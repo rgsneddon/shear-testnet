@@ -323,13 +323,15 @@ describe('privacy.walk', () => {
     const restTx = { kind: 'send', from: dest, to: alice.address, vin: [{ address: dest }], vout: [{ address: alice.address, nanos: 1 }] };
     assert.equal(checkTxAddressFields(restTx).reason, 'rest_frame_on_chain');
     const pool = emptyMempool();
-    assert.equal(admitMempool(pool, sheTx).reason, 'silent_id_on_chain');
+    // No plaintext amount on the probe, or amount_field answers first.
+    assert.equal(admitMempool(pool, { ...sheTx, vout: [{ address: alice.paymentCode }] }).reason, 'silent_id_on_chain');
     assert.equal(HASH_TX_LIVE, 1);
     const fp = consensusFingerprint();
     assert.match(fp, /DEST_HRP_SSA_ONLY=1/);
     assert.match(fp, /SPEND_SIG_ONLY=1/);
     assert.match(fp, /MEMO_NOT_DEST_KEYED=1/);
     assert.match(fp, /NETWORK=shear-testnet-v12/);
+    assert.match(fp, /RESERVE_NOTE=withdraw-levy-pull/);
     assert.doesNotMatch(fp, /NETWORK=shear-testnet-v11/);
     assert.match(fp, /HASH_FN=ShearHash-v3/);
     assert.match(fp, /HASH_TX_LIVE=1/);
@@ -349,12 +351,14 @@ describe('privacy.walk', () => {
     assert.match(fp, /KDF=argon2id-shewall/);
     assert.match(fp, /RESERVE=shear-reserve-v1/);
     assert.match(fp, /RESERVE_EVM=1/);
-    assert.match(fp, /RESERVE_INTEREST=4d-bps-floor/);
+    assert.match(fp, /RESERVE_REWARD=4d-bps-floor/);
+    assert.doesNotMatch(fp, /RESERVE_INTEREST=/);
+    assert.doesNotMatch(fp, /INTEREST=epoch-bps-floor/);
     assert.match(fp, /ORACLE=basket-mean-14/);
     assert.match(fp, /VORTEX=vort1-pin/);
     assert.match(fp, /VORTICE_NO_MINT=1/);
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
-    assert.match(fp, /LEVY_SPLIT=50-50-finder-reserve/);
+    assert.match(fp, /LEVY_SPLIT=100-finder-work,empty=public-finder-note/);
     assert.match(fp, /ADMIT=ADMITv3/);
     assert.match(fp, /RANGE=packed-bit/);
     assert.doesNotMatch(fp, /RANGE=bpplus/);

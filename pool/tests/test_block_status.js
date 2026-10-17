@@ -263,6 +263,9 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
     assert.equal(supply.hashNanos, 0);
     assert.equal(supply.extraMintNanos, 0);
     assert.equal(supply.burnedNanos, 0);
+    assert.equal(supply.reserveMintedNanos, supply.extraMintNanos);
+    assert.notEqual(supply.reserveMintedNanos, extra);
+    assert.equal(supply.reserveClaimableNanos, extra);
     assert.notEqual(supply.circulatingNanos, pot);
     assert.notEqual(supply.circulatingNanos, pot + 256 + extra - burned);
     assert.equal(supply.lockedNanos, staked);

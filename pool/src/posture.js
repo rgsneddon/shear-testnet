@@ -4,12 +4,16 @@
  * shear-testnet-v12 seals the 1% pool fee and admin spend to one dest.
  * The closed v10 and v11 pins are refused here so a copied unit cannot keep them.
  */
+import { isPayableDest, poolFeeDest } from '../../crypto/address.js';
 
 export const V10_POOL_FEE_DEST = 'ssa1qzcru37269cx30t7pdsmujwrxhc76km6ctzhwggxnyr9f0ld85wc4zvluktldtcnke7mr524ngqqvfr3sd5qsh6kkuk';
 export const V11_POOL_FEE_DEST = 'ssa1q5495s7qwnljwkt2q8896vect0qaj3argt68hvet8t3vkhf9f7tcn0qhsd2q45e4lnay7u98sp22sddc639hqt0d8jj';
 export const THIS_POOL_DIRECT_FEE_DEST = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
 
 export const CERTIFY_WINDOW = 288;
+
+export const POOL_FEE_DEST_NOT_PAYABLE_ERROR = 'pool fee dest must be a payable ssa (dest20 plus admit base) '
+  + 'or the pool-fee sink; a short ssa mines blocks that fail pool_fee_dest';
 
 export function isLoopbackHost(host) {
   const h = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
@@ -28,13 +32,26 @@ export function feeIdentityCheck({
 } = {}) {
   const fee = String(feeDest || '').trim();
   const admin = String(adminSpendDest || '').trim();
-  if (labOverride) {
-    return { ok: true, lab: true, reason: '', feeDest: fee, adminSpendDest: admin };
-  }
-  if (!fee || !admin || fee !== admin) {
+  if (!labOverride && (!fee || !admin || fee !== admin)) {
     return { ok: false, lab: false, reason: 'fee_dest_mismatch', feeDest: fee, adminSpendDest: admin };
   }
-  return { ok: true, lab: false, reason: '', feeDest: fee, adminSpendDest: admin };
+  // Book law, not posture: a pool-fee note pays the sink or a payable dest
+  // (dest20 || admit base) that carries a wrap (crypto/address.js
+  // poolFeeNoteBound). A short ssa mines blocks every node refuses as
+  // pool_fee_dest, so it fails here at config time. The lab flag does not
+  // bypass this.
+  const payable = fee !== '' && (fee === poolFeeDest() || isPayableDest(fee));
+  if (!payable) {
+    return {
+      ok: false,
+      lab: !!labOverride,
+      reason: 'fee_dest_not_payable',
+      error: POOL_FEE_DEST_NOT_PAYABLE_ERROR,
+      feeDest: fee,
+      adminSpendDest: admin,
+    };
+  }
+  return { ok: true, lab: !!labOverride, reason: '', feeDest: fee, adminSpendDest: admin };
 }
 
 export function configuredFeeIdentity({

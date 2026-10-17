@@ -84,7 +84,7 @@ jobs:
               pacman -S --noconfirm --needed base-devel cmake openssl python git patchelf
               ;;
             fedora)
-              dnf -y install gcc gcc-c++ make cmake openssl-devel python3 git zip file patchelf pkgconf-pkg-config
+              dnf -y install gcc gcc-c++ make cmake openssl-devel python3 git zip file patchelf pkgconf-pkg-config libstdc++-static
               ;;
             opensuse)
               zypper -n refresh

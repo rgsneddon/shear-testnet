@@ -21,7 +21,7 @@ import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, 
 import { packShareBatchBytes } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial, openedCoinbaseNanos } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
-import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags } from './note.js';
+import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags, AMOUNT_CT_BYTES } from './note.js';
 import { hash20FromAddress } from './address.js';
 import { canonicalReserveFields } from './reserve_vault.js';
 import { compactHashLedger, freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
@@ -341,7 +341,23 @@ function compactValue(v) {
   return out;
 }
 
-const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw']);
+const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw', 'reward-claim']);
+
+/**
+ * Top-level keys a sealed body tx may carry, from the signed body list in
+ * spend.js. Anything else, including nanos, amount, and changeNanos, is not
+ * copied. A key outside the signed list is already `unsigned` at admission.
+ */
+export const COMPACT_TX_KEYS = Object.freeze([
+  'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
+  'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
+  'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig', 'ownerPub',
+  'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
+  'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
+  'weight', 'payer', 'sponsor',
+  'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
+  'nullifier',
+]);
 
 function dest20Buf(x) {
   if (x == null || x === '') return null;
@@ -373,6 +389,15 @@ function claimedReserveV(o) {
   return 0;
 }
 
+function attachLockTime(row, o) {
+  if (String(o?.kind || row?.kind || '') !== 'lock') return;
+  const unlock = Number(o?.unlockAtMs);
+  if (Number.isInteger(unlock) && unlock > 0) row.unlockAtMs = unlock;
+  if (o?.lockEpoch != null && o.lockEpoch !== '' && Number.isInteger(Number(o.lockEpoch)) && Number(o.lockEpoch) >= 0) {
+    row.lockEpoch = Number(o.lockEpoch);
+  }
+}
+
 function attachReserveSeal(row, o) {
   const d20 = dest20FromOpen(o);
   if (d20) row.dest20 = d20;
@@ -383,6 +408,7 @@ function attachReserveSeal(row, o) {
   if (Number.isFinite(v) && v !== 0) {
     row.valueProof = { ...(row.valueProof || {}), v };
   }
+  attachLockTime(row, o);
 }
 
 const COINBASE_OPEN_KINDS = new Set(['pot', 'hash', 'pool-fee', 'finder-fee', 'reserve-fee']);
@@ -394,7 +420,7 @@ export function outputMayCarryValueOpen(tx, o) {
   if (tx?.coinbase || String(tx?.kind || '') === 'coinbase') return COINBASE_OPEN_KINDS.has(kind);
   const top = tx?.kind == null ? '' : String(tx.kind);
   // b-spend is a public mint receipt: the opened sum is the chain leaf.
-  if (top === 'lock' || top === 'vote' || top === 'withdraw' || top === 'pool-withdraw' || top === 'b-spend') return kind === top;
+  if (top === 'lock' || top === 'vote' || top === 'withdraw' || top === 'reward-claim' || top === 'pool-withdraw' || top === 'b-spend') return kind === top;
   // A dummy is publicly zero. That opening is not an amount. Any other value stays hidden.
   if (kind === 'dummy') {
     const v = o?.valueProof?.v;
@@ -410,7 +436,70 @@ function carriesValueOpen(o) {
   return Object.keys(vp).length > 0;
 }
 
-/** Hidden outputs reject a valueProof. The range proof stays. Reason value_open. */
+/**
+ * Plaintext amount keys. A hidden output carries none of them, present or
+ * empty. The amount is C, the range proof, and amtCt to the dest.
+ */
+export const OUTPUT_AMOUNT_KEYS = Object.freeze(['nanos', 'amount', 'v', 'value']);
+/** Top-level amount hints. A hidden-kind tx carries none of them. */
+export const TX_AMOUNT_KEYS = Object.freeze(['nanos', 'amount', 'changeNanos']);
+/** Kinds whose outputs are hidden. Reserve, pool-withdraw, b-spend, and coinbase are public-amount by design. */
+const HIDDEN_TX_KINDS = new Set(['', 'send', 'transfer', 'change', 'dummy']);
+export const HIDDEN_WRAP_KEYS = Object.freeze(['rEph', 'rCt', 'amtCt']);
+/** Dummies go to a random dest with no admit base; they stay publicly zero instead. */
+const WRAPPED_OUTPUT_KINDS = new Set(['', 'send', 'transfer', 'change']);
+
+function hasKey(o, k) {
+  return !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined;
+}
+
+function hiddenAmountTx(tx) {
+  if (!tx || tx.coinbase || String(tx.kind || '') === 'coinbase') return false;
+  const kind = tx.kind == null ? String(tx.vout?.[0]?.kind || '') : String(tx.kind);
+  return HIDDEN_TX_KINDS.has(kind);
+}
+
+/**
+ * AL-1. A hidden output, or a hidden-kind tx, that names its amount in clear
+ * is amount_field. A coinbase output with a commitment carries no nanos or
+ * amount beside it. amtCt, when present, is exactly AMOUNT_CT_BYTES.
+ */
+export function amountFieldRejected(tx) {
+  if (!tx || typeof tx !== 'object') return null;
+  const coinbase = !!(tx.coinbase || String(tx.kind || '') === 'coinbase');
+  if (!coinbase && hiddenAmountTx(tx)) {
+    for (const k of TX_AMOUNT_KEYS) {
+      if (hasKey(tx, k)) return { ok: false, reason: 'amount_field' };
+    }
+  }
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  for (const o of outs) {
+    if (!o || typeof o !== 'object') continue;
+    if (hasKey(o, 'amtCt')) {
+      let n = -1;
+      try { n = Buffer.from(asU8(o.amtCt)).length; } catch { n = -1; }
+      if (n !== AMOUNT_CT_BYTES) return { ok: false, reason: 'amount_ct' };
+    }
+    if (coinbase) {
+      if (o.commit && (hasKey(o, 'nanos') || hasKey(o, 'amount'))) return { ok: false, reason: 'amount_field' };
+      continue;
+    }
+    if (outputMayCarryValueOpen(tx, o)) continue;
+    if (!hiddenAmountTx(tx) && !o.commit) continue;
+    for (const k of OUTPUT_AMOUNT_KEYS) {
+      if (hasKey(o, k)) return { ok: false, reason: 'amount_field' };
+    }
+    // A hidden output is spendable and readable only by its dest: rEph, rCt, and amtCt are required.
+    if (hiddenAmountTx(tx) && o.commit && WRAPPED_OUTPUT_KINDS.has(String(o.kind || ''))) {
+      for (const k of HIDDEN_WRAP_KEYS) {
+        if (!hasKey(o, k) || o[k] === '') return { ok: false, reason: 'amount_ct', field: k };
+      }
+    }
+  }
+  return null;
+}
+
+/** Hidden outputs reject a valueProof (value_open) and any plaintext amount field (amount_field). */
 export function valueOpenRejected(tx) {
   if (!tx || typeof tx !== 'object') return null;
   const outs = Array.isArray(tx.vout) ? tx.vout : [];
@@ -419,7 +508,7 @@ export function valueOpenRejected(tx) {
     if (outputMayCarryValueOpen(tx, o)) continue;
     return { ok: false, reason: 'value_open' };
   }
-  return null;
+  return amountFieldRejected(tx);
 }
 
 function compactVout(o, tx) {
@@ -442,6 +531,7 @@ function compactVout(o, tx) {
     if (o.admitPub) row.admitPub = o.admitPub;
     if (o.rEph) row.rEph = o.rEph;
     if (o.rCt) row.rCt = o.rCt;
+    if (o.amtCt) row.amtCt = o.amtCt;
     if (o.dest20) row.dest20 = o.dest20;
     if (o.portalId) row.portalId = o.portalId;
     if (reserveKind || coinbaseMoney) {
@@ -481,6 +571,116 @@ export function sealedVinLinkField(v) {
   return null;
 }
 
+function vinBytes(raw) {
+  try {
+    if (raw == null || raw === '') return null;
+    return Buffer.from(asU8(raw));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * dest20, prev, and index that spendPackDigest hashes for one vin.
+ * Address is not sealed: the digest already folded it into dest20.
+ * A second compactTx must hash the same bytes.
+ */
+function bSpendDigestDest20(v) {
+  const nc = vinBytes(v?.noteCommit);
+  let d20 = nc && nc.length === 32 ? Buffer.from(nc.subarray(0, 20)) : null;
+  if (!d20) {
+    const field = vinBytes(v?.dest20);
+    d20 = field && field.length >= 20 ? Buffer.from(field.subarray(0, 20)) : Buffer.alloc(20);
+  }
+  if (d20.every((b) => b === 0)) {
+    const h = hash20FromAddress(v?.address || '');
+    if (h) d20 = Buffer.from(h);
+  }
+  return d20;
+}
+
+const VIN_INDEX_MAX = 0xffffffff;
+
+/** Integer in 0..2^32-1. Index 0 stays 0. A string, a float, and a boolean are not. */
+function canonicalVinIndex(raw) {
+  if (typeof raw === 'number') {
+    if (!Number.isInteger(raw) || raw < 0 || raw > VIN_INDEX_MAX) return null;
+    return raw;
+  }
+  if (typeof raw === 'bigint') {
+    if (raw < 0n || raw > BigInt(VIN_INDEX_MAX)) return null;
+    return Number(raw);
+  }
+  return null;
+}
+
+function fieldPosted(raw) {
+  return raw != null && raw !== '';
+}
+
+/** Why this b-spend vin is not sealable. Null when the posted link fields are canonical. */
+function bSpendVinFieldRejected(v) {
+  if (!v || typeof v !== 'object') return null;
+  const notePosted = fieldPosted(v.noteCommit);
+  const destPosted = fieldPosted(v.dest20);
+  if (notePosted) {
+    const nc = vinBytes(v.noteCommit);
+    if (!nc || nc.length !== 32) return 'noteCommit';
+    if (destPosted) return 'dest20';
+  }
+  if (fieldPosted(v.prev)) {
+    const prev = vinBytes(v.prev);
+    if (!prev || prev.length !== 32) return 'prev';
+  }
+  if (fieldPosted(v.index) && canonicalVinIndex(v.index) == null) return 'index';
+  return null;
+}
+
+/**
+ * Admission of a b-spend vin. Index must be an integer in 0..2^32-1.
+ * prev and noteCommit must be 32 bytes. dest20 beside noteCommit is refused.
+ * A missing field stays missing. The reason matches the body vin_link gate.
+ */
+export function bSpendVinRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  if (kind !== 'b-spend') return null;
+  const vins = Array.isArray(tx.vin) ? tx.vin : [];
+  for (const v of vins) {
+    if (bSpendVinFieldRejected(v)) return { ok: false, reason: 'vin_link' };
+  }
+  return null;
+}
+
+function sealBSpendVin(v) {
+  if (bSpendVinFieldRejected(v)) return null;
+  const commit = v?.pseudo || v?.cTilde || v?.commit;
+  const row = {};
+  if (commit != null && commit !== '') row.commit = compactValue(commit);
+  const notePosted = fieldPosted(v?.noteCommit);
+  if (notePosted) {
+    row.noteCommit = vinBytes(v.noteCommit);
+  } else {
+    const d20 = bSpendDigestDest20(v || {});
+    if (d20.length === 20 && !d20.every((b) => b === 0)) row.dest20 = d20;
+  }
+  if (fieldPosted(v?.prev)) row.prev = vinBytes(v.prev);
+  if (fieldPosted(v?.index)) row.index = canonicalVinIndex(v.index);
+  return row;
+}
+
+/** A refused vin is copied uncoerced, so the sealed body still fails admission. */
+function unsealedBSpendVin(v) {
+  const row = {};
+  const commit = v?.pseudo || v?.cTilde || v?.commit;
+  if (commit != null && commit !== '') row.commit = compactValue(commit);
+  if (fieldPosted(v?.noteCommit)) row.noteCommit = v.noteCommit;
+  if (fieldPosted(v?.dest20)) row.dest20 = v.dest20;
+  if (fieldPosted(v?.prev)) row.prev = v.prev;
+  if (fieldPosted(v?.index)) row.index = v.index;
+  return row;
+}
+
 /** Strip a tx down to the sealed fields. No openings, view material, IP, or memo plaintext. */
 export function compactTx(tx) {
   if (!tx) return tx;
@@ -493,11 +693,18 @@ export function compactTx(tx) {
     };
     if (tx.excess) row.excess = tx.excess;
     if (tx.jroot) row.jroot = tx.jroot;
-    if (tx.observe != null && typeof tx.observe === 'object' && !Array.isArray(tx.observe)) {
-      row.observe = {
-        annualBps: tx.observe.annualBps,
-        observedAtMs: tx.observe.observedAtMs,
+    if (Array.isArray(tx.reports) && tx.reports.length) {
+      row.reports = tx.reports.map((r) => ({ id: r?.id, tenths: r?.tenths }));
+    }
+    if (tx.rateCommit && typeof tx.rateCommit === 'object') {
+      row.rateCommit = {
+        epochIndex: Math.floor(Number(tx.rateCommit.epochIndex) || 0),
+        epochBps: Math.floor(Number(tx.rateCommit.epochBps) || 0),
+        magic: String(tx.rateCommit.magic || ''),
       };
+    }
+    if (typeof tx.rewardRoot === 'string' && /^[0-9a-f]{64}$/i.test(tx.rewardRoot)) {
+      row.rewardRoot = tx.rewardRoot.toLowerCase();
     }
     const carry = Math.floor(Number(tx.carryNanos) || 0);
     if (Number.isSafeInteger(carry) && carry > 0) row.carryNanos = carry;
@@ -507,25 +714,31 @@ export function compactTx(tx) {
     compactHashLedger(tx, row);
     return row;
   }
-  const out = compactValue(tx);
-  delete out.samples;
+  const out = {};
+  for (const k of COMPACT_TX_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(tx, k) && tx[k] !== undefined) out[k] = compactValue(tx[k]);
+  }
   const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
   const keepDest = kind === 'vortice-register';
   const reserveTx = RESERVE_TX_KINDS.has(kind);
   const reserveFields = reserveTx ? canonicalReserveFields(tx) : null;
   const poolWithdraw = kind === 'pool-withdraw';
-  delete out.nanos;
-  delete out.changeNanos;
-  delete out.amount;
   if (!keepDest) {
     delete out.from;
     delete out.to;
     delete out.payer;
     delete out.sponsor;
   }
+  delete out.owner;
+  delete out.payout;
+  delete out.address;
   if (tx.vin) {
-    out.vin = (tx.vin || []).map((v) => {
+    out.vin = (tx.vin || []).map((v, i) => {
       if (v?.coinbase) return compactValue({ coinbase: true, height: v.height });
+      if (kind === 'b-spend') {
+        const sealed = sealBSpendVin(v);
+        return sealed || unsealedBSpendVin(v);
+      }
       const commit = v.pseudo || v.cTilde || v.commit;
       const row = {};
       if (commit != null && commit !== '') row.commit = compactValue(commit);

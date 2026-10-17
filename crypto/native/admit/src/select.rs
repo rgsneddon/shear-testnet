@@ -21,6 +21,10 @@ use group::{Group, GroupEncoding};
 use pasta_curves::vesta;
 use rand_core::{OsRng, RngCore};
 
+fn r_is_id(p: &RistrettoPoint) -> bool {
+    IsIdentity::is_identity(p)
+}
+
 pub const CDS_LEN: usize = 32 + 32 + 32 + ARITY * 32 * 3; // W, Q, c0, z_x/z_r/z_t
 pub const PAIRED_LEN: usize = 32 * 4 + 64 + ARITY * 32 * 6; // Wd Qd Wc Qc hv0 + 6 z per slot
 pub const LEAF_PAIRED_LEN: usize = 32 * 2 + 64 + ARITY * 32 * 5; // Wd Qd hv0 + dest z*3 + c z_t + p z_w
@@ -289,7 +293,7 @@ pub fn cds_prove_ristretto(children: &[[u8; 32]; ARITY], index: usize, t: &RScal
         }
         RScalar::from_bytes_mod_order_wide(&sha512_64(&parts))
     };
-    let mut wpt = RistrettoPoint::identity();
+    let mut wpt = <RistrettoPoint as Identity>::identity();
     for k in 0..ARITY {
         if k == index {
             continue;
@@ -400,7 +404,7 @@ pub fn cds_verify_ristretto(parent: &[u8; 32], proof: &[u8]) -> bool {
         Some(x) => x,
         None => return false,
     };
-    if q.is_identity() {
+    if r_is_id(&q) {
         return false;
     }
     let (u, g, _) = ristretto_gens();
@@ -538,7 +542,7 @@ pub fn paired_prove(
         RScalar::from_bytes_mod_order_wide(&sha512_64(&parts))
     };
     let mut wd = vesta::Point::identity();
-    let mut wc = RistrettoPoint::identity();
+    let mut wc = <RistrettoPoint as Identity>::identity();
     for k in 0..ARITY {
         if k == index {
             continue;
@@ -749,7 +753,7 @@ pub fn paired_verify(dest_parent: &[u8; 32], c_parent: &[u8; 32], proof: &[u8], 
         Some(x) => x,
         None => return false,
     };
-    if bool::from(qd.is_identity()) || qc.is_identity() {
+    if bool::from(qd.is_identity()) || r_is_id(&qc) {
         return false;
     }
     let (uc, gc, _) = ristretto_gens();
@@ -909,7 +913,7 @@ pub fn leaf_prove(
     }
     let ci = dec_r(&c_ch[index])?;
     let pj = dec_r(&p_ch[index])?;
-    if bool::from(pj.is_identity()) {
+    if bool::from(r_is_id(&pj)) {
         return None;
     }
     let h = ristretto_h_note();
@@ -997,8 +1001,8 @@ pub fn leaf_prove(
         ztd[j] = c.to_repr().into();
         zct[j] = d.to_bytes();
         zpt[j] = e.to_bytes();
-        let cj = dec_r(&c_ch[j]).unwrap_or_else(RistrettoPoint::identity);
-        let ppj = dec_r(&p_ch[j]).unwrap_or_else(RistrettoPoint::identity);
+        let cj = dec_r(&c_ch[j]).unwrap_or_else(<RistrettoPoint as Identity>::identity);
+        let ppj = dec_r(&p_ch[j]).unwrap_or_else(<RistrettoPoint as Identity>::identity);
         let rpd = *ud * b + gd[j] * a - pwd * ed;
         let rqd = gseld * a + *ud * c - qd * ed;
         let rc = h * d - (*c_tilde - cj) * ec;
@@ -1050,8 +1054,8 @@ pub fn leaf_prove(
         let c = vs(&ztd[jj]);
         let d = rsc(&zct[jj]);
         let e = rsc(&zpt[jj]);
-        let cj = dec_r(&c_ch[jj]).unwrap_or_else(RistrettoPoint::identity);
-        let ppj = dec_r(&p_ch[jj]).unwrap_or_else(RistrettoPoint::identity);
+        let cj = dec_r(&c_ch[jj]).unwrap_or_else(<RistrettoPoint as Identity>::identity);
+        let ppj = dec_r(&p_ch[jj]).unwrap_or_else(<RistrettoPoint as Identity>::identity);
         let rpd = *ud * b + gd[jj] * a - pwd * e0d;
         let rqd = gseld * a + *ud * c - qd * e0d;
         let rc = h * d - (*c_tilde - cj) * e0c;
@@ -1131,7 +1135,7 @@ pub fn leaf_verify(
         Some(x) => x,
         None => return false,
     };
-    if bool::from(qd.is_identity()) || c_tilde.is_identity() || p_com.is_identity() {
+    if bool::from(qd.is_identity()) || r_is_id(&c_tilde) || r_is_id(&p_com) {
         return false;
     }
     let h = ristretto_h_note();
@@ -1175,8 +1179,8 @@ pub fn leaf_verify(
             None => return false,
         });
         off += 160;
-        let cj = dec_r(&c_ch[j]).unwrap_or_else(RistrettoPoint::identity);
-        let ppj = dec_r(&p_ch[j]).unwrap_or_else(RistrettoPoint::identity);
+        let cj = dec_r(&c_ch[j]).unwrap_or_else(<RistrettoPoint as Identity>::identity);
+        let ppj = dec_r(&p_ch[j]).unwrap_or_else(<RistrettoPoint as Identity>::identity);
         let rpd = vesta_mul_u(&b) + vesta_mul_g(j, &a) - pwd_t.mul(&ed);
         let rqd = vesta_mul_gsel(&a) + vesta_mul_u(&c) - qd_t.mul(&ed);
         let rc = h * d - (*c_tilde - cj) * ec;
@@ -1677,7 +1681,7 @@ fn leaf_prove_v3_inner(
     }
     let ci = dec_r(&c_ch[index])?;
     let pi = dec_r(&p_ch[index])?;
-    if bool::from(pi.is_identity()) {
+    if bool::from(r_is_id(&pi)) {
         return None;
     }
     let h = ristretto_h_note();
@@ -1718,7 +1722,7 @@ fn leaf_prove_v3_inner(
     let mut xs = [vesta::Scalar::ZERO; ARITY];
     let mut ys = [RScalar::ZERO; ARITY];
     let mut wd = vesta::Point::identity();
-    let mut wc = RistrettoPoint::identity();
+    let mut wc = <RistrettoPoint as Identity>::identity();
     for k in 0..ARITY {
         xs[k] = vesta_x(&dest_ch[k]);
         ys[k] = rsc(&c_ch[k]);
@@ -2084,7 +2088,7 @@ pub fn leaf_verify_v3(
         Some(x) => x,
         None => return false,
     };
-    if bool::from(qd.is_identity()) || c_tilde.is_identity() || p_com.is_identity() || kc.is_identity() || kp.is_identity() {
+    if bool::from(qd.is_identity()) || r_is_id(&c_tilde) || r_is_id(&p_com) || r_is_id(&kc) || r_is_id(&kp) {
         return false;
     }
     let y_b = match take32(proof, V3_Y) {
@@ -2299,7 +2303,7 @@ pub fn v3_dest_openings(leaf: &[u8]) -> Option<([u8; 32], [u8; 32])> {
 }
 
 fn point_child(b: &[u8; 32]) -> RistrettoPoint {
-    dec_r(b).unwrap_or_else(RistrettoPoint::identity)
+    dec_r(b).unwrap_or_else(<RistrettoPoint as Identity>::identity)
 }
 
 fn point_open_chal(rq: &[u8; 32], q: &[u8; 32], ctx: &[u8], sib: &[u8]) -> RScalar {
@@ -2321,7 +2325,7 @@ pub fn point_open_prove(c_ch: &[[u8; 32]; ARITY], index: usize, ctx: &[u8]) -> O
         return None;
     }
     let q = ci + u * rho;
-    if q.is_identity() || q == ci {
+    if r_is_id(&q) || q == ci {
         return None;
     }
     let q_b = enc_r(&q);
@@ -2375,7 +2379,7 @@ pub fn point_open_verify(c_ch: &[[u8; 32]; ARITY], proof: &[u8], ctx: &[u8]) -> 
         Some(p) => p,
         None => return false,
     };
-    if q.is_identity() {
+    if r_is_id(&q) {
         return false;
     }
     let mut sib = Vec::with_capacity(ARITY * 32);
@@ -2512,7 +2516,7 @@ mod tests {
         }
         assert_ne!(&pr[..32], super::enc_v(&wd).as_slice(), "v3 published the unblinded dest sum");
         let (_, gc, _) = ristretto_gens();
-        let mut wc = RistrettoPoint::identity();
+        let mut wc = <RistrettoPoint as Identity>::identity();
         for k in 0..ARITY {
             if k == 4 {
                 continue;

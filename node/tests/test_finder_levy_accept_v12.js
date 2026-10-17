@@ -285,9 +285,11 @@ describe('accepted finder levy', () => {
       const need = levyNeed(tx);
       assert.ok(tx.fee >= need && tx.fee <= LEVY_CAP_NANOS, `levy ${need} fee ${tx.fee}`);
       const split = splitLevy(tx.fee);
+      assert.equal(FEE_SPLIT_FINDER_BPS, 10000);
       assert.equal(split.finder, Math.floor(tx.fee * FEE_SPLIT_FINDER_BPS / 10000));
+      assert.equal(split.finder, tx.fee);
+      assert.equal(split.reserve, 0);
       assert.equal(split.finder + split.reserve, tx.fee);
-      assert.ok(split.reserve > 0, 'reserve half');
       const parked = admitMempool(emptyMempool(), tx, {
         height,
         noteAtAnchor: (got) => store.anchorNote(got),

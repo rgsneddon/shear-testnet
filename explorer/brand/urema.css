@@ -1,8 +1,3 @@
-/* Urema Variable (zafiratype / Envato LNXRAS3) — bulk text. Weight axis Thin–Black. */
-@font-face {
-  font-family: "Urema";
-  src: url("fonts/urema/woff2/Urema-Variable.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
+/* Licensed Urema WOFF2 is not in git.
+   deploy/install_fonts.sh copies it to brand/fonts/urema/woff2/ at deploy time.
+   Pages use Segoe UI and do not load this sheet. */

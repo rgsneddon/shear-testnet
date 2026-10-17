@@ -25,6 +25,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.6'
@@ -35,7 +36,9 @@ jobs:
           $env:CL = "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
           flutter config --enable-windows-desktop
           flutter pub get
-          flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+          cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/shear_admit.dll).Trim()
+          flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $define
           New-Item -ItemType Directory -Force -Path dist-cli | Out-Null
           cmd /c "dart compile exe bin/shear.dart -o dist-cli/shear.exe & exit /b 0"
       - name: Zip GUI
@@ -53,6 +56,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.6'
@@ -61,10 +65,14 @@ jobs:
         working-directory: wallet
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev g++ libsecret-1-dev
+          gcc_major="$(clang++ -print-file-name=libstdc++.so | sed -n 's|.*/\([0-9][0-9]*\)/libstdc++.so|\1|p')"
+          sudo apt-get install -y "libstdc++-${gcc_major}-dev"
           flutter config --enable-linux-desktop
           flutter pub get
-          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+          bash ../crypto/native/build-linux-admit-so.sh
+          DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
+          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
           mkdir -p dist-cli
           dart compile exe bin/shear.dart -o dist-cli/shear || true
       - name: Continuum release signing
@@ -86,13 +94,29 @@ jobs:
             echo "keyAlias=continuum"
             echo "storeFile=../continuum-release.jks"
           } > key.properties
+      - name: Pin NDK r27d (reproducible libsodium.so, see wallet/android/libsodium.lock.json)
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y minisign
+          if [[ ! -f /opt/android-ndk-r27d/source.properties ]]; then
+            curl -fsSL -o /tmp/android-ndk-r27d-linux.zip https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+            echo "22105e410cf29afcf163760cc95522b9fb981121  /tmp/android-ndk-r27d-linux.zip" | sha1sum -c
+            echo "601246087a682d1944e1e16dd85bc6e49560fe8b6d61255be2829178c8ed15d9  /tmp/android-ndk-r27d-linux.zip" | sha256sum -c
+            sudo unzip -q /tmp/android-ndk-r27d-linux.zip -d /opt
+          fi
+          grep -q 'Pkg.ReleaseName = r27d' /opt/android-ndk-r27d/source.properties
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-r27d" >> "$GITHUB_ENV"
+          echo "SHEAR_NDK_PIN=r27d" >> "$GITHUB_ENV"
+          echo "SHEAR_REQUIRE_MINISIGN=1" >> "$GITHUB_ENV"
       - name: Build release APK
         working-directory: wallet
-        run: flutter build apk --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+        run: flutter build apk --release --target-platform android-arm64 --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
       - name: Zip
         run: |
           python3 - <<'PY'
-          import os, zipfile, shutil
+          import os, sys, zipfile, shutil
+          sys.path.insert(0, "scripts/licenses")
+          import release_notices
           pin = os.environ["PIN"]
           bundle = "wallet/build/linux/x64/release/bundle"
           dist = "dist"
@@ -105,10 +129,15 @@ jobs:
           linux = os.path.join(dist, f"shear-wallet-{pin}-linux.zip")
           with zipfile.ZipFile(linux, "w", zipfile.ZIP_DEFLATED) as z:
               add_tree(z, bundle)
+              release_notices.write_notices(z, ".")
           arch = os.path.join(dist, f"shear-wallet-{pin}-archlinux.zip")
           with zipfile.ZipFile(arch, "w", zipfile.ZIP_DEFLATED) as z:
               z.write("wallet/pack/archlinux/PKGBUILD", "PKGBUILD")
               add_tree(z, bundle)
+              release_notices.write_notices(z, ".")
+          for path in (linux, arch):
+              release_notices.assert_has_notices(zipfile.ZipFile(path).namelist(), ".")
+              release_notices.assert_linux_zip_clean(path)
           apk = "wallet/build/app/outputs/flutter-apk/app-release.apk"
           shutil.copy(apk, os.path.join(dist, f"shear-wallet-{pin}-android.apk"))
           PY
@@ -122,6 +151,27 @@ jobs:
         run: |
           gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-android.apk --repo ${{ inputs.repo }}
           if [ -f wallet/dist-cli/shear ]; then gh release upload ${{ inputs.pin }} wallet/dist-cli/shear --repo ${{ inputs.repo }}; fi
+
+  release-notes:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record the bundled runtime versions in the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/assets
+          gh release download ${{ inputs.pin }} --repo ${{ inputs.repo }} --dir /tmp/assets \
+            --pattern 'shear-wallet-${{ inputs.pin }}-*.zip' --pattern 'shear-wallet-${{ inputs.pin }}-*.apk'
+          python3 scripts/licenses/release_notes_versions.py /tmp/assets/* > /tmp/versions.md
+          cat /tmp/versions.md
+          gh release view ${{ inputs.pin }} --repo ${{ inputs.repo }} --json body -q .body > /tmp/notes.md
+          { echo; cat /tmp/versions.md; } >> /tmp/notes.md
+          gh release edit ${{ inputs.pin }} --repo ${{ inputs.repo }} --notes-file /tmp/notes.md
 
   macos:
     if: false
@@ -139,7 +189,7 @@ jobs:
         run: |
           flutter config --enable-macos-desktop
           flutter pub get
-          flutter build macos --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }}
+          flutter build macos --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }} --dart-define=SHEAR_ADMIT_SIGN_ID="Developer ID Application: Russell Sneddon (SFCBP95595)"
           dart compile exe bin/shear.dart -o dist-cli/shear
           mkdir -p ../dist
           ditto -c -k --keepParent build/macos/Build/Products/Release/Shear.app ../dist/shear-wallet-${{ inputs.pin }}-macos.zip

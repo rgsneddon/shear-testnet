@@ -156,6 +156,7 @@ Uint8List spendPackDigest({
   int height = 0,
   String? kind,
   List<Map<String, dynamic>>? vin,
+  int fee = 0,
 }) {
   final from20 = hash20FromAddress(from) ?? Uint8List(20);
   final vins = <Map<String, dynamic>>[];
@@ -201,7 +202,36 @@ Uint8List spendPackDigest({
       'kind': _kindByte((o['kind'] as String?) ?? kind),
     });
   }
-  return packDigest(packTx(vins: vins, vouts: vouts));
+  final packed = packDigest(packTx(vins: vins, vouts: vouts));
+  final top = kind ?? (vout.isNotEmpty ? vout.first['kind'] as String? : null) ?? '';
+  if (top == 'lock' || top == 'vote' || top == 'withdraw') return packed;
+  final flowed = flowAmtDigest(packed, [for (final o in vout) _amtCtBytes(o['amtCt'])]);
+  if (top != 'b-spend') return flowed;
+  return Uint8List.fromList(sha256.convert([...flowed, ..._canonicalFee(fee)]).bytes);
+}
+
+final spendAmtDst = utf8.encode('shear-spend-amt-v1');
+
+/// Same bytes as crypto/spend.js flowAmtDigest: every output's amtCt, empty when absent.
+Uint8List flowAmtDigest(Uint8List packed, List<Uint8List> amtCts) {
+  final b = BytesBuilder()
+    ..add(spendAmtDst)
+    ..add(packed)
+    ..add(_u32le(amtCts.length));
+  for (final ct in amtCts) {
+    b.add(_u32le(ct.length));
+    b.add(ct);
+  }
+  return Uint8List.fromList(sha256.convert(b.toBytes()).bytes);
+}
+
+Uint8List _amtCtBytes(Object? v) {
+  if (v is Uint8List) return v;
+  if (v is List<int>) return Uint8List.fromList(v);
+  if (v is String && v.length.isEven && RegExp(r'^[0-9a-fA-F]+$').hasMatch(v)) {
+    return Uint8List.fromList([for (var i = 0; i < v.length; i += 2) int.parse(v.substring(i, i + 2), radix: 16)]);
+  }
+  return Uint8List(0);
 }
 
 Uint8List spendMessage({
@@ -210,8 +240,9 @@ Uint8List spendMessage({
   int height = 0,
   String? kind,
   List<Map<String, dynamic>>? vin,
+  int fee = 0,
 }) {
-  final digest = spendPackDigest(from: from, vout: vout, height: height, kind: kind, vin: vin);
+  final digest = spendPackDigest(from: from, vout: vout, height: height, kind: kind, vin: vin, fee: fee);
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
 }
 

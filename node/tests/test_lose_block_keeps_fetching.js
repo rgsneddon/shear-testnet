@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { jroot as jrootOf } from '../../crypto/admit.js';
 import { encodeDest } from '../../crypto/address.js';
 import {
   GENESIS_BITS_PACKED,
@@ -13,7 +12,6 @@ import {
   nextBits,
 } from '../../crypto/asert.js';
 import { decodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
-import { pointFrom } from '../../crypto/note.js';
 import { meetsTarget, setHashBackend, shearHash } from '../../crypto/shear_hash.js';
 import { shouldAdopt } from '../src/chain.js';
 import { createP2p, decodeWireBlock } from '../src/p2p.js';
@@ -22,36 +20,11 @@ import { createStore } from '../src/store.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
-// Same rewritten headers as test_p2p_wedge.js. Nonce 1014 is the fleet's
+// Same sealed headers as test_p2p_wedge.js. Nonce 59614 is the fleet's
 // height-1 block. lose-block-nonce.json is a different hit on that header
 // whose hash is greater, so equal work keeps the fleet block.
-const FLEET_HEADER_NONCE = [1014n, 5110n, 99739n];
-const FLEET_SHARE_NONCE = [null, ['258'], ['515']];
-
-function setHeaderBits(header, bits) {
-  const h = Buffer.from(header);
-  h.writeUInt32LE(bits >>> 0, 108);
-  return h;
-}
-
-function setHeaderPrev(header, prevHash) {
-  const h = Buffer.from(header);
-  Buffer.from(prevHash).copy(h, 4, 0, 32);
-  return h;
-}
-
-function admitPubsOf(block) {
-  const pubs = [];
-  for (const tx of block.txs || []) {
-    for (const o of tx.vout || []) {
-      if (!o?.admitPub) continue;
-      try {
-        pubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
-      } catch { /* verify skips the same unreadable pub */ }
-    }
-  }
-  return pubs;
-}
+const FLEET_HEADER_NONCE = [59614n, 518050n, 7158n];
+const FLEET_SHARE_NONCE = [null, ['576460752303423511'], ['576460752303424244']];
 
 function cloneBlock(block) {
   return {
@@ -61,6 +34,8 @@ function cloneBlock(block) {
     txs: block.txs,
     samples: block.samples || [],
     shareBatch: block.shareBatch || [],
+    hashCredits: block.hashCredits,
+    hashSpill: block.hashSpill || [],
     miner: block.miner,
     poolDest: block.poolDest,
     aLeaves: block.aLeaves,
@@ -76,14 +51,11 @@ function legalFleet() {
   if (childBits !== GENESIS_BITS_PACKED) {
     throw new Error(`padded median would move genesis bits to ${childBits}`);
   }
-  const raw = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-blocks.json', import.meta.url), 'utf8'));
+  const raw = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-v12.json', import.meta.url), 'utf8'));
   const out = [];
-  const pubs = [];
   for (let i = 0; i < FLEET_HEADER_NONCE.length; i += 1) {
     const block = cloneBlock(decodeWireBlock(raw.blocks[i]));
-    let header = setHeaderBits(block.header, GENESIS_BITS_PACKED);
-    if (i > 0) header = setHeaderPrev(header, out[i - 1].hash);
-    header = setNonce(header, FLEET_HEADER_NONCE[i]);
+    const header = setNonce(block.header, FLEET_HEADER_NONCE[i]);
     const hash = shearHash(header);
     if (!meetsTarget(hash, GENESIS_BITS_PACKED)) throw new Error(`fleet block ${i + 1} misses target`);
     block.header = header;
@@ -94,9 +66,6 @@ function legalFleet() {
         shareNonces[j] == null ? row : { ...row, nonce: shareNonces[j] }
       ));
     }
-    pubs.push(...admitPubsOf(block));
-    const root = Buffer.from(jrootOf(pubs));
-    block.txs = (block.txs || []).map((tx, idx) => (idx === 0 ? { ...tx, jroot: root } : tx));
     out.push(block);
   }
   return out;

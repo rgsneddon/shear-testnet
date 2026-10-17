@@ -1,12 +1,12 @@
 /**
  * N-43 / N-46: a snap or suffix reload keeps n, jroot, and zeroRoot at every
- * height. Frontier blobs stay sparse. A heavier fork with a lock anchored at
- * a dropped height adopts on a reloaded store and on a store that never
+ * height. Frontier blobs stay sparse. A heavier fork with an FS-1 B-leaf
+ * lock anchored at a dropped height adopts on a reloaded store and on a store that never
  * reloaded, with the same tip and jroot.
  *
  * The spread is the reorg depth and the anchor end, at a tip that is a
  * multiple of the checkpoint spacing and at a tip that is not. The lock
- * output is whatever the opened coinbase pays after the levy.
+ * spends the opened height-1 pot through an FS-1 proof at that anchor.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,26 +24,18 @@ import { newIdentity, encodeDest } from '../../crypto/address.js';
 import {
   appendFluxBlock,
   fluxsetFromBlocks,
-  admitProveV3,
   admitPub,
   admitScalarFromSeed,
-  blindCommit,
-  outputJoinsAdmitSet,
 } from '../../crypto/admit.js';
 import {
   asU8,
   pointBytes,
-  scalarBytes,
-  kernelExcess,
   openedCoinbaseNanos,
-  sealCoinbaseNote,
-  randomScalar,
 } from '../../crypto/note.js';
-import { lockTx } from '../../crypto/reserve_vault.js';
-import { signSpendTx } from '../../crypto/spend.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { ANCHOR_QUANTUM, ANCHOR_WINDOW } from '../../crypto/admit_v3.js';
-import { txDigestV3, admitV3Context, fundingJroot } from '../../crypto/admit_v3.js';
+import { resetFs1Tree } from '../../crypto/fs1_spend.js';
+import { lockSend } from './b_leaf_fs1.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -163,108 +155,6 @@ function forkBlocks(prefix, dest, count, txsForFirst) {
   return out;
 }
 
-function stripPayer(tx) {
-  delete tx.from;
-  delete tx.payer;
-  if (Array.isArray(tx.vin)) {
-    tx.vin = tx.vin.map((v) => {
-      if (!v || v.coinbase) return v;
-      const next = { ...v };
-      delete next.address;
-      delete next.dest20;
-      return next;
-    });
-  }
-  return tx;
-}
-
-function indexOfCommit(blocks, anchor, commit) {
-  const want = Buffer.from(asU8(commit));
-  let index = 0;
-  for (const b of blocks || []) {
-    const h = Number(b?.height || 0);
-    if (!(h > 0 && h <= anchor)) continue;
-    for (const tx of b.txs || []) {
-      for (const o of tx.vout || []) {
-        if (!outputJoinsAdmitSet(tx, o)) continue;
-        const got = Buffer.from(asU8(o.commit || []));
-        if (got.length === 32 && got.equals(want)) return { index, height: h };
-        index += 1;
-      }
-    }
-  }
-  return { index: -1, height: 0 };
-}
-
-function resealLock(tx, nanos) {
-  const prev = tx.vout[0] || {};
-  const d20 = Buffer.from(asU8(prev.dest20));
-  const sealed = sealCoinbaseNote(nanos, { dest20: d20, kind: 'lock' });
-  tx.vout = [{
-    ...sealed,
-    kind: 'lock',
-    dest20: d20,
-    portalId: prev.portalId || tx.portalId,
-  }];
-  tx.nanos = nanos;
-}
-
-function proveBalanced(tx, { x, index, flux, note, anchor, noteR, noteV, key }) {
-  let fee = 0;
-  let settled = null;
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const out = noteV - fee;
-    assert.ok(out > 0, `levy consumes the opened note ${noteV} fee ${fee}`);
-    resealLock(tx, out);
-    const t = randomScalar();
-    tx.fee = fee;
-    tx.anchor = anchor;
-    const probe = admitProveV3({
-      x,
-      index,
-      pubs: flux.pubs,
-      commits: flux.commits,
-      c: note.commit,
-      t,
-      ctx: Buffer.alloc(64, 9),
-    });
-    assert.ok(probe, `balance probe ${attempt}`);
-    tx.vin = [{ commit: Buffer.from(probe.cTilde) }];
-    tx.admit_proof = probe;
-    tx.excess = kernelExcess(tx.vout, [{ r: noteR, t: scalarBytes(t) }]);
-    assert.ok(tx.excess, 'excess');
-    const digest = txDigestV3(tx, MAGIC_TESTNET);
-    const ctx = admitV3Context({
-      magic: MAGIC_TESTNET,
-      anchor,
-      root: fundingJroot(flux),
-      n: flux.pubs.length,
-      digest,
-    });
-    const real = admitProveV3({
-      x,
-      index,
-      pubs: flux.pubs,
-      commits: flux.commits,
-      c: note.commit,
-      t,
-      ctx,
-    });
-    assert.ok(real, `balance prove ${attempt}`);
-    tx.admit_proof = real;
-    tx.vin = [{ commit: Buffer.from(real.cTilde) }];
-    signSpendTx(tx, key);
-    const need = levyNeed(tx);
-    if (need === fee) {
-      settled = real;
-      break;
-    }
-    fee = need;
-  }
-  assert.ok(settled, 'balanced fee did not settle');
-  return settled;
-}
-
 function windowQuantums(lockHeight) {
   const newest = lockHeight - K;
   const oldest = newest - ANCHOR_WINDOW;
@@ -274,31 +164,43 @@ function windowQuantums(lockHeight) {
   return list;
 }
 
+let lockNonce = 1;
+
+/**
+ * An FS-1 B-leaf lock (b_leaf_fs1.js lockSend) that spends the height-1 pot
+ * under `anchor`. The FS-1 leaves at an anchor are the first n admit-set
+ * notes, so the view is the prefix up to that anchor. v12 Stage 0 refuses a
+ * vault lock with a v3 bucket proof (vault_unavailable until Stage 3b), so
+ * the anchored spend is an FS-1 send that locks a unit.
+ */
 function makeLock(prefix, who, opening, anchor, id) {
   const pot = prefix[0].txs[0].vout.find((o) => o.kind === 'pot');
-  const found = indexOfCommit(prefix, anchor, pot.commit);
-  assert.equal(found.height, 1, `pot height at anchor ${anchor}`);
-  assert.ok(found.index >= 0, `pot index at anchor ${anchor}`);
+  assert.ok(Buffer.from(asU8(pot.commit)).equals(Buffer.from(asU8(opening.commit))), 'opened pot');
+  const flux = fluxsetFromBlocks(prefix.filter((b) => Number(b.height) > 0 && Number(b.height) <= anchor));
+  const live = { n: flux.pubs.length, pubs: flux.pubs, commits: flux.commits };
+  const want = Buffer.from(asU8(pot.commit));
+  const index = flux.commits.findIndex((c) => Buffer.from(asU8(c)).equals(want));
+  assert.ok(index >= 0, `pot index at anchor ${anchor}`);
   const x = admitScalarFromSeed(who.spendSeed, pot);
   assert.ok(Buffer.from(pointBytes(admitPub(x))).equals(Buffer.from(asU8(pot.admitPub))), 'pot key');
-  const flux = fluxsetFromBlocks(prefix.filter((b) => Number(b.height) > 0 && Number(b.height) <= anchor));
-  const lock = stripPayer(lockTx({
-    from: who.dest,
-    to: who.dest,
-    nanos: 1,
+  const lock = lockSend(who, {
     id,
-  }));
-  proveBalanced(lock, {
+    unit: 9,
+    nonce: lockNonce,
+    tag: 'b-extra',
+    memoH: Buffer.alloc(32),
+  }, {
+    r: Buffer.from(asU8(opening.r)),
+    v: opening.v,
+    commit: want,
+    index,
     x,
-    index: found.index,
-    flux,
-    note: pot,
-    anchor,
-    noteR: opening.r,
-    noteV: opening.v,
-    key: who.key,
-  });
-  assert.equal(levyNeed(lock), lock.fee, `levy drifted at anchor ${anchor}`);
+  }, anchor, live);
+  lockNonce += 1;
+  // FS-1 consensus is fee >= levyNeed. lockSend settles the fee with range
+  // slack, so the old equality from the v3 settle loop does not apply.
+  assert.ok(levyNeed(lock) <= lock.fee, `levy short at anchor ${anchor}`);
+  assert.equal(lock.anchor, anchor);
   return lock;
 }
 
@@ -362,6 +264,7 @@ describe('v12 snap reload anchor rows', () => {
     assert.equal(tipOn % SPACING, 0);
     assert.ok(tipOff >= minTip && tipOn > tipOff);
 
+    resetFs1Tree();
     const dirs = [];
     const opening = { note: null };
     const who = payer();
@@ -374,20 +277,24 @@ describe('v12 snap reload anchor rows', () => {
       assert.equal(halt, 0);
       let savedSnap = null;
       let savedVault = null;
+      let savedVaultSnap = null;
       // The saved tip is far enough behind that the depth-24 anchor is outside
       // its frontier window. A short suffix would still keep that row.
       const saveAt = tipOff - span - SPACING;
       const built = growTo(live, dest, tipOff, opening, (store, h) => {
         if (h === saveAt) {
+          store.flushBookSnap();
           savedSnap = fs.readFileSync(path.join(dir, 'book.snap'));
           savedVault = fs.readFileSync(path.join(dir, 'reserve.json'));
+          savedVaultSnap = fs.readFileSync(path.join(dir, 'vault.snap'));
         }
       });
       assert.equal(built.ok, true, built.reason || 'grow');
       assert.equal(live.tip().height, tipOff);
+      live.flushBookSnap();
       assert.ok(opening.note && opening.note.v > 1, 'opened pot');
       assert.equal(live.anchorView().roots, tipOff);
-      assert.ok(savedSnap && savedVault, 'suffix snap');
+      assert.ok(savedSnap && savedVault && savedVaultSnap, 'suffix snap');
 
       const offView = live.blocks.slice();
       const offEnds = windowQuantums(tipOff - 24 + 1);
@@ -415,6 +322,7 @@ describe('v12 snap reload anchor rows', () => {
       dirs.push(suffixDir);
       fs.writeFileSync(path.join(suffixDir, 'book.snap'), savedSnap);
       fs.writeFileSync(path.join(suffixDir, 'reserve.json'), savedVault);
+      fs.writeFileSync(path.join(suffixDir, 'vault.snap'), savedVaultSnap);
       const suffix = createStore(suffixDir, { reorgHaltDepth: 0, pruneAfter: 1_000_000 });
       assert.equal(suffix.loadMode, 'suffix', suffix.loadMode);
       assert.equal(suffix.tip().height, tipOff);
@@ -432,7 +340,7 @@ describe('v12 snap reload anchor rows', () => {
           const snapDir = cloneBook(dir);
           dirs.push(snapDir);
           const snap = createStore(snapDir, { reorgHaltDepth: 0, pruneAfter: 1_000_000 });
-          assert.equal(snap.loadMode, 'snap');
+          assert.equal(snap.loadMode, 'snap', snap.loadMode);
           const row = snap.anchorNote(anchor);
           const liveRow = live.anchorNote(anchor);
           assert.ok(row && liveRow, `anchor ${anchor} depth ${depth}`);
@@ -442,7 +350,10 @@ describe('v12 snap reload anchor rows', () => {
           process.stderr.write(`snap-anchor adopt depth ${depth} anchor ${anchor} ${(performance.now() - t0).toFixed(0)} ms\n`);
           assert.equal(snap.tip().height, tipOff + 1);
           assert.equal(rootHex(snap), rebuiltRoot(snap));
-          assert.ok(snap.blocks.some((b) => (b.txs || []).some((tx) => tx.anchor === anchor && tx.kind === 'lock')));
+          // The anchored spend is an FS-1 B-leaf lock (kind send, bFlag 1), not a
+          // vault lock. Same anchor and same fork id; only the kind changed.
+          const lockId = `lock-d${depth}-a${anchor}`;
+          assert.ok(snap.blocks.some((b) => (b.txs || []).some((tx) => tx.anchor === anchor && tx.id === lockId && tx.kind === 'send' && Number(tx.bFlag) === 1)));
           adopted.push({ depth, anchor, tip: tipHex(snap), root: rootHex(snap), fork });
         }
       }

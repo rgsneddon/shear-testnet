@@ -43,7 +43,7 @@ window.SHEAR_DOCS = {
       { id: 'epochs', title: 'Epochs' },
       { id: 'stake', title: 'Stake, idle, lock' },
       { id: 'votes', title: 'Votes' },
-      { id: 'oracle', title: 'Oracle' },
+      { id: 'oracle', title: 'Lock issuance rate' },
       { id: 'withdraw', title: 'Withdraw' }
     ]},
     { title: 'Network', children: [
@@ -253,7 +253,7 @@ window.SHEAR_DOCS = {
     html:
       '<p>Flow send, Reserve lock, and Reserve vote each pay one levy <code>L</code> quoted from mempool depth at that step. Withdraw of Reserve principal is not taxed. Hash bonus and the block pot are not taxed.</p>' +
       '<p><code>L_base</code> is the greater of 100 units and two basis points of the amount. Surge rises with waiting bytes. Empty-mempool floor is 100 units. <strong>L never exceeds 0.001 SHE</strong>, even on a large send or a crowded mempool. Continuum spendable pays <code>L</code>. Lock and vote quote separately — they can differ if the mempool moved between the two.</p>' +
-      '<p>When the block that includes the taxed send seals, <code>L</code> is split 50/50. Half is paid to the block finder as <code>finder-fee</code> on the coinbase (that miner’s dest). The other half is <code>reserve-fee</code>, credited to The Reserve vault fee bank. If <code>L</code> is an odd number of units, the finder gets the floor of half and the vault gets the remainder.</p>'
+      '<p>When the block that includes the taxed send seals, all of <code>L</code> is paid to that block’s miners as <code>finder-fee</code> on the coinbase. A round with shares splits <code>L</code> by work. A round with no shares pays <code>L</code> as one public finder-fee note to the block miner. None of <code>L</code> is credited to The Reserve.</p>'
   };
 
   P.mine = {
@@ -360,38 +360,39 @@ window.SHEAR_DOCS = {
     title: 'Epochs',
     crumb: 'reserve / epochs',
     html:
-      '<p>An epoch is 4 days on this testnet (400 days on mainnet). The first qualifying π deposit opens the inaugural epoch — not genesis, not an operator clock. Last 1 testnet day / 99 mainnet days: new deposits still lock and may vote, but they sit idle (no stake interest). Vote changes are only before that idle window.</p>'
+      '<p>An epoch is 4 days on this testnet (400 days on mainnet). The first qualifying π lock opens the inaugural epoch — not genesis, not an operator clock. Last 1 testnet day / 99 mainnet days: new locks still lock and may vote, but they sit idle (no reserve reward). The vote is the hash-bonus unit only, and only before that idle window.</p>'
   };
 
   P.stake = {
     title: 'Stake, idle, lock',
     crumb: 'reserve / stake',
     html:
-      '<p>Staked principal earns the oracle APR for the full epoch (4 days testnet / 400 days mainnet). Idle coin earns nothing. Locked is staked plus idle. Daily credits sit in the portal until you withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>'
+      '<p>An active lock earns the lock issuance rate for the full epoch (4 days testnet / 400 days mainnet). The rate is frozen when the epoch opens. Idle coin earns no Reserve reward. Locked is active plus idle. The Reserve reward is paid on withdraw after epoch end. One fee to add funds (lock); Continuum pays it.</p>' +
+      '<p>Reserve rewards are newly minted by the protocol in each block\'s coinbase at the lock issuance rate. They don\'t come from any pool or pot of existing Shear, and nobody holds your coins.</p>'
   };
 
   P.votes = {
     title: 'Votes',
     crumb: 'reserve / votes',
     html:
-      '<p>A vote may raise the hash bonus by one unit, lower it by one unit, or leave it. The 1 SHE pot does not change. Each portal votes once. After you seal, the Vortex pane keeps the chosen row with a green check; the other boxes and Cast vote go away.</p>' +
+      '<p>A vote may raise the hash bonus by one unit, lower it by one unit, or leave it. It does not set the lock issuance rate. The 1 SHE pot does not change. Each portal votes once. After you seal, the Vortex pane keeps the chosen row with a green check; the other boxes and Cast vote go away.</p>' +
       '<p>Ownership of a vote is the dest-opening of the portal dest. A second vote in the same epoch is <code>vote_locked</code>. Public tallies show the three piles. They do not name who voted. At epoch end the unique plurality moves the live bonus, or a tie leaves it.</p>' +
       '<p>One fee to vote, quoted from mempool depth at that step.</p>'
   };
 
   P.oracle = {
-    title: 'The Reserve oracle',
-    crumb: 'reserve / oracle',
+    title: 'Lock issuance rate',
+    crumb: 'reserve / lock issuance rate',
     html:
-      '<p>The staking rate is an epoch APR observed by <code>shear-reserve-oracle-v1</code> (4-day testnet / 400-day mainnet), coded into every node. Freeze is bounded and fail-closed. A bad rate cannot reorg blocks or steal the pot. The wallet paints live observations as observational until freeze; mint uses frozen <code>epochBps</code> only.</p>' +
-      '<p>Shear Sentinel v18 answers <code>GET /api/oracle</code> and <code>GET /api/reserve</code>. The basket is the observation. Mint uses the frozen epoch rate. A stale basket leaves that freeze in place. The step between epochs is at most 100 bps. Lock, epoch vote, and withdraw are sealed transactions. The node applies them. The oracle cannot move the pot or the hash-bonus pile.</p>'
+      '<p>The lock issuance rate is frozen for the epoch (4 days testnet / 400 days mainnet). It changes only when an epoch opens. A vote, a miner, an admin, and a local snapshot cannot set a different rate. The amount paid on withdraw is the Reserve reward. The rate does not move the pot or the hash-bonus pile.</p>' +
+      '<p>Reserve rewards are newly minted by the protocol in each block\'s coinbase at the lock issuance rate. They don\'t come from any pool or pot of existing Shear, and nobody holds your coins.</p>'
   };
 
   P.withdraw = {
     title: 'Withdraw',
     crumb: 'reserve / withdraw',
     html:
-      '<p>After epoch end (and bonus enact), principal plus minted interest on staked SHE return to Continuum on a signed Withdraw. Miss that window and previous-epoch rewards stay claimable; a new epoch does not confiscate them. Withdraw is not levied.</p>'
+      '<p>After epoch end (and bonus enact), principal plus the coinbase-minted reward on the active lock return to Continuum on a signed Withdraw. The payout dest is the one sealed on the lock. Miss that window and previous-epoch rewards stay claimable; a new epoch does not confiscate them. Withdraw is not levied.</p>'
   };
 
   P.node = {
@@ -402,7 +403,7 @@ window.SHEAR_DOCS = {
       '<pre>git clone https://github.com/rgsneddon/shear-testnet.git\n' +
       'cd shear-testnet\ngit checkout 0.71\nnpm ci\n' +
       'export SHEAR_DATA="$HOME/.shear/testnet-v11"\n' +
-      'export SHEAR_NETWORK=shear-testnet-v11\n' +
+      'export SHEAR_NETWORK=shear-testnet-v12\n' +
       'export SHEAR_BOOTSTRAP=1\n' +
       'export SHEAR_REORG_HALT_DEPTH=0\n' +
       'export SHEAR_P2P_PORT=30303\n' +
@@ -411,7 +412,7 @@ window.SHEAR_DOCS = {
       'export SHEAR_RPC_BIND=127.0.0.1\n' +
       'export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303\n' +
       'node node/src/node.js</pre>' +
-      '<p>Magic <code>shear-testnet-v11</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
+      '<p>Magic <code>shear-testnet-v12</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
       '<p>Windows, same release, in PowerShell from the repo root: <code>git checkout 0.71</code>, <code>npm ci</code>, then set <code>$env:SHEAR_DATA</code>, <code>$env:SHEAR_NETWORK</code>, <code>$env:SHEAR_BOOTSTRAP="1"</code>, <code>$env:SHEAR_SEEDS</code> to the same list, and run <code>node node/src/node.js</code>. Arch uses the same shell as Linux.</p>' +
       '<p>Default sync is full archival IBD from those peers. Reorg checkpoints are height 1000, then every 400. Do not set <code>SHEAR_FAST_SYNC</code> on a mining node.</p>' +
       '<p>Tree: <a href="https://shear.digital/node/">shear.digital/node</a>.</p>'
@@ -444,7 +445,8 @@ window.SHEAR_DOCS = {
     html:
       '<table><tr><th>Block pot</th><td>1 SHE, every found block</td></tr>' +
       '<tr><th>Hash bonus</th><td>10<sup>−11</sup> SHE per proven floor share, paid to that hasher dest on the next sealed block</td></tr>' +
-      '<tr><th>The Reserve</th><td>Oracle interest on staked SHE — the only dapp mint</td></tr></table>' +
+      '<tr><th>The Reserve</th><td>Reserve reward on locked SHE at the lock issuance rate — the only dapp mint</td></tr></table>' +
+      '<p>Reserve rewards are newly minted by the protocol in each block\'s coinbase at the lock issuance rate. They don\'t come from any pool or pot of existing Shear, and nobody holds your coins.</p>' +
       '<p>Third-party vortices must top up rewards from coin already in circulation.</p>'
   };
 

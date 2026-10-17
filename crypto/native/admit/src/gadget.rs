@@ -4289,9 +4289,10 @@ mod tests {
         assert!(combined > 4_194_304, "the parent sum fit under 2^22");
         let blob23 = crate::r1cs::r1cs_blob_len(23);
         assert_eq!(blob23, 1920, "one committed wire, 23 rounds");
-        let grown = crate::prove::MAX_PROOF_V3 - crate::tree::ARITY * 32 + blob23;
+        let cap = crate::prove::v3_legacy_cap();
+        let grown = cap - crate::tree::ARITY * 32 + blob23;
         assert_eq!(grown, 44386, "height 4 with the C bucket replaced by the 2^23 blob");
-        assert!(grown > crate::prove::MAX_PROOF_V3);
+        assert!(grown > cap);
         eprintln!(
             "ed_add gates {add_gates} note_sum_31 gates {sum_gates} u_mul gates {mul_gates} u_mul constraints {mul_cons} parent gates {parent} combined {combined} over_2_22 {}",
             combined - 4_194_304

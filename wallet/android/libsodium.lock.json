@@ -1,0 +1,19 @@
+{
+ "comment": "Pinned libsodium for the Android jniLibs. crypto/native/build-android-libsodium.sh downloads this exact tarball, refuses it unless the sha256 matches (and the minisign signature, when minisign is installed), and cross-compiles libsodium.so with the NDK. Built with the pinned NDK the output is reproducible and must match so_sha256_with_pinned_ndk. See docs/licensing-audit.md decision 5.",
+ "version": "1.0.22",
+ "urls": [
+  "https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz",
+  "https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz"
+ ],
+ "sha256": "adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349",
+ "minisign_public_key": "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3",
+ "abis": {
+  "arm64-v8a": {
+   "host": "aarch64-linux-android",
+   "cflags": "-O2 -march=armv8-a+crypto",
+   "so_sha256_with_pinned_ndk": "12a0a3c9e4cd8423a3082bb623c61c4349ee56f17d60acf34103a711db43d063"
+  }
+ },
+ "android_api": 29,
+ "ndk": "r27d"
+}

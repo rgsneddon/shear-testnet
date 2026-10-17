@@ -120,6 +120,10 @@ export function admitProveV3({ x, index, pubs, commits, c, t, ctx }) {
   };
 }
 
+/**
+ * Legacy Pasta verifier: `shear-admit-leaf-v2` on the Pallas–Vesta cycle, arity 32.
+ * The live fingerprint leaf is FS-1 Selene/Helios. Removal is a follow-up.
+ */
 export function admitVerifyV3(proof, fluxset, extra = {}) {
   try {
     const blob = proof?.blob || proof?.proof;
@@ -304,21 +308,27 @@ export function emptyFluxset() {
   };
 }
 
-/** A lock or vote receipt is the vault's record, not a note. A withdraw payout is. */
+/**
+ * A vote receipt is not a note. A lock is a vault tranche, not a note.
+ * A lock output never joins the admit set.
+ */
 export function outputJoinsAdmitSet(tx, o) {
   if (!o?.admitPub) return false;
   const k = String(o?.kind || tx?.kind || '');
-  return k !== 'lock' && k !== 'vote';
+  if (k === 'vote' || k === 'lock') return false;
+  return true;
 }
 
-/** An admitPub on a lock or vote receipt would make the stake spendable twice. */
+/**
+ * An admitPub on a vote or a lock would make the stake spendable as a note.
+ * Principal leaves only through withdraw.
+ */
 export function receiptAdmitRejected(tx) {
   const kind = String(tx?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote') return null;
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   for (const o of outs) {
     const k = String(o?.kind || kind);
-    if ((k === 'lock' || k === 'vote') && o?.admitPub) {
+    if ((k === 'vote' || k === 'lock') && o?.admitPub) {
       return { ok: false, reason: 'receipt_admitpub' };
     }
   }
@@ -457,6 +467,9 @@ export function appendFluxBlock(live, block) {
     : emptyFluxset();
   const before = dest.pubs.length;
   absorbFluxBlock(dest.pubs, dest.commits, dest.spendTags, block);
+  // A block that adds no notes leaves the frontier bytes alone. Calling the
+  // native append anyway is what made a long run of empty ancestors quadratic.
+  if (dest.pubs.length === before) return dest;
   const added = pairsFrom(dest.pubs.slice(before), dest.commits.slice(before));
   installFrontiers(dest, added.dest, added.cs);
   return dest;

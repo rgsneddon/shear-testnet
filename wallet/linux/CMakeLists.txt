@@ -19,6 +19,13 @@ check_cxx_compiler_flag("-Wno-deprecated-literal-operator" HAS_WNO_DEPRECATED_LI
 # Load bundled libraries from the lib/ directory relative to the binary.
 set(CMAKE_INSTALL_RPATH "$ORIGIN/lib")
 
+# The runner and every plugin link libgcc and libstdc++ statically, so the
+# bundle never needs libstdc++.so.6 or libgcc_s.so.1 (docs/licensing-audit.md
+# decision 4). --exclude-libs keeps each plugin's copy private to it.
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-libgcc -static-libstdc++ -Wl,--exclude-libs,ALL")
+set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -static-libgcc -static-libstdc++ -Wl,--exclude-libs,ALL")
+
 # Root filesystem for cross-building.
 if(FLUTTER_TARGET_PLATFORM_SYSROOT)
   set(CMAKE_SYSROOT ${FLUTTER_TARGET_PLATFORM_SYSROOT})
@@ -80,6 +87,19 @@ set_target_properties(${BINARY_NAME}
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# In-process range prover. The wallet dlopens lib/libshear_admit.so.
+set(SHEAR_ADMIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/admit")
+set(SHEAR_ADMIT_SO "${SHEAR_ADMIT_DIR}/target/release/libshear_admit.so")
+add_custom_target(shear_admit_cdylib
+  COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/build-linux-admit-so.sh" --locked
+  COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/stamp_admit_pin.py" "${SHEAR_ADMIT_SO}"
+  BYPRODUCTS "${SHEAR_ADMIT_SO}"
+  WORKING_DIRECTORY "${SHEAR_ADMIT_DIR}"
+  COMMENT "Building libshear_admit.so without admit-v3"
+  VERBATIM
+)
+add_dependencies(${BINARY_NAME} shear_admit_cdylib)
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build
@@ -106,6 +126,9 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/app_icon.png"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+
+install(FILES "${SHEAR_ADMIT_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 foreach(bundled_library ${PLUGIN_BUNDLED_LIBRARIES})

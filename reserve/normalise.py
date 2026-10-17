@@ -117,3 +117,31 @@ def mean_14(tenths_bp_values) -> int:
     if len(vals) != BANK_COUNT:
         raise ValueError(f'need {BANK_COUNT} rates, got {len(vals)}')
     return round_half_up_int(Decimal(sum(vals)) / Decimal(BANK_COUNT))
+
+
+SOURCE_TENTHS_MIN = -1000
+SOURCE_TENTHS_MAX = 100000
+SOURCE_QUORUM = 10
+
+
+def half_up_div(num: int, den: int) -> int:
+    n = int(num)
+    d = int(den)
+    if d == 0:
+        return 0
+    sign = -1 if n < 0 else 1
+    return sign * ((abs(n) + abs(d) // 2) // abs(d))
+
+
+def trimmed_mean_bps(tenths_bp_values):
+    """Plain average in whole bps. Same integers as crypto/reserve_oracle.js trimmedMeanBps.
+
+    Every in-range tenth is kept. Negatives stay in the sum. None if fewer
+    than SOURCE_QUORUM values are in range. The 0 floor applies to the result.
+    """
+    vals = [int(x) for x in tenths_bp_values if SOURCE_TENTHS_MIN <= int(x) <= SOURCE_TENTHS_MAX]
+    if len(vals) < SOURCE_QUORUM:
+        return None
+    tenths_mean = half_up_div(sum(vals), len(vals))
+    bps = half_up_div(tenths_mean, 10)
+    return bps if bps > 0 else 0

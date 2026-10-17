@@ -1,20 +1,17 @@
 {
   "version": "shear-reserve-oracle-v1",
-  "asOf": "2026-08-01",
-  "observedAt": "2026-08-01T12:00:00Z",
-  "averagePercent": 2.636,
-  "averageScale": "tenths_of_basis_point",
-  "averageInteger": 2636,
+  "asOf": "2026-10-15",
+  "observedAt": "2026-10-15T21:42:00Z",
+  "consensusBps": 281,
+  "consensusScale": "basis_point",
   "changed": true,
   "changedBanks": [
     "FED",
-    "BOE",
     "ECB",
     "BOJ",
     "BOC",
     "RBA",
     "RBNZ",
-    "SNB",
     "RIKSBANK",
     "NORGES",
     "DNBANK",
@@ -25,9 +22,9 @@
   "components": [
     {
       "id": "FED",
-      "raw": "3.50-3.75",
-      "normalisedPercent": 3.625,
-      "normalisedInteger": 3625
+      "raw": "3.75-4.00",
+      "normalisedPercent": 3.875,
+      "normalisedInteger": 3875
     },
     {
       "id": "BOE",
@@ -37,33 +34,33 @@
     },
     {
       "id": "ECB",
-      "raw": "2.00-2.15",
-      "normalisedPercent": 2.075,
-      "normalisedInteger": 2075
+      "raw": "2.50-2.65",
+      "normalisedPercent": 2.575,
+      "normalisedInteger": 2575
     },
     {
       "id": "BOJ",
-      "raw": "0.50",
-      "normalisedPercent": 0.5,
-      "normalisedInteger": 500
+      "raw": "1.25",
+      "normalisedPercent": 1.25,
+      "normalisedInteger": 1250
     },
     {
       "id": "BOC",
-      "raw": "2.75",
-      "normalisedPercent": 2.75,
-      "normalisedInteger": 2750
+      "raw": "2.25",
+      "normalisedPercent": 2.25,
+      "normalisedInteger": 2250
     },
     {
       "id": "RBA",
-      "raw": "3.60",
-      "normalisedPercent": 3.6,
-      "normalisedInteger": 3600
+      "raw": "4.60",
+      "normalisedPercent": 4.6,
+      "normalisedInteger": 4600
     },
     {
       "id": "RBNZ",
-      "raw": "3.00",
-      "normalisedPercent": 3.0,
-      "normalisedInteger": 3000
+      "raw": "2.75",
+      "normalisedPercent": 2.75,
+      "normalisedInteger": 2750
     },
     {
       "id": "SNB",
@@ -73,39 +70,39 @@
     },
     {
       "id": "RIKSBANK",
-      "raw": "2.00",
-      "normalisedPercent": 2.0,
-      "normalisedInteger": 2000
+      "raw": "1.75",
+      "normalisedPercent": 1.75,
+      "normalisedInteger": 1750
     },
     {
       "id": "NORGES",
-      "raw": "4.00",
-      "normalisedPercent": 4.0,
-      "normalisedInteger": 4000
+      "raw": "4.50",
+      "normalisedPercent": 4.5,
+      "normalisedInteger": 4500
     },
     {
       "id": "DNBANK",
-      "raw": "1.60",
-      "normalisedPercent": 1.6,
-      "normalisedInteger": 1600
+      "raw": "2.10",
+      "normalisedPercent": 2.1,
+      "normalisedInteger": 2100
     },
     {
       "id": "BOK",
-      "raw": "2.50",
-      "normalisedPercent": 2.5,
-      "normalisedInteger": 2500
+      "raw": "3.00",
+      "normalisedPercent": 3.0,
+      "normalisedInteger": 3000
     },
     {
       "id": "BOI",
-      "raw": "4.00",
-      "normalisedPercent": 4.0,
-      "normalisedInteger": 4000
+      "raw": "3.25",
+      "normalisedPercent": 3.25,
+      "normalisedInteger": 3250
     },
     {
       "id": "CNB",
-      "raw": "3.50",
-      "normalisedPercent": 3.5,
-      "normalisedInteger": 3500
+      "raw": "3.75",
+      "normalisedPercent": 3.75,
+      "normalisedInteger": 3750
     }
   ]
 }

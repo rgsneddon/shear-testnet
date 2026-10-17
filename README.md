@@ -6,7 +6,7 @@ This is the **main Shear tree** (`rgsneddon/shear-testnet`): node, crypto, specs
 
 | Repo | What |
 |------|------|
-| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v11`) |
+| [rgsneddon/shear-testnet](https://github.com/rgsneddon/shear-testnet) | **This tree** — node, wallet, pool, site, ADMITv2 (`shear-testnet-v12`; previous book `shear-testnet-v11`) |
 | [rgsneddon/ShearK](https://github.com/rgsneddon/ShearK) | Official miner pin + how-to (keep this repo) |
 
 Windows ops start: [`HANDOFF_OPS.md`](HANDOFF_OPS.md). MacBook cuts only the Continuum 0.70 disk image: [`MACBOOK-HANDOFF.md`](MACBOOK-HANDOFF.md).
@@ -22,15 +22,15 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Node pin: **Shear Sentinel v18** (product 18.0). Windows, Linux, and Fedora zips are one release: [v18](https://github.com/rgsneddon/shear-testnet/releases/tag/v18) ([windows](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-windows.zip), [linux](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-linux.zip), [fedora](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-fedora.zip)). This cut has no macOS node zip, no Arch node zip, and no openSUSE node zip. Git tag `v16` stays on the same commit as tag `0.66`.
 - Previous note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. `6054186` is quarantine.)
 - Stratum: public `stratum+ssl://pool.shear.digital:443`; cleartext migrate `pool.shear.digital:1111`; localhost solo `127.0.0.1:1111`. Port 1113 is only the pool process TLS listener. Public packets to 1113 do not arrive, so miners use 443. nginx ssl_preread sends a ShearK ClientHello (no ALPN) to that listener and keeps browser ALPN on the site.
-- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v11`)
+- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v12`)
 - Site: https://shear.digital
 - Docs: https://shear.digital/docs/#/surfaces
 - Pool: https://pool.shear.digital
-- Chain: `shear-testnet-v11`
+- Chain: `shear-testnet-v12`
 
 Mainnet `shear-v1` is **not live**. The public countdown is 16th November 2026 at 1400hrs UK time. That countdown is a display date. It is not genesis and it does not emit. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not set those env vars.
 
-Block pot starts at **1.00 SHE** and falls **0.01 SHE per Vortex epoch** to a **0.20 SHE** floor. Testnet epochs are **4 days** (so rollovers can be watched); mainnet epochs are **400 days**. Hash bonus stays governance-voted. Reserve interest is oracle-frozen each epoch. The pot schedule is not votable.
+Block pot starts at **1.00 SHE** and falls **0.01 SHE per Vortex epoch** to a **0.20 SHE** floor. Testnet epochs are **4 days** (so rollovers can be watched); mainnet epochs are **400 days**. Hash bonus stays governance-voted. The lock issuance rate is frozen when an epoch opens. A vote does not set it. The amount paid on withdraw is the Reserve reward. Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins. The pot schedule is not votable.
 
 One proven floor share mints hash-bonus units onto the dest that hashed. User transfers are signed Flow. The header commits a continuity root. Full nodes validate shareBatch until prune-1000; money vouts remain. The public pool is an equal node with a stratum.
 
@@ -63,7 +63,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 git clone https://github.com/rgsneddon/shear-testnet.git
 cd shear-testnet
 git checkout main
-npm ci
+npm ci --ignore-scripts
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
 cmake --build crypto/randomx/build -j"$(nproc)"
 make -C crypto/native
@@ -88,7 +88,7 @@ test -f "$NODE_INC/node_api.h" || { echo "Still missing headers — reinstall No
 make -C crypto/native
 ```
 
-`--print-config` must show `"version":"18.0"`, `"magic":"shear-testnet-v11"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
+`--print-config` must show `"version":"18.0"`, `"magic":"shear-testnet-v12"`, `"admit":"ADMITv2"`, `"mainnet":false`. Other OS copy/paste deps (Fedora, Arch, openSUSE, macOS, Windows/WSL) live on https://shear.digital#solo-mine.
 
 ### Run
 
@@ -149,4 +149,16 @@ Backup: encrypted `shewall.bin` (same file in GUI and CLI; v1 files still open a
 
 ## Secrets
 
-Never commit `SHEAR_DATA`, `admin.enc`, PEMs, or a live admin hostname. Pool admin host is `SHEAR_ADMIN_HOST` on the box only. Default seed is the hostname `p2p.shear.digital:30303` (also `r2r.shear.digital:30303`, `b2b.shear.digital:30303`) — never a raw IP in public copy.
+Never commit `SHEAR_DATA` or PEMs. Default seed is the hostname `p2p.shear.digital:30303` (also `r2r.shear.digital:30303`, `b2b.shear.digital:30303`) — never a raw IP in public copy.
+
+## Licence and credits
+
+Shear is released under the MIT License ([LICENSE](LICENSE)), copyright (c) 2026 Shear contributors.
+
+The Shear concept was inspired by Roy D Herbert, and the Chronoflux Principia.
+
+That line is an attribution. It is not a licence grant.
+
+Shear includes third-party code under its own licences: RandomX (BSD-3-Clause), the monero-oxide FCMP++ crates (MIT), Rust crates, npm packages, Dart packages, Android libraries and bundled runtimes such as Node.js, OpenSSL and libsodium. [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) carries every licence text and copyright line, [LICENSES/](LICENSES/) holds the full licence texts, and every release pack ships both. The wallet shows the same notices under Closure → About and licences. [docs/licensing-audit.md](docs/licensing-audit.md) lists each component and the licensing decisions.
+
+The MIT License does not cover the Nevia and Urema typefaces used by the websites. They belong to their owners, are not in this repository, and are copied onto the sites at deploy time under their webfont licences (`deploy/install_fonts.sh`). The RandomX audit reports are linked from [crypto/randomx/audits/](crypto/randomx/audits/README.md) rather than copied. Contributions are signed off under the Developer Certificate of Origin ([CONTRIBUTING.md](CONTRIBUTING.md)).

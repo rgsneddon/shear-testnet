@@ -4,6 +4,7 @@
  * starting unit. A constant unit does not describe that branch.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -324,7 +325,7 @@ function nextSpendable(store, openings, used) {
   return null;
 }
 
-describe('v12 adopt keeps the walked hash-bonus unit', () => {
+describe('v12 adopt keeps the walked hash-bonus unit', { timeout: fileCapMs(import.meta.url) }, () => {
   it('a heavier branch that changes the unit is adopted', { timeout: 600_000 }, async () => {
     const who = payer();
     const heavyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-unit-heavy-'));

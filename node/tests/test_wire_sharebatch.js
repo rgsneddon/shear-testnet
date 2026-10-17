@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { encodeDest } from '../../crypto/address.js';
+import { encodeDest, poolFeeDest } from '../../crypto/address.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { findShare, dest20OfShare } from '../../crypto/share_batch.js';
 import { unpackShareBatch, unpackShareBatchBytes, shareRowJson } from '../../crypto/pack.js';
@@ -55,7 +55,7 @@ describe('shareBatch on disk and p2p wire', () => {
 
   it('a second store appends a hash-bonus block from encodeWireBlock', async () => {
     const hasher = destOf(5);
-    const pool = destOf(9);
+    const pool = poolFeeDest();
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wire-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wire-b-'));
     const a = createStore(dirA);
@@ -86,7 +86,16 @@ describe('shareBatch on disk and p2p wire', () => {
     assert.ok(share, 'need floor-8 lag-1 share');
     const second = mineAppend(a, {
       miner: hasher,
-      shareBatch: [{ dest: hasher, dest20: share.dest20, nonce: share.nonce, lz: share.lz }],
+      shareBatch: [{
+        dest: hasher,
+        dest20: share.dest20,
+        nonce: share.nonce,
+        lz: share.lz,
+        shareBits: share.shareBits,
+        creditedShareBits: share.creditedShareBits,
+        noteCommit: share.noteCommit,
+        verifiedHeader: first.block.header,
+      }],
       poolDest: pool,
       now: t0 + 90_000,
     });
@@ -122,6 +131,6 @@ describe('shareBatch on disk and p2p wire', () => {
     assert.equal(c.append(cloned, { trustedPowHash: Buffer.from(first.block.hash) }).ok, true);
     const rejected = c.append(decodeWireBlock(missing), { trustedPowHash: Buffer.from(second.block.hash) });
     assert.equal(rejected.ok, false);
-    assert.equal(rejected.reason, 'continuity');
+    assert.equal(rejected.reason, 'share_slot');
   });
 });

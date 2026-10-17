@@ -11,6 +11,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "licenses"))
+import release_notices  # noqa: E402
 
 SPEC_RE = re.compile(
     r"""(?:\bfrom\s+|import\s*\(\s*|require\(\s*|import\s+)['"]([^'"]+)['"]"""
@@ -22,7 +26,6 @@ ROOTS = ("node/src/node.js",)
 SHIPPED = (
     "pool/src/pool.js",
     "pool/src/main.js",
-    "pool/src/admin.js",
 )
 NATIVE = (
     "crypto/native/shearhash.node",
@@ -143,6 +146,10 @@ def required_module_paths(repo: str) -> list[str]:
     queue: list[str] = []
 
     def add(arc: str) -> None:
+        # The regtest store factory lives under node/tests. A release that
+        # reached it would ship the only opener for the shear-regtest book.
+        if arc.startswith("node/tests/"):
+            raise SystemExit(f"release graph reaches test-only module {arc}")
         if arc in seen:
             return
         seen.add(arc)
@@ -238,7 +245,9 @@ def copy_linked_libs(binary: str, dest_dir: str) -> list[str]:
     """Copy non-glibc shared libraries next to a distro node binary.
 
     Fedora's /usr/bin/node is a small PIE that needs libnode.so.127. A zip
-    that copies only that 27KB file does not start. libc stays on the OS.
+    that copies only that 27KB file does not start. libc stays on the OS, and
+    so do libstdc++.so.6 and libgcc_s.so.1: they are GPL object code, every
+    glibc distro installs them, and no pack ships them.
     """
     import shutil
     import subprocess
@@ -246,7 +255,7 @@ def copy_linked_libs(binary: str, dest_dir: str) -> list[str]:
         out = subprocess.check_output(["ldd", binary], text=True, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.CalledProcessError):
         return []
-    skip = ("libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so", "libresolv.so", "ld-linux", "linux-vdso")
+    skip = ("libc.so", "libm.so", "libdl.so", "libpthread.so", "librt.so", "libresolv.so", "ld-linux", "linux-vdso") + release_notices.GCC_RUNTIME_SONAMES
     copied: list[str] = []
     for line in out.splitlines():
         if "=>" not in line:
@@ -286,21 +295,29 @@ def rpath_origin(binary: str, libs: list[str] | None = None) -> None:
         subprocess.check_call(["patchelf", "--set-rpath", "$ORIGIN", target])
 
 
-def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
-    """Put the node, its imports, and node_modules beside a release executable."""
+def write_release_sidecar(z, repo: str, flavor: str = "linux", extra_runtime=()) -> None:
+    """Put the node, its imports, and node_modules beside a release executable.
+
+    extra_runtime: other bundled libraries (libsodium) whose exact versions
+    go into RUNTIME-VERSIONS.txt with the node's.
+    """
     import shutil
     import sys
 
     repo = os.path.abspath(repo)
     skip_crypto = {"target", "randomx", "node_modules", ".git"}
 
-    def add_tree(root: str, arc_prefix: str, skip_dirs: set[str]) -> None:
+    def add_tree(root: str, arc_prefix: str, skip_dirs: set[str], keep_dir=None) -> None:
         if not os.path.isdir(root):
             raise SystemExit(f"release sidecar missing {root}")
         for dp, dns, fns in os.walk(root):
             dns[:] = [d for d in dns if d not in skip_dirs and not d.startswith(".")]
+            if keep_dir is not None:
+                dns[:] = [d for d in dns if keep_dir(os.path.relpath(os.path.join(dp, d), repo))]
             for fn in fns:
                 if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
+                    continue
+                if fn.lower() in release_notices.MINGW_RUNTIME_DLLS or release_notices.is_gcc_runtime(fn):
                     continue
                 p = os.path.join(dp, fn)
                 if not os.path.isfile(p):
@@ -325,8 +342,9 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
         z.write(src, rel)
     modules = os.path.join(repo, "node_modules")
     if not os.path.isdir(modules):
-        raise SystemExit("release sidecar missing node_modules — run npm ci before packing")
-    add_tree(modules, "node_modules", {".git"})
+        raise SystemExit("release sidecar missing node_modules — run npm ci --ignore-scripts before packing")
+    add_tree(modules, "node_modules", {".git"}, release_notices.npm_dir_filter(repo))
+    release_notices.write_notices(z, repo)
     runtime_name = "node.exe" if flavor == "windows" else "node"
     runtime_src = shutil.which("node")
     if flavor == "windows":
@@ -337,6 +355,7 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
         raise SystemExit("release sidecar needs a node binary on PATH")
     if flavor == "windows":
         z.write(runtime_src, f"runtime/{runtime_name}")
+        licensed = [runtime_src]
     else:
         import tempfile
         stage = tempfile.mkdtemp(prefix="shear-wallet-runtime-")
@@ -351,14 +370,20 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux") -> None:
                 z.write(os.path.join(stage, base), f"runtime/{base}")
         finally:
             shutil.rmtree(stage, ignore_errors=True)
+        licensed = [runtime_src] + release_notices.linked_system_libs(runtime_src, libs)
+    for src, arc in release_notices.runtime_license_members(licensed, "runtime/licenses", repo):
+        z.write(src, arc)
+    z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text(licensed + list(extra_runtime)))
+    release_notices.assert_ships_no_gcc_runtime(z.namelist())
+    native = os.path.join(repo, "crypto", "native")
+    if flavor != "windows":
+        release_notices.assert_no_gcc_runtime(
+            [p for p in (os.path.join(native, n) for n in ("shearhash.node", "shearadmit.node")) if release_notices.is_elf(p)]
+        )
     if flavor == "windows":
-        gcc = shutil.which("gcc")
-        bindir = os.path.dirname(os.path.abspath(gcc)) if gcc else ""
-        for dll in ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"):
-            src = os.path.join(bindir, dll)
-            if not os.path.isfile(src):
-                raise SystemExit(f"release sidecar needs MinGW {dll}")
-            z.write(src, f"runtime/{dll}")
+        release_notices.assert_no_mingw_runtime(
+            [os.path.join(native, n) for n in ("shearhash.node", "shearadmit.node") if os.path.isfile(os.path.join(native, n))]
+        )
     if sys.platform.startswith("win") and flavor != "windows":
         raise SystemExit("pack the linux release on linux so native addons match that OS")
 

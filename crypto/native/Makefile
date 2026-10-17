@@ -9,29 +9,42 @@ ifeq ($(OS),Windows_NT)
   # Command-line CC= still wins. Plain `cc` is not this MinGW gcc.
   CC := gcc
   # N-API lives in node.exe. dlltool builds an import lib; do not link node.lib.
-  # This WinLibs build has no libstdc++.a. The shared runtime must be the
-  # same MinGW that linked the addon: an earlier libgcc on PATH (Rust, Android
-  # SDK) loads and then fails with "procedure could not be found" (error 127).
+  # The GCC runtime and winpthreads are linked statically, so no
+  # libgcc_s_seh-1.dll, libstdc++-6.dll or libwinpthread-1.dll ships (GPL
+  # object code; see docs/licensing-audit.md decision 4). This needs a MinGW
+  # with libstdc++.a and libwinpthread.a (MSYS2 UCRT64 has both). The gcc
+  # driver ignores -static-libstdc++, hence -Bstatic around -lstdc++.
+  # --whole-archive: the driver appends a dynamic -lpthread after our flags.
   LINKFLAGS := -shared
   NODE_IMPORT := win_node_import.a
-  LIBSTDCXX := -pthread -lstdc++
-  ADMITSYS := -lws2_32 -luserenv -lbcrypt -lntdll -pthread
+  WIN_STATIC_RT := -static-libgcc -Wl,-Bstatic -lstdc++ -Wl,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic
+  LIBSTDCXX := -pthread $(WIN_STATIC_RT)
+  ADMITSYS := -lws2_32 -luserenv -lbcrypt -lntdll -pthread -static-libgcc -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic
 else ifeq ($(UNAME_S),Darwin)
   LINKFLAGS := -bundle -undefined dynamic_lookup
   NODE_IMPORT :=
   LIBSTDCXX := -pthread -lstdc++
   ADMITSYS := -lpthread
 else
-  LINKFLAGS := -shared -Wl,-z,noexecstack
+  # libgcc and libstdc++ are linked statically, so no pack ships
+  # libstdc++.so.6 or libgcc_s.so.1 (docs/licensing-audit.md decision 4).
+  # --exclude-libs hides the archived runtime inside the addon, so it never
+  # binds to the libstdc++ that node itself loads. Fedora needs the
+  # libstdc++-static package.
+  LINKFLAGS := -shared -Wl,-z,noexecstack -Wl,--exclude-libs,ALL
   NODE_IMPORT :=
-  LIBSTDCXX := -pthread -lstdc++
-  ADMITSYS := -lpthread -ldl -lm
+  LIBSTDCXX := -pthread -static-libgcc -Wl,-Bstatic -lstdc++ -Wl,-Bdynamic
+  ADMITSYS := -lpthread -ldl -lm -static-libgcc
+  GCC_RT_CHECK := python3 ../../scripts/licenses/release_notices.py no-gcc-runtime
 endif
 
 ADMIT_DIR := $(abspath admit)
-ADMITLIB := $(ADMIT_DIR)/target/release/libshear_admit.a
+# Node addon only. Wallet targets do not pass admit-v3.
+ADMIT_FEATURES := --features admit-v3
+ADMIT_TARGET := $(ADMIT_DIR)/target/node
+ADMITLIB := $(ADMIT_TARGET)/release/libshear_admit.a
 
-.PHONY: all clean admitlib
+.PHONY: all clean admitlib ios-staticlib android-arm64
 
 all: shearhash.node shearadmit.node
 
@@ -43,11 +56,22 @@ shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MI
 	  -o $@ shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c $(RXLIB) \
 	  $(NODE_IMPORT) $(LIBSTDCXX)
 ifeq ($(OS),Windows_NT)
-	node copy-mingw-runtime.js $(CC)
+	python ../../scripts/licenses/release_notices.py no-mingw-runtime $@
+endif
+ifdef GCC_RT_CHECK
+	$(GCC_RT_CHECK) $@
 endif
 
 admitlib:
-	cargo build --release --manifest-path $(ADMIT_DIR)/Cargo.toml
+	cargo build --release $(ADMIT_FEATURES) --target-dir $(ADMIT_TARGET) --manifest-path $(ADMIT_DIR)/Cargo.toml
+
+# iOS wallet staticlib. No codesign. admit-v3 stays off.
+ios-staticlib:
+	cargo rustc --release --target aarch64-apple-ios --crate-type staticlib --manifest-path $(ADMIT_DIR)/Cargo.toml
+
+# Android arm64-v8a cdylib into the Flutter jniLibs tree.
+android-arm64:
+	bash $(abspath build-android-arm64.sh)
 
 win_node_import.a: win_node_import.def
 	dlltool -d $< -l $@ -D node.exe
@@ -56,6 +80,12 @@ shearadmit.node: admit_napi.c admitlib $(NODE_IMPORT)
 	$(CC) $(CFLAGS) $(LINKFLAGS) \
 	  -I$(NODE_INC) \
 	  -o $@ admit_napi.c $(ADMITLIB) $(NODE_IMPORT) $(ADMITSYS)
+ifeq ($(OS),Windows_NT)
+	python ../../scripts/licenses/release_notices.py no-mingw-runtime $@
+endif
+ifdef GCC_RT_CHECK
+	$(GCC_RT_CHECK) $@
+endif
 
 clean:
 	rm -f shearhash.node shearadmit.node win_node_import.a

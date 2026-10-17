@@ -19,16 +19,16 @@ const kReserveJoinCutoffDaysMainnet = 99;
 const kReserveJoinCutoffDays = kBookMagic == 'shear-v1' ? kReserveJoinCutoffDaysMainnet : kReserveJoinCutoffDaysTestnet;
 const kReserveEpochMs = kReserveEpochDays * 86400000;
 const kReserveJoinCutoffMs = kReserveJoinCutoffDays * 86400000;
-/// Unweighted mean of all observed first-world policy rates (14 banks). 2.636% → 264 bps.
-const kReserveOracleDefaultBps = 264;
-const kBpsStepCap = 100;
+/// Plain average of the bundled policy rates (all 14 banks).
+/// Canonical integer: `GENESIS_BPS` in crypto/reserve_oracle.js. 2.81%.
+const kReserveOracleDefaultBps = 281;
 const kStaleObserveMs = 14 * 86400000;
 const kVoteIncrease = 'increase bonus';
 const kVoteDecrease = 'decrease bonus';
 const kVoteHold = 'leave bonus as-is';
 const kReserveCutoffDisclaimer =
     'Fewer than $kReserveJoinCutoffDays days remain. New deposits still lock and can unlock a vote, even on a first Reserve deposit. They do not earn stake.';
-const kReserveAccruedLabel = 'Accrued rewards';
+const kReserveAccruedLabel = 'Reserve reward';
 const kVoteConfirmWait = 'Vote is waiting on 9 confirmations of the reserve lock.';
 
 /// Vote attempt while this portal's own deposits are still under π.
@@ -54,7 +54,7 @@ String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
     'The epoch is still open. Withdraw after $days days.';
 
 String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
-    'Return principal and $days-day APR interest to Continuum.\nThis settles the finished epoch.\nPosts a withdraw transaction. Not full custody.';
+    'Return principal and the Reserve reward for this $days-day epoch to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
 
 class VortexSums {
   const VortexSums({
@@ -303,8 +303,6 @@ class ShearReserve {
       return prev;
     }
     var next = oracleBps;
-    if (next > prev + kBpsStepCap) next = prev + kBpsStepCap;
-    if (next < prev - kBpsStepCap) next = prev - kBpsStepCap;
     if (next < 0) next = 0;
     return next;
   }
@@ -722,6 +720,7 @@ Future<ReserveDepositResult> postReserveDeposit({
       needShe: need,
       keepHome: true,
     );
+    final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
     final tx = await ledger.send(
       from: from,
       to: dest,
@@ -734,6 +733,10 @@ Future<ReserveDepositResult> postReserveDeposit({
       spendSeed: spendSeed,
       allowPublicHttp: true,
       paintedCover: gap > 1e-12,
+      currentEpoch: clock == null ? null : reserve.currentEpoch,
+      epochStartMs: clock,
+      lockEpoch: clock == null ? null : reserve.currentEpoch,
+      unlockAtMs: clock == null ? null : clock + kReserveEpochMs,
     );
     final err = reserve.deposit(
       dest: dest,

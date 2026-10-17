@@ -71,10 +71,12 @@ describe('shear.digital/docs', () => {
     assert.match(content, /shewall\.bin/);
     assert.match(content, /Continuum/);
     assert.match(content, /0\.001 SHE/);
-    assert.match(content, /split 50\/50/);
+    assert.match(content, /all of <code>L<\/code> is paid to that block/);
     assert.match(content, /finder-fee/);
-    assert.match(content, /reserve-fee/);
-    assert.match(content, /The Reserve vault fee bank/);
+    assert.match(content, /splits <code>L<\/code> by work/);
+    assert.match(content, /one public finder-fee note/);
+    assert.doesNotMatch(content, /reserve-fee/);
+    assert.doesNotMatch(content, /vault fee bank/);
     assert.match(content, /not sent - try again/);
     assert.match(content, /https:\/\/shear\.digital\/whitepaper\//);
     assert.doesNotMatch(content, /href="https:\/\/whitepaper\.shear\.digital"/);
@@ -85,6 +87,17 @@ describe('shear.digital/docs', () => {
     assert.match(content, /https:\/\/pool\.shear\.digital/);
     assert.match(content, /pool HUD is not spendable/);
     assert.match(content, /Your deposits/);
+    assert.match(content, /lock issuance rate/);
+    assert.match(content, /Reserve reward/);
+    const minted = /Reserve rewards are newly minted by the protocol in each block\\?'s coinbase at the lock issuance rate\. They don\\?'t come from any pool or pot of existing Shear, and nobody holds your coins\./;
+    assert.match(content, minted);
+    const gov = fs.readFileSync(path.join(here, '../governance.html'), 'utf8');
+    assert.match(gov, minted);
+    assert.equal(fs.existsSync(path.join(here, '../admin/index.html')), false);
+    assert.doesNotMatch(content, /central-bank/);
+    assert.doesNotMatch(content, /base rate/);
+    assert.doesNotMatch(content, /APR/);
+    assert.doesNotMatch(content, /Bank of England/);
     assert.match(content, /two rows/);
     assert.doesNotMatch(content, /twenty rows/);
     assert.match(app, /hashchange/);
@@ -209,7 +222,6 @@ describe('shear.digital/docs', () => {
       path.join(root, 'pool/public/explorer.html'),
       path.join(root, 'pool/public/miner.html'),
       path.join(root, 'mempool/index.html'),
-      path.join(root, 'pool/admin/index.html'),
     ];
     const chrome = fs.readFileSync(path.join(here, '../shared/shear-chrome.js'), 'utf8');
     assert.match(chrome, /https:\/\/shear\.digital\/docs\//);
@@ -308,9 +320,8 @@ describe('deploy headers', () => {
   it('SSL vhosts send HSTS; stratum reload requires BIND+AUTH', () => {
     const root = path.join(here, '../..');
     const boot = fs.readFileSync(path.join(root, 'deploy/nginx-boot.shear.digital.conf'), 'utf8');
-    const admin = fs.readFileSync(path.join(root, 'deploy/nginx-admin.shear.digital.conf'), 'utf8');
     assert.match(boot, /Strict-Transport-Security/);
-    assert.match(admin, /Strict-Transport-Security/);
+    assert.equal(fs.existsSync(path.join(root, 'deploy/nginx-admin.shear.digital.conf')), false);
     const reload = fs.readFileSync(path.join(root, 'deploy/reload-stratum-units.sh'), 'utf8');
     assert.match(reload, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
     assert.match(reload, /SHEAR_STRATUM_AUTH=1/);

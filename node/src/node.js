@@ -161,11 +161,12 @@ export async function startNode({
       hashTxLive: HASH_TX_LIVE,
     };
   }
-  fs.mkdirSync(dataDir, { recursive: true });
-  const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true });
+  // createStore is the one datadir check on this path. applyLatestBootstrap
+  // checks before it writes, because that write happens before the store opens.
+  const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true, network });
   store.reserveVault = store.reserveVault || emptyVault();
   store.oracleSnapshot = loadOracleSnapshot({ dataDir });
-  const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: MAGIC_TESTNET, fluffDelayMs });
+  const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: store.magic, fluffDelayMs });
   const bound = await p2p.listen();
   const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });
   const rpcBound = await rpc.listen();
@@ -184,7 +185,7 @@ export async function startNode({
     stratumBound = await stratum.listen();
   }
   await p2p.dialSeeds(seedList);
-  const httpFollow = startHttpFollow({ store, magic: MAGIC_TESTNET });
+  const httpFollow = startHttpFollow({ store, magic: store.magic });
   const seedTimer = setInterval(() => {
     p2p.dialSeeds(seedList);
   }, SEED_RETRY_MS);
@@ -199,7 +200,7 @@ export async function startNode({
   return {
     store, p2p, rpc, bound, rpcBound, stratum, stratumBound,
     solo: !!stratum,
-    magic: MAGIC_TESTNET,
+    magic: store.magic,
     mainnet: false,
     emit: true,
     phaseBGate: PHASE_B_GATE,
@@ -304,6 +305,15 @@ export async function resolveGuiBootstrap({
   }
 }
 
+function datadirFromArgs(args) {
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '--datadir') return { present: true, path: String(args[i + 1] || '').trim() };
+    if (a.startsWith('--datadir=')) return { present: true, path: a.slice('--datadir='.length).trim() };
+  }
+  return { present: false, path: '' };
+}
+
 function parseHelpTopic(argv) {
   const args = argv.slice(2);
   if (args[0] === 'help') return args[1] || '';
@@ -331,6 +341,11 @@ async function main() {
         continue;
       }
     }
+    if (a === '--datadir') {
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('--datadir=')) continue;
     if (a === '--no-bootstrap' || a.startsWith('--bootstrap=')) continue;
     if (a === '--bootstrap') {
       i += 1;
@@ -355,6 +370,15 @@ async function main() {
     process.exitCode = 2;
     return;
   }
+  const flagged = datadirFromArgs(args);
+  if (flagged.present) {
+    if (!flagged.path) {
+      console.error('datadir_acl:link: --datadir needs a real directory that is not a junction');
+      process.exitCode = 2;
+      return;
+    }
+    process.env.SHEAR_DATA = flagged.path;
+  }
   if (argv.includes('--print-config')) {
     console.log(JSON.stringify(printConfig()));
     return;
@@ -363,6 +387,7 @@ async function main() {
     const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
     const store = createStore(dataDir, {
       fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
+      network: process.env.SHEAR_NETWORK || MAGIC_TESTNET,
     });
     printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;
@@ -435,7 +460,7 @@ async function main() {
       stratum: null,
       solo: false,
       bind: started.bound.host,
-      magic: MAGIC_TESTNET,
+      magic: started.magic,
       phaseBGate: PHASE_B_GATE,
       height: tip?.height || 0,
       hash: tip ? Buffer.from(tip.hash).toString('hex') : '',
@@ -488,7 +513,7 @@ async function main() {
     stratum: started.stratumBound ? `${started.stratumBound.host}:${started.stratumBound.port}` : null,
     solo: !!started.solo,
     bind: started.bound.host,
-    magic: MAGIC_TESTNET,
+    magic: started.magic,
     phaseBGate: PHASE_B_GATE,
     height: tip?.height || 0,
     hash: tip ? Buffer.from(tip.hash).toString('hex') : '',

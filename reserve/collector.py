@@ -9,13 +9,11 @@ from pathlib import Path
 
 from reserve.normalise import (
     BANK_IDS,
-    SCALE_NAME,
     VERSION,
     ForbiddenSeriesError,
-    mean_14,
     normalise_bank,
     refuse_overnight,
-    tenths_bp_to_percent,
+    trimmed_mean_bps,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -68,14 +66,13 @@ def components_from_input(payload: dict, sources: dict) -> list[dict]:
 
 
 def snapshot_from_components(components: list[dict], *, as_of: str, observed_at: str) -> dict:
-    avg_int = mean_14(c['normalisedInteger'] for c in components)
+    consensus = trimmed_mean_bps(c['normalisedInteger'] for c in components)
     return {
         'version': VERSION,
         'asOf': as_of,
         'observedAt': observed_at,
-        'averagePercent': float(tenths_bp_to_percent(avg_int)),
-        'averageScale': SCALE_NAME,
-        'averageInteger': avg_int,
+        'consensusBps': consensus,
+        'consensusScale': 'basis_point',
         'changed': False,
         'changedBanks': [],
         'components': [
@@ -107,8 +104,7 @@ def apply_update(previous: dict | None, incoming: dict, *, observed_at: str, dec
         snap['changed'] = False
         snap['changedBanks'] = []
         snap['asOf'] = previous.get('asOf') or decision_date
-        snap['averagePercent'] = previous['averagePercent']
-        snap['averageInteger'] = previous['averageInteger']
+        snap['consensusBps'] = previous.get('consensusBps')
         snap['components'] = previous['components']
         snap['observedAt'] = observed_at
         return snap
@@ -151,7 +147,7 @@ def main(argv=None) -> int:
     p.add_argument('--as-of', default=None)
     args = p.parse_args(argv)
     snap = collect(Path(args.input), Path(args.out), observed_at=args.observed_at, decision_date=args.as_of)
-    print(json.dumps({'changed': snap['changed'], 'averagePercent': snap['averagePercent'], 'asOf': snap['asOf']}))
+    print(json.dumps({'changed': snap['changed'], 'consensusBps': snap['consensusBps'], 'asOf': snap['asOf']}))
     return 0
 
 

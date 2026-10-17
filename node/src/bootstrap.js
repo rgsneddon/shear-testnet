@@ -12,6 +12,7 @@ import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { verifyLoadedChain, chainLoadSeal, chainWorkOf } from './chain.js';
 import { chainNoteRuleRejected } from '../../crypto/n1.js';
 import { bookSealKeyFor } from './book_seal_key.js';
+import { ensureDatadir } from './datadir_acl.js';
 
 function hexHash(h) {
   if (h == null || h === '') return '';
@@ -189,7 +190,7 @@ export function bootstrapMayInstall(localBlocks, remoteBlocks) {
 
 /** Empty datadir only. Copies latest.json + latest.bin into SHEAR_DATA and installs chain.bin. */
 export function applyLatestBootstrap(dataDir, fromDir) {
-  fs.mkdirSync(dataDir, { recursive: true });
+  ensureDatadir(dataDir);
   const chainBin = path.join(dataDir, 'chain.bin');
   const chainJson = path.join(dataDir, 'chain.jsonl');
   if (fs.existsSync(chainBin) || fs.existsSync(chainJson)) throw new Error('bootstrap_datadir_not_empty');

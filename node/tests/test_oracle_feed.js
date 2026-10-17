@@ -14,13 +14,14 @@ describe('Shear Sentinel staking oracle', () => {
     vault.epochBps = 264;
     vault.oracle.annualBps = 264;
     const snap = loadOracleSnapshot();
-    assert.equal(bpsFromSnapshot(snap).annualBps, 264);
-    const now = Date.parse('2026-09-29T12:00:00Z');
+    assert.equal(bpsFromSnapshot(snap).annualBps, 281);
+    const now = Date.parse('2026-11-15T12:00:00Z');
     const view = oracleView(vault, snap, now);
     assert.equal(view.id, 'shear-reserve-oracle-v1');
-    assert.equal(view.annualBps, 264);
+    assert.equal(view.annualBps, 281);
+    assert.equal(view.displayOnly, true);
     assert.equal(view.stale, true);
-    assert.equal(view.wouldFreezeBps, 264);
+    assert.equal(view.wouldFreezeBps, 281);
     assert.equal(view.epochBps, 264);
     assert.equal(view.mintUses, 'epochBps');
     assert.equal(view.sourceCount, 14);
@@ -32,7 +33,7 @@ describe('Shear Sentinel staking oracle', () => {
     assert.equal(consensusFingerprint().includes('13.0'), false);
   });
 
-  it('a fresh basket names the next freeze and leaves this epoch untouched', () => {
+  it('a fresh local basket does not name the next freeze', () => {
     const vault = emptyVault();
     vault.epochBps = 264;
     const now = Date.parse('2026-09-29T12:00:00Z');
@@ -44,8 +45,9 @@ describe('Shear Sentinel staking oracle', () => {
     };
     const view = oracleView(vault, snap, now);
     assert.equal(view.stale, false);
-    assert.equal(view.annualBps, 400);
-    assert.equal(view.wouldFreezeBps, 364);
+    assert.equal(view.annualBps, 281);
+    assert.equal(view.wouldFreezeBps, 281);
+    assert.equal(view.callerBasketIgnored, true);
     assert.equal(vault.epochBps, 264);
     assert.equal(bpsFromSnapshot({ version: 'other', averagePercent: 4 }), null);
   });

@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +27,7 @@ import {
   lockTx,
   withdrawTx,
   voteTx,
+  portalEpochInterest,
   portalIdFromDest,
   VOTE_INCREASE,
 } from '../../crypto/reserve_vault.js';
@@ -99,7 +101,7 @@ function dest20EqualsRow(row20, dest) {
   }
 }
 
-describe('node Reserve vault', () => {
+describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
   it('printConfig names the Reserve oracle and epoch', () => {
     const c = printConfig();
     assert.equal(c.reserveProgram, RESERVE_PROGRAM);
@@ -108,17 +110,17 @@ describe('node Reserve vault', () => {
     assert.equal(c.reserveJoinCutoffDays, 1);
     assert.equal(c.reserveOracle, RESERVE_ORACLE_ID);
     assert.equal(c.reserveOracleDefaultBps, RESERVE_ORACLE_DEFAULT_BPS);
-    assert.equal(c.reserveOracleDefaultBps, 264);
+    assert.equal(c.reserveOracleDefaultBps, 281);
     assert.equal(c.reserveEpochDays, 4);
     assert.equal(c.interestDenomDays, INTEREST_DENOM_DAYS);
     assert.equal(c.interestDenomDays, 400);
     assert.equal(c.hashBonusNanos, HASH_BONUS_NANOS);
     assert.equal(c.hashBonusNanos, 1);
     assert.equal(c.mainnet, false);
-    assert.equal(c.magic, 'shear-testnet-v11');
+    assert.equal(c.magic, 'shear-testnet-v12');
   });
 
-  it('lock spends mature Continuum, refuses when spendable is short, withdraw returns principal + staked interest', { timeout: 600_000 }, async () => {
+  it('lock spends mature Continuum, refuses when spendable is short, and a withdraw pays principal only', { timeout: 600_000 }, async () => {
     const alice = newIdentity();
     const aliceBox = spendBox(alice);
     const continuum = aliceBox.dest;
@@ -198,9 +200,16 @@ describe('node Reserve vault', () => {
       hash20FromAddress(preview.to)?.toString('hex'),
       hash20FromAddress(continuum)?.toString('hex'),
     );
-    assert.ok(preview.interest > 0);
-    assert.equal(preview.interest, interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS, 400));
-    assert.equal(preview.payout, PI_SHE_NANOS + preview.interest);
+    assert.equal(preview.interest, 0);
+    assert.equal(preview.payout, PI_SHE_NANOS);
+    assert.equal(
+      portalEpochInterest(
+        store.reserveVault,
+        store.reserveVault.portals[pid],
+        store.reserveVault.epochStartMs + RESERVE_EPOCH_MS,
+      ),
+      interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS, 400),
+    );
 
     const again = createStore(dir);
     assert.equal(Number(again.reserveVault.totalLockedNanos), PI_SHE_NANOS);

@@ -4,6 +4,7 @@
  * Amounts, portals, and k vary. The cap is the exported policy value.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -301,7 +302,7 @@ function readCounters() {
   };
 }
 
-describe('v12 reserve trial is incremental', () => {
+describe('v12 reserve trial is incremental', { timeout: fileCapMs(import.meta.url) }, () => {
   it('k reserve txs cost one apply each, and one arrival verifies once', { timeout: 300_000 }, async () => {
     assert.ok(RESERVE_ACTION_CAP > Math.max(...KS), `cap ${RESERVE_ACTION_CAP} holds the spread`);
     const who = payer();

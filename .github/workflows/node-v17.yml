@@ -52,7 +52,7 @@ jobs:
           export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
           test -f "$NODE_INC/node_api.h"
           echo "NODE_INC $NODE_INC"
-          npm ci
+          npm ci --ignore-scripts
           # Host rustc is MSVC and writes shear_admit.lib. MinGW ld needs
           # libshear_admit.a from the gnu toolchain, linked with ucrt64 gcc.
           rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
@@ -99,7 +99,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y build-essential cmake python3
-          npm ci
+          npm ci --ignore-scripts
           cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native
@@ -148,7 +148,7 @@ jobs:
           export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
           test -f "$NODE_INC/node_api.h"
           echo "NODE_INC $NODE_INC"
-          npm ci
+          npm ci --ignore-scripts
           sh node/pack/pack_macos.sh
           python3 - << 'PY'
           import zipfile
@@ -195,7 +195,7 @@ jobs:
               pacman -S --noconfirm --needed base-devel cmake nodejs npm rust python git file patchelf
               ;;
             fedora)
-              dnf -y install gcc gcc-c++ make cmake nodejs nodejs-devel rust cargo python3 git zip findutils file pkgconf-pkg-config patchelf
+              dnf -y install gcc gcc-c++ make cmake nodejs nodejs-devel rust cargo python3 git zip findutils file pkgconf-pkg-config patchelf libstdc++-static
               ;;
             opensuse)
               zypper -n refresh
@@ -241,7 +241,7 @@ jobs:
           rm -rf runtime node_modules dist crypto/randomx/build \
             crypto/native/shearhash.node crypto/native/shearadmit.node \
             crypto/native/admit/target
-          npm ci
+          npm ci --ignore-scripts
           cmake -S crypto/randomx -B crypto/randomx/build
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native -j"$(nproc)"
@@ -374,6 +374,7 @@ jobs:
               "- shear-node-v17-macos.zip\n"
           )
           PY
+          { echo; python3 scripts/licenses/release_notes_versions.py dist/shear-node-v17-*.zip; } >> /tmp/v17-notes.md
           gh release create v17 \
             --repo rgsneddon/shear-testnet \
             --target "${GITHUB_SHA}" \

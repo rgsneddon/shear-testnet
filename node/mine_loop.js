@@ -15,9 +15,10 @@ import {
   freshStealthDest,
   destOpeningFromView,
   ed25519SeedOf,
+  hash20FromAddress,
 } from '../crypto/address.js';
 import { destAtIndex } from '../crypto/flow_sheet.js';
-import { unwrapBlind } from '../crypto/note.js';
+import { unwrapBlind, hiddenAmountRangeReady, noteCommitOfDest20 } from '../crypto/note.js';
 import { admitBaseScalar } from '../crypto/admit.js';
 import { levyNanos, bindWeightFee } from '../crypto/levy.js';
 import { attachDummyOuts } from '../crypto/dummy.js';
@@ -83,11 +84,39 @@ function b32(x) {
   return Buffer.from(s.length === 64 && /^[0-9a-f]+$/i.test(s) ? s : s, 'hex');
 }
 
+let warnedSoakRange = false;
+
+/** Owner-side scan: no RPC returns notes by dest. Match noteCommit in compact blocks. */
+async function ownedNotes(tipHeight) {
+  const want = noteCommitOfDest20(hash20FromAddress(dest)).toString('hex');
+  const from = Math.max(1, tipHeight - 63);
+  const got = await rpcCall('getblocks', { from, to: tipHeight });
+  const rows = [];
+  for (const b of got?.blocks || []) {
+    for (const tx of b.txs || []) {
+      for (const o of tx.vout || []) {
+        if (String(o?.noteCommit || '') !== want) continue;
+        rows.push({ ...o, height: b.height, coinbase: !!tx.coinbase });
+      }
+    }
+  }
+  return rows;
+}
+
 async function trySoakFlow(tipHeight) {
   if (fs.existsSync(flowFlag)) return;
+  if (!hiddenAmountRangeReady()) {
+    if (!warnedSoakRange) {
+      warnedSoakRange = true;
+      console.error(
+        'SHEAR RANGE WARNING: hidden-amount soak send refused. shearadmit.node is required, '
+        + 'or set SHEAR_RANGE_JS=1 to allow the non-constant-time prover.',
+      );
+    }
+    return;
+  }
   if (tipHeight < SPENDABLE_CONFIRMATIONS + 1) return;
-  const notes = await rpcCall('getnotes', { address: dest });
-  const rows = notes?.notes || [];
+  const rows = await ownedNotes(tipHeight);
   const pot = rows.find((n) => n.coinbase && n.kind === 'pot'
     && Number(n.height) + SPENDABLE_CONFIRMATIONS <= tipHeight
     && n.rEph && n.rCt && n.commit);

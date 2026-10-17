@@ -1,12 +1,21 @@
 /**
  * ADMITv2 Flow levy (LEVY=weight). fee = max(FLOOR, ceil(weight × RATE)).
  * Amount is not an input. Cap 0.001 SHE is a hard ceiling, not the price.
- * Split half finder, half Reserve vault.
+ * The whole levy is paid to that block's miners. A round with shares
+ * splits it by work. An empty round pays one public finder-fee note.
+ * Nothing is credited to the Reserve vault.
  */
 import { createHash } from 'node:crypto';
 import { createPublicKey, verify } from 'node:crypto';
 import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX, aliasDestOfSilentId, poolFeeDest } from './address.js';
-import { NANOS_PER_SHE, MAGIC_TESTNET } from './asert.js';
+import {
+  NANOS_PER_SHE,
+  MAGIC_TESTNET,
+  FEE_SPLIT_FINDER_BPS,
+  FEE_SPLIT_RESERVE_BPS,
+} from './asert.js';
+
+export { FEE_SPLIT_FINDER_BPS, FEE_SPLIT_RESERVE_BPS };
 import {
   verifyPoolWithdrawSig,
   recoverPoolWithdrawPub,
@@ -20,8 +29,6 @@ export { poolFeeDest };
 
 export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
-export const FEE_SPLIT_FINDER_BPS = 5000;
-export const FEE_SPLIT_RESERVE_BPS = 5000;
 export const LEVY_FLOOR_UNITS = 100;
 export const LEVY_BPS = 0;
 export const LEVY_WEIGHT_RATE_NUM = 1;
@@ -55,15 +62,16 @@ const TAXED = new Set([
   'user-spend',
   'lock',
   'vote',
+  'withdraw',
+  'reward-claim',
 ]);
 
 export function levyTaxed(tx) {
   const k = String(tx?.kind || tx?.vout?.[0]?.kind || KIND_SEND);
   if (tx?.coinbase) return false;
   if (k === 'claim' || k === 'join-claim') return false;
-  if (k === 'withdraw') return false;
   if (k === 'reserve' || k === 'reserve-interest' || k === 'reserve-shortfall') return false;
-  if (tx?.mint && k !== KIND_POOL_WITHDRAW && k !== KIND_VORTICE_REGISTER) return false;
+  if (tx?.mint && k !== KIND_POOL_WITHDRAW && k !== KIND_VORTICE_REGISTER && k !== 'reward-claim' && k !== 'withdraw') return false;
   if (TAXED.has(k)) return true;
   return !tx?.mint && Array.isArray(tx?.vin) && tx.vin.length > 0 && k !== 'b-spend';
 }
@@ -138,6 +146,7 @@ export function quoteLevy(amountNanos, pressure = {}) {
   };
 }
 
+/** Finder receives FEE_SPLIT_FINDER_BPS of the levy. Reserve is the remainder. */
 export function splitLevy(levy) {
   const n = Math.max(0, Math.floor(Number(levy) || 0));
   const finder = Math.floor(n * FEE_SPLIT_FINDER_BPS / 10000);

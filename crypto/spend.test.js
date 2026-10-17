@@ -2,14 +2,15 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { levyNanos } from './levy.js';
-import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, spendPubFromTx, verifyReservePortalOpen, typedCommitSum } from './spend.js';
-import { sealNote, sealCoinbaseNote, randomScalar, scalarBytes, kernelExcess } from './note.js';
+import { fundedDebit, matureSpendableNanos, mempoolDebitNanos, verifyFundedBody, verifyDestOpening, flowSendNeedsOpen, indexedDestOpening, signSpendTx, verifySpendSig, spendPackDigest, spendPubFromTx, verifyReservePortalOpen, typedCommitSum, v12KindRejected } from './spend.js';
+import { sealNote, sealCoinbaseNote, sealHiddenNote, randomScalar, scalarBytes, kernelExcess } from './note.js';
 import { blindCommit } from './admit.js';
 import { compactTx } from './chronoflux.js';
 import { newIdentity, destOpeningFromView, hash20FromAddress, silentPay, ed25519SeedOf, stealthSpendPrivate, recognizeSilentDest, ed25519PrivateFromSeed, ed25519RawPub, encodeDest } from './address.js';
 import { destCommitFromSpendPub } from './stealth_ed25519.js';
 import { generateKeyPairSync, createPublicKey, verify } from 'node:crypto';
 import { destAtIndex, closureCommit } from './flow_sheet.js';
+import { portalIdFromDest } from './reserve_vault.js';
 
 const dest = 'ssa1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
 const other = 'ssa1qyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy';
@@ -61,12 +62,14 @@ describe('funded spend / no double-spend', () => {
     });
     assert.equal(spendPubFromTx(unsigned)?.toString('hex'), id.spendPub.toString('hex'));
     assert.equal(verifyReservePortalOpen(unsigned), false);
+    const fund = encodeDest(destCommitFromSpendPub(id.spendPub));
     const signed = {
       kind: 'lock',
-      from: encodeDest(destCommitFromSpendPub(id.spendPub)),
+      from: fund,
       to: id.address,
       portalId: 'cd'.repeat(32),
-      vin: [{ dest20: d20 }],
+      payoutPortalId: portalIdFromDest(fund),
+      vin: [{ dest20: destCommitFromSpendPub(id.spendPub) }],
       vout: [{ ...note, kind: 'lock' }],
     };
     signSpendTx(signed, id.privateKey);
@@ -152,15 +155,16 @@ describe('funded spend / no double-spend', () => {
       vin: [{ address: from }],
       vout: [{ address: to, nanos: amount }],
     }, key);
+    // A plaintext amount is amount_field (AL-1) before the kind gate. Either way, unfunded.
     const once = verifyFundedBody([tx('a', nanos)], spendableOf);
     assert.equal(once.ok, false);
-    assert.equal(once.reason, 'kind');
+    assert.equal(once.reason, 'amount_field');
     const twice = verifyFundedBody([tx('a', nanos), tx('b', nanos)], spendableOf);
     assert.equal(twice.ok, false);
-    assert.equal(twice.reason, 'kind');
+    assert.equal(twice.reason, 'amount_field');
     const over = verifyFundedBody([tx('a', 1), tx('b', nanos + NANOS_PER_SHE)], spendableOf);
     assert.equal(over.ok, false);
-    assert.equal(over.reason, 'kind');
+    assert.equal(over.reason, 'amount_field');
   });
 
   it('mempool already-queued debit blocks a second pull of the same coins', () => {
@@ -266,13 +270,14 @@ describe('funded spend / no double-spend', () => {
     const seed = Buffer.from('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60', 'hex');
     const key = ed25519PrivateFromSeed(seed);
     const from = encodeDest(destCommitFromSpendPub(ed25519RawPub(key)));
+    const paid = sealHiddenNote(50n, { dest20: Buffer.alloc(20, 3), kind: 'send', admitBase: newIdentity().admitBase });
+    delete paid.r;
     const tx = {
       kind: 'send',
       from,
-      nanos: 50,
       fee: 1,
       vin: [{ prev: Buffer.alloc(32, 1), index: 0, commit: Buffer.alloc(32, 2) }],
-      vout: [{ address: from, nanos: 50, kind: 'send' }],
+      vout: [paid],
     };
     signSpendTx(tx, key);
     const destMap = verifyFundedBody([tx], () => 0);
@@ -344,6 +349,7 @@ describe('funded spend / no double-spend', () => {
     const lock = {
       kind: 'lock',
       fee: 1,
+      from: encodeDest(destCommitFromSpendPub(ed25519RawPub(key))),
       portalId: 'portal-a',
       payoutPortalId: 'portal-b',
       vin: [{ noteCommit: Buffer.alloc(32, 2) }],
@@ -427,5 +433,58 @@ describe('funded spend / no double-spend', () => {
       assert.equal(short.ok, false);
       assert.equal(short.reason, 'commit_sum');
     }
+  });
+});
+
+describe('claim conservation', () => {
+  it('rejects a claim with no output or a value of zero or less', () => {
+    const payee = 'ssa1qzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz';
+    const feeRow = v12KindRejected({ kind: 'claim', fee: 1, vin: [{ address: payee }] });
+    assert.equal(feeRow, null);
+    const empty = v12KindRejected({ kind: 'claim', nanos: 0, vout: [] });
+    assert.equal(empty.reason, 'conservation');
+    const bare = v12KindRejected({ kind: 'claim', nanos: 5 });
+    assert.equal(bare.reason, 'conservation');
+    const zero = v12KindRejected({
+      kind: 'claim',
+      nanos: 0,
+      vout: [{ address: payee, nanos: 0 }],
+    });
+    assert.equal(zero.reason, 'conservation');
+    const negative = v12KindRejected({
+      kind: 'claim',
+      nanos: -3,
+      vout: [{ address: payee, nanos: -3 }],
+    });
+    assert.equal(negative.reason, 'conservation');
+    const outputOnly = v12KindRejected({
+      kind: 'claim',
+      nanos: 4,
+      vout: [{ address: payee, nanos: 0 }],
+    });
+    assert.equal(outputOnly.reason, 'conservation');
+    const valued = v12KindRejected({
+      kind: 'claim',
+      nanos: 4,
+      vout: [{ address: payee, nanos: 4 }],
+    });
+    assert.equal(valued.reason, 'kind');
+    const mismatch = v12KindRejected({
+      kind: 'claim',
+      nanos: 4,
+      vout: [{ address: payee, nanos: 5 }],
+    });
+    assert.equal(mismatch.reason, 'conservation');
+    const unstated = v12KindRejected({
+      kind: 'claim',
+      vout: [{ address: payee, nanos: 4 }],
+    });
+    assert.equal(unstated.reason, 'conservation');
+    const split = v12KindRejected({
+      kind: 'claim',
+      nanos: 9,
+      vout: [{ address: payee, nanos: 4 }, { address: payee, nanos: 5 }],
+    });
+    assert.equal(split.reason, 'kind');
   });
 });

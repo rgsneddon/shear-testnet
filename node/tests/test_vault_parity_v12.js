@@ -5,6 +5,7 @@
  * is rejected, and a flipped choice cannot keep the old digest.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,7 +20,6 @@ import {
   lockTx,
   voteTx,
   withdrawTx,
-  deposit,
   previewWithdraw,
   portalIdFromDest,
   VOTE_HOLD,
@@ -27,6 +27,7 @@ import {
   canonicalReserveFields,
   reserveDigestSuffix,
 } from '../../crypto/reserve_vault.js';
+import { deposit } from '../../crypto/owned_portal.js';
 import { signSpendTx, spendPackDigest, typedCommitSum } from '../../crypto/spend.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { levyNeed } from '../../crypto/levy.js';
@@ -383,7 +384,7 @@ async function sameVerdict(store, tx, reason, wall) {
   return stamp;
 }
 
-describe('vault parity', () => {
+describe('vault parity', { timeout: fileCapMs(import.meta.url) }, () => {
   it('binds choice on the three digests and leaves a send digest unchanged', () => {
     const amounts = [1, PI_SHE_NANOS];
     assert.ok(new Set(amounts).size >= 2);

@@ -3,7 +3,8 @@ import 'dart:typed_data';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 
-/// Shown when a send is attempted. The v3 prove stays off until FS-1.
+/// A node that still answers `send_unavailable` (a pre-FS-1 build). Sends
+/// prove with the FS-1 full-set spend in shear_fs1.dart.
 const String kErrSendUnavailable = 'send unavailable until FS-1';
 
 final admitXDst = utf8Bytes('shear-admit-x-v1');
@@ -94,6 +95,7 @@ Map<String, dynamic> attachAdmitPub(
   Map<String, dynamic> vout, {
   Uint8List? spendSeed,
   Element? admitBase,
+  BigInt? v,
 }) {
   if (vout['commit'] is! Uint8List) return vout;
   var out = Map<String, dynamic>.from(vout);
@@ -107,7 +109,7 @@ Map<String, dynamic> attachAdmitPub(
       out['admitPub'] = pointBytes(admitPub(randomScalar()));
     }
   }
-  if (admitBase != null) out = wrapNoteBlind(out, admitBase);
+  if (admitBase != null) out = wrapNoteBlind(out, admitBase, v: v);
   return out;
 }
 
@@ -126,16 +128,4 @@ bool _eq(Uint8List a, Uint8List b) {
     if (a[i] != b[i]) return false;
   }
   return true;
-}
-
-/// Closed until FS-1. The wallet has no spend prover to call.
-/// A missing helper used to surface as admit_native_required.
-Map<String, dynamic> proveFlowSpend(
-  Map<String, dynamic> tx, {
-  required Uint8List spendSeed,
-  required Map<String, dynamic> spentNote,
-  required List<Uint8List> pubs,
-  List<Uint8List>? commits,
-}) {
-  throw StateError(kErrSendUnavailable);
 }

@@ -3,22 +3,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
 import { bLeafId, bProof } from '../../crypto/clearing.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { packEpochBlock, unpackEpochBlock, writeChainBin } from '../../crypto/chainbin.js';
-import { sealNote, verifyRange } from '../../crypto/note.js';
+import { excessOf, verifyRange } from '../../crypto/note.js';
+import { signSpendTx } from '../../crypto/spend.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { createStore } from '../src/store.js';
 import { buildTemplate, retarget, GENESIS_PREV, shouldAdopt } from '../src/chain.js';
+import { payerIdentity, sealMintOut } from './b_leaf_fund.js';
+import { publishBLeaves } from './b_leaf_fs1.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
-function minerDest() {
-  const id = newIdentity();
-  return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+function minerWho() {
+  return payerIdentity();
 }
 
 function easyPow(tag) {
@@ -149,7 +149,7 @@ function expectTrailer(blocks, mutate, re, label) {
 }
 
 describe('v12 b-spend stamps survive a restart', () => {
-  it('rebuilds spentB from the chain trailer and still rejects a re-spend', { timeout: 180_000 }, () => {
+  it('rebuilds spentB from the chain trailer and still rejects a re-spend', { timeout: 600_000 }, async () => {
     assert.equal(SPENDABLE_CONFIRMATIONS, 9);
     const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     const rebuild = src.split('function rebuildSpentB()')[1].split('function bounceMempool')[0];
@@ -159,27 +159,27 @@ describe('v12 b-spend stamps survive a restart', () => {
     const bin = fs.readFileSync(new URL('../../crypto/chainbin.js', import.meta.url), 'utf8');
     assert.match(bin, /bSpendIds/);
 
-    const dest = minerDest();
-    const dest20 = hash20FromAddress(dest);
-    const leaf = {
-      dest20,
+    const who = minerWho();
+    const dest = who.dest;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-'));
+    const live = createStore(dir, { pruneAfter: 1_000_000 });
+    const funded = await publishBLeaves(live, who, [{
       unit: 9,
       nonce: 1,
       memoH: Buffer.alloc(32),
       tag: 'b-extra',
-    };
-    const id = bLeafId(leaf, 1, 0);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-'));
-    const live = createStore(dir, { pruneAfter: 1_000_000 });
-    const committed = sealBuilt(live, dest, { bLeaves: [leaf] });
-    assert.equal(committed.ok, true, committed.reason);
-    assert.equal(live.tip().height, 1);
-    while ((live.tip()?.height || 0) < SPENDABLE_CONFIRMATIONS - 1) {
+      id: 'fund-bspend-restart',
+    }]);
+    const leaf = funded.leaves[0];
+    const commitH = funded.height;
+    const id = bLeafId(leaf, commitH, 0);
+    const matureParent = commitH + SPENDABLE_CONFIRMATIONS - 2;
+    while ((live.tip()?.height || 0) < matureParent) {
       const pad = sealBuilt(live, dest);
       assert.equal(pad.ok, true, pad.reason);
     }
-    assert.equal(live.tip().height, 8);
-    const commit = live.blocks[0];
+    assert.equal(live.tip().height, matureParent);
+    const commit = live.blocks[commitH - 1];
     const spendTx = {
       id: 'bspend-restart',
       kind: 'b-spend',
@@ -187,21 +187,24 @@ describe('v12 b-spend stamps survive a restart', () => {
       to: dest,
       nanos: 0,
       fee: 0,
-      commitHeight: 1,
+      commitHeight: commitH,
       commitHeader: commit.header,
       commitRootA: commit.rootA,
       commitRootB: commit.rootB,
       leaf,
-      proof: bProof([leaf], 0),
+      proof: bProof(commit.bLeaves, 0),
       index: 0,
       vin: [{ address: dest }],
-      vout: [],
+      vout: [sealMintOut(leaf.unit, dest, 'b-spend')],
     };
+    spendTx.excess = excessOf(spendTx.vout);
+    signSpendTx(spendTx, who.key);
     const spent = sealBuilt(live, dest, { txs: [spendTx] });
     assert.equal(spent.ok, true, spent.reason);
-    assert.equal(live.tip().height, 9);
+    assert.equal(live.tip().height, matureParent + 1);
     assert.equal(live.spentB.has(id), true);
-    const stamped = live.blocks[8];
+    const spendIndex = matureParent;
+    const stamped = live.blocks[spendIndex];
     assert.ok(Array.isArray(stamped.bSpendIds));
     assert.equal(stamped.bSpendIds.includes(id), true);
     const round = unpackEpochBlock(packEpochBlock(stamped));
@@ -211,7 +214,7 @@ describe('v12 b-spend stamps survive a restart', () => {
     const old = unpackEpochBlock(packEpochBlock(unstamped));
     assert.equal(Object.prototype.hasOwnProperty.call(old, 'bSpendIds'), false);
 
-    while ((live.tip()?.height || 0) < 24) {
+    while ((live.tip()?.height || 0) < spendIndex + 16) {
       const pad = sealBuilt(live, dest);
       assert.equal(pad.ok, true, pad.reason);
     }
@@ -231,14 +234,14 @@ describe('v12 b-spend stamps survive a restart', () => {
     const depths = [1, 3, 8];
     for (const depth of depths) {
       const parentIndex = bounced.blocks.length - 1 - depth;
-      assert.ok(parentIndex >= 8, 'prefix still holds the spend');
+      assert.ok(parentIndex >= spendIndex, 'prefix still holds the spend');
       const got = adopt(bounced, dest, parentIndex, depth + 1, 80_000 + depth * 1000);
       assert.equal(got.ok, true, got.reason);
       assert.equal(bounced.spentB.has(id), true);
       assert.notEqual(tipHex(bounced), liveTip);
     }
 
-    const cut = 7;
+    const cut = spendIndex - 1;
     const dropped = adopt(bounced, dest, cut, bounced.blocks.length - cut, 120_000);
     assert.equal(dropped.ok, true, dropped.reason);
     assert.equal(bounced.spentB.has(id), false);
@@ -290,60 +293,65 @@ describe('v12 b-spend stamps survive a restart', () => {
     assert.throws(() => createStore(oldDir, { pruneAfter: 1_000_000 }), /pow/);
   });
 
-  it('rejects a trailer that is not the set of ids derived from that block', { timeout: 180_000 }, () => {
+  it('rejects a trailer that is not the set of ids derived from that block', { timeout: 600_000 }, async () => {
     const amounts = [1, 1_000_000_000, 2 ** 32, 2 ** 40, Number.MAX_SAFE_INTEGER];
     assert.ok(amounts.every((n) => Number.isSafeInteger(n) && n >= 1));
-    const dest = minerDest();
-    const dest20 = hash20FromAddress(dest);
-    const leaves = [1, 2, 3].map((n) => ({
-      dest20,
+    const who = minerWho();
+    const dest = who.dest;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-match-'));
+    const live = createStore(dir, { pruneAfter: 1_000_000 });
+    const funded = await publishBLeaves(live, who, [1, 2, 3].map((n) => ({
       unit: n,
       nonce: n,
       memoH: Buffer.alloc(32),
       tag: `b-leaf-${n}`,
-    }));
-    const ids = leaves.map((leaf, index) => bLeafId(leaf, 1, index));
+      id: `fund-leaf-${n}`,
+    })));
+    const leaves = funded.leaves;
+    const commitH = funded.height;
+    const ids = leaves.map((leaf, index) => bLeafId(leaf, commitH, index));
     assert.equal(new Set(ids).size, ids.length);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-bspend-match-'));
-    const live = createStore(dir, { pruneAfter: 1_000_000 });
-    const committed = sealBuilt(live, dest, { bLeaves: leaves });
-    assert.equal(committed.ok, true, committed.reason);
-    while ((live.tip()?.height || 0) < SPENDABLE_CONFIRMATIONS - 1) {
+    const matureParent = commitH + SPENDABLE_CONFIRMATIONS - 2;
+    while ((live.tip()?.height || 0) < matureParent) {
       const pad = sealBuilt(live, dest);
       assert.equal(pad.ok, true, pad.reason);
     }
-    const commit = live.blocks[0];
-    const spendTx = (leaf, index, vout, id) => ({
+    const commit = live.blocks[commitH - 1];
+    const spendTx = (leaf, index, vout, id) => signSpendTx({
       id,
       kind: 'b-spend',
       from: dest,
       to: dest,
       nanos: 0,
       fee: 0,
-      commitHeight: 1,
+      commitHeight: commitH,
       commitHeader: commit.header,
       commitRootA: commit.rootA,
       commitRootB: commit.rootB,
       leaf,
-      proof: bProof(leaves, index),
+      proof: bProof(commit.bLeaves, index),
       index,
       vin: [{ address: dest }],
       vout,
-    });
-    const note = (nanos) => sealNote(nanos, { dest20, kind: 'send' });
+      excess: excessOf(vout),
+    }, who.key);
     for (const nanos of amounts) {
       const plain = sealBuilt(live, dest, {
         txs: [spendTx(leaves[0], 0, [{ kind: 'send', address: dest, nanos }], 'bspend-plain')],
       });
       assert.equal(plain.ok, false, `plaintext ${nanos}`);
       assert.equal(plain.reason, 'range_proof');
-      assert.equal(live.tip().height, SPENDABLE_CONFIRMATIONS - 1);
+      assert.equal(live.tip().height, matureParent);
       assert.equal(live.spentB.has(ids[0]), false);
     }
     const vouts = [
-      [note(amounts[0])],
-      [note(amounts[1]), note(amounts[2])],
-      [note(amounts[3]), note(amounts[4]), note(amounts[0])],
+      [sealMintOut(leaves[0].unit, dest, 'b-spend')],
+      [sealMintOut(1, dest, 'b-spend'), sealMintOut(leaves[1].unit - 1, dest, 'b-spend')],
+      [
+        sealMintOut(1, dest, 'b-spend'),
+        sealMintOut(1, dest, 'b-spend'),
+        sealMintOut(leaves[2].unit - 2, dest, 'b-spend'),
+      ],
     ];
     assert.deepEqual(vouts.map((v) => v.length), [1, 2, 3]);
     const pair = sealBuilt(live, dest, {
@@ -355,7 +363,8 @@ describe('v12 b-spend stamps survive a restart', () => {
     assert.equal(pair.ok, true, pair.reason);
     assert.equal(live.spentB.has(ids[0]), true);
     assert.equal(live.spentB.has(ids[1]), true);
-    while ((live.tip()?.height || 0) < 11) {
+    const pairHeight = live.tip().height;
+    while ((live.tip()?.height || 0) < pairHeight + 2) {
       const pad = sealBuilt(live, dest);
       assert.equal(pad.ok, true, pad.reason);
     }
@@ -364,7 +373,8 @@ describe('v12 b-spend stamps survive a restart', () => {
     });
     assert.equal(third.ok, true, third.reason);
     assert.equal(live.spentB.has(ids[2]), true);
-    while ((live.tip()?.height || 0) < 14) {
+    const thirdHeight = live.tip().height;
+    while ((live.tip()?.height || 0) < thirdHeight + 2) {
       const pad = sealBuilt(live, dest);
       assert.equal(pad.ok, true, pad.reason);
     }

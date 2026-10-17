@@ -24,6 +24,9 @@ from bundle_modules import (
     write_missing_required,
 )
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "licenses"))
+import release_notices  # noqa: E402
+
 FLAVORS = ("windows", "linux", "archlinux", "fedora", "opensuse", "macos")
 SKIP_DIR_NAMES = {
     "node_modules",
@@ -53,12 +56,16 @@ def product_version() -> str:
     return os.environ.get("SHEAR_NODE_PIN", "9.0")
 
 
-def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=None) -> None:
+def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=None, keep_dir=None) -> None:
     skip = SKIP_DIR_NAMES if skip_dirs is None else skip_dirs
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d not in skip and not d.startswith(".")]
+        if keep_dir is not None:
+            dns[:] = [d for d in dns if keep_dir(os.path.relpath(os.path.join(dp, d), REPO))]
         for fn in fns:
             if fn.endswith((".obj", ".o", ".pdb", ".ilk")):
+                continue
+            if fn.lower() in release_notices.MINGW_RUNTIME_DLLS or release_notices.is_gcc_runtime(fn):
                 continue
             if fn.endswith(".node"):
                 host_win = sys.platform.startswith("win")
@@ -74,28 +81,14 @@ def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=
             z.write(p, f"{arc_prefix}/{rel}")
 
 
-def mingw_bin_dir() -> str:
-    gcc = shutil.which("gcc")
-    if gcc:
-        return os.path.dirname(os.path.abspath(gcc))
-    return ""
-
-
-def write_mingw_runtime(z: zipfile.ZipFile) -> None:
-    """shearhash.node is a MinGW N-API addon. Those DLLs must sit next to node.exe."""
-    bindir = mingw_bin_dir()
-    needed = ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")
-    missing = [n for n in needed if not os.path.isfile(os.path.join(bindir, n))] if bindir else list(needed)
-    if missing:
-        sys.exit(
-            "Windows node zip needs MinGW runtime "
-            + ", ".join(needed)
-            + " beside gcc (PATH gcc="
-            + (shutil.which("gcc") or "missing")
-            + ")"
-        )
-    for name in needed:
-        z.write(os.path.join(bindir, name), f"runtime/{name}")
+def windows_addons(repo: str) -> list[str]:
+    native = os.path.join(repo, "crypto", "native")
+    out = []
+    for n in ("shearhash.node", "shearadmit.node"):
+        p = os.path.join(native, n)
+        if os.path.isfile(p) and open(p, "rb").read(2) == b"MZ":
+            out.append(p)
+    return out
 
 
 def write_crlf_launcher(z: zipfile.ZipFile, src: str, arcname: str) -> None:
@@ -171,7 +164,6 @@ def main(argv: list[str] | None = None) -> int:
             "pool/src/withdraw_state.js",
             "pool/src/pool.js",
             "pool/src/main.js",
-            "pool/src/admin.js",
             "pool/src/posture.js",
             "pool/src/pull_book.js",
             "pool/src/auto_payout.js",
@@ -190,15 +182,21 @@ def main(argv: list[str] | None = None) -> int:
             sys.exit("refusing zip: SHEAR_NODE_PACK_DEPS=0 omits node_modules")
         nm = os.path.join(REPO, "node_modules")
         if not os.path.isdir(nm):
-            sys.exit("missing node_modules — run npm ci before packing")
-        add_filtered_tree(z, nm, "node_modules", skip_dirs={".git"})
+            sys.exit("missing node_modules — run npm ci --ignore-scripts before packing")
+        add_filtered_tree(z, nm, "node_modules", skip_dirs={".git"}, keep_dir=release_notices.npm_dir_filter(REPO))
+        release_notices.write_notices(z, REPO)
         if flavor == "windows":
             runtime = os.path.join(REPO, "runtime")
             if not os.path.isdir(runtime):
                 copy_runtime(REPO, flavor)
             if os.path.isdir(runtime):
                 add_filtered_tree(z, runtime, "runtime", skip_dirs={".git"})
-            write_mingw_runtime(z)
+            node_exe = os.path.join(runtime, "node.exe")
+            if os.path.isfile(node_exe):
+                for src, arc in release_notices.runtime_license_members([node_exe], "runtime/licenses", REPO):
+                    z.write(src, arc)
+                z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text([node_exe]))
+            release_notices.assert_no_mingw_runtime(windows_addons(REPO))
         else:
             # A Windows checkout keeps runtime/node.exe. Do not ship that PE
             # binary inside a Linux, Fedora, Arch, OpenSUSE, or macOS zip.
@@ -214,6 +212,11 @@ def main(argv: list[str] | None = None) -> int:
                 if linked:
                     rpath_origin(copied, linked)
                 add_filtered_tree(z, os.path.join(stage, "runtime"), "runtime", skip_dirs={".git"})
+                host_node = resolve_real_node(shutil.which("node"))
+                licensed = [host_node] + release_notices.linked_system_libs(host_node, linked)
+                for src, arc in release_notices.runtime_license_members(licensed, "runtime/licenses", REPO):
+                    z.write(src, arc)
+                z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text(licensed))
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
         readme = (
@@ -253,10 +256,17 @@ def main(argv: list[str] | None = None) -> int:
     ):
         if req not in names:
             sys.exit(f"missing {req}")
-    if flavor == "windows":
-        for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
-            if dll not in names:
-                sys.exit(f"missing {dll}")
+    bundles_runtime = any(n in ("runtime/node", "runtime/node.exe") for n in names)
+    if bundles_runtime and release_notices.RUNTIME_VERSIONS not in names:
+        sys.exit(f"node zip must record the bundled runtime versions in {release_notices.RUNTIME_VERSIONS}")
+    shipped_runtime = [n for n in names if n.rsplit("/", 1)[-1].lower() in release_notices.MINGW_RUNTIME_DLLS]
+    if shipped_runtime:
+        sys.exit(f"node zip must not ship the MinGW runtime: {', '.join(shipped_runtime)}")
+    # runtime/ holds the prebuilt node (and Fedora's libnode), which loads the system libstdc++.
+    release_notices.assert_linux_zip_clean(out, exempt=("runtime/*",))
+    if any(n.startswith("node_modules/solc/") for n in names):
+        sys.exit("node zip must not ship the development-only solc compiler")
+    release_notices.assert_has_notices(names, REPO)
     assert_zip_has_modules(names, REPO)
     print("ok", name, "pin", pin, "flavor", flavor, "modules", len(names))
     return 0

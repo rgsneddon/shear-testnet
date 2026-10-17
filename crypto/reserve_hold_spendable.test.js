@@ -52,6 +52,7 @@ describe('reserve principal is not spendable', () => {
         ],
       },
       nowMs: 1_700_000_000_000,
+      genesisMs: 1_700_000_000_000,
     });
     assert.equal(locked.some((r) => r.action === 'lock' && r.ok === true), true);
     assert.equal(portalPrincipalNanos(state, payer), NANOS_PER_SHE);

@@ -5,6 +5,7 @@
  * cannot be spent again.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -423,7 +424,7 @@ function proveChanged(tx, { x, index, flux, note, anchor, noteR, noteV, receiptN
   return settled;
 }
 
-describe('ADMITv3 note consumption', () => {
+describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, () => {
   it('unfunded and public-debit typed txs never queue, at every amount', () => {
     const who = payer();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-reject-'));
@@ -440,7 +441,7 @@ describe('ADMITv3 note consumption', () => {
           debit.noteSpends = [{ commit: Buffer.alloc(32, 3), nanos }];
           const queuedDebit = store.queueTx(debit);
           assert.equal(queuedDebit.ok, false, `${kind} debit ${nanos}`);
-          assert.equal(queuedDebit.reason, 'admit_version', `${kind} debit ${nanos} ${queuedDebit.reason}`);
+          assert.equal(queuedDebit.reason, 'unsigned', `${kind} debit ${nanos} ${queuedDebit.reason}`);
 
           const bare = stripPayer(typedTx(kind, who.dest, nanos, `${kind}-bare-${nanos}`));
           bare.vin = [{ commit: Buffer.alloc(32, nanos & 0xff) }];
@@ -501,7 +502,7 @@ describe('ADMITv3 note consumption', () => {
         signSpendTx(mismatch, who.key);
         const queuedMismatch = store.queueTx(mismatch);
         assert.equal(queuedMismatch.ok, false, `${nanos} ${queuedMismatch.reason}`);
-        assert.equal(queuedMismatch.reason, 'commit_sum', `${nanos} ${queuedMismatch.reason}`);
+        assert.equal(queuedMismatch.reason, 'vault_unavailable', `${nanos} ${queuedMismatch.reason}`);
         mismatched = mismatch;
       }
       const nowMis = T0 + (readyAt - 1) * TARGET_BLOCK_INTERVAL_MS;

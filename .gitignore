@@ -37,11 +37,34 @@ wallet/**/Flutter/ephemeral/
 wallet/**/ephemeral/
 crypto/native/admit/target/
 crypto/native/vendor/monero-oxide-77788c3/target/
+crypto/native/prove_ffi_harness
+wallet/android/app/src/main/jniLibs/**/*.so
+wallet/android/app/src/main/jniLibs/**/*.sha256
+# Licensed webfonts (Nevia, Urema) are copied in at deploy time by
+# deploy/install_fonts.sh and must never be committed.
+# Great Vibes (fonts/greatvibes/, SIL OFL) is committed and is the exception.
+*.otf
+*.ttf
+*.woff
+*.woff2
+*.eot
+**/brand/fonts/
+!/fonts/greatvibes/
+!/fonts/greatvibes/**
+site/fonts/greatvibes/
+site/boot/fonts/greatvibes/
+explorer/fonts/greatvibes/
+mempool/fonts/greatvibes/
+pool/public/fonts/greatvibes/
+team/fonts/greatvibes/
 # Distro pack tarballs, checksums, and smoke logs. Do not commit.
 scripts/packaging/out/
-# Operator admin vhost lives on the box only (SHEAR_ADMIN_HOST).
+# Private operator vhost. Lives on the box only.
 deploy/nginx-kyrusfables.shear.digital.conf
 deploy/nginx-*-secrets.conf
 # Operator spend seed is 0600 on the pool datadir / Desktop vault — never git.
 pool-spend.seed
 **/pool-spend.seed
+
+# FS-1 phone bench output (crypto/native/phone-bench.*)
+crypto/native/phone-bench-*.jsonl

@@ -2,7 +2,7 @@
 
 Privacy-class book magic is `shear-testnet-v3`. Frozen `shear-testnet-v2` is a different book. Reset the datadir; do not load a v2 chain. Mainnet `shear-v1` is a later, separate genesis. Do not invent a genesis datetime.
 
-ShearHash-v3 is the same RandomX light-mode parameterisation as v2 (128 MiB cache, on-the-fly dataset) with a new Argon salt and key personalisation so v2 digests cannot pretender. Coin numbers are unchanged: 90 s ASERT, 1 SHE pot PROP, hash unit 1, levy cap 0.001 SHE 50/50, no premine, no `setTip`.
+ShearHash-v3 is the same RandomX light-mode parameterisation as v2 (128 MiB cache, on-the-fly dataset) with a new Argon salt and key personalisation so v2 digests cannot pretender. Coin numbers are unchanged: 90 s ASERT, 1 SHE pot PROP, hash unit 1, levy cap 0.001 SHE paid in full to that block's miners, no premine, no `setTip`.
 
 Wire algorithm name: **ShearHash**. Personalisation: **ShearHash-v3**. Official miner: **ShearK-Miner**. ShearK implements this hash. The hash is not recut to match a miner.
 

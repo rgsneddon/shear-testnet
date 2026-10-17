@@ -8,6 +8,7 @@ import {
   nextBits,
   medianIntervalMs,
   MAGIC_TESTNET,
+  MAGIC_TESTNET_V11,
   SPENDABLE_CONFIRMATIONS,
   consensusFingerprint,
 } from '../../crypto/asert.js';
@@ -101,9 +102,11 @@ describe('sealed reserve-lock prefix', () => {
     const confs = blocks[blocks.length - 1].height - lockHeight + 1;
     assert.equal(confs, 6);
     assert.ok(confs < SPENDABLE_CONFIRMATIONS);
-    assert.match(consensusFingerprint(), new RegExp(`HISTORICAL_TIP=${HISTORICAL_TIP}`));
-    assert.match(consensusFingerprint(), /NETWORK=shear-testnet-v11/);
-    assert.match(consensusFingerprint(), /ASERT_STEP=median11/);
+    assert.doesNotMatch(consensusFingerprint(), /HISTORICAL_TIP=/);
+    assert.match(consensusFingerprint(), /NETWORK=shear-testnet-v12/);
+    assert.match(consensusFingerprint(), /RESERVE_NOTE=withdraw-levy-pull/);
+    assert.match(consensusFingerprint(), /ASERT_STEP=aserti3-2d/);
+    assert.match(consensusFingerprint(MAGIC_TESTNET_V11), new RegExp(`HISTORICAL_TIP=${HISTORICAL_TIP}`));
     console.log(`LOCK_PRESENT height=${lockHeight} nanos=${locked} confs=${confs} need=${SPENDABLE_CONFIRMATIONS} tip=${blocks[blocks.length - 1].height}`);
   });
 });

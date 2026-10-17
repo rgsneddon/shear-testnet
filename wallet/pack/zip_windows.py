@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import zipfile
 
 _PACK_DIR = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(_PACK_DIR, "..", "..", "node", "pack")))
+sys.path.insert(0, os.path.abspath(os.path.join(_PACK_DIR, "..", "..", "scripts", "licenses")))
 from bundle_modules import assert_zip_has_modules, write_missing_required  # noqa: E402
+import release_notices  # noqa: E402
 
 _PACK = os.path.abspath(os.path.dirname(__file__))
 _WALLET_ROOT = os.path.abspath(os.path.join(_PACK, ".."))
@@ -126,6 +127,8 @@ def main() -> int:
                     for fn in fns:
                         if fn.endswith((".obj", ".o", ".pdb")):
                             continue
+                        if fn.lower() in release_notices.MINGW_RUNTIME_DLLS:
+                            continue
                         p = os.path.join(dp, fn)
                         rel = os.path.relpath(p, node_root).replace("\\", "/")
                         z.write(p, rel)
@@ -137,7 +140,6 @@ def main() -> int:
                 "pool/src/withdraw_state.js",
                 "pool/src/pool.js",
                 "pool/src/main.js",
-                "pool/src/admin.js",
                 "pool/src/posture.js",
                 "pool/src/pull_book.js",
                 "pool/src/auto_payout.js",
@@ -154,10 +156,11 @@ def main() -> int:
                 z.write(p, extra)
             nm = os.path.join(node_root, "node_modules")
             if not os.path.isdir(nm):
-                sys.exit("Continuum sidecar missing node_modules — run npm ci before packing")
+                sys.exit("Continuum sidecar missing node_modules — run npm ci --ignore-scripts before packing")
             bundled = 0
+            keep = release_notices.npm_dir_filter(node_root)
             for dp, dns, fns in os.walk(nm):
-                dns[:] = [d for d in dns if d not in {".git"}]
+                dns[:] = [d for d in dns if d not in {".git"} and keep(os.path.relpath(os.path.join(dp, d), node_root))]
                 for fn in fns:
                     p = os.path.join(dp, fn)
                     rel = os.path.relpath(p, node_root).replace("\\", "/")
@@ -167,13 +170,14 @@ def main() -> int:
             node_exe = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "nodejs", "node.exe")
             if os.path.isfile(node_exe):
                 z.write(node_exe, "runtime/node.exe")
-            gcc = shutil.which("gcc")
-            mingw = os.path.dirname(os.path.abspath(gcc)) if gcc else ""
-            for dll in ("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"):
-                src = os.path.join(mingw, dll)
-                if not os.path.isfile(src):
-                    sys.exit(f"Continuum sidecar needs MinGW {dll} beside gcc")
-                z.write(src, f"runtime/{dll}")
+                for src, arc in release_notices.runtime_license_members([node_exe], "runtime/licenses", node_root):
+                    z.write(src, arc)
+                z.writestr(release_notices.RUNTIME_VERSIONS, release_notices.runtime_versions_text([node_exe]))
+            release_notices.write_notices(z, node_root)
+            native = os.path.join(node_root, "crypto", "native")
+            release_notices.assert_no_mingw_runtime(
+                [os.path.join(native, n) for n in ("shearhash.node", "shearadmit.node") if os.path.isfile(os.path.join(native, n))]
+            )
             write_missing_required(z, node_root)
             print("bundled Shear Sentinel v18 beside Continuum")
 
@@ -216,9 +220,14 @@ def main() -> int:
     ):
         if req not in names:
             sys.exit(f"Continuum zip must include {req}")
-    for dll in ("runtime/libgcc_s_seh-1.dll", "runtime/libstdc++-6.dll", "runtime/libwinpthread-1.dll"):
-        if dll not in names:
-            sys.exit(f"Continuum zip must include {dll}")
+    if release_notices.RUNTIME_VERSIONS not in names:
+        sys.exit(f"Continuum zip must record the bundled runtime versions in {release_notices.RUNTIME_VERSIONS}")
+    shipped_runtime = [n for n in names if n.rsplit("/", 1)[-1].lower() in release_notices.MINGW_RUNTIME_DLLS]
+    if shipped_runtime:
+        sys.exit(f"Continuum zip must not ship the MinGW runtime: {', '.join(shipped_runtime)}")
+    if any(n.startswith("node_modules/solc/") for n in names):
+        sys.exit("wallet zip must not ship the development-only solc compiler")
+    release_notices.assert_has_notices(names, node_root)
     assert_zip_has_modules(names, node_root)
     banned = []
     for n in names:

@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v11` (privacy-class). Frozen `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. v8 and v9 do not soft-merge. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant. invent-must-not-return is unchanged by the v10 cut.
+Network: `shear-testnet-v12` (privacy-class). Previous book `shear-testnet-v11`. Frozen `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. v8 and v9 do not soft-merge. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant. invent-must-not-return is unchanged by the v10 cut.
 
 ## Numbers
 
@@ -25,13 +25,13 @@ Network: `shear-testnet-v11` (privacy-class). Frozen `shear-testnet-v9`, `shear-
 | `MAX_SHARES_PER_BLOCK` | `65536` (v11). Direct from the closed v10 cap of `8192`. The 32768 rung is cancelled. Do not soft-merge 65536 onto v10. |
 | `MAX_HASH_UNITS_PER_BLOCK` | `2^28` (`268435456`). Not `65536 * 2^SHARE_FLOOR_BITS`. `HASH_BONUS_NANOS` stays `1`. |
 | Interest | 400-day APR: `floor(staked * bps / 10000)`. Not × 400/365. |
-| Oracle | unweighted mean of the frozen 14-bank basket. Default **264** bps until first sealed observe. |
+| Oracle | Fixed at genesis **281** bps until `ORACLE_ACTIVATION`. After that height, the 3b miner median: one week by duration (mainnet 6720 blocks at 90 s; testnet the same week-of-epoch fraction, 67 blocks), selected by height, per-bank 2/3 of the window, 10 of 14, plain average, bounds −1% to +100%, floor 0. |
 | Late 99 days | idle, can vote, no interest |
 | Dest HRP | `ssa` on chain only |
 | Extra mint | `shear-reserve-v1` withdraw only, amount-bound |
 | Pool fee | 100 bps of the 1 SHE pot; rest PROP to hasher dests |
 | MTP | last 11 timestamps + 2 hours future |
-| Levy cap | 0.001 SHE, 50/50 finder/Reserve |
+| Levy cap | 0.001 SHE, 100% to that block's miners (work split when the round has shares; one public finder-fee note when it does not). No vault fee share. |
 | Premine | none |
 | `setTip` | forbidden |
 | `HASH_TX_LIVE` | `1` (forbidden to flip to 0) |
@@ -39,7 +39,7 @@ Network: `shear-testnet-v11` (privacy-class). Frozen `shear-testnet-v9`, `shear-
 Fingerprint also pins:
 
 ```
-NETWORK=shear-testnet-v11
+NETWORK=shear-testnet-v12
 FORK=work-then-lowhash
 HASH_FN=ShearHash-v3
 HASH_TX_LIVE=1
@@ -60,12 +60,15 @@ VIEW_TAG=1
 KDF=argon2id-shewall
 RESERVE=shear-reserve-v1
 RESERVE_EVM=1
-RESERVE_INTEREST=400d-bps-floor
+RESERVE_REWARD=epoch-bps-floor
+RESERVE_REWARD=400d-bps-floor
 ORACLE=basket-mean-14
+RESERVE_RATE=epoch-fixed:quorum=10:genesis=281:floor=0:trim=0
+ORACLE_ACTIVATION=fixed
 VORTEX=vort1-pin
 VORTICE_NO_MINT=1
 LEVY_CAP=0.001-SHE
-LEVY_SPLIT=50-50-finder-reserve
+LEVY_SPLIT=100-finder-work,empty=public-finder-note
 ADMIT=ADMITv3
 BITS=q16.16
 ASERT_TAU_MS=1440000
@@ -121,7 +124,7 @@ Miner login is `ssa1.worker`. `she1` login is RAM-only and must resolve to an ow
 
 ## Reserve
 
-`vout.nanos = principal + floor(staked * committedBps / 10000)`. Idle adds 0 interest. Epoch ended. Bonus enacted first. `committedBps` is the last `observeRate` sealed in a prior block. `verifyBlock` does not read `reserve/latest.json`. Default 264 until first sealed observe. Wrong nanos = `mint_amount`. `wrapMintForbidden` stays. Third-party vortice cannot mint. `gateVorticeRegister` `ok: false` fails the block.
+`vout.nanos = principal + floor(active * epochBps / 10000)`. Idle adds 0 reward. Epoch ended. Bonus enacted first. `epochBps` stays at the genesis 281 bps until the oracle activation height. After that, the boundary commits the plain average of the 3b per-bank medians. A vote does not set it. A coinbase observe is `observe_unattested`. `dataDir/oracle-snapshot.json` does not set it. `verifyBlock` does not read `reserve/latest.json`. There is no per-epoch step and no aggregate cap. A source outside −1%..+100% is `bad_rate`. Fewer than 10 banks with a 2/3 supermajority keeps the previous rate. The rate is floored at 0% so a lock never reduces principal. Wrong nanos = `mint_amount`. `wrapMintForbidden` stays. Third-party vortice cannot mint. `gateVorticeRegister` `ok: false` fails the block. The reward is coinbase-minted. Transaction fees are not a vault balance and are not a reward source. Principal stays in the user's time-locked note.
 
 Vector: staked = 1 SHE, bps = 425, interest = `4_250_000_000`.
 

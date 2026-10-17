@@ -4,9 +4,11 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, spendDestOf } from '../../crypto/address.js';
+import { admitBaseFromAddress, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
+import { admitBaseScalar } from '../../crypto/admit.js';
 import { NANOS_PER_SHE, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { bindWeightFee, levyNeed, levyNanos } from '../../crypto/levy.js';
+import { noteU64, openNoteAmount, sealHiddenNote, sealNote } from '../../crypto/note.js';
 import { emptyVault, portalIdFromDest, voteTx, vortexSums, withdrawTx } from '../../crypto/reserve_vault.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { vaultDest } from '../../crypto/flow_sheet.js';
@@ -50,48 +52,63 @@ function queue() {
 describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
   it('keeps any posted nanos exact above 2^53 and rejects a rounded JS number', () => {
     const alice = newIdentity();
-    const from = spendDestOf(alice.spendPub);
-    const to = spendDestOf(newIdentity().spendPub);
+    const bob = newIdentity();
+    const dest20 = hash20FromAddress(spendDestOf(bob.spendPub));
+    // AL-3 / AL-7. amtCt is encrypted to a dest that carries an admit base.
+    // The posted body is the sealed tx only: no from, to, amount, or nanos.
+    const to = encodeDest(dest20, bob.admitBase);
+    assert.ok(admitBaseFromAddress(to));
+    const x = admitBaseScalar(bob.spendSeed);
     const samples = [1n, (1n << 40n) + 7n, (1n << 53n) - 1n, (1n << 53n) + 1n, (1n << 53n) + 3n, (1n << 60n) + 17n];
     for (const n of samples) {
+      const pay = sealHiddenNote(n, { dest20, kind: 'send', admitBase: bob.admitBase });
+      delete pay.r;
+      const dummy = sealNote(0, { dest20: Buffer.alloc(20, 2), kind: 'dummy' });
+      delete dummy.r;
       const draft = {
         kind: 'send',
-        from,
-        to,
-        nanos: n.toString(),
-        vin: [{ address: from }],
-        vout: [
-          { address: to, nanos: n.toString(), kind: 'send', commit: Buffer.alloc(32, 1) },
-          { address: to, nanos: '0', kind: 'dummy', commit: Buffer.alloc(32, 2) },
-        ],
-      };
-      signSpendTx(draft, alice.privateKey);
-      const { posted, queueSend } = queue();
-      const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
-        from,
-        to,
-        amount: sheString(n),
-        nanos: n.toString(),
-        sig: draft.sig,
-        spendPub: draft.spendPub,
-        vin: draft.vin,
-        vout: draft.vout,
+        fee: levyNanos(0),
+        maxLevy: levyNanos(0),
+        vin: [{ dest20: hash20FromAddress(spendDestOf(alice.spendPub)) }],
+        vout: [pay, dummy],
         admit_proof: {
           admit_proof: true,
           spendTag: Buffer.alloc(32, 4),
           c0: Buffer.alloc(32, 5),
           r: [Buffer.alloc(32, 6)],
         },
+      };
+      signSpendTx(draft, alice.privateKey);
+      bindWeightFee(draft);
+      const { posted, queueSend } = queue();
+      const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
+        fee: draft.fee,
+        sig: draft.sig,
+        spendPub: draft.spendPub,
+        vin: draft.vin,
+        vout: draft.vout,
+        admit_proof: draft.admit_proof,
       }, { store: store(), miners: new Map(), queueSend });
       assert.equal(ok.status, 200, `${n} ${ok.json && ok.json.reason}`);
-      assert.equal(String(posted[0].nanos), n.toString());
+      assert.equal(posted[0].nanos, undefined);
+      assert.equal(posted[0].amount, undefined);
+      assert.equal(posted[0].from, undefined);
+      assert.equal(posted[0].to, undefined);
+      const out = posted[0].vout[0];
+      assert.ok(out.amtCt && out.rEph && out.rCt);
+      assert.equal(out.nanos, undefined);
+      assert.equal(out.amount, undefined);
+      const opened = openNoteAmount(out, x);
+      assert.equal(opened && opened.v, n);
       if (n > (1n << 53n)) {
-        assert.notEqual(String(posted[0].nanos), String(Number(n.toString())));
-        const { posted: rounded, queueSend: queueRounded } = queue();
+        const rounded = Number(n.toString());
+        assert.equal(noteU64(rounded), null);
+        assert.notEqual(opened.v, BigInt(Math.trunc(rounded)));
+        assert.throws(() => sealHiddenNote(rounded, { dest20, kind: 'send', admitBase: bob.admitBase }));
+        const { posted: lostPosted, queueSend: queueRounded } = queue();
         const lost = handleWalletApi(url('/api/wallet/send'), 'POST', {
-          from,
-          to,
-          amount: Number(n.toString()),
+          amount: rounded,
+          fee: draft.fee,
           sig: draft.sig,
           spendPub: draft.spendPub,
           vin: draft.vin,
@@ -99,8 +116,9 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
           admit_proof: draft.admit_proof,
         }, { store: store(), miners: new Map(), queueSend: queueRounded });
         assert.equal(lost.status, 400, `number ${n} must not be accepted`);
-        assert.equal(lost.json.reason, 'bad_send');
-        assert.equal(rounded.length, 0);
+        assert.equal(lost.json.reason, 'send_hint');
+        assert.equal(lost.json.field, 'amount');
+        assert.equal(lostPosted.length, 0);
       }
     }
   });
