@@ -9325,7 +9325,8 @@ Future<String> continuumTipReport({List<String>? seeds, HttpClient? http}) async
 /// Body for POST /api/wallet/send. A flow send (kind send) posts the sealed tx only:
 /// no from, to, amount, nanos, change, open, or painted owed (AL-3). Its recipient must
 /// carry an admit base, or there is no key to encrypt amtCt to (AL-7). Lock, vote, and
-/// withdraw keep their public-amount body.
+/// withdraw keep their public-amount body. Locked leaves and vote-plan.json stay on
+/// this device: this map has no lockedLeaves and no planDir.
 Map<String, dynamic> walletSendBody({
   required String from,
   required String to,

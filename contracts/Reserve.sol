@@ -198,6 +198,11 @@ contract Reserve {
     uint256 public enactedAtEpoch;
     /// Leaf commits this withdraw retired. Cleared before the call returns.
     bytes32[] private retiredScratch;
+    /// Retire DLEQs already accepted in this Shear block. Reset when the time changes.
+    uint256 private retireDleqsUsed;
+    uint256 private retireDleqsStamp;
+    bool private retireBindSet;
+    bytes32 private retireBindScratch;
 
     modifier onlyShear() {
         _assertShear();
@@ -805,7 +810,8 @@ contract Reserve {
         uint256 nanos,
         bytes calldata auth,
         bytes32 trancheSet,
-        uint256 chain
+        uint256 chain,
+        bytes32 txBind
     ) internal view returns (bool) {
         if (auth.length < 96 || nanos > 9007199254740991) return false;
         return _ed25519(
@@ -819,6 +825,7 @@ contract Reserve {
                 _u64le(block.chainid),
                 _u64le(chain),
                 trancheSet,
+                txBind,
                 _u32le(auth.length - 96),
                 auth[96:]
             )
@@ -1200,7 +1207,7 @@ contract Reserve {
     }
 
     function _nullOff(bytes calldata proof) internal pure returns (uint256) {
-        if (proof.length < 5 || proof[0] != 0xaa) return 0;
+        if (proof.length < 5 || proof[0] != 0xab) return 0;
         uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
         return 5 + fs1Len + 389;
     }
@@ -1223,7 +1230,7 @@ contract Reserve {
         bytes32 root = epochStartRootOf[epoch];
         if (root == bytes32(0)) return 2;
         bytes1 cb = choice < 0 ? bytes1(0xff) : bytes1(uint8(int8(choice)));
-        bytes memory book = magic == SHEAR_MAINNET ? bytes("shear-v1") : bytes("shear-testnet-v12");
+        bytes memory book = _magicBook();
         (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(
             bytes("shear-vote-v2"),
             root,
@@ -1239,9 +1246,13 @@ contract Reserve {
         return uint256(bytes32(out));
     }
 
-    /// Header: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || magic.
+    /// The utf8 book the proof was built under. Mainnet is not the testnet string.
+    function _magicBook() internal view returns (bytes memory) {
+        return magic == SHEAR_MAINNET ? bytes("shear-v1") : bytes("shear-testnet-v12");
+    }
+
     function _vaultReward(bytes calldata proof) internal pure returns (uint256) {
-        if (proof.length < 5 || proof[0] != 0xaa) return 0;
+        if (proof.length < 5 || proof[0] != 0xab) return 0;
         uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
         uint256 off = 5 + fs1Len + 321 + 4 + 8 + 8;
         if (off + 8 > proof.length) return 0;
@@ -1252,18 +1263,22 @@ contract Reserve {
         return reward;
     }
 
+    /// Header: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || u32 magicLen || magic.
     function _vaultHead(bytes32 root, bytes32 nullifier, uint256 epoch, bytes calldata proof) internal view returns (bytes memory) {
         uint256 span = _epochBlocks();
         uint256 bps = _rateFor(epoch / PERIODS_PER_EPOCH);
         uint256 reward = _vaultReward(proof);
-        return abi.encodePacked(root, nullifier, _u64le(epoch), _u32le(bps), _u64le(span), _u64le(reward), bytes("shear-testnet-v12"));
+        bytes memory book = _magicBook();
+        return abi.encodePacked(
+            root, nullifier, _u64le(epoch), _u32le(bps), _u64le(span), _u64le(reward), _u32le(book.length), book
+        );
     }
 
     /// 1 accepts. 2 is a bad reward. 0 is not this proof. A missing root is 2,
     /// so the claim can be retried after the root is committed.
     /// Membership is the full lock set. No remainder index selects a leaf.
     function _vaultCode(bytes32 nullifier, uint256 epoch, bytes calldata proof, bytes calldata output) internal view returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xaa) return 0;
+        if (proof.length < 2 || proof[0] != 0xab) return 0;
         if (output.length < 96) return 2;
         if (_vaultReward(proof) == 0) return 2;
         bytes32 root = epochStartRootOf[epoch];
@@ -1292,7 +1307,7 @@ contract Reserve {
         bytes calldata proof,
         bytes calldata auth
     ) external onlyShear returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xaa) revert ClaimUnavailable();
+        if (proof.length < 2 || proof[0] != 0xab) revert ClaimUnavailable();
         // rootIndex is the period. A claim older than the two-epoch window is closed.
         uint256 claimChain = rootIndex / 16;
         if (currentEpoch > claimChain + 2) revert ClaimUnavailable();
@@ -1419,7 +1434,7 @@ contract Reserve {
         _settle(p, nowTs);
         // Hash the matured set before the release loop drops those tranches.
         bytes32 trancheSet = _trancheSet(p, chain);
-        uint256 hiddenRelease = _retireLeaves(p, chain, retireBlob);
+        uint256 hiddenRelease = _retireLeaves(p, chain, nowTs, retireBlob);
         // No proof bytes on this call. A matured hidden leaf stays, and the
         // withdraw does not drop it. An empty blob cannot retire, so it reverts.
         if (retireBlob.length == 0 && _maturedHiddenExists(p, chain)) revert Unsigned();
@@ -1461,7 +1476,7 @@ contract Reserve {
         reward = 0;
         uint256 signed = release + hiddenRelease;
         if (auth.length < 96 || _ownerCommit(_authPub(auth)) != ownerOf[id]) revert Unsigned();
-        if (!_withdrawAuthOk(portalSha[id], signed, auth, trancheSet, chain)) revert Unsigned();
+        if (!_withdrawAuthOk(portalSha[id], signed, auth, trancheSet, chain, retireBindScratch)) revert Unsigned();
         if (release > 0) {
             if (release > active) {
                 uint256 rest = release - active;
@@ -1541,16 +1556,68 @@ contract Reserve {
         return false;
     }
 
+    /// Period index of chain time. Period 0 is the first slice of epoch 0.
+    function _chainPeriod(uint256 nowTs) internal view returns (uint256) {
+        uint256 epoch = _chainEpoch(nowTs);
+        uint256 g = clockGenesis;
+        uint256 span = epochLengthMs();
+        if (g == 0 || span == 0 || nowTs <= g) return epoch * PERIODS_PER_EPOCH;
+        uint256 into = nowTs - (g + epoch * span);
+        uint256 periodMs = span / PERIODS_PER_EPOCH;
+        uint256 sub = 0;
+        if (periodMs != 0 && into != 0) sub = into / periodMs;
+        if (sub >= PERIODS_PER_EPOCH) sub = PERIODS_PER_EPOCH - 1;
+        return epoch * PERIODS_PER_EPOCH + sub;
+    }
+
+    function _readU64(bytes memory b, uint256 off) internal pure returns (uint256 v) {
+        for (uint256 i = 0; i < 8; i++) {
+            v |= uint256(uint8(b[off + i])) << (8 * i);
+        }
+    }
+
+    /// The three rows are the withdraw period through the next two, and the
+    /// trailing tx bind is the one the owner signed. The block holds 64 DLEQs.
+    function _retireWindowOk(bytes memory proof, uint256 period) internal pure returns (bool) {
+        uint256 n = _retireRows(proof);
+        if (n != 3) return false;
+        uint256 leafAt = 12 + (n * RETIRE_ROW);
+        if (proof.length != leafAt + 64 + 32) return false;
+        bool seen0;
+        bool seen1;
+        bool seen2;
+        for (uint256 i = 0; i < n; i++) {
+            uint256 at = _readU64(proof, 12 + (i * RETIRE_ROW));
+            if (at == period) seen0 = true;
+            else if (at == period + 1) seen1 = true;
+            else if (at == period + 2) seen2 = true;
+            else return false;
+        }
+        return seen0 && seen1 && seen2;
+    }
+
+    function _takeRetireDleqs(uint256 nowTs, uint256 rows) internal {
+        if (retireDleqsStamp != nowTs) {
+            retireDleqsStamp = nowTs;
+            retireDleqsUsed = 0;
+        }
+        retireDleqsUsed += rows;
+        if (retireDleqsUsed > 64) revert Unsigned();
+    }
+
     /// One π per distinct leaf commit. Each retire proof is verified once.
     /// The indexed nullifiers have to be the ones inside that proof.
-    function _retireLeaves(Portal storage p, uint256 chain, bytes memory blob) internal returns (uint256) {
+    /// Rows cover the withdraw period through the next two and share one tx bind.
+    function _retireLeaves(Portal storage p, uint256 chain, uint256 nowTs, bytes memory blob) internal returns (uint256) {
         _clearRetired();
+        retireBindSet = false;
+        retireBindScratch = bytes32(0);
         if (blob.length == 0) return 0;
         if (blob.length < 4) revert Unsigned();
         uint256 leaves = _readU32(blob, 0);
         if (leaves == 0 || leaves > 16) revert Unsigned();
         uint256 off = 4;
-        uint256 dleqs = 0;
+        uint256 period = _chainPeriod(nowTs);
         for (uint256 i = 0; i < leaves; i++) {
             if (off + 4 > blob.length) revert Unsigned();
             uint256 nNull = _readU32(blob, off);
@@ -1569,12 +1636,19 @@ contract Reserve {
             bytes memory proof = _copyAt(blob, off, proofLen);
             off += proofLen;
             uint256 rows = _retireRows(proof);
-            if (rows < 1 || rows > 3) revert Unsigned();
-            dleqs += rows;
-            if (dleqs > 64) revert Unsigned();
+            if (!_retireWindowOk(proof, period)) revert Unsigned();
+            _takeRetireDleqs(nowTs, rows);
+            bytes32 bind = _wordMem(proof, proof.length - 32);
+            if (!retireBindSet) {
+                retireBindScratch = bind;
+                retireBindSet = true;
+            } else if (bind != retireBindScratch) {
+                revert Unsigned();
+            }
             if (!_retireIdsMatch(proof, ids)) revert Unsigned();
+            bytes memory book = _magicBook();
             (bool ok, bytes memory out) = VAULT_ZK.staticcall(
-                abi.encodePacked(ids[0], bytes("shear-retire-v1"), proof)
+                abi.encodePacked(ids[0], bytes("shear-retire-v1"), _u32le(book.length), book, proof)
             );
             if (!ok || out.length < 32 || uint256(bytes32(out)) != 1) revert Unsigned();
             bytes32 commit = _retireLeafCommit(proof);

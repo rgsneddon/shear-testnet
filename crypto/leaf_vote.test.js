@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -39,6 +39,7 @@ import {
   encodeTallyBallot,
 } from './reserve_evm.js';
 import { encodeDeposit } from './owned_portal.js';
+import { handleWalletApi } from '../pool/src/wallet_api.js';
 import {
   MAX_BLOCK_LEAF_VOTES,
   RATE_CEIL_BPS,
@@ -49,6 +50,7 @@ import {
   castVotePlan,
   loadVotePlan,
   saveVotePlan,
+  votePlanPath,
   VOTE_EDGE_BLOCKS,
   VOTE_MIN_SEPARATION,
   commitCensus,
@@ -160,13 +162,15 @@ describe('leaf ballot window, step, and wording', () => {
     assert.equal(ballotDirection(3, 2, 0, 5), 0);
     const sol = readFileSync(new URL('../contracts/Reserve.sol', import.meta.url), 'utf8');
     assert.equal(/function\s+\w*veto/i.test(sol), false);
-    assert.match(consensusFingerprint(), /VOTE_BALLOT=leaf-v1/);
+    assert.match(consensusFingerprint(), /VOTE_BALLOT=leaf-v2/);
     assert.match(consensusFingerprint(), /VOTE_VETO=none/);
     assert.match(consensusFingerprint(), new RegExp(`VOTE_CAP=${MAX_BLOCK_LEAF_VOTES}`));
   });
 
   it('plans one send per locked leaf and does not export the vote key', () => {
-    const plan = castVotePlan(4);
+    assert.equal(castVotePlan(4), null);
+    const fees = ['11', '22', '33', '44'].map((b) => b.repeat(32));
+    const plan = castVotePlan(4, { feeInputs: fees });
     assert.equal(plan.label, 'Cast your 4 votes');
     assert.equal(plan.txs.length, 4);
     const heights = plan.txs.map((row) => row.height);
@@ -183,6 +187,14 @@ describe('leaf ballot window, step, and wording', () => {
     saveVotePlan(dir, plan);
     const loaded = loadVotePlan(dir);
     assert.deepEqual(loaded.txs, plan.txs);
+    assert.equal(statSync(votePlanPath(dir)).mode & 0o777, 0o600);
+    const posted = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', {
+      kind: 'send',
+      lockedLeaves: [{ commit: 'ab'.repeat(32) }],
+      planDir: dir,
+    }, { queueSend: () => ({ ok: true }) });
+    assert.equal(posted.status, 400);
+    assert.equal(posted.json.reason, 'vote_plan_local');
     assert.equal(vote({}).reason, 'vote_retired');
     const proved = proveVote(locksOf(1, 4), 0, 1, { choice: 1, seq: 1 });
     assert.ok(proved);

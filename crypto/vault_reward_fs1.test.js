@@ -1,15 +1,19 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, VAULT_FS1_ACTIVATION_HEIGHT } from './asert.js';
 import { txDigestV3 } from './admit_v3.js';
 import { encodeDest, hash20FromAddress, newIdentity, spendDestOf } from './address.js';
 import { interestNanos } from './reserve_oracle.js';
-import { vaultPeriodBlocks, vaultPeriodReward } from './vault_accrual.js';
+import { MAGIC_MAINNET, epochMs } from './pot_sched.js';
+import { accrualBetween, arrivalStubNanos, vaultEpochBlocks, vaultPeriodBlocks, vaultPeriodReward } from './vault_accrual.js';
 import {
   appendVaultLockNote,
   applyReserveBlock,
   chainPeriodIndex,
+  consensusUnlockPeriod,
   cloneVault,
   attachLockEquality,
   deposit,
@@ -32,6 +36,9 @@ import {
   withdrawTx,
   rollTx,
   lockTx,
+  MAX_BLOCK_RETIRE_DLEQS,
+  retireCapHit,
+  txRetireDleqs,
 } from './reserve_vault.js';
 import {
   bootReserveEvm,
@@ -61,9 +68,13 @@ import {
   vaultLockOwnerScalar,
   vaultRewardNanos,
   verifyVaultReward,
+  subtractUnlock,
+  VAULT_PROOF_VER,
+  VAULT_UNLOCK_DST,
   VAULT_UNLOCK_OPEN,
 } from './vault_reward_fs1.js';
-import { proveRange } from './note.js';
+import { admitPub } from './admit.js';
+import { G, pointBytes, pointFrom, proveRange, proveValue, scalarFrom, sealHiddenNote, verifySealedNote } from './note.js';
 import { admitMempool, emptyMempool } from './mempool.js';
 import { blockBudget, fs1VerifyWeight, txVerifyWeight, W_OUT, W_TX, W_VAULT_EXTRA } from './block_budget.js';
 import { consensusFingerprint, MAX_BLOCK_VAULT_CLAIMS } from './asert.js';
@@ -82,6 +93,10 @@ function who() {
     pub: Buffer.from(id.spendPub).toString('hex'),
     key: id.privateKey,
   };
+}
+
+function bareCommit(note) {
+  return pointBytes(subtractUnlock(pointFrom(note.commit), note.unlock));
 }
 
 function payee(byte) {
@@ -136,8 +151,8 @@ function provePair(dest20, epoch = 0) {
   });
   assert.ok(second, 'second proof');
   assert.equal(second.rootHex, first.rootHex);
-  assert.equal(first.blob[0], 0xaa);
-  assert.equal(second.blob[0], 0xaa);
+  assert.equal(first.blob[0], VAULT_PROOF_VER);
+  assert.equal(second.blob[0], VAULT_PROOF_VER);
   const amountBytes = Buffer.alloc(8);
   amountBytes.writeBigUInt64LE(BigInt(PI_SHE_NANOS));
   assert.equal(Buffer.from(first.blob).includes(amountBytes), false);
@@ -199,7 +214,7 @@ function word(ret) {
 }
 
 describe('vault-lock reward proof', () => {
-  it('packs the 0xaa blob in the same order as the Dart prover', () => {
+  it('packs the claim blob in the same order as the Dart prover', () => {
     const word = (b) => Buffer.alloc(32, b);
     const fs1 = Buffer.concat([Buffer.from([0xf1]), Buffer.alloc(8, 0x11)]);
     const record = Buffer.concat([Buffer.from([0xf1]), Buffer.alloc(320, 0x22)]);
@@ -220,7 +235,7 @@ describe('vault-lock reward proof', () => {
       noteZ: word(7),
     });
     const vector = readFileSync(new URL('./vault_reward_blob.vector', import.meta.url), 'utf8').trim();
-    assert.equal(blob[0], 0xaa);
+    assert.equal(blob[0], VAULT_PROOF_VER);
     assert.equal(blob.length, 1 + 4 + fs1.length + 321 + 4 + 8 * 4 + 32 * 7);
     assert.equal(blob.readUInt32LE(1), fs1.length);
     const rewardAt = 5 + fs1.length + 321 + 4 + 8 + 8;
@@ -844,7 +859,7 @@ describe('vault-lock reward proof', () => {
     assert.match(prover, /shear-vault-null-key-v1/);
     assert.match(prover, /shear-vault-null-prf-v1/);
     assert.match(prover, /shear-vault-reward-bal-v1/);
-    assert.match(prover, /0xaa/);
+    assert.match(prover, /0xab/);
     assert.equal(prover.includes('0xa9'), false);
     assert.equal(prover.includes('0xa8'), false);
     assert.equal(prover.includes('0xa7'), false);
@@ -909,6 +924,7 @@ describe('vault-lock reward proof', () => {
       dest: owner.dest,
       nanos: PI_SHE_NANOS,
       commit: leaf.commit,
+      rangeCommit: bareCommit(leaf),
       blind,
       rangeProof: proveRange(PI_SHE_NANOS, blind),
       nowMs: T0,
@@ -1094,6 +1110,7 @@ describe('vault-lock reward proof', () => {
       dest: owner.dest,
       state: parked,
       nowMs: at,
+      txBind: retire.proof,
     });
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: evmTx.rewardSig, dest: owner.dest });
     const blob = packRetireBlob([retire.proof]);
@@ -1211,6 +1228,7 @@ describe('vault-lock reward proof', () => {
         dest: owner.dest,
         nanos: PI_SHE_NANOS,
         commit: leaf.note.commit,
+        rangeCommit: bareCommit(leaf.note),
         blind: leaf.blind,
         rangeProof: proveRange(PI_SHE_NANOS, leaf.blind),
         nowMs: T0,
@@ -1297,6 +1315,7 @@ describe('vault-lock reward proof', () => {
       dest: owner.dest,
       nanos: PI_SHE_NANOS,
       commit: leaf.commit,
+      rangeCommit: bareCommit(leaf),
       blind,
       rangeProof: proveRange(PI_SHE_NANOS, blind),
       nowMs: T0,
@@ -1387,6 +1406,7 @@ describe('vault-lock reward proof', () => {
       dest: owner.dest,
       nanos: PI_SHE_NANOS,
       commit: leaf.commit,
+      rangeCommit: bareCommit(leaf),
       blind,
       rangeProof: proveRange(PI_SHE_NANOS, blind),
       nowMs: T0,
@@ -1516,6 +1536,7 @@ describe('vault-lock reward proof', () => {
         dest: owner.dest,
         nanos: PI_SHE_NANOS,
         commit: leaf.note.commit,
+        rangeCommit: bareCommit(leaf.note),
         blind: leaf.blind,
         rangeProof: proveRange(PI_SHE_NANOS, leaf.blind),
         nowMs: T0,
@@ -1566,5 +1587,350 @@ describe('vault-lock reward proof', () => {
     assert.equal(drew.ok, true, drew.reason);
     assert.equal(decodeWithdraw(drew.returnValue).principal, PI_SHE_NANOS * 16);
     console.log(`withdrawRetire 16 leaves gas ${drew.gasUsed}`);
+  });
+
+  it('refuses a funded lock whose unlock is open or zero', () => {
+    const owner = who();
+    const fresh = () => {
+      const state = emptyVault();
+      state.genesisMs = T0;
+      state.magic = MAGIC_TESTNET;
+      return state;
+    };
+    const openLeaf = vaultLockNote(PI_SHE_NANOS, 3n, 5n);
+    const openTx = lockTx({
+      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, blind: 5n, ownerPub: owner.pub, id: 'open-unlock',
+    });
+    openTx.vaultLockNote = openLeaf.note;
+    const opened = applyReserveBlock({
+      state: fresh(),
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, openTx] },
+      nowMs: T0,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(opened.ok, false);
+    assert.equal(opened.reason, 'stake_reward');
+    const zeroLeaf = vaultLockNote(PI_SHE_NANOS, 3n, 5n, 0);
+    const zeroTx = lockTx({
+      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, blind: 5n, ownerPub: owner.pub, id: 'zero-unlock',
+    });
+    zeroTx.vaultLockNote = zeroLeaf.note;
+    const zeroed = applyReserveBlock({
+      state: fresh(),
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, zeroTx] },
+      nowMs: T0,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(zeroed.ok, false);
+    assert.equal(zeroed.reason, 'stake_reward');
+  });
+
+  it('puts a boundary lock in that period root and does not rewrite it', () => {
+    const owner = who();
+    const unlock = consensusUnlockPeriod(0);
+    const blind = 19n;
+    const leaf = vaultLockNote(PI_SHE_NANOS, 17n, blind, unlock);
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    const blocks = vaultPeriodBlocks(MAGIC_TESTNET);
+    const tx = lockTx({
+      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, blind, ownerPub: owner.pub, id: 'boundary-lock',
+    });
+    tx.vaultLockNote = leaf.note;
+    const locked = applyReserveBlock({
+      state,
+      block: { height: blocks, txs: [{ coinbase: true, vout: [] }, tx] },
+      nowMs: T0,
+      height: blocks,
+      genesisMs: T0,
+    });
+    assert.equal(locked.ok, true, locked.reason);
+    const noteHex = leaf.note.toString('hex');
+    assert.equal(state.vaultLeafUnlock[noteHex], String(unlock));
+    assert.equal(state.epochStartRoots['1'], state.vaultLockRoot);
+    const stub = arrivalStubNanos({
+      amount: PI_SHE_NANOS, lockHeight: blocks, magic: MAGIC_TESTNET, rate: GENESIS_BPS,
+    });
+    assert.equal(stub.nanos, 0n);
+    const laterLeaf = vaultLockNote(PI_SHE_NANOS, 23n, 29n, unlock);
+    const laterTx = lockTx({
+      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, blind: 29n, ownerPub: owner.pub, id: 'later-lock',
+    });
+    laterTx.vaultLockNote = laterLeaf.note;
+    const frozen = state.epochStartRoots['1'];
+    const later = applyReserveBlock({
+      state,
+      block: { height: blocks + 1, txs: [{ coinbase: true, vout: [] }, laterTx] },
+      nowMs: T0,
+      height: blocks + 1,
+      genesisMs: T0,
+    });
+    assert.equal(later.ok, true, later.reason);
+    assert.equal(state.epochStartRoots['1'], frozen);
+    assert.notEqual(state.vaultLockRoot, frozen);
+  });
+
+  it('binds the consensus unlock from a funded lock through claim and withdraw', async () => {
+    const owner = who();
+    const pay = payee(0x81);
+    const scalar = 81n;
+    const blind = 83n;
+    const unlock = consensusUnlockPeriod(0);
+    const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_MAINNET;
+    const lockHeight = 100;
+    const action = lockTx({
+      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, blind, ownerPub: owner.pub, id: 'bound-lock',
+    });
+    action.vaultLockNote = leaf.note;
+    const locked = applyReserveBlock({
+      state,
+      block: { height: lockHeight, txs: [{ coinbase: true, vout: [] }, action] },
+      nowMs: T0,
+      height: lockHeight,
+      genesisMs: T0,
+    });
+    assert.equal(locked.ok, true, locked.reason);
+    const noteHex = leaf.note.toString('hex');
+    assert.equal(state.vaultLeafUnlock[noteHex], String(unlock));
+    assert.notEqual(String(unlock), String(VAULT_UNLOCK_OPEN));
+    const periodBlocks = vaultPeriodBlocks(MAGIC_MAINNET);
+    const snapped = applyReserveBlock({
+      state,
+      block: { height: periodBlocks, txs: [{ coinbase: true, vout: [] }] },
+      nowMs: T0,
+      height: periodBlocks,
+      genesisMs: T0,
+    });
+    assert.equal(snapped.ok, true, snapped.reason);
+    assert.equal(state.epochStartRoots['1'], state.vaultLockRoot);
+    const stored = BigInt(state.vaultLeafUnlock[noteHex]);
+    const proved = proveVaultReward({
+      locks: [{ amount: PI_SHE_NANOS, scalar, blind, unlockEpoch: stored }],
+      which: 0,
+      rootEpoch: 1,
+      earnEpoch: 1,
+      bps: GENESIS_BPS,
+      remainMs: span,
+      span,
+      dest20: pay.d20,
+      magic: MAGIC_MAINNET,
+    });
+    assert.ok(proved);
+    assert.equal(proved.locks[0].unlock, stored);
+    assert.equal(proved.rootHex, state.epochStartRoots['1']);
+    const gap = stored - 1n - 1n;
+    const U = RistrettoPoint.hashToCurve(createHash('sha512').update(VAULT_UNLOCK_DST).digest());
+    const x = RistrettoPoint.Fn.create(gap);
+    assert.equal(proved.blob.includes(pointBytes(G.multiply(x))), false);
+    assert.equal(proved.blob.includes(pointBytes(U.multiply(x))), false);
+    const claim = rewardClaimTx({ to: pay.to, vault: proved, id: 'bound-claim' });
+    const fat = rewardClaimTx({ to: pay.to, vault: proved, id: 'fat-claim' });
+    const fatAmount = proved.nanos + 1;
+    const sealed = sealHiddenNote(fatAmount, {
+      dest20: pay.d20,
+      kind: 'reward-claim',
+      admitBase: admitPub(9n),
+    });
+    const fatOpen = proveValue(fatAmount, scalarFrom(sealed.r));
+    fat.vout[0] = {
+      ...sealed,
+      address: pay.to,
+      kind: 'reward-claim',
+      admitPub: claim.vout[0].admitPub,
+      valueProof: { R: fatOpen.R, z: fatOpen.z, v: fatAmount },
+    };
+    assert.equal(fat.nanos, proved.nanos);
+    assert.equal(verifySealedNote(fat.vout[0], fatAmount), true);
+    assert.equal(verifySealedNote(fat.vout[0], proved.nanos), false);
+    const overClaim = applyReserveBlock({
+      state: cloneVault(state),
+      block: { height: periodBlocks + 1, txs: [{ coinbase: true, vout: [] }, fat] },
+      nowMs: T0,
+      height: periodBlocks + 1,
+      genesisMs: T0,
+    });
+    assert.equal(overClaim.ok, false);
+    assert.equal(overClaim.reason, 'stake_reward');
+    const claimed = applyReserveBlock({
+      state,
+      block: { height: periodBlocks + 1, txs: [{ coinbase: true, vout: [] }, claim] },
+      nowMs: T0,
+      height: periodBlocks + 1,
+      genesisMs: T0,
+    });
+    assert.equal(claimed.ok, true, claimed.reason);
+    const mainEpoch = epochMs(MAGIC_MAINNET);
+    const stubRow = arrivalStubNanos({
+      amount: PI_SHE_NANOS, lockHeight, magic: MAGIC_MAINNET, rate: GENESIS_BPS,
+    });
+    assert.ok(stubRow.nanos > 0n);
+    const payNanos = PI_SHE_NANOS + Number(stubRow.nanos);
+    const portal = portalIdFromDest(owner.dest);
+    const tx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: payNanos, id: 'bound-wd' });
+    const period = chainPeriodIndex(state, T0 + mainEpoch);
+    const retire = proveLeafRetire({
+      scalar,
+      epochs: leafEpochsToBurn(state, noteHex, period),
+      leaf: leaf.note,
+      txBind: txDigestV3(tx, MAGIC_MAINNET),
+      unlockEpoch: period,
+      magic: MAGIC_MAINNET,
+    });
+    assert.ok(retire);
+    tx.principalProof = provePrincipalOpen(
+      leaf.commit, PI_SHE_NANOS, blind, tx, portal, MAGIC_MAINNET, stored,
+    );
+    tx.retireProof = retire.proof;
+    const fatWd = withdrawTx({ from: owner.dest, to: owner.dest, nanos: payNanos, id: 'fat-wd' });
+    const bigger = payNanos + 1;
+    const fatNote = sealHiddenNote(bigger, {
+      dest20: hash20FromAddress(owner.dest),
+      kind: 'withdraw',
+      admitBase: admitPub(11n),
+    });
+    const fatValue = proveValue(bigger, scalarFrom(fatNote.r));
+    fatWd.nanos = payNanos;
+    fatWd.vout = [{
+      ...fatNote,
+      address: owner.dest,
+      kind: 'withdraw',
+      valueProof: { R: fatValue.R, z: fatValue.z, v: bigger },
+    }];
+    assert.equal(verifySealedNote(fatWd.vout[0], bigger), true);
+    assert.equal(verifySealedNote(fatWd.vout[0], payNanos), false);
+    const overWd = applyReserveBlock({
+      state: cloneVault(state),
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, fatWd] },
+      nowMs: T0 + mainEpoch,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(overWd.ok, false);
+    assert.equal(overWd.reason, 'stake_reward');
+    const unsigned = applyReserveBlock({
+      state: cloneVault(state),
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, tx] },
+      nowMs: T0 + mainEpoch,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(unsigned.ok, false);
+    assert.notEqual(unsigned.reason, 'stake_reward');
+    signWithdrawReward(tx, owner.key, {
+      portalId: portal, nanos: payNanos, dest: owner.dest, state, nowMs: T0 + mainEpoch,
+    });
+    const short = withdraw({
+      state: cloneVault(state),
+      dest: owner.dest,
+      nowMs: T0 + mainEpoch,
+      principal: PI_SHE_NANOS,
+      principalProof: tx.principalProof,
+      retireProof: retire.proof,
+      tx,
+    });
+    assert.equal(short.ok, false);
+    assert.equal(short.reason, 'mint_amount');
+    const evmTx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'evm-bound' });
+    evmTx.retireProof = retire.proof;
+    signWithdrawReward(evmTx, owner.key, {
+      portalId: portal, nanos: PI_SHE_NANOS, dest: owner.dest, state, nowMs: T0 + mainEpoch,
+    });
+    const paid = applyReserveBlock({
+      state,
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, tx] },
+      nowMs: T0 + mainEpoch,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(paid.ok, true, paid.reason);
+    const width = vaultEpochBlocks(MAGIC_MAINNET);
+    const integral = accrualBetween(PI_SHE_NANOS, lockHeight, periodBlocks * 2, { 0: GENESIS_BPS }, width);
+    assert.ok(stubRow.nanos + BigInt(proved.nanos) <= integral.nanos);
+    const session = await bootReserveEvm({ network: MAGIC_MAINNET });
+    assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(owner.dest, leaf.commit, T0, rewardOwnerCommit(owner.pub), true))).ok, true);
+    assert.equal((await callReserve(session, encodeCommitEpochStartRoot(1, proved.rootHex))).ok, true);
+    const evmClaim = await callReserve(
+      session,
+      encodeClaim(proved.nullifier, proved.nanos, proved.blob, 1, packVaultOutput(proved.note)),
+    );
+    assert.equal(evmClaim.ok, true, evmClaim.reason);
+    const oneRow = proveLeafRetire({
+      scalar, epochs: [period], leaf: leaf.note, txBind: txDigestV3(tx, MAGIC_MAINNET), unlockEpoch: period,
+    });
+    const oneBlob = packRetireBlob([oneRow.proof]);
+    assert.ok(oneBlob);
+    const auth = packRewardAuth({ ownerPub: owner.pub, sig: evmTx.rewardSig, dest: owner.dest });
+    const one = await callReserve(session, encodeWithdrawRetire(owner.dest, T0 + mainEpoch, auth, oneBlob));
+    assert.equal(one.ok, false);
+    assert.equal(one.reason, 'unsigned');
+    const drew = await callReserve(
+      session,
+      encodeWithdrawRetire(owner.dest, T0 + mainEpoch, auth, packRetireBlob([retire.proof], MAGIC_MAINNET)),
+    );
+    assert.equal(drew.ok, true, drew.reason);
+    assert.equal(decodeWithdraw(drew.returnValue).principal, PI_SHE_NANOS);
+    const burned = retire.epochs.find((row) => row.epoch === period);
+    const again = await callReserve(
+      session,
+      encodeClaim(burned.nullifierHex, 1, Buffer.from([VAULT_PROOF_VER, 0]), period, packVaultOutput(proved.note)),
+    );
+    assert.equal(again.ok, false);
+    assert.equal(again.reason, 'already_minted');
+  });
+
+  it('keeps a withdraw that would pass 64 retire proofs for a later block', () => {
+    const proof = Buffer.alloc(12 + 3 * 168 + 64 + 32);
+    proof.writeUInt32LE(3, 8);
+    const made = [];
+    for (let i = 0; i < 22; i += 1) {
+      made.push({
+        id: `cap-${i}`,
+        kind: 'withdraw',
+        nanos: PI_SHE_NANOS,
+        retireProof: proof,
+        vout: [{ kind: 'withdraw', nanos: PI_SHE_NANOS }],
+      });
+    }
+    let included = 0;
+    const taken = [];
+    const kept = [];
+    for (const tx of made) {
+      const hit = retireCapHit(included, tx);
+      if (hit) {
+        assert.equal(hit.reason, 'retire_cap');
+        kept.push(tx);
+        continue;
+      }
+      included += txRetireDleqs(tx);
+      taken.push(tx);
+    }
+    assert.equal(taken.length, 21);
+    assert.equal(included, 63);
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0].id, 'cap-21');
+    assert.ok(included <= MAX_BLOCK_RETIRE_DLEQS);
+    const src = readFileSync(new URL('../node/src/store.js', import.meta.url), 'utf8');
+    assert.match(src, /retireCapHit\(retireIncluded, tx\)/);
+    assert.match(src, /retireCapHit\(retireUsed, row\)/);
+    assert.match(src, /reason: 'retire_cap'/);
+    const state = emptyVault();
+    state.genesisMs = T0;
+    state.magic = MAGIC_TESTNET;
+    const packed = applyReserveBlock({
+      state,
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, ...made] },
+      nowMs: at,
+      height: HEIGHT,
+      genesisMs: T0,
+    });
+    assert.equal(packed.ok, false);
+    assert.equal(packed.reason, 'unsigned');
   });
 });

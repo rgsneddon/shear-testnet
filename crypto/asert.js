@@ -251,10 +251,13 @@ export const VAULT_REWARD_LAW = 'fs1-lock-root-v1';
  * the per-interval remainder. N leaves earn N floors, at most one floor of
  * an N×π lock. A day earns 1/epoch_days of the epoch total, not rate_e itself.
  */
-export const VAULT_HIDDEN_LAW = 'pi-leaf-v1';
+export const VAULT_HIDDEN_LAW = 'pi-leaf-unlock-v2';
 export const VAULT_ACCRUAL_LAW = 'epoch-total-bps';
-/** Claim proof version. Peers on an older byte do not share this book. */
-export const VAULT_PROOF_VER = 0xaa;
+/**
+ * Claim proof version. The gap is a blinded commitment, and the leaf binds
+ * the consensus unlock. Peers on an older byte do not share this book.
+ */
+export const VAULT_PROOF_VER = 0xab;
 /** Leaves one lock transaction may append. A larger lock is not a leaf. */
 export const MAX_LOCK_LEAVES = 16;
 /**
@@ -262,7 +265,12 @@ export const MAX_LOCK_LEAVES = 16;
  * valid for this many epochs after e, not for close+4.
  */
 export const MAX_LIVE_VAULT_LEAVES = 4096;
-/** About two epochs. Unclaimed rewards after this are never minted. */
+/**
+ * How many periods after the withdraw period a claim may still burn.
+ * Counted in periods, the same unit as the claim nullifier, not in epochs.
+ * The burn set is the withdraw period through this many later periods.
+ * Unclaimed rewards after that window are never minted.
+ */
 export const VAULT_CLAIM_WINDOW_EPOCHS = 2;
 /**
  * One claim's verify weight: W_TX + one FS-1 input + one output + one leaf.
@@ -497,7 +505,8 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `VAULT_LIVE_CAP=${MAX_LIVE_VAULT_LEAVES}`,
     `VAULT_PERIODS=${VAULT_PERIODS_PER_EPOCH}`,
     `VAULT_CLAIM_WINDOW=${VAULT_CLAIM_WINDOW_EPOCHS}`,
-    'VOTE_BALLOT=leaf-v1',
+    'RETIRE_ROW=window-3',
+    'VOTE_BALLOT=leaf-v2',
     'VOTE_VETO=none',
     'VOTE_CAP=64',
     'DINS=pot+hash',

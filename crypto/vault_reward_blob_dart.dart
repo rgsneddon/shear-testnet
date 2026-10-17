@@ -26,7 +26,7 @@ void main() {
   );
   final vector = File('crypto/vault_reward_blob.vector').readAsStringSync().trim();
   final hex = blob.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-  if (blob.length != 595 || blob[0] != 0xaa || hex != vector) {
+  if (blob.length != 595 || blob[0] != 0xab || hex != vector) {
     stderr.writeln('dart blob diverges from JS (${blob.length} bytes)');
     exit(1);
   }

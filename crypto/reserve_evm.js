@@ -334,7 +334,7 @@ function u32le(n) {
  * of it. A leaf wider than the claim window, or more than 16 leaves, is
  * not a blob the EVM will accept.
  */
-export function packRetireBlob(proofs) {
+export function packRetireBlob(proofs, magic = MAGIC_TESTNET) {
   const list = Array.isArray(proofs) ? proofs : [];
   if (!list.length || list.length > MAX_LOCK_LEAVES) return null;
   let dleqs = 0;
@@ -345,7 +345,7 @@ export function packRetireBlob(proofs) {
     if (rows == null || rows > MAX_RETIRE_ROWS) return null;
     dleqs += rows;
     if (dleqs > 64) return null;
-    const burned = verifyLeafRetire(raw);
+    const burned = verifyLeafRetire(raw, null, magic);
     if (!burned) return null;
     const ids = [];
     const seen = new Set();
@@ -587,8 +587,8 @@ function votePrecompile(data) {
 
 /**
  * Precompile 0x102.
- * Claim: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || magic || u32 outputLen || output || proof.
- * Retire: nullifier || "shear-retire-v1" || proof. A non-empty output is required for a claim.
+ * Claim: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || u32 magicLen || magic || u32 outputLen || output || proof.
+ * Retire: nullifier || "shear-retire-v1" || u32 magicLen || magic || proof. A non-empty output is required for a claim.
  */
 function vaultZkPrecompile(opts) {
   const data = Buffer.from(opts.data || new Uint8Array());
@@ -599,33 +599,43 @@ function vaultZkPrecompile(opts) {
   try {
     if (data.length >= VOTE_V2.length && data.subarray(0, VOTE_V2.length).equals(VOTE_V2)) {
       code = votePrecompile(data);
-    } else if (data.length >= 32 + RETIRE_MAGIC.length && data.subarray(32, 32 + RETIRE_MAGIC.length).equals(RETIRE_MAGIC)) {
-      const burned = verifyLeafRetire(data.subarray(32 + RETIRE_MAGIC.length), data.subarray(0, 32));
-      code = burned ? 1 : 0;
+    } else if (data.length >= 32 + RETIRE_MAGIC.length + 4 && data.subarray(32, 32 + RETIRE_MAGIC.length).equals(RETIRE_MAGIC)) {
+      let off = 32 + RETIRE_MAGIC.length;
+      const magicLen = data.readUInt32LE(off); off += 4;
+      if (magicLen >= 1 && magicLen <= 64 && off + magicLen <= data.length) {
+        const magic = data.subarray(off, off + magicLen).toString('utf8');
+        off += magicLen;
+        const burned = verifyLeafRetire(data.subarray(off), data.subarray(0, 32), magic);
+        code = burned ? 1 : 0;
+      }
     } else {
-      const head = 109;
-      if (data.length >= head + 4) {
+      const fixed = 92;
+      if (data.length >= fixed + 8) {
         const epoch = data.readBigUInt64LE(64);
         const bps = data.readUInt32LE(72);
         const span = data.readBigUInt64LE(76);
         const reward = data.readBigUInt64LE(84);
-        const magic = data.subarray(92, 109).toString('utf8');
-        const outputLen = data.readUInt32LE(109);
-        const outputAt = 113;
-        const outputEnd = outputAt + outputLen;
-        if (outputLen > 0 && outputEnd <= data.length) {
-          const got = verifyVaultReward({
-            root: data.subarray(0, 32),
-            nullifier: data.subarray(32, 64),
-            rootEpoch: epoch,
-            terms: { bps, span, covered: span / 16n, earnEpoch: epoch, reward },
-            magic,
-            output: data.subarray(outputAt, outputEnd),
-            blob: data.subarray(outputEnd),
-          });
-          code = got.ok ? 1 : (got.code === 2 ? 2 : 0);
-        } else if (outputLen === 0) {
-          code = 2;
+        const magicLen = data.readUInt32LE(fixed);
+        const magicAt = fixed + 4;
+        if (magicLen >= 1 && magicLen <= 64 && magicAt + magicLen + 4 <= data.length) {
+          const magic = data.subarray(magicAt, magicAt + magicLen).toString('utf8');
+          const outputLen = data.readUInt32LE(magicAt + magicLen);
+          const outputAt = magicAt + magicLen + 4;
+          const outputEnd = outputAt + outputLen;
+          if (outputLen > 0 && outputEnd <= data.length) {
+            const got = verifyVaultReward({
+              root: data.subarray(0, 32),
+              nullifier: data.subarray(32, 64),
+              rootEpoch: epoch,
+              terms: { bps, span, covered: span / 16n, earnEpoch: epoch, reward },
+              magic,
+              output: data.subarray(outputAt, outputEnd),
+              blob: data.subarray(outputEnd),
+            });
+            code = got.ok ? 1 : (got.code === 2 ? 2 : 0);
+          } else if (outputLen === 0) {
+            code = 2;
+          }
         }
       }
     }

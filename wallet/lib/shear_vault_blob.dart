@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 /// Claim blob version. The JS packer writes the same byte.
-const int kVaultBlobVer = 0xaa;
+const int kVaultBlobVer = 0xab;
 
 /// Version, FS-1, record, then bps, epoch-block span, period, reward,
 /// covered blocks, and the seven 32-byte words. The unlock integer is not
