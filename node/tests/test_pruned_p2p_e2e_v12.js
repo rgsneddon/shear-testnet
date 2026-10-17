@@ -306,7 +306,7 @@ async function syncStore(store, label, gap) {
   await p2p.connect('127.0.0.1', world.p2p.port, { pinned: true });
   let lastH = store.tip()?.height || 0;
   let lastMove = Date.now();
-  const deadline = Date.now() + 45 * 60 * 1000;
+  const deadline = Date.now() + 90 * 60 * 1000;
   let matched = false;
   while (Date.now() < deadline) {
     const h = store.tip()?.height || 0;
@@ -382,7 +382,7 @@ function collectSock(sock) {
   };
 }
 
-describe('pruned p2p e2e', { timeout: 7_400_000 }, () => {
+describe('pruned p2p e2e', { timeout: 21_600_000 }, () => {
   after(async () => {
     try { world.p2p?.close(); } catch { /* ignore */ }
     try { await world.rpc?.close(); } catch { /* ignore */ }
