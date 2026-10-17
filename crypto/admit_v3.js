@@ -2,7 +2,7 @@
  * ADMITv3 anchor window (083e V1–V3, 083g) and typed-kind funding (OPEN-5 A).
  * H is the height of the block that includes the spend. Mempool uses tip + 1.
  * A presented anchor that fails the window is rejected. Lock, vote, and
- * withdraw are funded only by a byte-3 input, and a flow spend (send or
+ * withdraw are funded by an FS-1 spend after activation, and a flow spend (send or
  * transfer) that presents a proof is admit_version unless every blob is byte
  * 3 and an anchor is present. Stage 0: a byte-3 bucket proof is
  * send_unavailable on a flow spend and vault_unavailable on a vault kind,
@@ -11,10 +11,15 @@
  * Stage 3: a send or transfer whose every record is an FS-1 record (byte
  * 0xF1) and that carries `tx.fs1` and an anchor is verified against the FS-1
  * root of the admit set at that anchor (verifyFlowAdmitFs1). That is the only
- * flow path that accepts a proof. Vault kinds stay closed.
+ * flow path that accepts a proof.
+ *
+ * Stage 3b: from VAULT_FS1_ACTIVATION_HEIGHT, a lock, top-up, or withdraw
+ * uses that same verifier and the same spend-tag set. A vote is an owner
+ * signature and is not an FS-1 spend. Below the height every vault kind is
+ * vault_unavailable. A byte-3 bucket proof stays vault_unavailable.
  */
 import { createHash } from 'node:crypto';
-import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET } from './asert.js';
+import { SPENDABLE_CONFIRMATIONS, MAGIC_TESTNET, VAULT_FS1_ACTIVATION_HEIGHT } from './asert.js';
 import { asU8, flowInputsBound } from './note.js';
 import { flowNeedsDummy } from './dummy.js';
 import { jrootPoint } from './admit.js';
@@ -29,6 +34,7 @@ import {
 } from './fs1_send_gate.js';
 import {
   FS1_INPUT_MAX,
+  FS1_WIRE,
   fs1BlobFits,
   fs1BlobOf,
   fs1Records,
@@ -150,7 +156,7 @@ export function checkAdmitAnchor(tx, H) {
   return { ok: true, anchor: A };
 }
 
-const TYPED_ADMIT_KINDS = new Set(['lock', 'vote', 'withdraw']);
+const TYPED_ADMIT_KINDS = new Set(['lock', 'vote', 'withdraw', 'leaf-vote']);
 
 export function typedKindNeedsAdmitV3(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
@@ -331,12 +337,14 @@ export function fundingJroot(live) {
   return root;
 }
 
-/** Shape only. A byte-3 bucket proof is vault_unavailable before the shape is read. */
-export function typedAdmitStructure(tx) {
-  const gated = v3BucketVaultRejected(tx);
-  if (gated) return gated;
-  if (!typedKindNeedsAdmitV3(tx)) return { ok: true, skip: true };
-  if (txPresentsFs1(tx)) return { ok: false, reason: 'admit_version' };
+/** True when `height` is an integer at or after the vault FS-1 activation. */
+export function vaultFs1Active(height) {
+  const h = Number(height);
+  if (!Number.isInteger(h)) return false;
+  return h >= VAULT_FS1_ACTIVATION_HEIGHT;
+}
+
+function cleartextVaultDebit(tx) {
   if (tx?.noteSpends != null && !(Array.isArray(tx.noteSpends) && tx.noteSpends.length === 0)) {
     return { ok: false, reason: 'admit_version' };
   }
@@ -346,6 +354,29 @@ export function typedAdmitStructure(tx) {
   for (const vin of vins) {
     if (vin.address || vin.dest20) return { ok: false, reason: 'admit_version' };
   }
+  return null;
+}
+
+/**
+ * Shape only. A byte-3 bucket proof is vault_unavailable before the shape is
+ * read. A vote is an owner signature: no input and no FS-1 blob. A lock,
+ * top-up, or withdraw is an FS-1 spend. Activation is not decided here.
+ */
+export function typedAdmitStructure(tx) {
+  const gated = v3BucketVaultRejected(tx);
+  if (gated) return gated;
+  if (!typedKindNeedsAdmitV3(tx)) return { ok: true, skip: true };
+  const debit = cleartextVaultDebit(tx);
+  if (debit) return debit;
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  const vins = (Array.isArray(tx?.vin) ? tx.vin : []).filter((v) => v && !v.coinbase);
+  if (kind === 'vote') {
+    if (txPresentsFs1(tx) || proofsOf(tx).length || vins.length) {
+      return { ok: false, reason: 'admit_version' };
+    }
+    return { ok: true, skip: true, vote: true };
+  }
+  if (!txPresentsFs1(tx) || !txAllFs1(tx)) return { ok: false, reason: 'admit_version' };
   let anchor = null;
   if (tx && Object.prototype.hasOwnProperty.call(tx, 'anchor') && tx.anchor != null) anchor = tx.anchor;
   for (const vin of (Array.isArray(tx?.vin) ? tx.vin : [])) {
@@ -355,25 +386,26 @@ export function typedAdmitStructure(tx) {
   }
   if (anchor == null) return { ok: false, reason: 'admit_anchor_window' };
   const proofs = proofsOf(tx);
-  if (!proofs.length || vins.length !== proofs.length || vins.length < 1) {
+  if (!proofs.length || vins.length !== proofs.length || vins.length < 1 || vins.length > FS1_INPUT_MAX) {
     return { ok: false, reason: proofs.length ? 'admit_membership' : 'admit_version' };
   }
   for (let i = 0; i < proofs.length; i += 1) {
     const blob = proofs[i]?.blob || proofs[i]?.proof;
     const pr = blob ? Buffer.from(asU8(blob)) : null;
-    if (!pr || pr.length < 33 || pr[0] !== 3) return { ok: false, reason: 'admit_version' };
+    if (!pr || pr[0] !== FS1_WIRE) return { ok: false, reason: 'admit_version' };
     const ct = bytes32(proofs[i].cTilde);
     const posted = bytes32(vins[i].commit);
     if (!ct || !posted || !ct.equals(posted)) return { ok: false, reason: 'admit_membership' };
   }
-  return { ok: true, anchor, proofs, vins };
+  return { ok: true, anchor, proofs, vins, fs1: true };
 }
 
 /**
- * lock, vote, and withdraw are funded only by byte-3 inputs whose anchor is
- * in the window. A cleartext payer or a noteSpends list is a public debit and
- * is rejected. Stage 0 rejects every byte-3 bucket input as vault_unavailable
- * before the anchor book is read, so no vault tx is funded until FS-1.
+ * lock and withdraw are funded by an FS-1 spend at or after
+ * VAULT_FS1_ACTIVATION_HEIGHT. A vote is an owner signature. A cleartext
+ * payer or a noteSpends list is a public debit and is rejected. A byte-3
+ * bucket input is vault_unavailable before the anchor book is read. Below
+ * the activation height the same reason is returned and the book is not read.
  */
 let anchorFluxRebuildCount = 0;
 
@@ -386,7 +418,7 @@ export function resetAnchorFluxRebuilds() {
   anchorFluxRebuildCount = 0;
 }
 
-/** Calls to a membership verifier from typed funding. No path makes one in Stage 0. */
+/** Byte-3 bucket verifies from typed funding. No path makes one. FS-1 counts on the flow counter. */
 export function typedProofVerifyCount() {
   return 0;
 }
@@ -408,10 +440,18 @@ export function flowPresentsProof(tx) {
   return Array.isArray(tx?.admit_proofs) && tx.admit_proofs.some(Boolean);
 }
 
-export function verifyTypedAdmitFunding(tx) {
+export function verifyTypedAdmitFunding(tx, opts = {}) {
   const structure = typedAdmitStructure(tx);
-  if (!structure.ok || structure.skip) return structure;
-  return { ok: false, reason: FS1_VAULT_REASON, state: FS1_VAULT_STATE };
+  if (!structure.ok) return structure;
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  const vault = kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'leaf-vote';
+  if (vault && !vaultFs1Active(opts?.height)) {
+    // A shape this function does not fund stays on its own predicate.
+    if (structure.skip && !structure.vote) return structure;
+    return { ok: false, reason: FS1_VAULT_REASON, state: FS1_VAULT_STATE };
+  }
+  if (structure.skip) return structure;
+  return verifyFlowAdmitFs1(tx, opts);
 }
 
 /**

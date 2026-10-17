@@ -16,8 +16,8 @@ import {
   SHARE_FLOOR_BITS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
-import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, verifiedInputNanos } from '../../crypto/note.js';
-import { publicReserveReceipt } from '../../crypto/dummy.js';
+import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, verifiedInputNanos, verifyFlowConservation } from '../../crypto/note.js';
+import { publicReserveReceipt, publicReceiptNanos } from '../../crypto/dummy.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
@@ -37,7 +37,7 @@ import {
   settleHashOwed,
 } from '../../crypto/hash_owed.js';
 import {
-  bonusUnitsBefore,
+  supplyUnits,
   unitsAlongChain,
   blockWithdrawInterest,
   blockPermittedInterest,
@@ -48,6 +48,7 @@ import {
   applyReserveBlock,
   txIsReserveAction,
   reserveAction,
+  lockNotePrincipal,
 } from '../../crypto/reserve_vault.js';
 import { reserveApplyFields } from '../../crypto/reserve_oracle.js';
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
@@ -125,6 +126,9 @@ function vaultAccruedNanos(vault) {
 
 function openedLockNanos(tx) {
   if (!tx || tx.coinbase || String(tx.kind || '') !== 'lock') return 0n;
+  if (publicReserveReceipt(tx)) return publicReceiptNanos(tx);
+  const noted = lockNotePrincipal(tx);
+  if (noted > 0n) return noted;
   const act = reserveAction(tx);
   if (!act || act.opened === false) return 0n;
   return asLocked(act.nanos);
@@ -135,6 +139,18 @@ function openedLockNanos(tx) {
  * receipt, and the verified openings on its inputs cover the lock.
  * The openings are read in note.js. This file does not touch them.
  */
+/**
+ * A hidden π leaf does not open each input. The fund proof says the lock
+ * commitment is π, and the FS-1 excess says the spent notes cover that
+ * commitment plus the fee. That is a note payment, not a bare credit.
+ */
+function fs1NotePaysLock(tx, need) {
+  if (need <= 0n) return false;
+  if (tx?.fs1 == null || tx.fs1 === '' || !tx?.excess) return false;
+  if (lockNotePrincipal(tx) !== need) return false;
+  return verifyFlowConservation(tx);
+}
+
 function vinPaysNote(tx) {
   if (publicReserveReceipt(tx)) return false;
   const need = openedLockNanos(tx);
@@ -145,7 +161,8 @@ function vinPaysNote(tx) {
     if (n == null) continue;
     opened += n;
   }
-  return opened >= need;
+  if (opened >= need) return true;
+  return fs1NotePaysLock(tx, need);
 }
 
 /**
@@ -745,10 +762,17 @@ function accountBlock(prev, block, opts = {}) {
   state.dust = settled.dust;
   state.overflow = settled.overflow;
   state.carry = carryOut;
-  const reward = stakeRewardSupply(opts.vault, block, ts, opts.oracle);
+  const reward = stakeRewardSupply(
+    opts.vault,
+    block,
+    ts,
+    Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : block?.height,
+  );
   if (!reward.ok) return { reason: reward.reason || 'supply', state };
   const claimedReward = reward.claimed || 0n;
-  const publicTotal = potMinted + mintedHashHere + levy + reward.minted;
+  // A claim mint is the claim output, not a coinbase output. Counting it
+  // here made the first honest claim block fail the coinbase sum.
+  const publicTotal = potMinted + mintedHashHere + levy;
   const rememberRange = opts.rememberRange !== false;
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };
@@ -828,7 +852,7 @@ export function foldSupply(blocks, opts = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   const genesisMs = Number(opts.genesisMs) > 0 ? Number(opts.genesisMs) : (headerMs(list[0]) || 0);
   if (!list.length) return { ok: true, reason: '', state: emptySupplyState(genesisMs) };
-  const units = opts.units || bonusUnitsBefore(list);
+  const units = opts.units || supplyUnits(list);
   if (!units) return { ok: false, reason: 'epoch_open', state: null };
   let tip = 0;
   for (let i = 0; i < list.length; i += 1) {
@@ -1154,7 +1178,7 @@ export function auditCirculatingSupply(blocks, opts = {}) {
     burnedNanos: burnedIn,
     ok,
     reason,
-    vaultPrincipalNanos: vaultLockedNanos(vault) + claimedUnfunded,
+    vaultPrincipalNanos: notePrincipal + claimedUnfunded,
     vaultAccruedNanos: vaultAccruedNanos(vault),
     noteBackedPrincipalNanos: notePrincipal,
   };

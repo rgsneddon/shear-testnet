@@ -4,16 +4,16 @@
  * Spend authority is Ed25519 over shear-spend-v1 || packDigest.
  */
 import { createHash, createPublicKey, sign, verify } from 'node:crypto';
-import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM } from './asert.js';
-import { levyTaxed, txAmountNanos, custodialPullRejected } from './levy.js';
+import { SPENDABLE_CONFIRMATIONS, SPEND_SIG_DOMAIN, RESERVE_PROGRAM, MAX_LOCK_LEAVES } from './asert.js';
+import { levyTaxed, levyNanos, txAmountNanos, custodialPullRejected } from './levy.js';
 import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
-import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
-import { portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
-import { typedAdmitStructure } from './admit_v3.js';
+import { asU8, verifyFlowConservation, verifySealedNote, leafVoteConserved } from './note.js';
+import { consensusUnlockPeriod, hiddenPrincipalOpens, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
 export { MEMBER_KEYS };
@@ -416,7 +416,7 @@ export function reservePortalDest(tx) {
   if (kind === 'lock' || kind === 'vote') {
     return String(tx?.to || tx?.vout?.[0]?.address || '');
   }
-  if (kind === 'withdraw') {
+  if (kind === 'withdraw' || kind === 'roll') {
     return String(tx?.from || tx?.vin?.[0]?.address || '');
   }
   return '';
@@ -424,7 +424,7 @@ export function reservePortalDest(tx) {
 
 export function reserveNeedsPortalOpen(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  return kind === 'lock' || kind === 'vote' || kind === 'withdraw';
+  return kind === 'lock' || kind === 'vote' || kind === 'withdraw' || kind === 'roll';
 }
 
 function destOpeningShape(open) {
@@ -444,7 +444,7 @@ export function verifyReservePortalOpen(tx) {
 
 function v3CommitCovers(tx, vin) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return false;
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw' && kind !== 'leaf-vote') return false;
   let posted = null;
   try {
     const b = Buffer.from(asU8(vin?.commit));
@@ -458,7 +458,7 @@ function v3CommitCovers(tx, vin) {
     const blob = proof?.blob || proof?.proof;
     if (!blob) continue;
     const pr = Buffer.from(asU8(blob));
-    if (!pr.length || pr[0] !== 3) continue;
+    if (!pr.length || (pr[0] !== 3 && pr[0] !== 0xf1)) continue;
     try {
       const ct = Buffer.from(asU8(proof.cTilde));
       if (ct.length === 32 && ct.equals(posted)) return true;
@@ -473,7 +473,9 @@ export const V12_VALUE_KINDS = new Set([
   'transfer',
   'lock',
   'vote',
+  'leaf-vote',
   'withdraw',
+  'roll',
   'reward-claim',
   'b-spend',
 ]);
@@ -486,6 +488,9 @@ export function txKind(tx) {
   if (!tx || tx.coinbase) return '';
   const top = tx.kind == null ? '' : String(tx.kind);
   if (!top) return '';
+  // The vote note is voteOutput. A hidden change output is a send, and
+  // that label does not make the transaction a send.
+  if (top === 'leaf-vote') return top;
   const raw = tx.vout?.[0]?.kind;
   if (raw != null && String(raw) !== '' && String(raw) !== top) return '';
   return top;
@@ -585,8 +590,12 @@ const BODY_KEYS = new Set([
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
   'coinbase', 'carryNanos', 'share', 'withdrawNonce', 'reports', 'rateCommit', 'rewardRoot',
+  'epochStartRoot', 'epochStartCommits', 'epochCensusCommit', 'vaultLockRoot',
   'nullifier',
   'ownerPub',
+  'piProof', 'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
+  'retireProof', 'retireProofs', 'principalProof', 'principalProofs',
+  'voteProof', 'voteProofs', 'voteSeq', 'voteParam', 'voteOutput',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
@@ -601,7 +610,7 @@ const VIN_KEYS = new Set([
 const VOUT_KEYS = new Set([
   'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
   'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
-  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch',
+  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch', 'fundProof', 'piProof',
 ]);
 
 const VALUE_PROOF_KEYS = new Set(['v', 'R', 'z']);
@@ -734,7 +743,7 @@ export function openingBeforeCarry(tx) {
 export function typedClockRejected(tx) {
   if (!tx || tx.coinbase) return null;
   const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return null;
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw' && kind !== 'roll') return null;
   if (tx.nowMs == null) return null;
   return { ok: false, reason: 'now_ms' };
 }
@@ -763,9 +772,31 @@ export function typedCommitRejected(tx) {
  * spent note opens to the fee plus the hidden change. A fee that is not
  * that remainder is commit_sum. The receipt does not have to equal the fee.
  */
-export function typedCommitSum(tx) {
+export function typedCommitSum(tx, ctx = {}) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind === 'leaf-vote') {
+    const paid = Math.floor(Number(tx?.fee || 0));
+    const need = Math.floor(Number(levyNanos(0, { tx })) || 0);
+    if (paid < need) return { ok: false, reason: 'levy' };
+    // The fee is paid to the miner only when this note spend balances.
+    // A number with no input is commit_sum, so it is not minted as a fee.
+    if (!leafVoteConserved(tx)) return { ok: false, reason: 'commit_sum' };
+    return { ok: true };
+  }
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
+  if (kind === 'vote') {
+    // A vote moves no value. A nonzero fee would be paid to miners with no debit.
+    const paid = Math.floor(Number(tx?.fee || 0));
+    if (paid !== 0) return { ok: false, reason: 'levy' };
+    const voteOuts = Array.isArray(tx?.vout) ? tx.vout : [];
+    for (const o of voteOuts) {
+      const raw = o?.valueProof?.v;
+      if (raw == null || raw === '') continue;
+      const v = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
+      if (v !== 0) return { ok: false, reason: 'commit_sum' };
+    }
+    return { ok: true, skip: true };
+  }
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   if (!outs.length) return { ok: false, reason: 'commit_sum' };
   let payout = 0;
@@ -779,6 +810,14 @@ export function typedCommitSum(tx) {
       continue;
     }
     const raw = o?.valueProof?.v;
+    const hiddenLock = kind === 'lock' && (raw == null || raw === '');
+    if (hiddenLock) {
+      if (!o?.commit || !o?.rangeProof || o.rangeProof === true) {
+        return { ok: false, reason: 'commit_sum' };
+      }
+      opened += 1;
+      continue;
+    }
     const v = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
     if (!o?.commit || !o?.valueProof || !Number.isInteger(v) || v < 0) {
       return { ok: false, reason: 'commit_sum' };
@@ -790,9 +829,22 @@ export function typedCommitSum(tx) {
       payout += v;
     }
   }
-  if (opened < 1) return { ok: false, reason: 'commit_sum' };
+  if (kind === 'lock') {
+    if (opened < 1 || opened > MAX_LOCK_LEAVES) return { ok: false, reason: 'commit_sum' };
+  } else if (opened !== 1) return { ok: false, reason: 'commit_sum' };
   const vaultPayout = kind === 'withdraw' ? payout : 0;
   if (!verifyFlowConservation(tx, null, vaultPayout)) return { ok: false, reason: 'commit_sum' };
+  if (kind === 'lock' && tx?.vaultLockNote) {
+    // The unlock is the chain clock, not a field the locker writes. Admission
+    // and the block path both derive it from the vault and the header time.
+    let fundCtx = ctx;
+    if (ctx.unlock == null && ctx.state && ctx.nowMs != null) {
+      const clock = lockUnlockOf(ctx.state, ctx.nowMs);
+      fundCtx = { ...ctx, unlock: consensusUnlockPeriod(clock.epoch) };
+    }
+    const funded = lockFundingRejected(tx, fundCtx);
+    if (funded) return { ok: false, reason: 'commit_sum' };
+  }
   return { ok: true };
 }
 
@@ -911,7 +963,6 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
   const raw = o?.valueProof?.v != null ? o.valueProof.v : (o?.nanos ?? tx?.nanos ?? 0);
   const claimed = typeof raw === 'bigint' ? Number(raw) : Math.floor(Number(raw));
   if (!Number.isInteger(claimed) || claimed < 0) return { ok: false, reason: 'insufficient' };
-  if (claimed === 0) return { ok: false, reason: 'mint_amount' };
   const ref = reservePortalRef(tx);
   if (!ref.ok) return ref;
   const portals = reserveState?.portals || {};
@@ -925,6 +976,41 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
     ? Math.max(0, Math.floor(Number(withdrawablePrincipal(reserveState, portal, clock)) || 0))
     : 0;
   const principal = duePrincipal;
+  const hidden = Number.isFinite(clock) && clock > 0
+    ? maturedHiddenCount(reserveState, portal, clock)
+    : 0;
+  const mintId = withdrawMintId(ref.id, reserveState?.currentEpoch || 0);
+  const already = reserveState?.mintedIds && reserveState.mintedIds[mintId];
+  if (already || (drawn instanceof Set && drawn.has(mintId))) {
+    return { ok: false, reason: 'double_mint' };
+  }
+  if (hidden > 0 && principal === 0) {
+    if (String(tx?.programId || '') !== RESERVE_PROGRAM) return { ok: false, reason: 'mint_forbidden' };
+    if (portal?.payout) {
+      const want = hash20FromAddress(portal.payout);
+      const got = voutDest20(o);
+      if (!want || !got || !Buffer.from(want).equals(got)) {
+        return { ok: false, reason: 'payout_mismatch' };
+      }
+    }
+    if (portal?.payoutPortalId) {
+      const payPid = String(tx?.payoutPortalId || '').toLowerCase();
+      if (!payPid || payPid !== String(portal.payoutPortalId).toLowerCase()) {
+        return { ok: false, reason: 'payout_mismatch' };
+      }
+    }
+    if (claimed !== 0) {
+      if (!hiddenPrincipalOpens(reserveState, portal, clock, claimed, tx?.principalProof, tx)) {
+        if (principalProofReused(reserveState, portal, claimed, tx?.principalProof, tx)) {
+          return { ok: false, reason: 'proof_reuse' };
+        }
+        return { ok: false, reason: 'stake_reward' };
+      }
+      return { ok: true, principal: claimed, claimed, cap: claimed, mintId };
+    }
+    return { ok: true, principal: 0, claimed: 0, cap: 0, mintId };
+  }
+  if (claimed === 0) return { ok: false, reason: 'mint_amount' };
   if (!(principal > 0)) return { ok: false, reason: 'insufficient' };
   const due = Math.max(0, Math.floor(Number(withdrawPaysInterest(reserveState, portal, clock)) || 0));
   const cap = principal + due;
@@ -950,11 +1036,6 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
   // withdrawable legacy principal. A time-locked note is not part of it.
   if (!o?.commit || !o?.valueProof || !verifySealedNote(o, cap)) {
     return { ok: false, reason: 'mint_amount' };
-  }
-  const mintId = withdrawMintId(ref.id, reserveState?.currentEpoch || 0);
-  const already = reserveState?.mintedIds && reserveState.mintedIds[mintId];
-  if (already || (drawn instanceof Set && drawn.has(mintId))) {
-    return { ok: false, reason: 'double_mint' };
   }
   return { ok: true, principal, claimed, cap, mintId };
 }
@@ -1039,11 +1120,20 @@ export function mempoolDebitNanos(txs, address) {
  * Walk body txs in order. An address balance is not value: a debit that is
  * not a note-bound Flow spend is rejected. `spendableOf` is ignored.
  */
-export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null, nowMs = null } = {}) {
+export function verifyFundedBody(body, spendableOf, {
+  seenDigests = null,
+  reserveState = null,
+  nowMs = null,
+  height = null,
+  spentTags = null,
+  magic = null,
+  noteAtAnchor = null,
+} = {}) {
   void spendableOf;
   const seen = seenDigests instanceof Set ? seenDigests : new Set();
   const seenOwners = new Map();
   const drawn = new Set();
+  const tags = spentTags && typeof spentTags.has === 'function' ? spentTags : new Set();
   for (const tx of body || []) {
     const publicReceipt = publicReserveReceiptRejected(tx);
     if (publicReceipt) return publicReceipt;
@@ -1063,8 +1153,16 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
     if (!stake.ok) return stake;
     const kind = reserveKindOf(tx);
     if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') {
-      const structure = typedAdmitStructure(tx);
-      if (!structure.ok) return structure;
+      const noteFund = verifyTypedAdmitFunding(tx, {
+        height,
+        spentTags: tags,
+        magic,
+        noteAtAnchor,
+      });
+      if (!noteFund.ok) return noteFund;
+      if (Array.isArray(noteFund.tags)) {
+        for (const th of noteFund.tags) tags.add(th);
+      }
     }
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;

@@ -317,9 +317,135 @@ int jsSafeInt(Object? raw) {
   return 0;
 }
 
+/// Unlock bound into the reserve suffix. Absent, or not a positive integer, is 0.
+int stampedUnlockAtMs(List<Map<String, dynamic>> vout) {
+  for (final o in vout) {
+    if (o['kind']?.toString() != 'lock') continue;
+    final unlock = o['unlockAtMs'];
+    if (unlock is int && unlock > 0) return unlock;
+    return 0;
+  }
+  return 0;
+}
+
+/// Lock epoch bound into the reserve suffix. Absent is -1.
+int stampedLockEpoch(List<Map<String, dynamic>> vout) {
+  for (final o in vout) {
+    if (o['kind']?.toString() != 'lock') continue;
+    final epoch = o['lockEpoch'];
+    if (epoch is int && epoch >= 0) return epoch;
+    return -1;
+  }
+  return -1;
+}
+
+Uint8List _commit32(Object? raw) {
+  if (raw is Uint8List && raw.length == 32) return raw;
+  if (raw is List<int> && raw.length == 32) return Uint8List.fromList(raw);
+  if (raw is String) {
+    final hex = raw.startsWith('0x') || raw.startsWith('0X') ? raw.substring(2) : raw;
+    if (hex.length == 64) {
+      final out = Uint8List(32);
+      for (var i = 0; i < 32; i++) {
+        final byte = int.tryParse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+        if (byte == null) return Uint8List(0);
+        out[i] = byte;
+      }
+      return out;
+    }
+  }
+  return Uint8List(0);
+}
+
+/// JS `reserveDigestSuffix`. Unlock time and lock epoch are always bound.
+/// A withdraw also binds its id and its 32-byte nonce. Lock and vote do not.
+/// A lock with a one-time owner appends sha256("shear-reward-owner-v1" || pub).
+Uint8List reserveDigestSuffixBytes({
+  required String kind,
+  required String portalId,
+  required String payoutPortalId,
+  required String programId,
+  required String choice,
+  required int suffixNanos,
+  Uint8List? commit,
+  required List<Map<String, dynamic>> vout,
+  String id = '',
+  Uint8List? withdrawNonce,
+  String oneTimePub = '',
+}) {
+  final portal = portalId.toLowerCase();
+  final payout = payoutPortalId.toLowerCase();
+  final commitBytes = (commit != null && commit.length == 32) ? commit : Uint8List(0);
+  final choiceBytes = kind == 'vote' ? choice : '';
+  final chunks = <int>[
+    ...utf8.encode('reserveact1'),
+    ..._lenPrefUtf8(kind),
+    ..._lenPrefUtf8(portal),
+    ..._lenPrefUtf8(payout),
+    ..._lenPrefUtf8(programId),
+    ..._lenPrefUtf8(choiceBytes),
+    ..._i64le(suffixNanos),
+    ...commitBytes,
+    ..._i64le(stampedUnlockAtMs(vout)),
+    ..._i64le(stampedLockEpoch(vout)),
+  ];
+  if (kind == 'withdraw') {
+    final nonce = (withdrawNonce != null && withdrawNonce.length == 32)
+        ? withdrawNonce
+        : Uint8List(32);
+    chunks.addAll(_lenPrefUtf8(id));
+    chunks.addAll(nonce);
+  }
+  final ownerHex = oneTimePub.startsWith('0x') || oneTimePub.startsWith('0X')
+      ? oneTimePub.substring(2)
+      : oneTimePub;
+  if (kind == 'lock' && RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(ownerHex)) {
+    final pub = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      pub[i] = int.parse(ownerHex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    chunks.addAll(sha256.convert([...utf8.encode('shear-reward-owner-v1'), ...pub]).bytes);
+  }
+  return Uint8List.fromList(chunks);
+}
+
+/// Commit of the output whose kind matches, else the first output. Empty when it is not 32 bytes.
+Uint8List reserveCommitOf(List<Map<String, dynamic>> vout, String kind) {
+  Map<String, dynamic>? hit;
+  for (final o in vout) {
+    if (o['kind']?.toString() == kind) {
+      hit = o;
+      break;
+    }
+  }
+  hit ??= vout.isEmpty ? null : vout.first;
+  if (hit == null) return Uint8List(0);
+  final vp = hit['commit'];
+  final raw = _commit32(vp);
+  return raw.length == 32 && hit['commit'] != null ? raw : Uint8List(0);
+}
+
+/// Opened nanos JS `canonicalReserveFields` reads from the kind output.
+int reserveOpenedNanos(List<Map<String, dynamic>> vout, String kind) {
+  Map<String, dynamic>? hit;
+  for (final o in vout) {
+    if (o['kind']?.toString() == kind) {
+      hit = o;
+      break;
+    }
+  }
+  hit ??= vout.isEmpty ? null : vout.first;
+  if (hit == null) return 0;
+  final vp = hit['valueProof'];
+  if (vp is Map && vp['v'] != null) return jsSafeInt(vp['v']);
+  if (hit['nanos'] != null) return jsSafeInt(hit['nanos']);
+  return 0;
+}
+
 /// Spend message the pool's `verifySpendSig` checks for a lock, vote, or withdraw.
 /// Flow sends stay on [spendMessage]. This adds the portal, fee, and reserve suffix.
 /// A withdraw also signs [id] and the 32-byte [withdrawNonce] directly.
+/// [proofBlobs] are the admit proof blobs, in order. An empty list signs a count of 0.
 Uint8List reserveSpendMessage({
   required String from,
   required List<Map<String, dynamic>> vout,
@@ -334,34 +460,40 @@ Uint8List reserveSpendMessage({
   Uint8List? commit,
   String id = '',
   Uint8List? withdrawNonce,
+  List<Uint8List> proofBlobs = const [],
+  String oneTimePub = '',
 }) {
   final packed = spendPackDigest(from: from, vout: vout, kind: kind, vin: vin);
   final portal = portalId.toLowerCase();
   final payout = payoutPortalId.toLowerCase();
-  final commitBytes = (commit != null && commit.length == 32) ? commit : Uint8List(0);
-  final choiceBytes = kind == 'vote' ? choice : '';
+  final suffix = reserveDigestSuffixBytes(
+    kind: kind,
+    portalId: portal,
+    payoutPortalId: payout,
+    programId: programId,
+    choice: choice,
+    suffixNanos: suffixNanos,
+    commit: commit,
+    vout: vout,
+    id: id,
+    withdrawNonce: withdrawNonce,
+    oneTimePub: oneTimePub,
+  );
   final chunks = <int>[
     ...packed,
     ...utf8.encode(portal),
     ...utf8.encode(payout),
     ..._canonicalFee(fee),
-    ..._u32le(0),
-    ...utf8.encode('reserveact1'),
-    ..._lenPrefUtf8(kind),
-    ..._lenPrefUtf8(portal),
-    ..._lenPrefUtf8(payout),
-    ..._lenPrefUtf8(programId),
-    ..._lenPrefUtf8(choiceBytes),
-    ..._i64le(suffixNanos),
-    ...commitBytes,
+    ..._u32le(proofBlobs.length),
   ];
-  if (kind == 'withdraw') {
-    final nonce = (withdrawNonce != null && withdrawNonce.length == 32)
-        ? withdrawNonce
-        : Uint8List(32);
-    chunks.addAll(_lenPrefUtf8(id));
-    chunks.addAll(nonce);
+  for (final blob in proofBlobs) {
+    chunks.addAll(_lenPrefUtf8Bytes(blob));
   }
+  chunks.addAll(suffix);
   final digest = Uint8List.fromList(sha256.convert(chunks).bytes);
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
+}
+
+Uint8List _lenPrefUtf8Bytes(List<int> body) {
+  return Uint8List.fromList([..._u32le(body.length), ...body]);
 }

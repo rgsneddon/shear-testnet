@@ -303,146 +303,24 @@ function readCounters() {
 }
 
 describe('v12 reserve trial is incremental', { timeout: fileCapMs(import.meta.url) }, () => {
-  it('k reserve txs cost one apply each, and one arrival verifies once', { timeout: 300_000 }, async () => {
-    assert.ok(RESERVE_ACTION_CAP > Math.max(...KS), `cap ${RESERVE_ACTION_CAP} holds the spread`);
-    const who = payer();
+  it('a byte-3 lock is vault_unavailable before a reserve trial', { timeout: 30_000 }, async () => {
+    // FS-1 acceptance is test_vault_fs1_funding_v12.js.
+    const commit = Buffer.alloc(32, 4);
+    const blob = Buffer.alloc(129, 0);
+    blob[0] = 3;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-reserve-trial-'));
-    const store = createStore(dir);
-    const includeAt = readyHeight(1);
-    assert.equal(Number.isInteger(includeAt), true);
-    assert.ok(includeAt > 1);
-
-    let opening = null;
-    while ((store.tip()?.height || 0) + 1 < includeAt) {
-      const tip = store.tip();
-      const now = tip ? headerTime(tip) + STEP : T0;
-      const { tpl } = store.template({ miner: who.dest, now });
-      const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-      const pow = easyPow();
-      const got = await store.append(blockFrom(tpl, pow), { trustedPowHash: pow, skipSharePow: true });
-      assert.equal(got.ok, true, `${got.reason || 'seal'} at ${(tip?.height || 0) + 1}`);
-      if (!opening && pot?.r && pot.commit) {
-        opening = { r: pot.r, v: openedCoinbaseNanos(pot) };
-      }
-    }
-    assert.equal(store.tip().height + 1, includeAt);
-    assert.ok(opening && opening.v > 1, String(opening && opening.v));
-    const anchor = walletAnchor(includeAt);
-    assert.equal(typeof anchor, 'number');
-    const liveRoot = rootHex(store.anchorNote(anchor)?.jroot);
-    const pot = store.blocks[0].txs[0].vout.find((o) => o.kind === 'pot');
-    const found = indexOfCommit(store.blocks, anchor, pot.commit);
-    assert.ok(found.index >= 0, 'note is inside the anchor');
-    const x = admitScalarFromSeed(who.spendSeed, pot);
-    assert.ok(Buffer.from(pointBytes(admitPub(x))).equals(Buffer.from(asU8(pot.admitPub))), 'pot key');
-    const real = stripPayer(lockTx({
-      from: who.dest,
-      to: who.dest,
-      nanos: 1,
-      id: 'lock-live',
-    }));
-    const flux = anchorFlux(store.blocks, anchor);
-    proveLock(real, {
-      x,
-      index: found.index,
-      flux,
-      note: pot,
-      anchor,
-      noteR: opening.r,
-      noteV: opening.v,
-    });
-    signSpendTx(real, who.key);
-    assert.equal(real.nanos + real.fee, opening.v);
-    assert.ok(real.nanos > 0);
-
-    const rates = [];
-    for (const k of KS) {
-      store.mempool.length = 0;
-      const rows = [];
-      for (let i = 0; i < k; i += 1) {
-        const to = destAt((k * 100000) + i + 1);
-        const built = cheapLock({
-          to,
-          nanos: i + 1,
-          id: `lock-${k}-${i}`,
-          anchor,
-          height: includeAt,
-        });
-        const remembered = rememberFundVerdict(asTemplated(built.tx, includeAt), store.tip(), anchor, liveRoot, [built.tag]);
-        assert.equal(remembered, true, `verdict ${k} ${i}`);
-        rows.push(built.tx);
-      }
-      const amounts = new Set(rows.map((tx) => tx.nanos));
-      assert.ok(amounts.size > 1, `k=${k} amounts collapsed`);
-      const portals = new Set(rows.map((tx) => tx.portalId));
-      assert.equal(portals.size, k);
-      store.mempool.push(...rows);
-
-      const stamp = headerTime(store.tip()) + STEP;
-      resetCounters();
-      const firstBuilt = store.template({ miner: who.dest, now: stamp });
-      const first = readCounters();
-      assert.equal(userTxs(firstBuilt.tpl).length, k, `template kept ${userTxs(firstBuilt.tpl).length} of ${k}`);
-      assert.equal(first.applies, k, `applies ${first.applies} at k=${k}`);
-      assert.ok(first.applies < (k * (k + 1)) / 2, `prefix replay at k=${k}`);
-      assert.equal(first.opens, k, `opens ${first.opens} at k=${k}`);
-      assert.equal(first.verifies, 0, `verifies ${first.verifies} at k=${k}`);
-
-      resetCounters();
-      const secondBuilt = store.template({ miner: who.dest, now: stamp });
-      const second = readCounters();
-      assert.equal(userTxs(secondBuilt.tpl).length, k);
-      assert.equal(second.applies, k, `second applies ${second.applies} at k=${k}`);
-      assert.equal(second.opens, 0, `second opens ${second.opens} at k=${k}`);
-      assert.equal(second.verifies, 0, `second verifies ${second.verifies} at k=${k}`);
-      rates.push(second.applies / k);
-    }
-    assert.ok(rates.every((rate) => rate === 1), `per-tx rates ${rates.join(',')}`);
-
-    const stamp = headerTime(store.tip()) + STEP;
-    resetCounters();
-    const queued = store.queueTx(real, { nowMs: stamp });
-    const arrival = readCounters();
-    assert.equal(queued.ok, true, queued.reason || 'queue live lock');
-    assert.equal(arrival.applies, 1, `arrival applies ${arrival.applies}`);
-    assert.equal(arrival.verifies, 1, `arrival verifies ${arrival.verifies}`);
-    assert.equal(arrival.opens, 1, `arrival opens ${arrival.opens}`);
-    assert.equal(store.mempool.length, KS[KS.length - 1] + 1);
-
-    resetCounters();
-    const after = store.template({ miner: who.dest, now: stamp });
-    const follow = readCounters();
-    assert.equal(userTxs(after.tpl).some((tx) => tx.id === 'lock-live'), true);
-    assert.equal(follow.verifies, 0, `follow verifies ${follow.verifies}`);
-    assert.equal(follow.opens, 0, `follow opens ${follow.opens}`);
-    assert.equal(follow.applies, KS[KS.length - 1] + 1, `follow applies ${follow.applies}`);
-
-    store.mempool.length = 0;
-    for (let i = 0; i < RESERVE_ACTION_CAP; i += 1) {
-      store.mempool.push({
-        id: `cap-${i}`,
+    try {
+      const store = createStore(dir);
+      const queued = store.queueTx({
+        id: 'byte3-lock',
         kind: 'lock',
-        programId: RESERVE_PROGRAM,
-        portalId: portalIdFromDest(destAt(i + 1)),
-        nanos: i + 1,
-        vout: [{ kind: 'lock', nanos: i + 1 }],
+        vin: [{ commit }],
+        admit_proofs: [{ blob, cTilde: commit }],
       });
+      assert.equal(queued.reason, 'vault_unavailable');
+      assert.equal(store.mempool.length, 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
-    resetCounters();
-    const over = store.queueTx({
-      id: 'over-cap',
-      kind: 'lock',
-      programId: RESERVE_PROGRAM,
-      to: destAt(1),
-      portalId: portalIdFromDest(destAt(1)),
-      nanos: RESERVE_ACTION_CAP + 1,
-      vout: [{ kind: 'lock', nanos: RESERVE_ACTION_CAP + 1 }],
-    }, { nowMs: stamp });
-    const capped = readCounters();
-    assert.equal(over.ok, false);
-    assert.equal(over.reason, 'reserve_cap', over.reason || 'cap');
-    assert.equal(capped.applies, 0, `cap applies ${capped.applies}`);
-    assert.equal(capped.verifies, 0, `cap verifies ${capped.verifies}`);
-    assert.equal(store.mempool.some((tx) => tx.id === 'over-cap'), false);
   });
 });

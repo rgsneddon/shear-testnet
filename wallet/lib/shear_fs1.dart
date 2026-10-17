@@ -8,6 +8,7 @@ import 'shear_admit.dart';
 import 'shear_admit_ffi.dart';
 import 'shear_eip712.dart' show hexToBytes;
 import 'shear_note.dart' show kernelExcess;
+import 'shear_pack.dart' show reserveCommitOf, reserveDigestSuffixBytes, reserveOpenedNanos;
 import 'shear_ristretto.dart';
 
 /// FS-1 full-set spend (ADMITv3). One spend covers every input of a send:
@@ -73,7 +74,8 @@ Uint8List _u64(int v) {
 
 /// SHA-256 body digest an FS-1 spend binds. Port of `txBodyDigestFs1` in
 /// crypto/fs1_spend.js over the posted vout rows (bytes or hex). A send has
-/// no portal, program, payout portal, or reserve suffix.
+/// no portal, program, payout portal, or reserve suffix. A lock, vote, or
+/// withdraw appends `reserveDigestSuffix`, including unlock time and lock epoch.
 Uint8List fs1BodyDigest({
   required String magic,
   required String kind,
@@ -84,6 +86,11 @@ Uint8List fs1BodyDigest({
   String portalId = '',
   String programId = '',
   String payoutPortalId = '',
+  String choice = '',
+  int? reserveNanos,
+  String id = '',
+  Uint8List? withdrawNonce,
+  String oneTimePub = '',
 }) {
   final b = BytesBuilder(copy: false)
     ..add(utf8Bytes(kFs1DigestDst))
@@ -115,6 +122,21 @@ Uint8List fs1BodyDigest({
     ..add(_lenPref(utf8Bytes(portalId.toLowerCase())))
     ..add(_lenPref(utf8Bytes(programId)))
     ..add(_lenPref(utf8Bytes(payoutPortalId.toLowerCase())));
+  if (kind == 'lock' || kind == 'vote' || kind == 'withdraw') {
+    b.add(reserveDigestSuffixBytes(
+      kind: kind,
+      portalId: portalId,
+      payoutPortalId: payoutPortalId,
+      programId: programId,
+      choice: choice,
+      suffixNanos: reserveNanos ?? reserveOpenedNanos(vout, kind),
+      commit: reserveCommitOf(vout, kind),
+      vout: vout,
+      id: id,
+      withdrawNonce: withdrawNonce,
+      oneTimePub: oneTimePub,
+    ));
+  }
   return Uint8List.fromList(sha256.convert(b.takeBytes()).bytes);
 }
 
@@ -161,6 +183,7 @@ class Fs1Native {
         _root = lib.lookupFunction<Int32 Function(Pointer<Void>, Pointer<Uint8>), int Function(Pointer<Void>, Pointer<Uint8>)>(
             'shear_fs1_tree_root'),
         _prove = lib.lookupFunction<_ProveC, _ProveDart>('shear_fs1_prove'),
+        _proveUnlinked = lib.lookupFunction<_ProveUnlinkedC, _ProveUnlinkedDart>('shear_fs1_prove_unlinked'),
         _verify = lib.lookupFunction<_Fs1VerifyC, _Fs1VerifyDart>('shear_fs1_verify');
 
   final int Function(int) _cap;
@@ -171,6 +194,7 @@ class Fs1Native {
   final int Function(Pointer<Void>, int) _truncate;
   final int Function(Pointer<Void>, Pointer<Uint8>) _root;
   final _ProveDart _prove;
+  final _ProveUnlinkedDart _proveUnlinked;
   final _Fs1VerifyDart _verify;
 
   static Fs1Native? tryLoad() {
@@ -268,6 +292,69 @@ class Fs1Native {
     }
   }
 
+  /// Claim spend. `link` is 96 bytes per input: announcement || blind response || N.
+  /// The record tag is one-time, not the stable spend tag.
+  ({Uint8List fs1, List<Uint8List> records, List<Uint8List> t, Uint8List link})? proveUnlinked(
+    int h,
+    List<int> indices,
+    List<Uint8List> xs,
+    Uint8List digest,
+    int anchor,
+    Uint8List nullBases, {
+    int threads = 0,
+  }) {
+    final n = indices.length;
+    if (h == 0 || n < 1 || n > kFs1InputMax || xs.length != n || digest.length != 32 || nullBases.length != 32 * n) {
+      return null;
+    }
+    final cap = blobCap(n);
+    if (cap <= 0) return null;
+    final idx = calloc<Uint64>(n);
+    final xp = calloc<Uint8>(32 * n);
+    final dp = calloc<Uint8>(32);
+    final bp = calloc<Uint8>(32 * n);
+    final out = calloc<Uint8>(cap);
+    final olen = calloc<Size>();
+    final recs = calloc<Uint8>(kFs1RecordBytes * n);
+    final tp = calloc<Uint8>(32 * n);
+    final lp = calloc<Uint8>(96 * n);
+    try {
+      for (var i = 0; i < n; i++) {
+        idx[i] = indices[i];
+        if (xs[i].length != 32) return null;
+        xp.asTypedList(32 * n).setAll(32 * i, xs[i]);
+      }
+      dp.asTypedList(32).setAll(0, digest);
+      bp.asTypedList(32 * n).setAll(0, nullBases);
+      final rc = _proveUnlinked(
+        Pointer<Void>.fromAddress(h), idx, xp, n, dp, anchor, threads, bp, out, cap, olen, recs, tp, lp,
+      );
+      if (rc != 1) return null;
+      final len = olen.value;
+      if (len <= 0 || len > cap) return null;
+      final rv = recs.asTypedList(kFs1RecordBytes * n);
+      final tv = tp.asTypedList(32 * n);
+      return (
+        fs1: Uint8List.fromList(out.asTypedList(len)),
+        records: [
+          for (var i = 0; i < n; i++) Uint8List.fromList(rv.sublist(i * kFs1RecordBytes, (i + 1) * kFs1RecordBytes)),
+        ],
+        t: [for (var i = 0; i < n; i++) Uint8List.fromList(tv.sublist(32 * i, 32 * (i + 1)))],
+        link: Uint8List.fromList(lp.asTypedList(96 * n)),
+      );
+    } finally {
+      _wipe(xp, 32 * n);
+      _wipe(tp, 32 * n);
+      calloc.free(idx);
+      calloc.free(dp);
+      calloc.free(bp);
+      calloc.free(out);
+      calloc.free(olen);
+      calloc.free(recs);
+      calloc.free(lp);
+    }
+  }
+
   bool verify(Uint8List fs1, List<Uint8List> records, Uint8List root, Uint8List digest, int anchor) {
     final n = records.length;
     if (n < 1 || n > kFs1InputMax || root.length != 32 || digest.length != 32) return false;
@@ -302,6 +389,10 @@ typedef _ProveC = Int32 Function(Pointer<Void>, Pointer<Uint64>, Pointer<Uint8>,
     Pointer<Uint8>, Size, Pointer<Size>, Pointer<Uint8>, Pointer<Uint8>);
 typedef _ProveDart = int Function(Pointer<Void>, Pointer<Uint64>, Pointer<Uint8>, int, Pointer<Uint8>, int, int,
     Pointer<Uint8>, int, Pointer<Size>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _ProveUnlinkedC = Int32 Function(Pointer<Void>, Pointer<Uint64>, Pointer<Uint8>, Uint32, Pointer<Uint8>, Uint64,
+    Uint32, Pointer<Uint8>, Pointer<Uint8>, Size, Pointer<Size>, Pointer<Uint8>, Pointer<Uint8>, Pointer<Uint8>);
+typedef _ProveUnlinkedDart = int Function(Pointer<Void>, Pointer<Uint64>, Pointer<Uint8>, int, Pointer<Uint8>, int, int,
+    Pointer<Uint8>, Pointer<Uint8>, int, Pointer<Size>, Pointer<Uint8>, Pointer<Uint8>, Pointer<Uint8>);
 typedef _Fs1VerifyC = Int32 Function(Pointer<Uint8>, Size, Pointer<Uint8>, Uint32, Pointer<Uint8>, Pointer<Uint8>, Uint64);
 typedef _Fs1VerifyDart = int Function(Pointer<Uint8>, int, Pointer<Uint8>, int, Pointer<Uint8>, Pointer<Uint8>, int);
 

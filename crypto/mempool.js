@@ -14,7 +14,7 @@ import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRej
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
-import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
+import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected, leafVoteLeakRejected } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -121,6 +121,12 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
+  // The fee note stays in the wallet. A leaf vote that names it is refused
+  // before an unknown field is reported as unsigned.
+  if (String(tx?.kind || '') === 'leaf-vote') {
+    const leaked = leafVoteLeakRejected(tx);
+    if (leaked) return leaked;
+  }
   const feeHit = feeFieldRejected(tx);
   if (feeHit) return feeHit;
   const spendFee = bSpendFeeRejected(tx);
@@ -159,10 +165,29 @@ export function admitMempool(pool, tx, opts = {}) {
   const leafAsk = bLeafAskRejected(tx);
   if (leafAsk) return leafAsk;
   const kind = String(tx.kind);
+  if (kind === 'reward-claim' && (opts.reserveState || opts.height != null)) {
+    const claim = rewardClaimRejected(tx, opts.reserveState || null, opts.height);
+    if (claim) return claim;
+  }
+  if (kind === 'withdraw') {
+    const retire = retireBlobRejected(
+      tx,
+      opts.reserveState || null,
+      opts.nowMs != null ? opts.nowMs : null,
+    );
+    if (retire) return retire;
+  }
   const clockField = typedClockRejected(tx);
   if (clockField) return clockField;
   const receiptPub = receiptAdmitRejected(tx);
   if (receiptPub) return receiptPub;
+  // A portal vote is retired. Refuse it before the public-receipt and vault
+  // trials so it never sits in a template. A leaf ballot is a different kind.
+  if (String(tx?.kind || '') === 'vote') return { ok: false, reason: 'vote_retired' };
+  if (String(tx?.kind || '') === 'leaf-vote') {
+    const leaked = leafVoteLeakRejected(tx);
+    if (leaked) return leaked;
+  }
   const vinAdmit = bSpendVinRejected(tx);
   if (vinAdmit) return vinAdmit;
   for (const v of tx.vin || []) {
@@ -235,7 +260,12 @@ export function admitMempool(pool, tx, opts = {}) {
   // Same sum as the block body. A missing range proof already returned.
   // Flow sends skip this. An unbalanced lock, vote, or withdraw does not
   // sit in a template until the block path rejects it.
-  const summed = typedCommitSum(tx);
+  const summed = typedCommitSum(tx, {
+    height: Number(opts.height || 0),
+    magic: opts.magic,
+    state: opts.reserveState || null,
+    nowMs: opts.nowMs != null ? opts.nowMs : null,
+  });
   if (!summed.ok) return summed;
   // Lock, vote, and withdraw: same funding check, same drawn mint, same
   // header-time vault trial as queue and consensus. A vault miss is marked
@@ -338,6 +368,9 @@ export function admitMempool(pool, tx, opts = {}) {
     return { ok: false, reason: 'max_levy', need };
   }
   if ((book.txs || []).length >= (book.max || MEMPOOL_MAX)) return { ok: false, reason: 'full' };
+  // A leaf ballot is admitted only after the vault trial. A portal vote
+  // already returned vote_retired. A proof-less ballot does not sit in the pool.
+  if (kind === 'leaf-vote' && !vaultState) return { ok: false, reason: 'not_voter' };
   book.txs.push(mempoolRow(tx, paid, kind));
   const accepted = book.txs[book.txs.length - 1];
   const tags = Array.isArray(fundTags) ? fundTags.slice() : txSpendTags(accepted).tags.map((tag) => tag.toString('hex'));

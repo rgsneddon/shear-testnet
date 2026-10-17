@@ -69,7 +69,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit, leafVoteLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -1298,12 +1298,11 @@ export function createStore(dir, {
 
   function destSpendableNanos(addr, tipH, chain = blocks, _rows = explorer) {
     void _rows;
-    // The note walk still holds a pot a v3 lock spent, because that spend
-    // hides the leaf. Subtract the vault principal once so the same value
-    // is not spendable again. A lock note covers that principal once its
-    // unlock has passed, and it keeps covering it after the note is spent.
-    // Spent principal must not freeze a later inbound. Lock receipts are
-    // already omitted by kind.
+    // A lock tranche is not a send input. The note walk omits lock outputs.
+    // A hidden funding leaf can still sit in the walk, so subtract the vault
+    // principal once. A lock output that has passed its unlock covers that
+    // subtraction, including after the output is spent, so a later inbound
+    // is not frozen. The tranche itself stays out of this sum.
     // The live book and a fork book each keep their own suffix index.
     // A request does not open notes that belong to someone else.
     if (chain === blocks) spendChecks += 1;
@@ -3320,13 +3319,17 @@ export function createStore(dir, {
     if (mempoolVault) return mempoolVault;
     let carried = cloneVault(reserveVault);
     let n = 0;
+    let retireUsed = 0;
     for (const row of mempool) {
       if (!txIsReserveAction(row)) continue;
       if (n >= RESERVE_ACTION_CAP) break;
+      const adding = txRetireDleqs(row);
+      if (retireCapHit(retireUsed, row)) continue;
       const tried = trialReserveApply({ state: carried, txs: [row], nowMs, inPlace: true });
       if (!tried.ok) continue;
       carried = tried.state;
       n += 1;
+      if (adding != null) retireUsed += adding;
     }
     mempoolVault = carried;
     return mempoolVault;
@@ -3348,6 +3351,9 @@ export function createStore(dir, {
     if (bucket) return bucket;
     const noteRule = txNoteRuleRejected(tx, 1);
     if (noteRule) return noteRule;
+    // The fee note stays in the wallet. Naming it is vote_leak, not an unknown field.
+    const leakedVote = leafVoteLeakRejected(tx);
+    if (leakedVote) return leakedVote;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a
@@ -3484,6 +3490,9 @@ export function createStore(dir, {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    // Membership already named a commit vin. A portal vote that got this far
+    // is retired and must not enter the pool or a template.
+    if (String(tx?.kind || '') === 'vote') return { ok: false, reason: 'vote_retired' };
     const publicReceipt = publicReserveReceiptRejected(tx);
     if (publicReceipt) return publicReceipt;
     if (txIsReserveAction(tx) && mempool.filter(txIsReserveAction).length >= RESERVE_ACTION_CAP) {
@@ -3497,14 +3506,19 @@ export function createStore(dir, {
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     });
     if (!noteFund.ok) return noteFund;
-    const summed = typedCommitSum(tx);
+    const stamp = headerStamp(opts.nowMs);
+    const summed = typedCommitSum(tx, {
+      height: Number(t?.height || 0) + 1,
+      magic: bookMagic,
+      state: reserveVault,
+      nowMs: stamp,
+    });
     if (!summed.ok) return summed;
     const drawn = new Set();
     for (const m of mempool) {
       const id = reserveWithdrawMintId(m, reserveVault);
       if (id) drawn.add(id);
     }
-    const stamp = headerStamp(opts.nowMs);
     const stake = boundReserveWithdraw(tx, reserveVault, drawn, stamp);
     if (!stake.ok) return stake;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
@@ -5171,6 +5185,7 @@ export function createStore(dir, {
     // clone. A miss undoes itself and does not clone the portal map again.
     let carried = cloneVault(reserveVault);
     let reserveIncluded = 0;
+    let retireIncluded = 0;
     let reserveDropped = false;
     const budgetStarted = performance.now();
     const announced = Array.isArray(shareBatch) ? shareBatch.length
@@ -5274,6 +5289,14 @@ export function createStore(dir, {
         keep.push(m);
         continue;
       }
+      const retireAdding = txIsReserveAction(tx) ? txRetireDleqs(tx) : 0;
+      if (retireCapHit(retireIncluded, tx)) {
+        keep.push(m);
+        try {
+          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: 'retire_cap' }));
+        } catch { /* ignore */ }
+        continue;
+      }
       // Chain notes do not cover a painted spend, so it stays queued and out of the block.
       if (paintedSpendSig(tx)) {
         const held = fundedDebit(tx);
@@ -5316,6 +5339,7 @@ export function createStore(dir, {
         if (got.vaultState) {
           carried = got.vaultState;
           reserveIncluded += 1;
+          if (retireAdding != null) retireIncluded += retireAdding;
         }
         for (const tag of txSpendTags(got.tx).tags) spendSeen.add(tag.toString('hex'));
         if (Array.isArray(got.tags)) {
@@ -5371,6 +5395,34 @@ export function createStore(dir, {
       prepareCoinbase: (cb) => {
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
+        // The contract reads the frozen period root and the census from this
+        // coinbase. A claim looks the root up by its earn epoch, and a leaf
+        // vote is NotVoter until both are stored.
+        const starts = new Map();
+        const censusRows = new Map();
+        for (const tx of pendingTxs) {
+          if (!tx) continue;
+          const kind = String(tx.kind || '');
+          if (kind !== 'reward-claim' && kind !== 'leaf-vote') continue;
+          if (kind === 'reward-claim' && !tx.vaultProof) continue;
+          if (kind === 'leaf-vote' && !tx.voteProof) continue;
+          const earn = Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0);
+          if (!Number.isInteger(earn) || earn < 0) continue;
+          const start = String(reserveVault.epochStartRoots?.[String(earn)] || '').toLowerCase();
+          if (/^[0-9a-f]{64}$/.test(start)) starts.set(earn, start);
+          if (kind !== 'leaf-vote') continue;
+          const census = reserveVault.epochCensus?.[String(earn)];
+          const leaves = Math.floor(Number(census?.leafCount) || 0);
+          const openH = Math.floor(Number(census?.openHeight) || 0);
+          if (census?.known && leaves >= 1 && openH >= 0) {
+            censusRows.set(earn, { epoch: earn, leafCount: leaves, openHeight: openH });
+          }
+        }
+        if (starts.size) {
+          cb.epochStartCommits = [...starts.entries()].map(([epoch, rootHex]) => ({ epoch, root: rootHex }));
+          cb.epochStartRoot = cb.epochStartCommits[0].root;
+        }
+        if (censusRows.size) cb.epochCensusCommit = [...censusRows.values()];
       },
     });
     const jobId = `shear-${height}-${jobSeq++}`;

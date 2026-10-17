@@ -215,13 +215,12 @@ export function fs1TreeStats() {
   return { len: tree.pubs.length, cached: rootCache.size, appends: treeAppends };
 }
 
-/** Test hook: drop the tree and every cached root. */
+/** Test hook: drop the tree and every cached root. A proof that already verified stays verified. */
 export function resetFs1Tree() {
   tree.handle = null;
   tree.pubs = [];
   tree.commits = [];
   rootCache.clear();
-  verifyCache.clear();
 }
 
 function cacheKey(n, jroot) {
@@ -333,6 +332,12 @@ export function fs1VerifyCount() {
 }
 
 export function resetFs1VerifyCount() {
+  verifyCalls = 0;
+}
+
+/** Drop cached verifies. The next check of the same proof runs native again. */
+export function resetFs1VerifyCache() {
+  verifyCache.clear();
   verifyCalls = 0;
 }
 

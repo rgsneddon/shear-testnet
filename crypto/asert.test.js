@@ -465,6 +465,17 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
     assert.match(fp, /NETWORK=shear-testnet-v12/);
     assert.match(fp, /RESERVE_NOTE=withdraw-levy-pull/);
+    assert.match(fp, /RESERVE_REWARD_CLAIM=root-claim-principal-kept/);
+    assert.match(fp, /RESERVE_ROLL=full-sum-next-epoch/);
+    assert.match(fp, /VAULT_LOCK=fs1-tranche/);
+    assert.match(fp, /VAULT_REWARD=fs1-lock-root-v1/);
+    assert.match(fp, /VAULT_CLAIM_CAP=455/);
+    assert.match(fp, /VAULT_HIDDEN=pi-leaf-unlock-v2/);
+    assert.match(fp, /VAULT_ACCRUAL=epoch-total-bps/);
+    assert.match(fp, /VAULT_PROOF=0xab/);
+    assert.match(fp, /RETIRE_ROW=window-3/);
+    assert.match(fp, /VAULT_PERIODS=16/);
+    assert.match(fp, /VAULT_CLAIM_WINDOW=2/);
     assert.doesNotMatch(fp, /HISTORICAL_TIP=/);
     assert.match(fp, /RESERVE_RATE=epoch-fixed:quorum=10:genesis=281:floor=0:trim=0:root=/);
     assert.match(fp, /RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2\/3:windowMain=6720:windowTest=67:windowMs=604800000:floorBps=0:sourceTenths=-1000\.\.100000:activation=fixed/);

@@ -23,7 +23,7 @@ import {
 import { lockTx, voteTx, portalIdFromDest } from './reserve_vault.js';
 import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest, spendDestOf, encodeDest } from './address.js';
 import { vaultDest, destForLogin } from './flow_sheet.js';
-import { verifySealedNote, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
+import { verifyRange, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
 import { attachAdmitPub } from './admit.js';
 import { PI_SHE_NANOS, GENESIS_BITS_PACKED, NANOS_PER_SHE, POOL_FEE_BPS } from './asert.js';
 import { digestTx, buildTemplate, verifyBlock, GENESIS_PREV } from '../node/src/chain.js';
@@ -232,28 +232,31 @@ describe('chronoflux prune + collate', () => {
     assert.equal(levy.nanos, 5);
   });
 
-  it('compact lock drops the opening and still proves the amount after JSON', () => {
+  it('compact lock keeps the commitment and the range proof, not the amount', () => {
     const id = newIdentity();
     const continuum = destForLogin(id.address, { viewKey: id.viewKey });
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
     const tx = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-json' });
-    assert.equal(verifySealedNote(tx.vout[0], PI_SHE_NANOS), true);
+    assert.equal(tx.nanos, 0);
+    assert.equal(tx.vout[0].valueProof, undefined);
+    assert.equal(tx.vout[0].nanos, undefined);
+    assert.equal(verifyRange(tx.vout[0].commit, tx.vout[0].rangeProof), true);
     const sealed = compactTx(tx);
     assert.equal(sealed.vout[0].r, undefined);
     assert.equal(sealed.kind, 'lock');
-    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.to, vault);
     assert.equal(sealed.from, undefined);
     assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.nanos, undefined);
     assert.equal(sealed.vout[0].nanos, undefined);
+    assert.equal(sealed.vout[0].valueProof, undefined);
     assert.ok(sealed.vout[0].commit);
-    assert.ok(sealed.vout[0].rangeProof || sealed.vout[0].valueProof);
-    if (sealed.vout[0].rangeProof) {
-      assert.equal(sealed.vout[0].rangeProof === true, false);
-    }
+    assert.ok(sealed.vout[0].rangeProof);
+    assert.equal(sealed.vout[0].rangeProof === true, false);
     const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
     assert.equal(Buffer.isBuffer(wire.vout[0].commit), true);
-    assert.equal(verifySealedNote(wire.vout[0], PI_SHE_NANOS), true);
+    assert.equal(wire.vout[0].valueProof, undefined);
+    assert.equal(verifyRange(wire.vout[0].commit, wire.vout[0].rangeProof), true);
     assert.equal(wire.vout[0].r, undefined);
     assert.ok(sealed.vout[0].dest20);
     assert.ok(sealed.vout[0].portalId);
@@ -276,12 +279,11 @@ describe('chronoflux prune + collate', () => {
     };
     const sealed = compactTx(fat);
     const blob = JSON.stringify(sealed);
-    assert.doesNotMatch(blob, /ssa1/);
-    assert.doesNotMatch(blob, /she1/);
+    assert.doesNotMatch(blob, /"from"/);
     assert.doesNotMatch(blob, /"nanos"/);
     assert.doesNotMatch(blob, /"address"/);
     assert.equal(sealed.from, undefined);
-    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.to, vault);
     assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.vout[0].nanos, undefined);
     assert.ok(sealed.vout[0].dest20);
@@ -309,6 +311,56 @@ describe('chronoflux prune + collate', () => {
     assert.equal(voteSealed.payer, undefined);
     assert.ok(voteSealed.vout[0].dest20);
     assert.equal(digestTx(voteSealed).equals(digestTx(voteFat)), true);
+  });
+
+  it('sealed withdraw keeps the payout and the retire and principal proofs', () => {
+    const payout = 'shear1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqexample';
+    const retire = Buffer.alloc(40, 7);
+    const principal = { R: Buffer.alloc(32, 3), z: Buffer.alloc(32, 4), opened: 1 };
+    const fat = {
+      id: 'wd-seal',
+      programId: 'shear-reserve-v1',
+      kind: 'withdraw',
+      from: payout,
+      to: payout,
+      nanos: 5,
+      fee: 1,
+      retireProof: retire,
+      principalProof: principal,
+      rewardSig: 'ab',
+      ownerPub: 'cd',
+      vin: [{ commit: Buffer.alloc(32, 9) }],
+      vout: [{ kind: 'withdraw', commit: Buffer.alloc(32, 8), valueProof: { v: 5, R: Buffer.alloc(32, 1), z: Buffer.alloc(32, 2) } }],
+    };
+    const sealed = compactTx(fat);
+    assert.equal(sealed.from, undefined);
+    assert.equal(sealed.nanos, undefined);
+    assert.equal(sealed.to, payout);
+    assert.ok(Buffer.from(sealed.retireProof).equals(retire));
+    assert.ok(Buffer.from(sealed.principalProof.R).equals(principal.R));
+    assert.ok(Buffer.from(sealed.principalProof.z).equals(principal.z));
+    assert.equal(sealed.rewardSig, 'ab');
+    const vote = compactTx({
+      id: 'lv-seal',
+      kind: 'leaf-vote',
+      programId: 'shear-reserve-v1',
+      to: payout,
+      from: payout,
+      voteProof: Buffer.alloc(8, 5),
+      voteParam: 'hb',
+      voteSeq: 2,
+      choice: 1,
+      earnEpoch: 4,
+      fee: 1,
+      vin: [{ commit: Buffer.alloc(32, 1) }],
+      vout: [],
+    });
+    assert.equal(vote.to, undefined);
+    assert.equal(vote.from, undefined);
+    assert.ok(Buffer.from(vote.voteProof).equals(Buffer.alloc(8, 5)));
+    assert.equal(vote.voteParam, 'hb');
+    assert.equal(vote.voteSeq, 2);
+    assert.equal(vote.earnEpoch, 4);
   });
 
   it('compact pool-withdraw keeps dest20+value so header merkle still matches after lean/wire', () => {
@@ -415,8 +467,21 @@ describe('chronoflux prune + collate', () => {
     const admit = admitBaseFromAddress(dest);
     const nanos = 620544;
     const fat = attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), { admitBase: admit });
-    const tx = { coinbase: true, height: 7, vin: [{ coinbase: true, height: 7 }], vout: [fat] };
+    const tx = {
+      coinbase: true,
+      height: 7,
+      vin: [{ coinbase: true, height: 7 }],
+      vout: [fat],
+      epochStartRoot: 'ab'.repeat(32),
+      epochStartCommits: [{ epoch: 1, root: 'ab'.repeat(32) }],
+      epochCensusCommit: [{ epoch: 1, leafCount: 1, openHeight: 240 }],
+      vaultLockRoot: 'cd'.repeat(32),
+    };
     const sealed = compactTx(tx);
+    assert.equal(sealed.epochStartRoot, 'ab'.repeat(32));
+    assert.deepEqual(sealed.epochStartCommits, [{ epoch: 1, root: 'ab'.repeat(32) }]);
+    assert.deepEqual(sealed.epochCensusCommit, [{ epoch: 1, leafCount: 1, openHeight: 240 }]);
+    assert.equal(sealed.vaultLockRoot, 'cd'.repeat(32));
     const o = sealed.vout[0];
     assert.equal(o.kind, 'hash');
     assert.equal(o.r, undefined);

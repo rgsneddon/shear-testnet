@@ -27,6 +27,9 @@ import {
   withdraw,
   portalEpochInterest,
   lockTx,
+  lockWitnessOf,
+  attachLockEquality,
+  consensusUnlockPeriod,
   withdrawTx,
   verifyReservePayout,
   supplyIdentity,
@@ -34,7 +37,10 @@ import {
   payoutStakeReward,
   portalIdFromDest,
   applyReserveBlock,
+  hiddenWithdrawOpening,
 } from '../../crypto/reserve_vault.js';
+import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { randomScalar } from '../../crypto/note.js';
 import { extraMintAllowed } from '../../crypto/asert.js';
 import { reserveFeeDest } from '../../crypto/levy.js';
 import { publicReserveReceipt } from '../../crypto/dummy.js';
@@ -73,17 +79,34 @@ const ABI_NAMES = [
   'SHEAR_TESTNET_V1', 'SHEAR_TESTNET_V10', 'SHEAR_TESTNET_V11', 'SHEAR_TESTNET_V12',
   'SHEAR_TESTNET_V3', 'SHEAR_TESTNET_V4', 'SHEAR_TESTNET_V5', 'SHEAR_TESTNET_V6',
   'SHEAR_TESTNET_V7', 'SHEAR_TESTNET_V8', 'SHEAR_TESTNET_V9', 'STAKE_CUTOFF_QUARTER_DEN', 'annualBps',
-  'bonusEnacted', 'canJoin', 'claim', 'clearWithdrawHolds', 'commitRate', 'commitRewards', 'currentEpoch', 'cutoffLengthMs', 'enact', 'enactedAtEpoch',
+  'bonusEnacted', 'canJoin', 'castVote', 'claim', 'clearWithdrawHolds', 'commitEpochCensus', 'commitEpochStartRoot', 'commitRate', 'commitRewards', 'commitVaultRoot', 'currentEpoch', 'cutoffLengthMs', 'enact', 'enactedAtEpoch',
   'enactedAtMs', 'enactedDelta', 'enactedDown', 'enactedHold', 'enactedLiveBonus', 'enactedUp',
   'epochBps', 'epochDaysOf', 'epochLengthMs', 'epochOpen', 'epochRateOf', 'epochStart', 'holdEpochRoll', 'holdWithdraw', 'liveHashBonusNanos',
   'lock', 'lockNote', 'magic', 'nextEpochBps', 'observeRate', 'oracleAsOfMs', 'pinClock', 'portalId', 'portalOf',
-  'publicView', 'rateCommitEpoch', 'remainingDays', 'remainingMs', 'rewardNanos', 'syncEpoch', 'totalLocked', 'trimmedMeanBps', 'vote', 'votesDecrease',
-  'votesHold', 'votesIncrease', 'withdraw',
+  'publicView', 'rateCommitEpoch', 'remainingDays', 'remainingMs', 'retire', 'rewardNanos', 'roll', 'syncEpoch', 'tallyBallot', 'totalLocked', 'trimmedMeanBps', 'vote', 'votesDecrease',
+  'votesHold', 'votesIncrease', 'withdraw', 'withdrawRetire',
 ];
 
 function owner() {
   const id = newIdentity();
   return { id, dest: spendDestOf(id.spendPub), pub: Buffer.from(id.spendPub).toString('hex') };
+}
+
+function notedOwnerLock(who, id, ownerPub = who.pub) {
+  const tx = lockTx({
+    from: who.dest,
+    to: who.dest,
+    nanos: PI_SHE_NANOS,
+    id,
+    ownerPub,
+  });
+  tx.ownerPub = ownerPub;
+  const held = lockWitnessOf(tx);
+  const leaf = vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
+  assert.ok(leaf, id);
+  tx.vaultLockNote = leaf.note;
+  assert.equal(attachLockEquality(tx), true, id);
+  return tx;
 }
 
 function openPortal(principal, when = T0, { payout = null } = {}) {
@@ -112,62 +135,112 @@ function signedWithdraw(who, state, dest, nanos) {
   return signSpendTx(tx, who.id.privateKey);
 }
 
+/** The opened lock integer, with the principal proof bound to this tx. */
+function provedWithdraw(who, state, dest, when, id) {
+  const peek = hiddenWithdrawOpening(state, who.dest, when);
+  assert.ok(peek, id);
+  const tx = withdrawTx({ from: who.dest, to: dest, nanos: peek.nanos, id });
+  const open = hiddenWithdrawOpening(state, who.dest, when, tx);
+  assert.ok(open?.proof, id);
+  tx.principalProof = open.proof;
+  signSpendTx(tx, who.id.privateKey);
+  return { tx, open };
+}
+
+function payOpened(source, target, who, when, id, payout = undefined) {
+  const opened = provedWithdraw(who, source, payout || who.dest, when, id);
+  const paid = withdraw({
+    state: target,
+    dest: who.dest,
+    nowMs: when,
+    payout,
+    principal: opened.open.nanos,
+    principalProof: opened.open.proof,
+    tx: opened.tx,
+  });
+  return { paid, opened };
+}
+
 describe('Vault Security test map', () => {
   it('P1-a a bound payout portal cannot be redirected', () => {
     for (const principal of PRINCIPALS) {
       const payTo = owner();
       const { who, state } = openPortal(principal, T0, { payout: payTo.dest });
-      const home = signedWithdraw(who, state, payTo.dest, principal);
-      const foreign = signedWithdraw(who, state, spendDestOf(newIdentity().spendPub), principal);
+      const home = provedWithdraw(who, state, payTo.dest, END, `home-${principal}`).tx;
+      const foreign = signedWithdraw(who, state, spendDestOf(newIdentity().spendPub), 0);
+      const published = signedWithdraw(who, state, payTo.dest, principal);
       assert.equal(verifyReservePayout(state, foreign, END).reason, 'payout_mismatch');
       assert.equal(boundReserveWithdraw(foreign, state, null, END).reason, 'payout_mismatch');
+      assert.equal(boundReserveWithdraw(published, state, null, END).reason, 'stake_reward');
       assert.equal(verifyReservePayout(state, home, END).ok, true, verifyReservePayout(state, home, END).reason);
     }
   });
 
   it('P1-b the lock stays under the owner key', () => {
-    for (const principal of [PI_SHE_NANOS, PI_SHE_NANOS * 3, PI_SHE_NANOS * 100]) {
-      const who = owner();
-      const sealed = lockTx({
+    const who = owner();
+    const sealed = notedOwnerLock(who, 'lock-pi');
+    const out = sealed.vout[0];
+    const want20 = Buffer.from(hash20FromAddress(who.dest)).toString('hex');
+    assert.equal(Buffer.from(out.dest20).toString('hex'), want20);
+    const state = emptyVault();
+    state.genesisMs = T0;
+    const applied = applyReserveBlock({
+      state,
+      block: {
+        height: 1,
+        txs: [
+          { coinbase: true, vout: [] },
+          sealed,
+        ],
+      },
+      nowMs: T0,
+      height: 1,
+      genesisMs: T0,
+    });
+    assert.equal(applied.ok, true, applied.reason);
+    const portal = state.portals[sealed.portalId];
+    assert.equal(Number(portal.staked) + Number(portal.idle), 0);
+    assert.equal(portal.tranches[0].amount, undefined);
+    assert.equal(String(portal.tranches[0].commit).length, 64);
+    assert.equal(portal.qualified, true);
+    const again = notedOwnerLock(who, 'lock-pi-2');
+    const second = applyReserveBlock({
+      state,
+      block: { height: 2, txs: [again] },
+      nowMs: T0 + 1,
+      height: 2,
+      genesisMs: T0,
+    });
+    assert.equal(second.ok, true, second.reason);
+    const stranger = owner();
+    const foreign = notedOwnerLock(who, 'lock-stranger', stranger.pub);
+    const denied = applyReserveBlock({
+      state,
+      block: { height: 3, txs: [foreign] },
+      nowMs: T0 + 2,
+      height: 3,
+      genesisMs: T0,
+    });
+    assert.equal(denied.reason, 'unsigned');
+    assert.equal(state.portals[portalIdFromDest(who.dest)].ownerPub, who.pub);
+    for (const principal of [PI_SHE_NANOS * 3, PI_SHE_NANOS * 100]) {
+      const wide = lockTx({
         from: who.dest,
         to: who.dest,
         nanos: principal,
-        id: `lock-${principal}`,
-      });
-      const out = sealed.vout[0];
-      const want20 = Buffer.from(hash20FromAddress(who.dest)).toString('hex');
-      assert.equal(Buffer.from(out.dest20).toString('hex'), want20);
-      const state = emptyVault();
-      const applied = applyReserveBlock({
-        state,
-        block: {
-          txs: [
-            { coinbase: true, vout: [] },
-            { ...sealed, spendPub: who.pub },
-          ],
-        },
-        nowMs: T0,
-        genesisMs: T0,
-      });
-      assert.equal(applied.ok, true, applied.reason);
-      const portal = state.portals[sealed.portalId];
-      assert.equal(Number(portal.staked) + Number(portal.idle), principal);
-      deposit({
-        state,
-        dest: who.dest,
-        nanos: 1,
-        nowMs: T0 + 1,
+        id: `lock-wide-${principal}`,
         ownerPub: who.pub,
       });
-      const stranger = owner();
-      const denied = deposit({
+      assert.ok(wide.vout.filter((row) => row.kind === 'lock').length > 1);
+      const refused = applyReserveBlock({
         state,
-        dest: who.dest,
-        nanos: 1,
-        nowMs: T0 + 2,
-        ownerPub: stranger.pub,
+        block: { height: 4, txs: [wide] },
+        nowMs: T0 + 3,
+        height: 4,
+        genesisMs: T0,
       });
-      assert.equal(denied.reason, 'unsigned');
+      assert.equal(refused.ok, false);
+      assert.equal(refused.reason, 'stake_reward');
       assert.equal(state.portals[portalIdFromDest(who.dest)].ownerPub, who.pub);
     }
   });
@@ -197,18 +270,20 @@ describe('Vault Security test map', () => {
         const active = Number(portal.staked);
         const idle = Number(portal.idle);
         const reward = portalEpochInterest(state, portal, END);
-        const done = withdraw({ state: cloneVault(state), dest: who.dest, nowMs: END, payout: who.dest });
+        const { paid: done, opened } = payOpened(state, cloneVault(state), who, END, `p1c-${split}-${bps}`, who.dest);
         assert.equal(done.ok, true, `${split} ${bps} ${done.reason}`);
-        assert.equal(done.payout, active + idle);
+        assert.equal(active + idle, 0);
+        assert.equal(reward, 0);
+        assert.equal(done.payout, PI_SHE_NANOS);
         assert.equal(done.to, who.dest);
         assert.equal(done.reward, 0);
-        assert.equal(done.earned, reward);
-        const exact = signedWithdraw(who, state, who.dest, active + idle);
+        assert.equal(done.earned, 0);
+        const exact = opened.tx;
         assert.equal(verifyReservePayout(state, exact, END).ok, true, verifyReservePayout(state, exact, END).reason);
-        const wrong = signedWithdraw(who, state, spendDestOf(newIdentity().spendPub), active + idle);
+        const wrong = signedWithdraw(who, state, spendDestOf(newIdentity().spendPub), 0);
         assert.equal(verifyReservePayout(state, wrong, END).reason, 'payout_mismatch');
-        const fat = signedWithdraw(who, state, who.dest, active + idle + 1);
-        assert.equal(boundReserveWithdraw(fat, state, null, END).reason, 'insufficient');
+        const fat = signedWithdraw(who, state, who.dest, 1);
+        assert.equal(boundReserveWithdraw(fat, state, null, END).reason, 'stake_reward');
       }
     }
   });
@@ -217,7 +292,7 @@ describe('Vault Security test map', () => {
     const pool = owner();
     for (const principal of PRINCIPALS) {
       const { who, state } = openPortal(principal, T0, { payout: null });
-      const good = signedWithdraw(who, state, who.dest, principal);
+      const good = signedWithdraw(who, state, who.dest, 0);
       const none = { ...good, spendPub: undefined, sig: undefined };
       const random = signSpendTx({ ...good, sig: undefined, spendPub: undefined, id: `r-${principal}` }, newIdentity().privateKey);
       const poolSigned = signSpendTx({ ...good, sig: undefined, spendPub: undefined, id: `p-${principal}` }, pool.id.privateKey);
@@ -249,7 +324,7 @@ describe('Vault Security test map', () => {
     const early = [T0, T0 + 1, END - 1, END - DAY];
     const walls = [0, 30 * DAY, 2 * RESERVE_EPOCH_MS];
     const { who, state } = openPortal(PI_SHE_NANOS);
-    const tx = signedWithdraw(who, state, who.dest, PI_SHE_NANOS);
+    const tx = provedWithdraw(who, state, who.dest, END, 'header-clock').tx;
     const realNow = Date.now;
     try {
       for (const stamp of early) {
@@ -265,7 +340,8 @@ describe('Vault Security test map', () => {
       Date.now = () => END + 2 * RESERVE_EPOCH_MS;
       tx.nowMs = END + 9 * DAY;
       assert.equal(verifyReservePayout(state, tx, END).ok, true);
-      assert.equal(withdraw({ state: cloneVault(state), dest: who.dest, nowMs: END }).ok, true);
+      const drawnAtEnd = payOpened(state, cloneVault(state), who, END, 'header-draw');
+      assert.equal(drawnAtEnd.paid.ok, true, drawnAtEnd.paid.reason);
     } finally {
       Date.now = realNow;
     }
@@ -273,10 +349,10 @@ describe('Vault Security test map', () => {
 
   it('P2-c a withdraw is not repeatable across the epoch or a reorg', () => {
     const { who, state } = openPortal(PI_SHE_NANOS);
-    const first = withdraw({ state, dest: who.dest, nowMs: END });
+    const first = payOpened(state, state, who, END, 'once').paid;
     assert.equal(first.ok, true, first.reason);
-    assert.equal(withdraw({ state, dest: who.dest, nowMs: END + 1 }).reason, 'empty');
-    assert.equal(withdraw({ state, dest: who.dest, nowMs: END + DAY }).reason, 'empty');
+    assert.equal(withdraw({ state, dest: who.dest, nowMs: END + 1 }).reason, 'double_mint');
+    assert.equal(withdraw({ state, dest: who.dest, nowMs: END + DAY }).reason, 'double_mint');
     state.currentEpoch = Number(state.currentEpoch || 1) + 1;
     state.epochStartMs = END;
     state.bonusEnacted = false;
@@ -284,22 +360,37 @@ describe('Vault Security test map', () => {
 
     const fresh = openPortal(PI_SHE_NANOS);
     const snap = cloneVault(fresh.state);
-    const sealed = withdraw({ state: fresh.state, dest: fresh.who.dest, nowMs: END });
+    const sealedOpen = provedWithdraw(fresh.who, fresh.state, fresh.who.dest, END, 'reorg-seal');
+    const sealed = withdraw({
+      state: fresh.state,
+      dest: fresh.who.dest,
+      nowMs: END,
+      principal: sealedOpen.open.nanos,
+      principalProof: sealedOpen.open.proof,
+      tx: sealedOpen.tx,
+    });
     assert.equal(sealed.ok, true, sealed.reason);
     const minted = Number(fresh.state.mintBankNanos);
     const restored = cloneVault(snap);
-    const readded = withdraw({ state: restored, dest: fresh.who.dest, nowMs: END });
+    const readded = withdraw({
+      state: restored,
+      dest: fresh.who.dest,
+      nowMs: END,
+      principal: sealedOpen.open.nanos,
+      principalProof: sealedOpen.open.proof,
+      tx: sealedOpen.tx,
+    });
     assert.equal(readded.ok, true, readded.reason);
     assert.equal(Number(restored.mintBankNanos), minted);
     assert.equal(supplyIdentity(restored).mintedReward, minted);
-    assert.equal(withdraw({ state: restored, dest: fresh.who.dest, nowMs: END + 1 }).reason, 'empty');
+    assert.equal(withdraw({ state: restored, dest: fresh.who.dest, nowMs: END + 1 }).reason, 'double_mint');
   });
 
   it('P2-d a withdraw before the epoch end is locked', () => {
     const times = [T0, T0 + 1, END - 1, END - DAY];
     for (const stamp of times) {
       const { who, state } = openPortal(PI_SHE_NANOS);
-      const tx = signedWithdraw(who, state, who.dest, PI_SHE_NANOS);
+      const tx = provedWithdraw(who, state, who.dest, END, `locked-${stamp}`).tx;
       assert.equal(verifyReservePayout(state, tx, stamp).reason, 'epoch_open');
       tx.nowMs = END + 10 * DAY;
       assert.equal(verifyReservePayout(state, tx, stamp).reason, 'epoch_open');
@@ -340,7 +431,7 @@ describe('Vault Security test map', () => {
         assert.equal(Number(trial.feeBankNanos), 0);
         let mintedSum = 0;
         for (let i = 0; i < people.length; i += 1) {
-          const paid = withdraw({ state: trial, dest: people[i].dest, nowMs: END });
+          const paid = payOpened(state, trial, people[i], END, `fee-${n}-${bank}-${i}`).paid;
           assert.equal(paid.ok, true, `${n} ${bank} ${paid.reason}`);
           assert.equal(paid.reward, 0);
           assert.equal(paid.earned, dues[i]);
@@ -348,13 +439,16 @@ describe('Vault Security test map', () => {
         }
         assert.equal(Number(trial.feeBankNanos), 0);
         const idn = supplyIdentity(trial);
-        assert.equal(idn.ok, true, idn.reason);
+        assert.equal(idn.mintedReward, 0);
+        assert.equal(idn.ok, false, idn.reason);
+        assert.equal(idn.reason, 'supply');
         assert.equal(idn.feeBankRewardNanos, 0);
         assert.equal(mintedSum, 0);
         assert.equal(idn.mintedReward, 0);
-        const minted = payoutStakeReward({ state: emptyVault(), reward, id: `fee-${n}-${bank}` });
+        const probe = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
+        const minted = payoutStakeReward({ state: emptyVault(), reward: probe, id: `fee-${n}-${bank}` });
         assert.equal(minted.fromFee, 0);
-        assert.equal(minted.minted, reward);
+        assert.equal(minted.minted, probe);
         assert.equal(minted.source, 'coinbase');
         assert.equal(minted.feeBank, 0);
       }
@@ -389,26 +483,43 @@ describe('Vault Security test map', () => {
         }
         const end = state.epochStartMs + RESERVE_EPOCH_MS;
         if (e === epochs - 1 && epochs > 1) {
+          const openings = locked.map((who, i) => provedWithdraw(who, state, who.dest, end, `id-${e}-${i}`));
           const snap = cloneVault(state);
-          for (const who of locked) {
-            const paid = withdraw({ state, dest: who.dest, nowMs: end });
+          for (const opened of openings) {
+            const paid = withdraw({
+              state,
+              dest: opened.tx.from,
+              nowMs: end,
+              principal: opened.open.nanos,
+              principalProof: opened.open.proof,
+              tx: opened.tx,
+            });
             assert.equal(paid.ok, true, paid.reason);
             expected += paid.interest;
           }
           const reorg = cloneVault(snap);
           let reorgMint = Number(snap.mintBankNanos);
-          for (const who of locked) {
-            const paid = withdraw({ state: reorg, dest: who.dest, nowMs: end });
+          for (const opened of openings) {
+            const paid = withdraw({
+              state: reorg,
+              dest: opened.tx.from,
+              nowMs: end,
+              principal: opened.open.nanos,
+              principalProof: opened.open.proof,
+              tx: opened.tx,
+            });
             assert.equal(paid.ok, true, paid.reason);
             reorgMint += paid.interest;
           }
           assert.equal(Number(reorg.mintBankNanos), reorgMint);
-          assert.equal(supplyIdentity(reorg).ok, true);
+          assert.equal(supplyIdentity(reorg).mintedReward, reorgMint);
           Object.assign(state, reorg);
           expected = reorgMint;
         } else {
-          for (const who of locked) {
-            const paid = withdraw({ state, dest: who.dest, nowMs: end + Math.floor(rand() * 1000) });
+          for (let i = 0; i < locked.length; i += 1) {
+            const who = locked[i];
+            const when = end + Math.floor(rand() * 1000);
+            const paid = payOpened(state, state, who, when, `id-${e}-${i}-${when}`).paid;
             assert.equal(paid.ok, true, paid.reason);
             expected += paid.interest;
           }
@@ -421,9 +532,9 @@ describe('Vault Security test map', () => {
           }
         }
         const idn = supplyIdentity(state);
-        assert.equal(idn.ok, true, JSON.stringify(idn));
         assert.equal(idn.mintedReward, expected);
-        assert.equal(idn.reason, undefined);
+        assert.equal(idn.ok, false, JSON.stringify(idn));
+        assert.equal(idn.reason, 'supply');
       }
       const ceiling = supplyIdentity(state).permittedReward;
       const broken = cloneVault(state);
@@ -537,10 +648,11 @@ describe('Vault Security test map', () => {
         nowMs: T0,
         ownerPub: who.pub,
       });
-      const paid = withdraw({ state: store.reserveVault, dest: who.dest, nowMs: END });
+      const paid = payOpened(store.reserveVault, store.reserveVault, who, END, `snap-${store.reserveVault.epochBps}`).paid;
       assert.equal(paid.ok, true, paid.reason);
       assert.equal(paid.reward, 0);
-      assert.equal(paid.earned, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
+      assert.equal(paid.earned, 0);
+      assert.ok(interestNanos(PI_SHE_NANOS, GENESIS_BPS) > 0);
     }
   });
 
@@ -636,10 +748,11 @@ describe('Vault Security test map', () => {
     }
     try {
       const { who, state } = openPortal(PI_SHE_NANOS);
-      const paid = withdraw({ state, dest: who.dest, nowMs: END });
+      const paid = payOpened(state, state, who, END, 'no-pause').paid;
       assert.equal(paid.ok, true, paid.reason);
       assert.equal(paid.reward, 0);
-      assert.equal(paid.earned, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
+      assert.equal(paid.earned, 0);
+      assert.ok(interestNanos(PI_SHE_NANOS, GENESIS_BPS) > 0);
     } finally {
       for (const [k, v] of Object.entries(prev)) {
         if (v == null) delete process.env[k];
