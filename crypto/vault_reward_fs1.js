@@ -13,9 +13,9 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
-import { MAGIC_TESTNET, PI_SHE_NANOS, VAULT_PROOF_VER } from './asert.js';
+import { MAGIC_TESTNET, PI_SHE_NANOS, VAULT_CLAIM_WINDOW_EPOCHS, VAULT_PROOF_VER } from './asert.js';
 import { vaultEpochBlocks, vaultPeriodBlocks } from './vault_accrual.js';
-import { voteBindBytes, voteKey, voteTag, voteTxDigest } from './leaf_vote.js';
+import { voteTag } from './leaf_vote.js';
 
 export { VAULT_PROOF_VER };
 import { admitPub } from './admit.js';
@@ -60,8 +60,20 @@ export const VAULT_RETIRE_MAGIC = 'shear-retire-v1';
 export const VAULT_RETIRE_NULL = 'shear-vault-retire-null-v1';
 export const VAULT_RETIRE_DST = 'shear-vault-retire-dleq-v1';
 export const VAULT_UNLOCK_DST = 'shear-vault-unlock-base-v1';
+/** Gap proof domain. The claimed period is not published as an unlock integer. */
+export const VAULT_GAP_DST = 'shear-vault-unlock-gap-v1';
+/** Vote-only null base. Not the claim epoch base, so a vote point is not a claim point. */
+export const VAULT_VOTE_NULL_DST = 'shear-vote-null-v1';
+export const VAULT_VOTE_VER = 0x56;
+const VOTE_FS1_MASK = 'shear-vote-fs1-v1';
+export const VAULT_VOTE_STMT = 'shear-vote-stmt-v1';
 /** Claims of a still-locked leaf are below this public unlock. Withdraw replaces it. */
 export const VAULT_UNLOCK_OPEN = (1n << 32n) - 1n;
+/** One retire proof covers the withdraw period and the later periods still inside the window. */
+export const MAX_RETIRE_ROWS = VAULT_CLAIM_WINDOW_EPOCHS + 1;
+/** A constructed proof may be wider. Consensus and the EVM accept only the window. */
+const MAX_RETIRE_BUILT = 64;
+const RETIRE_ROW = 8 + 32 * 5;
 export const VAULT_PI_LEAF = BigInt(PI_SHE_NANOS);
 export const VAULT_LOCK_BLIND_DST = 'shear-vault-lock-blind-v1';
 export const VAULT_LOCK_OWNER_DST = 'shear-vault-lock-owner-v1';
@@ -245,11 +257,11 @@ export function vaultLockNote(amount, ownerScalar, blind, unlockEpoch = VAULT_UN
 }
 
 function statementDigest({
-  magic, root, epoch, bps, span, reward, covered, unlock,
+  magic, root, epoch, bps, span, reward, covered, gapC,
   commit: outCommit, noteCommit, dest20, amtCt, preimage,
-  vote = null,
 }) {
-  const body = [
+  if (!gapC || gapC.length !== 32) return null;
+  return createHash('sha256').update(Buffer.concat([
     Buffer.from(VAULT_REWARD_DST),
     Buffer.from(String(magic || MAGIC_TESTNET)),
     root,
@@ -258,19 +270,13 @@ function statementDigest({
     u64le(span),
     u64le(reward),
     u64le(covered),
-    u64le(unlock),
+    gapC,
     outCommit,
     noteCommit,
     dest20,
     amtCt,
     preimage,
-  ];
-  if (vote) {
-    const bound = voteBindBytes(vote);
-    if (!bound) return null;
-    body.push(bound);
-  }
-  return createHash('sha256').update(Buffer.concat(body)).digest();
+  ])).digest();
 }
 
 /**
@@ -447,11 +453,58 @@ function retireNullifierOf(P2, epoch) {
 }
 
 /**
- * One leaf, one proof. Each epoch whose nullifier this withdraw burns has its
- * own DLEQ. The challenge binds the domain, the epoch, both bases, the
- * network magic, and the withdraw tx. The retire nullifier is not the claim
- * PRF; the claim nullifier is still derived so consensus can burn it.
- * Layout: u64 unlock || u32 n || n × (u64 epoch || A1 || A2 || s || P2) || leaf || txBind.
+ * Retire challenge. P2 is not an input: the verifier recomputes it, so the
+ * proof does not publish the claim null point.
+ */
+function retireChallenge(epoch, A1, A2, P1, claimNf, retireNf, magic, txBind) {
+  return hashToScalar(
+    Buffer.from(VAULT_RETIRE_DST),
+    u64le(epoch),
+    A1,
+    A2,
+    P1,
+    claimNf,
+    retireNf,
+    Buffer.from(String(magic || MAGIC_TESTNET)),
+    txBind,
+  );
+}
+
+function retireRowProve(epoch, x, P1, magic, txBind) {
+  const k = randomScalar();
+  const base = nullBase(epoch);
+  const A1 = pointBytes(G.multiply(k));
+  const A2 = pointBytes(base.multiply(k));
+  const P2 = base.multiply(x);
+  const P2b = pointBytes(P2);
+  const claim = claimNullifierOf(P2b);
+  const retire = retireNullifierOf(P2b, epoch);
+  const e = retireChallenge(epoch, A1, A2, P1, claim, retire, magic, txBind);
+  const s = scalarBytes(Fn.add(k, Fn.mul(e, x)));
+  return { epoch, A1, A2, s, claim, retire };
+}
+
+function retireRowVerify(epoch, A1, A2, s, claim, retire, P1, magic, txBind) {
+  const e = retireChallenge(epoch, A1, A2, P1, claim, retire, magic, txBind);
+  if (Fn.eql(e, Fn.ZERO)) return null;
+  const z = scalarFrom(s);
+  const left1 = G.multiply(z);
+  const right1 = pointFrom(A1).add(pointFrom(P1).multiply(e));
+  if (!left1.equals(right1)) return null;
+  const base = nullBase(epoch);
+  const P2 = base.multiply(z).subtract(pointFrom(A2)).multiply(Fn.inv(e));
+  const P2b = pointBytes(P2);
+  const expectClaim = claimNullifierOf(P2b);
+  const expectRetire = retireNullifierOf(P2b, epoch);
+  if (!expectClaim.equals(claim) || !expectRetire.equals(retire)) return null;
+  return { nullifier: expectClaim, retireNullifier: expectRetire };
+}
+
+/**
+ * One leaf, one proof. Each period this withdraw burns has its own DLEQ.
+ * The row publishes the claim nullifier and the retire nullifier, not the
+ * null point those hashes were taken from.
+ * Layout: u64 unlock || u32 n || n × (u64 period || A1 || A2 || s || claim || retire) || leaf || txBind.
  */
 export function proveLeafRetire({
   scalar, epoch, epochs = null, leaf, txBind = null, magic = MAGIC_TESTNET, unlockEpoch = null,
@@ -465,7 +518,7 @@ export function proveLeafRetire({
       if (!Number.isSafeInteger(at) || at < 0 || list.includes(at)) return null;
       list.push(at);
     }
-    if (!list.length || list.length > 64) return null;
+    if (!list.length || list.length > MAX_RETIRE_BUILT) return null;
     const note = Buffer.from(asU8(leaf));
     if (note.length !== 64) return null;
     let bind = Buffer.alloc(32);
@@ -475,16 +528,17 @@ export function proveLeafRetire({
     }
     const unlock = unlockEpoch == null ? BigInt(Math.max(...list)) : BigInt(unlockEpoch);
     if (unlock < 0n || unlock > 0xffffffffffffffffn) return null;
+    const P1 = note.subarray(0, 32);
     const rows = [];
     for (const at of list) {
-      const d = dleqProve(G, nullBase(at), x, at, magic, bind);
-      if (!note.subarray(0, 32).equals(d.P1)) return null;
-      rows.push({ epoch: at, ...d, claim: claimNullifierOf(d.P2), retire: retireNullifierOf(d.P2, at) });
+      const row = retireRowProve(at, x, P1, magic, bind);
+      if (!row) return null;
+      rows.push(row);
     }
     const proof = Buffer.concat([
       u64le(unlock),
       u32le(rows.length),
-      ...rows.map((row) => Buffer.concat([u64le(row.epoch), row.A1, row.A2, row.s, row.P2])),
+      ...rows.map((row) => Buffer.concat([u64le(row.epoch), row.A1, row.A2, row.s, row.claim, row.retire])),
       note,
       bind,
     ]);
@@ -509,34 +563,65 @@ export function proveLeafRetire({
   }
 }
 
-/** Null when the retire proof does not open `nullifier` for its leaf. */
+/** How many DLEQ rows a retire proof carries. Null when the header is not one. */
+export function retireDleqCount(proof) {
+  try {
+    const buf = Buffer.from(asU8(proof));
+    if (buf.length < 12) return null;
+    const n = buf.readUInt32LE(8);
+    if (!Number.isInteger(n) || n < 1) return null;
+    return n;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Row count of a retire proof whose length matches the layout.
+ * A short or torn buffer is not a declared proof. A count above the
+ * claim window is still returned, so consensus can refuse it as unsigned.
+ */
+export function retireDeclaredRows(proof) {
+  try {
+    const buf = Buffer.from(asU8(proof));
+    const n = retireDleqCount(buf);
+    if (n == null) return null;
+    const expect = 12 + n * RETIRE_ROW + 64 + 32;
+    if (!Number.isSafeInteger(expect) || buf.length !== expect) return null;
+    return n;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Null when the retire proof does not open `nullifier` for its leaf.
+ * A proof wider than the claim window is not a consensus proof.
+ */
 export function verifyLeafRetire(proof, nullifier = null, magic = MAGIC_TESTNET) {
   try {
     const buf = Buffer.from(asU8(proof));
-    if (buf.length < 8 + 4 + 136 + 64 + 32) return null;
+    if (buf.length < 8 + 4 + RETIRE_ROW + 64 + 32) return null;
     const unlock = buf.readBigUInt64LE(0);
     const n = buf.readUInt32LE(8);
-    if (n < 1 || n > 64) return null;
+    if (n < 1 || n > MAX_RETIRE_ROWS) return null;
     let off = 12;
     const epochs = [];
-    const leafAt = 12 + n * 136;
+    const leafAt = 12 + n * RETIRE_ROW;
     if (buf.length !== leafAt + 64 + 32) return null;
     const leaf = Buffer.from(buf.subarray(leafAt, leafAt + 64));
     const txBind = Buffer.from(buf.subarray(leafAt + 64));
+    const P1 = leaf.subarray(0, 32);
     for (let i = 0; i < n; i += 1) {
       const epoch = buf.readBigUInt64LE(off); off += 8;
-      const A1 = buf.subarray(off, off + 32); off += 32;
-      const A2 = buf.subarray(off, off + 32); off += 32;
-      const s = buf.subarray(off, off + 32); off += 32;
-      const P2 = buf.subarray(off, off + 32); off += 32;
-      const base = pointBytes(nullBase(epoch));
-      if (!dleqVerify(pointBytes(G), base, leaf.subarray(0, 32), P2, A1, A2, s, epoch, magic, txBind)) return null;
-      epochs.push({
-        epoch,
-        nullifier: claimNullifierOf(P2),
-        retireNullifier: retireNullifierOf(P2, epoch),
-        P2: Buffer.from(P2),
-      });
+      const A1 = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+      const A2 = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+      const s = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+      const claim = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+      const retire = Buffer.from(buf.subarray(off, off + 32)); off += 32;
+      const opened = retireRowVerify(epoch, A1, A2, s, claim, retire, P1, magic, txBind);
+      if (!opened) return null;
+      epochs.push({ epoch, nullifier: opened.nullifier, retireNullifier: opened.retireNullifier });
     }
     const expect = epochs[0].nullifier;
     const nf = nullifier == null ? expect : bytes32(nullifier);
@@ -583,13 +668,101 @@ function remainSigmaVerify(cTilde, A1, A2, C, Q, s, sr) {
   }
 }
 
-function piOpenExtra(cTilde, unlock) {
+function piOpenExtra(cTilde, gapC) {
   return createHash('sha256').update(Buffer.concat([
     Buffer.from(VAULT_REL_DST),
     cTilde,
     u64le(VAULT_PI_LEAF),
-    u64le(unlock),
+    gapC,
   ])).digest();
+}
+
+/** gap = unlock − period − 1. A non-negative gap is claimed_period < unlock. */
+function proveUnlockGap(unlock, epoch) {
+  let gap;
+  try {
+    gap = BigInt(unlock) - BigInt(epoch) - 1n;
+  } catch {
+    return null;
+  }
+  if (gap < 0n || gap > 0xffffffffn) return null;
+  const r = randomScalar();
+  const gapPoint = commit(gap, r);
+  const gapC = pointBytes(gapPoint);
+  const range = proveRange(gap, r);
+  if (!range?.length) return null;
+  const x = Fn.create(gap);
+  const d = dleqProve(G, unlockBase(), x, epoch, VAULT_GAP_DST, gapC);
+  if (!d) return null;
+  const linkP = gapPoint.subtract(pointFrom(d.P1));
+  const linkExtra = Buffer.concat([Buffer.from(VAULT_UNLOCK_DST), gapC, d.P1]);
+  if (!linkP.equals(H.multiply(r))) return null;
+  const link = schnorrProve(linkP, r, linkExtra);
+  return { gap, gapC, range, ...d, linkR: link.R, linkZ: link.z };
+}
+
+function verifyUnlockGap(epoch, tail) {
+  try {
+    if (!tail?.range?.length || !tail.gapC || tail.gapC.length !== 32) return false;
+    if (!verifyRange(tail.gapC, tail.range)) return false;
+    const U = unlockBase();
+    if (!dleqVerify(
+      pointBytes(G), pointBytes(U), tail.P1, tail.P2, tail.A1, tail.A2, tail.s,
+      epoch, VAULT_GAP_DST, tail.gapC,
+    )) return false;
+    const linkP = pointFrom(tail.gapC).subtract(pointFrom(tail.P1));
+    const linkExtra = Buffer.concat([Buffer.from(VAULT_UNLOCK_DST), tail.gapC, tail.P1]);
+    return schnorrVerify(linkP, tail.linkR, tail.linkZ, linkExtra);
+  } catch {
+    return false;
+  }
+}
+
+function packGapTail(gap) {
+  return Buffer.concat([
+    u32le(gap.range.length),
+    gap.range,
+    gap.gapC,
+    gap.A1,
+    gap.A2,
+    gap.s,
+    gap.P1,
+    gap.P2,
+    gap.linkR,
+    gap.linkZ,
+  ]);
+}
+
+function parseGapTail(buf, off) {
+  if (off === buf.length) return { tail: null };
+  const rangeLen = readU32(buf, off);
+  if (!rangeLen || rangeLen.n < 1) return null;
+  off = rangeLen.off;
+  const range = take(buf, off, rangeLen.n);
+  if (!range) return null;
+  off = range.off;
+  const gapC = take(buf, off, 32);
+  const A1 = gapC && take(buf, gapC.off, 32);
+  const A2 = A1 && take(buf, A1.off, 32);
+  const s = A2 && take(buf, A2.off, 32);
+  const P1 = s && take(buf, s.off, 32);
+  const P2 = P1 && take(buf, P1.off, 32);
+  const linkR = P2 && take(buf, P2.off, 32);
+  const linkZ = linkR && take(buf, linkR.off, 32);
+  if (!linkZ || linkZ.off !== buf.length) return null;
+  return {
+    tail: {
+      range: range.b,
+      gapC: gapC.b,
+      A1: A1.b,
+      A2: A2.b,
+      s: s.b,
+      P1: P1.b,
+      P2: P2.b,
+      linkR: linkR.b,
+      linkZ: linkZ.b,
+    },
+  };
 }
 
 function schnorrProve(P, s, extra) {
@@ -763,7 +936,8 @@ export function verifyUnderCap(capCommit, rewardCommit, range) {
 
 /**
  * Version, FS-1, record, then bps, epoch-block span, period, reward,
- * covered blocks, unlock, and the seven 32-byte words. No remainder.
+ * covered blocks, and the seven 32-byte words. The unlock integer is not
+ * a field. A gap proof after the header shows claimed_period < unlock.
  */
 export function packVaultRewardProof(p) {
   return Buffer.concat([
@@ -776,7 +950,6 @@ export function packVaultRewardProof(p) {
     u64le(p.epoch),
     u64le(p.reward),
     u64le(p.covered),
-    u64le(p.unlock),
     p.nullBase,
     p.nullP,
     p.nullA1,
@@ -820,9 +993,6 @@ function parseProof(blob) {
   const covered = readU64(buf, off);
   if (!covered) return null;
   off = covered.off;
-  const unlock = readU64(buf, off);
-  if (!unlock) return null;
-  off = unlock.off;
   const nullBaseB = take(buf, off, 32);
   if (!nullBaseB) return null;
   off = nullBaseB.off;
@@ -842,7 +1012,10 @@ function parseProof(blob) {
   if (!noteR) return null;
   off = noteR.off;
   const noteZ = take(buf, off, 32);
-  if (!noteZ || noteZ.off !== buf.length) return null;
+  if (!noteZ) return null;
+  off = noteZ.off;
+  const gap = parseGapTail(buf, off);
+  if (!gap) return null;
   return {
     fs1: fs1.b,
     record: record.b,
@@ -852,7 +1025,6 @@ function parseProof(blob) {
     earnEpoch: epoch.n,
     reward: reward.n,
     covered: covered.n,
-    unlock: unlock.n,
     nullBase: nullBaseB.b,
     nullP: nullP.b,
     nullA1: nullA1.b,
@@ -860,6 +1032,7 @@ function parseProof(blob) {
     openZ: openZ.b,
     noteR: noteR.b,
     noteZ: noteZ.b,
+    gap: gap.tail,
   };
 }
 
@@ -918,6 +1091,7 @@ export function proveVaultReward({
   magic = MAGIC_TESTNET,
   vote = null,
 } = {}) {
+  if (vote) return null;
   if (!fs1NativeLoaded()) return null;
   if (Math.floor(Number(rootEpoch)) !== Math.floor(Number(earnEpoch))) return null;
   if (!Array.isArray(locks) || !locks.length || which < 0 || which >= locks.length) return null;
@@ -964,6 +1138,8 @@ export function proveVaultReward({
   const epoch = Math.floor(Number(earnEpoch));
   const unlock = rows[which].unlock;
   if (BigInt(epoch) >= unlock) return null;
+  const gapProof = proveUnlockGap(unlock, epoch);
+  if (!gapProof) return null;
   const nullifier = vaultRewardNullifier(rows[which].scalar, epoch);
   if (!nullifier) return null;
   let note = null;
@@ -988,21 +1164,6 @@ export function proveVaultReward({
     reward: reward.nanos,
   });
   if (!preimage) return null;
-  let voteBind = null;
-  if (vote) {
-    const pid = Buffer.isBuffer(vote.proposalId) ? vote.proposalId : Buffer.from(String(vote.proposalId || ''), 'hex');
-    const kVote = voteKey(rows[which].scalar);
-    if (!kVote) return null;
-    const txDigest = voteTxDigest({
-      choice: vote.choice,
-      seq: vote.seq,
-      proposalId: pid,
-      epoch,
-      magic,
-    });
-    if (!txDigest) return null;
-    voteBind = { choice: vote.choice, seq: vote.seq, proposalId: pid, txDigest };
-  }
   const digest = statementDigest({
     magic,
     root,
@@ -1011,13 +1172,12 @@ export function proveVaultReward({
     span: blocks,
     reward: reward.nanos,
     covered,
-    unlock,
+    gapC: gapProof.gapC,
     commit: bound.commit,
     noteCommit: bound.noteCommit,
     dest20: bound.dest20,
     amtCt: bound.amtCt,
     preimage,
-    vote: voteBind,
   });
   if (!digest) return null;
   const epochBase = pointBytes(nullBase(epoch));
@@ -1038,9 +1198,12 @@ export function proveVaultReward({
   const t = scalarFrom(proved.t.subarray(0, 32));
   const cTilde = record.subarray(33, 65);
   const openS = Fn.add(rows[which].blind, t);
-  const openP = pointFrom(cTilde).subtract(G.multiply(Fn.create(VAULT_PI_LEAF))).subtract(unlockBase().multiply(Fn.create(unlock)));
+  const openP = pointFrom(cTilde)
+    .subtract(G.multiply(Fn.create(VAULT_PI_LEAF)))
+    .subtract(unlockBase().multiply(Fn.create(BigInt(epoch) + 1n)))
+    .subtract(pointFrom(gapProof.P2));
   if (!openP.equals(H.multiply(openS))) return null;
-  const open = schnorrProve(openP, openS, piOpenExtra(cTilde, unlock));
+  const open = schnorrProve(openP, openS, piOpenExtra(cTilde, gapProof.gapC));
   const noteS = scalarFrom(note.r);
   const noteP = pointFrom(bound.commit).subtract(G.multiply(Fn.create(reward.nanos)));
   if (!noteP.equals(H.multiply(noteS))) return null;
@@ -1056,7 +1219,6 @@ export function proveVaultReward({
     epoch,
     reward: reward.nanos,
     covered,
-    unlock,
     nullBase: linkAnn,
     nullP: linkN,
     nullA1: linkSr,
@@ -1065,10 +1227,11 @@ export function proveVaultReward({
     noteR: noteOpen.R,
     noteZ: noteOpen.z,
   });
-  if (blob.includes(lockCommit)) return null;
+  const packed = Buffer.concat([blob, packGapTail(gapProof)]);
+  if (packed.includes(lockCommit)) return null;
   return {
     ok: true,
-    blob,
+    blob: packed,
     root,
     rootHex: root.toString('hex'),
     nullifier: nullifier.toString('hex'),
@@ -1090,13 +1253,6 @@ export function proveVaultReward({
       commit: row.commit,
       unlock: row.unlock,
     })),
-    ...(voteBind ? {
-      voteTag: voteTag(linkN, epoch, voteBind.proposalId),
-      voteSeq: Math.floor(Number(vote.seq)),
-      proposalId: voteBind.proposalId,
-      txDigest: voteBind.txDigest,
-      choice: Math.floor(Number(vote.choice)),
-    } : {}),
   };
 }
 
@@ -1112,6 +1268,7 @@ export function verifyVaultReward({
   blob, root, rootEpoch, nullifier, output = null, terms = null, magic = MAGIC_TESTNET,
   vote = null,
 } = {}) {
+  if (vote) return fail(0, 'unsigned');
   const bound = claimOutputBinding(output);
   if (!bound) return fail(0, 'unsigned');
   const parsed = parseProof(blob);
@@ -1137,7 +1294,7 @@ export function verifyVaultReward({
   if (parsed.span <= 0n || parsed.bps <= 0 || parsed.bps > 1_000_000) return fail(2, 'stake_reward');
   if (BigInt(parsed.bps) * parsed.span >= RELATION_BOUND) return fail(2, 'stake_reward');
   if (parsed.reward <= 0n || parsed.reward > MAX_NANOS) return fail(2, 'stake_reward');
-  if (parsed.epoch >= parsed.unlock) return fail(2, 'stake_reward');
+  if (!parsed.gap || !verifyUnlockGap(parsed.epoch, parsed.gap)) return fail(2, 'stake_reward');
   const expectCovered = terms.covered != null ? BigInt(terms.covered) : (expectSpan / 16n);
   if (expectCovered <= 0n || expectCovered > expectSpan || parsed.covered !== expectCovered) {
     return fail(2, 'stake_reward');
@@ -1161,21 +1318,6 @@ export function verifyVaultReward({
       reward: parsed.reward,
     });
     if (!preimage) return fail(0, 'unsigned');
-    let voteBind = null;
-    if (vote) {
-      const pid = Buffer.isBuffer(vote.proposalId) ? vote.proposalId : Buffer.from(String(vote.proposalId || ''), 'hex');
-      const txDigest = vote.txDigest
-        ? (Buffer.isBuffer(vote.txDigest) ? vote.txDigest : Buffer.from(String(vote.txDigest), 'hex'))
-        : voteTxDigest({
-          choice: vote.choice,
-          seq: vote.seq,
-          proposalId: pid,
-          epoch: parsed.epoch,
-          magic,
-        });
-      voteBind = { choice: vote.choice, seq: vote.seq, proposalId: pid, txDigest };
-      if (!voteBindBytes(voteBind)) return fail(0, 'unsigned');
-    }
     digest = statementDigest({
       magic,
       root: rootBuf,
@@ -1184,22 +1326,24 @@ export function verifyVaultReward({
       span: parsed.span,
       reward: parsed.reward,
       covered: parsed.covered,
-      unlock: parsed.unlock,
+      gapC: parsed.gap.gapC,
       commit: bound.commit,
       noteCommit: bound.noteCommit,
       dest20: bound.dest20,
       amtCt: bound.amtCt,
       preimage,
-      vote: voteBind,
     });
     if (!digest) return fail(0, 'unsigned');
-    openP = pointFrom(cTilde).subtract(G.multiply(Fn.create(VAULT_PI_LEAF))).subtract(unlockBase().multiply(Fn.create(parsed.unlock)));
+    openP = pointFrom(cTilde)
+      .subtract(G.multiply(Fn.create(VAULT_PI_LEAF)))
+      .subtract(unlockBase().multiply(Fn.create(parsed.epoch + 1n)))
+      .subtract(pointFrom(parsed.gap.P2));
     noteP = pointFrom(bound.commit).subtract(G.multiply(Fn.create(parsed.reward)));
   } catch {
     return fail(2, 'stake_reward');
   }
   if (!schnorrVerify(noteP, parsed.noteR, parsed.noteZ, balanceExtra(preimage, bound.dest20))) return fail(2, 'stake_reward');
-  if (!schnorrVerify(openP, parsed.openR, parsed.openZ, piOpenExtra(cTilde, parsed.unlock))) return fail(2, 'stake_reward');
+  if (!schnorrVerify(openP, parsed.openR, parsed.openZ, piOpenExtra(cTilde, parsed.gap.gapC))) return fail(2, 'stake_reward');
   const anchor = Number(rootEpoch);
   if (!Number.isSafeInteger(anchor) || anchor < 0) return fail(0, 'unsigned');
   const epochBase = pointBytes(nullBase(parsed.epoch));
@@ -1220,13 +1364,197 @@ export function verifyVaultReward({
   const tag = parsed.record.subarray(1, 33);
   const derived = tagDerivedNullifier(tag, parsed.epoch);
   if (derived && derived.equals(nf)) return fail(0, 'unsigned');
-  let leafTag = null;
-  if (vote) {
-    const pid = Buffer.isBuffer(vote.proposalId) ? vote.proposalId : Buffer.from(String(vote.proposalId || ''), 'hex');
-    leafTag = voteTag(parsed.nullP, parsed.epoch, pid);
-    if (!leafTag) return fail(0, 'unsigned');
+  return { ok: true, code: 1, reason: null, reward: parsed.reward, full: true };
+}
+
+function voteNullBase(epoch, proposal) {
+  const pid = bytes32(proposal);
+  if (!pid) return null;
+  return ristretto255_hasher.hashToCurve(Buffer.concat([u64le(epoch), pid]), { DST: VAULT_VOTE_NULL_DST });
+}
+
+function voteStatement(root, epoch, proposal, choice, seq, magic, dest20) {
+  const pid = bytes32(proposal);
+  const picked = Math.floor(Number(choice));
+  const n = Math.floor(Number(seq));
+  if (!pid || !root || root.length !== 32 || !dest20 || dest20.length !== 20) return null;
+  if (picked !== -1 && picked !== 0 && picked !== 1) return null;
+  if (n < 1 || n > 8) return null;
+  const cb = picked < 0 ? 0xff : picked;
+  return createHash('sha256').update(Buffer.concat([
+    Buffer.from(VAULT_VOTE_STMT),
+    root,
+    u64le(epoch),
+    pid,
+    Buffer.from([cb]),
+    u32le(n),
+    Buffer.from(String(magic || MAGIC_TESTNET)),
+    dest20,
+  ])).digest();
+}
+
+/**
+ * The one-leaf FS-1 header is the same bytes on a claim and a vote.
+ * Masking the stored proof keeps those bytes off the vote. The verifier
+ * undoes the mask. The key is this vote's null point, which the claim does not carry.
+ */
+function maskVoteFs1(fs1, linkN) {
+  const out = Buffer.from(fs1);
+  const point = Buffer.from(linkN);
+  let block = Buffer.alloc(0);
+  let used = 0;
+  let n = 0;
+  for (let i = 0; i < out.length; i += 1) {
+    if (used >= block.length) {
+      block = createHash('sha256').update(VOTE_FS1_MASK).update(point).update(u32le(n)).digest();
+      n += 1;
+      used = 0;
+    }
+    out[i] ^= block[used];
+    used += 1;
   }
-  return { ok: true, code: 1, reason: null, reward: parsed.reward, full: true, voteTag: leafTag, nullP: parsed.nullP };
+  return out;
+}
+
+/**
+ * Vote-only proof. The null point is Hp_vote(epoch, proposal)·k, the leaf
+ * secret, not the claim null point. The blob carries no claim nullifier.
+ * Layout: 0x56 || u64 epoch || N || linkAnn || linkSr || u32 fs1Len || fs1 || record || dest20.
+ */
+export function proveLeafVote({
+  locks, which = 0, epoch, choice, seq, proposalId: pid, magic = MAGIC_TESTNET, dest20 = null,
+} = {}) {
+  if (!fs1NativeLoaded()) return null;
+  const at = Math.floor(Number(epoch));
+  if (!Number.isInteger(at) || at < 0) return null;
+  const proposal = bytes32(pid);
+  if (!proposal) return null;
+  const basePoint = voteNullBase(at, proposal);
+  if (!basePoint) return null;
+  if (!Array.isArray(locks) || !locks.length || which < 0 || which >= locks.length) return null;
+  const rows = [];
+  for (const lock of locks) {
+    const amount = BigInt(lock?.amount ?? 0);
+    if (amount <= 0n) return null;
+    let scalar = lock?.scalar == null
+      ? null
+      : (typeof lock.scalar === 'bigint' ? lock.scalar : scalarFrom(lock.scalar));
+    if (scalar == null) scalar = randomScalar();
+    let blind = lock?.blind == null
+      ? null
+      : (typeof lock.blind === 'bigint' ? lock.blind : scalarFrom(lock.blind));
+    if (blind == null) blind = randomScalar();
+    const unlock = lock?.unlockEpoch == null ? VAULT_UNLOCK_OPEN : lock.unlockEpoch;
+    const row = vaultLockNote(amount, scalar, blind, unlock);
+    if (!row) return null;
+    rows.push(row);
+  }
+  const handle = fs1TreeNew();
+  if (!handle || !fs1TreeAppend(handle, Buffer.concat(rows.map((row) => row.note)))) return null;
+  const root = fs1TreeRoot(handle);
+  if (!root) return null;
+  let dest = null;
+  try { dest = Buffer.from(asU8(dest20)); } catch { dest = null; }
+  if (!dest || dest.length !== 20) dest = randomBytes(20);
+  const digest = voteStatement(root, at, proposal, choice, seq, magic, dest);
+  if (!digest) return null;
+  const epochBase = pointBytes(basePoint);
+  const proved = fs1ProveUnlinked(handle, {
+    indices: [which],
+    xs: [scalarBytes(rows[which].scalar)],
+    digest,
+    anchor: at,
+    nullBases: epochBase,
+  });
+  if (!proved || proved.records.length < RECORD_BYTES || proved.link.length < 96) return null;
+  const record = Buffer.from(proved.records.subarray(0, RECORD_BYTES));
+  const linkAnn = Buffer.from(proved.link.subarray(0, 32));
+  const linkSr = Buffer.from(proved.link.subarray(32, 64));
+  const linkN = Buffer.from(proved.link.subarray(64, 96));
+  const expectN = pointBytes(basePoint.multiply(rows[which].scalar));
+  if (!expectN.equals(linkN)) return null;
+  const stableTag = pointBytes(hpOf(admitPub(rows[which].scalar)).multiply(rows[which].scalar));
+  if (stableTag.equals(record.subarray(1, 33))) return null;
+  let note = null;
+  try {
+    note = sealHiddenNote(1n, { dest20: dest, kind: 'leaf-vote', admitBase: admitPub(randomScalar()) });
+  } catch {
+    return null;
+  }
+  const fs1 = maskVoteFs1(proved.fs1, linkN);
+  const blob = Buffer.concat([
+    Buffer.from([VAULT_VOTE_VER]),
+    u64le(at),
+    linkN,
+    linkAnn,
+    linkSr,
+    u32le(fs1.length),
+    fs1,
+    record,
+    dest,
+  ]);
+  const leaf = rows[which].note;
+  if (blob.includes(leaf) || blob.includes(rows[which].commit)) return null;
+  const tag = voteTag(linkN, at, proposal);
+  if (!tag) return null;
+  return {
+    ok: true,
+    blob,
+    root,
+    rootHex: root.toString('hex'),
+    voteTag: tag,
+    voteSeq: Math.floor(Number(seq)),
+    proposalId: proposal,
+    choice: Math.floor(Number(choice)),
+    epoch: at,
+    note,
+    dest20: dest,
+    locks: rows.map((row) => ({ amount: row.amount, scalar: row.scalar, blind: row.blind, commit: row.commit, unlock: row.unlock })),
+  };
+}
+
+export function verifyLeafVote({
+  blob, root, epoch, choice, seq, proposalId: pid, magic = MAGIC_TESTNET,
+} = {}) {
+  try {
+    const buf = Buffer.from(asU8(blob));
+    if (buf.length < 1 + 8 + 96 + 4 + 3 + RECORD_BYTES + 20 || buf[0] !== VAULT_VOTE_VER) return { ok: false, reason: 'unsigned' };
+    const at = buf.readBigUInt64LE(1);
+    if (at !== BigInt(Math.floor(Number(epoch)))) return { ok: false, reason: 'stake_reward' };
+    const linkN = buf.subarray(9, 41);
+    const linkAnn = buf.subarray(41, 73);
+    const linkSr = buf.subarray(73, 105);
+    const fs1Len = buf.readUInt32LE(105);
+    const fs1At = 109;
+    if (fs1Len < 3 || fs1At + fs1Len + RECORD_BYTES + 20 !== buf.length) return { ok: false, reason: 'unsigned' };
+    const fs1 = maskVoteFs1(buf.subarray(fs1At, fs1At + fs1Len), linkN);
+    if (fs1[0] !== 0xf1) return { ok: false, reason: 'unsigned' };
+    const record = buf.subarray(fs1At + fs1Len, fs1At + fs1Len + RECORD_BYTES);
+    if (record[0] !== 0xf1) return { ok: false, reason: 'unsigned' };
+    const dest = buf.subarray(buf.length - 20);
+    const rootBuf = bytes32(root);
+    const proposal = bytes32(pid);
+    if (!rootBuf || !proposal) return { ok: false, reason: 'unsigned' };
+    const basePoint = voteNullBase(Number(at), proposal);
+    if (!basePoint) return { ok: false, reason: 'unsigned' };
+    const digest = voteStatement(rootBuf, at, proposal, choice, seq, magic, dest);
+    if (!digest) return { ok: false, reason: 'unsigned' };
+    const link = Buffer.concat([linkAnn, linkSr, linkN]);
+    if (!fs1VerifyUnlinked({
+      fs1,
+      records: record,
+      link,
+      root: rootBuf,
+      digest,
+      anchor: Number(at),
+      nullBases: pointBytes(basePoint),
+    })) return { ok: false, reason: 'unsigned' };
+    const tag = voteTag(linkN, at, proposal);
+    if (!tag) return { ok: false, reason: 'unsigned' };
+    return { ok: true, voteTag: tag, epoch: at };
+  } catch {
+    return { ok: false, reason: 'unsigned' };
+  }
 }
 
 /** Opening of the sum of reward commitments. This is the epoch's public mint. */

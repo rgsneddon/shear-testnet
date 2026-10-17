@@ -7,7 +7,9 @@
  * already proves, so the verifier recomputes the tag without the key.
  * There is no miner veto.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { MAGIC_TESTNET, HASH_BONUS_NANOS, HASH_BONUS_NANOS_FLOOR } from './asert.js';
 import { epochDays, joinCutoffDays } from './pot_sched.js';
 import { VAULT_DAY_BLOCKS } from './vault_accrual.js';
@@ -28,6 +30,11 @@ export const RATE_FLOOR_BPS = 100;
 export const RATE_CEIL_BPS = 2000;
 export const VOTE_STEP_DEN = 10;
 export const VOTE_GAP_BLOCKS = 7;
+/** Heights are drawn inside this margin of the open and the close. */
+export const VOTE_EDGE_BLOCKS = 10;
+/** Two leaves of one wallet are at least this many blocks apart. */
+export const VOTE_MIN_SEPARATION = 30;
+const VOTE_PLAN_FILE = 'vote-plan.json';
 
 const PARAMS = new Set(['hb', 'rr']);
 
@@ -410,13 +417,86 @@ export function activateBallot(state, leftEpoch) {
   return { ok: true, hb: hbRow.tallied ? hbRow.step : 0, rr: rrRow.tallied ? rrRow.step : 0 };
 }
 
-/** One send per locked leaf, spaced so sibling leaves are not in one proof. */
-export function castVotePlan(n, { gap = VOTE_GAP_BLOCKS } = {}) {
+function planHeights(count, lo, hi) {
+  const span = hi - lo + 1;
+  const need = count <= 1 ? 1 : (count - 1) * VOTE_MIN_SEPARATION + 1;
+  if (span < need) return null;
+  for (let attempt = 0; attempt < 256; attempt += 1) {
+    const draw = [];
+    for (let i = 0; i < count; i += 1) draw.push(lo + randomInt(span));
+    draw.sort((a, b) => a - b);
+    let ok = true;
+    for (let i = 1; i < draw.length; i += 1) {
+      if (draw[i] - draw[i - 1] < VOTE_MIN_SEPARATION) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return draw;
+  }
+  const last = hi - (count - 1) * VOTE_MIN_SEPARATION;
+  const reduced = last - lo + 1;
+  const picked = new Set();
+  let guard = 0;
+  while (picked.size < count && guard < reduced * 8) {
+    picked.add(lo + randomInt(reduced));
+    guard += 1;
+  }
+  if (picked.size < count) return null;
+  return [...picked].sort((a, b) => a - b).map((y, i) => y + i * VOTE_MIN_SEPARATION);
+}
+
+/**
+ * One send per locked leaf. Each height is an independent draw, uniform in
+ * [open+10, close-10], at least 30 blocks from the others, never two in
+ * one block. Each row carries its own fee input.
+ */
+export function castVotePlan(n, {
+  openHeight = 0, closeHeight = null, magic = MAGIC_TESTNET,
+} = {}) {
   const count = Math.max(0, Math.floor(Number(n) || 0));
-  const step = Math.max(1, Math.floor(Number(gap) || VOTE_GAP_BLOCKS));
-  const txs = [];
-  for (let i = 0; i < count; i += 1) txs.push({ leaf: i, heightGap: i * step });
-  return { label: `Cast your ${count} votes`, txs };
+  const open = Math.max(0, Math.floor(Number(openHeight) || 0));
+  const day = voteCloseDay(magic);
+  const close = closeHeight == null
+    ? open + (day == null ? 0 : day * VAULT_DAY_BLOCKS)
+    : Math.floor(Number(closeHeight));
+  const lo = open + VOTE_EDGE_BLOCKS;
+  const hi = close - VOTE_EDGE_BLOCKS;
+  const label = `Cast your ${count} votes`;
+  if (count === 0) return { label, openHeight: open, closeHeight: close, txs: [] };
+  const heights = planHeights(count, lo, hi);
+  if (!heights) return null;
+  const txs = heights.map((height, leaf) => ({
+    leaf,
+    height,
+    feeInput: randomBytes(32).toString('hex'),
+  }));
+  return { label, openHeight: open, closeHeight: close, txs };
+}
+
+export function votePlanPath(dir) {
+  return join(String(dir), VOTE_PLAN_FILE);
+}
+
+/** The plan is a file, so a restart reads the same heights and fee inputs. */
+export function saveVotePlan(dir, plan) {
+  if (!dir || !plan) return null;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(votePlanPath(dir), JSON.stringify(plan));
+  return plan;
+}
+
+export function loadVotePlan(dir) {
+  if (!dir) return null;
+  const file = votePlanPath(dir);
+  if (!existsSync(file)) return null;
+  try {
+    const plan = JSON.parse(readFileSync(file, 'utf8'));
+    if (!plan || !Array.isArray(plan.txs)) return null;
+    return plan;
+  } catch {
+    return null;
+  }
 }
 
 export function choiceOfCode(code) {

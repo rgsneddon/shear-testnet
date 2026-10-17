@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -13,7 +13,9 @@ import {
 import { levyNanos } from './levy.js';
 import { typedCommitSum } from './spend.js';
 import { VAULT_DAY_BLOCKS } from './vault_accrual.js';
-import { packVaultOutput, proveVaultReward } from './vault_reward_fs1.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { packVaultOutput, proveLeafVote, proveVaultReward, proveLeafRetire, vaultLockNote } from './vault_reward_fs1.js';
 import {
   applyLeafVote,
   applyReserveBlock,
@@ -45,6 +47,10 @@ import {
   VOTE_SEQ_CAP,
   ballotDirection,
   castVotePlan,
+  loadVotePlan,
+  saveVotePlan,
+  VOTE_EDGE_BLOCKS,
+  VOTE_MIN_SEPARATION,
   commitCensus,
   proposalId,
   recordVote,
@@ -74,16 +80,14 @@ function locksOf(n, salt) {
 
 function proveVote(locks, which, epoch, { choice = 1, seq = 1, param = 'hb' } = {}) {
   const pid = proposalId(epoch, param);
-  return proveVaultReward({
+  return proveLeafVote({
     locks,
     which,
-    rootEpoch: epoch,
-    earnEpoch: epoch,
-    bps: GENESIS_BPS,
-    remainMs: 1,
-    span: 1,
-    dest20: Buffer.alloc(20, epoch + which + 1),
-    vote: { choice, seq, proposalId: pid },
+    epoch,
+    choice,
+    seq,
+    proposalId: pid,
+    dest20: Buffer.alloc(20, (epoch + which + 1) & 0xff),
   });
 }
 
@@ -101,7 +105,6 @@ function voteTx(proved, epoch, { choice = 1, seq = 1, param = 'hb', height, leav
     programId: RESERVE_PROGRAM,
     voteProof: proved.blob,
     voteOutput: proved.note,
-    nullifier: proved.nullifier,
     choice,
     voteSeq: seq,
     voteParam: param,
@@ -166,7 +169,20 @@ describe('leaf ballot window, step, and wording', () => {
     const plan = castVotePlan(4);
     assert.equal(plan.label, 'Cast your 4 votes');
     assert.equal(plan.txs.length, 4);
-    assert.deepEqual(plan.txs.map((row) => row.heightGap), [0, 7, 14, 21]);
+    const heights = plan.txs.map((row) => row.height);
+    const lo = VOTE_EDGE_BLOCKS;
+    const hi = 3 * VAULT_DAY_BLOCKS - VOTE_EDGE_BLOCKS;
+    for (const height of heights) assert.ok(height >= lo && height <= hi, String(height));
+    const ordered = [...heights].sort((a, b) => a - b);
+    for (let i = 1; i < ordered.length; i += 1) {
+      assert.ok(ordered[i] - ordered[i - 1] >= VOTE_MIN_SEPARATION);
+    }
+    assert.equal(new Set(heights).size, 4);
+    assert.equal(new Set(plan.txs.map((row) => row.feeInput)).size, 4);
+    const dir = mkdtempSync(join(tmpdir(), 'vote-plan-'));
+    saveVotePlan(dir, plan);
+    const loaded = loadVotePlan(dir);
+    assert.deepEqual(loaded.txs, plan.txs);
     assert.equal(vote({}).reason, 'vote_retired');
     const proved = proveVote(locksOf(1, 4), 0, 1, { choice: 1, seq: 1 });
     assert.ok(proved);
@@ -179,7 +195,6 @@ describe('leaf ballot window, step, and wording', () => {
       choice: tx.choice,
       voteSeq: tx.voteSeq,
       voteParam: tx.voteParam,
-      nullifier: tx.nullifier,
       tag: proved.voteTag.toString('hex'),
     });
     assert.equal(wire.includes(key.toString('hex')), false);
@@ -429,6 +444,79 @@ describe('one proof per live leaf', () => {
     const view = decodePublicView((await callReserve(session, encodePublicView(end), { staticCall: true })).returnValue);
     assert.equal(view.liveHashBonusNanos, 1);
     assert.equal(view.currentEpoch, 1);
+  });
+
+  it('a vote shares no 32-byte field with that leaf claim or retire', () => {
+    const scalar = 7n;
+    const blind = 9n;
+    const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind);
+    const claim = proveVaultReward({
+      locks: [{ amount: PI_SHE_NANOS, scalar, blind }],
+      which: 0,
+      rootEpoch: 0,
+      earnEpoch: 0,
+      bps: GENESIS_BPS,
+      remainMs: 3840,
+      span: 3840,
+      dest20: Buffer.alloc(20, 4),
+    });
+    const voteProof = proveLeafVote({
+      locks: [{ amount: PI_SHE_NANOS, scalar, blind }],
+      which: 0,
+      epoch: 0,
+      choice: 1,
+      seq: 1,
+      proposalId: proposalId(0, 'hb'),
+      dest20: Buffer.alloc(20, 5),
+    });
+    const retire = proveLeafRetire({
+      scalar,
+      epochs: [0],
+      leaf: leaf.note,
+      unlockEpoch: 0,
+      txBind: Buffer.alloc(32, 2),
+    });
+    assert.ok(claim && voteProof && retire);
+    const windows = (buf) => {
+      const set = new Set();
+      for (let i = 0; i + 32 <= buf.length; i += 1) set.add(buf.subarray(i, i + 32).toString('hex'));
+      return set;
+    };
+    const voteBytes = windows(voteProof.blob);
+    const claimBytes = windows(Buffer.concat([
+      claim.blob,
+      Buffer.from(claim.nullifier, 'hex'),
+    ]));
+    const retireBytes = windows(retire.proof);
+    for (const word of voteBytes) {
+      assert.equal(claimBytes.has(word), false);
+      assert.equal(retireBytes.has(word), false);
+    }
+    assert.equal(voteProof.blob.includes(Buffer.from(claim.nullifier, 'hex')), false);
+    const refused = applyLeafVote(emptyVault(), {
+      kind: 'leaf-vote',
+      programId: RESERVE_PROGRAM,
+      voteProof: voteProof.blob,
+      nullifier: claim.nullifier,
+      choice: 1,
+      voteSeq: 1,
+      voteParam: 'hb',
+      earnEpoch: 0,
+      fee: 1,
+    }, 0);
+    assert.equal(refused.reason, 'stake_reward');
+    const carried = applyLeafVote(emptyVault(), {
+      kind: 'leaf-vote',
+      programId: RESERVE_PROGRAM,
+      voteProof: voteProof.blob,
+      to: 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
+      choice: 1,
+      voteSeq: 1,
+      voteParam: 'hb',
+      earnEpoch: 0,
+      fee: 1,
+    }, 0);
+    assert.equal(carried.reason, 'stake_reward');
   });
 });
 

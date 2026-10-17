@@ -8,19 +8,22 @@ import assert from 'node:assert/strict';
 import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, VAULT_FS1_ACTIVATION_HEIGHT } from './asert.js';
 import { txDigestV3 } from './admit_v3.js';
 import { encodeDest, hash20FromAddress, newIdentity, spendDestOf } from './address.js';
-import { arrivalStubNanos, periodSupplyNanos, vaultPeriodReward } from './vault_accrual.js';
+import { arrivalStubNanos, periodSupplyNanos, vaultPeriodBlocks, vaultPeriodReward } from './vault_accrual.js';
 import {
   appendVaultLockNote,
   applyReserveBlock,
+  chainPeriodIndex,
   cloneVault,
   deposit,
   emptyVault,
+  leafEpochsToBurn,
   packRewardAuth,
   portalIdFromDest,
   rewardClaimTx,
   provePrincipalOpen,
   rewardOwnerCommit,
   signWithdrawReward,
+  snapshotPeriodRoot,
   trialReserveApply,
   withdrawTx,
 } from './reserve_vault.js';
@@ -275,17 +278,30 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
     plant(undo, proved[0].locks, 0, root);
     const portal = portalIdFromDest(owner.dest);
     const tx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'spread-undo' });
+    const chainPeriod = chainPeriodIndex(undo, at);
     const retire = proveLeafRetire({
       scalar: leaf.scalar,
-      epochs: [0, 1],
+      epochs: leafEpochsToBurn(undo, note.note.toString('hex'), chainPeriod),
       leaf: note.note,
       txBind: txDigestV3(tx, MAGIC_TESTNET),
-      unlockEpoch: 1,
+      unlockEpoch: chainPeriod,
     });
     tx.retireProof = retire.proof;
     tx.principalProof = provePrincipalOpen(
       note.commit, PI_SHE_NANOS, leaf.blind, tx, portal, MAGIC_TESTNET, VAULT_UNLOCK_OPEN,
     );
+    snapshotPeriodRoot(undo, chainPeriod * vaultPeriodBlocks(MAGIC_TESTNET));
+    const periodClaim = proveVaultReward({
+      locks: proved[0].locks.map((lock) => ({ amount: lock.amount, scalar: lock.scalar, blind: lock.blind })),
+      which: 0,
+      rootEpoch: chainPeriod,
+      earnEpoch: chainPeriod,
+      bps: GENESIS_BPS,
+      remainMs: span,
+      span,
+      dest20,
+    });
+    assert.ok(periodClaim);
     signWithdrawReward(tx, owner.key, {
       portalId: portal,
       nanos: PI_SHE_NANOS,
@@ -304,7 +320,7 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
         txs: [
           { coinbase: true, vout: [] },
           tx,
-          rewardClaimTx({ to: pay, vault: proved[0], id: 'spread-undo-claim' }),
+          rewardClaimTx({ to: pay, vault: periodClaim, id: 'spread-undo-claim' }),
         ],
       },
     });
@@ -325,9 +341,14 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
     const drew = await callReserve(evmUndo, encodeWithdrawRetire(owner.dest, at, auth, packRetireBlob([retire.proof])));
     assert.equal(drew.ok, true, drew.reason);
     assert.equal(decodeWithdraw(drew.returnValue).principal, PI_SHE_NANOS);
-    const burned = await callReserve(
+    const early = await callReserve(
       evmUndo,
       encodeClaim(proved[0].nullifier, proved[0].nanos, proved[0].blob, 0, packVaultOutput(proved[0].note)),
+    );
+    assert.equal(early.ok, true, early.reason);
+    const burned = await callReserve(
+      evmUndo,
+      encodeClaim(periodClaim.nullifier, periodClaim.nanos, periodClaim.blob, chainPeriod, packVaultOutput(periodClaim.note)),
     );
     assert.equal(burned.ok, false);
     assert.equal(burned.reason, 'already_minted');

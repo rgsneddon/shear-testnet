@@ -6,15 +6,17 @@ import { createCustomCommon, Mainnet, Hardfork } from '@ethereumjs/common';
 import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '@ethereumjs/util';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
-import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
+import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET, MAX_LOCK_LEAVES } from './asert.js';
 import { EMPTY_ROOT } from './merkle.js';
 import { reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth, lockQualifies } from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { ED25519_SPKI_PREFIX } from './address.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
-import { packVaultOutput, verifyLeafRetire, verifyVaultReward, vaultPublicReward } from './vault_reward_fs1.js';
-import { voteTxDigest } from './leaf_vote.js';
+import {
+  packVaultOutput, verifyLeafRetire, verifyLeafVote, verifyVaultReward, vaultPublicReward,
+  retireDleqCount, MAX_RETIRE_ROWS,
+} from './vault_reward_fs1.js';
 
 function keccak256(data) {
   const u8 = data instanceof Uint8Array ? data : Buffer.from(data);
@@ -327,27 +329,37 @@ function u32le(n) {
   return b;
 }
 
-/** Nullifiers a retire proof burns, each paired with that same proof. */
+/**
+ * One proof per leaf. Nullifiers are indexed beside that proof, not a copy
+ * of it. A leaf wider than the claim window, or more than 16 leaves, is
+ * not a blob the EVM will accept.
+ */
 export function packRetireBlob(proofs) {
   const list = Array.isArray(proofs) ? proofs : [];
-  const rows = [];
+  if (!list.length || list.length > MAX_LOCK_LEAVES) return null;
+  let dleqs = 0;
+  const parts = [u32le(list.length)];
   for (const proof of list) {
     const raw = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
+    const rows = retireDleqCount(raw);
+    if (rows == null || rows > MAX_RETIRE_ROWS) return null;
+    dleqs += rows;
+    if (dleqs > 64) return null;
     const burned = verifyLeafRetire(raw);
     if (!burned) return null;
+    const ids = [];
     const seen = new Set();
     for (const epoch of burned.epochs) {
       for (const id of [epoch.nullifier, epoch.retireNullifier]) {
         const hex = id.toString('hex');
         if (seen.has(hex)) continue;
         seen.add(hex);
-        rows.push({ nullifier: id, proof: raw });
+        ids.push(id);
       }
     }
+    if (!ids.length) return null;
+    parts.push(u32le(ids.length), ...ids, u32le(raw.length), raw);
   }
-  if (!rows.length || rows.length > 64) return null;
-  const parts = [u32le(rows.length)];
-  for (const row of rows) parts.push(row.nullifier, u32le(row.proof.length), row.proof);
   return Buffer.concat(parts);
 }
 
@@ -542,49 +554,35 @@ function ed25519Precompile(opts) {
 }
 
 const RETIRE_MAGIC = Buffer.from('shear-retire-v1');
-const VOTE_PREFIX = Buffer.from('shear-vote-v1');
+const VOTE_V2 = Buffer.from('shear-vote-v2');
 
+/** shear-vote-v2 || root || u64 epoch || choice || u32 seq || pid || u32 magicLen || magic || proof */
 function votePrecompile(data) {
-  const base = VOTE_PREFIX.length;
-  const head = 109;
-  if (data.length < base + head + 4) return 0;
-  const epoch = data.readBigUInt64LE(base + 64);
-  const bps = data.readUInt32LE(base + 72);
-  const span = data.readBigUInt64LE(base + 76);
-  const reward = data.readBigUInt64LE(base + 84);
-  const magic = data.subarray(base + 92, base + 109).toString('utf8');
-  const outputLen = data.readUInt32LE(base + 109);
-  const outputAt = base + 113;
-  const outputEnd = outputAt + outputLen;
-  if (outputLen === 0) return 2;
-  if (outputEnd + 4 > data.length) return 0;
-  const proofLen = data.readUInt32LE(outputEnd);
-  const proofAt = outputEnd + 4;
-  const proofEnd = proofAt + proofLen;
-  if (proofLen === 0 || proofEnd + 37 > data.length) return 0;
-  const choiceByte = data[proofEnd];
+  const base = VOTE_V2.length;
+  if (data.length < base + 32 + 8 + 1 + 4 + 32 + 4) return 0;
+  let off = base;
+  const root = data.subarray(off, off + 32); off += 32;
+  const epoch = data.readBigUInt64LE(off); off += 8;
+  const choiceByte = data[off]; off += 1;
   const choice = choiceByte === 0xff ? -1 : choiceByte;
-  const seq = data.readUInt32LE(proofEnd + 1);
-  const proposalId = data.subarray(proofEnd + 5, proofEnd + 37);
-  const txDigest = voteTxDigest({
+  const seq = data.readUInt32LE(off); off += 4;
+  const proposalId = data.subarray(off, off + 32); off += 32;
+  if (off + 4 > data.length) return 0;
+  const magicLen = data.readUInt32LE(off); off += 4;
+  if (magicLen < 1 || off + magicLen > data.length) return 0;
+  const magic = data.subarray(off, off + magicLen).toString('utf8'); off += magicLen;
+  const proof = data.subarray(off);
+  if (proof.length < 2 || proof[0] !== 0x56) return 0;
+  const got = verifyLeafVote({
+    blob: proof,
+    root,
+    epoch: Number(epoch),
     choice,
     seq,
     proposalId,
-    epoch: Number(epoch),
     magic,
   });
-  if (!txDigest) return 0;
-  const got = verifyVaultReward({
-    root: data.subarray(base, base + 32),
-    nullifier: data.subarray(base + 32, base + 64),
-    rootEpoch: epoch,
-    terms: { bps, span, covered: span / 16n, earnEpoch: epoch, reward },
-    magic,
-    output: data.subarray(outputAt, outputEnd),
-    blob: data.subarray(proofAt, proofEnd),
-    vote: { choice, seq, proposalId, txDigest },
-  });
-  return got.ok ? 1 : (got.code === 2 ? 2 : 0);
+  return got.ok ? 1 : 0;
 }
 
 /**
@@ -599,7 +597,7 @@ function vaultZkPrecompile(opts) {
   if (opts.gasLimit < gasUsed) return { executionGasUsed: opts.gasLimit, returnValue: zero };
   let code = 0;
   try {
-    if (data.length >= VOTE_PREFIX.length && data.subarray(0, VOTE_PREFIX.length).equals(VOTE_PREFIX)) {
+    if (data.length >= VOTE_V2.length && data.subarray(0, VOTE_V2.length).equals(VOTE_V2)) {
       code = votePrecompile(data);
     } else if (data.length >= 32 + RETIRE_MAGIC.length && data.subarray(32, 32 + RETIRE_MAGIC.length).equals(RETIRE_MAGIC)) {
       const burned = verifyLeafRetire(data.subarray(32 + RETIRE_MAGIC.length), data.subarray(0, 32));

@@ -110,14 +110,13 @@ function claimFields(blob) {
   const fs1 = blob.readUInt32LE(1);
   const record = 5 + fs1;
   const rewardAt = record + 321 + 4 + 8 + 8;
-  const after = rewardAt + 8 + 8 + 8;
+  const after = rewardAt + 8 + 8;
   const word = (i) => blob.subarray(after + i * 32, after + (i + 1) * 32);
   return {
     tag: blob.subarray(record + 1, record + 33),
     member: blob.subarray(record + 33, record + 65),
     reward: blob.readBigUInt64LE(rewardAt),
     covered: blob.readBigUInt64LE(rewardAt + 8),
-    unlock: blob.readBigUInt64LE(rewardAt + 16),
     nullP: word(1),
     openR: word(3),
     openZ: word(4),

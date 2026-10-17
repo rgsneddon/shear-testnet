@@ -1202,13 +1202,13 @@ contract Reserve {
     function _nullOff(bytes calldata proof) internal pure returns (uint256) {
         if (proof.length < 5 || proof[0] != 0xaa) return 0;
         uint256 fs1Len = uint256(uint8(proof[1])) | (uint256(uint8(proof[2])) << 8) | (uint256(uint8(proof[3])) << 16) | (uint256(uint8(proof[4])) << 24);
-        return 5 + fs1Len + 397;
+        return 5 + fs1Len + 389;
     }
 
+    /// Vote tag is the vote null point at byte 9. Not the claim null point.
     function _voteTag(bytes calldata proof, uint256 epoch, bytes32 pid) internal pure returns (bytes32) {
-        uint256 off = _nullOff(proof);
-        if (off == 0 || off + 32 > proof.length) return bytes32(0);
-        return sha256(abi.encodePacked("shear-vote-v1", _wordAt(proof, off), _u64le(epoch), pid));
+        if (proof.length < 41 || proof[0] != 0x56) return bytes32(0);
+        return sha256(abi.encodePacked("shear-vote-v1", _wordAt(proof, 9), _u64le(epoch), pid));
     }
 
     function _voteCode(
@@ -1219,24 +1219,21 @@ contract Reserve {
         uint32 seq,
         bytes32 pid
     ) internal view returns (uint256) {
-        if (proof.length < 2 || proof[0] != 0xaa || output.length < 96) return 0;
+        if (proof.length < 2 || proof[0] != 0x56 || output.length < 96) return 0;
         bytes32 root = epochStartRootOf[epoch];
         if (root == bytes32(0)) return 2;
-        uint256 off = _nullOff(proof);
-        if (off == 0 || off + 32 > proof.length) return 0;
-        bytes32 nullP = _wordAt(proof, off);
-        bytes32 nf = sha256(abi.encodePacked("shear-vault-null-prf-v1", nullP));
         bytes1 cb = choice < 0 ? bytes1(0xff) : bytes1(uint8(int8(choice)));
+        bytes memory book = magic == SHEAR_MAINNET ? bytes("shear-v1") : bytes("shear-testnet-v12");
         (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(
-            bytes("shear-vote-v1"),
-            _vaultHead(root, nf, epoch, proof),
-            _u32le(output.length),
-            output,
-            _u32le(proof.length),
-            proof,
+            bytes("shear-vote-v2"),
+            root,
+            _u64le(epoch),
             cb,
             _u32le(seq),
-            pid
+            pid,
+            _u32le(book.length),
+            book,
+            proof
         ));
         if (!ok || out.length < 32) return 0;
         return uint256(bytes32(out));
@@ -1281,12 +1278,10 @@ contract Reserve {
         return uint256(bytes32(out));
     }
 
-    /// Burn a claim nullifier when its lock leaf is withdrawn. The proof is the key holder's DLEQ.
-    function retire(bytes32 nullifier, bytes calldata proof) external onlyShear {
-        if (nullifierMinted[nullifier]) revert AlreadyMinted();
-        (bool ok, bytes memory out) = VAULT_ZK.staticcall(abi.encodePacked(nullifier, bytes("shear-retire-v1"), proof));
-        if (!ok || out.length < 32 || uint256(bytes32(out)) != 1) revert Unsigned();
-        nullifierMinted[nullifier] = true;
+    /// A retire outside withdrawRetire would burn a nullifier before the epoch
+    /// ends. Principal moves only inside withdrawRetire, at or after epoch end.
+    function retire(bytes32, bytes calldata) external view onlyShear {
+        revert EpochNotEnded();
     }
 
     /// A vault proof mints nothing here. It spends the nullifier. Anything else stays closed.
@@ -1388,7 +1383,8 @@ contract Reserve {
 
     /// Same withdraw, and the retire proofs burn the claim nullifiers of the
     /// leaves it releases. π is paid once per leaf, not once per epoch.
-    /// Blob: u32le count || count × (bytes32 nullifier || u32le proofLen || proof).
+    /// Blob: u32le leaves || leaves × (u32le nullifierCount || nullifiers || u32le proofLen || proof).
+    /// Each proof is verified once.
     function withdrawRetire(
         bytes calldata dest,
         uint256 nowTs,
@@ -1399,8 +1395,8 @@ contract Reserve {
     }
 
     function _withdraw(bytes calldata dest, uint256 nowTs, bytes calldata auth, bytes memory retireBlob) internal returns (uint256 principal, uint256 reward, uint256 earned) {
-        // Each deposit unlocks at the end of its own lock epoch. A later
-        // top-up does not re-lock principal whose epoch has already ended.
+        // No early withdraw. Principal moves only at or after the lock epoch's end.
+        // A later top-up does not re-lock principal whose epoch has already ended.
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
         bytes32 id = portalId(dest);
         // No recorded owner is not a license to take the principal.
@@ -1511,7 +1507,17 @@ contract Reserve {
 
     function _copyAt(bytes memory blob, uint256 off, uint256 len) internal pure returns (bytes memory out) {
         out = new bytes(len);
-        for (uint256 i = 0; i < len; i++) out[i] = blob[off + i];
+        assembly ("memory-safe") {
+            let src := add(blob, add(32, off))
+            let dst := add(out, 32)
+            let end := add(dst, len)
+            for {} lt(dst, end) {
+                dst := add(dst, 32)
+                src := add(src, 32)
+            } {
+                mstore(dst, mload(src))
+            }
+        }
     }
 
     function _clearRetired() internal {
@@ -1535,30 +1541,40 @@ contract Reserve {
         return false;
     }
 
-    /// One π per distinct leaf commit. A second epoch of the same leaf burns
-    /// another nullifier and does not pay π again. The commits stay in
-    /// retiredScratch until the withdraw loop has dropped them.
+    /// One π per distinct leaf commit. Each retire proof is verified once.
+    /// The indexed nullifiers have to be the ones inside that proof.
     function _retireLeaves(Portal storage p, uint256 chain, bytes memory blob) internal returns (uint256) {
         _clearRetired();
         if (blob.length == 0) return 0;
         if (blob.length < 4) revert Unsigned();
-        uint256 n = _readU32(blob, 0);
-        if (n == 0 || n > 64) revert Unsigned();
+        uint256 leaves = _readU32(blob, 0);
+        if (leaves == 0 || leaves > 16) revert Unsigned();
         uint256 off = 4;
-        for (uint256 i = 0; i < n; i++) {
-            if (off + 36 > blob.length) revert Unsigned();
-            bytes32 nullifier;
-            bytes memory word = _copyAt(blob, off, 32);
-            assembly ("memory-safe") { nullifier := mload(add(word, 32)) }
-            off += 32;
+        uint256 dleqs = 0;
+        for (uint256 i = 0; i < leaves; i++) {
+            if (off + 4 > blob.length) revert Unsigned();
+            uint256 nNull = _readU32(blob, off);
+            off += 4;
+            if (nNull == 0 || off + (nNull * 32) + 4 > blob.length) revert Unsigned();
+            bytes32[] memory ids = new bytes32[](nNull);
+            for (uint256 j = 0; j < nNull; j++) {
+            bytes32 id = _wordMem(blob, off);
+            if (nullifierMinted[id]) revert AlreadyMinted();
+                ids[j] = id;
+                off += 32;
+            }
             uint256 proofLen = _readU32(blob, off);
             off += 4;
             if (proofLen == 0 || off + proofLen > blob.length) revert Unsigned();
             bytes memory proof = _copyAt(blob, off, proofLen);
             off += proofLen;
-            if (nullifierMinted[nullifier]) revert AlreadyMinted();
+            uint256 rows = _retireRows(proof);
+            if (rows < 1 || rows > 3) revert Unsigned();
+            dleqs += rows;
+            if (dleqs > 64) revert Unsigned();
+            if (!_retireIdsMatch(proof, ids)) revert Unsigned();
             (bool ok, bytes memory out) = VAULT_ZK.staticcall(
-                abi.encodePacked(nullifier, bytes("shear-retire-v1"), proof)
+                abi.encodePacked(ids[0], bytes("shear-retire-v1"), proof)
             );
             if (!ok || out.length < 32 || uint256(bytes32(out)) != 1) revert Unsigned();
             bytes32 commit = _retireLeafCommit(proof);
@@ -1567,10 +1583,40 @@ contract Reserve {
                 if (retiredScratch.length == 16) revert Unsigned();
                 retiredScratch.push(commit);
             }
-            nullifierMinted[nullifier] = true;
+            for (uint256 j = 0; j < nNull; j++) nullifierMinted[ids[j]] = true;
         }
         if (off != blob.length) revert Unsigned();
         return retiredScratch.length * PI_NANOS;
+    }
+
+    /// u64 period || A1 || A2 || s || claim nullifier || retire nullifier.
+    uint256 internal constant RETIRE_ROW = 168;
+
+    function _retireRows(bytes memory proof) internal pure returns (uint256) {
+        if (proof.length < 12) return 0;
+        return _readU32(proof, 8);
+    }
+
+    function _wordMem(bytes memory b, uint256 off) internal pure returns (bytes32 word) {
+        assembly ("memory-safe") {
+            word := mload(add(b, add(32, off)))
+        }
+    }
+
+    function _retireIdsMatch(bytes memory proof, bytes32[] memory ids) internal pure returns (bool) {
+        uint256 n = _retireRows(proof);
+        if (n < 1 || n > 3) return false;
+        uint256 leafAt = 12 + (n * RETIRE_ROW);
+        if (proof.length != leafAt + 64 + 32) return false;
+        for (uint256 j = 0; j < ids.length; j++) {
+            bool found = false;
+            for (uint256 i = 0; i < n; i++) {
+                uint256 row = 12 + (i * RETIRE_ROW);
+                if (ids[j] == _wordMem(proof, row + 104) || ids[j] == _wordMem(proof, row + 136)) found = true;
+            }
+            if (!found) return false;
+        }
+        return true;
     }
 
     function _maturedHidden(Portal storage p, uint256 chain, bytes32 commit) internal view returns (bool) {
@@ -1584,13 +1630,12 @@ contract Reserve {
 
     /// Leaf commit inside a retire proof. Layout matches the JS blob.
     function _retireLeafCommit(bytes memory proof) internal pure returns (bytes32 commit) {
-        if (proof.length < 12 + 136 + 64 + 32) return bytes32(0);
+        if (proof.length < 12 + RETIRE_ROW + 64 + 32) return bytes32(0);
         uint256 n = _readU32(proof, 8);
-        if (n < 1 || n > 64) return bytes32(0);
-        uint256 leafAt = 12 + (n * 136);
+        if (n < 1 || n > 3) return bytes32(0);
+        uint256 leafAt = 12 + (n * RETIRE_ROW);
         if (proof.length != leafAt + 64 + 32) return bytes32(0);
-        bytes memory word = _copyAt(proof, leafAt + 32, 32);
-        assembly ("memory-safe") { commit := mload(add(word, 32)) }
+        commit = _wordMem(proof, leafAt + 32);
     }
 
     function publicView(uint256 nowTs)

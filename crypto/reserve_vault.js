@@ -59,7 +59,8 @@ import { txDigestV3 } from './admit_v3.js';
 import { publicReserveReceipt } from './dummy.js';
 import {
   proveLockCap, verifyLockCap, verifyVaultReward, vaultProofCap, vaultPublicReward,
-  verifyLeafRetire, subtractUnlock, VAULT_PI_LEAF, VAULT_UNLOCK_OPEN, vaultNullPoint,
+  verifyLeafRetire, verifyLeafVote, retireDleqCount, retireDeclaredRows, MAX_RETIRE_ROWS,
+  subtractUnlock, VAULT_PI_LEAF, VAULT_UNLOCK_OPEN,
 } from './vault_reward_fs1.js';
 import {
   activateBallot,
@@ -85,6 +86,8 @@ export const KIND_LEAF_VOTE = 'leaf-vote';
 export const STAKE_REWARD_KIND = 'stake-reward';
 /** User tx that mints one archived reward. It is not a coinbase row. */
 export const KIND_REWARD_CLAIM = 'reward-claim';
+/** Retire DLEQs in one block. The same width as the leaf-vote cap. */
+export const MAX_BLOCK_RETIRE_DLEQS = 64;
 /** Domain for one reward leaf: tag || nullifier(32) || nanos u64le || ownerCommit(32). */
 export const REWARD_LEAF_TAG = 'shear-reward-leaf-v1';
 /** ownerCommit = sha256(tag || ownerPub). The leaf binds the key. The claim does not carry the lock dest. */
@@ -1402,7 +1405,7 @@ function publishedClaimReward(tx) {
 }
 
 function vaultClaimRejected(tx, state) {
-  if (tx?.portalId || tx?.from || tx?.payoutPortalId) return { ok: false, reason: 'stake_reward' };
+  if (tx?.portalId || tx?.from || tx?.payoutPortalId || tx?.to) return { ok: false, reason: 'stake_reward' };
   const nullifier = String(tx?.nullifier || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(nullifier)) return { ok: false, reason: 'unsigned' };
   const tip = Number(state?.tipMs) || 0;
@@ -2314,7 +2317,7 @@ function appendEpochRate(state, idx, bps) {
 }
 
 /** Freeze the live root at the start of this height's period. Later locks are not in it. */
-function snapshotPeriodRoot(state, height) {
+export function snapshotPeriodRoot(state, height) {
   const period = vaultPeriodBlocks(state?.magic || MAGIC_TESTNET);
   const h = Math.floor(Number(height));
   if (period == null || !Number.isInteger(h) || h < 0) return;
@@ -2771,6 +2774,31 @@ function derivedCommitIndex(nowMs, genesisMs, magic) {
 /** Chain-genesis vortex index. Rate keys and settlement both use this integer. */
 function chainEpochIndex(state, nowMs) {
   return derivedCommitIndex(nowMs, state?.genesisMs, state?.magic);
+}
+
+/**
+ * Period index of chain time. Period 0 is the first slice of epoch 0.
+ * At the instant an epoch ends, this is that next epoch's first period.
+ */
+export function chainPeriodIndex(state, nowMs) {
+  const epoch = chainEpochIndex(state, nowMs);
+  const genesis = Number(state?.genesisMs) || 0;
+  const now = Number(nowMs) || 0;
+  const span = epochMs(state?.magic);
+  if (!(genesis > 0) || !(span > 0) || now < genesis) return epoch * VAULT_PERIODS_PER_EPOCH;
+  const into = now - (genesis + epoch * span);
+  const periodMs = Math.floor(span / VAULT_PERIODS_PER_EPOCH);
+  let sub = 0;
+  if (periodMs > 0 && into > 0) sub = Math.floor(into / periodMs);
+  if (sub < 0) sub = 0;
+  if (sub >= VAULT_PERIODS_PER_EPOCH) sub = VAULT_PERIODS_PER_EPOCH - 1;
+  return epoch * VAULT_PERIODS_PER_EPOCH + sub;
+}
+
+/** First period of the epoch after the lock. A claim of this period is not early. */
+export function consensusUnlockPeriod(lockEpoch) {
+  const epoch = Math.floor(Number(lockEpoch) || 0);
+  return (epoch + 1) * VAULT_PERIODS_PER_EPOCH;
 }
 
 /** End of the chain epoch that a lock at this time belongs to. */
@@ -3416,7 +3444,6 @@ export function rewardClaimTx({
     programId: RESERVE_PROGRAM,
     mint: true,
     kind: KIND_REWARD_CLAIM,
-    to,
     nanos: n,
     nullifier: String(vault?.nullifier || nullifier || '').toLowerCase(),
     proof: vault ? [] : (Array.isArray(proof) ? proof : []),
@@ -3950,22 +3977,6 @@ function finishReserveApply(results) {
   return results;
 }
 
-function voteProofTerms(state, epoch, proof) {
-  const magic = state?.magic || MAGIC_TESTNET;
-  const blocks = vaultEpochBlocks(magic);
-  const period = vaultPeriodBlocks(magic);
-  const bps = rateForEpoch(state, Math.floor(Number(epoch) / 16));
-  const reward = vaultPublicReward(proof);
-  if (!(bps > 0) || !(blocks > 0) || !(period > 0) || reward == null) return null;
-  return {
-    bps,
-    span: BigInt(blocks),
-    covered: BigInt(period),
-    earnEpoch: BigInt(Math.floor(Number(epoch))),
-    reward,
-  };
-}
-
 function maybeTallyBallots(state, height) {
   const epoch = Math.floor(Number(state?.currentEpoch) || 0);
   if (!censusOf(state, epoch)) return;
@@ -3974,11 +3985,14 @@ function maybeTallyBallots(state, height) {
 }
 
 /**
- * One leaf, one proof. The tag is recomputed from the proof's null point.
- * A cast vote is not removed when the leaf later withdraws.
+ * One leaf, one vote proof. The tag is the vote null point, not the claim
+ * null point. A vote publishes no claim nullifier. A cast vote is not
+ * removed when the leaf later withdraws.
  */
 export function applyLeafVote(state, tx, blockHeight) {
   if (Array.isArray(tx?.voteProofs)) return { ok: false, reason: 'stake_reward' };
+  if (tx?.portalId || tx?.from || tx?.to || tx?.payoutPortalId) return { ok: false, reason: 'stake_reward' };
+  if (tx?.nullifier || tx?.vaultProof) return { ok: false, reason: 'stake_reward' };
   const param = voteParam(tx?.voteParam || tx?.param);
   const choice = voteChoice(tx?.choice);
   const seq = Math.floor(Number(tx?.voteSeq ?? tx?.seq));
@@ -3995,24 +4009,20 @@ export function applyLeafVote(state, tx, blockHeight) {
   const rootHex = String(state?.epochStartRoots?.[String(epoch)] || '');
   if (!/^[0-9a-f]{64}$/.test(rootHex)) return { ok: false, reason: 'not_voter' };
   const proof = tx?.voteProof;
-  const output = tx?.voteOutput || tx?.vout?.[0] || null;
-  if (!proof || !output) return { ok: false, reason: 'unsigned' };
+  if (!proof) return { ok: false, reason: 'unsigned' };
   const pid = proposalId(epoch, param);
-  const terms = voteProofTerms(state, epoch, proof);
-  if (!terms || !pid) return { ok: false, reason: 'stake_reward' };
-  const nullifier = tx?.nullifier;
+  if (!pid) return { ok: false, reason: 'stake_reward' };
   const paid = Math.floor(Number(tx?.fee || 0));
   const need = Math.floor(Number(levyNanos(0, { tx })) || 0);
   if (paid < need) return { ok: false, reason: 'levy' };
-  const got = verifyVaultReward({
+  const got = verifyLeafVote({
     blob: proof,
     root: Buffer.from(rootHex, 'hex'),
-    rootEpoch: epoch,
-    nullifier,
-    output,
-    terms,
+    epoch,
+    choice,
+    seq,
+    proposalId: pid,
     magic,
-    vote: { choice, seq, proposalId: pid },
   });
   if (!got.ok || !got.voteTag) return { ok: false, reason: got.reason || 'unsigned' };
   const recorded = recordVote(state, {
@@ -4023,15 +4033,12 @@ export function applyLeafVote(state, tx, blockHeight) {
     seq,
   });
   if (!recorded.ok) return recorded;
-  return { ...recorded, voteTag: got.voteTag, nullP: got.nullP };
+  return { ...recorded, voteTag: got.voteTag };
 }
 
-function applyCombinedVote(state, tx, blockHeight) {
-  if (Array.isArray(tx?.voteProofs)) return { ok: false, reason: 'stake_reward' };
-  const claimP = vaultNullPoint(tx?.vaultProof);
-  const voteP = vaultNullPoint(tx?.voteProof);
-  if (!claimP || !voteP || !claimP.equals(voteP)) return { ok: false, reason: 'stake_reward' };
-  return applyLeafVote(state, tx, blockHeight);
+/** A claim and a vote are separate transactions. One tx that carries both is refused. */
+function applyCombinedVote() {
+  return { ok: false, reason: 'stake_reward' };
 }
 
 export function applyReserveBlock({
@@ -4136,6 +4143,17 @@ export function applyReserveBlock({
   }
   if (leafVotes > MAX_BLOCK_LEAF_VOTES) {
     return finishReserveApply([{ ok: false, reason: 'vote_cap', action: KIND_LEAF_VOTE }]);
+  }
+  let retireDleqs = 0;
+  for (const tx of txs) {
+    if (!tx || tx.coinbase || txKind(tx) !== KIND_WITHDRAW) continue;
+    for (const proof of proofListOf(tx, null)) {
+      const n = retireDleqCount(proof);
+      if (n != null) retireDleqs += n;
+    }
+  }
+  if (retireDleqs > MAX_BLOCK_RETIRE_DLEQS) {
+    return finishReserveApply([{ ok: false, reason: 'unsigned', action: KIND_WITHDRAW }]);
   }
   const cb = txs.find((t) => t?.coinbase) || txs[0];
   const reservePaid = openedReserveFeeNanos(cb);
@@ -4251,8 +4269,11 @@ export function applyReserveBlock({
         }
         const portal = state.portals?.[act.portalId];
         const tranche = portal?.tranches?.[portal.tranches.length - 1];
+        const lockEpoch = chainEpochIndex(state, nowMs);
         const rooted = appendVaultLockNote(state, tx.vaultLockNote, {
           earnEpoch: Math.floor(Number(tranche?.epoch) || 0),
+          bornEpoch: chainPeriodIndex(state, nowMs),
+          unlockEpoch: consensusUnlockPeriod(lockEpoch),
           remainCommit: tx.remainCommit,
           lockHeight: blockHeight,
         });
@@ -4564,20 +4585,21 @@ function periodIndexOfHeight(height, magic) {
 }
 
 /**
- * Withdraw epoch, plus frozen-root epochs that are still inside the claim
- * window. Older roots are already unclaimable, so a long hold does not
- * burn them. The window is two epochs back through the withdraw epoch.
+ * Periods this withdraw burns: the withdraw period through every later
+ * period still inside the claim window. A period before the leaf was born
+ * is not in the set. The window is counted in periods, the same unit as
+ * the claim nullifier.
  */
-export function leafEpochsToBurn(state, noteHex, withdrawEpoch) {
+export function leafEpochsToBurn(state, noteHex, withdrawPeriod) {
   const born = Math.floor(Number(state?.vaultLeafBorn?.[noteHex] ?? 0));
-  const now = Math.floor(Number(withdrawEpoch) || 0);
-  const floor = Math.max(born, now - VAULT_CLAIM_WINDOW_EPOCHS);
-  const set = new Set([now]);
-  for (const key of Object.keys(state?.epochStartRoots || {})) {
-    const e = Math.floor(Number(key));
-    if (Number.isInteger(e) && e >= floor && e <= now) set.add(e);
-  }
-  return [...set].sort((a, b) => a - b);
+  const now = Math.floor(Number(withdrawPeriod) || 0);
+  if (!Number.isInteger(now) || now < 0) return [];
+  const start = Math.max(born, now);
+  const last = now + VAULT_CLAIM_WINDOW_EPOCHS;
+  if (start > last) return [now];
+  const set = [];
+  for (let period = start; period <= last; period += 1) set.push(period);
+  return set;
 }
 
 function retireBindOf(tx, magic) {
@@ -4614,7 +4636,8 @@ function openIndexedLeaves({
 } = {}) {
   if (want == null || want <= 0n) return { ok: false, reason: 'mint_amount' };
   const k = proofList.length;
-  if (!Number.isSafeInteger(k) || k < 1 || k > MAX_LOCK_LEAVES) return { ok: false, reason: 'mint_amount' };
+  if (!Number.isSafeInteger(k) || k < 1) return { ok: false, reason: 'mint_amount' };
+  if (k > MAX_LOCK_LEAVES) return { ok: false, reason: 'unsigned' };
   if (openList.length !== k) return { ok: false, reason: 'stake_reward' };
   const magic = state?.magic || MAGIC_TESTNET;
   const bind = retireBindOf(tx, magic);
@@ -4622,7 +4645,13 @@ function openIndexedLeaves({
   const used = new Set();
   const openedCommits = [];
   const retireRows = [];
+  let dleqs = 0;
   for (const proof of proofList) {
+    const rows = retireDeclaredRows(proof);
+    if (rows == null) return { ok: false, reason: 'stake_reward' };
+    if (rows > MAX_RETIRE_ROWS) return { ok: false, reason: 'unsigned' };
+    dleqs += rows;
+    if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'unsigned' };
     const burned = verifyLeafRetire(proof, null, magic);
     if (!burned || !burned.txBind.equals(bind)) return { ok: false, reason: 'stake_reward' };
     if (burned.unlock !== BigInt(chainNow)) return { ok: false, reason: 'stake_reward' };
@@ -4660,8 +4689,15 @@ function openIndexedLeaves({
 export function retireBlobRejected(tx, state = null, nowMs = null) {
   const proofList = proofListOf(tx, null);
   if (!proofList.length) return null;
+  if (proofList.length > MAX_LOCK_LEAVES) return { ok: false, reason: 'unsigned' };
   const magic = state?.magic || MAGIC_TESTNET;
+  let dleqs = 0;
   for (const proof of proofList) {
+    const rows = retireDeclaredRows(proof);
+    if (rows == null) return { ok: false, reason: 'stake_reward' };
+    if (rows > MAX_RETIRE_ROWS) return { ok: false, reason: 'unsigned' };
+    dleqs += rows;
+    if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'unsigned' };
     if (!verifyLeafRetire(proof, null, magic)) return { ok: false, reason: 'stake_reward' };
   }
   if (!state || nowMs == null) return null;
@@ -4675,7 +4711,7 @@ export function retireBlobRejected(tx, state = null, nowMs = null) {
     state,
     tx,
     hiddenCommits,
-    chainNow: chainEpochIndex(state, nowMs),
+    chainNow: chainPeriodIndex(state, nowMs),
     portalId: id,
     proofList,
     openList: openListOf(tx, null),
@@ -4727,8 +4763,9 @@ export function withdraw({
   if (staked + idle <= 0n && hiddenCommits.length === 0) return { ok: false, reason: 'empty' };
   const split = maturedSplit(state, p, nowMs);
   if (split.legacy <= 0n && split.note > 0n && hiddenCommits.length === 0) return { ok: false, reason: 'note_principal' };
-  const chainNow = chainEpochIndex(state, nowMs);
-  if (state?.rolled?.[rollKey(id, chainNow)] || state?.rolled?.[rollKey(id, state.currentEpoch)]) {
+  const chainEpoch = chainEpochIndex(state, nowMs);
+  const chainPeriod = chainPeriodIndex(state, nowMs);
+  if (state?.rolled?.[rollKey(id, chainEpoch)] || state?.rolled?.[rollKey(id, state.currentEpoch)]) {
     return { ok: false, reason: 'stake_reward' };
   }
   let openedCommits = [];
@@ -4745,7 +4782,14 @@ export function withdraw({
       : (principalProof ? [principalProof] : []);
     const indexed = hiddenCommits.filter((hex) => state.vaultLockIndex?.[hex]);
     if (proofList.length) {
+      if (proofList.length > MAX_LOCK_LEAVES) return { ok: false, reason: 'unsigned' };
+      let dleqs = 0;
       for (const proof of proofList) {
+        const rows = retireDeclaredRows(proof);
+        if (rows == null) return { ok: false, reason: 'stake_reward' };
+        if (rows > MAX_RETIRE_ROWS) return { ok: false, reason: 'unsigned' };
+        dleqs += rows;
+        if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'unsigned' };
         if (!verifyLeafRetire(proof, null, state?.magic || MAGIC_TESTNET)) {
           return { ok: false, reason: 'stake_reward' };
         }
@@ -4753,7 +4797,7 @@ export function withdraw({
     }
     if (indexed.length) {
       const opened = openIndexedLeaves({
-        state, tx, hiddenCommits, chainNow, portalId: id, proofList, openList, want,
+        state, tx, hiddenCommits, chainNow: chainPeriod, portalId: id, proofList, openList, want,
       });
       if (!opened.ok) return opened;
       openedCommits = opened.openedCommits;
@@ -4794,7 +4838,7 @@ export function withdraw({
   }
   void rewardTaken;
   void dueEpochs;
-  const chain = chainNow;
+  const chain = chainEpoch;
   if (openedCommits.length) {
     if (hiddenRewardDue(state, p, nowMs)) p.hiddenRewardOpen = true;
     if (!state.pendingWithdraw) state.pendingWithdraw = [];
