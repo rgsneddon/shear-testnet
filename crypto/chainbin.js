@@ -201,6 +201,98 @@ export function writeChainBin(path, blocks) {
   fs.renameSync(tmp, path);
 }
 
+/**
+ * Replace one record in a segment. Every other record stays byte-for-byte.
+ * A prune changes one body; repacking the other 399 is the same file with
+ * more CPU. Returns the new file bytes, or null when the index is absent.
+ */
+export function replaceSegmentRecord(filePath, indexInSegment, block) {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  const buf = fs.readFileSync(filePath);
+  if (buf.length < MAGIC.length || !buf.subarray(0, MAGIC.length).equals(MAGIC)) return null;
+  const target = Math.floor(Number(indexInSegment));
+  if (!Number.isInteger(target) || target < 0) return null;
+  let o = MAGIC.length;
+  let i = 0;
+  while (o + 4 <= buf.length) {
+    const n = buf.readUInt32LE(o);
+    if (n > buf.length - (o + 4)) return null;
+    if (i === target) {
+      const rec = packEpochBlock(block);
+      const len = Buffer.alloc(4);
+      len.writeUInt32LE(rec.length, 0);
+      const next = Buffer.concat([buf.subarray(0, o), len, rec, buf.subarray(o + 4 + n)]);
+      const tmp = `${filePath}.tmp`;
+      fs.writeFileSync(tmp, next);
+      fs.renameSync(tmp, filePath);
+      return next;
+    }
+    o += 4 + n;
+    i += 1;
+  }
+  return null;
+}
+
+/** Offsets of each length-prefixed record. Null when the file is missing or torn. */
+export function chainRecordIndex(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  let buf;
+  try { buf = fs.readFileSync(filePath); } catch { return null; }
+  if (buf.length < MAGIC.length || !buf.subarray(0, MAGIC.length).equals(MAGIC)) return null;
+  const index = [];
+  let o = MAGIC.length;
+  while (o + 4 <= buf.length) {
+    const n = buf.readUInt32LE(o);
+    if (n > buf.length - (o + 4)) return null;
+    index.push({ off: o, len: n });
+    o += 4 + n;
+  }
+  if (o !== buf.length) return null;
+  return index;
+}
+
+/**
+ * Replace one record and shift only the bytes after it.
+ * The prefix stays on disk. A buried body is smaller, so the tail moves down
+ * and the file is truncated. Returns the new record length, or null.
+ */
+export function spliceChainRecordAt(filePath, rec, block) {
+  if (!filePath || !rec || !Number.isInteger(rec.off) || rec.off < MAGIC.length) return null;
+  if (!Number.isInteger(rec.len) || rec.len < 0) return null;
+  const packed = packEpochBlock(block);
+  const len = Buffer.alloc(4);
+  len.writeUInt32LE(packed.length, 0);
+  let fd = null;
+  try {
+    fd = fs.openSync(filePath, 'r+');
+    const size = fs.fstatSync(fd).size;
+    const tailStart = rec.off + 4 + rec.len;
+    if (tailStart > size) return null;
+    const tailLen = size - tailStart;
+    const tail = Buffer.alloc(tailLen);
+    if (tailLen) {
+      const n = fs.readSync(fd, tail, 0, tailLen, tailStart);
+      if (n !== tailLen) return null;
+    }
+    const chunk = Buffer.concat([len, packed, tail]);
+    let w = 0;
+    while (w < chunk.length) {
+      const n = fs.writeSync(fd, chunk, w, chunk.length - w, rec.off + w);
+      if (n <= 0) return null;
+      w += n;
+    }
+    const end = rec.off + chunk.length;
+    if (end < size) fs.ftruncateSync(fd, end);
+    return packed.length;
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch { /* the caller rewrites the file */ }
+    }
+  }
+}
+
 /** Append one packed epoch. Full archival: never drops txs. IBD must not rewrite the book.
  *  Returns the bytes just written so a running file digest can extend. */
 export function appendChainBin(path, block) {

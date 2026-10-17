@@ -309,32 +309,27 @@ export function emptyFluxset() {
 }
 
 /**
- * A vote receipt is not a note. A lock is a note once it carries its unlock
- * time. A lock receipt with no unlock stays out of the admit set.
+ * A vote receipt is not a note. A lock is a vault tranche, not a note.
+ * A lock output never joins the admit set.
  */
 export function outputJoinsAdmitSet(tx, o) {
   if (!o?.admitPub) return false;
   const k = String(o?.kind || tx?.kind || '');
-  if (k === 'vote') return false;
-  if (k === 'lock') return Number(o.unlockAtMs) > 0;
+  if (k === 'vote' || k === 'lock') return false;
   return true;
 }
 
 /**
- * An admitPub on a vote, or on a lock that is not a time-locked note, would
- * make the stake spendable twice. A time-locked lock joins only as an FS-1 leaf.
+ * An admitPub on a vote or a lock would make the stake spendable as a note.
+ * Principal leaves only through withdraw.
  */
 export function receiptAdmitRejected(tx) {
   const kind = String(tx?.kind || '');
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   for (const o of outs) {
     const k = String(o?.kind || kind);
-    if (k === 'vote' && o?.admitPub) return { ok: false, reason: 'receipt_admitpub' };
-    if (k === 'lock' && o?.admitPub && !(Number(o.unlockAtMs) > 0)) {
+    if ((k === 'vote' || k === 'lock') && o?.admitPub) {
       return { ok: false, reason: 'receipt_admitpub' };
-    }
-    if (k === 'lock' && Number(o.unlockAtMs) > 0 && o?.admitPub && !fs1LeafFor(o)) {
-      return { ok: false, reason: 'admit_note_point' };
     }
   }
   return null;
@@ -472,6 +467,9 @@ export function appendFluxBlock(live, block) {
     : emptyFluxset();
   const before = dest.pubs.length;
   absorbFluxBlock(dest.pubs, dest.commits, dest.spendTags, block);
+  // A block that adds no notes leaves the frontier bytes alone. Calling the
+  // native append anyway is what made a long run of empty ancestors quadratic.
+  if (dest.pubs.length === before) return dest;
   const added = pairsFrom(dest.pubs.slice(before), dest.commits.slice(before));
   installFrontiers(dest, added.dest, added.cs);
   return dest;

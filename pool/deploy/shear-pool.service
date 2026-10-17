@@ -15,7 +15,6 @@ Environment=SHEAR_STRATUM_AUTH=1
 Environment=SHEAR_HTTP=8088
 Environment=SHEAR_SHARE_BITS=8
 Environment=SHEAR_RPC_BIND=127.0.0.1
-Environment=SHEAR_ADMIN_HOST=mypool.site
 ExecStart=/usr/bin/node pool/src/main.js
 Restart=always
 RestartSec=2

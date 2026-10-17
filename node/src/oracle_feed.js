@@ -51,7 +51,7 @@ export function loadOracleSnapshot({ dataDir = '', bundled = BUNDLED } = {}) {
 /**
  * Staking oracle view. Mint uses the sealed epochBps.
  * `wouldFreezeBps` is the bundled quorum. There is no per-epoch step.
- * A snapshot argument is not an input to either number.
+ * A caller-supplied basket is not an input to either number.
  */
 export function oracleView(vault, snapshot, nowMs = Date.now()) {
   const parsed = bpsFromSnapshot(snapshot);
@@ -72,7 +72,7 @@ export function oracleView(vault, snapshot, nowMs = Date.now()) {
     sourceCount: ORACLE_QUORUM,
     floorBps: 0,
     mintUses: 'epochBps',
-    snapshotIgnored: true,
+    callerBasketIgnored: true,
     displayOnly: true,
     observeCall: Buffer.from(encodeObserveRate(wouldFreezeBps, Math.floor(Number(nowMs) / 1000))).toString('hex'),
   };

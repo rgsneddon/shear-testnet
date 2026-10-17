@@ -837,6 +837,27 @@ function supplyTipHeight(store) {
   return Array.isArray(blocks) ? blocks.length : 0;
 }
 
+function nonNegCount(value) {
+  const n = Math.floor(Number(value) || 0);
+  return Number.isSafeInteger(n) && n >= 0 ? n : 0;
+}
+
+/**
+ * Vault figures for the tip supply report. A public receipt cannot be
+ * appended, so locked principal on this vault is the note-backed debit.
+ * Accrued interest is the mint bank plus claimable leaves.
+ */
+function explorerVaultOpts(store) {
+  const view = publicVaultView(store?.reserveVault || {}, Date.now());
+  const principal = nonNegCount(view.totalLockedNanos);
+  const accrued = nonNegCount(view.reserveClaimableNanos);
+  return {
+    vaultPrincipalNanos: principal,
+    vaultAccruedNanos: accrued,
+    noteBackedPrincipalNanos: principal,
+  };
+}
+
 function packSupply(audit, store) {
   const vault = publicVaultView(store?.reserveVault || {}, Date.now());
   const word = supplyStatusWord(audit?.status);
@@ -852,6 +873,10 @@ function packSupply(audit, store) {
     schedulePotNanos: settled ? audit.schedulePotNanos : null,
     carryNanos: settled ? audit.carryNanos : null,
     differenceNanos: settled ? audit.differenceNanos : null,
+    vaultPrincipalNanos: settled ? nonNegCount(audit.vaultPrincipalNanos) : null,
+    vaultAccruedNanos: settled ? nonNegCount(audit.vaultAccruedNanos) : null,
+    noteBackedPrincipalNanos: settled ? nonNegCount(audit.noteBackedPrincipalNanos) : null,
+    mintedInterestNanos: settled ? nonNegCount(audit.mintedInterestNanos) : null,
     supplyStatus: word,
     supplyReason: audit?.reason || '',
     asOfHeight: supplyTipHeight(store),
@@ -952,9 +977,10 @@ function runSupplyAudit(store, key) {
 
 export function networkSupply(store) {
   const consensus = typeof store?.supplyState === 'function' ? store.supplyState() : null;
-  if (consensus) return packSupply(supplyReport(consensus), store);
+  const vaultOpts = explorerVaultOpts(store);
+  if (consensus) return packSupply(supplyReport(consensus, vaultOpts), store);
   const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
-  if (!blocks.length) return packSupply(supplyReport(emptySupplyState(0)), store);
+  if (!blocks.length) return packSupply(supplyReport(emptySupplyState(0), vaultOpts), store);
   const key = supplyCacheKey(store);
   const hit = cachedSupply(store, key);
   if (hit) return hit;
@@ -999,6 +1025,10 @@ export function explorerCirculation(store) {
     emitted: settled ? nanosToShe(supply.potNanos + supply.hashNanos + supply.extraMintNanos) : null,
     hashOwedNanos: settled ? Number(supply.hashOwedNanos) || 0 : null,
     reserveMintedNanos: settled ? Math.max(0, Math.floor(Number(supply.extraMintNanos) || 0)) : null,
+    vaultPrincipalNanos: settled ? nonNegCount(supply.vaultPrincipalNanos) : null,
+    vaultAccruedNanos: settled ? nonNegCount(supply.vaultAccruedNanos) : null,
+    noteBackedPrincipalNanos: settled ? nonNegCount(supply.noteBackedPrincipalNanos) : null,
+    mintedInterestNanos: settled ? nonNegCount(supply.mintedInterestNanos) : null,
     reserveVaultNanos: supply.vaultNanos || supply.lockedNanos || 0,
     accruingNanos: supply.accruingNanos || 0,
     holderCount: 0,

@@ -6,9 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { GENESIS_BITS_PACKED, MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS, nextBits } from '../../crypto/asert.js';
-import { jroot as jrootOf } from '../../crypto/admit.js';
 import { VERSION, decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
-import { pointFrom } from '../../crypto/note.js';
 import { meetsTarget, setHashBackend, shearHash } from '../../crypto/shear_hash.js';
 import { hashHeaderOffLoop, p2pHashCap, p2pHashStats, resetP2pHashStats } from '../../crypto/hash_offloop.js';
 
@@ -31,41 +29,12 @@ import {
   resetP2pVerifyStats,
 } from '../src/p2p.js';
 
-// The fixture was sealed at packed bits 786432. Genesis verify requires
-// GENESIS_BITS_PACKED (983040). A padded 90s median does not move that seed,
-// so every header in this short chain is legal at the same packed value.
-// Nonces are ShearHash-v3 hits at that target. Prev links follow those hashes.
-// Share nonces are floor hits on the rewritten parent. chain.js is unchanged.
-// Coinbase jroot on the fixture is the pre-native merkle fallback of the
-// cumulative admit pubs. Verify now wants nativeJroot of that same list.
-// digestTx does not cover jroot, so the mined merkle and PoW stay valid.
-const WEDGE_HEADER_NONCE = [1014n, 5110n, 99739n];
-const WEDGE_SHARE_NONCE = [null, ['258'], ['515']];
-
-function setHeaderBits(header, bits) {
-  const h = Buffer.from(header);
-  h.writeUInt32LE(bits >>> 0, 108);
-  return h;
-}
-
-function setHeaderPrev(header, prevHash) {
-  const h = Buffer.from(header);
-  Buffer.from(prevHash).copy(h, 4, 0, 32);
-  return h;
-}
-
-function admitPubsOf(block) {
-  const pubs = [];
-  for (const tx of block.txs || []) {
-    for (const o of tx.vout || []) {
-      if (!o?.admitPub) continue;
-      try {
-        pubs.push(typeof o.admitPub.toBytes === 'function' ? o.admitPub : pointFrom(o.admitPub));
-      } catch { /* verify skips the same unreadable pub */ }
-    }
-  }
-  return pubs;
-}
+// Sealed on the v12 genesis curve (GENESIS_BITS_PACKED) at 90s gaps.
+// Header nonces are ShearHash-v3 hits at that target. Share nonces are
+// floor-width hits on the parent, with the credit byte in the high 8 bits.
+// The retired single-gap step does not move an on-time child. chain.js is unchanged.
+const WEDGE_HEADER_NONCE = [59614n, 518050n, 7158n];
+const WEDGE_SHARE_NONCE = [null, ['576460752303423511'], ['576460752303424244']];
 
 function legalizeBlocks(blocks) {
   const childBits = nextBits(GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS);
@@ -73,12 +42,9 @@ function legalizeBlocks(blocks) {
     throw new Error(`padded median would move genesis bits to ${childBits}`);
   }
   const out = [];
-  const pubs = [];
   for (let i = 0; i < blocks.length; i += 1) {
     const block = cloneBlock(blocks[i]);
-    let header = setHeaderBits(block.header, GENESIS_BITS_PACKED);
-    if (i > 0) header = setHeaderPrev(header, out[i - 1].hash);
-    header = setNonce(header, WEDGE_HEADER_NONCE[i]);
+    const header = setNonce(block.header, WEDGE_HEADER_NONCE[i]);
     const hash = shearHash(header);
     if (decodeHeader(header).bits !== GENESIS_BITS_PACKED) {
       throw new Error(`wedge block ${i + 1} bits were not rewritten`);
@@ -94,10 +60,6 @@ function legalizeBlocks(blocks) {
         shareNonces[j] == null ? row : { ...row, nonce: shareNonces[j] }
       ));
     }
-    pubs.push(...admitPubsOf(block));
-    const root = Buffer.from(jrootOf(pubs));
-    if (root.length !== 32) throw new Error(`wedge block ${i + 1} jroot is not 32 bytes`);
-    block.txs = (block.txs || []).map((tx, idx) => (idx === 0 ? { ...tx, jroot: root } : tx));
     out.push(block);
   }
   return out;
@@ -106,7 +68,7 @@ function legalizeBlocks(blocks) {
 let legalChain;
 function loadChain() {
   if (!legalChain) {
-    const raw = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-blocks.json', import.meta.url), 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-v12.json', import.meta.url), 'utf8'));
     legalChain = legalizeBlocks(raw.blocks.map((b) => decodeWireBlock(b)));
   }
   return legalChain.map(cloneBlock);
@@ -120,6 +82,8 @@ function cloneBlock(block) {
     txs: block.txs,
     samples: block.samples || [],
     shareBatch: block.shareBatch || [],
+    hashCredits: block.hashCredits,
+    hashSpill: block.hashSpill || [],
     miner: block.miner,
     poolDest: block.poolDest,
     aLeaves: block.aLeaves,
@@ -186,6 +150,26 @@ async function connectPeer(port) {
   });
   await readJsonLines(sock, 2, 2000);
   return sock;
+}
+
+function collectLines(sock) {
+  const lines = [];
+  let buf = '';
+  const onData = (chunk) => {
+    buf += chunk.toString('utf8');
+    let idx;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const raw = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!raw) continue;
+      try { lines.push(JSON.parse(raw)); } catch { /* ignore */ }
+    }
+  };
+  sock.on('data', onData);
+  return {
+    lines,
+    stop() { sock.off('data', onData); },
+  };
 }
 
 function missHeader(header, salt) {
@@ -297,16 +281,19 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
     const tall = await connectPeer(bound.port);
     const short = await connectPeer(bound.port);
     try {
+      const tallWatch = collectLines(tall);
+      const shortWatch = collectLines(short);
+      try {
       tall.write(`${JSON.stringify({
         type: 'tip', magic: MAGIC_TESTNET, height: 10, hash: 'b'.repeat(64),
       })}\n`);
       short.write(`${JSON.stringify({
         type: 'tip', magic: MAGIC_TESTNET, height: 4, hash: 'c'.repeat(64),
       })}\n`);
-      const tallMsg = await readJsonLines(tall, 1, 2000);
-      const shortMsg = await readJsonLines(short, 1, 800);
-      assert.ok(tallMsg.some((m) => m.type === 'getheaders'), 'taller peer should be asked for headers');
-      assert.equal(shortMsg.some((m) => m.type === 'getheaders'), false);
+      // A relayed tip can arrive before getheaders. The ask is still only to the taller peer.
+      const askedTall = await waitFor(() => tallWatch.lines.some((m) => m.type === 'getheaders'), 2000);
+      assert.equal(askedTall, true, 'taller peer should be asked for headers');
+      assert.equal(shortWatch.lines.some((m) => m.type === 'getheaders'), false);
       const missing = `${'d'.repeat(64)}`;
       tall.write(`${JSON.stringify({
         type: 'headers',
@@ -318,10 +305,13 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
         magic: MAGIC_TESTNET,
         headers: [{ hash: 'e'.repeat(64), height: 2 }],
       })}\n`);
-      const tallBlocks = await readJsonLines(tall, 1, 2000);
-      const shortBlocks = await readJsonLines(short, 1, 800);
-      assert.ok(tallBlocks.some((m) => m.type === 'getblock'), 'best peer should be asked for the block');
-      assert.equal(shortBlocks.some((m) => m.type === 'getblock'), false);
+      const askedBlock = await waitFor(() => tallWatch.lines.some((m) => m.type === 'getblock'), 2000);
+      assert.equal(askedBlock, true, 'best peer should be asked for the block');
+      assert.equal(shortWatch.lines.some((m) => m.type === 'getblock'), false);
+      } finally {
+        tallWatch.stop();
+        shortWatch.stop();
+      }
     } finally {
       tall.destroy();
       short.destroy();
@@ -347,6 +337,10 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
     const tall = await connectPeer(bound.port);
     const same = await connectPeer(bound.port);
     try {
+      const heavyWatch = collectLines(heavy);
+      const tallWatch = collectLines(tall);
+      const sameWatch = collectLines(same);
+      try {
       heavy.write(`${JSON.stringify({
         type: 'tip', magic: MAGIC_TESTNET, height: 5, hash: '1'.repeat(64), work: '0x30',
       })}\n`);
@@ -356,12 +350,15 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
       same.write(`${JSON.stringify({
         type: 'tip', magic: MAGIC_TESTNET, height: 5, hash: '3'.repeat(64), work: '0x10',
       })}\n`);
-      const heavyMsg = await readJsonLines(heavy, 1, 2000);
-      const tallMsg = await readJsonLines(tall, 1, 800);
-      const sameMsg = await readJsonLines(same, 1, 800);
-      assert.ok(heavyMsg.some((m) => m.type === 'getheaders'), 'heavier work should win catch-up');
-      assert.equal(tallMsg.some((m) => m.type === 'getheaders'), false);
-      assert.equal(sameMsg.some((m) => m.type === 'getheaders'), false);
+      const askedHeavy = await waitFor(() => heavyWatch.lines.some((m) => m.type === 'getheaders'), 2000);
+      assert.equal(askedHeavy, true, 'heavier work should win catch-up');
+      assert.equal(tallWatch.lines.some((m) => m.type === 'getheaders'), false);
+      assert.equal(sameWatch.lines.some((m) => m.type === 'getheaders'), false);
+      } finally {
+        heavyWatch.stop();
+        tallWatch.stop();
+        sameWatch.stop();
+      }
     } finally {
       heavy.destroy();
       tall.destroy();
@@ -523,7 +520,9 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
       const goodHash = Buffer.from(second.hash).toString('hex');
       sock.write(blockLine(badShare));
       sock.write(blockLine(badHeader, { trustedPowHash: goodHash }));
-      const sawShare = await waitFor(() => events.some((e) => e.reason === 'share_pow'), 60_000);
+      // The coinbase commits the share frame. A mutated nonce misses that
+      // root before ShearHash runs, so the reject is share_slot.
+      const sawShare = await waitFor(() => events.some((e) => e.reason === 'share_slot'), 60_000);
       const sawPow = await waitFor(() => events.some((e) => e.reason === 'pow'), 60_000);
       assert.equal(sawShare, true, JSON.stringify(events));
       assert.equal(sawPow, true, JSON.stringify(events));

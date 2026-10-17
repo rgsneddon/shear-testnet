@@ -31,6 +31,7 @@ function stubStore(pinOk) {
 describe('reserve pin gates mining', () => {
   it('the live magic is in the pinned bytecode, and a stranger magic is not', () => {
     assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
+    assert.equal(MAGIC_TESTNET_V12, 'shear-testnet-v12');
     assert.equal(reservePinOk(), true);
     assert.equal(reservePinOk('shear-testnet-v11'), true);
     assert.equal(reservePinOk('shear-testnet-v9'), true);

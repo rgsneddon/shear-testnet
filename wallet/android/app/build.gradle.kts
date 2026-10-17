@@ -106,8 +106,19 @@ val buildShearAdmitSo = tasks.register<Exec>("buildShearAdmitSo") {
     workingDir = rootProject.projectDir
 }
 
+// Builds the pinned, checksum-verified libsodium.so (wallet/android/libsodium.lock.json)
+// into jniLibs. A current build is reused.
+val buildLibsodiumSo = tasks.register<Exec>("buildLibsodiumSo") {
+    group = "shear"
+    description = "Build the pinned libsodium.so into jniLibs/arm64-v8a"
+    val script = rootProject.file("../../crypto/native/build-android-libsodium.sh")
+    commandLine("bash", script.absolutePath)
+    workingDir = rootProject.projectDir
+}
+
 tasks.named("preBuild").configure {
     dependsOn(buildShearAdmitSo)
+    dependsOn(buildLibsodiumSo)
 }
 
 dependencies {

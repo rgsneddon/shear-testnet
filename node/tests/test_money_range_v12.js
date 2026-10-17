@@ -11,7 +11,7 @@ import { sealNote } from '../../crypto/note.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { boundReserveWithdraw, verifyFundedBody } from '../../crypto/spend.js';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
-import { RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { RESERVE_EPOCH_MS, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { portalIdFromDest } from '../../crypto/reserve_vault.js';
 
@@ -31,6 +31,21 @@ function easyPowHash() {
   h[6] = (powTag >> 16) & 0xff;
   powTag += 1;
   return h;
+}
+
+// One epoch after genesis. A tranche-less lump locked in epoch 0 is due.
+// The cap tests are not a mid-epoch withdraw.
+const LUMP_GENESIS = 1;
+const LUMP_CLOCK = 1 + RESERVE_EPOCH_MS;
+
+function dueLump(nanos, extra = {}) {
+  return {
+    staked: nanos,
+    idle: 0,
+    lockEpoch: 0,
+    ownerPub: '11'.repeat(32),
+    ...extra,
+  };
 }
 
 function plainTx(kind, dest, nanos) {
@@ -58,16 +73,17 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         assert.equal(parked.reason, want, `${kind} ${nanos}`);
       }
       const bare = plainTx('withdraw', dest, nanos);
-      assert.equal(boundReserveWithdraw(bare, { portals: {}, epochBps: 0 }).reason, 'insufficient');
+      assert.equal(boundReserveWithdraw(bare, { portals: {}, epochBps: 0 }).reason, 'owner_missing');
       const over = boundReserveWithdraw(bare, {
         epochBps: 0,
-        portals: { [dest]: { staked: nanos - 1, idle: 0 } },
+        portals: { [dest]: { staked: nanos - 1, idle: 0, ownerPub: '11'.repeat(32) } },
       });
       if (nanos > 1) assert.equal(over.reason, 'insufficient');
       const exact = boundReserveWithdraw(bare, {
         epochBps: 0,
-        portals: { [portalIdFromDest(dest)]: { staked: nanos, idle: 0 } },
-      });
+        genesisMs: LUMP_GENESIS,
+        portals: { [portalIdFromDest(dest)]: dueLump(nanos) },
+      }, null, LUMP_CLOCK);
       assert.equal(exact.ok, false, String(nanos));
       assert.equal(exact.reason, 'mint_forbidden', `${nanos} ${exact.reason}`);
       const unlabeled = boundReserveWithdraw({
@@ -75,8 +91,9 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         programId: RESERVE_PROGRAM,
       }, {
         epochBps: 0,
-        portals: { [portalIdFromDest(dest)]: { staked: nanos, idle: 0 } },
-      });
+        genesisMs: LUMP_GENESIS,
+        portals: { [portalIdFromDest(dest)]: dueLump(nanos) },
+      }, null, LUMP_CLOCK);
       assert.equal(unlabeled.reason, 'mint_amount', `${nanos} ${unlabeled.reason}`);
       const note = sealNote(nanos, { dest20: hash20FromAddress(dest), kind: 'withdraw' });
       const opened = boundReserveWithdraw({
@@ -87,13 +104,14 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         vout: [{ ...note, kind: 'withdraw' }],
       }, {
         epochBps: 0,
+        genesisMs: LUMP_GENESIS,
         currentEpoch: 1,
-        portals: { [portalIdFromDest(dest)]: { staked: nanos, idle: 0 } },
-      });
+        portals: { [portalIdFromDest(dest)]: dueLump(nanos) },
+      }, null, LUMP_CLOCK);
       assert.equal(opened.ok, true, `${nanos} ${opened.reason}`);
       const body = verifyFundedBody([bare], () => 0, { reserveState: { portals: {}, epochBps: 0 } });
       assert.equal(body.ok, false);
-      assert.equal(body.reason, 'insufficient');
+      assert.equal(body.reason, 'owner_missing');
     }
   });
 

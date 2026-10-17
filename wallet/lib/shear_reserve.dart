@@ -20,9 +20,9 @@ const kReserveJoinCutoffDaysMainnet = 99;
 const kReserveJoinCutoffDays = kBookMagic == 'shear-v1' ? kReserveJoinCutoffDaysMainnet : kReserveJoinCutoffDaysTestnet;
 const kReserveEpochMs = kReserveEpochDays * 86400000;
 const kReserveJoinCutoffMs = kReserveJoinCutoffDays * 86400000;
-/// Trimmed mean of the bundled policy rates (14 banks, drop 2 each side). 2.84%.
-const kReserveOracleDefaultBps = 284;
-const kBpsStepCap = 100;
+/// Plain average of the bundled policy rates (all 14 banks).
+/// Canonical integer: `GENESIS_BPS` in crypto/reserve_oracle.js. 2.81%.
+const kReserveOracleDefaultBps = 281;
 const kStaleObserveMs = 14 * 86400000;
 const kVoteIncrease = 'increase bonus';
 const kVoteDecrease = 'decrease bonus';
@@ -309,8 +309,6 @@ class ShearReserve {
       return prev;
     }
     var next = oracleBps;
-    if (next > prev + kBpsStepCap) next = prev + kBpsStepCap;
-    if (next < prev - kBpsStepCap) next = prev - kBpsStepCap;
     if (next < 0) next = 0;
     return next;
   }

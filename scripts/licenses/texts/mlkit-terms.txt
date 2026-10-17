@@ -1,0 +1,42 @@
+Google ML Kit (barcode scanning, vision common, common, vision interfaces and
+play-services-mlkit-barcode-scanning) is not open source. The Android wallet's
+QR scanner (mobile_scanner) links it. Shear accepted Google's terms on
+2026-10-14 (docs/licensing-audit.md, decision 3). These are Google's terms,
+not a licence Shear grants, and they bind Shear as the app developer:
+
+  ML Kit Terms of Service (last modified May 14, 2025)
+    https://developers.google.com/ml-kit/terms
+  Google APIs Terms of Service, which the ML Kit Terms incorporate
+    https://developers.google.com/terms
+
+What the terms require of Shear:
+
+  No reverse engineering. The ML Kit Terms forbid reverse engineering or
+  extracting the source code of ML Kit or its models, except where the law
+  expressly allows it.
+
+  Attribution. Google APIs Terms, Section 6(b): Shear displays any
+  attribution Google requires in the ML Kit documentation, and uses Google's
+  brand features only as the Google Brand Features Use Guidelines allow.
+  Section 6(c): Shear makes no statement suggesting partnership with,
+  sponsorship by, or endorsement by Google. When checked on 2026-10-14, the
+  ML Kit barcode-scanning documentation required no attribution beyond this
+  notice.
+
+  Data use. Under the ML Kit Terms, images are processed on the device, and
+  ML Kit does not send them or the scan results to Google. ML Kit may contact
+  Google servers for bug fixes, updated models and hardware compatibility
+  information, and it sends Google metrics about how the API performs and is
+  used (Google's ML Kit Android data disclosure lists device information,
+  package name and app version, per-installation identifiers, performance
+  metrics, API configuration, input and output sizes, feature version, event
+  types and error codes). Google uses these metrics to measure performance,
+  debug, maintain and improve the APIs and to detect misuse or abuse, as
+  described in Google's Privacy Policy (https://policies.google.com/privacy).
+  Shear must tell users of the app about this processing as the law
+  requires, and Google APIs Terms Section 3(d) requires a privacy policy
+  that describes it.
+    https://developers.google.com/ml-kit/android-data-disclosure
+
+The iOS app does not use ML Kit; mobile_scanner uses Apple's Vision framework
+there (wallet/ios/Podfile.lock has no ML Kit pod).

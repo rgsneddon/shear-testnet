@@ -10,6 +10,7 @@
  * The oldest credited block is the first child.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -378,7 +379,7 @@ function proveBalanced(tx, { x, index, flux, note, anchor, noteR, noteV }) {
   return settled;
 }
 
-describe('v12 frontier, burial, and reorg fallback', () => {
+describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import.meta.url) }, () => {
   it('a depth-2 reorg costs the same at two heights, and the pubs-only root matches the coinbase', { timeout: 600_000 }, () => {
     clearLiveSharePow();
     const dest = minerDest();

@@ -26,6 +26,7 @@ function standIn() {
 describe('v12 rejects a synthetic digest on the real chain', () => {
   it('verify, submit, RPC, ingest, and IPC hash the header', { timeout: 60_000 }, async () => {
     assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
+    assert.equal(MAGIC_TESTNET_V12, 'shear-testnet-v12');
     const miner = encodeDest(Buffer.alloc(20, 7));
     const now = 1_700_000_000_000;
     const pow = standIn();
