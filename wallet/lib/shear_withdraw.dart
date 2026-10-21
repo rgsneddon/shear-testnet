@@ -3,15 +3,17 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'shear_ed25519.dart';
+import 'shear_eip712.dart';
 import 'shear_note.dart';
 import 'shear_pack.dart';
 import 'shear_ristretto.dart';
 
 /// A withdraw the wallet can ship. It spends an FS-1 note and carries the
 /// retire proof and the principal opening. A plaintext `from` is refused.
-/// The proofs are the caller's. This function does not invent them.
+/// The payout is a one-time dest20. `to` and `payoutPortalId` are not on
+/// the body. The proofs are the caller's. This function does not invent them.
 Map<String, Object?>? buildFundedWithdraw({
-  required String to,
+  required List<int> dest20,
   required int nanos,
   required String id,
   required String portalId,
@@ -22,7 +24,6 @@ Map<String, Object?>? buildFundedWithdraw({
   required List<Map<String, Object?>> admitProofs,
   required Object retireProof,
   required Object principalProof,
-  String payoutPortalId = '',
   int fee = 0,
   List<Map<String, Object?>>? vout,
   String ownerPub = '',
@@ -31,7 +32,7 @@ Map<String, Object?>? buildFundedWithdraw({
   String payer = '',
 }) {
   if (from.isNotEmpty || payer.isNotEmpty) return null;
-  if (to.isEmpty || nanos < 0 || id.isEmpty || portalId.isEmpty) return null;
+  if (dest20.length != 20 || nanos < 0 || id.isEmpty || portalId.isEmpty) return null;
   if (anchor < 0 || excess.length != 32 || fs1.isEmpty || fs1[0] != 0xf1) return null;
   if (vin.isEmpty || vin.length != admitProofs.length || vin.length > 8) return null;
   for (var i = 0; i < vin.length; i++) {
@@ -41,14 +42,12 @@ Map<String, Object?>? buildFundedWithdraw({
     final raw = blob is Uint8List ? blob : Uint8List.fromList(blob as List<int>);
     if (raw.isEmpty || raw[0] != 0xf1) return null;
   }
-  final pay = payoutPortalId.isEmpty ? portalId : payoutPortalId;
   return {
     'id': id,
     'kind': 'withdraw',
-    'to': to,
     'nanos': nanos,
     'portalId': portalId,
-    'payoutPortalId': pay,
+    'dest20': Uint8List.fromList(dest20),
     'anchor': anchor,
     'fee': fee,
     'vin': [
@@ -359,11 +358,63 @@ Uint8List jsWithdrawSpendMessage(Map<String, Object?> tx) {
   return _sha([...utf8Bytes('shear-spend-v1'), ..._sha(_cat(chunks))]);
 }
 
+const _kWithdrawOwnerTag = 'shear-withdraw-owner-v1';
+const _kPortalOwnerTag = 'shear-portal-owner-v1';
+const _kTrancheSetTag = 'shear-tranche-set-v1';
+const _kWithdrawChainId = 2701;
+
+String _hexOf(List<int> raw) =>
+    raw.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+/// sha256(portal-owner tag || spend seed || portal id). One key per portal.
+Uint8List? _portalOwnerSeed(Uint8List spendSeed, String portalId) {
+  final hex = portalId.startsWith('0x') ? portalId.substring(2) : portalId;
+  if (spendSeed.length != 32 || hex.length != 64) return null;
+  return _sha(_cat([
+    utf8Bytes(_kPortalOwnerTag),
+    spendSeed,
+    _hex32(hex),
+  ]));
+}
+
+/// JS `withdrawOwnerMessage`. The destination is the dest20 hex, not an address.
+Uint8List? _withdrawOwnerMessage({
+  required String portalId,
+  required int nanos,
+  required String dest,
+  required Uint8List magic,
+  required int chainId,
+  required int epoch,
+  required Uint8List trancheSet,
+  required Uint8List txBind,
+}) {
+  final hex = portalId.startsWith('0x') ? portalId.substring(2) : portalId;
+  if (hex.length != 64 || nanos < 0 || magic.length != 32 || trancheSet.length != 32) {
+    return null;
+  }
+  if (chainId < 0 || epoch < 0 || txBind.length != 32) return null;
+  final destBuf = utf8Bytes(dest);
+  return _cat([
+    utf8Bytes(_kWithdrawOwnerTag),
+    _hex32(hex),
+    _u64(nanos),
+    magic,
+    _u64(chainId),
+    _u64(epoch),
+    trancheSet,
+    txBind,
+    _u32(destBuf.length),
+    destBuf,
+  ]);
+}
+
 /// A withdraw that generates one retire proof and one principal opening per
-/// leaf, then the spend signature. [leaves] each carry `scalar`, `blind`,
-/// `note` (64 bytes), `unlock` (the epoch inside the note), and `epochs`.
+/// leaf, the portal-owner signature over the one-time dest20, and the spend
+/// signature. [leaves] each carry `scalar`, `blind`, `note` (64 bytes),
+/// `unlock` (the epoch inside the note), and `epochs`. [dest20] is the payout.
+/// It is not derived from the spend key. `to` and `payoutPortalId` stay off.
 Map<String, Object?>? buildProvedWithdraw({
-  required String to,
+  required List<int> dest20,
   required int nanos,
   required String id,
   required String portalId,
@@ -374,7 +425,7 @@ Map<String, Object?>? buildProvedWithdraw({
   required List<Map<String, Object?>> admitProofs,
   required List<Map<String, Object?>> leaves,
   required List<int> spendSeed,
-  String payoutPortalId = '',
+  required int releaseEpoch,
   int fee = 0,
   List<Map<String, Object?>>? vout,
   String programId = 'shear-reserve-v1',
@@ -385,18 +436,18 @@ Map<String, Object?>? buildProvedWithdraw({
 }) {
   if (from.isNotEmpty || payer.isNotEmpty) return null;
   if (leaves.isEmpty || leaves.length > 16 || spendSeed.length != 32) return null;
-  final pay = payoutPortalId.isEmpty ? portalId : payoutPortalId;
+  if (dest20.length != 20 || releaseEpoch < 0) return null;
   final nonce = withdrawNonce != null && withdrawNonce.length == 32
       ? Uint8List.fromList(withdrawNonce)
       : Uint8List.fromList(List<int>.generate(32, (i) => (i * 17 + 3) & 0xff));
-  final spendPub = ed25519PublicFromSeed(Uint8List.fromList(spendSeed));
-  final dest20 = destCommitFromSpendPub(spendPub);
+  final seed = Uint8List.fromList(spendSeed);
+  final spendPub = ed25519PublicFromSeed(seed);
+  final payout = Uint8List.fromList(dest20);
   final body = buildFundedWithdraw(
-    to: to,
+    dest20: payout,
     nanos: nanos,
     id: id,
     portalId: portalId,
-    payoutPortalId: pay,
     anchor: anchor,
     excess: excess,
     fs1: fs1,
@@ -415,6 +466,7 @@ Map<String, Object?>? buildProvedWithdraw({
   final digest = withdrawTxDigest(tx: body, magic: magic);
   final retires = <Uint8List>[];
   final opens = <Map<String, Object?>>[];
+  var principal = 0;
   for (final leaf in leaves) {
     final scalar = _asBytes(leaf['scalar']);
     final blind = _asBytes(leaf['blind']);
@@ -424,8 +476,9 @@ Map<String, Object?>? buildProvedWithdraw({
     if (epochs is! List || epochs.isEmpty) return null;
     final burned = [for (final e in epochs) e is int ? e : 0];
     final period = leaf['withdrawPeriod'] is int ? leaf['withdrawPeriod'] as int : burned.first;
-    final each = leaf['amount'] is int ? leaf['amount'] as int : (leaves.length == 1 ? nanos : 0);
+    final each = leaf['amount'] is int ? leaf['amount'] as int : 0;
     if (each <= 0) return null;
+    principal += each;
     final proof = proveLeafRetireBytes(
       scalar: scalar,
       epochs: burned,
@@ -453,8 +506,25 @@ Map<String, Object?>? buildProvedWithdraw({
     body['retireProofs'] = retires;
     body['principalProofs'] = opens;
   }
-  body['dest20'] = dest20;
+  final ownerSeed = _portalOwnerSeed(seed, portalId);
+  if (ownerSeed == null) return null;
+  final message = _withdrawOwnerMessage(
+    portalId: portalId,
+    nanos: principal,
+    dest: _hexOf(payout),
+    magic: keccak256(utf8Bytes(magic)),
+    chainId: _kWithdrawChainId,
+    epoch: releaseEpoch,
+    trancheSet: _sha(utf8Bytes(_kTrancheSetTag)),
+    txBind: digest,
+  );
+  if (message == null) return null;
+  body['ownerPub'] = _hexOf(ed25519PublicFromSeed(ownerSeed));
+  body['rewardSig'] = ed25519Sign(ownerSeed, message);
   body['spendPub'] = spendPub;
-  body['sig'] = ed25519Sign(Uint8List.fromList(spendSeed), jsWithdrawSpendMessage(body));
+  body['sig'] = ed25519Sign(seed, jsWithdrawSpendMessage(body));
+  if (body.containsKey('from') || body.containsKey('to') || body.containsKey('payoutPortalId')) {
+    return null;
+  }
   return body;
 }

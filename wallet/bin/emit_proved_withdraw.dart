@@ -41,7 +41,7 @@ void main() {
     });
   }
   final built = buildProvedWithdraw(
-    to: 'shear1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq2w5k2x',
+    dest20: Uint8List(20)..[0] = 0x11,
     nanos: pi * 2,
     id: 'dart-wd',
     portalId: portal,
@@ -62,6 +62,7 @@ void main() {
     ],
     leaves: leaves,
     spendSeed: seed,
+    releaseEpoch: 0,
     fee: 0,
     withdrawNonce: Uint8List(32)..[31] = 7,
   );

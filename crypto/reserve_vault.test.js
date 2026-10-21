@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { newIdentity } from './address.js';
+import { newIdentity, hash20FromAddress, ed25519RawPub } from './address.js';
 import { destForLogin, vaultDest } from './flow_sheet.js';
 import {
   RESERVE_PROGRAM,
@@ -22,6 +22,8 @@ import {
   withdraw,
   enact,
   applyReserveBlock,
+  deposit as depositRaw,
+  portalOwnerKey,
   verifyReservePayout,
   portalEpochInterest,
   creditFeeBank,
@@ -31,6 +33,9 @@ import {
   canVote,
   publicVaultView,
   portalIdFromDest,
+  portalIdFromDest20,
+  portalBlindFromSeed,
+  compactLockLeakRejected,
   observeRate,
   portalRewards,
   previewWithdraw,
@@ -46,6 +51,7 @@ import {
 } from './reserve_vault.js';
 import { deposit, lockTx, withdrawTx, portalOwnerPub, ownerFor } from './owned_portal.js';
 import { compactTx } from './chronoflux.js';
+import { reservePortalRef } from './spend.js';
 import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, GENESIS_BPS, interestNanos } from './reserve_oracle.js';
@@ -735,6 +741,65 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(done.ok, true);
     // Russell 21:34 17 Oct. A voted 0 is bonus off and is not clamped back to 1.
     assert.equal(Number(state.liveHashBonusNanos), 0);
+  });
+
+  it('a carried portal id binds the first owner and a peer does not rebuild it', () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const vault = destOf(alice);
+    const d20 = hash20FromAddress(vault);
+    const pid = portalIdFromDest20(d20, portalBlindFromSeed(alice.spendSeed));
+    assert.equal(pid.length, 64);
+    assert.notEqual(pid, portalIdFromDest(vault));
+    const keyA = portalOwnerKey(alice.privateKey, pid);
+    const keyB = portalOwnerKey(bob.privateKey, pid);
+    const pubA = Buffer.from(ed25519RawPub(keyA)).toString('hex');
+    const pubB = Buffer.from(ed25519RawPub(keyB)).toString('hex');
+    assert.notEqual(pubA, pubB);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const first = depositRaw({
+      state, portalId: pid, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub: pubA,
+    });
+    assert.equal(first.ok, true, first.reason);
+    assert.equal(state.portals[pid].ownerPub, pubA);
+    assert.equal(state.portals[portalIdFromDest(vault)], undefined);
+    const other = depositRaw({
+      state, portalId: pid, nanos: PI_SHE_NANOS, nowMs: t0 + 1, ownerPub: pubB,
+    });
+    assert.equal(other.ok, false);
+    assert.equal(other.reason, 'unsigned');
+    const same = depositRaw({
+      state, portalId: pid, nanos: PI_SHE_NANOS, nowMs: t0 + 2, ownerPub: pubA,
+    });
+    assert.equal(same.ok, true, same.reason);
+    const bare = reserveAction({
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      to: vault,
+      vout: [{ kind: 'lock', address: vault, dest20: Buffer.from(d20) }],
+    });
+    assert.equal(bare.portalId, '');
+    const carried = reservePortalRef({ kind: 'lock', from: vault, portalId: pid });
+    assert.equal(carried.ok, true);
+    assert.equal(carried.id, pid);
+  });
+
+  it('a compact lock portal id is not the address hash, and to or ssa1 is refused', () => {
+    const alice = newIdentity();
+    const vault = destOf(alice);
+    const d20 = hash20FromAddress(vault);
+    const blind = portalBlindFromSeed(alice.spendSeed);
+    const pid = portalIdFromDest20(d20, blind);
+    assert.equal(typeof pid, 'string');
+    assert.equal(pid.length, 64);
+    assert.notEqual(pid, portalIdFromDest(vault));
+    const leaked = compactLockLeakRejected({ kind: 'lock', to: vault, portalId: pid });
+    assert.equal(leaked.reason, 'vote_leak');
+    const named = compactLockLeakRejected({ kind: 'lock', portalId: pid, memo: 'pay ssa1qq' });
+    assert.equal(named.reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({ kind: 'lock', portalId: pid, dest20: Buffer.from(d20) }), null);
   });
 
   it('a compact lock with no lock note is refused, and so is the wire copy', () => {

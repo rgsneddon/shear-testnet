@@ -199,6 +199,22 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(code.includes(stranger), false);
   });
 
+  it('a carried 32-byte portal id keeps the first owner and refuses another', async () => {
+    const s = await bootReserveEvm();
+    const t0 = 1_700_000_000_000;
+    assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
+    const id = Buffer.alloc(32, 7);
+    const ownerA = Buffer.alloc(32, 1);
+    const ownerB = Buffer.alloc(32, 2);
+    const first = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 9), t0, ownerA, false));
+    assert.equal(first.ok, true, first.reason);
+    const again = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 8), t0 + 1, ownerB, false));
+    assert.equal(again.ok, false);
+    assert.equal(again.reason, 'unsigned');
+    const same = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 6), t0 + 2, ownerA, false));
+    assert.equal(same.ok, true, same.reason);
+  });
+
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;

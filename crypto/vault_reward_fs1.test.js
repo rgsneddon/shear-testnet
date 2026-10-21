@@ -2004,6 +2004,26 @@ describe('vault-lock reward proof', () => {
     assert.ok(built);
     assert.equal(built.from, undefined);
     assert.equal(built.payer, undefined);
+    assert.equal(built.to, owner.dest);
     assert.equal(buildFundedWithdraw({ ...built, from: owner.dest, to: owner.dest }), null);
+    // Current law: a body with no address pays dest20 and does not gain `to`.
+    const hidden = buildFundedWithdraw({
+      dest20: Buffer.alloc(20, 9),
+      nanos: PI_SHE_NANOS,
+      id: 'hidden-wd',
+      portalId: 'ab'.repeat(32),
+      anchor: 16,
+      excess: Buffer.alloc(32, 4),
+      fs1: Buffer.concat([Buffer.from([0xf1]), Buffer.alloc(40, 1)]),
+      vin: [{ commit }],
+      admit_proof: { blob, cTilde: commit, spendTag: Buffer.alloc(32, 5) },
+      retireProof: Buffer.alloc(12, 1),
+      principalProof: { R: Buffer.alloc(32, 2), z: Buffer.alloc(32, 3) },
+    });
+    assert.ok(hidden);
+    assert.equal(hidden.to, undefined);
+    assert.equal(hidden.from, undefined);
+    assert.equal(hidden.payoutPortalId, undefined);
+    assert.equal(Buffer.from(hidden.dest20).equals(Buffer.alloc(20, 9)), true);
   });
 });

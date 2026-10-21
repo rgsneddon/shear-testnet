@@ -14,7 +14,7 @@ import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRej
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
-import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected, leafVoteLeakRejected } from './reserve_vault.js';
+import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected, leafVoteLeakRejected, compactLockLeakRejected } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -127,6 +127,8 @@ export function admitMempool(pool, tx, opts = {}) {
     const leaked = leafVoteLeakRejected(tx);
     if (leaked) return leaked;
   }
+  const leakedLock = compactLockLeakRejected(tx);
+  if (leakedLock) return leakedLock;
   const feeHit = feeFieldRejected(tx);
   if (feeHit) return feeHit;
   const spendFee = bSpendFeeRejected(tx);

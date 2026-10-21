@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../src/store.js';
 import { decodeHeader } from '../../crypto/header.js';
+import { encodeWireBlock } from '../src/p2p.js';
 import { newIdentity, encodeDest, hash20FromAddress, destCommitFromSpendPub } from '../../crypto/address.js';
 import {
   GENESIS_BPS,
@@ -58,6 +59,8 @@ import {
   consensusUnlockPeriod,
   leafEpochsToBurn,
   portalIdFromDest,
+  portalIdFromDest20,
+  portalBlindFromSeed,
   leafStubNanos,
   proveLockEquality,
   provePrincipalOpen,
@@ -93,7 +96,8 @@ function payer() {
     base: id.admitBase,
     pub: Buffer.from(id.spendPub).toString('hex'),
     key: id.privateKey,
-    portalId: portalIdFromDest(dest),
+    // portalId = H(tag, dest20, r). r comes from the seed. The address hash does not match.
+    portalId: portalIdFromDest20(hash20FromAddress(dest), portalBlindFromSeed(id.spendSeed)),
   };
 }
 
@@ -237,6 +241,9 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
 
   const who = payer();
   const pay = payer();
+  assert.equal(who.portalId.length, 64);
+  assert.notEqual(who.portalId, portalIdFromDest(who.dest));
+  assert.notEqual(pay.portalId, portalIdFromDest(pay.dest));
   let dir;
   let store;
   const coins = [];
@@ -302,7 +309,6 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
         payoutPortalId: who.portalId,
         ownerPub: who.pub,
         vaultLockNote: leaf.note,
-        to: who.dest,
         vin: ph.vin,
         vout: outs,
         fs1: ph.fs1,
@@ -319,7 +325,8 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
       fee = next;
     }
     assert.ok(tx, 'lock fee');
-    tx.to = who.dest;
+    // Current law: the queued lock carries portalId and dest20. The address is not on the wire.
+    assert.equal(tx.to, undefined);
     tx.dest20 = Buffer.from(hash20FromAddress(who.dest));
     signSpendTx(tx, who.key);
     const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, 0);
@@ -335,7 +342,9 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     const sealed = await mine(store, who.dest);
     assert.ok(sealed.tpl.txs.some((row) => row.id === 'sync-lock'), 'lock template');
     const wired = sealed.tpl.txs.find((row) => row.id === 'sync-lock');
-    assert.equal(wired.to, who.dest, 'lock keeps its address on the wire');
+    // Current law: a compact lock has no address. The peer uses the carried portal id.
+    assert.equal(wired.to, undefined, 'lock address stays off the wire');
+    assert.equal(JSON.stringify(wired).includes('ssa1'), false, 'lock wire has no ssa1');
     for (const c of use) spent.add(c.commit.toString('hex'));
     const change = spentOuts[1];
     coins.push({
@@ -622,31 +631,25 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.equal(restarted.vaultRoot, String(store.reserveVault.vaultLockRoot || ''));
     assert.deepEqual(restarted.portals, Object.keys(store.reserveVault.portals || {}).sort());
     assert.ok(restarted.portals.includes(who.portalId), 'restart portal');
-    const peerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-vault-peer-'));
-    try {
-      const peer = createStore(peerDir);
-      for (const block of store.blocks) {
-        const got = await Promise.resolve(peer.append({
-          header: block.header,
-          height: block.height,
-          txs: block.txs,
-          samples: block.samples,
-          shareBatch: block.shareBatch || [],
-          miner: block.miner,
-          aLeaves: block.aLeaves,
-          bLeaves: block.bLeaves,
-          rootA: block.rootA,
-          rootB: block.rootB,
-          weight: block.weight,
-        }, { trustedPowHash: Buffer.from(block.hash), skipSharePow: true }));
-        assert.equal(got.ok, true, `peer h=${block.height} ${got.reason || ''} ${got.error || ''}`);
-      }
-      assert.equal(peer.tip().height, store.tip().height);
-      assert.ok(peer.reserveVault.portals[who.portalId], 'peer portal');
-      assert.equal(peer.reserveVault.epochStartRoots['1'], root);
-      assert.ok(censusOf(peer.reserveVault, 1), 'peer census');
-    } finally {
-      fs.rmSync(peerDir, { recursive: true, force: true });
-    }
+    // A fresh peer reads the wire in its own process. It does not append
+    // the parent's block objects, and it does not rebuild the portal id.
+    const wirePath = path.join(dir, 'wire-blocks.jsonl');
+    const wireBody = store.blocks.map((block) => JSON.stringify(encodeWireBlock(block))).join('\n');
+    fs.writeFileSync(wirePath, `${wireBody}\n`);
+    const wireChild = path.join(path.dirname(fileURLToPath(import.meta.url)), 'vault_wire_open.js');
+    const wired = spawnSync(process.execPath, [wireChild, wirePath], {
+      encoding: 'utf8',
+      timeout: 900_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    assert.equal(wired.status, 0, wired.stderr || wired.stdout || 'wire process');
+    const wireLine = String(wired.stdout || '').trim().split(/\r?\n/).filter(Boolean).pop();
+    const peer = JSON.parse(wireLine);
+    assert.equal(peer.height, store.tip().height, 'wire height');
+    assert.equal(peer.hash, Buffer.from(liveTip.hash).toString('hex'), 'wire hash');
+    assert.equal(peer.lockTo, false, 'wire lock has no address');
+    assert.equal(peer.lockSsa1, false, 'wire lock has no ssa1');
+    assert.equal(peer.lockDest20, true, 'wire lock carries dest20');
+    assert.ok(peer.portals.includes(who.portalId), 'wire portal');
   });
 });

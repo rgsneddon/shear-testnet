@@ -72,6 +72,7 @@ error NotePrincipal();
 error Unsigned();
 error OwnerMissing();
 error ClaimUnavailable();
+error RetireCap();
 
 contract Reserve {
     bytes32 public constant SHEAR_TESTNET = keccak256(bytes("shear-testnet-v2"));
@@ -275,6 +276,21 @@ contract Reserve {
 
     function portalId(bytes calldata dest) public pure returns (bytes32) {
         return keccak256(abi.encodePacked("shear-portal-v1", dest));
+    }
+
+    /// A 32-byte dest is the portal id the lock carried. That word is the
+    /// storage key and the id the owner signs. It is not a hash of an address.
+    /// A longer dest is the legacy address encoding, still hashed.
+    function _portalKey(bytes calldata dest) internal pure returns (bytes32 id, bytes32 shaId) {
+        if (dest.length == 0) revert BadDest();
+        if (dest.length == 32) {
+            id = bytes32(dest);
+            if (id == bytes32(0)) revert BadDest();
+            shaId = id;
+            return (id, shaId);
+        }
+        id = keccak256(abi.encodePacked("shear-portal-v1", dest));
+        shaId = sha256(abi.encodePacked("shear-portal-v1", dest));
     }
 
     function observeRate(uint256 bps, uint256 nowTs) external view onlyShear {
@@ -584,9 +600,7 @@ contract Reserve {
 
     /// A withdraw in this block keeps this portal's legacy principal.
     function holdWithdraw(bytes calldata dest) external onlyShear {
-        if (dest.length == 0) revert BadDest();
-        bytes32 id = portalId(dest);
-        bytes32 shaId = sha256(abi.encodePacked("shear-portal-v1", dest));
+        (bytes32 id, bytes32 shaId) = _portalKey(dest);
         if (!withdrawHold[id]) {
             withdrawHold[id] = true;
             heldIds.push(id);
@@ -616,11 +630,11 @@ contract Reserve {
         if (clockGenesis == 0) revert ClockUnpinned();
         if (epochStart != 0 && !bonusEnacted && remainingMs(nowTs) == 0) revert NeedEnact();
         if (bonusEnacted && !deferEpochRoll) _syncEpoch(nowTs);
-        bytes32 id = portalId(dest);
+        (bytes32 id, bytes32 shaId) = _portalKey(dest);
         if (!portalListed[id]) {
             portalListed[id] = true;
             portalKeys.push(id);
-            portalSha[id] = sha256(abi.encodePacked("shear-portal-v1", dest));
+            portalSha[id] = shaId;
         }
         Portal storage p = portals[id];
         // Every lock names its owner. A later lock must name the same one.
@@ -1380,11 +1394,12 @@ contract Reserve {
         uint256 epoch,
         bytes calldata auth
     ) external onlyShear returns (uint256) {
-        bytes32 id = portalId(dest);
+        (bytes32 id, bytes32 carriedSha) = _portalKey(dest);
         if (ownerOf[id] == bytes32(0)) revert OwnerMissing();
         if (auth.length < 96 || _ownerCommit(_authPub(auth)) != ownerOf[id]) revert Unsigned();
-        // The same sha256 portal id the JS roll signs. keccak portalId is the storage key.
+        // The id the owner signed. A carried 32-byte portal id is that word.
         bytes32 shaId = portalSha[id];
+        if (shaId == bytes32(0)) shaId = carriedSha;
         if (shaId == bytes32(0)) revert Unsigned();
         if (epoch != currentEpoch) revert EpochNotEnded();
         Portal storage p = portals[id];
@@ -1445,7 +1460,7 @@ contract Reserve {
         // No early withdraw. Principal moves only at or after the lock epoch's end.
         // A later top-up does not re-lock principal whose epoch has already ended.
         if (_payIndex(nowTs) == 0) revert EpochNotEnded();
-        bytes32 id = portalId(dest);
+        (bytes32 id,) = _portalKey(dest);
         // No recorded owner is not a license to take the principal.
         if (ownerOf[id] == bytes32(0)) revert OwnerMissing();
         uint256 chainNow = _chainEpoch(nowTs);
@@ -1628,18 +1643,24 @@ contract Reserve {
         return seen0 && seen1 && seen2;
     }
 
-    function _takeRetireDleqs(uint256 nowTs, uint256 rows) internal {
-        if (retireDleqsStamp != nowTs) {
-            retireDleqsStamp = nowTs;
-            retireDleqsUsed = 0;
-        }
+    /// One block. The executor calls this with the block height before the
+    /// body. The cap is that height, not the header timestamp.
+    function noteBlockHeight(uint256 height) external onlyShear {
+        retireDleqsStamp = height;
+        retireDleqsUsed = 0;
+    }
+
+    function _takeRetireDleqs(uint256 rows) internal {
         retireDleqsUsed += rows;
-        if (retireDleqsUsed > 64) revert Unsigned();
+        if (retireDleqsUsed > 64) revert RetireCap();
     }
 
     /// One π per distinct leaf commit. Each retire proof is verified once.
     /// The indexed nullifiers have to be the ones inside that proof.
     /// Rows cover the withdraw period through the next two and share one tx bind.
+    /// The trailing bind is the one the owner signed. This contract does not
+    /// recompute the withdraw digest. The node checks that bind in JS before
+    /// it forwards the call.
     function _retireLeaves(Portal storage p, uint256 chain, uint256 nowTs, bytes memory blob) internal returns (uint256) {
         _clearRetired();
         retireBindSet = false;
@@ -1669,7 +1690,7 @@ contract Reserve {
             off += proofLen;
             uint256 rows = _retireRows(proof);
             if (!_retireWindowOk(proof, period)) revert Unsigned();
-            _takeRetireDleqs(nowTs, rows);
+            _takeRetireDleqs(rows);
             bytes32 bind = _wordMem(proof, proof.length - 32);
             if (!retireBindSet) {
                 retireBindScratch = bind;
@@ -1782,7 +1803,8 @@ contract Reserve {
         view
         returns (uint256 active, uint256 idle, Vote vote, bool joined, uint256 voteEpoch)
     {
-        Portal storage p = portals[portalId(dest)];
+        bytes32 id = dest.length == 32 ? bytes32(dest) : portalId(dest);
+        Portal storage p = portals[id];
         return (p.active, p.idle, p.vote, p.joined, p.voteEpoch);
     }
 }

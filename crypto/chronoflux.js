@@ -383,10 +383,10 @@ function dest20FromOpen(o) {
 }
 
 function portalIdFromOpen(o) {
-  if (o?.portalId) return o.portalId;
-  const dest = String(o?.address || '');
-  if (!dest) return '';
-  return createHash('sha256').update('shear-portal-v1').update(dest).digest('hex');
+  // The carried id only. An address is not an input, so compact cannot
+  // recompute portalId from dest20 or from the public address.
+  const pid = String(o?.portalId || '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(pid) ? pid : '';
 }
 
 function claimedReserveV(o) {
@@ -778,12 +778,9 @@ export function compactTx(tx) {
     delete out.payer;
     delete out.sponsor;
   }
-  // The portal id hashes the full address, admit base included. dest20
-  // cannot rebuild it. A lock and a withdraw keep `to` on the wire. A leaf
-  // vote has no portal address and still drops the string.
-  if ((kind === 'withdraw' || kind === 'lock') && typeof tx.to === 'string' && tx.to !== '') {
-    out.to = tx.to;
-  }
+  // A compact lock carries portalId and dest20. The address is not on the
+  // wire. A withdraw payout is the one-time dest20 under the owner signature,
+  // so `to` stays off this body too. A leaf vote has no portal address.
   // The reward integer is public. Compact still drops it from a hidden
   // lock. A claim without it cannot match the proof.
   if (kind === 'reward-claim') {

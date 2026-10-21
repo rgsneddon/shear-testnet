@@ -3741,7 +3741,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         );
       } else {
         final leaves = reserveLockLeaves(ledger.notes);
-        final spend = leaves == null ? null : reserveWithdrawSpend(ledger.notes);
         posted = await postReserveWithdraw(
           ledger,
           reserve: reserve,
@@ -3753,11 +3752,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           restFrame: ident.address,
           paymentCode: ident.paymentCode,
           leaves: leaves,
-          fs1: spend?.fs1,
-          vin: spend?.vin,
-          admitProofs: spend?.admitProofs,
-          excess: spend?.excess,
-          anchor: spend?.anchor ?? 0,
         );
       }
     } on StateError catch (err) {
@@ -3983,26 +3977,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final tun = hop.tunVerified && !hop.probeOnly;
-    final planned = await castPlannedLeafVotes(
+    final result = await castPlannedLeafVotes(
       ledger: ledger,
       reserve: reserve,
       planDir: votePlanFolder(session.store.parent.path),
       dest: dest,
       choice: choice,
-      local: ledger.pool == null || widget.skipPoolSync,
-    );
-    final result = planned ?? await commandReserveVote(
-      ledger: ledger,
-      reserve: reserve,
       restFrame: ident.address,
       paymentCode: ident.paymentCode,
-      dest: dest,
-      choice: choice,
-      depth: depth,
       spendSeed: hexToBytes(ident.seedHex),
       local: ledger.pool == null || widget.skipPoolSync,
-      privacyHopUp: tun,
     );
     if (context.mounted) {
       final messenger = ScaffoldMessenger.of(context);

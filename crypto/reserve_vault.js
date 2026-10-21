@@ -220,6 +220,42 @@ function nanosOut(n) {
   return v <= MAX_SAFE_NANOS ? Number(v) : v;
 }
 
+export const PORTAL_BLIND_TAG = 'shear-portal-r-v1';
+export const PORTAL_ID_TAG = 'shear-portal-id-v1';
+
+/** 32-byte r from the wallet seed. Domain-separated from the portal owner key. */
+export function portalBlindFromSeed(spendSeed) {
+  let seed = spendSeed;
+  if (seed && typeof seed === 'object' && !Buffer.isBuffer(seed) && !(seed instanceof Uint8Array)) {
+    try { seed = ed25519SeedOf(seed); } catch { return null; }
+  }
+  const raw = Buffer.isBuffer(seed) ? seed : Buffer.from(seed || []);
+  if (raw.length !== 32) return null;
+  return createHash('sha256').update(Buffer.from(PORTAL_BLIND_TAG)).update(raw).digest();
+}
+
+/**
+ * portalId = H(domain, dest20, r). r is not on the wire.
+ * The full address is not an input, so a peer cannot recompute this.
+ */
+export function portalIdFromDest20(dest20, r) {
+  let d20;
+  let blind;
+  try {
+    d20 = Buffer.from(asU8(dest20));
+    blind = Buffer.from(asU8(r));
+  } catch {
+    return null;
+  }
+  if (d20.length !== 20 || blind.length !== 32) return null;
+  return createHash('sha256')
+    .update(Buffer.from(PORTAL_ID_TAG))
+    .update(d20)
+    .update(blind)
+    .digest('hex');
+}
+
+/** Address-only id. Compact locks do not use this. A peer must not rebuild a portal from it. */
 export function portalIdFromDest(dest) {
   const d = String(dest || '');
   return createHash('sha256').update('shear-portal-v1').update(d).digest('hex');
@@ -857,6 +893,27 @@ function claimDestOf(tx) {
   return String(note?.address || tx?.to || '');
 }
 
+function dest20Hex(raw) {
+  try {
+    if (typeof raw === 'string') {
+      const hex = raw.replace(/^0x/i, '');
+      if (/^[0-9a-f]{40}$/i.test(hex)) return hex.toLowerCase();
+      return '';
+    }
+    const b = Buffer.from(asU8(raw));
+    if (b.length >= 20) return Buffer.from(b.subarray(0, 20)).toString('hex');
+  } catch { /* not a dest20 */ }
+  return '';
+}
+
+/** Address when `to` is present. Otherwise the one-time dest20 hex. */
+function withdrawSignedDest(tx, act) {
+  if (typeof tx?.to === 'string' && tx.to !== '') return tx.to;
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const note = outs.find((row) => String(row?.kind || '') === KIND_WITHDRAW);
+  return dest20Hex(note?.dest20) || dest20Hex(tx?.dest20) || String(act?.payout || '');
+}
+
 /**
  * A withdraw of principal must be signed by the portal owner.
  * The message is the portal id, the principal, and the payout destination.
@@ -888,7 +945,10 @@ export function withdrawRewardRejected(state, tx, nowMs) {
   if (!hidden.length && !(principal > 0)) return null;
   const presented = String(tx?.ownerPub || '').replace(/^0x/i, '').toLowerCase();
   if (presented && presented !== owner) return { ok: false, reason: 'unsigned', nanos: 0 };
-  const dest = String(tx?.to || act?.payout || '');
+  // An address-bearing body is signed over that address. A body with no `to`
+  // is signed over the one-time dest20 hex. dest20 is not preferred while
+  // `to` is present: those signatures are over the address string.
+  const dest = withdrawSignedDest(tx, act);
   const bind = withdrawBinding(state, portal, nowMs);
   const firstProof = tx?.retireProof || (Array.isArray(tx?.retireProofs) ? tx.retireProofs[0] : null);
   const message = withdrawOwnerMessage({
@@ -1661,7 +1721,7 @@ export function rollRewardRejected(state, tx, nowMs, height = null) {
   if (String(tx?.kind || '') !== 'roll') return null;
   void nowMs;
   void height;
-  const id = String(tx?.portalId || '').toLowerCase() || portalIdFromDest(tx?.from || '');
+  const id = String(tx?.portalId || '').toLowerCase();
   const portal = id && state?.portals ? state.portals[id] : null;
   const owner = String(portal?.ownerPub || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(owner)) return { ok: false, reason: 'owner_missing' };
@@ -1687,7 +1747,7 @@ export function rollRewardRejected(state, tx, nowMs, height = null) {
 function applyRoll(state, tx, nowMs, height) {
   const refused = rollRewardRejected(state, tx, nowMs, height);
   if (refused) return { ok: false, reason: refused.reason || 'unsigned', interest: 0 };
-  const id = String(tx?.portalId || '').toLowerCase() || portalIdFromDest(tx?.from || '');
+  const id = String(tx?.portalId || '').toLowerCase();
   const epoch = Math.floor(Number(tx?.earnEpoch) || 0);
   if (!state.rolled) state.rolled = Object.create(null);
   const portal = state.portals?.[id];
@@ -3494,17 +3554,35 @@ function fs1RecordBlob(proof) {
   }
 }
 
+/** 20-byte payout. A 40-char hex string or 20 raw bytes. An address is not one. */
+export function postedPayoutDest20(raw) {
+  try {
+    if (typeof raw === 'string') {
+      const hex = raw.replace(/^0x/i, '');
+      if (!/^[0-9a-f]{40}$/i.test(hex)) return null;
+      return Buffer.from(hex, 'hex');
+    }
+    const b = Buffer.from(asU8(raw));
+    return b.length === 20 ? Buffer.from(b) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * A withdraw the wallet can ship. It spends an FS-1 note the wallet owns
  * and carries the retire and principal proofs. A plaintext `from` is not a
  * spend and is refused. The pool does not invent the proofs.
+ * A body with no address pays [dest20] and does not gain `to` or payoutPortalId.
  */
 export function buildFundedWithdraw(body = {}) {
   if (!body || typeof body !== 'object') return null;
   if (body.from != null && String(body.from) !== '') return null;
   if (body.payer != null && String(body.payer) !== '') return null;
-  const to = body.to;
-  if (!isDestAddress(String(to || ''))) return null;
+  const namedTo = String(body.to || '');
+  const hasTo = isDestAddress(namedTo);
+  const payout20 = postedPayoutDest20(body.dest20);
+  if (!hasTo && !payout20) return null;
   const n = exactFloorNanos(body.nanos);
   if (n == null || n < 0) return null;
   const proofs = [];
@@ -3525,14 +3603,26 @@ export function buildFundedWithdraw(body = {}) {
     ? body.principalProofs
     : (body.principalProof ? [body.principalProof] : []);
   if (!retire.length || !principal.length) return null;
-  const tx = withdrawTx({
-    to,
-    nanos: n,
-    id: body.id,
-    nonce: body.withdrawNonce,
-    portalId: body.portalId,
-    payoutPortalId: body.payoutPortalId,
-  });
+  const tx = hasTo
+    ? withdrawTx({
+      to: namedTo,
+      nanos: n,
+      id: body.id,
+      nonce: body.withdrawNonce,
+      portalId: body.portalId,
+      payoutPortalId: body.payoutPortalId,
+    })
+    : {
+      id: body.id == null || String(body.id) === '' ? `wd-${randomBytes(8).toString('hex')}` : String(body.id),
+      programId: RESERVE_PROGRAM,
+      kind: KIND_WITHDRAW,
+      nanos: n,
+      portalId: isPortalId(body.portalId) ? String(body.portalId).toLowerCase() : '',
+      dest20: payout20,
+      vin: [],
+      vout: [],
+      ...(body.withdrawNonce != null && body.withdrawNonce !== '' ? { withdrawNonce: body.withdrawNonce } : {}),
+    };
   delete tx.from;
   const posted = Array.isArray(body.vout) ? body.vout.filter((o) => o && (o.commit || o.kind)) : [];
   if (posted.length) tx.vout = posted;
@@ -3841,18 +3931,11 @@ export function reserveAction(tx) {
       opened = !!verifySealedNote(o, claimed);
     }
   }
-  const legacyTo = tx?.to || o?.address || destFromDest20(o?.dest20) || '';
-  const legacyFrom = tx?.from || tx?.vin?.[0]?.address || destFromDest20(tx?.vin?.[0]?.dest20) || '';
-  let portalId = String(tx?.portalId || o?.portalId || '').toLowerCase();
-  if (!isPortalId(portalId)) {
-    const dest = kind === KIND_WITHDRAW ? legacyFrom : legacyTo;
-    portalId = dest ? portalIdFromDest(dest) : '';
-  }
-  let payoutPortalId = String(tx?.payoutPortalId || '').toLowerCase();
-  if (!isPortalId(payoutPortalId)) {
-    const pay = kind === KIND_WITHDRAW ? legacyTo : legacyFrom;
-    payoutPortalId = pay ? portalIdFromDest(pay) : '';
-  }
+  const legacyTo = tx?.to || o?.address || '';
+  const legacyFrom = tx?.from || tx?.vin?.[0]?.address || '';
+  // Carried id only. dest20 and the address are not inputs.
+  const portalId = isPortalId(tx?.portalId || o?.portalId) ? String(tx?.portalId || o?.portalId).toLowerCase() : '';
+  const payoutPortalId = isPortalId(tx?.payoutPortalId) ? String(tx.payoutPortalId).toLowerCase() : '';
   return {
     kind,
     portalId,
@@ -3906,18 +3989,10 @@ export function canonicalReserveFields(tx) {
   const raw = o?.valueProof?.v != null ? o.valueProof.v : (tx?.nanos != null ? tx.nanos : o?.nanos);
   const n = Math.floor(Number(raw));
   const nanos = Number.isFinite(n) ? n : 0;
-  const legacyTo = tx?.to || o?.address || destFromDest20(o?.dest20) || '';
-  const legacyFrom = tx?.from || tx?.vin?.[0]?.address || destFromDest20(tx?.vin?.[0]?.dest20) || '';
-  let portalId = String(tx?.portalId || o?.portalId || '').toLowerCase();
-  if (!isPortalId(portalId)) {
-    const dest = kind === KIND_WITHDRAW ? legacyFrom : legacyTo;
-    portalId = dest ? portalIdFromDest(dest) : '';
-  }
-  let payoutPortalId = String(tx?.payoutPortalId || '').toLowerCase();
-  if (!isPortalId(payoutPortalId)) {
-    const pay = kind === KIND_WITHDRAW ? legacyTo : legacyFrom;
-    payoutPortalId = pay ? portalIdFromDest(pay) : '';
-  }
+  // Same rule as reserveAction. A missing id stays empty on both the fat
+  // body and the compact body, so the digest does not grow an address hash.
+  const portalId = isPortalId(tx?.portalId || o?.portalId) ? String(tx?.portalId || o?.portalId).toLowerCase() : '';
+  const payoutPortalId = isPortalId(tx?.payoutPortalId) ? String(tx.payoutPortalId).toLowerCase() : '';
   const choice = kind === KIND_VOTE ? String(tx?.choice ?? '') : '';
   return {
     kind,
@@ -4247,6 +4322,33 @@ function maybeTallyBallots(state, height) {
  */
 const LEAKED_LEAF_VOTE_FIELDS = ['feeInput', 'parentTx', 'parent'];
 
+function valueHasSsa1(value, seen) {
+  if (value == null) return false;
+  if (typeof value === 'string') return value.includes('ssa1');
+  if (typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) return false;
+  if (Array.isArray(value)) return value.some((row) => valueHasSsa1(row, seen));
+  for (const row of Object.values(value)) {
+    if (valueHasSsa1(row, seen)) return true;
+  }
+  return false;
+}
+
+/**
+ * A compact lock carries portalId and dest20. `to` and any ssa1 string are
+ * the address, which a peer must not need. Same shape as a leaked vote.
+ * The EVM keys the owner on the carried 32-byte portal id.
+ */
+export function compactLockLeakRejected(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== KIND_LOCK) return null;
+  if (tx?.to != null && String(tx.to) !== '') return { ok: false, reason: 'vote_leak' };
+  if (valueHasSsa1(tx, new Set())) return { ok: false, reason: 'vote_leak' };
+  return null;
+}
+
 /** The fee note's commit and its parent tx stay in the wallet. A vote that carries them is refused. */
 export function leafVoteLeakRejected(tx) {
   if (String(tx?.kind || '') !== KIND_LEAF_VOTE) return null;
@@ -4570,6 +4672,12 @@ export function applyReserveBlock({
         }));
       if (!credits.length) {
         results.push({ action: KIND_LOCK, ok: false, reason: 'stake_reward' });
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
+      // The carried portal id is the storage key. dest is not a fallback.
+      if (!isPortalId(act.portalId)) {
+        results.push({ action: KIND_LOCK, ok: false, reason: 'bad_dest' });
         state.deferEpochRoll = false;
         return finishReserveApply(results);
       }
@@ -4926,10 +5034,11 @@ function periodIndexOfHeight(height, magic) {
 }
 
 /**
- * Periods this withdraw burns: the withdraw period through every later
- * period still inside the claim window. A period before the leaf was born
- * is not in the set. The window is counted in periods, the same unit as
- * the claim nullifier.
+ * Forward burn. Periods this withdraw burns: the withdraw period through
+ * every later period still inside the claim window. There is no separate
+ * FORWARD_BURN constant. The window is VAULT_CLAIM_WINDOW_EPOCHS, counted
+ * in periods, the same unit as the claim nullifier. A period before the
+ * leaf was born is not in the set.
  */
 export function leafEpochsToBurn(state, noteHex, withdrawPeriod) {
   const born = Math.floor(Number(state?.vaultLeafBorn?.[noteHex] ?? 0));
@@ -5252,14 +5361,8 @@ export function withdraw({
       hiddenPrincipal = opened.hiddenPrincipal;
       retireRows = opened.retireRows;
     } else if (want != null && want > 0n) {
-      for (const hex of hiddenCommits) {
-        if (verifyPrincipalOpen(Buffer.from(hex, 'hex'), want, principalProof, tx, id, state?.magic)) {
-          openedCommits = [hex];
-          hiddenPrincipal = want;
-          break;
-        }
-      }
-      if (!openedCommits.length) return { ok: false, reason: 'stake_reward' };
+      // An unindexed hidden tranche is not a receipt. Do not open it.
+      return { ok: false, reason: 'stake_reward' };
     } else {
       // A matured commitment with no lock-note index is not a receipt.
       return { ok: false, reason: 'stake_reward' };

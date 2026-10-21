@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, buildFundedWithdraw, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, lockTx, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1664,7 +1664,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && Array.isArray(body.vin) && body.vin.length > 0
       && (body.retireProof || (Array.isArray(body.retireProofs) && body.retireProofs.length))
       && (body.principalProof || (Array.isArray(body.principalProofs) && body.principalProofs.length));
-    if ((!sealedSendEarly && !fundedWithdraw && !isDestAddress(from)) || !isDestAddress(to)) {
+    // A proved withdraw with a one-time dest20 has no address on the wire.
+    const hiddenWithdraw = fundedWithdraw && !isDestAddress(to) && !!postedPayoutDest20(body.dest20);
+    if ((!sealedSendEarly && !fundedWithdraw && !isDestAddress(from)) || (!isDestAddress(to) && !hiddenWithdraw)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     const nanosBi = isVote ? 0n : parsed.nanos;

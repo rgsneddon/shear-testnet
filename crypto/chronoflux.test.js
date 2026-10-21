@@ -244,7 +244,8 @@ describe('chronoflux prune + collate', () => {
     const sealed = compactTx(tx);
     assert.equal(sealed.vout[0].r, undefined);
     assert.equal(sealed.kind, 'lock');
-    assert.equal(sealed.to, vault);
+    // Current law: a compact lock does not carry the address. The portal id is already stamped.
+    assert.equal(sealed.to, undefined);
     assert.equal(sealed.from, undefined);
     assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.nanos, undefined);
@@ -283,12 +284,16 @@ describe('chronoflux prune + collate', () => {
     assert.doesNotMatch(blob, /"nanos"/);
     assert.doesNotMatch(blob, /"address"/);
     assert.equal(sealed.from, undefined);
-    assert.equal(sealed.to, vault);
+    // Current law: a compact lock does not carry the address. dest20 and the carried portal id stay.
+    assert.equal(sealed.to, undefined);
     assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.vout[0].nanos, undefined);
     assert.ok(sealed.vout[0].dest20);
     assert.equal(Buffer.from(sealed.vout[0].dest20).length, 20);
-    assert.equal(sealed.vout[0].portalId, portalIdFromDest(vault));
+    // Current law: compact does not derive portalId from the address.
+    // An address-only output carries dest20 and no portal id.
+    assert.equal(sealed.vout[0].portalId, undefined);
+    assert.equal(sealed.portalId, undefined);
     assert.equal(Number(sealed.vout[0].valueProof.v), PI_SHE_NANOS);
     assert.equal(digestTx(sealed).equals(digestTx(fat)), true);
     const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
@@ -335,7 +340,10 @@ describe('chronoflux prune + collate', () => {
     const sealed = compactTx(fat);
     assert.equal(sealed.from, undefined);
     assert.equal(sealed.nanos, undefined);
-    assert.equal(sealed.to, payout);
+    // Current law: a compact withdraw does not carry `to` or payoutPortalId.
+    // The payout is the one-time dest20 under the owner signature.
+    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.payoutPortalId, undefined);
     assert.ok(Buffer.from(sealed.retireProof).equals(retire));
     assert.ok(Buffer.from(sealed.principalProof.R).equals(principal.R));
     assert.ok(Buffer.from(sealed.principalProof.z).equals(principal.z));

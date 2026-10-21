@@ -10,6 +10,7 @@ import 'shear_levy.dart';
 import 'shear_read_sync.dart';
 import 'shear_reserve.dart';
 import 'shear_session.dart';
+import 'shear_vote_plan.dart';
 import 'shear_shewall.dart';
 import 'shear_vortex.dart';
 
@@ -893,23 +894,21 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       final choiceRaw = flags['choice'];
       if (choiceRaw == null) throw const FormatException('reserve vote needs --choice increase|decrease|hold');
       final choice = _voteChoice(choiceRaw);
-      final errVote = reserve.vote(dest: dest, choice: choice, nowMs: now);
-      if (errVote != null) {
-        err.writeln(errVote);
-        return 1;
-      }
-      await ledger.sendSpendableSum(
-        from: dest,
-        to: dest,
-        amount: 0,
-        kind: 'vote',
-        programId: 'shear-reserve-v1',
+      final voted = await castPlannedLeafVotes(
+        ledger: ledger,
+        reserve: reserve,
+        planDir: votePlanFolder(session.store.parent.path),
+        dest: dest,
         choice: choice,
-        local: flags['dry-run'] == '1',
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
+        local: flags['dry-run'] == '1' || ledger.pool == null,
       );
+      if (!voted.enacted) {
+        err.writeln(voted.remark);
+        return 1;
+      }
       session.rememberedReserve = _portalSnap(reserve, dest, now);
       await session.persist();
       out.writeln(flags.json ? jsonEncode({'ok': true, 'vote': choice}) : 'vote  $choice');

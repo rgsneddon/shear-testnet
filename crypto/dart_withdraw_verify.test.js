@@ -4,13 +4,14 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAGIC_TESTNET, PI_SHE_NANOS } from './asert.js';
 import { txDigestV3 } from './admit_v3.js';
 import { verifySpendSig } from './spend.js';
-import { verifyPrincipalOpen } from './reserve_vault.js';
+import { reserveMagicBytes, verifyPrincipalOpen, verifyRewardAuth, withdrawOwnerMessage } from './reserve_vault.js';
 import { verifyLeafRetire } from './vault_reward_fs1.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -45,16 +46,28 @@ function revive(value, key = '') {
 
 describe('Dart withdraw verifies in JS', () => {
   it('checks retire, principal, spend signature, and the digest', () => {
-    const ran = spawnSync('dart', ['run', 'bin/emit_proved_withdraw.dart'], {
-      cwd: wallet,
-      encoding: 'utf8',
-      timeout: 120_000,
-    });
+    const ran = process.platform === 'win32'
+      ? spawnSync('cmd.exe', ['/d', '/s', '/c', 'dart', 'run', 'bin/emit_proved_withdraw.dart'], {
+        cwd: wallet,
+        encoding: 'utf8',
+        timeout: 120_000,
+      })
+      : spawnSync('dart', ['run', 'bin/emit_proved_withdraw.dart'], {
+        cwd: wallet,
+        encoding: 'utf8',
+        timeout: 120_000,
+      });
     assert.equal(ran.status, 0, ran.stderr || ran.stdout || 'dart withdraw');
     const tx = revive(JSON.parse(ran.stdout));
     assert.equal(tx.kind, 'withdraw');
     assert.equal(tx.from, undefined);
+    assert.equal(tx.to, undefined);
+    assert.equal(tx.payoutPortalId, undefined);
     assert.equal(tx.nanos, PI_SHE_NANOS * 2);
+    assert.equal(Buffer.from(tx.fs1)[0], 0xf1);
+    assert.equal(Buffer.from(tx.excess).length, 32);
+    assert.equal(tx.vin.length, 2);
+    assert.equal(tx.admit_proofs.length, 2);
     assert.equal(Buffer.from(tx.dest20).length, 20);
     assert.equal(Buffer.from(tx.spendPub).length, 32);
     assert.equal(Buffer.from(tx.sig).length, 64);
@@ -81,5 +94,21 @@ describe('Dart withdraw verifies in JS', () => {
       assert.equal(opened, true, `principal ${i}`);
     }
     assert.equal(verifySpendSig(tx), true);
+    const rewardHex = String(tx.rewardSig || '');
+    assert.match(rewardHex, /^[0-9a-f]{128}$/);
+    assert.match(String(tx.ownerPub || ''), /^[0-9a-f]{64}$/);
+    const destHex = Buffer.from(tx.dest20).toString('hex');
+    assert.equal(destHex, '11' + '00'.repeat(19));
+    const message = withdrawOwnerMessage({
+      nullifier: tx.portalId,
+      nanos: PI_SHE_NANOS * 2,
+      dest: destHex,
+      magic: reserveMagicBytes(MAGIC_TESTNET),
+      chainId: 2701n,
+      epoch: 0,
+      trancheSet: createHash('sha256').update(Buffer.from('shear-tranche-set-v1')).digest(),
+      txBind: digest,
+    });
+    assert.equal(verifyRewardAuth(message, tx.ownerPub, rewardHex), true);
   });
 });

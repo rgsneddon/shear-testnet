@@ -12,7 +12,7 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote, leafVoteConserved } from './note.js';
-import { consensusUnlockPeriod, hiddenPrincipalOpens, indexedWithdrawQuote, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { consensusUnlockPeriod, hiddenPrincipalOpens, indexedWithdrawQuote, lockFundingRejected, lockUnlockOf, maturedHiddenCount, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -226,14 +226,18 @@ export function signSpendTx(tx, privateKey) {
   return tx;
 }
 
-/** Spend authority is Ed25519 over shear-spend-v1 || packDigest. spendPub must commit to dest20. */
+/** Spend authority is Ed25519 over shear-spend-v1 || packDigest. spendPub must commit to dest20.
+ * A withdraw with no address pays a one-time dest20. The owner signature binds
+ * that dest. The spend signature still binds the body. */
 export function verifySpendSig(tx) {
   const pubRaw = spendPubFromTx(tx);
   if (!pubRaw) return false;
   const from = String(tx?.from || tx?.vin?.[0]?.address || '');
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  const namedTo = typeof tx?.to === 'string' && tx.to !== '';
   if (from) {
     if (!destMatchesSpendPub(from, pubRaw)) return false;
-  } else {
+  } else if (!(kind === 'withdraw' && !namedTo)) {
     const vin = Array.isArray(tx?.vin) ? tx.vin[0] : null;
     const d20 = vin?.dest20 || tx?.dest20;
     if (!d20 || !dest20MatchesSpendPub(d20, pubRaw)) return false;
@@ -861,13 +865,12 @@ function reserveKindOf(tx) {
   return String(tx?.kind || tx?.vout?.[0]?.kind || '');
 }
 
-/** Portal named by the tx. A from-dest that disagrees with portalId is a retarget. */
+/** Portal named by the carried id. A peer does not rebuild it from an address. */
 export function reservePortalRef(tx) {
   const from = String(tx?.from || tx?.vin?.[0]?.address || '');
-  const fromId = from ? portalIdFromDest(from) : '';
-  const pid = String(tx?.portalId || tx?.vout?.[0]?.portalId || '').toLowerCase();
-  if (pid && fromId && pid !== fromId) return { ok: false, reason: 'payout_mismatch' };
-  return { ok: true, id: fromId || pid, from };
+  const pid = String(tx?.portalId || tx?.vout?.[0]?.portalId || '').replace(/^0x/i, '').toLowerCase();
+  if (pid && !/^[0-9a-f]{64}$/.test(pid)) return { ok: false, reason: 'unsigned' };
+  return { ok: true, id: pid, from };
 }
 
 function voutDest20(o) {
@@ -901,9 +904,11 @@ function freshLockBound(tx, pubRaw) {
   else if (o?.dest20 && dest20MatchesSpendPub(o.dest20, pubRaw)) {
     try { ownedDest = encodeDest(Buffer.from(o.dest20)); } catch { ownedDest = ''; }
   }
-  if (!ownedDest) return false;
+  const ownsDest20 = !!(o?.dest20 && dest20MatchesSpendPub(o.dest20, pubRaw));
+  if (!ownedDest && !ownsDest20) return false;
+  // The carried portal id is not a hash of the address. A peer does not rebuild it.
   const pid = String(tx?.portalId || o?.portalId || '').toLowerCase();
-  if (pid && pid !== portalIdFromDest(ownedDest)) return false;
+  if (pid && !/^[0-9a-f]{64}$/.test(pid)) return false;
   return true;
 }
 

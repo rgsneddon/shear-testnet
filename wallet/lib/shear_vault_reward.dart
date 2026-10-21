@@ -513,3 +513,196 @@ Map<String, dynamic> proveVaultLockRewardWire(Map<String, dynamic> input) {
     magic: (input['magic'] as String?) ?? kBookMagic,
   );
 }
+
+const String kVoteNullDst = 'shear-vote-null-v1';
+const String kVoteStmtDst = 'shear-vote-stmt-v1';
+const String kVoteFs1Mask = 'shear-vote-fs1-v1';
+const String kVoteProposalDst = 'shear-vote-proposal-v1';
+const String kVoteTagDst = 'shear-vote-v1';
+const int kVoteVer = 0x56;
+
+Uint8List? _b32(Object? v) {
+  if (v is Uint8List && v.length == 32) return v;
+  if (v is List<int> && v.length == 32) return Uint8List.fromList(v);
+  if (v is String) {
+    final hex = v.startsWith('0x') || v.startsWith('0X') ? v.substring(2) : v;
+    if (hex.length != 64) return null;
+    final out = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      final byte = int.tryParse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+      if (byte == null) return null;
+      out[i] = byte;
+    }
+    return out;
+  }
+  return null;
+}
+
+Uint8List _maskVoteFs1(Uint8List fs1, Uint8List linkN) {
+  final out = Uint8List.fromList(fs1);
+  var block = Uint8List(0);
+  var used = 0;
+  var n = 0;
+  for (var i = 0; i < out.length; i++) {
+    if (used >= block.length) {
+      block = _sha256(_concat([utf8Bytes(kVoteFs1Mask), linkN, _u32(n)]));
+      n += 1;
+      used = 0;
+    }
+    out[i] ^= block[used];
+    used += 1;
+  }
+  return out;
+}
+
+bool _contains(Uint8List hay, Uint8List needle) {
+  if (needle.isEmpty || hay.length < needle.length) return false;
+  for (var i = 0; i + needle.length <= hay.length; i++) {
+    var same = true;
+    for (var j = 0; j < needle.length; j++) {
+      if (hay[i + j] != needle[j]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return true;
+  }
+  return false;
+}
+
+/// Vote-only proof. Same layout as `proveLeafVote` in crypto/vault_reward_fs1.js:
+/// 0x56 || u64 epoch || N || linkAnn || linkSr || u32 fs1Len || masked fs1 || record || dest20.
+/// A missing native library returns null. The raw leaf commit is not in the blob.
+Map<String, Object?>? proveLeafVote({
+  required List<Map<String, dynamic>> locks,
+  int which = 0,
+  required int epoch,
+  required int choice,
+  required int seq,
+  required Uint8List proposalId,
+  Uint8List? dest20,
+  String magic = kBookMagic,
+}) {
+  final fs1 = Fs1Native.tryLoad();
+  if (fs1 == null) return null;
+  if (epoch < 0 || proposalId.length != 32) return null;
+  if (choice != -1 && choice != 0 && choice != 1) return null;
+  if (seq < 1 || seq > 8) return null;
+  if (locks.isEmpty || which < 0 || which >= locks.length) return null;
+  final notes = <Uint8List>[];
+  final owners = <Uint8List>[];
+  for (final lock in locks) {
+    final amount = (lock['amount'] as num?)?.toInt() ?? 0;
+    if (amount != kPiSheNanos) return null;
+    final owner = _b32(lock['scalar']);
+    final blind = _b32(lock['blind']);
+    if (owner == null || blind == null) return null;
+    var unlock = kVaultUnlockOpen;
+    if (lock['unlockEpoch'] != null) unlock = (lock['unlockEpoch'] as num).toInt();
+    else if (lock['unlock'] != null) unlock = (lock['unlock'] as num).toInt();
+    if (unlock < 0) return null;
+    try {
+      notes.add(_lockNote(amount, owner, blind, unlock));
+    } catch (_) {
+      return null;
+    }
+    owners.add(owner);
+  }
+  final handle = fs1.treeNew();
+  if (handle == 0) return null;
+  try {
+    if (!fs1.treeAppend(handle, _concat(notes))) return null;
+    final root = fs1.treeRoot(handle);
+    if (root == null || root.length != 32) return null;
+    final dest = dest20 != null && dest20.length == 20 ? Uint8List.fromList(dest20) : randomBytes(20);
+    final choiceByte = choice < 0 ? 0xff : choice;
+    final digest = _sha256(_concat([
+      utf8Bytes(kVoteStmtDst),
+      root,
+      _u64(epoch),
+      proposalId,
+      Uint8List.fromList([choiceByte]),
+      _u32(seq),
+      utf8Bytes(magic),
+      dest,
+    ]));
+    final epochBase = pointBytes(hashToRistretto(_concat([_u64(epoch), proposalId]), utf8Bytes(kVoteNullDst)));
+    final proved = fs1.proveUnlinked(handle, [which], [owners[which]], digest, epoch, epochBase);
+    if (proved == null || proved.records.isEmpty || proved.link.length < 96) return null;
+    final record = proved.records.first;
+    if (record.length != kFs1RecordBytes || record[0] != kFs1Wire) return null;
+    final linkAnn = Uint8List.sublistView(proved.link, 0, 32);
+    final linkSr = Uint8List.sublistView(proved.link, 32, 64);
+    final linkN = Uint8List.sublistView(proved.link, 64, 96);
+    final expectN = pointBytes(mulEl(pointFrom(epochBase), scalarFromBytes(owners[which])));
+    if (!_bytesEq(expectN, linkN)) return null;
+    final stable = pointBytes(mulEl(hp(admitPub(scalarFromBytes(owners[which]))), scalarFromBytes(owners[which])));
+    if (_bytesEq(stable, Uint8List.sublistView(record, 1, 33))) return null;
+    final masked = _maskVoteFs1(proved.fs1, linkN);
+    final blob = _concat([
+      Uint8List.fromList([kVoteVer]),
+      _u64(epoch),
+      linkN,
+      linkAnn,
+      linkSr,
+      _u32(masked.length),
+      masked,
+      record,
+      dest,
+    ]);
+    final leaf = notes[which];
+    final commit = Uint8List.sublistView(leaf, 32, 64);
+    if (_contains(blob, leaf) || _contains(blob, commit)) return null;
+    final admit = AdmitNative.tryLoad();
+    if (admit == null) return null;
+    final r = randomScalar();
+    final range = admit.proveRange(BigInt.one, scalarBytes(r));
+    if (range == null || range.isEmpty) return null;
+    final note = wrapNoteBlind({
+      'kind': 'leaf-vote',
+      'noteCommit': noteCommitOfDest20(dest),
+      'commit': commitBytes(1, scalarBytes(r)),
+      'r': scalarBytes(r),
+      'rangeProof': range,
+      'dest20': dest,
+    }, admitPub(randomScalar()), v: BigInt.one);
+    final tag = _sha256(_concat([utf8Bytes(kVoteTagDst), linkN, _u64(epoch), proposalId]));
+    return {
+      'ok': true,
+      'blob': blob,
+      'root': root,
+      'voteTag': tag,
+      'note': note,
+      'dest20': dest,
+      'epoch': epoch,
+      'choice': choice,
+      'voteSeq': seq,
+    };
+  } finally {
+    fs1.treeFree(handle);
+  }
+}
+
+/// sha256('shear-vote-proposal-v1' || epoch || param). `hb` or `rr` only.
+Uint8List? voteProposalId(int epoch, String param) {
+  if (epoch < 0 || (param != 'hb' && param != 'rr')) return null;
+  return _sha256(_concat([utf8Bytes(kVoteProposalDst), _u64(epoch), utf8Bytes(param)]));
+}
+
+/// Hidden change for a vote fee. No value opening. The range proof stays.
+Map<String, dynamic>? hiddenChangeNote(int nanos, Uint8List dest20) {
+  if (nanos <= 0 || dest20.length != 20) return null;
+  final admit = AdmitNative.tryLoad();
+  if (admit == null) return null;
+  final r = randomScalar();
+  final range = admit.proveRange(BigInt.from(nanos), scalarBytes(r));
+  if (range == null || range.isEmpty) return null;
+  return wrapNoteBlind({
+    'kind': 'send',
+    'noteCommit': noteCommitOfDest20(dest20),
+    'commit': commitBytes(nanos, scalarBytes(r)),
+    'r': scalarBytes(r),
+    'rangeProof': range,
+    'dest20': dest20,
+  }, admitPub(randomScalar()), v: BigInt.from(nanos));
+}

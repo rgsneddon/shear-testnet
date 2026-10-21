@@ -172,13 +172,40 @@ Map<String, Object?>? castWalletVotePlan({
   };
 }
 
-int _planEpoch(Map plan) {
+/// A missing epoch is not epoch 0. The caller fails closed.
+int? _planEpoch(Map plan) {
+  if (!plan.containsKey('epoch')) return null;
   final raw = plan['epoch'];
   if (raw is int && raw >= 0) return raw;
-  return 0;
+  return null;
 }
 
-Map<String, Object?>? loadWalletVotePlan(String dir, {int? epoch}) {
+/// Same-epoch plans must name this window, one height per leaf, and fee
+/// notes the wallet still holds unspent. Anything else is not reusable.
+bool votePlanAccepts(
+  Map plan, {
+  required int leaves,
+  required int openHeight,
+  required int closeHeight,
+  required List<dynamic> notes,
+}) {
+  if (_planEpoch(plan) == null) return false;
+  if (plan['openHeight'] != openHeight || plan['closeHeight'] != closeHeight) return false;
+  final txs = plan['txs'];
+  if (txs is! List || txs.length != leaves) return false;
+  final owned = ownedFeeInputs(notes).toSet();
+  final seen = <String>{};
+  for (final row in txs) {
+    if (row is! Map) return false;
+    final height = row['height'];
+    if (height is! int || height < openHeight || height > closeHeight) return false;
+    final fee = row['feeInput'];
+    if (fee is! String || !owned.contains(fee) || !seen.add(fee)) return false;
+  }
+  return true;
+}
+
+Map<String, Object?>? _readVotePlanFile(String dir) {
   final dest = File(votePlanPath(dir));
   final kind = FileSystemEntity.typeSync(dest.path, followLinks: false);
   if (kind == FileSystemEntityType.notFound) return null;
@@ -186,12 +213,19 @@ Map<String, Object?>? loadWalletVotePlan(String dir, {int? epoch}) {
   try {
     final plan = jsonDecode(dest.readAsStringSync());
     if (plan is! Map || plan['txs'] is! List) return null;
-    final out = plan.map((key, value) => MapEntry(key.toString(), value));
-    if (epoch != null && _planEpoch(out) != epoch) return null;
-    return out;
+    return plan.map((key, value) => MapEntry(key.toString(), value));
   } catch (_) {
     return null;
   }
+}
+
+Map<String, Object?>? loadWalletVotePlan(String dir, {int? epoch}) {
+  final out = _readVotePlanFile(dir);
+  if (out == null) return null;
+  final at = _planEpoch(out);
+  if (at == null) return null;
+  if (epoch != null && at != epoch) return null;
+  return out;
 }
 
 /// Load the plan for [epoch], or build and save one. A file for another
@@ -205,8 +239,24 @@ Map<String, Object?>? plannedLeafVotes({
   int epoch = 0,
   Random? random,
 }) {
-  final loaded = loadWalletVotePlan(dir, epoch: epoch);
-  if (loaded != null) return loaded;
+  final onDisk = _readVotePlanFile(dir);
+  if (onDisk != null) {
+    final at = _planEpoch(onDisk);
+    // No epoch is not epoch 0. A same-epoch plan that fails the window,
+    // the leaf count, or the unspent fee notes is not replaced.
+    if (at == null || at == epoch) {
+      if (at != null && votePlanAccepts(
+        onDisk,
+        leaves: leaves,
+        openHeight: openHeight,
+        closeHeight: closeHeight,
+        notes: notes,
+      )) {
+        return onDisk;
+      }
+      return null;
+    }
+  }
   final prior = loadWalletVotePlan(dir);
   final plan = castWalletVotePlan(
     leaves: leaves,
@@ -567,8 +617,6 @@ class _VotePosix {
         Pointer<Void> Function(Pointer<Utf8>)>('objc_getClass');
     final sel = objc.lookupFunction<Pointer<Void> Function(Pointer<Utf8>),
         Pointer<Void> Function(Pointer<Utf8>)>('sel_registerName');
-    final msg = objc.lookupFunction<Pointer<Void> Function(Pointer<Void>, Pointer<Void>),
-        Pointer<Void> Function(Pointer<Void>, Pointer<Void>)>('objc_msgSend');
     final msgBool = objc.lookupFunction<Int8 Function(Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Pointer<Void>>),
         int Function(Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Pointer<Void>>)>('objc_msgSend');
     final nsUrl = getClass('NSURL'.toNativeUtf8());
@@ -580,8 +628,7 @@ class _VotePosix {
     final err = malloc<Pointer<Void>>();
     try {
       err.value = nullptr;
-      final pathStr = msg(nsString, sel('stringWithUTF8String:'.toNativeUtf8()));
-      // stringWithUTF8String: takes the C string. Re-call with the right arity.
+      // stringWithUTF8String: takes the C string.
       final stringWith = objc.lookupFunction<Pointer<Void> Function(Pointer<Void>, Pointer<Void>, Pointer<Utf8>),
           Pointer<Void> Function(Pointer<Void>, Pointer<Void>, Pointer<Utf8>)>('objc_msgSend');
       final nsPath = stringWith(nsString, sel('stringWithUTF8String:'.toNativeUtf8()), pathUtf);

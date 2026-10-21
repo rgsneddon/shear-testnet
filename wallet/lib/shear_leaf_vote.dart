@@ -1,10 +1,12 @@
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'shear_note.dart';
+import 'shear_ristretto.dart';
 import 'shear_vote_plan.dart';
 
 /// Proves the spend of the note [buildLeafVote] already picked.
-/// The returned admit proof's `cTilde` has to be that note's commit.
+/// The result carries a fresh `t`. `cTilde` is commit + t·H, not the commit.
 typedef FeeNoteProver = Map<String, Object?>? Function(Map<String, dynamic> note);
 
 bool _bytesEq(List<int> a, List<int> b) {
@@ -32,9 +34,32 @@ List<int>? _commitBytes(Object? raw) {
   return null;
 }
 
-/// One leaf vote. The fee note is picked first. [prove] then spends that
-/// note, and the proof is kept only when its `cTilde` is the note's commit.
-/// The posted vote does not carry the commit or the parent transaction.
+/// commit + t·H. A zero t, or a cTilde that is the raw commit, is not a spend.
+bool _tildeBindsCommit(List<int> commit, List<int> tilde, List<int> t) {
+  if (commit.length != 32 || tilde.length != 32 || t.length != 32) return false;
+  if (_bytesEq(commit, tilde)) return false;
+  var zero = true;
+  for (final b in t) {
+    if (b != 0) {
+      zero = false;
+      break;
+    }
+  }
+  if (zero) return false;
+  try {
+    final bound = addBytes(
+      Uint8List.fromList(commit),
+      mulBytes(noteHBytes, Uint8List.fromList(t)),
+    );
+    return _bytesEq(bound, tilde);
+  } catch (_) {
+    return false;
+  }
+}
+
+/// One leaf vote. The fee note is picked first. [prove] spends that note
+/// and returns a fresh t. The proof is kept only when cTilde = commit + t·H.
+/// The posted vote carries cTilde, not the raw commit, and not the parent.
 /// Those stay in the wallet. A fee integer with no spend is not a vote.
 Map<String, Object?>? buildLeafVote({
   required Map<String, Object?> vote,
@@ -90,8 +115,18 @@ Map<String, Object?>? buildLeafVote({
   if (raw.length < 65 || raw[0] != 0xf1) return null;
   final tilde = admitProof['cTilde'];
   if (tilde is! List<int> || tilde.length != 32) return null;
+  final tag = admitProof['spendTag'];
+  if (tag is! List<int> || tag.length != 32) return null;
+  final t = proved['t'];
+  if (t is! List<int> || t.length != 32) return null;
   final commit = _commitBytes(note['commit']);
-  if (commit == null || !_bytesEq(commit, tilde)) return null;
+  if (commit == null || !_tildeBindsCommit(commit, tilde, t)) return null;
+  // The wire allowlist is blob, cTilde, and spendTag. t and the raw commit stay here.
+  final posted = <String, Object?>{
+    'blob': raw,
+    'cTilde': Uint8List.fromList(tilde),
+    'spendTag': Uint8List.fromList(tag),
+  };
   return {
     'kind': 'leaf-vote',
     'voteProof': vote['voteProof'],
@@ -106,9 +141,9 @@ Map<String, Object?>? buildLeafVote({
     'fs1': fs1,
     'excess': excess,
     'vin': [
-      {'commit': tilde},
+      {'commit': posted['cTilde']},
     ],
-    'admit_proofs': [admitProof],
+    'admit_proofs': [posted],
     'vout': change == null ? <Map<String, Object?>>[] : [change],
   };
 }

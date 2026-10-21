@@ -70,7 +70,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit, leafVoteLeakRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit, leafVoteLeakRejected, compactLockLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -3574,6 +3574,8 @@ export function createStore(dir, {
     // The fee note stays in the wallet. Naming it is vote_leak, not an unknown field.
     const leakedVote = leafVoteLeakRejected(tx);
     if (leakedVote) return leakedVote;
+    const leakedLock = compactLockLeakRejected(tx);
+    if (leakedLock) return leakedLock;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a

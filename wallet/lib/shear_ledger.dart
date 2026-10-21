@@ -3737,6 +3737,38 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
+  /// Census the wallet already stored from a compact coinbase.
+  /// A missing epoch is not epoch 0 and is not open height 0.
+  ({int epoch, int leafCount, int openHeight})? epochCensus(int epoch) {
+    if (epoch < 0) return null;
+    final heights = <int, Map<String, dynamic>>{};
+    for (final block in _nodeBodies) {
+      final h = (block['height'] as num?)?.toInt() ?? 0;
+      if (h < 1) continue;
+      heights[h] = block;
+    }
+    final order = heights.keys.toList()..sort();
+    for (final h in order) {
+      final txs = heights[h]!['txs'];
+      if (txs is! List) continue;
+      for (final tx in txs) {
+        if (tx is! Map || tx['coinbase'] != true) continue;
+        final rows = tx['epochCensusCommit'];
+        if (rows is! List) continue;
+        for (final row in rows) {
+          if (row is! Map) continue;
+          final at = (row['epoch'] as num?)?.toInt();
+          final leaves = (row['leafCount'] as num?)?.toInt();
+          final open = (row['openHeight'] as num?)?.toInt();
+          if (at == null || at != epoch || leaves == null || open == null) continue;
+          if (leaves < 1 || open < 0) continue;
+          return (epoch: at, leafCount: leaves, openHeight: open);
+        }
+      }
+    }
+    return null;
+  }
+
   bool historyStamped(String address) {
     final key = payKey(address);
     return _sealedHeight >= 1 && _historyAt[key] == _sealedHeight;
@@ -7299,13 +7331,14 @@ class ShearLedger implements ReadProofSink {
   /// One FS-1 spend of every note in [notes] for the [sealed] outputs at
   /// [fee]. The digest binds the posted outputs, the fee, and the anchor, so
   /// none may change after this. Vin is C̃ only.
-  Future<({List<Map<String, dynamic>> vin, List<Map<String, dynamic>> proofs, Uint8List fs1, int anchor, Uint8List excess})>
+  Future<({List<Map<String, dynamic>> vin, List<Map<String, dynamic>> proofs, Uint8List fs1, int anchor, Uint8List excess, List<Uint8List> t})>
       _fs1Spend({
     required List<Map<String, dynamic>> notes,
     required List<Map<String, dynamic>> sealed,
     required int fee,
     required Uint8List spendSeed,
     String kind = 'send',
+    bool keepT = false,
   }) async {
     if (notes.isEmpty || notes.length > kFs1InputMax) throw StateError('fs1_inputs');
     final cols = await _fluxColumns();
@@ -7353,6 +7386,7 @@ class ShearLedger implements ReadProofSink {
         'digest': digest,
         'anchor': anchor.height,
         'tree': _fs1Tree.toWire(),
+        if (keepT) 'keepT': true,
       }).timeout(kFs1ProveTimeout);
     } on TimeoutException {
       throw StateError('send_timeout');
@@ -7370,6 +7404,32 @@ class ShearLedger implements ReadProofSink {
       fs1: proved['fs1'] as Uint8List,
       anchor: anchor.height,
       excess: proved['excess'] as Uint8List,
+      t: keepT && proved['t'] is List
+          ? <Uint8List>[
+              for (final row in proved['t'] as List)
+                if (row is Uint8List) Uint8List.fromList(row),
+            ]
+          : <Uint8List>[],
+    );
+  }
+
+  /// One fresh FS-1 spend of [note]. [t] is returned only so the caller can
+  /// check cTilde = commit + t·H. It is not a wire field.
+  Future<({List<Map<String, dynamic>> vin, List<Map<String, dynamic>> proofs, Uint8List fs1, int anchor, Uint8List excess, List<Uint8List> t})>
+      spendFs1Notes({
+    required List<Map<String, dynamic>> notes,
+    required List<Map<String, dynamic>> sealed,
+    required int fee,
+    required Uint8List spendSeed,
+    String kind = 'leaf-vote',
+  }) {
+    return _fs1Spend(
+      notes: notes,
+      sealed: sealed,
+      fee: fee,
+      spendSeed: spendSeed,
+      kind: kind,
+      keepT: true,
     );
   }
 

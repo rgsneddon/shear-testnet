@@ -508,6 +508,11 @@ Map<String, dynamic> proveFs1SpendWire(Map<String, dynamic> input) {
       for (var i = 0; i < spent.length; i++) {'r': spent[i]['r'], 't': out.t[i]},
     ];
     final excess = kernelExcess(vout, vins);
+    // t stays off a send. A leaf-vote fee checks cTilde = commit + t·H locally
+    // and still does not post t.
+    final keepT = input['keepT'] == true
+        ? <Uint8List>[for (final t in out.t) Uint8List.fromList(t)]
+        : null;
     for (final t in out.t) {
       t.fillRange(0, t.length, 0);
     }
@@ -518,6 +523,7 @@ Map<String, dynamic> proveFs1SpendWire(Map<String, dynamic> input) {
       'tree': synced.state.toWire(),
       'treeMs': treeMs,
       'ms': sw.elapsedMilliseconds,
+      if (keepT != null) 't': keepT,
     };
   } finally {
     for (final x in xs) {

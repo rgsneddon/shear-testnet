@@ -132,6 +132,8 @@ void main() {
       reserve.totalLockedNanos = principal;
       final now = 1 + kReserveEpochMs;
       expect(reserveWithdrawPayoutNanos(reserve, dest, now), principal);
+      // Current law: no leaves and local:true do not settle. There is no
+      // `from` send fallback.
       final posted = await postReserveWithdraw(
         ledger,
         reserve: reserve,
@@ -140,10 +142,8 @@ void main() {
         nowMs: now,
         local: true,
       );
-      expect(posted, isNotNull, reason: 'principal=$principal');
-      expect(posted!.tx.kind, 'withdraw');
-      expect(posted.tx.kind, isNot('send'));
-      expect(reserve.portal(dest).staked, 0);
+      expect(posted, isNull, reason: 'principal=$principal');
+      expect(reserve.portal(dest).staked, principal);
     }
     reserve.epochBps = 100;
     reserve.epochStartMs = 1;
@@ -160,9 +160,8 @@ void main() {
       nowMs: 1 + kReserveEpochMs,
       local: true,
     );
-    expect(withInterest, isNotNull);
-    expect(withInterest!.tx.kind, 'withdraw');
-    expect(withInterest.settled['payout']!, greaterThan(100000000000));
+    expect(withInterest, isNull);
+    expect(reserve.portal(dest).staked, 100000000000);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('vortex sums are one reconstruct labelled portal, program, and continuum', () {
@@ -181,7 +180,7 @@ void main() {
 
   test('vote errors are not rewritten into the fee sentence', () {
     final src = File('lib/shear_reserve.dart').readAsStringSync();
-    final start = src.indexOf('Future<ReserveVoteResult> commandReserveVote');
+    final start = src.indexOf('Future<ReserveVoteResult> castPlannedLeafVotes');
     final end = src.indexOf('class ReserveVoteTower');
     expect(start, greaterThan(0));
     final body = src.substring(start, end);
@@ -810,6 +809,8 @@ void main() {
         ..joined = true;
       reserve.totalLockedNanos = principal;
       final now = 1 + kReserveEpochMs;
+      // Current law: a withdraw with no lock leaves does not post and does
+      // not settle. The legacy `from` body is gone.
       final posted = await postReserveWithdraw(
         ledger,
         reserve: reserve,
@@ -817,13 +818,9 @@ void main() {
         payout: dest,
         nowMs: now,
       );
-      expect(posted, isNotNull, reason: 'principal=$principal');
-      expect(posted!.tx.kind, 'withdraw');
-      expect(pool.posts, isNotEmpty);
-      final body = pool.posts.last;
-      expect(body['kind'], 'withdraw', reason: 'principal=$principal');
-      expect(body['nanosWire'], principal.toString(), reason: 'principal=$principal');
-      expect(reserve.portal(dest).staked, 0);
+      expect(posted, isNull, reason: 'principal=$principal');
+      expect(pool.posts, isEmpty);
+      expect(reserve.portal(dest).staked, principal);
     }
     final src = File('lib/shear_reserve.dart').readAsStringSync();
     final start = src.indexOf('postReserveWithdraw(');

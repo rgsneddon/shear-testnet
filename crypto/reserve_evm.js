@@ -143,6 +143,11 @@ export function encodeClearWithdrawHolds() {
   return selector('clearWithdrawHolds()');
 }
 
+/** Start this block's retire-cap bucket. The key is the block height. */
+export function encodeNoteBlockHeight(height) {
+  return concat(selector('noteBlockHeight(uint256)'), pad32(Math.max(0, Math.floor(Number(height) || 0))));
+}
+
 export function encodeCommitEpochCensus(epoch, leafCount, openHeight) {
   return concat(
     selector('commitEpochCensus(uint256,uint256,uint256)'),
@@ -528,6 +533,7 @@ function evmRevertReason(res) {
     if (sel.equals(Buffer.from(selector('EpochClosed()')))) return 'epoch_closed';
     if (sel.equals(Buffer.from(selector('EpochNotEnded()')))) return 'epoch_open';
     if (sel.equals(Buffer.from(selector('BadAmount()')))) return 'bad_amount';
+    if (sel.equals(Buffer.from(selector('RetireCap()')))) return 'retire_cap';
   }
   return String(res?.execResult?.exceptionError?.error || 'revert');
 }
@@ -832,7 +838,16 @@ const VOTE_NUM = {
   'leave bonus as-is': 3,
 };
 
+function carriedPortalBytes(tx) {
+  const pid = String(tx?.portalId || tx?.vout?.[0]?.portalId || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(pid)) return Buffer.from(pid, 'hex');
+  return null;
+}
+
 function destBytesForEvm(tx, act) {
+  // The carried portal id is the EVM key. The address is not an input.
+  const carried = carriedPortalBytes(tx);
+  if (carried) return carried;
   const s = txDestOf(tx) || txFromOf(tx) || act?.dest || act?.payout || '';
   if (s) return s;
   const d20 = tx?.vout?.[0]?.dest20 || tx?.vin?.[0]?.dest20;
@@ -1139,6 +1154,9 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
       if (!on.ok) return fail(on.reason || 'epoch');
       held = true;
     }
+    const noted = await callReserve(session, encodeNoteBlockHeight(Math.floor(Number(cb?.height) || 0)));
+    if (!noted.ok) return fail(noted.reason || 'retire_cap');
+    evm.calls += 1;
     for (const tx of list.slice(1)) {
       if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
       const got = await executeReserveTx(session, tx, nowMs, {
