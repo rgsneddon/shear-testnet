@@ -4,8 +4,8 @@ import 'dart:typed_data';
 const int kVaultBlobVer = 0xab;
 
 /// Version, FS-1, record, then bps, epoch-block span, period, reward,
-/// covered blocks, and the seven 32-byte words. The unlock integer is not
-/// a field. A gap proof after this header shows claimed_period < unlock.
+/// covered blocks, and five 32-byte words. A1 and zGap live only in the
+/// gap tail. The unlock integer is not a field.
 Uint8List packVaultRewardProof({
   required Uint8List fs1,
   required Uint8List record,
@@ -17,8 +17,6 @@ Uint8List packVaultRewardProof({
   required Uint8List nullBase,
   required Uint8List nullP,
   required Uint8List nullA1,
-  required Uint8List openR,
-  required Uint8List openZ,
   required Uint8List noteR,
   required Uint8List noteZ,
 }) {
@@ -35,8 +33,6 @@ Uint8List packVaultRewardProof({
     nullBase,
     nullP,
     nullA1,
-    openR,
-    openZ,
     noteR,
     noteZ,
   ]);

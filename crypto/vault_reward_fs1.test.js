@@ -231,14 +231,13 @@ describe('vault-lock reward proof', () => {
       nullBase: word(1),
       nullP: word(2),
       nullA1: word(3),
-      openR: word(4),
-      openZ: word(5),
       noteR: word(6),
       noteZ: word(7),
     });
     const vector = readFileSync(new URL('./vault_reward_blob.vector', import.meta.url), 'utf8').trim();
     assert.equal(blob[0], VAULT_PROOF_VER);
-    assert.equal(blob.length, 1 + 4 + fs1.length + 321 + 4 + 8 * 4 + 32 * 7);
+    // Five header words. A1 and zGap are not repeated before noteR.
+    assert.equal(blob.length, 1 + 4 + fs1.length + 321 + 4 + 8 * 4 + 32 * 5);
     assert.equal(blob.readUInt32LE(1), fs1.length);
     const rewardAt = 5 + fs1.length + 321 + 4 + 8 + 8;
     assert.equal(blob.readBigUInt64LE(rewardAt), 551742209n);

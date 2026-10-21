@@ -121,9 +121,10 @@ function claimFields(blob) {
     reward: blob.readBigUInt64LE(rewardAt),
     covered: blob.readBigUInt64LE(rewardAt + 8),
     nullP: word(1),
-    openR: word(3),
-    openZ: word(4),
-    noteR: word(5),
+    // Gap tail ends the blob: gapC, A1, A2, zGap, zR, zS. The header no longer repeats A1/zGap.
+    A1: blob.subarray(blob.length - 32 * 5, blob.length - 32 * 4),
+    zGap: blob.subarray(blob.length - 32 * 3, blob.length - 32 * 2),
+    noteR: word(3),
   };
 }
 
@@ -495,8 +496,8 @@ describe('hidden vault claims', () => {
     assert.equal(left.reward, right.reward);
     assert.notEqual(left.member.toString('hex'), right.member.toString('hex'));
     assert.notEqual(left.nullP.toString('hex'), right.nullP.toString('hex'));
-    assert.notEqual(left.openR.toString('hex'), right.openR.toString('hex'));
-    assert.notEqual(left.openZ.toString('hex'), right.openZ.toString('hex'));
+    assert.notEqual(left.A1.toString('hex'), right.A1.toString('hex'));
+    assert.notEqual(left.zGap.toString('hex'), right.zGap.toString('hex'));
     assert.notEqual(left.noteR.toString('hex'), right.noteR.toString('hex'));
     const det = proveLockCap(PI_SHE_NANOS, first.locks[0].blind, GENESIS_BPS);
     assert.ok(det);

@@ -21,14 +21,12 @@ void main() {
       nullBase: word(1),
       nullP: word(2),
       nullA1: word(3),
-      openR: word(4),
-      openZ: word(5),
       noteR: word(6),
       noteZ: word(7),
     );
     final vector = File('../crypto/vault_reward_blob.vector').readAsStringSync().trim();
     expect(blob[0], 0xab);
-    expect(blob.length, 595);
+    expect(blob.length, 531);
     expect(_hex(blob), vector);
   });
 }

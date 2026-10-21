@@ -450,8 +450,6 @@ Map<String, dynamic> proveVaultLockReward({
       nullBase: Uint8List.fromList(linkAnn),
       nullP: Uint8List.fromList(linkN),
       nullA1: Uint8List.fromList(linkSr),
-      openR: eq['A1']!,
-      openZ: eq['zGap']!,
       noteR: noteOpen['R']!,
       noteZ: noteOpen['z']!,
     );

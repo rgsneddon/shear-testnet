@@ -776,12 +776,12 @@ function verifyGapEquality(epoch, gapC, openP, A1, A2, zGap, zR, zS, magic, dige
   return left1.equals(right1) && left2.equals(right2);
 }
 
-function verifyUnlockGap(epoch, tail, openP, openR, openZ, magic, digest) {
+function verifyUnlockGap(epoch, tail, openP, magic, digest) {
   try {
     if (!tail?.range?.length || !tail.gapC || tail.gapC.length !== 32) return false;
-    if (!openR || !openZ || !tail.A1 || !tail.A2 || !tail.zGap || !tail.zR || !tail.zS) return false;
+    if (!tail.A1 || !tail.A2 || !tail.zGap || !tail.zR || !tail.zS) return false;
     if (!verifyRange(tail.gapC, tail.range)) return false;
-    if (!openR.equals(tail.A1) || !openZ.equals(tail.zGap)) return false;
+    // A1 and zGap are the only gap openings. The header does not repeat them.
     return verifyGapEquality(epoch, tail.gapC, openP, tail.A1, tail.A2, tail.zGap, tail.zR, tail.zS, magic, digest);
   } catch {
     return false;
@@ -1000,8 +1000,9 @@ export function verifyUnderCap(capCommit, rewardCommit, range) {
 
 /**
  * Version, FS-1, record, then bps, epoch-block span, period, reward,
- * covered blocks, and the seven 32-byte words. The unlock integer is not
- * a field. A gap proof after the header shows claimed_period < unlock.
+ * covered blocks, and five 32-byte words (null base, null point, link
+ * response, note R, note z). A1 and zGap live only in the gap tail.
+ * The unlock integer is not a field. The gap proof shows claimed_period < unlock.
  */
 export function packVaultRewardProof(p) {
   return Buffer.concat([
@@ -1017,8 +1018,6 @@ export function packVaultRewardProof(p) {
     p.nullBase,
     p.nullP,
     p.nullA1,
-    p.openR,
-    p.openZ,
     p.noteR,
     p.noteZ,
   ]);
@@ -1066,12 +1065,6 @@ function parseProof(blob) {
   const nullA1 = take(buf, off, 32);
   if (!nullA1) return null;
   off = nullA1.off;
-  const openR = take(buf, off, 32);
-  if (!openR) return null;
-  off = openR.off;
-  const openZ = take(buf, off, 32);
-  if (!openZ) return null;
-  off = openZ.off;
   const noteR = take(buf, off, 32);
   if (!noteR) return null;
   off = noteR.off;
@@ -1092,8 +1085,6 @@ function parseProof(blob) {
     nullBase: nullBaseB.b,
     nullP: nullP.b,
     nullA1: nullA1.b,
-    openR: openR.b,
-    openZ: openZ.b,
     noteR: noteR.b,
     noteZ: noteZ.b,
     gap: gap.tail,
@@ -1288,8 +1279,6 @@ export function proveVaultReward({
     nullBase: linkAnn,
     nullP: linkN,
     nullA1: linkSr,
-    openR: gapEq.A1,
-    openZ: gapEq.zGap,
     noteR: noteOpen.R,
     noteZ: noteOpen.z,
   });
@@ -1407,7 +1396,7 @@ export function verifyVaultReward({
   } catch {
     return fail(2, 'stake_reward');
   }
-  if (!verifyUnlockGap(parsed.epoch, parsed.gap, openP, parsed.openR, parsed.openZ, magic, digest)) return fail(2, 'stake_reward');
+  if (!verifyUnlockGap(parsed.epoch, parsed.gap, openP, magic, digest)) return fail(2, 'stake_reward');
   if (!schnorrVerify(noteP, parsed.noteR, parsed.noteZ, balanceExtra(preimage, bound.dest20))) return fail(2, 'stake_reward');
   const anchor = Number(rootEpoch);
   if (!Number.isSafeInteger(anchor) || anchor < 0) return fail(0, 'unsigned');
