@@ -400,6 +400,10 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   final host = _freshWithdrawNote(ledger.notes);
   if (portalId == null || host == null) return null;
   final payout20 = randomBytes(20);
+  final wdId = withdrawId ?? 'wd-$nowMs';
+  final nonce = withdrawNonce != null && withdrawNonce.length == 32
+      ? Uint8List.fromList(withdrawNonce)
+      : randomBytes(32);
   late final ({
     List<Map<String, dynamic>> vin,
     List<Map<String, dynamic>> proofs,
@@ -415,6 +419,11 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
       fee: 0,
       spendSeed: spendSeed,
       kind: 'withdraw',
+      portalId: portalId,
+      programId: kReserveProgram,
+      id: wdId,
+      withdrawNonce: nonce,
+      reserveNanos: nanos,
     );
   } catch (_) {
     return null;
@@ -431,7 +440,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   final built = buildProvedWithdraw(
     dest20: payout20,
     nanos: nanos,
-    id: withdrawId ?? 'wd-$nowMs',
+    id: wdId,
     portalId: portalId,
     anchor: spent.anchor,
     excess: spent.excess,
@@ -442,7 +451,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
     admitProofs: proofs,
     leaves: leaves,
     spendSeed: spendSeed,
-    withdrawNonce: withdrawNonce,
+    withdrawNonce: nonce,
     releaseEpoch: reserve.currentEpoch,
   );
   if (built == null) return null;
@@ -1266,18 +1275,44 @@ int? _leafChoice(String choice) {
   return null;
 }
 
+String? _commitHex(Object? raw) {
+  if (raw is String) {
+    final hex = raw.replaceFirst(RegExp(r'^0x'), '').toLowerCase();
+    if (RegExp(r'^[0-9a-f]{64}$').hasMatch(hex)) return hex;
+    return null;
+  }
+  List<int>? bytes;
+  if (raw is Uint8List) {
+    bytes = raw;
+  } else if (raw is List<int>) {
+    bytes = raw;
+  }
+  if (bytes == null || bytes.length != 32) return null;
+  final out = StringBuffer();
+  for (final b in bytes) {
+    out.write(b.toRadixString(16).padLeft(2, '0'));
+  }
+  return out.toString();
+}
+
 Map<String, dynamic>? _noteByCommit(List<dynamic> notes, String commit) {
+  final want = commit.toLowerCase();
   for (final row in notes) {
     if (row is! Map) continue;
-    if (row['commit']?.toString() == commit) return Map<String, dynamic>.from(row);
+    final hex = _commitHex(row['commit']);
+    if (hex != null && hex == want) return Map<String, dynamic>.from(row);
   }
   return null;
 }
 
 int? _rowNanos(Map<String, dynamic> note) {
-  final raw = note['nanos'];
+  final raw = note['nanos'] ?? note['verifiedNanos'];
   if (raw is int && raw > 0) return raw;
   if (raw is num && raw > 0) return raw.toInt();
+  if (raw is String) {
+    final n = int.tryParse(raw);
+    if (n != null && n > 0) return n;
+  }
   return null;
 }
 
@@ -1399,6 +1434,10 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
     if (feeNote == null || noteNanos == null || noteNanos < voteL || changeDest == null) {
       return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
     }
+    // The plan stores the commit as hex. A scanned note keeps those 32 bytes.
+    // The leaf-vote builder only selects a string commit.
+    final feeRow = Map<String, dynamic>.from(feeNote);
+    feeRow['commit'] = feeCommit;
     Map<String, dynamic>? change;
     if (noteNanos > voteL) {
       change = hiddenChangeNote(noteNanos - voteL, changeDest);
@@ -1416,11 +1455,12 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
     }) spent;
     try {
       spent = await ledger.spendFs1Notes(
-        notes: [feeNote],
+        notes: [feeRow],
         sealed: change == null ? const <Map<String, dynamic>>[] : [change],
         fee: voteL,
         spendSeed: spendSeed,
         kind: 'leaf-vote',
+        programId: kReserveProgram,
       );
     } catch (e) {
       return ReserveVoteResult(enacted: false, remark: voteFailCopy(e));
@@ -1440,7 +1480,7 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
         'earnEpoch': reserve.currentEpoch,
         'height': height,
       },
-      notes: [feeNote],
+      notes: [feeRow],
       fee: voteL,
       anchor: spent.anchor,
       change: postedChange,

@@ -907,7 +907,7 @@ function dest20Hex(raw) {
 }
 
 /** Address when `to` is present. Otherwise the one-time dest20 hex. */
-function withdrawSignedDest(tx, act) {
+export function withdrawSignedDest(tx, act) {
   if (typeof tx?.to === 'string' && tx.to !== '') return tx.to;
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   const note = outs.find((row) => String(row?.kind || '') === KIND_WITHDRAW);
@@ -1042,6 +1042,12 @@ function flushVaultLockRoot(state) {
   if (!root) return null;
   state.vaultLockDirty = false;
   return root;
+}
+
+/** Rebuild after trials that deferred the vault-lock tree. Null on failure. */
+export function commitVaultLockRoot(state) {
+  if (!state) return null;
+  return flushVaultLockRoot(state);
 }
 
 export function appendVaultLockNote(state, note, terms = null) {
@@ -4463,6 +4469,7 @@ export function applyReserveBlock({
   genesisMs = 0,
   holdEpoch = false,
   requireStakeReward = false,
+  deferVaultRoot = false,
 } = {}) {
   if (!state || state.blankFork) return [];
   state.tipMs = Number(nowMs) || 0;
@@ -4826,7 +4833,11 @@ export function applyReserveBlock({
   }
   state.deferEpochRoll = false;
   pruneClaimNullifiers(state, blockHeight);
-  if (state.vaultLockDirty && !flushVaultLockRoot(state)) {
+  // A template trials one withdraw at a time. Rebuilding the vault-lock
+  // tree on each one does not fit the one-second body budget. The caller
+  // rebuilds once after the body is chosen. A block apply does not defer:
+  // it still rebuilds once, from the same live notes.
+  if (!deferVaultRoot && state.vaultLockDirty && !flushVaultLockRoot(state)) {
     return finishReserveApply([{ ok: false, reason: 'stake_reward', action: KIND_WITHDRAW }]);
   }
   const sealed = parseCoinbaseObserve(cb?.coinbase ? cb : null);
@@ -4887,6 +4898,7 @@ function trialInPlace(state, rows, block, nowMs, oracle = {}) {
       block: trialBlock(rows, block),
       nowMs: Number(nowMs) || 0,
       requireStakeReward: !!oracle.requireStakeReward,
+      deferVaultRoot: !!oracle.deferVaultRoot,
       ...oracleForward(oracle),
     });
   } catch (err) {
@@ -4923,6 +4935,7 @@ export function trialReserveApply({
   parentMs = 0,
   genesisMs = null,
   requireStakeReward = false,
+  deferVaultRoot = false,
 } = {}) {
   const rows = Array.isArray(txs) ? txs : (Array.isArray(block?.txs) ? block.txs : []);
   const oracle = {
@@ -4946,13 +4959,16 @@ export function trialReserveApply({
   // The carried vault is already a private copy. Mutate it and undo a miss.
   // Any other caller, including consensus, still gets one clone so the live
   // vault cannot change inside a check that discards the trial.
-  if (inPlace) return trialInPlace(state, rows, block, nowMs, { ...oracle, requireStakeReward });
+  if (inPlace) {
+    return trialInPlace(state, rows, block, nowMs, { ...oracle, requireStakeReward, deferVaultRoot });
+  }
   const trial = cloneVault(state);
   const applied = applyReserveBlock({
     state: trial,
     block: rewardBlock,
     nowMs: Number(nowMs) || 0,
     requireStakeReward,
+    deferVaultRoot: !!deferVaultRoot,
     ...oracleForward(oracle),
   });
   if (applied && applied.ok === false) {

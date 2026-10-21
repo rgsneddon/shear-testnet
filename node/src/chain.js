@@ -3105,7 +3105,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     },
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
-  return { ok: true, hash, decoded, aLeaves, bLeaves, jroot: wantRoot, supplyState: stepped.state };
+  return { ok: true, hash, decoded, height, aLeaves, bLeaves, jroot: wantRoot, supplyState: stepped.state };
 }
 
 /**
@@ -3216,7 +3216,10 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   if (fresh && Array.isArray(opts.evmHistory)) {
     for (const b of opts.evmHistory) {
       if (!blockNeedsEvm(b?.txs || [])) continue;
-      const replayed = await executeBlockEvm(session, b.txs, headerTimeMs(b), genesisMs);
+      const replayed = await executeBlockEvm(session, b.txs, headerTimeMs(b), genesisMs, undefined, undefined, {
+        height: Math.floor(Number(b?.height) || 0),
+        magic: opts.magic || MAGIC_TESTNET,
+      });
       if (!replayed.ok) {
         return { ok: false, reason: 'evm', error: `replay:${replayed.reason}` };
       }
@@ -3227,7 +3230,11 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
     : headerTimeMs(block);
   const owedRoot = opts.reserveState ? coinbaseRewardRoot(opts.reserveState, headerMs) : undefined;
   const vaultBind = vaultCoinbaseBind(opts.reserveState, block.txs || []);
-  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot, vaultBind);
+  const structural = Math.floor(Number(consensus?.height) || 0);
+  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot, vaultBind, {
+    height: structural > 0 ? structural : Math.floor(Number(block?.height) || 0),
+    magic: opts.magic || MAGIC_TESTNET,
+  });
   if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
   return {
     ...consensus,

@@ -864,7 +864,17 @@ export function supplyStep(prev, block, opts = {}) {
   const notePrincipal = (next.state.vaultPrincipal || 0n) + split.note - openedWithdrawPrincipal(block, opts.vault, headerMs(block));
   if (notePrincipal < 0n) return { ok: false, reason: 'supply', state: null };
   if (opts.vault) {
-    const advanced = vaultAfterBlock(opts.vault, block);
+    // The reserve trial already used the structural height. A block on the
+    // wire often omits height; replaying the vault at 0 closes the vote
+    // window and this check then rejects a block the trial accepted.
+    const structural = Number(opts.height);
+    const stamped = Number(block?.height);
+    const vaultBlock = Number.isInteger(structural) && structural > 0 && !(stamped > 0)
+      ? { ...block, height: structural }
+      : block;
+    const advanced = vaultAfterBlock(opts.vault, vaultBlock, [], {
+      magic: opts.magic || undefined,
+    });
     if (!advanced.ok || !advanced.vault) return { ok: false, reason: 'supply', state: null };
     const identity = supplyIdentity(advanced.vault);
     if (!identity.ok) return { ok: false, reason: 'supply', state: null };
@@ -908,8 +918,11 @@ export function foldSupply(blocks, opts = {}) {
     });
     if (!stepped.ok) return stepped;
     state = stepped.state;
+    // Same height the supply step stamped. A wire block often omits height;
+    // replaying the vault at 0 records a different arrival stub than the step.
+    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: h };
     // Same prior and stake-reward rule as the store's vault apply.
-    const advanced = vaultAfterBlock(vault, list[i], list.slice(0, i), {
+    const advanced = vaultAfterBlock(vault, vaultBlock, list.slice(0, i), {
       requireStakeReward: true,
       magic: opts.magic || MAGIC_TESTNET,
     });

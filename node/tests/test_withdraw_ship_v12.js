@@ -50,6 +50,7 @@ import {
   chainPeriodIndex,
   consensusUnlockPeriod,
   leafEpochsToBurn,
+  leafStubNanos,
   portalIdFromDest,
   proveLockEquality,
   provePrincipalOpen,
@@ -311,10 +312,7 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
       fee = next;
     }
     assert.ok(tx, `${id} fee`);
-    // The address string is not in the FS-1 digest. The spend signature
-    // still has to show a dest20 the spend key commits to, and the portal
-    // open reads `to`.
-    tx.to = who.dest;
+    // Compact lock. `to` is vote_leak. The spend signature binds dest20.
     tx.dest20 = Buffer.from(hash20FromAddress(who.dest));
     signSpendTx(tx, who.key);
     // The leaf amount is the public constant π. The fund proof opens the
@@ -348,13 +346,17 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
     const use = view.coins.filter((c) => c.who === who).slice(0, 1);
     assert.equal(use.length, 1, `${id} change`);
     const d20 = hash20FromAddress(who.dest);
+    // The principal proof opens π. The receipt is π plus this leaf's arrival stub.
+    const stub = leafStubNanos(store.reserveVault, [leaf.commit.toString('hex')]);
+    assert.ok(stub > 0n, `${id} arrival stub`);
+    const withdrawNanos = PI_SHE_NANOS + Number(stub);
     const ph = placeholders(1);
     let fee = LEVY_FLOOR_UNITS;
     let body = null;
     for (let attempt = 0; attempt < 6; attempt += 1) {
       const changeN = use[0].v - fee;
       assert.ok(changeN > 0, `${id} withdraw change`);
-      const receipt = attachAdmitPub(sealNote(PI_SHE_NANOS, { dest20: d20, kind: 'withdraw' }), { admitBase: who.base });
+      const receipt = attachAdmitPub(sealNote(withdrawNanos, { dest20: d20, kind: 'withdraw' }), { admitBase: who.base });
       receipt.kind = 'withdraw';
       receipt.dest20 = Buffer.from(d20);
       const change = hiddenChange(changeN, d20, who.base);
@@ -363,12 +365,11 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
         kind: 'withdraw',
         anchor: view.anchor,
         fee,
-        nanos: PI_SHE_NANOS,
+        nanos: withdrawNanos,
         programId: RESERVE_PROGRAM,
         portalId: who.portalId,
-        payoutPortalId: who.portalId,
         ownerPub: who.pub,
-        to: who.dest,
+        dest20: Buffer.from(d20),
         vin: ph.vin,
         vout: [receipt, change],
         fs1: ph.fs1,
@@ -382,10 +383,11 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
       fee = need + rangeSlack([receipt, change]);
     }
     assert.ok(body, `${id} withdraw fee`);
-    // compactTx drops the address string. The builder needs it for the
-    // owner message, and the digest does not hash it.
-    body.to = who.dest;
-    body.nanos = PI_SHE_NANOS;
+    // The posted body has portalId and dest20. The address is not on the wire.
+    body.nanos = withdrawNanos;
+    body.dest20 = Buffer.from(d20);
+    assert.equal(body.to, undefined, `${id} address`);
+    assert.equal(body.payoutPortalId, undefined, `${id} payout portal`);
     const period = chainPeriodIndex(store.reserveVault, now);
     const burn = leafEpochsToBurn(store.reserveVault, leaf.note.toString('hex'), period);
     assert.equal(burn.length, 3, `${id} burn ${burn.join(',')}`);
@@ -405,12 +407,15 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
     const built = buildFundedWithdraw(body);
     assert.ok(built, `${id} builder`);
     assert.equal(built.from, undefined);
-    built.dest20 = Buffer.from(hash20FromAddress(who.dest));
+    assert.equal(built.to, undefined, `${id} built address`);
+    assert.equal(built.payoutPortalId, undefined, `${id} built payout`);
+    built.dest20 = Buffer.from(d20);
     signSpendTx(built, who.key);
+    // The owner signs π. The receipt is π plus the arrival stub.
     signWithdrawReward(built, who.key, {
       portalId: who.portalId,
       nanos: PI_SHE_NANOS,
-      dest: who.dest,
+      dest: Buffer.from(d20).toString('hex'),
       state: store.reserveVault,
       nowMs: now,
     });

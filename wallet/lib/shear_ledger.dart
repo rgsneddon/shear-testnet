@@ -7339,6 +7339,11 @@ class ShearLedger implements ReadProofSink {
     required Uint8List spendSeed,
     String kind = 'send',
     bool keepT = false,
+    String portalId = '',
+    String programId = '',
+    String id = '',
+    Uint8List? withdrawNonce,
+    int? reserveNanos,
   }) async {
     if (notes.isEmpty || notes.length > kFs1InputMax) throw StateError('fs1_inputs');
     final cols = await _fluxColumns();
@@ -7367,6 +7372,8 @@ class ShearLedger implements ReadProofSink {
     final top = indices.reduce((a, b) => a > b ? a : b);
     final anchor = pickFs1Anchor(_fs1Anchors, top);
     if (anchor == null) throw StateError(kErrFs1Anchor);
+    // The posted body carries these fields. The proof is useless if they
+    // are stamped after the digest.
     final digest = fs1BodyDigest(
       magic: kBookMagic,
       kind: kind,
@@ -7374,6 +7381,11 @@ class ShearLedger implements ReadProofSink {
       fee: fee,
       nIn: notes.length,
       vout: _postedVout(sealed),
+      portalId: portalId,
+      programId: programId,
+      id: id,
+      withdrawNonce: withdrawNonce,
+      reserveNanos: reserveNanos,
     );
     Map<String, dynamic> proved;
     try {
@@ -7422,6 +7434,11 @@ class ShearLedger implements ReadProofSink {
     required int fee,
     required Uint8List spendSeed,
     String kind = 'leaf-vote',
+    String portalId = '',
+    String programId = '',
+    String id = '',
+    Uint8List? withdrawNonce,
+    int? reserveNanos,
   }) {
     return _fs1Spend(
       notes: notes,
@@ -7430,6 +7447,11 @@ class ShearLedger implements ReadProofSink {
       spendSeed: spendSeed,
       kind: kind,
       keepT: true,
+      portalId: portalId,
+      programId: programId,
+      id: id,
+      withdrawNonce: withdrawNonce,
+      reserveNanos: reserveNanos,
     );
   }
 

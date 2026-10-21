@@ -336,6 +336,7 @@ export function admitMempool(pool, tx, opts = {}) {
       txs: useCarried ? [tx] : [...prior, tx],
       nowMs: Number(opts.nowMs) || 0,
       inPlace: useCarried && !!opts.reserveCarried,
+      deferVaultRoot: opts.deferVaultRoot === true,
     });
     if (!tried.ok) return { ok: false, reason: tried.reason || 'no_vault', vault: true };
     vaultState = tried.state || null;

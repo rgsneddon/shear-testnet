@@ -6,7 +6,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
-import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, VAULT_FS1_ACTIVATION_HEIGHT } from './asert.js';
+import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM, VAULT_FS1_ACTIVATION_HEIGHT } from './asert.js';
 import { newIdentity, hash20FromAddress } from './address.js';
 import { vaultDest } from './flow_sheet.js';
 import {
@@ -21,15 +21,20 @@ import {
   scalarBytes,
 } from './note.js';
 import { typedCommitSum } from './spend.js';
+import { txDigestV3 } from './admit_v3.js';
 import {
   appendVaultLockNote,
   applyReserveBlock,
+  chainPeriodIndex,
   consensusRemainMs,
   deposit,
   emptyVault,
   consensusUnlockPeriod,
+  leafEpochsToBurn,
+  leafStubNanos,
   lockFundingRejected,
   lockUnlockContext,
+  lockUnlockOf,
   lockTx,
   proveRemainOpen,
   verifyRemainOpen,
@@ -52,9 +57,11 @@ import {
   encodeCommitVaultRoot,
   encodeDeposit,
   encodePinClock,
+  executeBlockEvm,
 } from './reserve_evm.js';
 import {
   epochCapBlind,
+  proveLeafRetire,
   proveLockCap,
   proveVaultReward,
   stableSpendTag,
@@ -89,6 +96,97 @@ function fundProof(lockCommit, outCommit, s, tx, height, magic, unlock) {
   const e = hashToScalar(pointBytes(P), pointBytes(R), extra);
   const z = Fn.add(k, Fn.mul(e, s));
   return { R: pointBytes(R), z: scalarBytes(z), height };
+}
+
+/**
+ * Claim membership is one reward leaf. The withdraw leaf is a second,
+ * indexed π note. Epoch-start stays the claim root. The live root, which
+ * the coinbase publishes, is both notes.
+ */
+function plantClaimBook(who, row, ownerPub) {
+  const state = emptyVault();
+  state.genesisMs = T0;
+  state.magic = MAGIC_TESTNET;
+  const claimNote = vaultLockNote(
+    row.proved.locks[0].amount,
+    row.proved.locks[0].scalar,
+    row.proved.locks[0].blind,
+  ).note;
+  assert.ok(appendVaultLockNote(state, claimNote));
+  state.epochStartRoots = { 0: state.vaultLockRoot };
+  state.epochRewardDue = { 0: String(row.proved.nanos) };
+  const stamp = lockUnlockOf(state, T0);
+  const unlock = consensusUnlockPeriod(stamp.epoch);
+  const blind = randomScalar();
+  const scalar = randomScalar();
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+  assert.ok(leaf);
+  const got = deposit({
+    state,
+    dest: who.dest,
+    nanos: PI_SHE_NANOS,
+    nowMs: T0,
+    ownerPub,
+    commit: leaf.commit,
+    rangeProof: proveRange(BigInt(PI_SHE_NANOS), blind),
+    unlock,
+    rangeCommit: pointBytes(subtractUnlock(pointFrom(leaf.commit), unlock)),
+    piProof: proveRange(0n, blind),
+  });
+  assert.equal(got.ok, true, got.reason);
+  assert.ok(appendVaultLockNote(state, leaf.note, {
+    earnEpoch: Math.floor(Number(stamp.epoch) || 0),
+    bornEpoch: chainPeriodIndex(state, T0),
+    unlockEpoch: unlock,
+    lockHeight: 1,
+  }));
+  state.vaultLockRoots = { 0: state.vaultLockRoot };
+  return { state, planted: { leaf, unlock } };
+}
+
+/** Indexed π withdraw. The owner signs π. The receipt is π plus the arrival stub. */
+function indexedWithdrawTx(state, planted, who, extra = {}) {
+  const stub = leafStubNanos(state, [planted.leaf.commit.toString('hex')]);
+  const nanos = PI_SHE_NANOS + Number(stub);
+  const tx = withdrawTx({
+    from: who.dest,
+    to: who.dest,
+    nanos,
+    id: extra.id,
+  });
+  if (extra.carry) {
+    tx.vout.push({ ...extra.carry.note, kind: 'reward-claim', address: who.dest });
+    tx.vaultProof = extra.carry.blob;
+    tx.nullifier = extra.carry.nullifier;
+    tx.rootEpoch = 0;
+    tx.earnEpoch = 0;
+    tx.full = true;
+  }
+  const portal = portalIdFromDest(who.dest);
+  const proof = provePrincipalOpen(
+    planted.leaf.commit, PI_SHE_NANOS, planted.leaf.blind, tx, portal, MAGIC_TESTNET, planted.leaf.unlock,
+  );
+  assert.ok(proof, extra.id || 'principal');
+  tx.principalProof = proof;
+  const nowMs = T0 + span;
+  const retire = proveLeafRetire({
+    scalar: planted.leaf.scalar,
+    epochs: leafEpochsToBurn(state, planted.leaf.note.toString('hex'), chainPeriodIndex(state, nowMs)),
+    leaf: planted.leaf.note,
+    txBind: txDigestV3(tx, MAGIC_TESTNET),
+    unlockEpoch: chainPeriodIndex(state, nowMs),
+    magic: MAGIC_TESTNET,
+  });
+  assert.ok(retire?.proof, extra.id || 'retire');
+  tx.retireProof = retire.proof;
+  signWithdrawReward(tx, who.id.privateKey, {
+    portalId: portal,
+    nanos: PI_SHE_NANOS,
+    dest: who.dest,
+    state,
+    nowMs,
+  });
+  return { tx, stub: Number(stub) };
 }
 
 function proveLock(amount, epoch = 0) {
@@ -738,21 +836,7 @@ describe('hidden vault claims', () => {
     const who = dest20();
     const row = proveLock(PI_SHE_NANOS, 0);
     const ownerPub = who.id.spendPub.toString('hex');
-    const lockBlind = 11n;
-    const fresh = () => {
-      const state = emptyVault();
-      state.genesisMs = T0;
-      state.magic = MAGIC_TESTNET;
-      assert.equal(deposit({
-        state, dest: who.dest, nanos: PI_SHE_NANOS, blind: lockBlind, nowMs: T0, ownerPub,
-      }).ok, true);
-      const note = vaultLockNote(row.proved.locks[0].amount, row.proved.locks[0].scalar, row.proved.locks[0].blind).note;
-      appendVaultLockNote(state, note);
-      state.vaultLockRoots = { 0: state.vaultLockRoot };
-      state.epochStartRoots = { 0: state.vaultLockRoot };
-      state.epochRewardDue = { 0: String(row.proved.nanos) };
-      return state;
-    };
+    const fresh = () => plantClaimBook(who, row, ownerPub);
     const claim = () => {
       const tx = rewardClaimTx({
         to: who.dest,
@@ -768,25 +852,10 @@ describe('hidden vault claims', () => {
       tx.full = true;
       return tx;
     };
-    const take = (state) => {
-      const commit = state.portals[portalIdFromDest(who.dest)].tranches.at(-1).commit;
-      const tx = withdrawTx({ from: who.dest, to: who.dest, nanos: PI_SHE_NANOS, id: `wd-${state.vaultLockRoot.slice(0, 8)}` });
-      tx.vout.push({ ...row.proved.note, kind: 'reward-claim', address: who.dest });
-      tx.principalProof = provePrincipalOpen(Buffer.from(commit, 'hex'), PI_SHE_NANOS, lockBlind, tx, portalIdFromDest(who.dest));
-      tx.vaultProof = row.proved.blob;
-      tx.nullifier = row.proved.nullifier;
-      tx.rootEpoch = 0;
-      tx.earnEpoch = 0;
-      tx.full = true;
-      signWithdrawReward(tx, who.id.privateKey, {
-        portalId: portalIdFromDest(who.dest),
-        nanos: PI_SHE_NANOS,
-        dest: who.dest,
-        state,
-        nowMs: T0 + span,
-      });
-      return tx;
-    };
+    const take = (book, id) => indexedWithdrawTx(book.state, book.planted, who, {
+      id,
+      carry: row.proved,
+    });
     const roll = (state) => {
       const tx = rollTx({ from: who.dest, id: 'roll-spent' });
       tx.rootEpoch = 0;
@@ -803,62 +872,46 @@ describe('hidden vault claims', () => {
     });
 
     const claimed = fresh();
-    assert.equal(run(claimed, claim()).ok, true);
-    assert.equal(claimed.mintedIds[row.proved.nullifier], true);
-    const claimThenWithdraw = run(claimed, take(claimed));
+    assert.equal(run(claimed.state, claim()).ok, true);
+    assert.equal(claimed.state.mintedIds[row.proved.nullifier], true);
+    // The indexed withdraw is accepted. The carried nullifier was already minted.
+    const claimThenWithdraw = run(claimed.state, take(claimed, `wd-${claimed.state.vaultLockRoot.slice(0, 8)}`).tx);
     assert.equal(claimThenWithdraw.ok, false);
     assert.equal(claimThenWithdraw.reason, 'double_mint');
 
-    const refusedState = fresh();
-    const refusedWithdraw = run(refusedState, take(refusedState));
+    const refusedBook = fresh();
+    const refusedWithdraw = run(refusedBook.state, take(refusedBook, 'wd-carry').tx);
     assert.equal(refusedWithdraw.ok, false);
+    // The body still has from and to, so the carried claim is not a claim.
     assert.equal(refusedWithdraw.reason, 'stake_reward');
 
     const withdrawn = fresh();
-    const portal = portalIdFromDest(who.dest);
-    const plain = withdrawTx({ from: who.dest, to: who.dest, nanos: PI_SHE_NANOS, id: 'wd-plain' });
-    const commit = withdrawn.portals[portal].tranches.at(-1).commit;
-    plain.principalProof = provePrincipalOpen(Buffer.from(commit, 'hex'), PI_SHE_NANOS, lockBlind, plain, portal);
-    signWithdrawReward(plain, who.id.privateKey, {
-      portalId: portal,
-      nanos: PI_SHE_NANOS,
-      dest: who.dest,
-      state: withdrawn,
-      nowMs: T0 + span,
-    });
-    const did = run(withdrawn, plain);
+    const plain = indexedWithdrawTx(withdrawn.state, withdrawn.planted, who, { id: 'wd-plain' });
+    const did = run(withdrawn.state, plain.tx);
     assert.equal(did.ok, true, did.reason);
-    assert.equal(withdrawn.mintedIds[row.proved.nullifier], undefined);
-    assert.equal(withdrawn.mintBankNanos, 0n);
-    const withdrawThenClaim = run(withdrawn, claim());
+    assert.equal(withdrawn.state.mintedIds[row.proved.nullifier], undefined);
+    // The indexed withdraw mints the arrival stub. An unindexed tranche mints nothing and is refused.
+    assert.equal(withdrawn.state.mintBankNanos, BigInt(plain.stub));
+    // The retire rebuilds the live root. The next coinbase publishes that root.
+    withdrawn.state.vaultLockRoots['0'] = withdrawn.state.vaultLockRoot;
+    const withdrawThenClaim = run(withdrawn.state, claim());
     assert.equal(withdrawThenClaim.ok, true, withdrawThenClaim.reason);
-    assert.equal(withdrawn.mintedIds[row.proved.nullifier], true);
+    assert.equal(withdrawn.state.mintedIds[row.proved.nullifier], true);
 
     const rolled = fresh();
-    const didRoll = run(rolled, roll(rolled));
+    const didRoll = run(rolled.state, roll(rolled.state));
     assert.equal(didRoll.ok, true, didRoll.reason);
-    assert.equal(rolled.mintedIds[row.proved.nullifier], undefined);
-    const rollThenClaim = run(rolled, claim());
+    assert.equal(rolled.state.mintedIds[row.proved.nullifier], undefined);
+    const rollThenClaim = run(rolled.state, claim());
     assert.equal(rollThenClaim.ok, true, rollThenClaim.reason);
-    assert.equal(rolled.mintedIds[row.proved.nullifier], true);
+    assert.equal(rolled.state.mintedIds[row.proved.nullifier], true);
   });
 
   it('a claim and an interest withdraw in one epoch use different ids', () => {
     const who = dest20();
     const row = proveLock(PI_SHE_NANOS, 0);
     const ownerPub = who.id.spendPub.toString('hex');
-    const lockBlind = 13n;
-    const state = emptyVault();
-    state.genesisMs = T0;
-    state.magic = MAGIC_TESTNET;
-    assert.equal(deposit({
-      state, dest: who.dest, nanos: PI_SHE_NANOS, blind: lockBlind, nowMs: T0, ownerPub,
-    }).ok, true);
-    const note = vaultLockNote(row.proved.locks[0].amount, row.proved.locks[0].scalar, row.proved.locks[0].blind).note;
-    appendVaultLockNote(state, note);
-    state.vaultLockRoots = { 0: state.vaultLockRoot };
-    state.epochStartRoots = { 0: state.vaultLockRoot };
-    state.epochRewardDue = { 0: String(row.proved.nanos) };
+    const { state, planted } = plantClaimBook(who, row, ownerPub);
     const portal = portalIdFromDest(who.dest);
     const interestId = withdrawMintId(portal, 1);
     assert.notEqual(interestId, row.proved.nullifier);
@@ -873,19 +926,10 @@ describe('hidden vault claims', () => {
         note: row.proved.note,
       },
     });
-    const commit = state.portals[portal].tranches.at(-1).commit;
-    const draw = withdrawTx({ from: who.dest, to: who.dest, nanos: PI_SHE_NANOS, id: 'wd-interest' });
-    draw.principalProof = provePrincipalOpen(Buffer.from(commit, 'hex'), PI_SHE_NANOS, lockBlind, draw, portal);
-    signWithdrawReward(draw, who.id.privateKey, {
-      portalId: portal,
-      nanos: PI_SHE_NANOS,
-      dest: who.dest,
-      state,
-      nowMs: T0 + span,
-    });
+    const draw = indexedWithdrawTx(state, planted, who, { id: 'wd-interest' });
     const both = applyReserveBlock({
       state,
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [], vaultLockRoot: state.vaultLockRoot }, claim, draw] },
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [], vaultLockRoot: state.vaultLockRoot }, claim, draw.tx] },
       nowMs: T0 + span,
       height: HEIGHT,
       genesisMs: T0,
@@ -893,7 +937,7 @@ describe('hidden vault claims', () => {
     assert.equal(both.ok, true, both.reason);
     assert.equal(state.mintedIds[row.proved.nullifier], true);
     assert.equal(state.mintedIds[interestId], true);
-    assert.equal(draw.vaultProof, undefined);
+    assert.equal(draw.tx.vaultProof, undefined);
     const again = withdrawTx({ from: who.dest, to: who.dest, nanos: 0, id: 'wd-interest-2' });
     signWithdrawReward(again, who.id.privateKey, {
       portalId: portal,
@@ -1080,5 +1124,48 @@ describe('hidden vault claims', () => {
     });
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'stake_reward');
+  });
+
+  it('the EVM deposit checks the consensus unlock itself', async () => {
+    const rIn = randomScalar();
+    const funded = pointBytes(commit(PI_SHE_NANOS, rIn));
+    const range = proveRange(PI_SHE_NANOS, rIn);
+    assert.ok(range, 'range');
+    const unlock = consensusUnlockPeriod(0);
+    const note = vaultLockNote(PI_SHE_NANOS, 3n, rIn, unlock).note;
+    const who = dest20();
+    const tx = {
+      id: 'evm-unlock',
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      nanos: 0,
+      portalId: '11'.repeat(32),
+      ownerPub: who.id.spendPub.toString('hex'),
+      vaultLockNote: note,
+      vout: [{ kind: 'lock', commit: funded, rangeProof: range }],
+    };
+    const session = await bootReserveEvm();
+    const good = await executeBlockEvm(
+      session,
+      [{ coinbase: true, vout: [] }, tx],
+      T0,
+      T0,
+      undefined,
+      undefined,
+      { height: HEIGHT, magic: MAGIC_TESTNET },
+    );
+    assert.equal(good.ok, true, good.reason);
+    const badNote = Buffer.concat([note.subarray(0, 32), Buffer.alloc(32, 9)]);
+    const bad = await executeBlockEvm(
+      session,
+      [{ coinbase: true, vout: [] }, { ...tx, id: 'evm-unlock-bad', vaultLockNote: badNote }],
+      T0,
+      T0,
+      undefined,
+      undefined,
+      { height: HEIGHT, magic: MAGIC_TESTNET },
+    );
+    assert.equal(bad.ok, false);
+    assert.equal(bad.reason, 'stake_reward');
   });
 });

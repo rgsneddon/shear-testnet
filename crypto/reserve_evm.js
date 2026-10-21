@@ -8,7 +8,11 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET, MAX_LOCK_LEAVES } from './asert.js';
 import { EMPTY_ROOT } from './merkle.js';
-import { reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth, lockQualifies } from './reserve_vault.js';
+import {
+  reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth,
+  lockQualifies, lockFundingRejected, lockUnlockOf, consensusUnlockPeriod,
+  portalIdFromDest, withdrawSignedDest,
+} from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { ED25519_SPKI_PREFIX } from './address.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
@@ -845,10 +849,16 @@ function carriedPortalBytes(tx) {
 }
 
 function destBytesForEvm(tx, act) {
-  // The carried portal id is the EVM key. The address is not an input.
+  // A compact lock carries H(tag, dest20, r). That 32-byte id is the EVM key.
+  // lockTx and withdrawTx also stamp portalIdFromDest(address). That hash is
+  // not the compact id, and an address deposit lives under the address.
   const carried = carriedPortalBytes(tx);
-  if (carried) return carried;
-  const s = txDestOf(tx) || txFromOf(tx) || act?.dest || act?.payout || '';
+  const address = txDestOf(tx) || txFromOf(tx) || '';
+  if (carried) {
+    const legacy = address ? portalIdFromDest(address).toLowerCase() : '';
+    if (!legacy || carried.toString('hex') !== legacy) return carried;
+  }
+  const s = address || act?.dest || act?.payout || '';
   if (s) return s;
   const d20 = tx?.vout?.[0]?.dest20 || tx?.vin?.[0]?.dest20;
   if (d20) {
@@ -877,6 +887,20 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
       const leafCommit = note.subarray(32, 64);
       const funded = tx?.vout?.find((row) => String(row?.kind || '') === 'lock');
       const proof = tx?.piProof || funded?.piProof;
+      // The deposit checks the consensus unlock itself. A leaf that is not
+      // the funding output plus that unlock is not credited.
+      const height = Math.floor(Number(ctx?.blockHeight ?? ctx?.height) || 0);
+      const magic = ctx?.magic || MAGIC_TESTNET;
+      const clock = lockUnlockOf({
+        genesisMs: Number(ctx?.genesisMs) || 0,
+        magic,
+      }, nowMs);
+      const opened = lockFundingRejected(tx, {
+        height,
+        magic,
+        unlock: consensusUnlockPeriod(clock.epoch),
+      });
+      if (opened) return { ok: false, reason: opened.reason || 'stake_reward' };
       // The π proof opens the funding output. The leaf adds the unlock point.
       let valueCommit = leafCommit;
       try {
@@ -955,10 +979,18 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
         if (!en.ok) return en;
       }
     }
-    const from = txFromOf(tx) || dest;
+    // The lock credited the carried portal id. An address is a different key,
+    // so a withdraw that prefers `from` never sees that owner.
+    // The owner signs the payout: the address when `to` is set, otherwise
+    // the one-time dest20 hex. The portal id is not that payout.
+    const from = dest || txFromOf(tx);
     if (!from) return { ok: true };
     const auth = tx?.rewardSig
-      ? packRewardAuth({ ownerPub: tx.ownerPub || tx.spendPub, sig: tx.rewardSig, dest: tx.to || dest })
+      ? packRewardAuth({
+        ownerPub: tx.ownerPub || tx.spendPub,
+        sig: tx.rewardSig,
+        dest: withdrawSignedDest(tx, act),
+      })
       : new Uint8Array();
     const retireList = Array.isArray(tx?.retireProofs) && tx.retireProofs.length
       ? tx.retireProofs
@@ -1023,7 +1055,7 @@ function epochCensusRows(cb) {
   return out;
 }
 
-export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRoot = undefined, vaultBind = undefined) {
+export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRoot = undefined, vaultBind = undefined, evmCtx = null) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
   const list = Array.isArray(txs) ? txs : [];
   const cb = list[0] || null;
@@ -1160,7 +1192,9 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     for (const tx of list.slice(1)) {
       if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
       const got = await executeReserveTx(session, tx, nowMs, {
-        blockHeight: Math.floor(Number(cb?.height) || 0),
+        blockHeight: Math.floor(Number(evmCtx?.height) || Number(cb?.height) || 0),
+        genesisMs: Number(genesisMs) || 0,
+        magic: evmCtx?.magic || MAGIC_TESTNET,
       });
       if (!got.ok) {
         if (isEvmValueTx(tx)) {

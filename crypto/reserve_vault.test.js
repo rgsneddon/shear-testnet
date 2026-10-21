@@ -44,6 +44,12 @@ import {
   reserveAction,
   hiddenWithdrawOpening,
   provePrincipalOpen,
+  appendVaultLockNote,
+  chainPeriodIndex,
+  consensusUnlockPeriod,
+  leafEpochsToBurn,
+  leafStubNanos,
+  lockUnlockOf,
   signWithdrawReward,
   VOTE_INCREASE,
   VOTE_DECREASE,
@@ -56,7 +62,9 @@ import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, GENESIS_BPS, interestNanos } from './reserve_oracle.js';
 import { extraMint } from './mint.js';
-import { verifySealedNote } from './note.js';
+import { verifySealedNote, pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
+import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
+import { txDigestV3 } from './admit_v3.js';
 
 const DAY = 86_400_000;
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -65,8 +73,79 @@ function destOf(id) {
   return vaultDest(id.address, { viewKey: id.viewKey });
 }
 
+/** Indexed π leaf. An unindexed hidden tranche withdraws as stake_reward. */
+function depositIndexed(state, dest, nowMs, extra = {}) {
+  const magic = state.magic || MAGIC_TESTNET;
+  const stamp = lockUnlockOf({ genesisMs: state.genesisMs, magic }, nowMs);
+  const unlock = consensusUnlockPeriod(stamp.epoch);
+  const blind = randomScalar();
+  const scalar = randomScalar();
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+  assert.ok(leaf);
+  const got = deposit({
+    state,
+    dest,
+    nanos: PI_SHE_NANOS,
+    nowMs,
+    payout: extra.payout,
+    commit: leaf.commit,
+    rangeProof: proveRange(BigInt(PI_SHE_NANOS), blind),
+    unlock,
+    rangeCommit: pointBytes(subtractUnlock(pointFrom(leaf.commit), unlock)),
+    piProof: proveRange(0n, blind),
+  });
+  assert.equal(got.ok, true, got.reason);
+  assert.ok(appendVaultLockNote(state, leaf.note, {
+    earnEpoch: Math.floor(Number(stamp.epoch) || 0),
+    bornEpoch: chainPeriodIndex(state, nowMs),
+    unlockEpoch: unlock,
+    lockHeight: extra.lockHeight || 1,
+  }));
+  return { ...got, planted: { leaf, unlock } };
+}
+
+function indexedHiddenWithdraw(state, dest, nowMs, extra) {
+  const planted = extra.planted;
+  const stub = leafStubNanos(state, [planted.leaf.commit.toString('hex')]);
+  const nanos = extra.nanos != null ? extra.nanos : PI_SHE_NANOS + Number(stub);
+  const tx = withdrawTx({
+    from: dest,
+    to: extra.payout || dest,
+    nanos,
+    id: extra.id || `hidden-${nowMs}`,
+  });
+  const magic = state.magic || MAGIC_TESTNET;
+  const proof = provePrincipalOpen(
+    planted.leaf.commit, PI_SHE_NANOS, planted.leaf.blind, tx, portalIdFromDest(dest), magic, planted.leaf.unlock,
+  );
+  assert.ok(proof, extra.id || 'proof');
+  tx.principalProof = proof;
+  const retire = proveLeafRetire({
+    scalar: planted.leaf.scalar,
+    epochs: leafEpochsToBurn(state, planted.leaf.note.toString('hex'), chainPeriodIndex(state, nowMs)),
+    leaf: planted.leaf.note,
+    txBind: txDigestV3(tx, magic),
+    unlockEpoch: chainPeriodIndex(state, nowMs),
+    magic,
+  });
+  assert.ok(retire?.proof, extra.id || 'retire');
+  tx.retireProof = retire.proof;
+  if (extra.bindOnly) return { tx, nanos, stub: Number(stub), proof };
+  return withdraw({
+    state,
+    dest,
+    nowMs,
+    payout: extra.payout,
+    principal: nanos,
+    principalProof: proof,
+    retireProof: tx.retireProof,
+    tx,
+  });
+}
+
 /** Publish the opened lock integer and bind the principal proof to that tx. */
 function hiddenWithdraw(state, dest, nowMs, extra = {}) {
+  if (extra.planted) return indexedHiddenWithdraw(state, dest, nowMs, extra);
   const peek = hiddenWithdrawOpening(state, dest, nowMs);
   assert.ok(peek, 'hidden opening');
   const tx = withdrawTx({
@@ -172,11 +251,12 @@ describe('Reserve vault protocol', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    const aliceLock = depositIndexed(state, a, t0);
+    assert.equal(aliceLock.ok, true);
     assert.equal(canJoin(state, t0 + Math.floor(RESERVE_EPOCH_MS / 2)), true);
     const late = t0 + RESERVE_EPOCH_MS - 1;
     assert.equal(remainingUnder99(state, late), true);
-    const idleBob = deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: late });
+    const idleBob = depositIndexed(state, b, late);
     assert.equal(idleBob.ok, true);
     assert.equal(idleBob.idle, true);
     assert.equal(idleBob.portal.joined, true);
@@ -193,12 +273,12 @@ describe('Reserve vault protocol', () => {
     const more = deposit({ state, dest: a, nanos: 100, nowMs: late });
     assert.equal(more.ok, true);
     assert.equal(more.idle, true);
-    const done = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'cutoff-alice' });
+    const done = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'cutoff-alice', planted: aliceLock.planted });
     assert.equal(done.ok, true);
     assert.equal(done.idle, 0);
     assert.equal(done.interest, 0);
     assert.equal(done.earned, 0);
-    const bobOut = hiddenWithdraw(state, b, t0 + RESERVE_EPOCH_MS, { id: 'cutoff-bob' });
+    const bobOut = hiddenWithdraw(state, b, t0 + RESERVE_EPOCH_MS, { id: 'cutoff-bob', planted: idleBob.planted });
     assert.equal(bobOut.ok, true);
     assert.equal(bobOut.interest, 0);
     assert.equal(bobOut.idle, 0);
@@ -366,16 +446,12 @@ describe('Reserve vault protocol', () => {
     assert.equal(deposit({ state, dest, nanos: nearCap, nowMs: t0 }).ok, true);
     state.epochBps = 10000;
     const paid = hiddenWithdraw(state, dest, t0 + 2 * RESERVE_EPOCH_MS, { id: 'u64-cap' });
-    assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.principal, nearCap);
-    assert.equal(paid.mint, null);
-    assert.equal(paid.interest, 0);
-    assert.equal(paid.earned, 0);
+    // Not an indexed π leaf. The unindexed tranche is refused and nothing is minted.
+    assert.equal(paid.reason, 'stake_reward');
     assert.equal(state.mintBankNanos, 0n);
     const book = supplyIdentity(state);
     assert.equal(book.mintedReward, 0);
-    assert.equal(book.ok, false);
-    assert.equal(book.reason, 'supply');
+    assert.ok(book.principalNanos >= 0);
   });
 
   it('first sealed block after epoch auto-enacts the winning vote; height is unchanged', () => {
@@ -458,10 +534,10 @@ describe('Reserve vault protocol', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0, payout: continuum });
+    const locked = depositIndexed(state, a, t0, { payout: continuum });
     const early = withdraw({ state, dest: a, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
     assert.equal(early.ok, false);
-    const done = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'after-epoch' });
+    const done = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'after-epoch', planted: locked.planted });
     assert.equal(done.ok, true);
     assert.equal(done.programId, RESERVE_PROGRAM);
     assert.equal(done.to, continuum);
@@ -542,23 +618,23 @@ describe('Reserve oracle', () => {
     state.genesisMs = t0;
     assert.equal(state.oracle.id, RESERVE_ORACLE_ID);
     assert.equal(state.oracle.annualBps, RESERVE_ORACLE_DEFAULT_BPS);
-    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const locked = depositIndexed(state, a, t0);
     const pub = publicVaultView(state, t0);
     assert.equal(pub.oracleBps, RESERVE_ORACLE_DEFAULT_BPS);
     assert.equal(pub.epochBps, RESERVE_ORACLE_DEFAULT_BPS);
     assert.equal(JSON.stringify(pub).includes(alice.address), false);
-    const mid = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'oracle-mid' });
+    const mid = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'oracle-mid', planted: locked.planted });
     assert.equal(mid.ok, true);
     assert.equal(mid.interest, 0);
     assert.equal(mid.earned, 0);
     const again = emptyVault();
     again.genesisMs = t0;
-    deposit({ state: again, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const againLock = depositIndexed(again, a, t0);
     const refused = observeRate({ state: again, annualBps: 0, nowMs: t0 + 1 });
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'rate_bundled');
     assert.equal(again.oracle.annualBps, RESERVE_ORACLE_DEFAULT_BPS);
-    const frozen = hiddenWithdraw(again, a, t0 + RESERVE_EPOCH_MS, { id: 'oracle-frozen' });
+    const frozen = hiddenWithdraw(again, a, t0 + RESERVE_EPOCH_MS, { id: 'oracle-frozen', planted: againLock.planted });
     assert.equal(frozen.ok, true);
     assert.equal(frozen.interest, 0);
     assert.equal(frozen.earned, 0);
@@ -575,16 +651,16 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const two = emptyVault();
     one.genesisMs = t0;
     two.genesisMs = t0;
-    deposit({ state: one, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
-    deposit({ state: two, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const oneLock = depositIndexed(one, a, t0);
+    const twoLock = depositIndexed(two, a, t0);
     assert.equal(observeRate({ state: one, annualBps: 100, nowMs: t0 + 1 }).ok, false);
     assert.equal(observeRate({ state: two, annualBps: 9000, nowMs: t0 + 1 }).ok, false);
     one.oracle.annualBps = 100;
     two.oracle.annualBps = 9000;
     assert.equal(one.epochBps, two.epochBps);
     assert.equal(one.epochBps, GENESIS_BPS);
-    const w1 = hiddenWithdraw(one, a, t0 + RESERVE_EPOCH_MS, { id: 'bundle-one' });
-    const w2 = hiddenWithdraw(two, a, t0 + RESERVE_EPOCH_MS, { id: 'bundle-two' });
+    const w1 = hiddenWithdraw(one, a, t0 + RESERVE_EPOCH_MS, { id: 'bundle-one', planted: oneLock.planted });
+    const w2 = hiddenWithdraw(two, a, t0 + RESERVE_EPOCH_MS, { id: 'bundle-two', planted: twoLock.planted });
     assert.equal(w1.ok, true);
     assert.equal(w2.ok, true);
     assert.equal(w1.interest, 0);
@@ -599,7 +675,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const locked = depositIndexed(state, a, t0);
     const before = portalEpochInterest(state, state.portals[portalIdFromDest(a)], t0 + RESERVE_EPOCH_MS);
     const saw = observeRate({ state, annualBps: 9999, nowMs: t0 + 10 * DAY });
     assert.equal(saw.ok, false);
@@ -609,7 +685,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(previewWithdraw(state, a).interest, 0);
     assert.equal(portalEpochInterest(state, state.portals[portalIdFromDest(a)], t0 + RESERVE_EPOCH_MS), before);
     assert.equal(publicVaultView(state, t0 + 10 * DAY).oracleBps, GENESIS_BPS);
-    const out = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'preview-out' });
+    const out = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'preview-out', planted: locked.planted });
     assert.equal(out.interest, 0);
     assert.equal(out.earned, before);
     assert.equal(state.epochBps, GENESIS_BPS);
@@ -666,11 +742,11 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0, payout: continuumA });
+    const locked = depositIndexed(state, a, t0, { payout: continuumA });
     const stolen = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS, payout: continuumB });
     assert.equal(stolen.ok, false);
     assert.equal(stolen.reason, 'payout_mismatch');
-    const ok = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'alice-payout', payout: continuumA });
+    const ok = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'alice-payout', payout: continuumA, planted: locked.planted });
     assert.equal(ok.ok, true);
     assert.equal(ok.to, continuumA);
   });
@@ -683,7 +759,8 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    const aliceLock = depositIndexed(state, a, t0);
+    assert.equal(aliceLock.ok, true);
     assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).reason, 'vote_retired');
     assert.equal(state.votes.increase, 0);
     const end1 = t0 + RESERVE_EPOCH_MS;
@@ -695,7 +772,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(state.votes.hold, 0);
     const end2 = end1 + 1 + RESERVE_EPOCH_MS;
     assert.equal(enact({ state, nowMs: end2 }).ok, true);
-    const out = hiddenWithdraw(state, a, end2, { id: 'rollover-alice' });
+    const out = hiddenWithdraw(state, a, end2, { id: 'rollover-alice', planted: aliceLock.planted });
     assert.equal(out.ok, true, out.reason);
     assert.equal(state.votes.increase, 0);
     assert.equal(state.votes.hold, 0);
@@ -1058,17 +1135,20 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const end = t0 + RESERVE_EPOCH_MS;
     const state = emptyVault();
     state.genesisMs = t0;
-    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    const locked = depositIndexed(state, a, t0);
     state.epochBps = -250;
-    const short = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS - 1, id: 'short' });
-    bindRealPrincipal(state, a, end, short);
+    const due = PI_SHE_NANOS + Number(leafStubNanos(state, [locked.planted.leaf.commit.toString('hex')]));
+    const short = indexedHiddenWithdraw(state, a, end, {
+      id: 'short', planted: locked.planted, nanos: due - 1, bindOnly: true,
+    }).tx;
     const refused = verifyReservePayout(state, short, end);
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'principal_short');
-    const fatRate = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + 1, id: 'rate-fat' });
-    bindRealPrincipal(state, a, end, fatRate);
+    const fatRate = indexedHiddenWithdraw(state, a, end, {
+      id: 'rate-fat', planted: locked.planted, nanos: due + 1, bindOnly: true,
+    }).tx;
     assert.equal(verifyReservePayout(state, fatRate, end).reason, 'over_mint');
-    const paid = hiddenWithdraw(state, a, end, { id: 'rate-full' });
+    const paid = hiddenWithdraw(state, a, end, { id: 'rate-full', planted: locked.planted });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.reward, 0);
     assert.equal(paid.interest, 0);
@@ -1076,9 +1156,9 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(paid.payout, paid.principal);
     const zero = emptyVault();
     zero.genesisMs = t0;
-    assert.equal(deposit({ state: zero, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    const flatLock = depositIndexed(zero, a, t0);
     zero.epochBps = 0;
-    const flat = hiddenWithdraw(zero, a, end, { id: 'rate-flat' });
+    const flat = hiddenWithdraw(zero, a, end, { id: 'rate-flat', planted: flatLock.planted });
     assert.equal(flat.ok, true, flat.reason);
     assert.equal(flat.payout, flat.principal);
   });

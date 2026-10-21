@@ -276,6 +276,8 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
     assert.ok(leaf, 'leaf');
     const funded = pointBytes(commit(PI_SHE_NANOS, blind));
+    // The leaf is the funding output plus the unlock point. They are not the same commitment.
+    assert.equal(leaf.commit.equals(funded), false, 'nonzero funding gap');
     const range = proveRange(PI_SHE_NANOS, blind);
     assert.ok(range, 'range');
     const d20 = hash20FromAddress(who.dest);
@@ -387,9 +389,8 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
         nanos: withdrawNanos,
         programId: RESERVE_PROGRAM,
         portalId: who.portalId,
-        payoutPortalId: who.portalId,
         ownerPub: who.pub,
-        to: who.dest,
+        dest20: Buffer.from(d20),
         vin: ph.vin,
         vout: [receipt, change],
         fs1: ph.fs1,
@@ -403,8 +404,12 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
       fee = need + rangeSlack([receipt, change]);
     }
     assert.ok(body, `${id} withdraw fee`);
-    body.to = who.dest;
+    // The posted body has portalId and dest20. `to` and payoutPortalId are not
+    // on it, and the retire proof is bound to that body.
     body.nanos = withdrawNanos;
+    body.dest20 = Buffer.from(d20);
+    assert.equal(body.to, undefined, `${id} address`);
+    assert.equal(body.payoutPortalId, undefined, `${id} payout portal`);
     const period = chainPeriodIndex(store.reserveVault, now);
     const burn = leafEpochsToBurn(store.reserveVault, row.leaf.note.toString('hex'), period);
     assert.equal(burn.length, 3, `${id} burn ${burn.join(',')}`);
@@ -423,13 +428,17 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.ok(body.principalProof, `${id} principal`);
     const built = buildFundedWithdraw(body);
     assert.ok(built, `${id} builder`);
-    built.dest20 = Buffer.from(hash20FromAddress(who.dest));
+    assert.equal(built.to, undefined, `${id} built address`);
+    assert.equal(built.from, undefined, `${id} built from`);
+    assert.equal(built.payoutPortalId, undefined, `${id} built payout`);
+    built.dest20 = Buffer.from(d20);
     signSpendTx(built, who.key);
     // The owner signs π. The receipt above is π plus the arrival stub.
+    const payoutHex = Buffer.from(built.dest20).toString('hex');
     signWithdrawReward(built, who.key, {
       portalId: who.portalId,
       nanos: PI_SHE_NANOS,
-      dest: who.dest,
+      dest: payoutHex,
       state: store.reserveVault,
       nowMs: now,
     });

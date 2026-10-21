@@ -37,6 +37,7 @@ import {
   consensusUnlockPeriod,
   emptyVault,
   leafEpochsToBurn,
+  leafStubNanos,
   lockUnlockOf,
   lockWitnessOf,
   portalEpochInterest,
@@ -148,11 +149,13 @@ function openedPrincipalTx(state, dest, when, locks, id, { admit = false } = {})
     break;
   }
   if (!leaf) return null;
-  const nanos = PI_SHE_NANOS;
+  // The principal proof opens π. The receipt is π plus this leaf's arrival stub.
+  const stub = leafStubNanos(state, [leaf.commit.toString('hex')]);
+  const nanos = PI_SHE_NANOS + Number(stub);
   const tx = admit
     ? admitWithdraw(dest, nanos, id)
     : withdrawTx({ from: dest, to: dest, nanos, id });
-  const proof = provePrincipalOpen(leaf.commit, nanos, leaf.blind, tx, portalId, state.magic, leaf.unlock);
+  const proof = provePrincipalOpen(leaf.commit, PI_SHE_NANOS, leaf.blind, tx, portalId, state.magic, leaf.unlock);
   if (!proof) return null;
   tx.principalProof = proof;
   const period = chainPeriodIndex(state, when);
@@ -168,7 +171,7 @@ function openedPrincipalTx(state, dest, when, locks, id, { admit = false } = {})
   tx.retireProof = retire.proof;
   signWithdrawReward(tx, ownerFor(dest).key, {
     portalId,
-    nanos,
+    nanos: PI_SHE_NANOS,
     dest,
     state,
     nowMs: when,
@@ -248,7 +251,8 @@ describe('time-locked withdraw supply', () => {
     assert.equal(hiddenBound.cap, preview.payout);
     const exact = openedPrincipalTx(state, dest, DRAW, lock, 'spend-withdraw', { admit: true });
     assert.ok(exact);
-    assert.equal(verifyReservePayout(state, exact.tx, DRAW).ok, true, exact && 'payout');
+    const pay = verifyReservePayout(state, exact.tx, DRAW);
+    assert.equal(pay.ok, true, pay.reason || 'payout');
     for (const delta of [1]) {
       const off = admitWithdraw(dest, preview.payout + delta, `spend-${delta}`);
       assert.equal(verifyReservePayout(state, off, DRAW).ok, false, String(delta));
@@ -269,6 +273,9 @@ describe('time-locked withdraw supply', () => {
     assert.equal(Number(portal.staked) + Number(portal.idle), 0);
     assert.equal(Number(portal.redeemedNanos || 0), 0);
     assert.equal(Number(state.totalLockedNanos), 0);
+    // Capture the stub before the withdraw retires the leaf height.
+    const arrival = leafStubNanos(state, [lock._leaf.commit.toString('hex')]);
+    assert.ok(arrival > 0n);
     const paid = payOpened(state, dest, DRAW, lock, 'spend-pay');
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
@@ -278,7 +285,9 @@ describe('time-locked withdraw supply', () => {
     assert.equal(again.ok, false);
     assert.equal(Number(state.totalLockedNanos), 0);
     const identity = supplyIdentity(state);
-    assert.equal(identity.mintedReward, 0);
+    assert.equal(identity.ok, true, identity.reason);
+    // The arrival stub is minted. Principal is not.
+    assert.equal(identity.mintedReward, Number(arrival));
     assert.equal(identity.principalNanos, 0);
   });
 
@@ -316,7 +325,11 @@ describe('time-locked withdraw supply', () => {
     const permittedPlain = blockPermittedInterest(prior, supplyBlock(DRAW, plainDest, [plainDraw]), DRAW);
     assert.equal(interest.ok, true, interest.reason);
     assert.equal(permittedPlain.ok, true, permittedPlain.reason);
-    assert.equal(interest.nanos, 0n);
+    // Supply counts the arrival stub as minted interest. The reward mint stays 0.
+    const plainStub = leafStubNanos(prior, [plainTx._leaf.commit.toString('hex')]);
+    assert.ok(plainStub > 0n);
+    assert.equal(interest.nanos, plainStub);
+    assert.equal(permittedPlain.nanos, plainStub);
 
     const noteDest = destOf();
     const note = freshVault();
@@ -549,8 +562,9 @@ describe('time-locked withdraw supply', () => {
     const withClock = boundReserveWithdraw(hidden, state, new Set(), DRAW);
     assert.equal(withClock.ok, true, withClock.reason);
     assert.equal(withClock.cap, 0);
-    // The hidden lock is matured and unopened. Claiming it is stake_reward.
-    assert.equal(boundReserveWithdraw(loose, state, new Set(), DRAW).reason, 'stake_reward');
+    // A positive receipt with no leaf proofs is mint_amount. stake_reward is
+    // a proof that does not open the leaf.
+    assert.equal(boundReserveWithdraw(loose, state, new Set(), DRAW).reason, 'mint_amount');
     const over = boundReserveWithdraw(
       withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS * 2 + 1, id: 'clock-over' }),
       state,
@@ -558,7 +572,7 @@ describe('time-locked withdraw supply', () => {
       DRAW,
     );
     assert.equal(over.ok, false);
-    assert.equal(over.reason, 'stake_reward');
+    assert.equal(over.reason, 'mint_amount');
   });
 
   it('accepts the pro-rata legacy and mixed withdraw and refuses one nano either side', () => {

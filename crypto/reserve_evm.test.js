@@ -35,12 +35,22 @@ import {
   shearMagicBytes,
 } from './reserve_evm.js';
 import { GENESIS_BPS } from './reserve_oracle.js';
+import { txDigestV3 } from './admit_v3.js';
 import { ed25519RawPub, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from './address.js';
+import { pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
+import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
 import { boundReserveWithdraw, reserveAuth, signSpendTx } from './spend.js';
 import {
+  appendVaultLockNote,
   applyReserveBlock,
+  chainPeriodIndex,
   cloneVault,
+  consensusUnlockPeriod,
   emptyVault,
+  leafEpochsToBurn,
+  leafStubNanos,
+  lockUnlockOf,
+  provePrincipalOpen,
   enact,
   packRewardAuth,
   packRewardProof,
@@ -54,7 +64,6 @@ import {
   signWithdrawReward,
   supplyIdentity,
   deposit as depositUnowned,
-  hiddenWithdrawOpening,
   withdraw,
   withdrawMintId,
   withdrawPaysInterest,
@@ -72,6 +81,80 @@ import { fileURLToPath } from 'node:url';
 
 const destA = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
 const destB = 'ssa1ppppppppppppppppppppppppppppppppppppppppppppppppppppp';
+
+/** One indexed π leaf. An unindexed hidden tranche withdraws as stake_reward.
+ *  The owner signs π. The receipt is π plus this leaf's arrival stub. */
+function indexPiLock(state, dest, nowMs, ownerPub, lockHeight = 1) {
+  const magic = state.magic || MAGIC_TESTNET;
+  const stamp = lockUnlockOf({ genesisMs: state.genesisMs, magic }, nowMs);
+  const unlock = consensusUnlockPeriod(stamp.epoch);
+  const scalar = randomScalar();
+  const blind = randomScalar();
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+  if (!leaf) return { ok: false, reason: 'leaf' };
+  const ranged = pointBytes(subtractUnlock(pointFrom(leaf.commit), unlock));
+  const range = proveRange(BigInt(PI_SHE_NANOS), blind);
+  // The leaf commit hides π. The same proof the plain deposit used shows it
+  // qualifies, so the epoch opens and enact can run.
+  const piProof = proveRange(0n, blind);
+  const got = deposit({
+    state,
+    dest,
+    nanos: PI_SHE_NANOS,
+    nowMs,
+    ownerPub,
+    commit: leaf.commit,
+    rangeProof: range,
+    unlock,
+    rangeCommit: ranged,
+    piProof,
+  });
+  if (!got.ok) return got;
+  const rooted = appendVaultLockNote(state, leaf.note, {
+    earnEpoch: Math.floor(Number(stamp.epoch) || 0),
+    bornEpoch: chainPeriodIndex(state, nowMs),
+    unlockEpoch: unlock,
+    lockHeight,
+  });
+  if (!rooted) return { ok: false, reason: 'stake_reward' };
+  return { ok: true, leaf };
+}
+
+/** Retire proof and principal opening bound to this withdraw. */
+function indexedDraw(state, dest, when, planted, id, ownerKey, to = dest) {
+  const commitHex = planted.leaf.commit.toString('hex');
+  const stub = leafStubNanos(state, [commitHex]);
+  const nanos = PI_SHE_NANOS + Number(stub);
+  const tx = withdrawTx({ from: dest, to, nanos, id });
+  const portalId = portalIdFromDest(dest);
+  const magic = state.magic || MAGIC_TESTNET;
+  const proof = provePrincipalOpen(
+    planted.leaf.commit, PI_SHE_NANOS, planted.leaf.blind, tx, portalId, magic, planted.leaf.unlock,
+  );
+  if (!proof) return null;
+  tx.principalProof = proof;
+  const period = chainPeriodIndex(state, when);
+  const retire = proveLeafRetire({
+    scalar: planted.leaf.scalar,
+    epochs: leafEpochsToBurn(state, planted.leaf.note.toString('hex'), period),
+    leaf: planted.leaf.note,
+    txBind: txDigestV3(tx, magic),
+    unlockEpoch: period,
+    magic,
+  });
+  if (!retire) return null;
+  tx.retireProof = retire.proof;
+  if (ownerKey) {
+    signWithdrawReward(tx, ownerKey, {
+      portalId,
+      nanos: PI_SHE_NANOS,
+      dest: to,
+      state,
+      nowMs: when,
+    });
+  }
+  return { tx, nanos, proof, stub };
+}
 
 describe('Reserve bytecode on the Shear EVM', () => {
   it('bootReserveEvm defaults to MAGIC_TESTNET', async () => {
@@ -525,7 +608,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const ownerPub = Buffer.from(owner.spendPub).toString('hex');
     const js = emptyVault();
     js.genesisMs = t0;
-    assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub }).ok, true);
+    // Indexed leaf. An unindexed hidden tranche is stake_reward, not a payout.
+    const planted = indexPiLock(js, dest, t0, ownerPub, 1);
+    assert.equal(planted.ok, true, planted.reason);
     assert.equal(enact({ state: js, nowMs: end }).ok, true);
     const before = supplyIdentity(js);
     assert.equal(before.ok, true, before.reason);
@@ -538,22 +623,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(preview.payout, 0);
     const earned = portalEpochInterest(js, js.portals[portalIdFromDest(dest)], end);
     assert.equal(earned, 0);
-    const peek = hiddenWithdrawOpening(js, dest, end);
-    assert.ok(peek);
-    const tx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: 'paid-reward' });
-    const open = hiddenWithdrawOpening(js, dest, end, tx);
-    assert.ok(open?.proof);
-    tx.principalProof = open.proof;
-    signWithdrawReward(tx, owner.privateKey, {
-      portalId: portalIdFromDest(dest),
-      nanos: open.nanos,
-      dest,
-      state: js,
-      nowMs: end,
-    });
+    const opened = indexedDraw(js, dest, end, planted, 'paid-reward', owner.privateKey);
+    assert.ok(opened, 'indexed draw');
+    const tx = opened.tx;
     const bound = boundReserveWithdraw(tx, js, new Set(), end);
     assert.equal(bound.ok, true, bound.reason);
-    assert.equal(bound.cap, open.nanos);
+    assert.equal(bound.cap, opened.nanos);
     assert.equal(preview.principal, 0);
     const applied = applyReserveBlock({
       state: js,
@@ -586,7 +661,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(again.ok, false);
     assert.equal(again.reason, 'claim_unavailable');
     const after = supplyIdentity(js);
-    assert.equal(after.mintedReward, 0);
+    // The receipt mints the arrival stub. The reward claim stays unavailable.
+    assert.equal(after.mintedReward, Number(opened.stub));
     assert.equal(Number(js.openedLockNanos || 0), 0);
     assert.equal(Number(js.openedWithdrawNanos), PI_SHE_NANOS);
     assert.equal(after.ok, false);
@@ -613,7 +689,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
     js.genesisMs = t0;
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
-    assert.equal(deposit({ state: js, dest, nanos, nowMs: t0 }).ok, true);
+    const planted = indexPiLock(js, dest, t0, undefined, 1);
+    assert.equal(planted.ok, true, planted.reason);
     assert.equal((await callReserve(session, encodeDeposit(dest, nanos, t0))).ok, true);
     let now = t0;
     for (let epoch = 0; epoch < 5; epoch += 1) {
@@ -641,12 +718,17 @@ describe('Reserve bytecode on the Shear EVM', () => {
       assert.equal(view.currentEpoch, js.currentEpoch, `epoch ${epoch}`);
       assert.equal(supplyIdentity(js).ok, true);
     }
-    const peek = hiddenWithdrawOpening(js, dest, now);
-    assert.ok(peek);
-    const boundTx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: 'parity-draw' });
-    const open = hiddenWithdrawOpening(js, dest, now, boundTx);
-    assert.ok(open?.proof);
-    const paid = withdraw({ state: js, dest, nowMs: now, principal: open.nanos, principalProof: open.proof, tx: boundTx });
+    const opened = indexedDraw(js, dest, now, planted, 'parity-draw');
+    assert.ok(opened, 'indexed draw');
+    const paid = withdraw({
+      state: js,
+      dest,
+      nowMs: now,
+      principal: opened.nanos,
+      principalProof: opened.proof,
+      retireProof: opened.tx.retireProof,
+      tx: opened.tx,
+    });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(paid.interest, 0);
@@ -784,7 +866,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const payout = encodeDest(Buffer.alloc(20, 0x44));
     const js = emptyVault();
     js.genesisMs = t0;
-    assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub }).ok, true);
+    const planted = indexPiLock(js, dest, t0, ownerPub, 1);
+    assert.equal(planted.ok, true, planted.reason);
     const plan = rewardCommitment(js, end);
     const preview = previewWithdraw(js, dest, end);
     const earned = portalEpochInterest(js, js.portals[portalIdFromDest(dest)], end);
@@ -817,15 +900,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     });
     assert.equal(stolenApply.ok, false);
     assert.equal(stolenApply.reason, 'unsigned');
-    const peek = hiddenWithdrawOpening(js, dest, end);
-    assert.ok(peek);
-    const tx = withdrawTx({ from: dest, to: payout, nanos: peek.nanos, id: 'wd-owner' });
-    const open = hiddenWithdrawOpening(js, dest, end, tx);
-    assert.ok(open?.proof);
-    tx.principalProof = open.proof;
-    signWithdrawReward(tx, owner.privateKey, {
-      portalId, nanos: open.nanos, dest: payout, state: js, nowMs: end,
-    });
+    const opened = indexedDraw(js, dest, end, planted, 'wd-owner', owner.privateKey, payout);
+    assert.ok(opened, 'indexed draw');
+    const tx = opened.tx;
     const applied = applyReserveBlock({
       state: js,
       block: { txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }, tx] },
@@ -870,13 +947,19 @@ describe('Reserve bytecode on the Shear EVM', () => {
     for (const [at, want] of draws) {
       const js = emptyVault();
       js.genesisMs = t0;
-      assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: lateAt }).ok, true);
-      const peek = hiddenWithdrawOpening(js, dest, at);
-      assert.ok(peek, String(at));
-      const boundTx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: `late-${at}` });
-      const open = hiddenWithdrawOpening(js, dest, at, boundTx);
-      assert.ok(open?.proof, String(at));
-      const paid = withdraw({ state: js, dest, nowMs: at, principal: open.nanos, principalProof: open.proof, tx: boundTx });
+      const planted = indexPiLock(js, dest, lateAt, undefined, 1);
+      assert.equal(planted.ok, true, `${at} ${planted.reason}`);
+      const opened = indexedDraw(js, dest, at, planted, `late-${at}`);
+      assert.ok(opened, String(at));
+      const paid = withdraw({
+        state: js,
+        dest,
+        nowMs: at,
+        principal: opened.nanos,
+        principalProof: opened.proof,
+        retireProof: opened.tx.retireProof,
+        tx: opened.tx,
+      });
       assert.equal(paid.ok, true, `${at} ${paid.reason}`);
       assert.equal(paid.interest, 0, `js ${at}`);
       assert.equal(paid.earned, 0, `js earned ${at}`);
@@ -956,19 +1039,26 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     const locks = [];
+    let planted = null;
     for (let i = 0; i < n; i += 1) {
-      assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub: who.pub }).ok, true, `js ${i}`);
+      planted = indexPiLock(js, dest, t0, who.pub, 1);
+      assert.equal(planted.ok, true, `js ${i} ${planted.reason}`);
       const evmLock = await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, who.commit));
       assert.equal(evmLock.ok, true, `evm ${i} ${evmLock.reason}`);
       locks.push({ nanos: PI_SHE_NANOS, at: t0 });
     }
     const drawAt = t0 + epochs * RESERVE_EPOCH_MS;
-    const peek = hiddenWithdrawOpening(js, dest, drawAt);
-    assert.ok(peek);
-    const boundTx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: 'many-draw' });
-    const open = hiddenWithdrawOpening(js, dest, drawAt, boundTx);
-    assert.ok(open?.proof);
-    const paid = withdraw({ state: js, dest, nowMs: drawAt, principal: open.nanos, principalProof: open.proof, tx: boundTx });
+    const opened = indexedDraw(js, dest, drawAt, planted, 'many-draw', who.key);
+    assert.ok(opened, 'indexed draw');
+    const paid = withdraw({
+      state: js,
+      dest,
+      nowMs: drawAt,
+      principal: opened.nanos,
+      principalProof: opened.proof,
+      retireProof: opened.tx.retireProof,
+      tx: opened.tx,
+    });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(paid.earned, 0);
@@ -986,12 +1076,15 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const who = ownerFor(dest);
     const js = emptyVault();
     js.genesisMs = t0;
-    assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub: who.pub }).ok, true);
+    const planted = indexPiLock(js, dest, t0, who.pub, 1);
+    assert.equal(planted.ok, true, planted.reason);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, who.commit))).ok, true);
     const end = t0 + epoch;
-    const first = { to: dest, kind: 'withdraw', from: dest };
+    // The replayed body carries the portal id. Without it the owner cannot
+    // be found, and the signature is never checked.
+    const first = { to: dest, kind: 'withdraw', from: dest, portalId: portalIdFromDest(dest) };
     signWithdrawReward(first, who.key, {
       portalId: portalIdFromDest(dest),
       nanos: PI_SHE_NANOS,
@@ -1006,17 +1099,23 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const drawn = await callReserve(session, encodeWithdraw(dest, end, firstAuth));
     assert.equal(drawn.ok, false);
     assert.equal(drawn.reason, 'unsigned');
-    const peek = hiddenWithdrawOpening(js, dest, end);
-    assert.ok(peek);
-    const boundTx = withdrawTx({ from: dest, to: dest, nanos: peek.nanos, id: 'replay-draw' });
-    const open = hiddenWithdrawOpening(js, dest, end, boundTx);
-    assert.ok(open?.proof);
-    const jsPaid = withdraw({ state: js, dest, nowMs: end, principal: open.nanos, principalProof: open.proof, tx: boundTx });
+    const opened = indexedDraw(js, dest, end, planted, 'replay-draw', who.key);
+    assert.ok(opened, 'indexed draw');
+    const jsPaid = withdraw({
+      state: js,
+      dest,
+      nowMs: end,
+      principal: opened.nanos,
+      principalProof: opened.proof,
+      retireProof: opened.tx.retireProof,
+      tx: opened.tx,
+    });
     assert.equal(jsPaid.ok, true, jsPaid.reason);
     assert.equal(jsPaid.principal, PI_SHE_NANOS);
     const relockAt = end;
     assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
-    assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: relockAt, ownerPub: who.pub }).ok, true);
+    const plantedAgain = indexPiLock(js, dest, relockAt, who.pub, 1);
+    assert.equal(plantedAgain.ok, true, plantedAgain.reason);
     assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, relockAt, who.commit))).ok, true);
     const end2 = t0 + 2 * epoch;
     const replay = await callReserve(session, encodeWithdraw(dest, end2, firstAuth, PI_SHE_NANOS));
@@ -1030,12 +1129,17 @@ describe('Reserve bytecode on the Shear EVM', () => {
     }));
     assert.equal(fresh.ok, false);
     assert.equal(fresh.reason, 'unsigned');
-    const againPeek = hiddenWithdrawOpening(js, dest, end2);
-    assert.ok(againPeek);
-    const againTx = withdrawTx({ from: dest, to: dest, nanos: againPeek.nanos, id: 'replay-again' });
-    const reopened = hiddenWithdrawOpening(js, dest, end2, againTx);
-    assert.ok(reopened?.proof);
-    const jsAgain = withdraw({ state: js, dest, nowMs: end2, principal: reopened.nanos, principalProof: reopened.proof, tx: againTx });
+    const reopened = indexedDraw(js, dest, end2, plantedAgain, 'replay-again', who.key);
+    assert.ok(reopened, 'indexed re-lock');
+    const jsAgain = withdraw({
+      state: js,
+      dest,
+      nowMs: end2,
+      principal: reopened.nanos,
+      principalProof: reopened.proof,
+      retireProof: reopened.tx.retireProof,
+      tx: reopened.tx,
+    });
     assert.equal(jsAgain.ok, true, jsAgain.reason);
     assert.equal(jsAgain.principal, PI_SHE_NANOS);
   });
@@ -1058,7 +1162,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
         id: `lock-${portalDest.slice(-6)}-${fundDest.slice(-4)}`,
         programId: RESERVE_PROGRAM,
         kind: 'lock',
-        to: portalDest,
+        // Compact lock. `to` is the address and is vote_leak before the
+        // receipt gate. The unfunded dest20 is still a public receipt.
         nanos: PI_SHE_NANOS,
         portalId: portalIdFromDest(portalDest),
         payoutPortalId: portalIdFromDest(fundDest),

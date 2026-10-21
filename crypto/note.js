@@ -114,6 +114,12 @@ export function reviveTx(tx) {
   }
   if (out.spendTag != null && !Buffer.isBuffer(out.spendTag)) out.spendTag = reviveField(out.spendTag);
   if (out.excess != null) out.excess = reviveField(out.excess);
+  // P2P posts the lock's carried dest20 as {$hex}. The spend check binds that
+  // field with Buffer.from, which does not read {$hex}.
+  if (out.dest20 != null) {
+    const back = reviveBytes('dest20', out.dest20);
+    if (Buffer.isBuffer(back)) out.dest20 = back;
+  }
   if (Array.isArray(out.hashOwed)) {
     out.hashOwed = out.hashOwed.map((row) => {
       if (!row || typeof row !== 'object') return row;

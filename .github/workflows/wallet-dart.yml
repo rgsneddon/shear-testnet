@@ -22,11 +22,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
       - name: Dart vote plan, leaf vote, and withdraw builder
         working-directory: wallet
         run: |
           flutter pub get
           flutter test test/shear_vote_plan_test.dart
+      - name: Admit library the withdraw prover loads
+        run: cargo build --release --manifest-path crypto/native/admit/Cargo.toml
+      - name: UI leaf vote posts a real proof
+        working-directory: wallet
+        run: flutter test test/leaf_vote_wire_test.dart
       - name: JS verifies a Dart-built withdraw
         run: |
           npm ci --ignore-scripts

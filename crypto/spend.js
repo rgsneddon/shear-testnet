@@ -998,9 +998,11 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
         return { ok: false, reason: 'payout_mismatch' };
       }
     }
-    if (portal?.payoutPortalId) {
-      const payPid = String(tx?.payoutPortalId || '').toLowerCase();
-      if (!payPid || payPid !== String(portal.payoutPortalId).toLowerCase()) {
+    // A carried id that differs is a mismatch. The compact withdraw omits
+    // payoutPortalId. Its payout is the one-time dest20 under the owner sig.
+    if (portal?.payoutPortalId && tx?.payoutPortalId) {
+      const payPid = String(tx.payoutPortalId).toLowerCase();
+      if (payPid !== String(portal.payoutPortalId).toLowerCase()) {
         return { ok: false, reason: 'payout_mismatch' };
       }
     }
@@ -1040,9 +1042,10 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
       return { ok: false, reason: 'payout_mismatch' };
     }
   }
-  if (portal?.payoutPortalId) {
-    const payPid = String(tx?.payoutPortalId || '').toLowerCase();
-    if (!payPid || payPid !== String(portal.payoutPortalId).toLowerCase()) {
+  // Same rule as the hidden branch. Absent is the compact body.
+  if (portal?.payoutPortalId && tx?.payoutPortalId) {
+    const payPid = String(tx.payoutPortalId).toLowerCase();
+    if (payPid !== String(portal.payoutPortalId).toLowerCase()) {
       return { ok: false, reason: 'payout_mismatch' };
     }
   }

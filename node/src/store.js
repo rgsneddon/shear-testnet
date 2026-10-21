@@ -70,7 +70,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit, leafVoteLeakRejected, compactLockLeakRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit, leafVoteLeakRejected, compactLockLeakRejected, commitVaultLockRoot } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -317,6 +317,10 @@ export function createStore(dir, {
   oracleActivationHeight = undefined,
   magic: magicIn = null,
   regtestPermit = null,
+  snapEvery = BOOK_SNAP_EVERY,
+  // In-memory suites still verify and append. They do not rewrite the book,
+  // the vault file, or the load seal on every block.
+  diskJournal = true,
 } = {}, resume = null) {
   // shear-regtest is not a public book. A genesis pin (the v12 hash, or any
   // caller pin) refuses it outright. An unpinned open still needs the permit
@@ -324,6 +328,7 @@ export function createStore(dir, {
   // magic wins when a caller sets it. network stays the node and datadir path.
   // The check runs before the datadir is created or locked down, so a refused
   // regtest open does not touch the directory.
+  const journalDisk = diskJournal !== false;
   const configuredMagic = String(magicIn || network || MAGIC_TESTNET);
   if (configuredMagic === MAGIC_REGTEST) {
     const genesisPin = String(genesisHash || '');
@@ -1081,6 +1086,7 @@ export function createStore(dir, {
   reserveVault.magic = bookMagic;
 
   function saveReserve() {
+    if (!journalDisk) return;
     const raw = JSON.parse(JSON.stringify(reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
     delete raw.blankFork;
     delete raw.vaultSeal;
@@ -1381,6 +1387,7 @@ export function createStore(dir, {
   }
 
   function writeLoadSeal(rows) {
+    if (!journalDisk) return;
     if (rows !== blocks) {
       fs.writeFileSync(sealFile, `${chainLoadSeal(rows, sealKey, bookMagic)}\n`);
       return;
@@ -1529,11 +1536,12 @@ export function createStore(dir, {
     return foldTags('stable');
   }
 
+  const snapGap = Math.floor(Number(snapEvery));
   function shouldSnap(height) {
     const h = Number(height) || 0;
-    if (h < 1) return false;
-    if (h <= BOOK_SNAP_EVERY) return true;
-    return h % BOOK_SNAP_EVERY === 0;
+    if (h < 1 || !Number.isInteger(snapGap) || snapGap <= 0) return false;
+    if (h <= snapGap) return true;
+    return h % snapGap === 0;
   }
 
   function maybeSnap(height) {
@@ -1706,6 +1714,7 @@ export function createStore(dir, {
   }
 
   function persistBookSnap() {
+    if (!journalDisk) return;
     if (!blocks.length) return;
     if (acceptedSeries.length !== blocks.length || unitAt.length !== blocks.length) return;
     try {
@@ -1847,6 +1856,7 @@ export function createStore(dir, {
   }
 
   function persist(block) {
+    if (!journalDisk) return;
     fs.writeFileSync(magicFile, bookMagic);
     const tipH = Number(block?.height || 0);
     // The block being written is the tip. Fast-sync must not mark it pruned.
@@ -5674,6 +5684,8 @@ export function createStore(dir, {
         }
         admitOpts.reserveCarried = carried;
         admitOpts.verifiedFund = fundVerdictFor(tx);
+        // Mark the leaf now. One tree rebuild, after this walk, covers the body.
+        admitOpts.deferVaultRoot = true;
       }
       const got = admitMempool(book, tx, admitOpts);
       if (got.ok) {
@@ -5706,6 +5718,10 @@ export function createStore(dir, {
           || got.reason === 'admit_link_tag';
         if (!got.vault && !permanent) keep.push(m);
       }
+    }
+    if (carried && carried.vaultLockDirty) {
+      const rooted = commitVaultLockRoot(carried);
+      if (!rooted) reserveDropped = true;
     }
     mempool.length = 0;
     mempool.push(...keep);
