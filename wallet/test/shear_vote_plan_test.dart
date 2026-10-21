@@ -43,6 +43,23 @@ void main() {
 
     final root = '${Directory.systemTemp.path}${Platform.pathSeparator}vote-plan-${pid}-${Random(1).nextInt(1 << 20)}';
     final dir = votePlanFolder(root);
+    if (Platform.isWindows) {
+      // Current law: Windows cannot create the plan at mode 0600. The save
+      // fails closed and writes nothing. The file checks below are the POSIX path.
+      expect(
+        () => plannedLeafVotes(
+          dir: dir,
+          leaves: 2,
+          notes: notes,
+          openHeight: 0,
+          closeHeight: 100,
+          random: Random(2),
+        ),
+        throwsA(isA<StateError>().having((err) => err.message, 'message', 'vote_plan_mode')),
+      );
+      expect(File(votePlanPath(dir)).existsSync(), isFalse);
+      return;
+    }
     final first = plannedLeafVotes(
       dir: dir,
       leaves: 2,
@@ -269,6 +286,33 @@ void main() {
     ];
     final root = '${Directory.systemTemp.path}${Platform.pathSeparator}vote-plan-roll-${pid}';
     final dir = votePlanFolder(root);
+    final memory = castWalletVotePlan(
+      leaves: 1,
+      notes: notes,
+      openHeight: 0,
+      closeHeight: 100,
+      epoch: 1,
+      random: Random(1),
+    );
+    expect(memory, isNotNull);
+    expect((memory!['txs'] as List).first['feeInput'], '22' * 32);
+    if (Platform.isWindows) {
+      // Current law: the epoch file is not written when 0600 cannot be created.
+      expect(
+        () => plannedLeafVotes(
+          dir: dir,
+          leaves: 1,
+          notes: notes,
+          openHeight: 0,
+          closeHeight: 100,
+          epoch: 1,
+          random: Random(1),
+        ),
+        throwsA(isA<StateError>().having((err) => err.message, 'message', 'vote_plan_mode')),
+      );
+      expect(File(votePlanPath(dir)).existsSync(), isFalse);
+      return;
+    }
     final first = plannedLeafVotes(
       dir: dir,
       leaves: 1,

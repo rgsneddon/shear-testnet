@@ -436,7 +436,30 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
           const plain = typedTx(kind, who.dest, nanos, `${kind}-plain-${nanos}`);
           const queuedPlain = store.queueTx(plain);
           assert.equal(queuedPlain.ok, false, `${kind} ${nanos} ${queuedPlain.reason}`);
-          assert.equal(queuedPlain.reason, 'admit_version', `${kind} plain ${nanos} ${queuedPlain.reason}`);
+          // Current law: a lock that still carries `to` or an ssa1 address is
+          // vote_leak, ahead of admit version, the signature, and membership.
+          if (kind === 'lock') {
+            assert.equal(queuedPlain.reason, 'vote_leak', `${kind} plain ${nanos} ${queuedPlain.reason}`);
+            const debit = stripPayer(typedTx(kind, who.dest, nanos, `${kind}-debit-${nanos}`));
+            debit.noteSpends = [{ commit: Buffer.alloc(32, 3), nanos }];
+            const queuedDebit = store.queueTx(debit);
+            assert.equal(queuedDebit.ok, false, `${kind} debit ${nanos}`);
+            assert.equal(queuedDebit.reason, 'vote_leak', `${kind} debit ${nanos} ${queuedDebit.reason}`);
+            const bare = stripPayer(typedTx(kind, who.dest, nanos, `${kind}-bare-${nanos}`));
+            bare.vin = [{ commit: Buffer.alloc(32, nanos & 0xff) }];
+            const queuedBare = store.queueTx(bare);
+            assert.equal(queuedBare.ok, false, `${kind} bare ${nanos}`);
+            assert.equal(queuedBare.reason, 'vote_leak', `${kind} bare ${nanos} ${queuedBare.reason}`);
+            continue;
+          }
+          // Current law: the portal vote API is retired. A vote with no commit
+          // vin is vote_retired, ahead of admit version. A withdraw that still
+          // names `from` is admit_version.
+          if (kind === 'vote') {
+            assert.equal(queuedPlain.reason, 'vote_retired', `${kind} plain ${nanos} ${queuedPlain.reason}`);
+          } else {
+            assert.equal(queuedPlain.reason, 'admit_version', `${kind} plain ${nanos} ${queuedPlain.reason}`);
+          }
 
           const debit = stripPayer(typedTx(kind, who.dest, nanos, `${kind}-debit-${nanos}`));
           debit.noteSpends = [{ commit: Buffer.alloc(32, 3), nanos }];
