@@ -15,13 +15,13 @@ import { bookSealKeyPath } from '../src/book_seal_key.js';
 import { buildTemplate, verifyBlock } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS, MTP_FUTURE_MS, MTP_WINDOW } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, RESERVE_PROGRAM, TARGET_BLOCK_INTERVAL_MS, MTP_FUTURE_MS, MTP_WINDOW } from '../../crypto/asert.js';
 import { epochMs } from '../../crypto/pot_sched.js';
 import { newIdentity, encodeDest, hash20FromAddress, admitBaseFromAddress } from '../../crypto/address.js';
-import { lockTx, voteTx, withdrawTx, VOTE_HOLD, previewWithdraw, withdrawMintId, portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { lockTx, voteTx, withdrawTx, VOTE_HOLD, previewWithdraw, withdrawMintId, portalIdFromDest, portalBlindFromSeed, portalIdFromDest20 } from '../../crypto/reserve_vault.js';
 import { signSpendTx, typedCommitSum, verifySpendSig } from '../../crypto/spend.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
-import { levyNeed, splitLevy } from '../../crypto/levy.js';
+import { levyNeed, splitLevy, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import {
   admitProveV3,
@@ -51,6 +51,7 @@ import {
   admitV3Context,
   fundingJroot,
 } from '../../crypto/admit_v3.js';
+import { FS1_RECORD_BYTES, FS1_WIRE, fs1BlobLen, fs1ProveSpend } from '../../crypto/fs1_spend.js';
 
 const KINDS = ['lock', 'vote', 'withdraw'];
 const AMOUNTS = [1, 1_000_000, 50_000_000_000];
@@ -471,6 +472,138 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
       });
       assert.equal(queued.reason, 'vault_unavailable');
       assert.equal(store.fluxset().spendTags.has(Buffer.alloc(32).toString('hex')), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('FS-1 funding past the gate is commit_sum on the queue and on append, and the book stays supply-verified', { timeout: 180_000 }, async () => {
+    // Stage 3b. A byte-3 bucket stays vault_unavailable. An FS-1 lock at
+    // height 17 is past the gate, so a nonzero output gap is commit_sum on
+    // the queue and on append. The coinbase book that funded the note stays
+    // supply-verified.
+    const who = payer();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-fs1-fund-'));
+    const store = createStore(dir);
+    try {
+      for (let i = 0; i < 16; i += 1) {
+        await sealEmpty(store, who.dest, T0 + i * TARGET_BLOCK_INTERVAL_MS, []);
+      }
+      assert.equal(store.tip().height, 16);
+      const anchor = walletAnchor(17);
+      assert.equal(anchor, 8);
+      const live = store.anchorNote(anchor);
+      assert.ok(live && live.n >= 1, `anchor ${anchor}`);
+      const pot = store.blocks[0].txs[0].vout.find((o) => o.kind === 'pot');
+      const want = Buffer.from(asU8(pot.commit));
+      let index = -1;
+      for (let i = 0; i < live.n; i += 1) {
+        if (Buffer.from(asU8(live.commits[i])).equals(want)) index = i;
+      }
+      assert.ok(index >= 0, 'pot is inside the anchor');
+      const coin = {
+        index,
+        r: Buffer.from(asU8(pot.r)),
+        v: openedCoinbaseNanos(pot),
+        x: admitScalarFromSeed(who.spendSeed, pot),
+      };
+      assert.ok(coin.v > 1_000_000, String(coin.v));
+      const d20 = Buffer.from(asU8(hash20FromAddress(who.dest)));
+      const portalId = portalIdFromDest20(d20, portalBlindFromSeed(who.spendSeed));
+      assert.ok(portalId && portalId !== portalIdFromDest(who.dest));
+      const ph = Buffer.alloc(fs1BlobLen(1), 255);
+      ph[0] = FS1_WIRE;
+      const placeholder = Buffer.alloc(FS1_RECORD_BYTES, 255);
+      placeholder[0] = FS1_WIRE;
+      const placeholders = [{
+        admit_proof: true,
+        v: FS1_WIRE,
+        spendTag: Buffer.alloc(32, 255),
+        blob: placeholder,
+        cTilde: Buffer.alloc(32, 255),
+      }];
+      let fee = LEVY_FLOOR_UNITS;
+      let outs = null;
+      let draft = null;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const note = sealNote(1, { dest20: d20, kind: 'lock' });
+        outs = [{ ...note, kind: 'lock', dest20: Buffer.from(d20), valueProof: { v: 1 } }];
+        draft = compactTx({
+          id: 'v3-fs1-mismatch',
+          kind: 'lock',
+          anchor,
+          fee,
+          programId: RESERVE_PROGRAM,
+          portalId,
+          vin: [{ commit: Buffer.alloc(32, 255) }],
+          vout: outs,
+          fs1: ph,
+          admit_proofs: placeholders,
+          excess: Buffer.alloc(32, 255),
+        });
+        const need = levyNeed(draft);
+        if (fee >= need && fee <= LEVY_CAP_NANOS) break;
+        fee = need;
+        draft = null;
+      }
+      assert.ok(draft, 'fee did not settle');
+      const proven = fs1ProveSpend({
+        live,
+        anchor,
+        indices: [coin.index],
+        xs: [coin.x],
+        tx: draft,
+        magic: MAGIC_TESTNET,
+      });
+      assert.ok(proven, 'fs1 prove');
+      const tx = compactTx({
+        id: 'v3-fs1-mismatch',
+        kind: 'lock',
+        anchor,
+        fee: draft.fee,
+        programId: RESERVE_PROGRAM,
+        portalId,
+        vin: [{ commit: Buffer.from(proven.proofs[0].cTilde) }],
+        vout: outs,
+        fs1: proven.fs1,
+        admit_proofs: proven.proofs,
+        excess: Buffer.alloc(32, 9),
+      });
+      tx.dest20 = Buffer.from(d20);
+      signSpendTx(tx, who.key);
+      assert.equal(tx.to, undefined);
+      const queued = store.queueTx(tx);
+      assert.equal(queued.ok, false, queued.reason);
+      assert.equal(queued.reason, 'commit_sum', queued.reason);
+      const tip = store.tip();
+      const built = buildTemplate({
+        prev: tip.hash,
+        prevHeader: tip.header,
+        prevBlock: tip,
+        height: tip.height + 1,
+        miner: who.dest,
+        now: T0 + 16 * TARGET_BLOCK_INTERVAL_MS,
+        bits: Number(decodeHeader(Buffer.from(tip.header)).bits),
+        txs: [tx],
+        parentBlocks: store.blocks,
+      });
+      const appended = await Promise.resolve(store.append({
+        header: built.header,
+        txs: built.txs,
+        samples: built.samples,
+        shareBatch: built.shareBatch || [],
+        miner: who.dest,
+        aLeaves: built.aLeaves,
+        bLeaves: built.bLeaves,
+        rootA: built.rootA,
+        rootB: built.rootB,
+        weight: built.weight,
+      }, { trustedPowHash: easyPowHash(), skipSharePow: true }));
+      assert.equal(appended.ok, false, appended.reason);
+      assert.equal(appended.reason, 'commit_sum', appended.reason);
+      assert.equal(store.tip().height, 16);
+      const liveSupply = auditCirculatingSupply(store.blocks);
+      assert.equal(liveSupply.status, 'verified', liveSupply.reason || liveSupply.differenceNanos);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

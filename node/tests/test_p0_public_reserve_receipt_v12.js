@@ -498,7 +498,8 @@ describe('P0 public reserve receipt', () => {
       assert.equal(report.rpcLevy.reason, 'public_receipt');
       assert.equal(report.p2pByteArray.ok, false);
       assert.equal(report.p2pByteArray.reason, 'public_receipt');
-      assert.equal(report.p2pHexWire.reason, 'admit_version');
+      // Hex wire decodes and hits the receipt gate. It is still not queued.
+      assert.equal(report.p2pHexWire.reason, 'public_receipt');
       assert.equal(report.p2pHexWire.queuedBySocket, false);
       assert.equal(report.vaultAfterMempool.principal, '0');
       assert.equal(report.block.ok, false);

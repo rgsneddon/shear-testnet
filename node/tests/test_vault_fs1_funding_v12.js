@@ -630,7 +630,7 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
     // The vin is the spent note. The owner signature binds tx.dest20, which
     // compact does not rebuild from the portal address.
     tx.dest20 = Buffer.from(d20);
-    tx.to = who.dest;
+    // A compact lock carries dest20. The address is vote_leak.
     signSpendTx(tx, who.id.privateKey);
     if (amount === PI_SHE_NANOS) {
       const lockBlind = outs[0].r;
