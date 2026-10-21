@@ -52,15 +52,29 @@ void main() {
       random: Random(2),
     );
     expect(first, isNotNull);
+    // A restart of the same window reuses the saved heights and fee notes.
     final again = plannedLeafVotes(
       dir: dir,
       leaves: 2,
       notes: notes,
       openHeight: 0,
-      closeHeight: 400,
+      closeHeight: 100,
       random: Random(9),
     );
+    expect(again, isNotNull);
     expect(again!['txs'], first!['txs']);
+    // Current law: a same-epoch plan whose window does not match fails
+    // closed and is not replaced. close 400 is not the saved 0-100 window.
+    final widened = plannedLeafVotes(
+      dir: dir,
+      leaves: 2,
+      notes: notes,
+      openHeight: 0,
+      closeHeight: 400,
+      random: Random(3),
+    );
+    expect(widened, isNull);
+    expect(loadWalletVotePlan(dir)!['closeHeight'], 100);
     final file = File(votePlanPath(dir));
     expect(file.statSync().mode & 0x1ff, voteFileMode);
     expect(Directory(dir).statSync().mode & 0x1ff, voteDirMode);
@@ -195,6 +209,29 @@ void main() {
       ),
       isTrue,
     );
+    // Same window is reused. A different close fails closed and the file stays.
+    final reused = plannedLeafVotes(
+      dir: dir,
+      leaves: 1,
+      notes: notes,
+      openHeight: 0,
+      closeHeight: 100,
+      epoch: 1,
+    );
+    expect(reused, isNotNull);
+    expect((reused!['txs'] as List).first['feeInput'], fee);
+    expect(
+      plannedLeafVotes(
+        dir: dir,
+        leaves: 1,
+        notes: notes,
+        openHeight: 0,
+        closeHeight: 400,
+        epoch: 1,
+      ),
+      isNull,
+    );
+    expect(jsonDecode(file.readAsStringSync())['closeHeight'], 100);
     expect(
       votePlanAccepts(
         jsonDecode(file.readAsStringSync()) as Map,
