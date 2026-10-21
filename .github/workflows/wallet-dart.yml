@@ -1,5 +1,6 @@
-# Pure Dart wallet tests. The vote plan, the leaf-vote fee note, and the
-# funded withdraw builder. Flutter is the SDK that resolves this package.
+# Wallet tests. The vote plan, the leaf-vote fee note, and a Dart withdraw
+# that the JS FS-1 verifier checks. Flutter resolves the package. The
+# verifier needs shearadmit.node, which this job builds.
 name: wallet-dart
 on:
   pull_request:
@@ -33,7 +34,25 @@ jobs:
       - name: UI leaf vote posts a real proof
         working-directory: wallet
         run: flutter test test/leaf_vote_wire_test.dart
-      - name: JS verifies a Dart-built withdraw
+      - name: Install node deps
+        run: npm ci --ignore-scripts
+      - name: Build shearadmit.node
         run: |
-          npm ci --ignore-scripts
-          node --test crypto/dart_withdraw_verify.test.js
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+          VER=$(node -p process.version)
+          mkdir -p .node-headers
+          base="https://nodejs.org/dist/${VER}"
+          curl -fsSL "${base}/SHASUMS256.txt" -o .node-headers/SHASUMS256.txt
+          curl -fsSL "${base}/node-${VER}-headers.tar.gz" -o ".node-headers/node-${VER}-headers.tar.gz"
+          grep -E "[[:space:]]node-${VER}-headers\\.tar\\.gz$" .node-headers/SHASUMS256.txt > .node-headers/headers.sha256
+          test "$(wc -l < .node-headers/headers.sha256)" -eq 1
+          (cd .node-headers && sha256sum -c headers.sha256)
+          tar -xzf ".node-headers/node-${VER}-headers.tar.gz" -C .node-headers
+          export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
+          test -f "$NODE_INC/node_api.h"
+          make -C crypto/native shearadmit.node NODE_INC="$NODE_INC"
+          test -f crypto/native/shearadmit.node
+          node -e 'const n = require("module").createRequire(process.cwd()+"/")("./crypto/native/shearadmit.node"); if (!n || typeof n.fs1Verify !== "function") throw new Error("shearadmit");'
+      - name: JS verifies a Dart-built withdraw
+        run: node --test crypto/dart_withdraw_verify.test.js
