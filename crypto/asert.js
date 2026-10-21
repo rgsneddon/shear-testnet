@@ -18,7 +18,7 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
-import { VAULT_PERIODS_PER_EPOCH } from './vault_accrual.js';
+import { VAULT_PERIODS_PER_EPOCH, VAULT_TESTNET_DAY_BLOCKS } from './vault_accrual.js';
 import {
   bundleObservationRoot,
   GENESIS_BPS,
@@ -144,13 +144,15 @@ export const HASH_BONUS_NANOS = 1;
 /** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The pot does not move. */
 export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
 /**
- * Per-hash unit is never 0. Fingerprint pin HASH_UNIT_FLOOR=1.
- * Votes, vault load, coinbase, and verify all clamp through hashBonusUnitNanos.
+ * Garbage, negative, and missing units clamp to 1. A voted 0 is bonus off
+ * (Russell 21:34 17 Oct): one rho per passed hash-bonus vote, a down vote
+ * at 1 sets 0, a down vote at 0 stays 0, and an up vote at 0 sets 1.
  */
 export const HASH_BONUS_NANOS_FLOOR = 1;
 
-/** Consensus clamp: the live hash-bonus unit is always ≥ HASH_BONUS_NANOS_FLOOR. Never 0. */
+/** Clamp a missing or negative unit to the floor. A voted 0 stays 0 (bonus off). */
 export function hashBonusUnitNanos(n) {
+  if (n === 0 || n === 0n) return 0;
   const v = typeof n === 'bigint' ? Number(n) : Math.floor(Number(n));
   if (!Number.isFinite(v) || v < HASH_BONUS_NANOS_FLOOR) return HASH_BONUS_NANOS_FLOOR;
   return v;
@@ -438,6 +440,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `RESERVE_REWARD=${REWARD_LAW}`,
     `ORACLE=${ORACLE_LAW}`,
     `HASH_UNIT_FLOOR=${HASH_BONUS_NANOS_FLOOR}`,
+    'HASH_BONUS_STEP=1rho',
+    'HASH_BONUS_OFF=0',
+    `VAULT_TESTNET_DAY=${VAULT_TESTNET_DAY_BLOCKS}`,
     `POT_PROP=${POT_PROP}`,
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,

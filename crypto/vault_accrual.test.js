@@ -5,6 +5,8 @@ import { MAGIC_MAINNET } from './pot_sched.js';
 import { interestNanos } from './reserve_oracle.js';
 import {
   VAULT_DAY_BLOCKS,
+  VAULT_TESTNET_DAY_BLOCKS,
+  vaultDayBlocks,
   VAULT_PERIODS_PER_EPOCH,
   accrualBetween,
   arrivalStubNanos,
@@ -137,14 +139,22 @@ describe('epoch rate is the total, not a daily rate', () => {
   });
 });
 
-describe('testnet day is longer than the period', () => {
-  it('the arrival stub is 0 on testnet and positive mid-period on mainnet', () => {
-    assert.ok(VAULT_DAY_BLOCKS > vaultPeriodBlocks(MAGIC_TESTNET));
-    assert.ok(VAULT_DAY_BLOCKS < vaultPeriodBlocks(MAGIC_MAINNET));
-    for (let h = 0; h < vaultPeriodBlocks(MAGIC_TESTNET); h += 1) {
-      const stub = arrivalStubNanos({ amount: PI, lockHeight: h, magic: MAGIC_TESTNET, rate: RATE });
-      assert.equal(stub.nanos, 0n, `testnet height ${h}`);
-    }
+describe('testnet stub day fits inside the period', () => {
+  it('a mid-period testnet lock has a nonzero stub and mainnet periods stay 24,000', () => {
+    // Russell 21:34 17 Oct: the 960-block day was longer than the 240-block
+    // testnet period, so the stub was always 0. The testnet stub day is 24.
+    // Epoch width is still 960, so the mainnet period stays 24,000.
+    assert.equal(vaultPeriodBlocks(MAGIC_MAINNET), 24_000);
+    assert.equal(vaultPeriodBlocks(MAGIC_TESTNET), 240);
+    assert.equal(VAULT_DAY_BLOCKS, 960);
+    assert.equal(vaultDayBlocks(MAGIC_TESTNET), VAULT_TESTNET_DAY_BLOCKS);
+    assert.ok(VAULT_TESTNET_DAY_BLOCKS < vaultPeriodBlocks(MAGIC_TESTNET));
+    assert.equal(vaultDayBlocks(MAGIC_MAINNET), VAULT_DAY_BLOCKS);
+    const boundary = arrivalStubNanos({ amount: PI, lockHeight: 0, magic: MAGIC_TESTNET, rate: RATE });
+    assert.equal(boundary.nanos, 0n);
+    const mid = arrivalStubNanos({ amount: PI, lockHeight: 1, magic: MAGIC_TESTNET, rate: RATE });
+    assert.ok(mid.nanos > 0n);
+    assert.equal(mid.from, nextDayHeight(1, VAULT_TESTNET_DAY_BLOCKS));
     const main = arrivalStubNanos({ amount: PI, lockHeight: 100, magic: MAGIC_MAINNET, rate: RATE });
     assert.ok(main.nanos > 0n);
     assert.equal(main.from, nextDayHeight(100));

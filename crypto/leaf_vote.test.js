@@ -46,6 +46,8 @@ import {
   encodePinClock,
   encodePublicView,
   encodeSyncEpoch,
+  encodeArrivalStub,
+  encodeStepBonus,
   encodeTallyBallot,
 } from './reserve_evm.js';
 import { encodeDeposit } from './owned_portal.js';
@@ -68,6 +70,7 @@ import {
   proposalId,
   recordVote,
   stepRate,
+  stepHashBonus,
   tallyBallot,
   voteCloseDay,
   voteKey,
@@ -179,6 +182,13 @@ describe('leaf ballot window, step, and wording', () => {
     assert.equal(stepRate(9, 1, RATE_FLOOR_BPS, RATE_CEIL_BPS), 9);
     assert.equal(stepRate(1, 1, 1, 1), 1);
     assert.equal(stepRate(1, -1, 1, 1), 1);
+    // Hash-bonus ballot is one rho, not the reserve ±10% step.
+    assert.equal(stepHashBonus(1, 1), 2);
+    assert.equal(stepHashBonus(1, -1), 0);
+    assert.equal(stepHashBonus(0, -1), 0);
+    assert.equal(stepHashBonus(0, 1), 1);
+    assert.equal(stepHashBonus(2, 0), 2);
+    assert.equal(stepHashBonus(-1, 1), null);
     assert.equal(stepRate(2000, 1, RATE_FLOOR_BPS, RATE_CEIL_BPS), 2000);
     assert.equal(stepRate(100, -1, RATE_FLOOR_BPS, RATE_CEIL_BPS), 100);
     assert.equal(ballotDirection(1, 0, 0, 5), 1);
@@ -574,6 +584,120 @@ describe('one proof per live leaf', () => {
       fee: 1,
     }, 0);
     assert.equal(carried.reason, 'stake_reward');
+  });
+});
+
+function mineHashBonus(choice, startUnit, salt) {
+  const proved = proveVote(locksOf(1, salt), 0, 1, { choice, seq: 1, param: 'hb' });
+  assert.ok(proved, `proof choice ${choice} from ${startUnit}`);
+  const state = emptyVault();
+  state.genesisMs = T0;
+  state.epochStartMs = T0 + RESERVE_EPOCH_MS;
+  state.currentEpoch = 1;
+  state.bonusEnacted = true;
+  state.liveHashBonusNanos = BigInt(startUnit);
+  arm(state, 1, proved, 1);
+  const open = openHeight(1);
+  const cast = applyLeafVote(state, voteTx(proved, 1, { param: 'hb', choice, height: open }), open);
+  assert.equal(cast.ok, true, cast.reason);
+  const tallyH = open + 3 * VAULT_DAY_BLOCKS + VOTE_FINALITY_BLOCKS;
+  for (let h = open; h <= tallyH; h += 1) {
+    const nowMs = h === tallyH ? T0 + 2 * RESERVE_EPOCH_MS : T0 + RESERVE_EPOCH_MS;
+    const applied = applyReserveBlock({
+      state,
+      block: { height: h, txs: [] },
+      nowMs,
+      height: h,
+      genesisMs: T0,
+      parentMs: T0,
+    });
+    assert.notEqual(applied.ok, false, applied.reason || `height ${h}`);
+  }
+  return { proved, open, tallyH, live: Number(state.liveHashBonusNanos) };
+}
+
+describe('hash-bonus rho through mined blocks', () => {
+  it('tallies an up vote at the mined tip and matches the EVM step', async () => {
+    const up = mineHashBonus(1, 1, 4);
+    const down = mineHashBonus(-1, 1, 5);
+    const stay = mineHashBonus(-1, 0, 6);
+    const back = mineHashBonus(1, 0, 7);
+    assert.equal(up.live, 2);
+    assert.equal(down.live, 0);
+    assert.equal(stay.live, 0);
+    assert.equal(back.live, 1);
+
+    const session = await bootReserveEvm();
+    for (const [current, dir, want] of [[1, 1, 2], [1, -1, 0], [0, -1, 0], [0, 1, 1]]) {
+      const got = await callReserve(session, encodeStepBonus(current, dir));
+      assert.equal(got.ok, true, got.reason);
+      assert.equal(decodeTallyStep(got.returnValue), want, `${current} ${dir}`);
+    }
+    assert.equal((await callReserve(session, encodeCommitEpochStartRoot(1, up.proved.rootHex))).ok, true);
+    assert.equal((await callReserve(session, encodeCommitEpochCensus(1, 1, up.open))).ok, true);
+    const evmCast = await callReserve(session, encodeCastVote({
+      proof: up.proved.blob,
+      output: packVaultOutput(up.proved.note),
+      paramId: 0,
+      choice: 1,
+      seq: 1,
+      height: up.open,
+      epoch: 1,
+    }));
+    assert.equal(evmCast.ok, true, evmCast.reason);
+    const early = await callReserve(session, encodeTallyBallot(0, 1, up.open));
+    assert.equal(early.reason, 'epoch_open');
+    const evmStep = await callReserve(session, encodeTallyBallot(0, 1, up.tallyH));
+    assert.equal(evmStep.ok, true, evmStep.reason);
+    assert.equal(decodeTallyStep(evmStep.returnValue), 1);
+    const bumped = await callReserve(session, encodeStepBonus(1, decodeTallyStep(evmStep.returnValue)));
+    assert.equal(decodeTallyStep(bumped.returnValue), up.live);
+
+    const downSession = await bootReserveEvm();
+    assert.equal((await callReserve(downSession, encodeCommitEpochStartRoot(1, down.proved.rootHex))).ok, true);
+    assert.equal((await callReserve(downSession, encodeCommitEpochCensus(1, 1, down.open))).ok, true);
+    const downOnly = await callReserve(downSession, encodeCastVote({
+      proof: down.proved.blob,
+      output: packVaultOutput(down.proved.note),
+      paramId: 0,
+      choice: -1,
+      seq: 1,
+      height: down.open,
+      epoch: 1,
+    }));
+    assert.equal(downOnly.ok, true, downOnly.reason);
+    const downTally = await callReserve(downSession, encodeTallyBallot(0, 1, down.tallyH));
+    assert.equal(downTally.ok, true, downTally.reason);
+    assert.equal(decodeTallyStep(downTally.returnValue), -1);
+    const off = await callReserve(downSession, encodeStepBonus(1, -1));
+    const noop = await callReserve(downSession, encodeStepBonus(0, -1));
+    const on = await callReserve(downSession, encodeStepBonus(0, 1));
+    assert.equal(decodeTallyStep(off.returnValue), down.live);
+    assert.equal(decodeTallyStep(noop.returnValue), stay.live);
+    assert.equal(decodeTallyStep(on.returnValue), back.live);
+
+    const { arrivalStubNanos } = await import('./vault_accrual.js');
+    const jsStub = arrivalStubNanos({
+      amount: PI_SHE_NANOS,
+      lockHeight: 1,
+      magic: MAGIC_TESTNET,
+      rate: GENESIS_BPS,
+    });
+    assert.ok(jsStub.nanos > 0n);
+    const evmStub = await callReserve(session, encodeArrivalStub(PI_SHE_NANOS, 1));
+    assert.equal(evmStub.ok, true, evmStub.reason);
+    assert.equal(decodeTallyStep(evmStub.returnValue), Number(jsStub.nanos));
+    const main = await bootReserveEvm({ network: MAGIC_MAINNET });
+    const mainStub = arrivalStubNanos({
+      amount: PI_SHE_NANOS,
+      lockHeight: 100,
+      magic: MAGIC_MAINNET,
+      rate: GENESIS_BPS,
+    });
+    assert.ok(mainStub.nanos > 0n);
+    const mainEvm = await callReserve(main, encodeArrivalStub(PI_SHE_NANOS, 100));
+    assert.equal(mainEvm.ok, true, mainEvm.reason);
+    assert.equal(decodeTallyStep(mainEvm.returnValue), Number(mainStub.nanos));
   });
 });
 

@@ -170,6 +170,22 @@ export function encodeCastVote({ proof, output, paramId = 0, choice = 0, seq = 1
   );
 }
 
+export function encodeStepBonus(current, dir) {
+  return concat(
+    selector('stepBonus(uint256,int256)'),
+    pad32(current),
+    pad32(dir),
+  );
+}
+
+export function encodeArrivalStub(amount, lockHeight) {
+  return concat(
+    selector('arrivalStubOf(uint256,uint256)'),
+    pad32(amount),
+    pad32(lockHeight),
+  );
+}
+
 export function encodeTallyBallot(paramId, epoch, height) {
   return concat(
     selector('tallyBallot(uint8,uint256,uint256)'),

@@ -337,10 +337,11 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE, 1);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
-    assert.equal(hashBonusUnitNanos(0), 1);
+    // A voted 0 is bonus off. Missing and negative units still clamp to 1.
+    assert.equal(hashBonusUnitNanos(0), 0);
+    assert.equal(hashBonusUnitNanos(0n), 0);
     assert.equal(hashBonusUnitNanos(-1), 1);
     assert.equal(hashBonusUnitNanos(null), 1);
-    assert.equal(hashBonusUnitNanos(0n), 1);
     assert.equal(hashBonusUnitNanos(3), 3);
     assert.equal(HASH_BONUS_NANOS / NANOS_PER_SHE, 1e-11);
     assert.equal(HASH_BONUS_VOTE_DELTA_NANOS, 1);
@@ -396,12 +397,15 @@ describe('SHEAR 11-decimal protocol unit', () => {
   });
 });
 
-describe('hash bonus never zero (law)', () => {
-  it('HASH_UNIT_FLOOR=1 is fingerprinted and hashBonusUnitNanos never returns 0', () => {
+describe('hash bonus step (law)', () => {
+  it('a voted 0 is bonus off and garbage still clamps to HASH_UNIT_FLOOR', () => {
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.ok(HASH_BONUS_NANOS_FLOOR >= 1);
-    for (const bad of [0, -1, -99, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, '', '0', 0n, -1n]) {
+    // Russell 21:34 17 Oct. 0 and 0n are the voted-off rate, not garbage.
+    assert.equal(hashBonusUnitNanos(0), 0);
+    assert.equal(hashBonusUnitNanos(0n), 0);
+    for (const bad of [-1, -99, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, '', '0', -1n]) {
       const got = hashBonusUnitNanos(bad);
       assert.equal(got, HASH_BONUS_NANOS_FLOOR, `hashBonusUnitNanos(${String(bad)}) → ${got}`);
       assert.ok(got >= 1);
@@ -410,7 +414,11 @@ describe('hash bonus never zero (law)', () => {
     assert.equal(hashBonusUnitNanos(7n), 7);
     const fp = consensusFingerprint();
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
+    assert.match(fp, /HASH_BONUS_STEP=1rho/);
+    assert.match(fp, /HASH_BONUS_OFF=0/);
+    assert.match(fp, /VAULT_TESTNET_DAY=24/);
     assert.match(mainnetFingerprint(), /HASH_UNIT_FLOOR=1/);
+    assert.match(mainnetFingerprint(), /HASH_BONUS_STEP=1rho/);
   });
 });
 
@@ -461,6 +469,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /POT_SCHED=lin-epoch/);
     assert.match(fp, /ORACLE=basket-mean-14/);
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
+    assert.match(fp, /HASH_BONUS_STEP=1rho/);
+    assert.match(fp, /HASH_BONUS_OFF=0/);
+    assert.match(fp, /VAULT_TESTNET_DAY=24/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
     assert.match(fp, /NETWORK=shear-testnet-v12/);

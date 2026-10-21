@@ -719,7 +719,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(Number(state.liveHashBonusNanos) >= 1, true);
   });
 
-  it('enact cannot write a zero hash unit even if vault state is corrupted to 0', () => {
+  it('a stored 0 stays bonus-off when no hash-bonus vote is counted', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
@@ -733,9 +733,8 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).reason, 'vote_retired');
     const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
-    assert.ok(Number(state.liveHashBonusNanos) >= 1);
-    assert.equal(Number(state.liveHashBonusNanos), 1);
-    assert.notEqual(Number(state.liveHashBonusNanos), 0);
+    // Russell 21:34 17 Oct. A voted 0 is bonus off and is not clamped back to 1.
+    assert.equal(Number(state.liveHashBonusNanos), 0);
   });
 
   it('a compact lock with no lock note is refused, and so is the wire copy', () => {

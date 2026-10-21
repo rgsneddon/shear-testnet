@@ -23,12 +23,22 @@
  * The rate table is append-only. Accrual from height A to B is one
  * prefix subtraction and one floor, not a loop over days.
  */
-import { epochDays } from './pot_sched.js';
+import { epochDays, MAGIC_MAINNET } from './pot_sched.js';
 
 export const VAULT_BLOCK_MS = 90_000;
 export const VAULT_DAY_MS = 86_400_000;
-/** 90s blocks. 86_400_000 / 90_000 = 960. */
+/** 90s blocks. 86_400_000 / 90_000 = 960. Epoch and period widths use this on every network. */
 export const VAULT_DAY_BLOCKS = VAULT_DAY_MS / VAULT_BLOCK_MS;
+/**
+ * Testnet arrival-stub day. The testnet period is 240 blocks, so a 960-block
+ * day never starts inside the period and the stub was always 0. 24 is below
+ * that period. Mainnet stays on VAULT_DAY_BLOCKS, so its period stays 24,000.
+ */
+export const VAULT_TESTNET_DAY_BLOCKS = 24;
+
+export function vaultDayBlocks(magic) {
+  return String(magic) === MAGIC_MAINNET ? VAULT_DAY_BLOCKS : VAULT_TESTNET_DAY_BLOCKS;
+}
 /** Splits a 400-day epoch into 25-day periods. Testnet (4 days) uses the same count. */
 export const VAULT_PERIODS_PER_EPOCH = 16;
 export const VAULT_BPS_DENOM = 10000n;
@@ -190,11 +200,9 @@ export function accrualBetween(amount, h0, h1, rates, epochBlocks) {
  * the period boundary (that period is a claim) or the next day is already
  * past the period end.
  *
- * The day is 960 blocks on every network. Testnet's period is 240 blocks,
- * so the next day is always at or past the period end and the stub is 0.
- * Mainnet's period is 15360 blocks, so a mid-period lock still has a stub.
- * The day is not scaled down to the testnet period: that would change the
- * accrual unit the mainnet integral uses.
+ * The epoch width stays 960-block days, so mainnet periods stay 24,000
+ * blocks and testnet periods stay 240. The stub's own day is 24 blocks on
+ * testnet, which fits inside that period, and 960 blocks on mainnet.
  */
 export function arrivalStubNanos({ amount, lockHeight, magic, rates, rate }) {
   const period = vaultPeriodBlocks(magic);
@@ -206,7 +214,7 @@ export function arrivalStubNanos({ amount, lockHeight, magic, rates, rate }) {
   const periodStart = (h / size) * size;
   const periodEnd = periodStart + size;
   if (h === periodStart) return { nanos: 0n, from: h, to: periodEnd };
-  const from = nextDayHeight(h);
+  const from = nextDayHeight(h, vaultDayBlocks(magic));
   if (from == null || from >= periodEnd) return { nanos: 0n, from, to: periodEnd };
   const table = rates && typeof rates === 'object' ? { ...rates } : {};
   if (rate != null && table[0] == null && table['0'] == null) table[0] = rate;

@@ -175,8 +175,23 @@ export function voteTallyReady(openHeight, height, magic = MAGIC_TESTNET) {
 }
 
 /**
+ * One rho per passed hash-bonus vote. Down at 1 turns the bonus off.
+ * Down at 0 stays 0. Up at 0 returns 1. Never below 0. Not milli-rho.
+ * The reserve-rate ballot does not use this. It keeps stepRate.
+ */
+export function stepHashBonus(current, dir) {
+  const cur = Math.floor(Number(current));
+  const way = Math.floor(Number(dir) || 0);
+  if (!Number.isInteger(cur) || cur < 0) return null;
+  if (way === 0) return cur;
+  if (way < 0) return cur === 0 ? 0 : cur - 1;
+  return cur + 1;
+}
+
+/**
  * ±10% via floor(current / 10). A current below 10 does not move.
  * Hold does not clamp. An increase past the ceiling stops at the ceiling.
+ * The reserve-rate ballot only. The hash-bonus ballot is stepHashBonus.
  */
 export function stepRate(current, dir, floor, ceil) {
   const cur = Math.floor(Number(current));
@@ -379,12 +394,7 @@ export function activateBallot(state, leftEpoch) {
   const hbRow = storedStep(state, left, hb);
   const rrRow = storedStep(state, left, rr);
   if (hbRow.tallied) {
-    const unit = stepRate(
-      state.liveHashBonusNanos,
-      hbRow.step,
-      hashBonusFloor(),
-      hashBonusCeiling(),
-    );
+    const unit = stepHashBonus(state.liveHashBonusNanos, hbRow.step);
     if (unit != null) state.liveHashBonusNanos = BigInt(unit);
   }
   if (rrRow.tallied) {

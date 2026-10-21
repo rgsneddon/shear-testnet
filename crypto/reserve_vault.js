@@ -4849,7 +4849,8 @@ export function enact({ state, nowMs } = {}) {
   let live = hashBonusUnitNanos(state.liveHashBonusNanos);
   if (winners === 1 && delta > 0) live += 1;
   else if (winners === 1 && delta < 0) {
-    if (live <= HASH_BONUS_NANOS_FLOOR) {
+    // One rho. Down at 0 is a no-op. Down at 1 sets the bonus off.
+    if (live <= 0) {
       delta = 0;
     } else {
       live -= 1;

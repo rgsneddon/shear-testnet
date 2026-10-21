@@ -680,8 +680,8 @@ contract Reserve {
         if (down == m && m > 0) { winners += 1; delta = -1; }
         if (hold == m && m > 0) { winners += 1; delta = 0; }
         if (winners == 1 && delta > 0) liveHashBonusNanos += 1;
-        else         if (winners == 1 && delta < 0) {
-            if (liveHashBonusNanos <= GENESIS_BONUS) delta = 0;
+        else if (winners == 1 && delta < 0) {
+            if (liveHashBonusNanos == 0) delta = 0;
             else liveHashBonusNanos -= 1;
         }
         bonusEnacted = true;
@@ -1166,6 +1166,38 @@ contract Reserve {
         return 0;
     }
 
+    /// One rho. Floor 0 is bonus off. The reserve ballot does not use this.
+    function _stepBonus(uint256 current, int256 dir) internal pure returns (uint256) {
+        if (dir == 0) return current;
+        if (dir > 0) return current + 1;
+        if (current == 0) return 0;
+        return current - 1;
+    }
+
+    function stepBonus(uint256 current, int256 dir) external pure returns (uint256) {
+        return _stepBonus(current, dir);
+    }
+
+    /// Arrival stub. Epoch width stays 960-block days (mainnet period 24,000,
+    /// testnet period 240). The stub day is 24 blocks on testnet and 960 on mainnet.
+    function _stubDayBlocks() internal view returns (uint256) {
+        return magic == SHEAR_MAINNET ? 960 : 24;
+    }
+
+    function arrivalStubOf(uint256 amount, uint256 lockHeight) external view returns (uint256) {
+        uint256 epochBlocks = _epochBlocks();
+        uint256 period = epochBlocks / PERIODS_PER_EPOCH;
+        uint256 day = _stubDayBlocks();
+        if (period == 0 || day == 0 || amount == 0 || epochBlocks == 0) return 0;
+        uint256 periodStart = (lockHeight / period) * period;
+        uint256 periodEnd = periodStart + period;
+        if (lockHeight == periodStart) return 0;
+        uint256 rem = lockHeight % day;
+        uint256 from = rem == 0 ? lockHeight : lockHeight + (day - rem);
+        if (from >= periodEnd) return 0;
+        return (amount * epochBps * (periodEnd - from)) / (epochBlocks * 10000);
+    }
+
     function _clampStep(uint256 current, int256 dir, uint256 floor_, uint256 ceil_) internal pure returns (uint256) {
         if (dir == 0) return current;
         if (current < 10) return current;
@@ -1187,7 +1219,7 @@ contract Reserve {
         if (packed != 0) {
             int256 step = _unpackStep(packed);
             if (bonus) {
-                liveHashBonusNanos = _clampStep(liveHashBonusNanos, step, GENESIS_BONUS, GENESIS_BONUS);
+                liveHashBonusNanos = _stepBonus(liveHashBonusNanos, step);
             } else {
                 uint256 next = _clampStep(epochBps, step, 100, 2000);
                 epochBps = next;
