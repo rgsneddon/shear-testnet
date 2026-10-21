@@ -54,8 +54,9 @@ export function adminWalletBalance(store, poolDest, pullBook) {
 export function adminSpendFrom() {
   const pinned = configuredFeeIdentity();
   if (!pinned.ok) {
-    const err = new Error('fee_dest_mismatch');
-    err.reason = 'fee_dest_mismatch';
+    const reason = pinned.reason || 'fee_dest_mismatch';
+    const err = new Error(reason);
+    err.reason = reason;
     throw err;
   }
   return pinned.feeDest;

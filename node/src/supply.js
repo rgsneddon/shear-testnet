@@ -16,7 +16,7 @@ import {
   SHARE_FLOOR_BITS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
-import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, verifiedInputNanos, verifyFlowConservation } from '../../crypto/note.js';
+import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, asU8, verifiedInputNanos, verifyFlowConservation } from '../../crypto/note.js';
 import { publicReserveReceipt, publicReceiptNanos } from '../../crypto/dummy.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
@@ -422,9 +422,9 @@ function rangeBound(vouts, remember) {
     let pr;
     let commit;
     try {
-      commit = Buffer.from(o.commit);
+      commit = Buffer.from(asU8(o.commit));
       pr = o.rangeProof
-        ? (Buffer.isBuffer(o.rangeProof) ? o.rangeProof : Buffer.from(o.rangeProof))
+        ? Buffer.from(asU8(o.rangeProof))
         : Buffer.alloc(0);
     } catch {
       return false;

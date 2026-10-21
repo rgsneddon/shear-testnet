@@ -8,6 +8,7 @@ import tls from 'node:tls';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { SHEARK_MINER_VERSION } from '../../crypto/asert.js';
+import { encodeDest, newIdentity } from '../../crypto/address.js';
 import {
   createPool,
   THIS_POOL_DIRECT_FEE_DEST,
@@ -52,7 +53,12 @@ describe('fee dest, auth pub, certify, public stats', () => {
     });
     assert.equal(bad.ok, false);
     assert.equal(bad.reason, 'fee_dest_mismatch');
-    const legacy = `${shipped.slice(0, -1)}a`;
+    // A second payable dest under the legacy key. The old fixture edited the
+    // shipped string's last char, which is not a payable dest and now fails
+    // fee_dest_not_payable (issue 122); the legacy-key read is what is tested.
+    const legacyId = newIdentity();
+    const legacy = encodeDest(Buffer.from(legacyId.spendPub.subarray(0, 20)), legacyId.admitBase);
+    assert.notEqual(legacy, shipped);
     const kept = configuredFeeIdentity({ env: { SHEAR_POOL_FEE_PAYOUT_DEST: legacy } });
     assert.equal(kept.ok, true);
     assert.equal(kept.feeDest, legacy);

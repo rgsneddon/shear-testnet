@@ -111,8 +111,12 @@ async function startLanes(count) {
   return workers;
 }
 
-/** Search at most maxTries nonces across `threads` lanes. First block hit wins. */
-export async function mineHeaderParallel(header, bits, maxTries = 8_192, threads = os.cpus().length) {
+/**
+ * Search at most maxTries nonces across `threads` lanes. First block hit wins.
+ * `timeoutMs` bounds the wait. Regtest bits-4 searches finish in well under
+ * the default. A bits-17 genesis search is ~2^17 hashes and needs a longer bound.
+ */
+export async function mineHeaderParallel(header, bits, maxTries = 8_192, threads = os.cpus().length, timeoutMs = 60_000) {
   const count = Math.max(1, Math.floor(Number(threads) || os.cpus().length));
   const pool = await startLanes(count);
   const total = Math.floor(Number(maxTries));
@@ -134,7 +138,8 @@ export async function mineHeaderParallel(header, bits, maxTries = 8_192, threads
       header: base,
     });
   }
-  const finished = await waitUntil(STATUS, () => Atomics.load(i32, STATUS) !== 0, 60_000);
+  const waitMs = Math.max(1_000, Math.floor(Number(timeoutMs) || 60_000));
+  const finished = await waitUntil(STATUS, () => Atomics.load(i32, STATUS) !== 0, waitMs);
   if (!finished || Atomics.load(i32, STATUS) !== 1) return null;
   const nonce64 = new BigUint64Array(sab, 16, 1);
   const bytes = new Uint8Array(sab);

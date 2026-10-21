@@ -1618,9 +1618,13 @@ export function buildTemplate({
   // notes. Rebuilding J from every ancestor is what made connect and reorg
   // quadratic.
   let parentFlux = null;
+  const hasParentBlock = !!prevBlock || (Array.isArray(parentBlocks) && parentBlocks.length > 0);
   if (parentFluxset && !Array.isArray(parentFluxset) && parentFluxset.zeroFrontier) {
     parentFlux = parentFluxset;
-  } else if (!Array.isArray(parentFluxset)) {
+  } else if (!Array.isArray(parentFluxset) && (hasParentBlock || Number(height) === 1)) {
+    // A missing parent at height > 1 is not an empty book. Stamping a jroot
+    // from that empty frontier commits only this block's pubs and fails
+    // admit_membership against the chain the block actually extends.
     parentFlux = fluxsetFromBlocks(parentBlocks || (prevBlock ? [prevBlock] : []));
   }
   const parentPubs = parentFlux?.pubs
@@ -1758,6 +1762,17 @@ export function discardPreparedHeader(header) {
   if (header) dropPreparedHeader(header);
 }
 
+/**
+ * A worker already hashed this header. The sync verifier still checks the
+ * target. This does not invent trustedPowHash.
+ */
+export function holdPreparedHeader(header, hash) {
+  const buf = Buffer.from(hash || []);
+  if (!header || buf.length !== 32) return false;
+  stashPreparedHeader(header, buf);
+  return true;
+}
+
 function dropPreparedHeader(header) {
   preparedHeaderPow.delete(headerPowKey(header));
 }
@@ -1824,17 +1839,27 @@ async function prepareOffLoopPow(block, prev, { skipSharePow = false, priorHeade
       } catch { /* sync verifier reports the bad row */ }
     }
   }
-  const todo = [h, ...shareHeaders];
-  let hashes;
-  try {
-    hashes = await Promise.all(todo.map((hdr) => hashHeaderOffLoop(hdr)));
-  } catch {
-    return { ok: false, reason: 'pow' };
+  // A burial append may already have hashed this header on the other
+  // worker while the new header above it was proving. Reuse that ShearHash.
+  // Share headers still hash here. The target check stays in the verifier.
+  const prepared = peekPreparedHeader(h);
+  const todo = prepared ? shareHeaders : [h, ...shareHeaders];
+  let hashes = [];
+  if (todo.length) {
+    try {
+      hashes = await Promise.all(todo.map((hdr) => hashHeaderOffLoop(hdr)));
+    } catch {
+      return { ok: false, reason: 'pow' };
+    }
   }
-  stashPreparedHeader(h, hashes[0]);
+  if (!prepared) {
+    if (!hashes.length) return { ok: false, reason: 'pow' };
+    stashPreparedHeader(h, hashes[0]);
+  }
   const shareKeys = [];
+  const shareAt = prepared ? 0 : 1;
   for (let i = 0; i < shareHeaders.length; i += 1) {
-    shareKeys.push(stashSharePow(shareHeaders[i], hashes[i + 1]));
+    shareKeys.push(stashSharePow(shareHeaders[i], hashes[i + shareAt]));
   }
   return {
     ok: true,
@@ -2194,8 +2219,12 @@ export function assessHeader(block, prev, opts = {}) {
   return finish({ ok: true, hash, decoded, genesisMs: resolvedGenesisMs });
 }
 
-/** A genesis header without its body, under a claimed hash. */
-export function rootHeaderReason(header, hash) {
+/**
+ * A genesis header without its body, under a claimed hash.
+ * `magic` selects the regtest seed after the test factory seals it.
+ * Testnet and mainnet stay on GENESIS_BITS_PACKED: the override is null there.
+ */
+export function rootHeaderReason(header, hash, magic = '') {
   let decoded;
   try {
     decoded = decodeHeader(Buffer.from(header));
@@ -2204,7 +2233,8 @@ export function rootHeaderReason(header, hash) {
   }
   if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
   if (!decoded.prevBlockHash.equals(GENESIS_PREV)) return { ok: false, reason: 'prev' };
-  if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) return { ok: false, reason: 'bits' };
+  const wantBits = regtestBitsOverride(magic) ?? GENESIS_BITS_PACKED;
+  if (decoded.bits !== wantBits || !isPackedBits(decoded.bits)) return { ok: false, reason: 'bits' };
   const pow = Buffer.from(hash || []);
   if (pow.length !== 32 || !meetsTarget(pow, decoded.bits)) return { ok: false, reason: 'pow' };
   return { ok: true, decoded };
@@ -2217,7 +2247,7 @@ export function rootHeaderReason(header, hash) {
  * body, so a header run does not prove them. `hash` is the header's proven
  * ShearHash. `parent` is { header, hash, height }.
  */
-export function headerLinkReason(header, hash, parent, { genesisMs = 0, mtpTimestamps = null, nowMs = null } = {}) {
+export function headerLinkReason(header, hash, parent, { genesisMs = 0, mtpTimestamps = null, nowMs = null, magic = '' } = {}) {
   let decoded;
   let up;
   try {
@@ -2236,8 +2266,10 @@ export function headerLinkReason(header, hash, parent, { genesisMs = 0, mtpTimes
   const parentIsGenesis = up.prevBlockHash.equals(GENESIS_PREV);
   const anchorMs = parentIsGenesis ? parentTs : Number(genesisMs);
   if (!Number.isFinite(anchorMs) || anchorMs <= 0) return { ok: false, reason: 'genesis_ms' };
+  // Same regtest seed as block verify. A peer height is not an anchor.
+  const regtestBits = regtestBitsOverride(magic);
   const quote = asertNextBits({
-    anchorBits: parentIsGenesis ? up.bits : GENESIS_BITS_PACKED,
+    anchorBits: parentIsGenesis ? up.bits : (regtestBits != null ? regtestBits : GENESIS_BITS_PACKED),
     anchorTimeMs: anchorMs,
     anchorHeight: parentIsGenesis ? Number(parent.height || 1) : 1,
     blockTimeMs: ts,
@@ -3517,14 +3549,17 @@ function stepLoaded(state, list, i) {
     state.sawCheckpoint = true;
   }
   if (!state.prevDecoded) {
-    if (decoded.bits !== GENESIS_BITS_PACKED || !isPackedBits(decoded.bits)) {
+    // Same regtest seed as block verify. Public books keep GENESIS_BITS_PACKED.
+    const wantBits = regtestBitsOverride(state.magic) ?? GENESIS_BITS_PACKED;
+    if (decoded.bits !== wantBits || !isPackedBits(decoded.bits)) {
       return { ok: false, reason: 'bits' };
     }
     state.genesisMs = ts;
   } else {
     const parentIsGenesis = state.prevDecoded.prevBlockHash.equals(GENESIS_PREV);
+    const regtestBits = regtestBitsOverride(state.magic);
     const quote = asertNextBits({
-      anchorBits: parentIsGenesis ? state.prevDecoded.bits : GENESIS_BITS_PACKED,
+      anchorBits: parentIsGenesis ? state.prevDecoded.bits : (regtestBits != null ? regtestBits : GENESIS_BITS_PACKED),
       anchorTimeMs: parentIsGenesis ? Number(state.prevDecoded.timestamp) : state.genesisMs,
       anchorHeight: parentIsGenesis ? state.prevHeight : 1,
       blockTimeMs: ts,

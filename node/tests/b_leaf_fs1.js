@@ -113,7 +113,7 @@ async function growCoins(store, who, need) {
   throw new Error(`anchor never held ${need} pot notes`);
 }
 
-function lockSend(who, spec, coin, anchor, live) {
+export function lockSend(who, spec, coin, anchor, live) {
   const dest20 = Buffer.from(hash20FromAddress(who.dest));
   const tag = spec.tag == null || spec.tag === '' ? 'b-extra' : String(spec.tag);
   const memoH = spec.memoH == null ? Buffer.alloc(32) : Buffer.from(spec.memoH);
