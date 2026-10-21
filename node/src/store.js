@@ -250,6 +250,23 @@ function potIdsOf(block) {
   return ids;
 }
 
+/** Windows can refuse the replace while a scanner still holds the new file. */
+function replaceFileSync(tmp, dest) {
+  let last;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      fs.renameSync(tmp, dest);
+      return;
+    } catch (err) {
+      last = err;
+      const code = err && err.code;
+      if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+    }
+  }
+  throw last;
+}
+
 /** Wallet-readable tip. Stop saves this height; Start reads it and syncs forward. */
 export function writeTipFile(dir, tip) {
   const height = Math.max(0, Math.floor(Number(tip?.height || 0)));
@@ -262,7 +279,7 @@ export function writeTipFile(dir, tip) {
   const tipPath = path.join(dir, 'tip.json');
   const tmp = `${tipPath}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify({ height, hash })}\n`);
-  fs.renameSync(tmp, tipPath);
+  replaceFileSync(tmp, tipPath);
   return { height, hash };
 }
 

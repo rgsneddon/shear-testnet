@@ -12,7 +12,7 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote, leafVoteConserved } from './note.js';
-import { consensusUnlockPeriod, hiddenPrincipalOpens, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { consensusUnlockPeriod, hiddenPrincipalOpens, indexedWithdrawQuote, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -1000,6 +1000,19 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null, cloc
       }
     }
     if (claimed !== 0) {
+      // Indexed leaves: the proof opens π and the receipt is π plus the stub.
+      const quote = indexedWithdrawQuote(reserveState, portal, clock, tx);
+      if (quote) {
+        if (!quote.ok) {
+          if (quote.reason === 'proof_reuse' || principalProofReused(reserveState, portal, claimed, tx?.principalProof, tx)) {
+            return { ok: false, reason: 'proof_reuse' };
+          }
+          return { ok: false, reason: quote.reason || 'stake_reward' };
+        }
+        if (BigInt(claimed) !== quote.due) return { ok: false, reason: 'mint_amount' };
+        const released = quote.principal <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(quote.principal) : claimed;
+        return { ok: true, principal: released, claimed, cap: claimed, mintId };
+      }
       if (!hiddenPrincipalOpens(reserveState, portal, clock, claimed, tx?.principalProof, tx)) {
         if (principalProofReused(reserveState, portal, claimed, tx?.principalProof, tx)) {
           return { ok: false, reason: 'proof_reuse' };

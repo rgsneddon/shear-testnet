@@ -342,9 +342,13 @@ function applyWindows(dir, sid, execFileSync, systemDir, systemRoot, realpathSyn
   const user = `*${sid}:(OI)(CI)F`;
   const system = `*${SYSTEM_SID}:(OI)(CI)F`;
   const admins = `*${ADMINISTRATORS_SID}:(OI)(CI)F`;
-  // One call. /L does not follow a link. /T rewrites the files already there.
+  // icacls rejects /setowner in the same invocation as /grant (error 87).
+  // /L does not follow a link. /T rewrites the files already there.
   runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [
-    dir, '/inheritance:r', '/grant:r', user, system, admins, '/setowner', `*${sid}`, '/T', '/L',
+    dir, '/inheritance:r', '/grant:r', user, system, admins, '/T', '/L',
+  ]);
+  runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [
+    dir, '/setowner', `*${sid}`, '/T', '/L',
   ]);
 }
 

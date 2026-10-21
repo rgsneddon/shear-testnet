@@ -871,9 +871,20 @@ export function withdrawRewardRejected(state, tx, nowMs) {
   const owner = String(portal?.ownerPub || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(owner)) return { ok: false, reason: 'owner_missing', nanos: 0 };
   const hidden = maturedHiddenCommits(state, portal, nowMs);
-  const principal = hidden.length
-    ? Math.floor(Number(act?.nanos) || 0)
-    : Math.floor(Number(withdrawablePrincipal(state, portal, nowMs)) || 0);
+  // The owner signs the released principal: one π per retired leaf.
+  // The receipt is that principal plus the arrival stub, and is not the signed amount.
+  let principal = Math.floor(Number(withdrawablePrincipal(state, portal, nowMs)) || 0);
+  if (hidden.length) {
+    const indexed = hidden.some((hex) => state?.vaultLockIndex?.[hex]);
+    if (indexed) {
+      const proofs = Array.isArray(tx?.retireProofs) && tx.retireProofs.length
+        ? tx.retireProofs.length
+        : (tx?.retireProof ? 1 : 0);
+      principal = proofs * PI_SHE_NANOS;
+    } else {
+      principal = Math.floor(Number(act?.nanos) || 0);
+    }
+  }
   if (!hidden.length && !(principal > 0)) return null;
   const presented = String(tx?.ownerPub || '').replace(/^0x/i, '').toLowerCase();
   if (presented && presented !== owner) return { ok: false, reason: 'unsigned', nanos: 0 };
@@ -4035,6 +4046,17 @@ export function verifyReservePayout(state, tx, clockMs) {
   const hidden = maturedHiddenCommits(state, p, clock);
   if (hidden.length) {
     if (act.opened === false || !(act.nanos > 0)) return { ok: false, reason: 'mint_amount' };
+    // An indexed leaf proof opens π. The receipt is π plus the arrival stub.
+    const quote = indexedWithdrawQuote(state, p, clock, tx);
+    if (quote) {
+      if (!quote.ok) return { ok: false, reason: quote.reason || 'stake_reward' };
+      const published = BigInt(act.nanos);
+      if (published > quote.due) return { ok: false, reason: 'over_mint' };
+      if (published < quote.due) return { ok: false, reason: 'principal_short' };
+      const mintId = withdrawMintId(p.id || act.portalId, mintEpoch(state, clock));
+      if (state.mintedIds && state.mintedIds[mintId]) return { ok: false, reason: 'double_mint' };
+      return { ok: true };
+    }
     const hinted = tx.principalProof?.opened != null ? exactBi(tx.principalProof.opened) : exactBi(act.nanos);
     if (hinted == null || hinted <= 0n) return { ok: false, reason: 'stake_reward' };
     const portalId = p.id || act.portalId;
@@ -4877,7 +4899,7 @@ export function enact({ state, nowMs } = {}) {
 }
 
 /** Arrival stubs of the leaves this withdraw releases. A leaf with no lock height adds nothing. */
-function leafStubNanos(state, commitHexes) {
+export function leafStubNanos(state, commitHexes) {
   let sum = 0n;
   const magic = state?.magic || MAGIC_TESTNET;
   for (const hex of commitHexes || []) {
@@ -5067,6 +5089,43 @@ function openIndexedLeaves({
     hiddenPrincipal: VAULT_PI_LEAF * BigInt(k),
     retireRows,
   };
+}
+
+/**
+ * Indexed hidden withdraw. The principal proofs open π per leaf.
+ * The receipt is that principal plus the arrival stub.
+ * Null when this portal has no indexed matured leaf.
+ */
+export function indexedWithdrawQuote(state, portal, nowMs, tx) {
+  if (!state || !portal || !tx) return null;
+  const hidden = maturedHiddenCommits(state, portal, nowMs);
+  const indexed = hidden.filter((hex) => state.vaultLockIndex?.[hex]);
+  if (!indexed.length) return null;
+  const id = portal.id || portalKey(portal.dest);
+  const want = exactBi(tx?.nanos);
+  const opened = openIndexedLeaves({
+    state,
+    tx,
+    hiddenCommits: hidden,
+    chainNow: chainPeriodIndex(state, nowMs),
+    portalId: id,
+    proofList: proofListOf(tx, null),
+    openList: openListOf(tx, null),
+    want: want != null && want > 0n ? want : 1n,
+  });
+  if (!opened.ok) return { ok: false, reason: opened.reason || 'stake_reward' };
+  const due = opened.hiddenPrincipal + leafStubNanos(state, opened.openedCommits);
+  return { ok: true, due, principal: opened.hiddenPrincipal };
+}
+
+/** Principal an indexed withdraw releases. Null when the leaf is not indexed. */
+export function releasedWithdrawPrincipal(state, tx, nowMs) {
+  const act = reserveAction(tx);
+  const portal = act?.portalId ? state?.portals?.[act.portalId] : null;
+  if (!portal) return null;
+  const quote = indexedWithdrawQuote(state, portal, nowMs, tx);
+  if (!quote || quote.ok !== true) return null;
+  return quote.principal;
 }
 
 /**
@@ -5309,6 +5368,7 @@ export function withdraw({
     earned: nanosOut(earned),
     rewardSource: undefined,
     payout: nanosOut(release),
+    arrival: nanosOut(arrivalPaid),
     to,
     mint,
     programId: RESERVE_PROGRAM,
@@ -5435,12 +5495,17 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     if (got.length !== 1) return fail();
     const interest = exactBi(got[0].interest);
     const vaultPrincipal = exactBi(got[0].principal);
+    const arrivalRaw = exactBi(got[0].arrival);
+    const arrival = arrivalRaw == null ? 0n : arrivalRaw;
     if (interest == null || vaultPrincipal == null) return fail();
-    if (interest !== 0n || vaultPrincipal !== principal) return fail();
+    // The receipt is principal plus the arrival stub. The reward mint stays 0.
+    // Supply counts the stub as minted interest and releases only the principal.
+    if (interest !== 0n || vaultPrincipal + arrival !== opened) return fail();
     const mintedHere = got[0].mint && got[0].mint.ok === true ? exactBi(got[0].mint.nanos) : 0n;
     if (mintedHere == null || mintedHere !== 0n) return fail();
-    permittedSum += 0n;
-    principalOut += principal;
+    minted += arrival;
+    permittedSum += arrival;
+    principalOut += vaultPrincipal;
     if (minted > REWARD_U64 || permittedSum > REWARD_U64) return fail();
     counted += 1;
   }

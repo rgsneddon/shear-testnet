@@ -7,9 +7,11 @@
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createStore } from '../src/store.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { newIdentity, encodeDest, hash20FromAddress, destCommitFromSpendPub } from '../../crypto/address.js';
@@ -51,15 +53,19 @@ import {
   applyLeafVote,
   applyReserveBlock,
   buildFundedWithdraw,
+  cloneVault,
   chainPeriodIndex,
   consensusUnlockPeriod,
   leafEpochsToBurn,
   portalIdFromDest,
+  leafStubNanos,
   proveLockEquality,
   provePrincipalOpen,
   rewardClaimTx,
   signWithdrawReward,
+  supplyIdentity,
 } from '../../crypto/reserve_vault.js';
+import { auditCirculatingSupply } from '../src/supply.js';
 import {
   proveLeafRetire,
   proveLeafVote,
@@ -346,6 +352,11 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     const view = liveCoins(store, coins, spent);
     const use = view.coins.filter((c) => c.who === who).slice(0, 1);
     assert.equal(use.length, 1, `${id} change`);
+    // Testnet day is 24 blocks, inside the 240-block period, so a mid-period
+    // lock's arrival stub is part of the withdraw amount.
+    const stub = leafStubNanos(store.reserveVault, [row.leaf.commit.toString('hex')]);
+    assert.ok(stub > 0n, 'testnet arrival stub');
+    const withdrawNanos = PI_SHE_NANOS + Number(stub);
     const d20 = hash20FromAddress(who.dest);
     const ph = placeholders(1);
     let fee = LEVY_FLOOR_UNITS;
@@ -353,7 +364,9 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     for (let attempt = 0; attempt < 6; attempt += 1) {
       const changeN = use[0].v - fee;
       assert.ok(changeN > 0, `${id} withdraw change`);
-      const receipt = attachAdmitPub(sealNote(PI_SHE_NANOS, { dest20: d20, kind: 'withdraw' }), { admitBase: who.base });
+      // Current law: the receipt opens to principal plus the arrival stub.
+      // The principal proof still opens π. Supply releases π and mints the stub.
+      const receipt = attachAdmitPub(sealNote(withdrawNanos, { dest20: d20, kind: 'withdraw' }), { admitBase: who.base });
       receipt.kind = 'withdraw';
       receipt.dest20 = Buffer.from(d20);
       const change = hiddenChange(changeN, d20, who.base);
@@ -362,7 +375,7 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
         kind: 'withdraw',
         anchor: view.anchor,
         fee,
-        nanos: PI_SHE_NANOS,
+        nanos: withdrawNanos,
         programId: RESERVE_PROGRAM,
         portalId: who.portalId,
         payoutPortalId: who.portalId,
@@ -382,7 +395,7 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     }
     assert.ok(body, `${id} withdraw fee`);
     body.to = who.dest;
-    body.nanos = PI_SHE_NANOS;
+    body.nanos = withdrawNanos;
     const period = chainPeriodIndex(store.reserveVault, now);
     const burn = leafEpochsToBurn(store.reserveVault, row.leaf.note.toString('hex'), period);
     assert.equal(burn.length, 3, `${id} burn ${burn.join(',')}`);
@@ -403,6 +416,7 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.ok(built, `${id} builder`);
     built.dest20 = Buffer.from(hash20FromAddress(who.dest));
     signSpendTx(built, who.key);
+    // The owner signs π. The receipt above is π plus the arrival stub.
     signWithdrawReward(built, who.key, {
       portalId: who.portalId,
       nanos: PI_SHE_NANOS,
@@ -561,21 +575,53 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.ok(store.reserveVault.portals[who.portalId], 'portal');
 
     const tallH = voteCloseHeight(census.openHeight, MAGIC_TESTNET) + VOTE_FINALITY_BLOCKS;
+    // The tally height is not mined here. Applying it on the live vault
+    // would enact the bonus into the next real block, which the chain replay
+    // has no record of.
+    const tallyVault = cloneVault(store.reserveVault);
     const tallied = applyReserveBlock({
-      state: store.reserveVault,
+      state: tallyVault,
       block: { height: tallH, txs: [{ coinbase: true, vout: [] }] },
       nowMs: genesis + RESERVE_EPOCH_MS + 60_000,
       height: tallH,
       genesisMs: genesis,
     });
     assert.equal(tallied.ok, true, tallied.reason);
-    const step = storedStep(store.reserveVault, 1, proposalId(1, 'hb'));
+    const step = storedStep(tallyVault, 1, proposalId(1, 'hb'));
     assert.equal(step.tallied, true);
     assert.equal(step.step, 1);
 
-    const restarted = createStore(dir);
-    assert.ok(restarted.reserveVault.portals[who.portalId], 'restart portal');
-    assert.equal(restarted.tip().height, store.tip().height);
+    // One more block, then put the previous snap back. The reload is the
+    // snapshot-plus-later-blocks path. A new process does not share this
+    // process's FS-1 tree.
+    const snapNames = ['book.snap', 'vault.snap', 'reserve.json'];
+    const snapSaved = snapNames.map((name) => fs.readFileSync(path.join(dir, name)));
+    await mine(store, who.dest);
+    snapNames.forEach((name, i) => fs.writeFileSync(path.join(dir, name), snapSaved[i]));
+    const liveTip = store.tip();
+    const liveAudit = auditCirculatingSupply(store.blocks);
+    const liveIdentity = supplyIdentity(store.reserveVault);
+    assert.equal(liveAudit.status, 'verified', liveAudit.reason || 'live supply');
+    assert.equal(liveIdentity.ok, true, 'live identity');
+    const opener = path.join(path.dirname(fileURLToPath(import.meta.url)), 'vault_restart_open.js');
+    const opened = spawnSync(process.execPath, [opener, dir], {
+      encoding: 'utf8',
+      timeout: 900_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    assert.equal(opened.status, 0, opened.stderr || opened.stdout || 'restart process');
+    const line = String(opened.stdout || '').trim().split(/\r?\n/).filter(Boolean).pop();
+    const restarted = JSON.parse(line);
+    assert.equal(restarted.loadMode, 'suffix', restarted.loadMode);
+    assert.equal(restarted.height, liveTip.height);
+    assert.equal(restarted.hash, Buffer.from(liveTip.hash).toString('hex'));
+    assert.equal(restarted.supplyStatus, 'verified', restarted.supplyStatus);
+    assert.equal(restarted.circulating, liveAudit.circulatingNanos);
+    assert.equal(restarted.identityOk, true, 'restart identity');
+    assert.equal(restarted.principal, liveIdentity.principalNanos);
+    assert.equal(restarted.vaultRoot, String(store.reserveVault.vaultLockRoot || ''));
+    assert.deepEqual(restarted.portals, Object.keys(store.reserveVault.portals || {}).sort());
+    assert.ok(restarted.portals.includes(who.portalId), 'restart portal');
     const peerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-vault-peer-'));
     try {
       const peer = createStore(peerDir);

@@ -49,6 +49,7 @@ import {
   txIsReserveAction,
   reserveAction,
   lockNotePrincipal,
+  releasedWithdrawPrincipal,
 } from '../../crypto/reserve_vault.js';
 import { reserveApplyFields } from '../../crypto/reserve_oracle.js';
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
@@ -87,18 +88,19 @@ export function blockNeedsReserve(block) {
 }
 
 /** Vault after `block`, or null when this block does not touch a vault. */
-function vaultApply(state, block, prior) {
+function vaultApply(state, block, prior, applyOpts = {}) {
   const parent = prior?.length ? prior[prior.length - 1] : null;
   return applyReserveBlock({
     state,
     ...reserveApplyFields({
       prior,
       block,
-      magic: MAGIC_TESTNET,
+      magic: applyOpts.magic || MAGIC_TESTNET,
       parentMs: parent ? headerMs(parent) || 0 : 0,
       genesisMs: headerMs(prior?.[0] || block) || 0,
       nowMs: headerMs(block) || 0,
     }),
+    requireStakeReward: applyOpts.requireStakeReward === true,
   });
 }
 
@@ -181,14 +183,19 @@ function lockPrincipalSplit(block) {
   return { note, bare };
 }
 
-/** Principal an opened withdraw receipt names. The vault must agree. */
-function openedWithdrawPrincipal(block) {
+/**
+ * Principal an opened withdraw releases. An indexed receipt is principal
+ * plus the arrival stub; the stub is minted interest, not principal.
+ * Without a parent vault the receipt total is used, and the cross-check fails closed.
+ */
+function openedWithdrawPrincipal(block, vault = null, nowMs = null) {
   let n = 0n;
   for (const tx of block?.txs || []) {
     if (!tx || tx.coinbase) continue;
     const act = reserveAction(tx);
     if (!act || act.kind !== 'withdraw' || act.opened === false) continue;
-    n += asLocked(act.nanos);
+    const released = vault ? releasedWithdrawPrincipal(vault, tx, nowMs) : null;
+    n += released == null ? asLocked(act.nanos) : released;
   }
   return n;
 }
@@ -220,11 +227,12 @@ export function rollVaultSupply(track, beforeLocked, afterLocked, block) {
   return { noteBacked: note, unfunded: bare };
 }
 
-export function vaultAfterBlock(vault, block, prior = []) {
+export function vaultAfterBlock(vault, block, prior = [], applyOpts = {}) {
   if (!vault && !blockNeedsReserve(block)) return { ok: true, vault: null };
   if (vault && vault.blankFork) return { ok: false, vault: null };
   const next = vault ? cloneVault(vault) : emptyVault();
-  const applied = vaultApply(next, block, prior);
+  if (applyOpts.magic) next.magic = applyOpts.magic;
+  const applied = vaultApply(next, block, prior, applyOpts);
   if (!applied || applied.ok !== true) return { ok: false, vault: null };
   return { ok: true, vault: next };
 }
@@ -527,8 +535,26 @@ function carriedInterest(scalar, key) {
 }
 
 /**
- * Replay withdraw interest onto snap rows. The 12-u64 snap does not store it.
- * `rows[i]` is the supply after `blocks[i]`. A miss is not published.
+ * Principal the replayed vault publishes. The 12-u64 snap has no field for
+ * it. A suffix load starts from this row, so a missing principal is supply.
+ * Returns null when the vault's own identity does not close.
+ */
+function replayedPrincipal(vault) {
+  if (!vault) return 0n;
+  const identity = supplyIdentity(vault);
+  if (!identity.ok) return null;
+  const raw = identity.principalNanos;
+  if (typeof raw === 'bigint') return raw >= 0n && raw <= U64 ? raw : null;
+  if (!Number.isSafeInteger(raw) || raw < 0) return null;
+  const n = BigInt(raw);
+  return n <= U64 ? n : null;
+}
+
+/**
+ * Replay withdraw interest onto snap rows. The 12-u64 snap does not store it,
+ * and it does not store vault principal either. `rows[i]` is the supply after
+ * `blocks[i]`. The walk is the load replay: stake rewards required, prior
+ * blocks in view. A miss is not published.
  */
 export function fillSnapInterest(rows, blocks) {
   const list = Array.isArray(blocks) ? blocks : [];
@@ -537,6 +563,7 @@ export function fillSnapInterest(rows, blocks) {
   let vault = null;
   let interest = 0n;
   let permitted = 0n;
+  const replay = { requireStakeReward: true, magic: MAGIC_TESTNET };
   for (let i = 0; i < list.length; i += 1) {
     const row = snaps[i];
     if (!row) return { ok: false, reason: 'supply_state' };
@@ -552,9 +579,12 @@ export function fillSnapInterest(rows, blocks) {
     if (interest !== permitted) return { ok: false, reason: 'supply' };
     row.mintedInterest = interest;
     row.permittedInterest = permitted;
-    const advanced = vaultAfterBlock(vault, list[i]);
+    const advanced = vaultAfterBlock(vault, list[i], list.slice(0, i), replay);
     if (!advanced.ok) return { ok: false, reason: 'supply' };
     vault = advanced.vault;
+    const principal = replayedPrincipal(vault);
+    if (principal == null) return { ok: false, reason: 'supply' };
+    row.vaultPrincipal = principal;
   }
   return { ok: true, reason: '' };
 }
@@ -831,7 +861,7 @@ export function supplyStep(prev, block, opts = {}) {
   // The vault balance is a cross-check when this step has the parent vault.
   // A public lock credits vault principal with no note debit.
   const split = lockPrincipalSplit(block);
-  const notePrincipal = (next.state.vaultPrincipal || 0n) + split.note - openedWithdrawPrincipal(block);
+  const notePrincipal = (next.state.vaultPrincipal || 0n) + split.note - openedWithdrawPrincipal(block, opts.vault, headerMs(block));
   if (notePrincipal < 0n) return { ok: false, reason: 'supply', state: null };
   if (opts.vault) {
     const advanced = vaultAfterBlock(opts.vault, block);
@@ -878,7 +908,11 @@ export function foldSupply(blocks, opts = {}) {
     });
     if (!stepped.ok) return stepped;
     state = stepped.state;
-    const advanced = vaultAfterBlock(vault, list[i]);
+    // Same prior and stake-reward rule as the store's vault apply.
+    const advanced = vaultAfterBlock(vault, list[i], list.slice(0, i), {
+      requireStakeReward: true,
+      magic: opts.magic || MAGIC_TESTNET,
+    });
     if (!advanced.ok) return { ok: false, reason: 'supply', state: null };
     vault = advanced.vault;
     if (vault) {
@@ -1145,7 +1179,13 @@ export function auditCirculatingSupply(blocks, opts = {}) {
     } else {
       state = next.state;
       const split = lockPrincipalSplit(list[bi]);
-      const advanced = vaultAfterBlock(vault, list[bi]);
+      const withdrawn = openedWithdrawPrincipal(list[bi], vault, headerMs(list[bi]));
+      // prior is the prefix this block was applied on. An empty prior
+      // installs this header as genesis and skips the epoch boundary.
+      const advanced = vaultAfterBlock(vault, list[bi], list.slice(0, bi), {
+        requireStakeReward: true,
+        magic,
+      });
       if (!advanced.ok) {
         // The vault refused the row. A bare receipt is still a claim with
         // no note debit, so the difference is that amount. Keep the prior vault.
@@ -1155,7 +1195,7 @@ export function auditCirculatingSupply(blocks, opts = {}) {
         state.vaultPrincipal = notePrincipal;
       } else {
         vault = advanced.vault;
-        const nextNote = notePrincipal + split.note - openedWithdrawPrincipal(list[bi]);
+        const nextNote = notePrincipal + split.note - withdrawn;
         if (nextNote < 0n) {
           ok = false;
           reason = reason || 'supply';
