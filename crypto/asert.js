@@ -256,6 +256,23 @@ export const VAULT_REWARD_LAW = 'fs1-lock-root-v1';
 export const VAULT_HIDDEN_LAW = 'pi-leaf-unlock-v2';
 export const VAULT_ACCRUAL_LAW = 'epoch-total-bps';
 /**
+ * Spend digest always binds unlockAtMs and lockEpoch. Absent unlock is 0.
+ * Absent epoch is -1. Compact coinbase keeps the frozen roots, the census,
+ * and a claim's public nanos. The coinbase commitment sum is pot + hash +
+ * levy; reward.minted is a claim output and is not part of that sum. An
+ * unindexed hidden withdraw fails closed as stake_reward. portalId is
+ * H(tag, dest20, r) with r seed-derived, not the public address. Compact
+ * lock and withdraw bodies do not carry `to`. The gap opening is A1 and
+ * zGap once; the claim header does not repeat them.
+ */
+export const DIGEST_LOCK_STAMP = 'unlockAtMs+lockEpoch';
+export const COMPACT_VAULT_WIRE = 'roots+census+claimNanos';
+export const COINBASE_PUBLIC_TOTAL = 'pot+hash+levy';
+export const UNINDEXED_WITHDRAW = 'stake_reward';
+export const PORTAL_ID_LAW = 'H(tag,dest20,r)';
+export const COMPACT_TO = 'dropped';
+export const VAULT_GAP_LAW = 'A1-once';
+/**
  * Claim proof version. The gap is a blinded commitment, and the leaf binds
  * the consensus unlock. Peers on an older byte do not share this book.
  */
@@ -443,6 +460,13 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'HASH_BONUS_STEP=1rho',
     'HASH_BONUS_OFF=0',
     `VAULT_TESTNET_DAY=${VAULT_TESTNET_DAY_BLOCKS}`,
+    `DIGEST_STAMP=${DIGEST_LOCK_STAMP}`,
+    `COMPACT_VAULT=${COMPACT_VAULT_WIRE}`,
+    `COINBASE_TOTAL=${COINBASE_PUBLIC_TOTAL}`,
+    `UNINDEXED_WITHDRAW=${UNINDEXED_WITHDRAW}`,
+    `PORTAL_ID=${PORTAL_ID_LAW}`,
+    `COMPACT_TO=${COMPACT_TO}`,
+    `VAULT_GAP=${VAULT_GAP_LAW}`,
     `POT_PROP=${POT_PROP}`,
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,

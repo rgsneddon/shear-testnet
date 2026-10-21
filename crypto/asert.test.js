@@ -417,8 +417,16 @@ describe('hash bonus step (law)', () => {
     assert.match(fp, /HASH_BONUS_STEP=1rho/);
     assert.match(fp, /HASH_BONUS_OFF=0/);
     assert.match(fp, /VAULT_TESTNET_DAY=24/);
+    assert.match(fp, /DIGEST_STAMP=unlockAtMs\+lockEpoch/);
+    assert.match(fp, /COMPACT_VAULT=roots\+census\+claimNanos/);
+    assert.match(fp, /COINBASE_TOTAL=pot\+hash\+levy/);
+    assert.match(fp, /UNINDEXED_WITHDRAW=stake_reward/);
+    assert.match(fp, /PORTAL_ID=H\(tag,dest20,r\)/);
+    assert.match(fp, /COMPACT_TO=dropped/);
+    assert.match(fp, /VAULT_GAP=A1-once/);
     assert.match(mainnetFingerprint(), /HASH_UNIT_FLOOR=1/);
     assert.match(mainnetFingerprint(), /HASH_BONUS_STEP=1rho/);
+    assert.match(mainnetFingerprint(), /COINBASE_TOTAL=pot\+hash\+levy/);
   });
 });
 
@@ -472,6 +480,13 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_BONUS_STEP=1rho/);
     assert.match(fp, /HASH_BONUS_OFF=0/);
     assert.match(fp, /VAULT_TESTNET_DAY=24/);
+    assert.match(fp, /DIGEST_STAMP=unlockAtMs\+lockEpoch/);
+    assert.match(fp, /COMPACT_VAULT=roots\+census\+claimNanos/);
+    assert.match(fp, /COINBASE_TOTAL=pot\+hash\+levy/);
+    assert.match(fp, /UNINDEXED_WITHDRAW=stake_reward/);
+    assert.match(fp, /PORTAL_ID=H\(tag,dest20,r\)/);
+    assert.match(fp, /COMPACT_TO=dropped/);
+    assert.match(fp, /VAULT_GAP=A1-once/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
     assert.match(fp, /NETWORK=shear-testnet-v12/);
