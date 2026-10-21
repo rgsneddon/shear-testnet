@@ -21,6 +21,7 @@ const store = createStore(dir);
 let lockDest20 = false;
 let lockTo = false;
 let lockSsa1 = false;
+const lockDest20s = [];
 
 for (const line of lines) {
   const decoded = decodeWireBlock(JSON.parse(line));
@@ -29,7 +30,15 @@ for (const line of lines) {
     if (tx.to != null && String(tx.to) !== '') lockTo = true;
     if (JSON.stringify(tx).includes('ssa1')) lockSsa1 = true;
     const outs = Array.isArray(tx.vout) ? tx.vout : [];
-    if (outs.some((row) => row?.dest20)) lockDest20 = true;
+    for (const row of outs) {
+      if (!row?.dest20) continue;
+      lockDest20 = true;
+      lockDest20s.push(Buffer.from(row.dest20).toString('hex'));
+    }
+    if (tx.dest20) {
+      lockDest20 = true;
+      lockDest20s.push(Buffer.from(tx.dest20).toString('hex'));
+    }
   }
   const hash = Buffer.from(decoded.hash);
   const got = await Promise.resolve(store.append(decoded, {
@@ -48,6 +57,7 @@ process.stdout.write(`${JSON.stringify({
   hash: tip ? Buffer.from(tip.hash).toString('hex') : '',
   portals: Object.keys(store.reserveVault.portals || {}).sort(),
   lockDest20,
+  lockDest20s,
   lockTo,
   lockSsa1,
 })}\n`);

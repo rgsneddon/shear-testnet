@@ -344,9 +344,13 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     const sealed = await mine(store, who.dest);
     assert.ok(sealed.tpl.txs.some((row) => row.id === 'sync-lock'), 'lock template');
     const wired = sealed.tpl.txs.find((row) => row.id === 'sync-lock');
-    // Current law: a compact lock has no address. The peer uses the carried portal id.
+    // The address binding moved onto dest20. `to` stays off the mined lock.
     assert.equal(wired.to, undefined, 'lock address stays off the wire');
     assert.equal(JSON.stringify(wired).includes('ssa1'), false, 'lock wire has no ssa1');
+    const wiredLock = wired.vout.find((row) => String(row?.kind || '') === 'lock');
+    const want20 = Buffer.from(hash20FromAddress(who.dest));
+    assert.ok(Buffer.from(wiredLock.dest20).equals(want20), 'lock dest20');
+    assert.ok(Buffer.from(wired.dest20).equals(want20), 'lock body dest20');
     for (const c of use) spent.add(c.commit.toString('hex'));
     const change = spentOuts[1];
     coins.push({
@@ -659,6 +663,8 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.equal(peer.lockTo, false, 'wire lock has no address');
     assert.equal(peer.lockSsa1, false, 'wire lock has no ssa1');
     assert.equal(peer.lockDest20, true, 'wire lock carries dest20');
+    const wire20 = Buffer.from(hash20FromAddress(who.dest)).toString('hex');
+    assert.ok(peer.lockDest20s.includes(wire20), 'wire lock dest20');
     assert.ok(peer.portals.includes(who.portalId), 'wire portal');
   });
 });
