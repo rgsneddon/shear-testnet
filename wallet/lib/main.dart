@@ -274,6 +274,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   final _depositsScroll = ScrollController();
   bool _reserveUnprivateOk = false;
   bool _awaitingPublicChoice = false;
+
+  /// False while a locked session still holds the default Connect bare mode.
+  /// Persist must not write that default over the sealed choice.
+  bool _nodeChoiceLive = false;
   bool _localNodePending = false;
   bool _localChoiceOpening = false;
   final _ownNodeCtrl = TextEditingController();
@@ -521,20 +525,42 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (unlocked && !widget.skipPoolSync) _startAccrualTick(immediate: true);
   }
 
+  /// Copy the unlocked choice onto the sidecar. A locked session still has the
+  /// default Connect bare string, and that default is not the stored choice.
+  void _installStoredNodeChoice() {
+    final mode = closureModeFromStored(session.closureSendMode, android: _hostAndroid);
+    sidecar
+      ..committed = mode
+      ..pending = mode;
+    _nodeChoiceLive = true;
+  }
+
+  Future<void> _spawnStoredNode() {
+    if (_hostAndroid) return Future<void>.value();
+    final underTest = Platform.environment['FLUTTER_TEST'] == 'true';
+    if (underTest && widget.startNode == null) return Future<void>.value();
+    final mode = sidecar.committed;
+    if (mode == ClosureSendMode.localNode || mode == ClosureSendMode.localNodeFull) {
+      return sidecar.apply();
+    }
+    return Future<void>.value();
+  }
+
+  void _keepStoredNodeChoice() {
+    if (!_nodeChoiceLive) return;
+    session.closureSendMode = closureModeStored(sidecar.committed);
+  }
+
   Future<void> _boot() async {
     id = await session.loadOrCreate();
     _themeMode = session.darkMode ? ThemeMode.dark : ThemeMode.light;
-    sidecar
-      ..committed = closureModeFromStored(session.closureSendMode, android: _hostAndroid)
-      ..pending = closureModeFromStored(session.closureSendMode, android: _hostAndroid);
-    // Connect bare never starts a node. P2P and Solo start only after that choice,
-    // including a choice already stored from an earlier launch.
-    final underTest = Platform.environment['FLUTTER_TEST'] == 'true';
-    if (!_hostAndroid && (!underTest || widget.startNode != null)) {
-      final mode = sidecar.committed;
-      if (mode == ClosureSendMode.localNode || mode == ClosureSendMode.localNodeFull) {
-        unawaited(sidecar.apply());
-      }
+    // A locked seal has not been opened, so the in-memory mode is still the
+    // default. Do not copy that default, and do not start a node from it.
+    if (session.needsUnlock) {
+      _nodeChoiceLive = false;
+    } else if (!_nodeChoiceLive) {
+      _installStoredNodeChoice();
+      unawaited(_spawnStoredNode());
     }
     _syncJoinRoster();
     try {
@@ -890,6 +916,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _enterWallet(String pw) async {
     _preloginTick?.cancel();
     if (session.identity == null) return;
+    // Unlock has applied the sealed choice. Start that node now, before any
+    // later Apply can write the pre-unlock Connect bare default back.
+    if (!_nodeChoiceLive) {
+      _installStoredNodeChoice();
+      unawaited(_spawnStoredNode());
+    }
     // Write the scrubbed book before any credit follow re-reads session.json.
     // Otherwise the worker would put the stub height 20 back.
     if (session.bookCacheNeedsPersist) {
@@ -3798,7 +3830,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     sidecar.select(mode);
     final msg = await sidecar.apply();
     if (!mounted) return;
-    session.closureSendMode = closureModeStored(sidecar.committed);
+    _keepStoredNodeChoice();
     session.publicNodeChoiceMade = sidecar.running;
     _localNodePending = true;
     setState(() => _ownNodeError = msg);
@@ -3827,7 +3859,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     sidecar.select(ClosureSendMode.connectBare);
     await sidecar.apply();
     if (!mounted) return;
-    session.closureSendMode = closureModeStored(sidecar.committed);
+    _keepStoredNodeChoice();
     session.publicNodeChoiceMade = false;
     _localNodePending = false;
     ledger.pool?.stopPublicReads();
@@ -4667,7 +4699,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Future<void> _applyResistancePath(BuildContext context, Future<String> Function() run) async {
     final msg = await run();
-    session.closureSendMode = closureModeStored(sidecar.committed);
+    _keepStoredNodeChoice();
     if (!widget.skipPoolSync) await session.persist();
     if (!mounted || !context.mounted) return;
     setState(() {});
@@ -4707,9 +4739,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         value: ClosureSendMode.connectBare,
         groupValue: sidecar.pending,
         title: const Text('Connect Bare'),
-        subtitle: Text(_hostAndroid
-            ? kConnectBareCopy
-            : 'Connect bare. You push a signed send. This device still runs the book node so blocks can land. $kPublicNodeEverySendCopy'),
+        subtitle: const Text(kConnectBareCopy),
         onChanged: (v) => _selectSendMode(v!),
       ),
       if (sidecar.pending == ClosureSendMode.connectBare) ...[
@@ -4769,7 +4799,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             );
             final msg = await sidecar.apply();
             ledger.onClosureApply(bookChanged: sidecar.rescanFromGenesis);
-            session.closureSendMode = closureModeStored(sidecar.committed);
+            _keepStoredNodeChoice();
             _syncPublicReadsToMode();
             if (!widget.skipPoolSync) {
               Zone.root.run(() {

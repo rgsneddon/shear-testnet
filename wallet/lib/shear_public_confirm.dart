@@ -16,7 +16,7 @@ const kPublicNodeEverySendCopy =
     'The public node can see your IP on every send and every sync, not just once. '
     'In public mode, history requests carry your view key, so that operator can see incoming payments. '
     'Use a VPN, or point Continuum at your own node. '
-    'A full node keeps your IP from the public node; your node\'s peers still see your IP.';
+    'Only your own node and its P2P peers see your IP.';
 
 const kUnprivateConfirmHelper = kPublicNodeEverySendCopy;
 
@@ -94,6 +94,7 @@ Future<OwnNodeCheck> checkOwnNodeUrl(String raw) async {
   final parsed = parseOwnNodeUrl(raw);
   if (parsed == null) return const OwnNodeCheck();
   final uri = Uri.parse(parsed);
+  if (isPublicWalletHost(uri.host)) return const OwnNodeCheck();
   List<InternetAddress> addrs;
   try {
     addrs = await ownNodeLookup(uri.host);
@@ -147,6 +148,11 @@ Future<List<InternetAddress>> _dialableAddresses(
 }) async {
   if (host.isEmpty || host.contains('%')) {
     throw SocketException('refused host', port: port);
+  }
+  // A public Shear name or a known public address is refused before DNS.
+  // Consent is the only path that may look the name up.
+  if (!allowPublic && isPublicWalletHost(host)) {
+    throw SocketException('public node refused', port: port);
   }
   final List<InternetAddress> addrs;
   final literal = InternetAddress.tryParse(host);

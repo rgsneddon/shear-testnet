@@ -183,15 +183,15 @@ const kAndroidNodeMissingCopy =
     'This Android pack does not include a node runtime, so Run node cannot start on the phone. '
     'Continuum stays on Connect bare. The light seeker still follows the live tip.';
 
-/// What a full node on this device actually reveals. Seed hosts and peers see the IP.
+/// What a full node on this device actually reveals. P2P peers see the IP.
 const kLocalNodeIpCopy =
-    'A full node on this device. Your node fetches blocks from the Shear seed hosts and its P2P peers, so they see your IP. The public node never gets your view key or your sends.';
+    'A full node on this device. It syncs over P2P only. Only your own node and its P2P peers see your IP. The public node never gets your view key or your sends.';
 
 /// p2P Node. A full node on this device, without `--solo`.
 const kLocalNodeModeCopy =
     'p2P Node. A full node on this device, without --solo. '
     'It requests each next block in order until the tip and does not mine. '
-    'Your node fetches blocks from the Shear seed hosts and its P2P peers, so they see your IP. '
+    'It syncs over P2P only. Only your own node and its P2P peers see your IP. '
     'The public node never gets your view key or your sends. '
     'Start resumes from the saved height. Stop saves that height and leaves the book.';
 
@@ -199,7 +199,7 @@ const kLocalNodeModeCopy =
 const kLocalNodeFullModeCopy =
     'Full Node. The same full node, with --solo on the command line before it syncs, '
     'so this device can solo mine. '
-    'Your node fetches blocks from the Shear seed hosts and its P2P peers, so they see your IP. '
+    'It syncs over P2P only. Only your own node and its P2P peers see your IP. '
     'The public node never gets your view key or your sends. '
     'Start resumes from the saved height. Stop saves that height and leaves the book.';
 
@@ -309,8 +309,8 @@ Map<String, String> closureSpawnEnv(
     'SHEAR_GETBLOCK_BATCH': '1',
     'SHEAR_SOLO': (!android && mode == ClosureSendMode.localNodeFull) ? '1' : '0',
     'SHEAR_FAST_SYNC': '1',
-    // Port 30303 is fleet-only. Desktop follows the same hosts over HTTPS.
-    'SHEAR_HTTP_FOLLOW': android ? '0' : '1',
+    // Port 30303 is fleet-only. This wallet syncs over P2P. Public HTTP follow stays off.
+    'SHEAR_HTTP_FOLLOW': '0',
     'SHEARK_POOL': shearKPoolUrl(publicPool: publicStratum),
   };
 }
@@ -708,6 +708,7 @@ class ShearNodeSidecar {
     listenPort = null;
     rpcToken = '';
     localRpcToken = null;
+    localRpcPort = null;
     if (onStop != null) await onStop!();
   }
 
@@ -792,6 +793,7 @@ class ShearNodeSidecar {
     }
     rpcToken = token;
     localRpcToken = token;
+    localRpcPort = int.tryParse(lastEnv['SHEAR_RPC_PORT'] ?? '') ?? 18332;
     running = true;
     honest = false;
     return progress;

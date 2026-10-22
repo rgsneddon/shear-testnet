@@ -169,7 +169,7 @@ export function noteHttpSync(store, remoteTip, localHeight) {
   return row;
 }
 
-/** Desktop Continuum sets SHEAR_HTTP_FOLLOW=1. Unset leaves fleet nodes on P2P only. */
+/** Follow runs only when SHEAR_HTTP_FOLLOW is exactly 1. The desktop wallet sets 0 and syncs over P2P. */
 export function startHttpFollow(opts = {}) {
   if (String(process.env.SHEAR_HTTP_FOLLOW || '').trim() !== '1') {
     return { stop() {} };

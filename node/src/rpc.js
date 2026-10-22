@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import http from 'node:http';
 import { mempoolPressure } from '../../crypto/levy.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
@@ -172,6 +173,20 @@ export function rpcHostAllowed(header) {
   const raw = String(headerOne(header) ?? '').trim().toLowerCase();
   if (!raw || /[\s@/\\]/.test(raw)) return false;
   let name = raw;
+  if (raw.startsWith('[')) {
+    const end = raw.indexOf(']');
+    if (end < 2) return false;
+    name = raw.slice(1, end);
+    const rest = raw.slice(end + 1);
+    if (rest) {
+      if (!rest.startsWith(':')) return false;
+      const tail = rest.slice(1);
+      if (!/^\d+$/.test(tail)) return false;
+      const port = Number(tail);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+    }
+    return name === '::1';
+  }
   const colon = raw.lastIndexOf(':');
   if (colon > 0) {
     const tail = raw.slice(colon + 1);
@@ -191,11 +206,24 @@ export function rpcOriginAllowed(origin) {
   return raw == null || String(raw) === '';
 }
 
+/** Host, Origin, and the header token apply only to a loopback bind that has a token. */
+export function rpcSidecarGate(bind, token) {
+  const name = String(bind || '').trim().toLowerCase();
+  const loopback = name === '127.0.0.1' || name === 'localhost' || name === '::1' || name === '[::1]';
+  return loopback && String(token || '').trim() !== '';
+}
+
 function rpcTokenAllowed(req, token) {
   const want = String(token || '');
   if (!want.trim()) return true;
-  const got = headerOne(req.headers['x-shear-rpc-token']);
-  return String(got || '') === want;
+  const got = String(headerOne(req.headers['x-shear-rpc-token']) || '');
+  const a = Buffer.from(want);
+  const b = Buffer.from(got);
+  if (a.length !== b.length) {
+    crypto.timingSafeEqual(a, Buffer.alloc(a.length));
+    return false;
+  }
+  return crypto.timingSafeEqual(a, b);
 }
 
 function refuseRpc(req, res, reason) {
@@ -444,18 +472,21 @@ export function createRpc({
     return { ok: false, reason: 'unknown_method', method: m };
   }
 
+  const gate = rpcSidecarGate(bind, token);
   const server = http.createServer(async (req, res) => {
-    if (!rpcHostAllowed(req.headers.host)) {
-      refuseRpc(req, res, 'rpc_host');
-      return;
-    }
-    if (!rpcOriginAllowed(req.headers.origin)) {
-      refuseRpc(req, res, 'rpc_origin');
-      return;
-    }
-    if (!rpcTokenAllowed(req, token)) {
-      refuseRpc(req, res, 'rpc_token');
-      return;
+    if (gate) {
+      if (!rpcHostAllowed(req.headers.host)) {
+        refuseRpc(req, res, 'rpc_host');
+        return;
+      }
+      if (!rpcOriginAllowed(req.headers.origin)) {
+        refuseRpc(req, res, 'rpc_origin');
+        return;
+      }
+      if (!rpcTokenAllowed(req, token)) {
+        refuseRpc(req, res, 'rpc_token');
+        return;
+      }
     }
     const url = new URL(req.url, 'http://127.0.0.1');
     if (url.pathname === '/events') {

@@ -6,7 +6,9 @@ import 'dart:isolate';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_cli.dart';
 import 'package:shear_wallet/shear_closure.dart';
+import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_session.dart';
 import 'package:shear_wallet/shear_public_confirm.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_tip_tick.dart';
@@ -54,10 +56,14 @@ void main() {
   });
 
   test('local node copy says who sees the IP', () {
-    expect(kLocalNodeIpCopy, contains('Shear seed hosts and its P2P peers, so they see your IP'));
+    expect(kLocalNodeIpCopy, contains('Only your own node and its P2P peers see your IP'));
+    expect(kLocalNodeIpCopy, contains('syncs over P2P only'));
+    expect(kLocalNodeIpCopy.contains('seed hosts'), isFalse);
     expect(kLocalNodeIpCopy, contains('The public node never gets your view key or your sends.'));
-    expect(kLocalNodeModeCopy, contains('so they see your IP'));
-    expect(kLocalNodeFullModeCopy, contains('so they see your IP'));
+    expect(kLocalNodeModeCopy, contains('Only your own node and its P2P peers see your IP'));
+    expect(kLocalNodeFullModeCopy, contains('Only your own node and its P2P peers see your IP'));
+    expect(kLocalNodeModeCopy.contains('seed hosts'), isFalse);
+    expect(kLocalNodeFullModeCopy.contains('seed hosts'), isFalse);
     expect(kLocalNodeModeCopy.contains('Best privacy'), isFalse);
     expect(kLocalNodeFullModeCopy.contains('Best privacy'), isFalse);
     final ui = File('lib/main.dart').readAsStringSync();
@@ -84,7 +90,9 @@ void main() {
     expect(env!['SHEAR_P2P_BIND'], '127.0.0.1');
     expect(env!['SHEAR_STRATUM_BIND'], '127.0.0.1');
     expect(env!['SHEAR_RPC_BIND'], '127.0.0.1');
+    expect(env!['SHEAR_HTTP_FOLLOW'], '0');
     expect(localRpcToken, token);
+    expect(localRpcPort, 18332);
     side.select(ClosureSendMode.localNodeFull);
     await side.apply();
     expect(env!['SHEAR_RPC_TOKEN'], isNot(token));
@@ -93,6 +101,7 @@ void main() {
     side.select(ClosureSendMode.connectBare);
     await side.apply();
     expect(localRpcToken, isNull);
+    expect(localRpcPort, isNull);
     var calls = 0;
     final bare = ShearNodeSidecar(
       nodeBinary: 'node',
@@ -295,6 +304,178 @@ void main() {
     expect(stats['ok'], true);
     expect(stats['height'], 3);
     expect(client.debugConnectPinned, isTrue);
+  });
+
+  test('a shear.digital name is refused before DNS unless consent applies', () async {
+    final lookup = ownNodeLookup;
+    addTearDown(() => ownNodeLookup = lookup);
+    var lookups = 0;
+    ownNodeLookup = (host) async {
+      lookups += 1;
+      throw const SocketException('dns');
+    };
+    await expectLater(
+      walletConnectTask(Uri.parse('https://cdn.shear.digital/book'), allowPublic: false),
+      throwsA(isA<SocketException>().having((e) => e.message, 'message', 'public node refused')),
+    );
+    await expectLater(
+      walletConnectTask(Uri.parse('https://77.42.91.84/book'), allowPublic: false),
+      throwsA(isA<SocketException>().having((e) => e.message, 'message', 'public node refused')),
+    );
+    expect(lookups, 0);
+    await expectLater(
+      walletConnectTask(Uri.parse('https://cdn.shear.digital/book'), allowPublic: true),
+      throwsA(isA<SocketException>().having((e) => e.message, 'message', 'dns failed')),
+    );
+    expect(lookups, 1);
+  });
+
+  test('the CLI token stays in memory and is sent only to the node port', () async {
+    final previousToken = localRpcToken;
+    final previousPort = localRpcPort;
+    addTearDown(() {
+      localRpcToken = previousToken;
+      localRpcPort = previousPort;
+    });
+    const token = 'desk-token-secret';
+    final code = await runShearCli(['help'], env: {
+      'SHEAR_RPC_TOKEN': token,
+      'SHEAR_RPC_PORT': '18332',
+    });
+    expect(code, 0);
+    expect(localRpcToken, token);
+    expect(localRpcPort, 18332);
+    final dir = Directory.systemTemp.createTempSync('cli-token-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await session.loadOrCreate();
+    await session.setPassword('test-pass-1');
+    await session.persist();
+    expect(session.store.readAsStringSync().contains(token), isFalse);
+
+    final previous = HttpOverrides.current;
+    HttpOverrides.global = _RealHttp();
+    addTearDown(() => HttpOverrides.global = previous);
+    final seen = <int, String?>{};
+    final nodePort = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final otherPort = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => nodePort.close(force: true));
+    addTearDown(() => otherPort.close(force: true));
+    for (final server in [nodePort, otherPort]) {
+      server.listen((req) async {
+        seen[server.port] = req.headers.value(kLocalRpcTokenHeader);
+        req.response.headers.contentType = ContentType.json;
+        req.response.write('{"ok":true,"height":1}');
+        await req.response.close();
+      });
+    }
+    armLocalRpcFromEnv({'SHEAR_RPC_TOKEN': token, 'SHEAR_RPC_PORT': '${nodePort.port}'});
+    final node = ShearPoolClient(baseUrl: 'http://127.0.0.1:${nodePort.port}');
+    final other = ShearPoolClient(baseUrl: 'http://127.0.0.1:${otherPort.port}');
+    addTearDown(node.close);
+    addTearDown(other.close);
+    node.debugHttp.findProxy = (_) => 'DIRECT';
+    other.debugHttp.findProxy = (_) => 'DIRECT';
+    expect((await node.stats())['height'], 1);
+    expect(seen[nodePort.port], token);
+    expect((await other.stats())['height'], 1);
+    expect(seen[otherPort.port], isNull);
+  });
+
+  test('a credit worker loads balance and spendable from a token-locked node', () async {
+    final previousToken = localRpcToken;
+    final previousPort = localRpcPort;
+    addTearDown(() {
+      localRpcToken = previousToken;
+      localRpcPort = previousPort;
+    });
+    localRpcToken = null;
+    localRpcPort = null;
+    const token = 'worker-rpc-token';
+    final seen = <String>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    server.listen((req) async {
+      final got = req.headers.value(kLocalRpcTokenHeader);
+      seen.add('${req.uri.path}|$got');
+      req.response.headers.contentType = ContentType.json;
+      if (got != token) {
+        req.response.statusCode = 403;
+        req.response.write('{"ok":false,"reason":"rpc_token"}');
+        await req.response.close();
+        return;
+      }
+      final path = req.uri.path;
+      if (path == '/stats' || path == '/api/stats') {
+        req.response.write('{"ok":true,"height":4}');
+      } else if (path.contains('balance')) {
+        req.response.write('{"ok":true,"balance":999.5}');
+      } else if (path.contains('notes')) {
+        req.response.write('{"ok":true,"notes":[]}');
+      } else {
+        req.response.statusCode = 404;
+        req.response.write('{"ok":false}');
+      }
+      await req.response.close();
+    });
+
+    final id = createIdentity();
+    final recv = ReceivePort();
+    addTearDown(recv.close);
+    await Isolate.spawn(creditFollowEntry, <dynamic>[
+      jsonEncode({
+        'full': false,
+        'chain': false,
+        'spendableFirst': true,
+        'baseUrl': 'http://127.0.0.1:${server.port}',
+        'ownNode': false,
+        'publicConsent': false,
+        'address': id.address,
+        'seedHex': id.seedHex,
+        'viewKey': id.viewKey,
+        'paymentCode': id.paymentCode,
+        'restFrame': id.address,
+        'rpcToken': token,
+        'rpcPort': server.port,
+      }),
+      recv.sendPort,
+    ]);
+    final msg = await recv.first.timeout(const Duration(seconds: 30)) as Map;
+    expect(msg['event'], 'done', reason: '${msg['message']}');
+    final out = Map<String, dynamic>.from(msg['out'] as Map);
+    expect(out.containsKey('rpcToken'), isFalse);
+    expect(jsonEncode(out).contains(token), isFalse);
+    expect((out['opened'] as num).toDouble(), 0);
+    expect(jsonEncode(out['spendable']).contains('999.5'), isFalse);
+    expect(seen.any((s) => (s.startsWith('/stats|') || s.startsWith('/api/stats|')) && s.endsWith(token)), isTrue);
+    expect(seen.any((s) => s.contains('balance') && s.endsWith(token)), isTrue);
+    expect(seen.any((s) => s.contains('notes') && s.endsWith(token)), isTrue);
+    expect(localRpcToken, isNull);
+
+    localRpcToken = token;
+    localRpcPort = server.port;
+    final ledger = ShearLedger(pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}'));
+    addTearDown(() => ledger.pool?.close());
+    ledger.bindIdentity(id);
+    final opened = await ledger.followOffUi(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      full: false,
+      spendableFirst: true,
+    );
+    expect(debugLastFollowSpecKeys, contains('rpcToken'));
+    expect(opened, 0);
+    expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
+    final exported = ledger.exportCreditFollow(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      full: false,
+    );
+    expect(exported.containsKey('rpcToken'), isFalse);
+    expect(jsonEncode(exported).contains(token), isFalse);
+    expect(jsonEncode(exported['spendable']).contains('999.5'), isFalse);
   });
 }
 

@@ -26,18 +26,58 @@ final Expando<bool> _walletConnectPinned = Expando<bool>('walletConnectPinned');
 bool walletConnectPinned(HttpClient client) => _walletConnectPinned[client] == true;
 
 /// Per-launch secret for the sidecar RPC. Empty until that process is spawned.
+/// Memory only. Never written to shewall.bin or session.json.
 String? localRpcToken;
+
+/// Port of the node that [localRpcToken] belongs to. Other loopback ports
+/// do not receive the header.
+int? localRpcPort;
 
 /// Header the sidecar node requires when [localRpcToken] is set.
 const kLocalRpcTokenHeader = 'X-Shear-Rpc-Token';
 
-/// Loopback RPC only. Public hosts never receive the token.
+bool _loopbackRpcHost(String host) {
+  final name = host.toLowerCase();
+  return name == '127.0.0.1' || name == 'localhost' || name == '::1';
+}
+
+/// Loopback RPC on the configured node port only. Public hosts never receive the token.
 void stampLocalRpc(HttpClientRequest req, Uri uri) {
   final token = localRpcToken;
-  if (token == null || token.isEmpty) return;
-  final host = uri.host.toLowerCase();
-  if (host != '127.0.0.1' && host != 'localhost' && host != '::1') return;
+  final port = localRpcPort;
+  if (token == null || token.isEmpty || port == null) return;
+  if (!_loopbackRpcHost(uri.host)) return;
+  if (uri.port != port) return;
   req.headers.set(kLocalRpcTokenHeader, token);
+}
+
+/// Install the launch token for this isolate. [spec] drops the fields so a
+/// later export cannot persist them.
+void armLocalRpcFromSpec(Map<String, dynamic> spec) {
+  final token = spec.remove('rpcToken')?.toString().trim() ?? '';
+  final rawPort = spec.remove('rpcPort');
+  final port = rawPort is num ? rawPort.toInt() : int.tryParse(rawPort?.toString() ?? '');
+  if (token.isEmpty || port == null || port < 1 || port > 65535) {
+    localRpcToken = null;
+    localRpcPort = null;
+    return;
+  }
+  localRpcToken = token;
+  localRpcPort = port;
+}
+
+/// A separate CLI process has no UI isolate. The token stays in this process
+/// when the environment names it. Nothing here writes the token to disk.
+void armLocalRpcFromEnv(Map<String, String> env) {
+  final token = (env['SHEAR_RPC_TOKEN'] ?? '').trim();
+  final port = int.tryParse(env['SHEAR_RPC_PORT'] ?? '') ?? 18332;
+  if (token.isEmpty || port < 1 || port > 65535) {
+    localRpcToken = null;
+    localRpcPort = null;
+    return;
+  }
+  localRpcToken = token;
+  localRpcPort = port;
 }
 
 /// Every wallet [HttpClient] dials through [walletConnect] when it is set.

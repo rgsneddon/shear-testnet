@@ -12,6 +12,7 @@ import 'shear_read_sync.dart';
 import 'shear_reserve.dart';
 import 'shear_session.dart';
 import 'shear_shewall.dart';
+import 'shear_tip_tick.dart';
 import 'shear_vortex.dart';
 
 /// Public wallet pin. Keep in lock-step with [kWalletVersion] in main.dart.
@@ -153,12 +154,14 @@ Future<int> runShearCli(
   Map<String, String>? env,
 }) async {
   armWalletConnect();
+  final gotEnv = env ?? Platform.environment;
+  armLocalRpcFromEnv(gotEnv);
   final outBuf = stdout ?? StringBuffer();
   final errBuf = stderr ?? StringBuffer();
   final out = _BufSink(outBuf);
   final err = _BufSink(errBuf);
   try {
-    return await _run(argv, out, err, env ?? Platform.environment);
+    return await _run(argv, out, err, gotEnv);
   } on FormatException catch (e) {
     err.writeln(e.message);
     return 2;

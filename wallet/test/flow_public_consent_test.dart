@@ -705,9 +705,69 @@ void main() {
     await tester.pump();
     expect(calls, 1);
     expect(env!['SHEAR_RPC_TOKEN'], isNotEmpty);
+    expect(env!['SHEAR_HTTP_FOLLOW'], '0');
     expect(env!['SHEAR_P2P_BIND'], '127.0.0.1');
     expect(env!['SHEAR_STRATUM_BIND'], '127.0.0.1');
     expect(session.publicNodeConsent, isFalse);
+  });
+
+  testWidgets('a locked relaunch with P2P or Solo saved starts the node after unlock', (tester) async {
+    Future<void> launch(String mode) async {
+      final dir = Directory.systemTemp.createTempSync('boot-locked-');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      final seeded = ShearSession(store: File('${dir.path}/session.json'));
+      await tester.runAsync(() async {
+        await seeded.loadOrCreate();
+        await seeded.setPassword('test-pass-1');
+        seeded.closureSendMode = mode;
+        seeded.publicNodeChoiceMade = true;
+        await seeded.persist();
+      });
+      final locked = ShearSession(store: seeded.store);
+      await tester.runAsync(() => locked.loadOrCreate());
+      expect(locked.needsUnlock, isTrue);
+      expect(locked.closureSendMode, kClosureModeBare);
+      var calls = 0;
+      Map<String, String>? env;
+      await tester.pumpWidget(ShearWalletApp(
+        key: UniqueKey(),
+        session: locked,
+        skipPoolSync: true,
+        nodeBinary: 'node',
+        startNode: (binary, got, args) async {
+          calls += 1;
+          env = got;
+        },
+      ));
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(calls, 0, reason: mode);
+      expect(find.text('Unlock'), findsOneWidget);
+      final state = tester.state<ShearWalletAppState>(find.byType(ShearWalletApp));
+      state.unlockCtrl.text = 'test-pass-1';
+      await tester.runAsync(() => state.unlockNow());
+      await tester.pump();
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+      await tester.pump();
+      expect(calls, 1, reason: mode);
+      expect(env!['SHEAR_HTTP_FOLLOW'], '0');
+      expect(env!['SHEAR_RPC_TOKEN'], isNotEmpty);
+      expect(env!['SHEAR_SOLO'], mode == kClosureModeFull ? '1' : '0');
+      expect(state.session.closureSendMode, mode);
+      expect(state.sidecar.committed, closureModeFromStored(mode, android: false));
+      final again = ShearSession(store: seeded.store);
+      await tester.runAsync(() async {
+        await again.loadOrCreate();
+        await again.unlock('test-pass-1');
+      });
+      expect(again.closureSendMode, mode);
+    }
+
+    await launch(kClosureModeLocal);
+    await launch(kClosureModeFull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 1));
   });
 
   testWidgets('Public node turns on only after the IP confirm', (tester) async {

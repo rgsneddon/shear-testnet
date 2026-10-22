@@ -149,15 +149,13 @@ describe('node RPC', () => {
     }
   });
 
-  it('refuses a non-loopback Host, any Origin, and a bad sidecar token', async () => {
+  it('gates Host, Origin, and the token only on a loopback bind that has a token', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-rpc-guard-'));
     const store = createStore(dir);
-    const open = createRpc({ store, port: 0, host: '127.0.0.1' });
-    const bound = await open.listen();
-    const ask = (headers) => new Promise((resolve, reject) => {
+    const askOn = (port, headers) => new Promise((resolve, reject) => {
       const req = http.request({
         hostname: '127.0.0.1',
-        port: bound.port,
+        port,
         path: '/policy',
         method: 'GET',
         headers,
@@ -173,67 +171,97 @@ describe('node RPC', () => {
       req.on('error', reject);
       req.end();
     });
+
+    const open = createRpc({ store, port: 0, host: '127.0.0.1' });
+    const bound = await open.listen();
     try {
-      const ok = await ask({ host: `127.0.0.1:${bound.port}` });
+      const ok = await askOn(bound.port, { host: `127.0.0.1:${bound.port}` });
       assert.equal(ok.status, 200);
       assert.equal(ok.json.consensus_min, 9);
-      const named = await ask({ host: 'localhost:18332' });
+      const named = await askOn(bound.port, { host: 'localhost:18332' });
       assert.equal(named.status, 200);
-      const host = await ask({ host: 'p2p.shear.digital' });
-      assert.equal(host.status, 403);
-      assert.equal(host.json.reason, 'rpc_host');
-      const mapped = await ask({ host: '127.0.0.1.evil.test' });
-      assert.equal(mapped.status, 403);
-      assert.equal(mapped.json.reason, 'rpc_host');
-      const origin = await ask({ host: `127.0.0.1:${bound.port}`, origin: 'https://evil.example' });
-      assert.equal(origin.status, 403);
-      assert.equal(origin.json.reason, 'rpc_origin');
-      const nullOrigin = await ask({ host: `127.0.0.1:${bound.port}`, origin: 'null' });
-      assert.equal(nullOrigin.status, 403);
-      assert.equal(nullOrigin.json.reason, 'rpc_origin');
+      const nginx = await askOn(bound.port, { host: '127.0.0.1:18332' });
+      assert.equal(nginx.status, 200);
+      const host = await askOn(bound.port, { host: 'p2p.shear.digital' });
+      assert.equal(host.status, 200);
+      const origin = await askOn(bound.port, { host: `127.0.0.1:${bound.port}`, origin: 'https://evil.example' });
+      assert.equal(origin.status, 200);
     } finally {
       await open.close();
     }
 
     const locked = createRpc({ store, port: 0, host: '127.0.0.1', token: 'launch-token' });
     const lockedBound = await locked.listen();
-    const askLocked = (headers) => new Promise((resolve, reject) => {
-      const req = http.request({
-        hostname: '127.0.0.1',
-        port: lockedBound.port,
-        path: '/policy',
-        method: 'GET',
-        headers,
-      }, (res) => {
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
-        res.on('end', () => {
-          let json = {};
-          try { json = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { /* */ }
-          resolve({ status: res.statusCode, json });
-        });
-      });
-      req.on('error', reject);
-      req.end();
-    });
     try {
-      const missing = await askLocked({ host: `127.0.0.1:${lockedBound.port}` });
+      const missing = await askOn(lockedBound.port, { host: `127.0.0.1:${lockedBound.port}` });
       assert.equal(missing.status, 403);
       assert.equal(missing.json.reason, 'rpc_token');
-      const wrong = await askLocked({
+      const wrong = await askOn(lockedBound.port, {
         host: `127.0.0.1:${lockedBound.port}`,
         'x-shear-rpc-token': 'nope',
       });
       assert.equal(wrong.status, 403);
       assert.equal(wrong.json.reason, 'rpc_token');
-      const right = await askLocked({
+      const host = await askOn(lockedBound.port, {
+        host: 'p2p.shear.digital',
+        'x-shear-rpc-token': 'launch-token',
+      });
+      assert.equal(host.status, 403);
+      assert.equal(host.json.reason, 'rpc_host');
+      const mapped = await askOn(lockedBound.port, {
+        host: '127.0.0.1.evil.test',
+        'x-shear-rpc-token': 'launch-token',
+      });
+      assert.equal(mapped.status, 403);
+      assert.equal(mapped.json.reason, 'rpc_host');
+      const origin = await askOn(lockedBound.port, {
+        host: `127.0.0.1:${lockedBound.port}`,
+        origin: 'https://evil.example',
+        'x-shear-rpc-token': 'launch-token',
+      });
+      assert.equal(origin.status, 403);
+      assert.equal(origin.json.reason, 'rpc_origin');
+      const nullOrigin = await askOn(lockedBound.port, {
+        host: `127.0.0.1:${lockedBound.port}`,
+        origin: 'null',
+        'x-shear-rpc-token': 'launch-token',
+      });
+      assert.equal(nullOrigin.status, 403);
+      assert.equal(nullOrigin.json.reason, 'rpc_origin');
+      const right = await askOn(lockedBound.port, {
         host: `localhost:${lockedBound.port}`,
         'x-shear-rpc-token': 'launch-token',
       });
       assert.equal(right.status, 200);
       assert.equal(right.json.ok, true);
+      const v6 = await askOn(lockedBound.port, {
+        host: `[::1]:${lockedBound.port}`,
+        'x-shear-rpc-token': 'launch-token',
+      });
+      assert.equal(v6.status, 200);
+      const nginx = await askOn(lockedBound.port, {
+        host: '127.0.0.1:18332',
+        'x-shear-rpc-token': 'launch-token',
+      });
+      assert.equal(nginx.status, 200);
+      assert.equal(nginx.json.ok, true);
     } finally {
       await locked.close();
+    }
+
+    const pub = createRpc({ store, port: 0, host: '0.0.0.0', token: 'fleet-token' });
+    const pubBound = await pub.listen();
+    try {
+      const read = await askOn(pubBound.port, { host: 'p2p.shear.digital' });
+      assert.equal(read.status, 200);
+      assert.equal(read.json.ok, true);
+      const nginx = await askOn(pubBound.port, { host: '127.0.0.1:18332' });
+      assert.equal(nginx.status, 200);
+      assert.equal(nginx.json.ok, true);
+      const origin = await askOn(pubBound.port, { host: '127.0.0.1:18332', origin: 'https://pool.shear.digital' });
+      assert.equal(origin.status, 200);
+    } finally {
+      await pub.close();
     }
   });
 });

@@ -128,6 +128,37 @@ class ReleaseNoticesTest(unittest.TestCase):
                 release_notices.assert_windows_dlls_covered([dll])
 
     @staticmethod
+    def minimal_elf_needed(sonames):
+        """ELF64 whose DT_NEEDED entries are exactly sonames. One PT_LOAD covers the file."""
+        import struct
+
+        blobs = b"".join(name + b"\0" for name in sonames)
+        dyn_off = 64 + 56 * 2
+        dyn_size = (len(sonames) + 2) * 16
+        str_off = dyn_off + dyn_size
+        filesz = str_off + len(blobs)
+        vbase = 0x400000
+        ehdr = struct.pack(
+            "<16sHHIQQQIHHHHHH",
+            b"\x7fELF\x02\x01\x01" + b"\0" * 9,
+            3, 0x3E, 1,
+            0, 64, 0, 0,
+            64, 56, 2, 0, 0, 0,
+        )
+        load = struct.pack("<IIQQQQQQ", 1, 5, 0, vbase, vbase, filesz, filesz, 0x1000)
+        dynamic = struct.pack(
+            "<IIQQQQQQ", 2, 6, dyn_off, vbase + dyn_off, vbase + dyn_off, dyn_size, dyn_size, 8,
+        )
+        dyn = b""
+        off = 0
+        for name in sonames:
+            dyn += struct.pack("<qQ", 1, off)
+            off += len(name) + 1
+        dyn += struct.pack("<qQ", 5, vbase + str_off)
+        dyn += struct.pack("<qQ", 0, 0)
+        return ehdr + load + dynamic + dyn + blobs
+
+    @staticmethod
     def minimal_pe(dlls):
         """A PE32+ image with one section holding an import directory for dlls."""
         import struct
@@ -161,12 +192,21 @@ class ReleaseNoticesTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             release_notices.assert_ships_no_gcc_runtime(["runtime/libstdc++.so.6", "libgcc_s.so.1"])
         self.assertIn("libgcc_s.so.1", str(caught.exception))
-        needed = release_notices.elf_needed("/usr/bin/ls")
-        self.assertIn("libc.so.6", needed)
+        # A real distro binary still has to name libc. Ubuntu 26's ls also
+        # needs libgcc_s.so.1, so it is not the clean addon sample.
+        if os.path.isfile("/usr/bin/ls"):
+            needed = release_notices.elf_needed("/usr/bin/ls")
+            self.assertIn("libc.so.6", needed)
         with tempfile.TemporaryDirectory() as d:
             kept = os.path.join(d, "shearhash.node")
-            open(kept, "wb").write(open("/usr/bin/ls", "rb").read())
+            open(kept, "wb").write(self.minimal_elf_needed([b"libc.so.6"]))
+            self.assertEqual(release_notices.elf_needed(kept), ["libc.so.6"])
             release_notices.assert_no_gcc_runtime([kept])
+            gcc = os.path.join(d, "gcc.node")
+            open(gcc, "wb").write(self.minimal_elf_needed([b"libc.so.6", b"libgcc_s.so.1"]))
+            with self.assertRaises(SystemExit) as gcc_hit:
+                release_notices.assert_no_gcc_runtime([gcc])
+            self.assertIn("libgcc_s.so.1", str(gcc_hit.exception))
             shipped = os.path.join(d, "libstdc++.so.6")
             open(shipped, "wb").write(b"")
             with self.assertRaises(SystemExit):

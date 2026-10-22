@@ -901,10 +901,19 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
 /// book the worker already collated.
 Future<void> creditFollowEntry(List<dynamic> args) async {
   armWalletConnect();
-  final specJson = args.isEmpty ? '' : args[0]?.toString() ?? '';
+  var specJson = args.isEmpty ? '' : args[0]?.toString() ?? '';
   final port = args.length > 1 ? args[1] : null;
   if (port is! SendPort) return;
   try {
+    final decoded = jsonDecode(specJson);
+    if (decoded is Map) {
+      final spec = Map<String, dynamic>.from(decoded);
+      armLocalRpcFromSpec(spec);
+      specJson = jsonEncode(spec);
+    } else {
+      localRpcToken = null;
+      localRpcPort = null;
+    }
     final out = await creditFollowWorker(specJson, port);
     port.send(<String, dynamic>{
       'event': 'done',
@@ -6353,6 +6362,14 @@ class ShearLedger implements ReadProofSink {
         for (final e in _reserveHeldNanos.entries) e.key: e.value.toString(),
       },
     };
+    // The launch token lives in this isolate. The worker is another isolate,
+    // so the spec carries it. armLocalRpcFromSpec removes it before any export.
+    final rpcTok = localRpcToken;
+    final rpcPort = localRpcPort;
+    if (rpcTok != null && rpcTok.isNotEmpty && rpcPort != null) {
+      spec['rpcToken'] = rpcTok;
+      spec['rpcPort'] = rpcPort;
+    }
     // A sealed session is already on disk. The worker opens it. Encoding the
     // in-memory book here is what froze Verifying on 0.68 (Windows and Android).
     if (sessionPath != null && sessionPath.isNotEmpty) {
