@@ -191,18 +191,22 @@ export function sealedExplorerRows(block) {
       let recovered = '';
       if (!hit.address && !o.address && toDest20) {
         try {
-          // Display only. A dest20 that does not commit to the note stays unlabeled.
+          // Display only, same gate as coinbase_notes.js: a dest20 label needs a
+          // 32-byte noteCommit that is that dest. Missing or short commits stay blank.
+          // Off the payout schedule this string is a declared dest, not proof of payee.
           const nc = Buffer.from(asU8(o.noteCommit));
-          if (nc.length !== 32 || nc.equals(noteCommitOfDest20(toDest20))) {
+          if (nc.length === 32 && nc.equals(noteCommitOfDest20(toDest20))) {
             recovered = encodeDest(toDest20);
           }
         } catch { recovered = ''; }
       }
+      const to = hit.address || o.address || recovered;
       rows.push({
         id: `${hid}-${o.kind || 'cb'}-${i}`,
         kind: o.kind === 'hash' ? 'hash' : (o.kind === 'lock' || o.kind === 'vote' || o.kind === 'withdraw' ? o.kind : 'coinbase'),
         from: 'coinbase',
-        to: hit.address || o.address || recovered,
+        to,
+        ...(recovered ? { toDeclared: true } : {}),
         nanos,
         height,
         confirmed: true,
