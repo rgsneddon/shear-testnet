@@ -8,9 +8,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_checkpoint.dart';
 import 'package:shear_wallet/shear_closure.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_hash.dart';
+import 'package:shear_wallet/shear_hash_v3.dart' as v3;
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
@@ -58,9 +60,10 @@ void main() {
         _v3PatHeader: _v3PatDigest,
         _v3GenesisHeader: _v3GenesisDigest,
         _v3ChildHeader: _v3ChildDigest,
+        _v3CkptHeader: _v3CkptDigest,
       };
       for (final entry in cases.entries) {
-        final got = shearHashV3(_hexBytes(entry.key));
+        final got = v3.shearHashV3(_hexBytes(entry.key));
         expect(got, isNotNull);
         expect(_hexOf(got!), entry.value);
       }
@@ -69,28 +72,31 @@ void main() {
   );
 
   test(
-    'a host live height is not spendable depth; only a pinned v3 chain is',
+    'native ShearHash-v3 matches the JS vectors and reuses the key cache',
     () {
-      final ledger = ShearLedger();
-      ledger.noteLiveHeight(40);
-      ledger.noteCovered(4);
-      expect(ledger.sealedHeight, 40);
-      expect(ledger.bookTip, 0);
-      expect(ledger.notesCovered, 4);
-      expect(ledger.confirmationsOf(1), 0);
-      final genesis = _hexBytes(_v3GenesisHeader);
-      final child = _hexBytes(_v3ChildHeader);
-      final pin = _hexBytes(_v3GenesisDigest);
-      ledger.applyTipHeader(child, sealedHeight: 2);
-      expect(ledger.bookTip, 0, reason: 'no genesis pin');
-      ledger.bindGenesisPin(pin, _v3GenesisMs);
-      ledger.applyTipHeader(child, sealedHeight: 2);
-      expect(ledger.bookTip, 0, reason: 'parent is not checked');
-      ledger.applyTipHeader(genesis, sealedHeight: 1);
-      expect(ledger.bookTip, 1);
-      ledger.applyTipHeader(child, sealedHeight: 2);
-      expect(ledger.bookTip, 2);
-      expect(ledger.confirmationsOf(1), 2);
+      final cold = Stopwatch()..start();
+      final first = shearHashV3(_hexBytes(_v3CkptHeader));
+      cold.stop();
+      final warm = Stopwatch()..start();
+      final second = shearHashV3(_hexBytes(_v3CkptHeader));
+      warm.stop();
+      // ignore: avoid_print
+      print(
+        'SHEAR_V3_MS cold=${cold.elapsedMilliseconds} warm=${warm.elapsedMilliseconds}',
+      );
+      expect(first, isNotNull);
+      expect(_hexOf(first!), _v3CkptDigest);
+      expect(_hexOf(second!), _v3CkptDigest);
+      expect(warm.elapsedMilliseconds, lessThan(cold.elapsedMilliseconds));
+      expect(cold.elapsedMilliseconds, lessThan(3000));
+      for (final entry in {
+        _v3SelfHex(): _v3SelfDigest,
+        _v3PatHeader: _v3PatDigest,
+        _v3GenesisHeader: _v3GenesisDigest,
+        _v3ChildHeader: _v3ChildDigest,
+      }.entries) {
+        expect(_hexOf(shearHashV3(_hexBytes(entry.key))!), entry.value);
+      }
       final quote = asertQuoteForHeight(
         anchorTimeMs: _v3GenesisMs,
         blockTimeMs: _v3ChildMs,
@@ -99,61 +105,119 @@ void main() {
       );
       expect(quote.packed, _v3ChildBits);
       expect(quote.eased, 918332);
-      expect(bitsAcceptAsert(_v3ChildBits, quote), isTrue);
-      ledger.noteLiveHeight(55);
-      expect(ledger.sealedHeight, 55);
-      expect(ledger.bookTip, 2);
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 
-      final fake = Uint8List.fromList(genesis);
-      fake[112] ^= 0xff;
-      final fakeBook = ShearLedger()..bindGenesisPin(pin, _v3GenesisMs);
-      fakeBook.applyTipHeader(fake, sealedHeight: 1);
-      expect(fakeBook.bookTip, 0, reason: 'fake genesis');
+  test('the release guard fails on an empty checkpoint pin', () {
+    expect(kCheckpointIsPlaceholder, isTrue);
+    expect(checkpointPinWellFormed(kReleaseCheckpoint), isFalse);
+    expect(requireReleaseCheckpoint, throwsStateError);
+    expect(checkpointPinWellFormed(_fixturePin()), isTrue);
+  });
 
-      final broken = _linkedHeader(
-        prev: pin,
-        timestampMs: _v3GenesisMs + 60000,
-        bits: _v3ChildBits,
+  test(
+    'backfill from a fixture checkpoint gives depth without settleTo or FlyClient',
+    () async {
+      final id = createIdentity();
+      final dir = Directory.systemTemp.createTempSync('shear-hdr-');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      final path = '${dir.path}/verified-headers.json';
+      final ledger = ShearLedger()..bindIdentity(id);
+      final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+      ledger.rememberNote(_coin(dest, nanos: kUnitsPerShe, height: 12));
+      ledger.noteLiveHeight(40);
+      expect(ledger.bookTip, 0);
+      expect(
+        ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+        0,
       );
+      ledger.installCheckpoint(_fixturePin(), storePath: path);
+      expect(ledger.bookTip, 19);
+      expect(
+        ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+        0,
+        reason: 'eight confirmations',
+      );
+      ledger.noteVerifiedHeight(100);
+      expect(ledger.bookTip, 19, reason: 'FlyClient does not set depth');
+      final child = _hexBytes(_v3CkptHeader);
+      final tip = await ledger.catchUpVerifiedChain(
+        20,
+        fetch: (from, to) async => [(height: 20, header: child)],
+      );
+      expect(tip, 20);
+      expect(ledger.bookTip, 20);
+      expect(ledger.confirmationsOf(12), 9);
+      expect(
+        ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+        greaterThan(0),
+      );
+      final resumed = ShearLedger()..bindIdentity(id);
+      resumed.installCheckpoint(_fixturePin(), storePath: path);
+      expect(resumed.bookTip, 20);
+      final again = await resumed.catchUpVerifiedChain(
+        20,
+        fetch: (from, to) async => throw StateError('fetch'),
+      );
+      expect(again, 20);
+
+      final pin = _hexBytes(_v3GenesisDigest);
+      final broken = Uint8List.fromList(child);
       broken[4] ^= 0xff;
-      final brokenBook = ShearLedger()..bindGenesisPin(pin, _v3GenesisMs);
-      brokenBook.applyTipHeader(genesis, sealedHeight: 1);
-      brokenBook.applyTipHeader(broken, sealedHeight: 2);
-      expect(brokenBook.bookTip, 1, reason: 'broken parent');
+      final brokenBook = ShearLedger()..installCheckpoint(_fixturePin());
+      brokenBook.applyTipHeader(broken, sealedHeight: 20);
+      expect(brokenBook.bookTip, 19, reason: 'broken parent');
 
       final late = _linkedHeader(
         prev: pin,
         timestampMs: _v3GenesisMs + 26 * 60 * 60 * 1000,
         bits: 4 * 65536,
       );
-      final lateBook = ShearLedger()..bindGenesisPin(pin, _v3GenesisMs);
-      lateBook.applyTipHeader(genesis, sealedHeight: 1);
-      lateBook.applyTipHeader(late, sealedHeight: 2);
-      expect(lateBook.bookTip, 1, reason: '26h late 4-bit header');
+      final lateBook = ShearLedger()..installCheckpoint(_fixturePin());
+      lateBook.applyTipHeader(late, sealedHeight: 20);
+      expect(lateBook.bookTip, 19, reason: '26h late');
 
-      final ahead = _linkedHeader(
-        prev: pin,
-        timestampMs: _v3GenesisMs + 60000,
-        bits: _v3ChildBits,
-      );
       final futureBook = ShearLedger()
-        ..bindGenesisPin(pin, _v3GenesisMs)
+        ..installCheckpoint(_fixturePin())
         ..bindHeaderClock(_v3GenesisMs);
-      futureBook.applyTipHeader(genesis, sealedHeight: 1);
-      futureBook.applyTipHeader(ahead, sealedHeight: 2);
-      expect(futureBook.bookTip, 1, reason: 'future time');
+      futureBook.applyTipHeader(
+        _linkedHeader(
+          prev: pin,
+          timestampMs: _v3GenesisMs + 60000,
+          bits: 4 * 65536,
+        ),
+        sealedHeight: 20,
+      );
+      expect(futureBook.bookTip, 19, reason: 'future time');
 
       final low = Uint8List.fromList(child);
       low[108] = 1;
       low[109] = 0;
       low[110] = 0;
       low[111] = 0;
-      final lowBook = ShearLedger()..bindGenesisPin(pin, _v3GenesisMs);
-      lowBook.applyTipHeader(genesis, sealedHeight: 1);
-      lowBook.applyTipHeader(low, sealedHeight: 2);
-      expect(lowBook.bookTip, 1, reason: 'low bits');
+      final lowBook = ShearLedger()..installCheckpoint(_fixturePin());
+      lowBook.applyTipHeader(low, sealedHeight: 20);
+      expect(lowBook.bookTip, 19, reason: 'low bits');
+
+      final wrong = CheckpointPin(
+        network: _fixturePin().network,
+        height: 19,
+        hashHex: '11${_v3GenesisDigest.substring(2)}',
+        timeMs: _v3GenesisMs,
+        bits: 4 * 65536,
+        anchorHeight: 19,
+        anchorTimeMs: _v3GenesisMs,
+        anchorBits: 4 * 65536,
+        priorTimesMs: _fixturePin().priorTimesMs,
+      );
+      final wrongBook = ShearLedger()..installCheckpoint(wrong);
+      wrongBook.applyTipHeader(child, sealedHeight: 20);
+      expect(wrongBook.bookTip, 19, reason: 'wrong checkpoint');
     },
-    timeout: const Timeout(Duration(minutes: 3)),
+    timeout: const Timeout(Duration(minutes: 2)),
   );
 
   test('desktop own-node depth comes from the node tip without settleTo', () {
@@ -299,6 +363,103 @@ void main() {
       expect(tx.to, bob);
       expect(shown, formatSheFromNanos(pay.toInt()));
     },
+  );
+
+  test(
+    'a held multi-note send on the app path posts the reduced amount',
+    () async {
+      final id = createIdentity();
+      final seed = hexToBytes(id.seedHex);
+      final probe = ShearLedger()..bindIdentity(id);
+      final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+      final d20 = hash20FromAddress(dest)!;
+      final notes = <Map<String, dynamic>>[];
+      final pubs = <Uint8List>[];
+      final commits = <Uint8List>[];
+      for (var i = 0; i < 2; i++) {
+        var note = nativeSealNote(5 * kUnitsPerShe, dest20: d20, kind: 'pot');
+        note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
+        note = compactSealedVout(note);
+        note['height'] = 2;
+        notes.add(note);
+        final x = admitScalarFromSeed(seed, note);
+        pubs.add(pointBytes(admitPub(x)));
+        commits.add(note['commit'] as Uint8List);
+      }
+      final pool = _PostPool(
+        pubs.map(_hexOf).toList(),
+        commits.map(_hexOf).toList(),
+      );
+      final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+      ledger.noteNodeCheckedTip(40);
+      ledger.ingestSealedVouts(
+        notes,
+        spendSeed: seed,
+        dest: dest,
+        prev: Uint8List(32),
+        startIndex: 0,
+      );
+      ledger.setReserveHeldNanos(dest, 3 * kUnitsPerShe);
+      const ask = 7 * kUnitsPerShe;
+      expect(
+        ledger.displayedSpendableNanos(id.address, paymentCode: id.paymentCode),
+        BigInt.from(ask),
+      );
+      final bobId = createIdentity();
+      final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(
+        bobId.address,
+        paymentCode: bobId.paymentCode,
+      );
+      final fee = estimateSendLevyUnits(inputs: 2, outputs: 3);
+      final shown = await ledger.quoteConfirmRecipientShe(
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        amount: 7,
+        nanosWire: '$ask',
+      );
+      debugNativeSealNote = (v, {dest20, kind = 'send'}) {
+        final r = randomScalar();
+        final value = proveValue(v, r);
+        final nc = dest20 != null ? noteCommitOfDest20(dest20) : Uint8List(32);
+        return {
+          'kind': kind,
+          'noteCommit': nc,
+          'commit': value['C'],
+          'valueProof': {'R': value['R'], 'z': value['z'], 'v': v},
+          'rangeProof': Uint8List.fromList([2, ...List<int>.filled(64, 4)]),
+          'r': scalarBytes(r),
+          'nanos': v,
+          if (dest20 != null) 'dest20': dest20,
+        };
+      };
+      addTearDown(() {
+        debugNativeSealNote = null;
+      });
+      final result = await submitContinuumSend(
+        ledger: ledger,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        startTo: bob,
+        enteredTo: bob,
+        amount: 7,
+        nanosWire: '$ask',
+        spendSeed: seed,
+        local: false,
+        publicNode: false,
+        allowPublicHttp: true,
+      );
+      final pay = BigInt.from(ask) - BigInt.from(fee);
+      final payShe = pay.toDouble() / kUnitsPerShe;
+      expect(debugLastFeeNanos, BigInt.from(fee));
+      expect(debugLastPayNanos, pay);
+      expect(debugLastChangeNanos, BigInt.from(3 * kUnitsPerShe));
+      expect(result.posted, isTrue);
+      expect(result.tx, isNotNull);
+      expect(result.tx!.amount, closeTo(payShe, 1e-9));
+      expect(pool.postedAmount, closeTo(payShe, 1e-9));
+      expect(shown, formatSheFromNanos(pay.toInt()));
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
   );
 
   testWidgets('the flow line shows the reduced recipient amount', (tester) async {
@@ -816,6 +977,77 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
+class _PostPool extends ShearPoolClient {
+  _PostPool(this.pubHex, this.commitHex)
+    : super(
+        baseUrl: 'http://127.0.0.1:9',
+        http: HttpClient()..idleTimeout = const Duration(milliseconds: 50),
+      );
+  final List<String> pubHex;
+  final List<String> commitHex;
+  double? postedAmount;
+
+  @override
+  Future<Map<String, dynamic>> fluxset() async => {
+    'ok': true,
+    'pubs': pubHex,
+    'commits': commitHex,
+    'anchors': [
+      {'height': 8, 'n': pubHex.length},
+    ],
+    'spendTags': const <String>[],
+  };
+
+  @override
+  Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
+
+  @override
+  Future<Map<String, dynamic>> send({
+    required String from,
+    required String to,
+    required double amount,
+    Map<String, dynamic>? memoCt,
+    String? open,
+    String? sig,
+    String? portalOpen,
+    String? kind,
+    String? programId,
+    String? choice,
+    int? currentEpoch,
+    int? epochStartMs,
+    String? change,
+    String? spendPub,
+    String? ephPub,
+    List<dynamic>? vin,
+    List<dynamic>? vout,
+    dynamic excess,
+    Map<String, dynamic>? admitProof,
+    List<Map<String, dynamic>>? admitProofs,
+    String? spendTag,
+    int? fee,
+    int paintedOwedNanos = 0,
+    bool legacyPoolSend = false,
+    bool publicConsent = false,
+    String? nanosWire,
+    String? id,
+    String? withdrawNonce,
+    String? fs1,
+    int? anchor,
+  }) async {
+    postedAmount = amount;
+    return {
+      'ok': true,
+      'tx': {
+        'id': 'held-send',
+        'from': from,
+        'to': to,
+        'amount': amount,
+        'kind': kind ?? 'send',
+      },
+    };
+  }
+}
+
 class _MidPool extends ShearPoolClient {
   _MidPool(this.pubHex, this.commitHex, String baseUrl)
     : super(
@@ -900,6 +1132,25 @@ const _v3GenesisHeader =
     '0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000806e87740100000000110075fd0300000000000000000000000000';
 const _v3ChildHeader =
     '010000000000062e313064a7eb815f40f8d0c5ead15fd47d4ac293aaac7e09c9ea8fa4b7000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001859dc87740100003c03100047e60000000000000000000000000000';
+const _v3CkptDigest =
+    '03b471fcb9e55ab73e6238cca90506433490143b0f343eb08edc4aa28d9cf117';
+const _v3CkptHeader =
+    '010000000000062e313064a7eb815f40f8d0c5ead15fd47d4ac293aaac7e09c9ea8fa4b70000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000090df6f87740100000000040001000000000000000000000000000000';
+
+CheckpointPin _fixturePin() {
+  const time = _v3GenesisMs;
+  return CheckpointPin(
+    network: 'testnet-v12-fixture',
+    height: 19,
+    hashHex: _v3GenesisDigest,
+    timeMs: time,
+    bits: 4 * 65536,
+    anchorHeight: 19,
+    anchorTimeMs: time,
+    anchorBits: 4 * 65536,
+    priorTimesMs: [for (var i = 10; i >= 1; i--) time - i * 90000],
+  );
+}
 
 String _v3SelfHex() => '${'01'}${'00' * 127}';
 

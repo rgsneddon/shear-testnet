@@ -20,6 +20,7 @@ import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
+import 'shear_checkpoint.dart';
 import 'shear_hash.dart';
 import 'shear_tip_tick.dart';
 
@@ -1321,6 +1322,13 @@ Future<Map<String, dynamic>> creditFollowWorker(
   final ledger = ShearLedger(pool: pool);
   ledger._stampSpendTagsInline = true;
   ledger._v3HashInline = true;
+  final sessionPath = spec['sessionPath']?.toString() ?? '';
+  final slash = sessionPath.lastIndexOf('/');
+  if (slash > 0) {
+    ledger.bindHeaderStore(
+      '${sessionPath.substring(0, slash)}/verified-headers.json',
+    );
+  }
   try {
     ledger.installCreditFollow(spec);
     final rest = spec['restFrame']?.toString() ?? '';
@@ -4714,6 +4722,8 @@ class ShearLedger implements ReadProofSink {
     _verifiedTip = 0;
     _settledHeight = 0;
     _checkedHeaders.clear();
+    _chainLoaded = false;
+    _seedCheckpoint();
     lag1Root = null;
     tipHeight = 1;
   }
@@ -4775,44 +4785,68 @@ class ShearLedger implements ReadProofSink {
     if (height > _verifiedTip) _verifiedTip = height;
   }
 
-  /// Network genesis. Empty until the v12 cut publishes a hash. A host
-  /// header cannot fill these in.
-  static const String kNetworkGenesisHash = '';
-  static const int kNetworkGenesisMs = 0;
-
-  /// Pinned genesis hash and time. Empty until [kNetworkGenesisHash] or a
-  /// test installs them. A host-labelled height 1 does not set this.
-  Uint8List? _genesisPinHash;
-  int? _genesisPinMs;
+  /// Release checkpoint. Empty until [installCheckpoint]. A host header cannot fill it.
+  CheckpointPin? _pin;
+  String? _headerStorePath;
+  bool _chainLoaded = false;
 
   /// Verifier clock for the future-time bound. Tests pin it. Production uses
   /// the wall clock.
   int? _headerNowMs;
 
-  final List<({int height, Uint8List hash, int timeMs})> _checkedHeaders = [];
+  final List<({int height, Uint8List hash, int timeMs, String headerHex})>
+  _checkedHeaders = [];
   final Map<String, Uint8List> _v3Ready = {};
 
   /// The credit worker is already off the UI isolate.
   bool _v3HashInline = false;
 
-  void _installNetworkPin() {
-    if (_genesisPinHash != null) return;
-    final hex = kNetworkGenesisHash;
-    if (hex.length != 64 || kNetworkGenesisMs <= 0) return;
-    final hash = Uint8List(32);
-    for (var i = 0; i < 32; i++) {
-      hash[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+  static const int _kHeaderAheadMs = 15000;
+  static const int _kMtpFutureMs = 2 * 60 * 60 * 1000;
+  static const int _kMtpWindow = 11;
+  static const int _kHeaderBackfillCap = 32;
+
+  int get _chainTip {
+    var tip = 0;
+    for (final row in _checkedHeaders) {
+      if (row.height > tip) tip = row.height;
     }
-    _genesisPinHash = hash;
-    _genesisPinMs = kNetworkGenesisMs;
+    return tip;
   }
 
-  /// Install the network genesis pin. The header must still hash to [hash]
-  /// and carry [timeMs]. It does not by itself move the spendable tip.
-  void bindGenesisPin(Uint8List hash, int timeMs) {
-    if (hash.length != 32 || timeMs <= 0) return;
-    _genesisPinHash = Uint8List.fromList(hash);
-    _genesisPinMs = timeMs;
+  /// Install a release checkpoint. This block is the anchor. Later headers
+  /// still have to link, pass MTP and the future-time bound, and meet ASERT.
+  void installCheckpoint(CheckpointPin pin, {String? storePath}) {
+    if (!checkpointPinWellFormed(pin)) return;
+    _pin = pin;
+    if (storePath != null && storePath.isNotEmpty) _headerStorePath = storePath;
+    _checkedHeaders.clear();
+    _chainLoaded = false;
+    _seedCheckpoint();
+    _loadVerifiedChain();
+  }
+
+  /// Where the verified header chain is stored. Loaded once a pin is installed.
+  void bindHeaderStore(String path) {
+    if (path.isEmpty) return;
+    _headerStorePath = path;
+    _chainLoaded = false;
+    if (_pin != null) _loadVerifiedChain();
+  }
+
+  void _installReleaseCheckpoint() {
+    if (_pin != null || kCheckpointIsPlaceholder) return;
+    if (!checkpointPinWellFormed(kReleaseCheckpoint)) return;
+    installCheckpoint(kReleaseCheckpoint);
+  }
+
+  void _seedCheckpoint() {
+    final pin = _pin;
+    if (pin == null) return;
+    final hash = _hexToBytes(pin.hashHex);
+    if (hash == null) return;
+    _rememberChecked(pin.height, hash, pin.timeMs, headerHex: '');
+    if (pin.height > _verifiedTip) _verifiedTip = pin.height;
   }
 
   /// Test clock for the header future-time bound.
@@ -4820,20 +4854,11 @@ class ShearLedger implements ReadProofSink {
     if (nowMs > 0) _headerNowMs = nowMs;
   }
 
-  /// A flyclient sample this wallet already checked. Moves the spendable tip.
+  /// FlyClient does not move spendable depth. A sample counts only when
+  /// [catchUpVerifiedChain] accepts the header onto the linked chain.
   void noteVerifiedHeight(int height) {
     if (height < 1) return;
-    if (height > _verifiedTip) _verifiedTip = height;
-    if (height > _sealedHeight) {
-      noteLiveHeight(height);
-      return;
-    }
-    settleTo(_verifiedTip);
   }
-
-  static const int _kHeaderAheadMs = 15000;
-  static const int _kMtpFutureMs = 2 * 60 * 60 * 1000;
-  static const int _kMtpWindow = 11;
 
   int _headerVersion(Uint8List header) =>
       header[0] | (header[1] << 8) | (header[2] << 16) | (header[3] << 24);
@@ -4846,13 +4871,6 @@ class ShearLedger implements ReadProofSink {
     return bits;
   }
 
-  bool _prevIsZero(Uint8List header) {
-    for (var i = 4; i < 36; i++) {
-      if (header[i] != 0) return false;
-    }
-    return true;
-  }
-
   bool _prevEquals(Uint8List header, Uint8List hash) {
     if (hash.length != 32) return false;
     for (var i = 0; i < 32; i++) {
@@ -4861,11 +4879,23 @@ class ShearLedger implements ReadProofSink {
     return true;
   }
 
-  ({int height, Uint8List hash, int timeMs})? _checkedAt(int height) {
+  ({int height, Uint8List hash, int timeMs, String headerHex})? _checkedAt(
+    int height,
+  ) {
     for (final row in _checkedHeaders) {
       if (row.height == height) return row;
     }
     return null;
+  }
+
+  int? _timeAt(int height) {
+    final row = _checkedAt(height);
+    if (row != null) return row.timeMs;
+    final pin = _pin;
+    if (pin == null) return null;
+    final age = pin.height - height;
+    if (age < 1 || age > pin.priorTimesMs.length) return null;
+    return pin.priorTimesMs[pin.priorTimesMs.length - age];
   }
 
   int _medianTimes(List<int> times) {
@@ -4874,45 +4904,60 @@ class ShearLedger implements ReadProofSink {
     return sorted[(sorted.length - 1) ~/ 2];
   }
 
-  /// Structural link, MTP, and future-time. No hash yet.
+  /// Prev link, 11-header MTP, and the future-time bound. No hash yet.
   bool _headerCandidate(Uint8List header, int sealedHeight) {
-    if (sealedHeight < 1 || header.length != shearHeaderLen) return false;
+    if (_pin == null || sealedHeight < 1 || header.length != shearHeaderLen) {
+      return false;
+    }
     if (_headerVersion(header) != 1) return false;
     final ts = headerTimestampMs(header);
     if (ts == null || ts <= 0) return false;
-    final bits = _headerBits(header);
-    if (bits < kAsertBitsScale) return false;
-    if (sealedHeight == 1) {
-      _installNetworkPin();
-      final pin = _genesisPinHash;
-      final pinMs = _genesisPinMs;
-      if (pin == null || pinMs == null) return false;
-      if (bits != kGenesisBitsPacked || !_prevIsZero(header)) return false;
-      return ts == pinMs;
-    }
+    if (_headerBits(header) < kAsertBitsScale) return false;
+    if (sealedHeight != _chainTip + 1) return false;
     final parent = _checkedAt(sealedHeight - 1);
     if (parent == null || !_prevEquals(header, parent.hash)) return false;
     if (ts <= parent.timeMs) return false;
     final window = <int>[];
-    final from = sealedHeight - _kMtpWindow;
-    for (var h = from < 1 ? 1 : from; h < sealedHeight; h++) {
-      final row = _checkedAt(h);
-      if (row != null) window.add(row.timeMs);
+    for (var h = sealedHeight - _kMtpWindow; h < sealedHeight; h++) {
+      final t = _timeAt(h);
+      if (t == null) return false;
+      window.add(t);
     }
-    if (window.isEmpty) window.add(parent.timeMs);
+    if (window.length < _kMtpWindow) return false;
     if (ts > _medianTimes(window) + _kMtpFutureMs) return false;
     final now = _headerNowMs ?? DateTime.now().millisecondsSinceEpoch;
     if (ts > now + _kHeaderAheadMs || ts > now + _kMtpFutureMs) return false;
     return true;
   }
 
-  void _rememberChecked(int height, Uint8List hash, int timeMs) {
+  void _rememberChecked(
+    int height,
+    Uint8List hash,
+    int timeMs, {
+    String headerHex = '',
+  }) {
     _checkedHeaders.removeWhere((row) => row.height == height);
     _checkedHeaders.add((
       height: height,
       hash: Uint8List.fromList(hash),
       timeMs: timeMs,
+      headerHex: headerHex,
     ));
+    if (_checkedHeaders.length > 64) {
+      _checkedHeaders.sort((a, b) => a.height.compareTo(b.height));
+      while (_checkedHeaders.length > 48) {
+        if (_checkedHeaders.first.height == _pin?.height) {
+          _checkedHeaders.removeAt(1);
+        } else {
+          _checkedHeaders.removeAt(0);
+        }
+      }
+    }
+  }
+
+  void _rememberDigest(String hex, Uint8List digest) {
+    if (_v3Ready.length > 8) _v3Ready.remove(_v3Ready.keys.first);
+    _v3Ready[hex] = digest;
   }
 
   Uint8List? _digestOf(Uint8List header) {
@@ -4921,13 +4966,13 @@ class ShearLedger implements ReadProofSink {
     if (ready != null) return ready;
     if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
       final digest = shearHashV3(header);
-      if (digest != null) _v3Ready[hex] = digest;
+      if (digest != null) _rememberDigest(hex, digest);
       return digest;
     }
     return null;
   }
 
-  /// Hash a tip header off the UI isolate, then [applyTipHex] can use it.
+  /// Hash a header off the UI isolate, then [applyTipHex] can use it.
   Future<void> _prepareTipHash(String headerHex, int sealedHeight) async {
     final raw = headerFromHex(headerHex);
     if (raw == null || !_headerCandidate(raw, sealedHeight)) return;
@@ -4940,38 +4985,148 @@ class ShearLedger implements ReadProofSink {
       final copy = Uint8List.fromList(raw);
       digest = await Isolate.run(() => shearHashV3(copy));
     }
-    if (digest != null) _v3Ready[hex] = digest;
+    if (digest != null) _rememberDigest(hex, digest);
   }
 
-  /// ShearHash-v3 meets this header, the prev link reaches a checked header,
-  /// and the bits are the ASERT quote from the pinned genesis. A host height
-  /// is not an anchor.
+  /// Native ShearHash-v3, prev link back to the checkpoint, MTP, the
+  /// future-time bound, and ASERT bits from that checkpoint's anchor.
   bool _headerPowOk(Uint8List header, {required int sealedHeight}) {
+    final pin = _pin;
+    if (pin == null) return false;
+    if (_checkedAt(sealedHeight) != null && sealedHeight <= _chainTip) {
+      return true;
+    }
     if (!_headerCandidate(header, sealedHeight)) return false;
     final ts = headerTimestampMs(header);
     final bits = _headerBits(header);
     if (ts == null) return false;
+    final parent = _checkedAt(sealedHeight - 1);
+    if (parent == null) return false;
     final digest = _digestOf(header);
     if (digest == null || !shearMeetsTarget(digest, bits)) return false;
-    if (sealedHeight == 1) {
-      final pin = _genesisPinHash;
-      if (pin == null || !noteBytesEq(digest, pin)) return false;
-      _rememberChecked(1, digest, ts);
-      return true;
-    }
-    final genesis = _checkedAt(1);
-    final parent = _checkedAt(sealedHeight - 1);
-    if (genesis == null || parent == null) return false;
     final quote = asertQuoteForHeight(
-      anchorTimeMs: genesis.timeMs,
+      anchorTimeMs: pin.anchorTimeMs,
       blockTimeMs: ts,
       blockHeight: sealedHeight,
-      anchorBits: kGenesisBitsPacked,
+      anchorHeight: pin.anchorHeight,
+      anchorBits: pin.anchorBits,
       parentTimeMs: parent.timeMs,
     );
     if (!bitsAcceptAsert(bits, quote)) return false;
-    _rememberChecked(sealedHeight, digest, ts);
+    _rememberChecked(sealedHeight, digest, ts, headerHex: _bytesHex(header));
+    if (sealedHeight > _verifiedTip) _verifiedTip = sealedHeight;
     return true;
+  }
+
+  /// Headers from the checkpoint toward [hostTip]. At most 32 per call.
+  /// The credit worker calls this off the UI isolate. A bare wallet stays at
+  /// depth 0 until this chain reaches the note.
+  Future<int> catchUpVerifiedChain(
+    int hostTip, {
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetch,
+  }) async {
+    _installReleaseCheckpoint();
+    if (_pin == null || hostTip < 1) return bookTip;
+    _loadVerifiedChain();
+    var next = _chainTip + 1;
+    if (hostTip < next) return bookTip;
+    final cap = next + _kHeaderBackfillCap - 1;
+    final to = hostTip < cap ? hostTip : cap;
+    final rows = fetch != null
+        ? await fetch(next, to)
+        : await _fetchHeaderPage(next, to);
+    rows.sort((a, b) => a.height.compareTo(b.height));
+    for (final row in rows) {
+      if (row.height != next) break;
+      await _prepareTipHash(_bytesHex(row.header), row.height);
+      if (!_headerPowOk(row.header, sealedHeight: row.height)) break;
+      next = _chainTip + 1;
+    }
+    _saveVerifiedChain();
+    return bookTip;
+  }
+
+  Future<List<({int height, Uint8List header})>> _fetchHeaderPage(
+    int from,
+    int to,
+  ) async {
+    final client = pool;
+    if (client == null) return const [];
+    final out = <({int height, Uint8List header})>[];
+    for (var h = from; h <= to; h++) {
+      try {
+        final json = await client.headerAt(h);
+        final raw = headerFromHex(json['header']?.toString() ?? '');
+        if (raw == null) break;
+        final height = (json['height'] as num?)?.toInt() ?? h;
+        out.add((height: height, header: raw));
+      } catch (_) {
+        break;
+      }
+    }
+    return out;
+  }
+
+  void _loadVerifiedChain() {
+    if (_chainLoaded || _pin == null) return;
+    final path = _headerStorePath;
+    if (path == null || path.isEmpty) return;
+    _chainLoaded = true;
+    final file = File(path);
+    if (!file.existsSync()) return;
+    Object? decoded;
+    try {
+      decoded = jsonDecode(file.readAsStringSync());
+    } catch (_) {
+      return;
+    }
+    if (decoded is! Map) return;
+    if (decoded['pin']?.toString().toLowerCase() != _pin!.hashHex.toLowerCase()) {
+      return;
+    }
+    final rows = decoded['rows'];
+    if (rows is! List) return;
+    final pending = <({int height, Uint8List header})>[];
+    for (final row in rows) {
+      if (row is! Map) return;
+      final height = (row['h'] as num?)?.toInt() ?? 0;
+      final raw = headerFromHex(row['hdr']?.toString() ?? '');
+      if (height < 1 || raw == null) return;
+      pending.add((height: height, header: raw));
+    }
+    pending.sort((a, b) => a.height.compareTo(b.height));
+    for (final row in pending) {
+      if (row.height != _chainTip + 1) return;
+      if (!_headerPowOk(row.header, sealedHeight: row.height)) return;
+    }
+  }
+
+  void _saveVerifiedChain() {
+    final path = _headerStorePath;
+    final pin = _pin;
+    if (path == null || path.isEmpty || pin == null) return;
+    final rows = [
+      for (final row in _checkedHeaders)
+        if (row.height > pin.height && row.headerHex.isNotEmpty)
+          {'h': row.height, 't': row.timeMs, 'hdr': row.headerHex},
+    ];
+    final file = File(path);
+    file.parent.createSync(recursive: true);
+    file.writeAsStringSync(
+      jsonEncode({'v': 1, 'pin': pin.hashHex, 'rows': rows}),
+    );
+  }
+
+  Uint8List? _hexToBytes(String hex) {
+    if (hex.length != 64) return null;
+    final out = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      final byte = int.tryParse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+      if (byte == null) return null;
+      out[i] = byte;
+    }
+    return out;
   }
 
   /// Record how far a notes response reached. Never moves backward.
@@ -5961,6 +6116,7 @@ class ShearLedger implements ReadProofSink {
       final named = json['genesis']?.toString() ?? '';
       if (named.isNotEmpty) bindChainGenesis(named);
     }
+    await catchUpVerifiedChain(sealed);
     await _prepareTipHash(hex, sealed);
     applyTipHex(hex, sealedHeight: sealed);
     _applyReorgList(json['orphans'] ?? json['reorgHeights']);
@@ -6702,6 +6858,7 @@ class ShearLedger implements ReadProofSink {
         hostHeight = h;
         if (h > 0) {
           final tipHex = json['header']?.toString() ?? '';
+          await catchUpVerifiedChain(h);
           await _prepareTipHash(tipHex, h);
           applyTipHex(tipHex, sealedHeight: h);
         }

@@ -33,6 +33,7 @@ import 'shear_eip712.dart';
 import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_public_confirm.dart';
+import 'shear_checkpoint.dart';
 import 'shear_closure.dart';
 import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
@@ -86,6 +87,7 @@ const kExplains = [
 final List<String> debugPopulationOrder = <String>[];
 
 Future<void> main(List<String> args) async {
+  guardReleaseCheckpoint();
   armWalletConnect();
   final tipFlag = args.indexOf('--print-tip');
   if (tipFlag >= 0) {
@@ -2189,7 +2191,6 @@ class ShearWalletAppState extends State<ShearWalletApp>
       if (sync.flyclientOk && !disagree && sync.flyclientTip > 0) {
         final beforeTip = ledger.sealedHeight;
         if (sync.flyclientTip > ledger.sealedHeight) {
-          ledger.noteVerifiedHeight(sync.flyclientTip);
           ledger.noteLiveHeight(sync.flyclientTip);
         }
         if (ledger.sealedHeight > beforeTip) {

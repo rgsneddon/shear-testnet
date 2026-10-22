@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
-import 'shear_hash_v3.dart' as v3;
+import 'shear_v3_ffi.dart';
 
 /// Port of miner/src/shear_hash.c (ShearHash-v1, 8 rounds).
 const shearPersonal = 'ShearHash-v1';
@@ -90,16 +90,7 @@ bool shearMeetsTarget(List<int> hash, int bits) {
   return hash[full] < (1 << (8 - rem));
 }
 
-final Map<String, Uint8List> _v3ByHeader = {};
-
-/// Consensus ShearHash-v3. Pure Dart port of crypto/shear_hash.js. Not [shearHash].
-/// Null when the header is not 128 bytes.
-Uint8List? shearHashV3(Uint8List header) {
-  if (header.length != shearHeaderLen) return null;
-  final hex = [for (final b in header) b.toRadixString(16).padLeft(2, '0')].join();
-  final hit = _v3ByHeader[hex];
-  if (hit != null) return hit;
-  final got = Uint8List.fromList(v3.shearHashV3(header));
-  _v3ByHeader[hex] = got;
-  return got;
-}
+/// Consensus ShearHash-v3 via libshear_v3. Not [shearHash]. The pure Dart port
+/// in shear_hash_v3.dart is the test-parity reference. Null when the header
+/// is not 128 bytes or the native library did not load.
+Uint8List? shearHashV3(Uint8List header) => shearV3Native(header);

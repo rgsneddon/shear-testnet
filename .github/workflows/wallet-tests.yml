@@ -29,12 +29,14 @@ jobs:
       - name: Linux admit library
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libsodium-dev
+          sudo apt-get install -y build-essential cmake pkg-config libsodium-dev
           bash crypto/native/build-linux-admit-so.sh
+          bash wallet/native/build-shear-v3.sh
       - name: Spendable, t18, and reserve-hold tests
         working-directory: wallet
         run: |
           flutter pub get
+          dart run tool/checkpoint_guard.dart
           flutter test \
             test/spendable_hard_lock_test.dart \
             test/t18_frame_test.dart \
