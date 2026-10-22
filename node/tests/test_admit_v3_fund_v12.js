@@ -832,9 +832,11 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
           const plain = typedTx(kind, who.dest, nanos, `${kind}-plain-${nanos}`);
           const queuedPlain = store.queueTx(plain);
           assert.equal(queuedPlain.ok, false, `${kind} ${nanos} ${queuedPlain.reason}`);
-          // Current law: a lock that still carries `to` or an ssa1 address is
-          // vote_leak, ahead of admit version, the signature, and membership.
-          if (kind === 'lock') {
+          // Current law: a lock or withdraw that still carries `to` or `from`
+          // is vote_leak, ahead of admit version, the signature, and membership.
+          // stripPayer removes from and payer and leaves `to`, so the debit
+          // and bare bodies hit the same gate.
+          if (kind === 'lock' || kind === 'withdraw') {
             assert.equal(queuedPlain.reason, 'vote_leak', `${kind} plain ${nanos} ${queuedPlain.reason}`);
             const debit = stripPayer(typedTx(kind, who.dest, nanos, `${kind}-debit-${nanos}`));
             debit.noteSpends = [{ commit: Buffer.alloc(32, 3), nanos }];
@@ -849,8 +851,7 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
             continue;
           }
           // Current law: the portal vote API is retired. A vote with no commit
-          // vin is vote_retired, ahead of admit version. A withdraw that still
-          // names `from` is admit_version.
+          // vin is vote_retired, ahead of admit version.
           if (kind === 'vote') {
             assert.equal(queuedPlain.reason, 'vote_retired', `${kind} plain ${nanos} ${queuedPlain.reason}`);
           } else {
