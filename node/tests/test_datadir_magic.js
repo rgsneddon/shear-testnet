@@ -12,6 +12,7 @@ import { bookSealKeyFor } from '../src/book_seal_key.js';
 import { nextBits } from '../../crypto/asert.js';
 import { MAGIC_TESTNET, MAGIC_TESTNET_V1, MAGIC_TESTNET_V2, MAGIC_TESTNET_V3, MAGIC_TESTNET_V4, MAGIC_TESTNET_V6, MAGIC_TESTNET_V8, MAGIC_TESTNET_V9, MAGIC_MAINNET } from '../../crypto/asert.js';
 import { encodeDest } from '../../crypto/address.js';
+import { fingerprintHelloHash } from '../src/p2p.js';
 import { decodeHeader } from '../../crypto/header.js';
 
 describe('v3 and v4 datadirs refuse each other', () => {
@@ -287,9 +288,16 @@ describe('v3 and v4 datadirs refuse each other', () => {
     const tip = inbound.find((m) => m.type === 'tip');
     assert.equal(hello.magic, MAGIC_TESTNET);
     assert.equal(hello.magic, 'shear-testnet-v12');
+    assert.equal(hello.fingerprint, fingerprintHelloHash(MAGIC_TESTNET));
     assert.equal(tip.magic, 'shear-testnet-v12');
     assert.equal(tip.height, 1);
-    sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, ua: 'v4-peer', port: 1 })}\n`);
+    sock.write(`${JSON.stringify({
+      type: 'hello',
+      magic: MAGIC_TESTNET,
+      fingerprint: fingerprintHelloHash(MAGIC_TESTNET),
+      ua: 'v4-peer',
+      port: 1,
+    })}\n`);
     sock.write(`${JSON.stringify({ type: 'getheaders', magic: MAGIC_TESTNET, locator: [], stopHash: '' })}\n`);
     const t0 = Date.now();
     let headers = inbound.find((m) => m.type === 'headers');

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { ed25519RawPub, encodeDest, hash20FromAddress, newIdentity } from '../../crypto/address.js';
+import { destCommitFromSpendPub, ed25519RawPub, encodeDest, hash20FromAddress, newIdentity } from '../../crypto/address.js';
 import { spendBox } from '../../tests/spend_box.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import {
@@ -14,23 +14,27 @@ import {
   portalBlindFromSeed,
   portalIdFromDest20,
   portalOwnerKey,
+  portalsFromSeed,
   proveLockEquality,
 } from '../../crypto/reserve_vault.js';
 import { admitScalarFromSeed, attachAdmitPub } from '../../crypto/admit.js';
 import { readyHeight, walletAnchor } from '../../crypto/admit_v3.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { viewTagOf } from '../../crypto/dummy.js';
-import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { proveLeafVote, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { censusOf, proposalId } from '../../crypto/leaf_vote.js';
 import {
   FS1_RECORD_BYTES,
   FS1_WIRE,
   fs1BlobLen,
   fs1ProveSpend,
+  resetFs1Tree,
 } from '../../crypto/fs1_spend.js';
 import { levyNeed, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
 import { asU8, kernelExcess, openedCoinbaseNanos, proveRange, randomScalar, sealHiddenNote, sealNote } from '../../crypto/note.js';
 import {
   MAGIC_TESTNET,
+  RESERVE_EPOCH_MS,
   GENESIS_BITS_PACKED,
   MTP_WINDOW,
   PI_SHE_NANOS,
@@ -72,7 +76,7 @@ import {
   locatorHashes,
 } from '../src/p2p.js';
 import { DEFAULT_SEEDS } from '../src/node.js';
-import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
+import { closeMineWorkers, lastMineAttempt, mineHeaderParallel } from './mine_worker.mjs';
 import { printConfig, startNode, createStore } from '../src/node.js';
 import { bookSealKeyPath } from '../src/book_seal_key.js';
 import { countSyncedOnline, countLiveOnline, isFinalIngestFail, recordIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
@@ -86,12 +90,13 @@ function shareBitsOf(bits) {
   return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
 }
 
-// One light-JIT lane is ~50 H/s, so five bits-17 blocks miss a 2 h budget
-// on one lane. Same ShearHash target and 3e6 nonce cap, searched across
-// the cores the reorg harness already uses. The subtest ceiling is the
-// file cap. A second shorter timer was killing a search that still hits.
-const MINE_LANES = os.cpus().length;
-const MINE_WAIT_MS = 90 * 60 * 1000;
+// Native jit-full on this host: 1 lane 264 H/s, 2 lanes 104 H/s, 4 lanes 81 H/s.
+// One lane is the fast search. Bits stay 17 (2^17 tries). The wall is 3× that mean.
+const MINE_LANES = 1;
+const MINE_BACKEND = 'jit-full';
+const MINE_HPS = 264;
+const MINE_SLICE = 3_000_000;
+const MINE_WALL_MS = Math.round((3 * (1 << 17) * 1000) / MINE_HPS);
 after(() => closeMineWorkers());
 
 async function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
@@ -102,8 +107,35 @@ async function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
     ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
     : Date.now();
   const { tpl } = store.template({ miner: dest, bits: packed, shareBits: sb, now });
-  const found = await mineHeaderParallel(tpl.header, packed, 3_000_000, MINE_LANES, MINE_WAIT_MS);
-  assert.ok(found && found.block, 'need pow');
+  const wallStart = Date.now();
+  let nonceBase = 0;
+  let found = null;
+  let tried = 0;
+  while (Date.now() - wallStart < MINE_WALL_MS) {
+    const left = MINE_WALL_MS - (Date.now() - wallStart);
+    found = await mineHeaderParallel(
+      tpl.header, packed, MINE_SLICE, MINE_LANES, left, nonceBase, MINE_BACKEND,
+    );
+    const attempt = lastMineAttempt();
+    tried += attempt.tried;
+    console.error(JSON.stringify({
+      event: 'p2p_mine',
+      backend: MINE_BACKEND,
+      lanes: MINE_LANES,
+      bits: packed,
+      expectedTries: 1 << 17,
+      nonceCap: MINE_SLICE,
+      nonceBase,
+      tried: attempt.tried,
+      triedTotal: tried,
+      status: attempt.status,
+      hit: !!(found && found.block),
+      ms: Date.now() - wallStart,
+    }));
+    if (found && found.block) break;
+    if (attempt.status === 2) nonceBase += MINE_SLICE;
+  }
+  assert.ok(found && found.block, `need pow tried=${tried} bits=${packed}`);
   return store.append({
     header: found.header,
     txs: tpl.txs,
@@ -129,18 +161,20 @@ function trustIngest(node) {
   };
 }
 
-async function appendTrusted(store, dest, seq) {
+async function appendTrusted(store, dest, seq, nowMs = null) {
   const parent = store.tip();
-  const now = parent
-    ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
-    : 1_700_000_000_000;
+  const now = nowMs != null
+    ? nowMs
+    : (parent
+      ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
+      : 1_700_000_000_000);
   const { tpl } = store.template({ miner: dest, bits: GENESIS_BITS_PACKED, shareBits: 4, now });
   const pot = (tpl.txs[0].vout || []).find((o) => o.kind === 'pot');
   const opening = pot && pot.r && pot.commit
     ? { r: Buffer.from(asU8(pot.r)), commit: Buffer.from(asU8(pot.commit)), v: openedCoinbaseNanos(pot) }
     : null;
   const pow = Buffer.alloc(32);
-  pow[31] = seq;
+  pow.writeUInt32BE(seq >>> 0, 28);
   const got = await store.append({
     header: tpl.header,
     txs: tpl.txs,
@@ -154,7 +188,7 @@ async function appendTrusted(store, dest, seq) {
     weight: tpl.weight,
   }, { trustedPowHash: pow, skipSharePow: true });
   assert.equal(got.ok, true, got.reason);
-  return { tpl, opening };
+  return { tpl, opening, pot };
 }
 
 async function fundAnchor(store, id) {
@@ -188,6 +222,7 @@ async function fundAnchor(store, id) {
     if (index < 0) continue;
     coins.push({
       index,
+      commit: Buffer.from(want),
       r: Buffer.from(opening.r),
       v: opening.v,
       x: admitScalarFromSeed(id.spendSeed, storedPot),
@@ -281,7 +316,7 @@ function fs1Send({ id, coin, anchor, live, magic, outsOf }) {
   });
 }
 
-function fs1Lock({ id, coins, anchor, live, magic, dest20, portalId, admitBase, ownerPub, stamp, proveHeight }) {
+function fs1Lock({ id, coins, anchor, live, magic, dest20, bodyDest20, portalId, admitBase, ownerPub, stamp, proveHeight }) {
   const use = [];
   let total = 0;
   for (const coin of coins) {
@@ -368,18 +403,110 @@ function fs1Lock({ id, coins, anchor, live, magic, dest20, portalId, admitBase, 
     admit_proofs: proven.proofs,
     excess,
   });
-  tx.dest20 = Buffer.from(dest20);
+  const spend20 = bodyDest20 || dest20;
+  tx.dest20 = Buffer.from(spend20);
+  const scalar = randomScalar();
   const lockBlind = outs[0].r;
   const lockRow = tx.vout.find((row) => String(row?.kind || '') === 'lock');
   const unlock = consensusUnlockPeriod(stamp.epoch);
-  const leaf = vaultLockNote(PI_SHE_NANOS, randomScalar(), lockBlind, unlock);
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, lockBlind, unlock);
   if (!leaf || !lockRow || lockBlind == null) return null;
   tx.vaultLockNote = leaf.note;
   tx.piProof = proveRange(0n, lockBlind);
   const fund = proveLockEquality(lockRow.commit, PI_SHE_NANOS, lockBlind, tx, magic, proveHeight);
   if (!tx.piProof || !fund) return null;
   lockRow.fundProof = fund;
-  return tx;
+  return { tx, scalar, blind: lockBlind, unlock };
+}
+
+function bindCoins(store, rows) {
+  const height = store.tip().height + 1;
+  const anchor = walletAnchor(height);
+  const live = store.anchorNote(anchor);
+  const at = new Map();
+  if (live) {
+    for (let i = 0; i < live.n; i += 1) {
+      at.set(Buffer.from(asU8(live.commits[i])).toString('hex'), i);
+    }
+  }
+  const coins = [];
+  for (const row of rows) {
+    const key = Buffer.from(asU8(row.commit)).toString('hex');
+    if (!at.has(key)) continue;
+    coins.push({ ...row, index: at.get(key) });
+  }
+  return { anchor, live, coins };
+}
+
+function fs1LeafVote({ id, coin, anchor, live, magic, voteProof }) {
+  const ph = Buffer.alloc(fs1BlobLen(1), 255);
+  ph[0] = FS1_WIRE;
+  const blob = Buffer.alloc(FS1_RECORD_BYTES, 255);
+  blob[0] = FS1_WIRE;
+  const proofs = [{ blob, cTilde: Buffer.alloc(32, 255), spendTag: Buffer.alloc(32, 255) }];
+  const d20 = Buffer.from(asU8(voteProof.dest20));
+  let fee = LEVY_FLOOR_UNITS;
+  let outs = null;
+  let draft = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const changeN = coin.v - fee;
+    if (changeN <= 0) return null;
+    outs = [hiddenOut(changeN, d20, null, 'send')];
+    draft = compactTx({
+      id,
+      kind: 'leaf-vote',
+      anchor,
+      fee,
+      programId: RESERVE_PROGRAM,
+      voteProof: voteProof.blob,
+      voteOutput: voteProof.note,
+      choice: 1,
+      voteSeq: 1,
+      voteParam: 'hb',
+      earnEpoch: 1,
+      vin: [{ commit: Buffer.alloc(32, 255) }],
+      vout: outs,
+      fs1: ph,
+      admit_proofs: proofs,
+      excess: Buffer.alloc(32, 255),
+    });
+    const need = levyNeed(draft);
+    if (fee >= need && fee <= LEVY_CAP_NANOS) break;
+    const next = need + rangeSlack(outs);
+    if (!(next > fee && next <= LEVY_CAP_NANOS)) return null;
+    fee = next;
+    draft = null;
+  }
+  if (!draft) return null;
+  const proven = fs1ProveSpend({
+    live,
+    anchor,
+    indices: [coin.index],
+    xs: [coin.x],
+    tx: draft,
+    magic,
+  });
+  if (!proven) return null;
+  const excess = kernelExcess(outs, [{ r: coin.r, t: proven.t[0] }]);
+  if (!excess) return null;
+  return compactTx({
+    id,
+    kind: 'leaf-vote',
+    anchor,
+    fee: draft.fee,
+    programId: RESERVE_PROGRAM,
+    voteProof: voteProof.blob,
+    voteOutput: voteProof.note,
+    choice: 1,
+    voteSeq: 1,
+    voteParam: 'hb',
+    earnEpoch: 1,
+    vin: [{ commit: Buffer.from(proven.proofs[0].cTilde) }],
+    vout: outs,
+    fs1: proven.fs1,
+    admit_proofs: proven.proofs,
+    excess,
+  });
 }
 
 function fs1GossipSend({ id, store, funded, payee }) {
@@ -781,50 +908,131 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     }
   });
 
-  it('lock and vote still paint (pending) after fluff', async () => {
+  it('lock and vote still paint (pending) after fluff', { timeout: 600_000 }, async () => {
     const id = newIdentity();
     const box = spendBox(id);
     const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-seed-'));
     const seeded = createStore(seedDir);
     const funded = await fundAnchor(seeded, id);
-    const d20 = hash20FromAddress(box.dest);
-    const portalId = portalIdFromDest20(d20, portalBlindFromSeed(id.spendSeed));
-    const ownerKey = portalOwnerKey(id.spendSeed, portalId);
-    const ownerPub = ownerKey ? ed25519RawPub(ownerKey).toString('hex') : '';
-    const tip = seeded.tip();
-    const parent = decodeHeader(Buffer.from(tip.header));
-    const mtp = medianTimePast(seeded.blocks.slice(-MTP_WINDOW).map((b) => Number(decodeHeader(Buffer.from(b.header)).timestamp)));
-    const now = templateStampMs(Number(parent.timestamp), Date.now(), null, mtp);
+    const minerDest = encodeDest(hash20FromAddress(box.dest), id.admitBase);
+    const tipMs = (store) => Number(decodeHeader(Buffer.from(store.tip().header)).timestamp);
+    const portals = portalsFromSeed(id.spendSeed, 2);
+    assert.equal(portals.length, 2, 'two portals');
+    assert.notEqual(portals[0].portalId, portals[1].portalId, 'one portal per lock');
+    const ownerKey = portalOwnerKey(id.spendSeed, portals[0].portalId);
+    const ownerPub = ed25519RawPub(ownerKey).toString('hex');
     const genesis = seeded.blocks.find((b) => Number(b.height) === 1) || seeded.blocks[0];
     const genesisMs = Number(decodeHeader(Buffer.from(genesis.header)).timestamp);
-    const stamp = lockUnlockOf({ genesisMs, magic: seeded.magic }, now);
-    const lock = fs1Lock({
-      id: 'lock-fluff',
-      coins: funded.coins,
+    const stamp = lockUnlockOf({ genesisMs, magic: seeded.magic }, tipMs(seeded));
+    const minedCoins = funded.coins.slice(0, 4);
+    assert.equal(minedCoins.length, 4, 'seed lock inputs');
+    const mined = fs1Lock({
+      id: 'lock-seed',
+      coins: minedCoins,
       anchor: funded.anchor,
       live: funded.live,
       magic: seeded.magic,
-      dest20: d20,
-      portalId,
+      dest20: portals[0].dest20,
+      bodyDest20: destCommitFromSpendPub(ed25519RawPub(ownerKey)),
+      portalId: portals[0].portalId,
       admitBase: id.admitBase,
       ownerPub,
       stamp,
-      proveHeight: tip.height + 1,
+      proveHeight: seeded.tip().height + 1,
     });
-    assert.ok(lock, 'fs1 lock');
-    signSpendTx(lock, box.key);
-    const vote = compactTx({
+    assert.ok(mined, 'fs1 lock');
+    signSpendTx(mined.tx, ownerKey);
+    resetFs1Tree();
+    const qSeed = seeded.queueTx(mined.tx);
+    assert.equal(qSeed.ok, true, `seed lock ${qSeed.reason}`);
+    let seq = 1000;
+    const sealed = await appendTrusted(seeded, minerDest, seq);
+    seq += 1;
+    assert.ok(sealed.tpl.txs.some((row) => row.id === 'lock-seed'), 'seed lock mined');
+    while (seeded.tip().height < 240) {
+      await appendTrusted(seeded, minerDest, seq);
+      seq += 1;
+    }
+    assert.equal(String(seeded.reserveVault.epochStartRoots?.['1'] || ''), seeded.reserveVault.vaultLockRoot, 'period root');
+    const target = genesisMs + RESERVE_EPOCH_MS;
+    // Pots from the funding anchor fall out of the 64-block window during
+    // this walk. Keep the recent coinbases; the pending lock spends those.
+    const recent = [];
+    const keepPot = (built) => {
+      if (!built?.opening || !built?.pot) return;
+      recent.push({ opening: built.opening, pot: built.pot });
+      if (recent.length > 48) recent.shift();
+    };
+    let guard = 0;
+    while (tipMs(seeded) < target) {
+      guard += 1;
+      assert.ok(guard < 2000, 'clock');
+      keepPot(await appendTrusted(seeded, minerDest, seq, Math.min(target, tipMs(seeded) + 15 * 60_000)));
+      seq += 1;
+    }
+    // The boundary block enacts the empty ballot and stays on epoch 0.
+    // The next block opens epoch 1 and writes that epoch's census.
+    keepPot(await appendTrusted(seeded, minerDest, seq, tipMs(seeded) + 90_000));
+    seq += 1;
+    assert.equal(seeded.reserveVault.currentEpoch, 1, 'epoch rolled');
+    const census = censusOf(seeded.reserveVault, 1);
+    assert.ok(census && census.leafCount >= 1, 'census');
+    const voteProof = proveLeafVote({
+      locks: [{
+        amount: PI_SHE_NANOS,
+        scalar: mined.scalar,
+        blind: mined.blind,
+        unlockEpoch: mined.unlock,
+      }],
+      which: 0,
+      epoch: 1,
+      choice: 1,
+      seq: 1,
+      proposalId: proposalId(1, 'hb'),
+      dest20: hash20FromAddress(box.dest),
+    });
+    assert.ok(voteProof, 'vote proof');
+    assert.equal(voteProof.rootHex, seeded.reserveVault.epochStartRoots['1'], 'vote root');
+    const late = bindCoins(seeded, recent.map((row) => ({
+      commit: row.opening.commit,
+      r: row.opening.r,
+      v: row.opening.v,
+      x: admitScalarFromSeed(id.spendSeed, row.pot),
+    })));
+    assert.ok(late.coins.length >= 5, `late coins ${late.coins.length}`);
+    const pendingKey = portalOwnerKey(id.spendSeed, portals[1].portalId);
+    const pendingPub = ed25519RawPub(pendingKey).toString('hex');
+    const lateStamp = lockUnlockOf(seeded.reserveVault, tipMs(seeded));
+    resetFs1Tree();
+    const pending = fs1Lock({
+      id: 'lock-fluff',
+      coins: late.coins.slice(0, 4),
+      anchor: late.anchor,
+      live: late.live,
+      magic: seeded.magic,
+      dest20: portals[1].dest20,
+      bodyDest20: destCommitFromSpendPub(ed25519RawPub(pendingKey)),
+      portalId: portals[1].portalId,
+      admitBase: id.admitBase,
+      ownerPub: pendingPub,
+      stamp: lateStamp,
+      proveHeight: seeded.tip().height + 1,
+    });
+    assert.ok(pending, 'pending lock');
+    signSpendTx(pending.tx, pendingKey);
+    resetFs1Tree();
+    const vote = fs1LeafVote({
       id: 'vote-fluff',
-      kind: 'vote',
-      programId: RESERVE_PROGRAM,
-      portalId,
-      choice: 'leave bonus as-is',
-      fee: 0,
-      vin: [],
-      vout: [],
+      coin: late.coins[4],
+      anchor: late.anchor,
+      live: late.live,
+      magic: seeded.magic,
+      voteProof,
     });
-    vote.dest20 = Buffer.from(asU8(d20));
-    signSpendTx(vote, box.key);
+    assert.ok(vote, 'leaf vote');
+    assert.equal(vote.kind, 'leaf-vote');
+    assert.equal(vote.to, undefined);
+    assert.equal(vote.portalId, undefined);
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-b-'));
     const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fluff-lock-c-'));
@@ -861,26 +1069,31 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       await a.p2p.connect('127.0.0.1', b.bound.port);
       await a.p2p.connect('127.0.0.1', c.bound.port);
       await waitFor(() => a.p2p.syncedOnline() >= 2);
-      // Stage 3b. The lock is an FS-1 spend of the coinbase note. The vote is
-      // an owner signature with no bucket proof and no address on the wire.
-      const qLock = a.store.queueTx(lock);
+      // Stage 3b. The pending lock and the FS-1 leaf vote both gossip.
+      // A kind:vote body is vote_retired and does not paint.
+      const qLock = a.store.queueTx(pending.tx);
       const qVote = a.store.queueTx(vote);
       assert.equal(qLock.ok, true, qLock.reason);
-      assert.equal(qVote.ok, false);
-      assert.equal(qVote.reason, 'vote_retired');
+      assert.equal(qVote.ok, true, qVote.reason);
+      assert.notEqual(qVote.reason, 'vote_retired');
       assert.equal(a.p2p.originInvSetSize('lock-fluff'), 1);
+      assert.equal(a.p2p.originInvSetSize('vote-fluff'), 1);
       const { explorerRecentTxs, publicPayloadLeaksIdentity } = await import('../../pool/src/wallet_api.js');
       const painted = await waitFor(() => {
         const rows = explorerRecentTxs(c.store, 30);
         const lockRow = rows.find((t) => t.id === 'lock-fluff');
         const voteRow = rows.find((t) => t.id === 'vote-fluff');
-        return lockRow?.pending === true && !voteRow && lockRow.kind === 'lock';
+        return lockRow?.pending === true && voteRow?.pending === true
+          && lockRow.kind === 'lock' && voteRow.kind === 'leaf-vote';
       }, 8000);
       assert.equal(painted, true);
       const rows = explorerRecentTxs(c.store, 30);
       const lockRow = rows.find((t) => t.id === 'lock-fluff');
+      const voteRow = rows.find((t) => t.id === 'vote-fluff');
       assert.equal(lockRow.to, '');
+      assert.equal(voteRow.to, '');
       assert.equal(publicPayloadLeaksIdentity(lockRow), false);
+      assert.equal(publicPayloadLeaksIdentity(voteRow), false);
       assert.equal(lockRow.memoPlain, undefined);
     } finally {
       a?.p2p?.close();
@@ -1247,10 +1460,13 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
     }
   });
 
-  it('empty, lagging-prefix, and later third nodes fully catch up past one getblock batch', { timeout: fileCapMs(import.meta.url) }, async () => {
+  // Two bits-17 blocks. Batch 1 makes the second block the next getblock page.
+  // Ceiling is 3× the two-block mean at the measured jit-full rate, plus connect time.
+  it('empty, lagging-prefix, and later third nodes fully catch up past one getblock batch', { timeout: (2 * MINE_WALL_MS) + (5 * 60 * 1000) }, async () => {
     const dest = destMiner();
-    process.env.SHEAR_GETBLOCK_BATCH = '2';
-    const want = 5;
+    const prevBatch = process.env.SHEAR_GETBLOCK_BATCH;
+    process.env.SHEAR_GETBLOCK_BATCH = '1';
+    const want = 2;
     assert.ok(want > Number(process.env.SHEAR_GETBLOCK_BATCH));
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-a-'));
     const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
@@ -1271,7 +1487,7 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
         const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-c-'));
         const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
         try {
-          const prefixLen = 2;
+          const prefixLen = 1;
           const prefix = copyBlocks(a.store.blocks.slice(0, prefixLen));
           const ingested = await Promise.resolve(c.store.ingest(prefix));
           assert.equal(ingested.ok, true, ingested.reason);
@@ -1304,6 +1520,8 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
         await b.rpc?.close?.();
       }
     } finally {
+      if (prevBatch === undefined) delete process.env.SHEAR_GETBLOCK_BATCH;
+      else process.env.SHEAR_GETBLOCK_BATCH = prevBatch;
       a.p2p.close();
       await a.rpc?.close?.();
     }

@@ -47,6 +47,7 @@ import {
   signRollReward,
   signWithdrawReward,
   withdrawMintId,
+  withdrawSignedDest,
   withdrawTx,
   VAULT_MINT_DELAY_BLOCKS,
 } from './reserve_vault.js';
@@ -57,6 +58,7 @@ import {
   encodeCommitVaultRoot,
   encodeDeposit,
   encodePinClock,
+  attachLockAuth,
   executeBlockEvm,
 } from './reserve_evm.js';
 import {
@@ -182,7 +184,7 @@ function indexedWithdrawTx(state, planted, who, extra = {}) {
   signWithdrawReward(tx, who.id.privateKey, {
     portalId: portal,
     nanos: PI_SHE_NANOS,
-    dest: who.dest,
+    dest: withdrawSignedDest(tx),
     state,
     nowMs,
   });
@@ -942,7 +944,7 @@ describe('hidden vault claims', () => {
     signWithdrawReward(again, who.id.privateKey, {
       portalId: portal,
       nanos: 0,
-      dest: who.dest,
+      dest: withdrawSignedDest(again),
       state,
       nowMs: T0 + span,
     });
@@ -980,8 +982,7 @@ describe('hidden vault claims', () => {
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     const who = dest20();
-    const owner = rewardOwnerCommit(who.id.spendPub.toString('hex'));
-    assert.equal((await callReserve(session, encodeDeposit(who.dest, Buffer.alloc(32, 7), T0, owner, true))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who.dest, Buffer.alloc(32, 7), T0, { key: who.id.privateKey }, true))).ok, true);
     const root = 'ab'.repeat(32);
     const zero = await callReserve(session, encodeCommitVaultRoot(0, '00'.repeat(32)));
     assert.equal(zero.ok, false);
@@ -1145,6 +1146,7 @@ describe('hidden vault claims', () => {
       vout: [{ kind: 'lock', commit: funded, rangeProof: range }],
     };
     const session = await bootReserveEvm();
+    attachLockAuth(tx, who.id.privateKey);
     const good = await executeBlockEvm(
       session,
       [{ coinbase: true, vout: [] }, tx],
@@ -1156,9 +1158,15 @@ describe('hidden vault claims', () => {
     );
     assert.equal(good.ok, true, good.reason);
     const badNote = Buffer.concat([note.subarray(0, 32), Buffer.alloc(32, 9)]);
+    const badTx = { ...tx, id: 'evm-unlock-bad', vaultLockNote: badNote };
+    delete badTx.lockAuth;
+    attachLockAuth(badTx, who.id.privateKey);
+    // A second lock on the session that already took the good one is
+    // portal_exists. The unlock check is the first lock of a fresh book.
+    const badBook = await bootReserveEvm();
     const bad = await executeBlockEvm(
-      session,
-      [{ coinbase: true, vout: [] }, { ...tx, id: 'evm-unlock-bad', vaultLockNote: badNote }],
+      badBook,
+      [{ coinbase: true, vout: [] }, badTx],
       T0,
       T0,
       undefined,

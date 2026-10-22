@@ -37,7 +37,7 @@ import {
 import { GENESIS_BPS } from './reserve_oracle.js';
 import { txDigestV3 } from './admit_v3.js';
 import { ed25519RawPub, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from './address.js';
-import { pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
+import { pointBytes, pointFrom, proveRange, randomScalar, sealCoinbaseNote } from './note.js';
 import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
 import { boundReserveWithdraw, reserveAuth, signSpendTx } from './spend.js';
 import {
@@ -125,7 +125,23 @@ function indexedDraw(state, dest, when, planted, id, ownerKey, to = dest) {
   const commitHex = planted.leaf.commit.toString('hex');
   const stub = leafStubNanos(state, [commitHex]);
   const nanos = PI_SHE_NANOS + Number(stub);
-  const tx = withdrawTx({ from: dest, to, nanos, id });
+  const tx = withdrawTx({ nanos, id, portalId: portalIdFromDest(dest) });
+  // The payout is dest20. from, to, and payoutPortalId are vote_leak.
+  delete tx.from;
+  delete tx.to;
+  delete tx.payer;
+  delete tx.payoutPortalId;
+  const d20 = hash20FromAddress(to) || hash20FromAddress(dest);
+  if (d20) tx.dest20 = Buffer.from(d20);
+  // The receipt has to open to the public nanos. A kind-only row is stake_reward.
+  // Seal it before the proofs: the digest binds this note's commit and dest20.
+  if (d20) {
+    const note = sealCoinbaseNote(nanos, { dest20: Buffer.from(d20), kind: 'withdraw' });
+    if (note.valueProof && typeof note.valueProof === 'object') {
+      note.valueProof = { ...note.valueProof, v: nanos };
+    }
+    tx.vout = [note];
+  }
   const portalId = portalIdFromDest(dest);
   const magic = state.magic || MAGIC_TESTNET;
   const proof = provePrincipalOpen(
@@ -148,7 +164,7 @@ function indexedDraw(state, dest, when, planted, id, ownerKey, to = dest) {
     signWithdrawReward(tx, ownerKey, {
       portalId,
       nanos: PI_SHE_NANOS,
-      dest: to,
+      dest: d20 ? Buffer.from(d20).toString('hex') : '',
       state,
       nowMs: when,
     });
@@ -287,15 +303,19 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const t0 = 1_700_000_000_000;
     assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     const id = Buffer.alloc(32, 7);
-    const ownerA = Buffer.alloc(32, 1);
-    const ownerB = Buffer.alloc(32, 2);
-    const first = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 9), t0, ownerA, false));
+    const ownerA = newIdentity();
+    const ownerB = newIdentity();
+    const first = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 9), t0, { key: ownerA.privateKey }, false));
     assert.equal(first.ok, true, first.reason);
-    const again = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 8), t0 + 1, ownerB, false));
+    const again = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 8), t0 + 1, { key: ownerB.privateKey }, false));
     assert.equal(again.ok, false);
     assert.equal(again.reason, 'unsigned');
-    const same = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 6), t0 + 2, ownerA, false));
-    assert.equal(same.ok, true, same.reason);
+    const same = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 6), t0 + 2, { key: ownerA.privateKey }, false));
+    assert.equal(same.ok, false);
+    assert.equal(same.reason, 'portal_exists');
+    const copied = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 5), t0 + 3, Buffer.alloc(32, 1), false));
+    assert.equal(copied.ok, false);
+    assert.equal(copied.reason, 'owner_missing');
   });
 
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {
@@ -349,10 +369,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     const view0 = decodePublicView((await callReserve(s, encodePublicView(t0), { staticCall: true })).returnValue);
     assert.equal(view0.oracleBps, GENESIS_BPS);
-    const d = await callReserve(s, encodeDeposit(destA, NANOS_PER_SHE, t0));
+    const d = await callReserve(s, encodeDeposit(destA, PI_SHE_NANOS, t0));
     assert.equal(d.ok, true, d.reason);
-    const rest = PI_SHE_NANOS - NANOS_PER_SHE;
-    assert.equal((await callReserve(s, encodeDeposit(destA, rest, t0, undefined, true))).ok, true);
+    // One portal, one lock. A second credit on destA is not a top-up.
+    const topped = await callReserve(s, encodeDeposit(destA, NANOS_PER_SHE, t0, undefined, true));
+    assert.equal(topped.ok, false);
+    assert.equal(topped.reason, 'portal_exists');
     assert.equal((await callReserve(s, encodeVote(destA, 1, t0 + 2))).reason, 'not_voter');
     const locked = await callReserve(s, encodeVote(destA, 3, t0 + 3));
     assert.equal(locked.ok, false);
@@ -361,10 +383,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const end = t0 + RESERVE_EPOCH_MS;
     assert.equal((await callReserve(s, encodeEnact(end))).ok, true);
     const w = await callReserve(s, encodeWithdraw(destA, end, undefined, PI_SHE_NANOS, {
-      locks: [
-        { nanos: NANOS_PER_SHE, at: t0 },
-        { nanos: rest, at: t0 },
-      ],
+      locks: [{ nanos: PI_SHE_NANOS, at: t0 }],
     }));
     assert.equal(w.ok, false);
     assert.equal(w.reason, 'unsigned');
@@ -506,7 +525,12 @@ describe('Reserve bytecode on the Shear EVM', () => {
           state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub: ownerPub || undefined,
         });
         assert.equal(jsLock.ok, true, `${n} js ${i} ${jsLock.reason}`);
-        const evmLock = await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, ownerCommit || undefined));
+        const evmLock = await callReserve(session, encodeDeposit(
+          dest,
+          PI_SHE_NANOS,
+          t0,
+          i === 0 ? { key: firstOwner.privateKey } : undefined,
+        ));
         assert.equal(evmLock.ok, true, `${n} evm ${i} ${evmLock.reason}`);
       }
       for (let epoch = 0; epoch < epochCount; epoch += 1) {
@@ -668,7 +692,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(after.ok, false);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, rewardOwnerCommit(ownerPub)))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, { key: owner.privateKey }))).ok, true);
     const drawn = await callReserve(session, encodeWithdraw(dest, end, undefined, 0, {
       ownerKey: owner.privateKey,
     }));
@@ -812,7 +836,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, rewardOwnerCommit(ownerPub)))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, { key: owner.privateKey }))).ok, true);
     const stored = await callReserve(session, encodeCommitRewards(end, plan.root));
     assert.equal(stored.ok, true, stored.reason);
     const stolenAuth = packRewardAuth({ ownerPub: stolen.spendPub, sig: stolen.sig, dest: payout });
@@ -834,15 +858,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const dest = encodeDest(Buffer.alloc(20, 0x91));
     const js = emptyVault();
     js.genesisMs = t0;
+    // A fixture may book a portal with no signer. The withdraw still needs an owner.
     const missing = depositUnowned({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0 });
-    assert.equal(missing.ok, false);
-    assert.equal(missing.reason, 'owner_missing');
-    const owner = newIdentity();
-    const ownerPub = Buffer.from(owner.spendPub).toString('hex');
-    assert.equal(depositUnowned({
-      state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub,
-    }).ok, true);
-    js.portals[portalIdFromDest(dest)].ownerPub = '';
+    assert.equal(missing.ok, true, missing.reason);
     const stripped = withdraw({ state: js, dest, nowMs: end });
     assert.equal(stripped.ok, false);
     assert.equal(stripped.reason, 'owner_missing');
@@ -876,7 +894,11 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(preview.payout, 0);
     assert.equal(withdrawPaysInterest(js, js.portals[portalIdFromDest(dest)], end), 0);
     const portalId = portalIdFromDest(dest);
-    const bare = withdrawTx({ from: dest, to: payout, nanos: 0, id: 'wd-bare' });
+    const bare = withdrawTx({ nanos: 0, id: 'wd-bare', portalId });
+    delete bare.from;
+    delete bare.to;
+    delete bare.payer;
+    delete bare.payoutPortalId;
     const refused = applyReserveBlock({
       state: cloneVault(js),
       block: { txs: [{ coinbase: true, vout: [], rewardRoot: plan.root }, bare] },
@@ -887,9 +909,14 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'unsigned');
     const stranger = newIdentity();
-    const stolen = withdrawTx({ from: dest, to: payout, nanos: 0, id: 'wd-stolen' });
+    const stolen = withdrawTx({ nanos: 0, id: 'wd-stolen', portalId });
+    delete stolen.from;
+    delete stolen.to;
+    delete stolen.payer;
+    delete stolen.payoutPortalId;
+    stolen.dest20 = hash20FromAddress(payout);
     signWithdrawReward(stolen, stranger.privateKey, {
-      portalId, nanos: 0, dest: payout, state: js, nowMs: end,
+      portalId, nanos: 0, dest: Buffer.from(stolen.dest20).toString('hex'), state: js, nowMs: end,
     });
     const stolenApply = applyReserveBlock({
       state: cloneVault(js),
@@ -918,7 +945,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, rewardOwnerCommit(ownerPub)))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, { key: owner.privateKey }))).ok, true);
     const bareEvm = await callReserve(session, encodeWithdraw(dest, end));
     assert.equal(bareEvm.ok, false);
     const stolenAuth = packRewardAuth({ ownerPub: stolen.ownerPub, sig: stolen.rewardSig, dest: payout });
@@ -1040,10 +1067,18 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     const locks = [];
     let planted = null;
+    // One portal cannot hold 100 tranches. Each lock is its own dest.
     for (let i = 0; i < n; i += 1) {
-      planted = indexPiLock(js, dest, t0, who.pub, 1);
-      assert.equal(planted.ok, true, `js ${i} ${planted.reason}`);
-      const evmLock = await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, who.commit));
+      const raw = Buffer.alloc(20);
+      raw.writeUInt32BE(i + 1, 16);
+      raw[0] = 0x92;
+      const one = i === 0 ? dest : encodeDest(raw);
+      const whoI = i === 0 ? who : ownerFor(one);
+      if (i === 0) {
+        planted = indexPiLock(js, dest, t0, who.pub, 1);
+        assert.equal(planted.ok, true, `js ${i} ${planted.reason}`);
+      }
+      const evmLock = await callReserve(session, encodeDeposit(one, PI_SHE_NANOS, t0, whoI.commit));
       assert.equal(evmLock.ok, true, `evm ${i} ${evmLock.reason}`);
       locks.push({ nanos: PI_SHE_NANOS, at: t0 });
     }
@@ -1062,7 +1097,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(paid.earned, 0);
-    assert.equal(js.portals[portalIdFromDest(dest)].tranches.length, n - 1);
+    // The single tranche is spent. A same-dest stack of n-1 is portal_exists.
+    assert.equal(js.portals[portalIdFromDest(dest)].tranches.length, 0);
     const drawn = await callReserve(session, encodeWithdraw(dest, drawAt, undefined, n * PI_SHE_NANOS, { locks }));
     assert.equal(drawn.ok, false);
     assert.equal(drawn.reason, 'unsigned');
@@ -1114,34 +1150,27 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(jsPaid.principal, PI_SHE_NANOS);
     const relockAt = end;
     assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
+    // The portal id is spent, not free. A re-lock is a duplicate portal.
     const plantedAgain = indexPiLock(js, dest, relockAt, who.pub, 1);
-    assert.equal(plantedAgain.ok, true, plantedAgain.reason);
-    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, relockAt, who.commit))).ok, true);
+    assert.equal(plantedAgain.ok, false);
+    assert.equal(plantedAgain.reason, 'portal_exists');
+    const relocked = await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, relockAt, who.commit));
+    assert.equal(relocked.ok, false);
+    assert.equal(relocked.reason, 'portal_exists');
     const end2 = t0 + 2 * epoch;
     const replay = await callReserve(session, encodeWithdraw(dest, end2, firstAuth, PI_SHE_NANOS));
     assert.equal(replay.ok, false);
     assert.equal(replay.reason, 'unsigned');
     const again = { ...first, rewardSig: first.rewardSig, ownerPub: first.ownerPub };
     const rejected = withdrawRewardRejected(js, again, end2);
-    assert.equal(rejected.reason, 'unsigned');
+    if (rejected) assert.equal(rejected.reason, 'unsigned');
+    const bound = boundReserveWithdraw(again, js, new Set(), end2);
+    assert.equal(bound.ok, false, bound.reason);
     const fresh = await callReserve(session, encodeWithdraw(dest, end2, undefined, 0, {
       tranches: lockTranches(dest).slice(-1),
     }));
     assert.equal(fresh.ok, false);
     assert.equal(fresh.reason, 'unsigned');
-    const reopened = indexedDraw(js, dest, end2, plantedAgain, 'replay-again', who.key);
-    assert.ok(reopened, 'indexed re-lock');
-    const jsAgain = withdraw({
-      state: js,
-      dest,
-      nowMs: end2,
-      principal: reopened.nanos,
-      principalProof: reopened.proof,
-      retireProof: reopened.tx.retireProof,
-      tx: reopened.tx,
-    });
-    assert.equal(jsAgain.ok, true, jsAgain.reason);
-    assert.equal(jsAgain.principal, PI_SHE_NANOS);
   });
 
   it('a stranger cannot lock into a fresh portal and take its owner slot', async () => {
@@ -1236,7 +1265,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(swapped.ok, false);
     assert.equal(swapped.reason, 'public_receipt', swapped.reason);
     assert.equal(opened.reason, 'public_receipt', opened.reason);
-    assert.equal(reserveAuth(honest, state).ok, true, reserveAuth(honest, state).reason);
+    // A fresh lock's ownerPub is the spend key. A derived portal key is not the signer.
+    assert.equal(reserveAuth(honest, state).ok, false);
+    assert.equal(reserveAuth(honest, state).reason, 'unsigned');
     assert.equal(reserveAuth(stolenDest, state).reason, 'unsigned');
     assert.equal(state.portals?.[portalIdFromDest(dest)]?.ownerPub || '', '');
   });

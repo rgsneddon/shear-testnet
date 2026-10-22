@@ -13,6 +13,7 @@ import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote, leafVoteConserved } from './note.js';
 import { consensusUnlockPeriod, hiddenPrincipalOpens, indexedWithdrawQuote, lockFundingRejected, lockUnlockOf, maturedHiddenCount, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { attachLockAuth, verifyLockAuth } from './reserve_evm.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -223,6 +224,7 @@ export function signSpendTx(tx, privateKey) {
   tx.spendPub = ed25519RawPub(privateKey).toString('hex');
   const sig = sign(null, msg, privateKey);
   tx.sig = Buffer.from(sig).toString('hex');
+  attachLockAuth(tx, privateKey);
   return tx;
 }
 
@@ -438,10 +440,26 @@ function destOpeningShape(open) {
 
 /**
  * Vote/lock/withdraw authority is the owner signature. A range proof is not
- * an authorization, and a missing spendPub is not an authorization.
+ * an authorization. An FS-1 withdraw or lock carries no identity spendPub:
+ * the withdraw is the SAL plus rewardSig, and the lock is lockAuth.
  */
+function fs1Carry(tx) {
+  try {
+    const raw = tx?.fs1;
+    const b = Buffer.from(asU8(raw));
+    return b.length > 0 && b[0] === 0xf1;
+  } catch {
+    return false;
+  }
+}
+
 export function verifyReservePortalOpen(tx) {
   if (!reserveNeedsPortalOpen(tx)) return true;
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  // An FS-1 withdraw is authorised by the SAL and the owner rewardSig.
+  // An FS-1 lock is authorised by lockAuth. The identity spend key is not
+  // on either compact body.
+  if ((kind === 'withdraw' || kind === 'lock') && fs1Carry(tx) && !spendPubFromTx(tx)) return true;
   if (!spendPubFromTx(tx)) return false;
   return verifySpendSig(tx);
 }
@@ -598,6 +616,7 @@ const BODY_KEYS = new Set([
   'nullifier',
   'ownerPub',
   'piProof', 'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
+  'lockAuth',
   'retireProof', 'retireProofs', 'principalProof', 'principalProofs',
   'voteProof', 'voteProofs', 'voteSeq', 'voteParam', 'voteOutput',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
@@ -625,6 +644,56 @@ const PROOF_KEYS = new Set([
   'admit_proof', 'v', 'version', 'spendTag', 'blob', 'cTilde', 'c0',
   'proof', 'members', 'anchor', 'root', 'n', 'pseudo', 'commit', 'tag',
 ]);
+
+/** Leaf-vote, withdraw, lock, and an FS-1 spend post only these proof keys. */
+const ADMIT_WIRE_KEYS = new Set(['blob', 'cTilde', 'spendTag']);
+
+function blobIsFs1(value) {
+  try {
+    const raw = Buffer.isBuffer(value) ? value : Buffer.from(asU8(value));
+    return raw.length > 0 && raw[0] === 0xf1;
+  } catch {
+    return false;
+  }
+}
+
+function admitWireStrict(tx) {
+  const kind = String(tx?.kind || '');
+  if (kind === 'leaf-vote' || kind === 'withdraw' || kind === 'lock') return true;
+  if (blobIsFs1(tx?.fs1)) return true;
+  if (tx?.admit_proof && blobIsFs1(tx.admit_proof.blob)) return true;
+  if (Array.isArray(tx?.admit_proofs)) {
+    for (const proof of tx.admit_proofs) {
+      if (proof && blobIsFs1(proof.blob)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A strict admit proof carries blob, cTilde, and spendTag. `t`, `r`,
+ * `commit`, `pseudo`, `seed`, and any other key are unsigned. Secret-key
+ * skipping does not apply: those names are the leak this gate closes.
+ */
+export function admitKeysRejected(tx) {
+  if (!tx || typeof tx !== 'object' || Buffer.isBuffer(tx) || Array.isArray(tx)) return null;
+  if (!admitWireStrict(tx)) return null;
+  const proofs = [];
+  if (tx.admit_proof && typeof tx.admit_proof === 'object' && !Buffer.isBuffer(tx.admit_proof) && !Array.isArray(tx.admit_proof)) {
+    proofs.push(tx.admit_proof);
+  }
+  if (Array.isArray(tx.admit_proofs)) {
+    for (const proof of tx.admit_proofs) {
+      if (proof && typeof proof === 'object' && !Buffer.isBuffer(proof) && !Array.isArray(proof)) proofs.push(proof);
+    }
+  }
+  for (const proof of proofs) {
+    for (const key of Object.keys(proof)) {
+      if (!ADMIT_WIRE_KEYS.has(key)) return { ok: false, reason: 'unsigned' };
+    }
+  }
+  return null;
+}
 
 const LEDGER_ROW_KEYS = new Set([
   'noteCommit', 'dest20', 'nanos', 'sinceHeight', 'admitBase', 'address',
@@ -692,6 +761,8 @@ export function unsignedBodyField(tx) {
     }
   }
   if (uncoveredKey(tx.observe, OBSERVE_KEYS)) return { ok: false, reason: 'unsigned' };
+  const strictProof = admitKeysRejected(tx);
+  if (strictProof) return strictProof;
   const proofs = [];
   if (tx.admit_proof && typeof tx.admit_proof === 'object') proofs.push(tx.admit_proof);
   if (Array.isArray(tx.admit_proofs)) proofs.push(...tx.admit_proofs);
@@ -899,17 +970,19 @@ function freshLockBound(tx, pubRaw) {
   const dest = reservePortalDest(tx);
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   const o = outs.find((row) => String(row?.kind || 'lock') === 'lock') || outs[0] || {};
-  let ownedDest = '';
-  if (dest && destMatchesSpendPub(dest, pubRaw)) ownedDest = dest;
-  else if (o?.dest20 && dest20MatchesSpendPub(o.dest20, pubRaw)) {
-    try { ownedDest = encodeDest(Buffer.from(o.dest20)); } catch { ownedDest = ''; }
-  }
-  const ownsDest20 = !!(o?.dest20 && dest20MatchesSpendPub(o.dest20, pubRaw));
-  if (!ownedDest && !ownsDest20) return false;
   // The carried portal id is not a hash of the address. A peer does not rebuild it.
   const pid = String(tx?.portalId || o?.portalId || '').toLowerCase();
-  if (pid && !/^[0-9a-f]{64}$/.test(pid)) return false;
-  return true;
+  if (!/^[0-9a-f]{64}$/.test(pid)) return false;
+  // Identity-address lock: dest20 is the signer's hash.
+  if (dest && destMatchesSpendPub(dest, pubRaw)) return true;
+  if (o?.dest20 && dest20MatchesSpendPub(o.dest20, pubRaw)) return true;
+  // One portal per lock. dest20 is the one-time subaddress, not the identity hash.
+  // The signer is the owner. A later lock on this portal id is a different check.
+  try {
+    const b = o?.dest20 ? Buffer.from(asU8(o.dest20)) : null;
+    if (b && b.length >= 20) return true;
+  } catch { /* not a dest20 */ }
+  return false;
 }
 
 export function reserveAuth(tx, reserveState = null, seenOwners = null) {
@@ -923,27 +996,51 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
   }
   const ref = reservePortalRef(tx);
   if (!ref.ok) return ref;
-  const spend = pubRaw.toString('hex').toLowerCase();
+  // A compact FS-1 lock has no spendPub. The owner is the lockAuth key.
+  // A compact FS-1 withdraw has no spendPub either. The SAL and the owner
+  // reward signature are the authorisation. A spend key on that body is vote_leak.
+  let spend;
+  let ownerKey = pubRaw;
+  const hiddenWithdraw = !pubRaw && kind === 'withdraw' && fs1Carry(tx);
+  if (!pubRaw && !hiddenWithdraw) {
+    if (!(kind === 'lock' && fs1Carry(tx))) {
+      return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+    }
+    spend = verifyLockAuth(tx);
+    if (!spend) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+    ownerKey = Buffer.from(spend, 'hex');
+  } else if (pubRaw) {
+    spend = pubRaw.toString('hex').toLowerCase();
+  }
   const ownerPub = String(tx?.ownerPub || '').replace(/^0x/i, '').toLowerCase();
   const recorded = String(reserveState?.portals?.[ref.id]?.ownerPub || '').toLowerCase();
   const seen = seenOwners instanceof Map ? String(seenOwners.get(ref.id) || '') : '';
   const want = recorded || seen;
   if (kind === 'lock' && !want) {
-    if (!freshLockBound(tx, pubRaw)) {
+    if (!freshLockBound(tx, ownerKey)) {
       return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
     }
     if (!/^[0-9a-f]{64}$/.test(ownerPub)) {
       return { ok: false, reason: 'owner_missing', from: reservePortalDest(tx) };
     }
-    if (seenOwners instanceof Map && ref.id) seenOwners.set(ref.id, ownerPub);
+    // A fresh lock's owner is the signer. A copied ownerPub is not a binding.
+    if (ownerPub !== spend) {
+      return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+    }
+    if (seenOwners instanceof Map && ref.id) seenOwners.set(ref.id, spend);
     return { ok: true };
   }
   if (kind === 'lock' && want) {
-    const presented = ownerPub || spend;
-    if (presented !== want) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+    // A later lock is signed by the recorded owner. ownerPub cannot stand in.
+    if (spend !== want || (ownerPub && ownerPub !== spend)) {
+      return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+    }
   }
   if (kind === 'withdraw' && !want) {
     return { ok: false, reason: 'owner_missing', from: reservePortalDest(tx) };
+  }
+  if (hiddenWithdraw && ownerPub && ownerPub !== want) {
+    return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
   }
   if (seenOwners instanceof Map && ref.id && kind === 'lock') {
     seenOwners.set(ref.id, ownerPub || spend);

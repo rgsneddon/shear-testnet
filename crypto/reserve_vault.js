@@ -16,7 +16,7 @@ import {
   MAX_LIVE_VAULT_LEAVES,
   VAULT_CLAIM_WINDOW_EPOCHS,
 } from './asert.js';
-import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest, admitBaseFromAddress, ED25519_SPKI_PREFIX, ed25519RawPub, ed25519PrivateFromSeed, ed25519SeedOf } from './address.js';
+import { isDestAddress, isShearAddress, hash20FromAddress, encodeDest, admitBaseFromAddress, ED25519_SPKI_PREFIX, ed25519RawPub, ed25519PrivateFromSeed, ed25519SeedOf, destCommitFromSpendPub } from './address.js';
 import { attachAdmitPub } from './admit.js';
 import { fs1LeafFor } from './fs1_leaf.js';
 import {
@@ -222,16 +222,53 @@ function nanosOut(n) {
 
 export const PORTAL_BLIND_TAG = 'shear-portal-r-v1';
 export const PORTAL_ID_TAG = 'shear-portal-id-v1';
+export const PORTAL_SPEND_TAG = 'shear-portal-spend-v1';
 
-/** 32-byte r from the wallet seed. Domain-separated from the portal owner key. */
-export function portalBlindFromSeed(spendSeed) {
+function portalSeedBytes(spendSeed) {
   let seed = spendSeed;
   if (seed && typeof seed === 'object' && !Buffer.isBuffer(seed) && !(seed instanceof Uint8Array)) {
     try { seed = ed25519SeedOf(seed); } catch { return null; }
   }
   const raw = Buffer.isBuffer(seed) ? seed : Buffer.from(seed || []);
-  if (raw.length !== 32) return null;
-  return createHash('sha256').update(Buffer.from(PORTAL_BLIND_TAG)).update(raw).digest();
+  return raw.length === 32 ? raw : null;
+}
+
+function portalIndexBytes(lockIndex) {
+  const idx = Buffer.alloc(4);
+  const n = Number(lockIndex);
+  idx.writeUInt32LE(Number.isInteger(n) && n >= 0 ? (n >>> 0) : 0);
+  return idx;
+}
+
+/** 32-byte r from the wallet seed and the lock index. One portal per lock. */
+export function portalBlindFromSeed(spendSeed, lockIndex = 0) {
+  const raw = portalSeedBytes(spendSeed);
+  if (!raw) return null;
+  return createHash('sha256')
+    .update(Buffer.from(PORTAL_BLIND_TAG))
+    .update(raw)
+    .update(portalIndexBytes(lockIndex))
+    .digest();
+}
+
+/** One-time spend seed for this lock. The wallet re-derives it from the seed and the index. */
+export function portalSpendSeed(spendSeed, lockIndex = 0) {
+  const raw = portalSeedBytes(spendSeed);
+  if (!raw) return null;
+  return createHash('sha256')
+    .update(Buffer.from(PORTAL_SPEND_TAG))
+    .update(raw)
+    .update(portalIndexBytes(lockIndex))
+    .digest();
+}
+
+/** Fresh subaddress dest20 for this lock. Not the identity address and not the height-0 vault dest. */
+export function portalDest20FromSeed(spendSeed, lockIndex = 0) {
+  const one = portalSpendSeed(spendSeed, lockIndex);
+  if (!one) return null;
+  let pub;
+  try { pub = ed25519RawPub(ed25519PrivateFromSeed(one)); } catch { return null; }
+  return destCommitFromSpendPub(pub);
 }
 
 /**
@@ -266,16 +303,32 @@ export function portalIdFromDest(dest) {
  * that is not a 20-byte address, has no r, so the caller keeps the address id.
  * A present seed and dest20 never fall back to that address id.
  */
-function portalIdFor(dest, spendSeed) {
+function portalIdFor(dest, spendSeed, lockIndex = null) {
   if (spendSeed != null) {
-    const d20 = hash20FromAddress(dest);
-    const blind = portalBlindFromSeed(spendSeed);
+    const indexed = lockIndex != null && Number.isInteger(Number(lockIndex)) && Number(lockIndex) >= 0;
+    const d20 = indexed ? portalDest20FromSeed(spendSeed, lockIndex) : hash20FromAddress(dest);
+    const blind = portalBlindFromSeed(spendSeed, indexed ? lockIndex : 0);
     if (d20 && blind) {
       const id = portalIdFromDest20(d20, blind);
       if (id) return id;
     }
+    if (indexed) return '';
   }
   return dest ? portalIdFromDest(dest) : '';
+}
+
+/** Every portal this seed can open, in lock-index order. Nothing but the seed is required. */
+export function portalsFromSeed(spendSeed, count = 1) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const out = [];
+  for (let i = 0; i < n; i += 1) {
+    const dest20 = portalDest20FromSeed(spendSeed, i);
+    const r = portalBlindFromSeed(spendSeed, i);
+    const portalId = dest20 && r ? portalIdFromDest20(dest20, r) : null;
+    if (!dest20 || !portalId) break;
+    out.push({ lockIndex: i, dest20, portalId, spendSeed: portalSpendSeed(spendSeed, i) });
+  }
+  return out;
 }
 
 export function isPortalId(s) {
@@ -923,9 +976,8 @@ function dest20Hex(raw) {
   return '';
 }
 
-/** Address when `to` is present. Otherwise the one-time dest20 hex. */
+/** The one-time dest20 hex. An address on `to` is not the signed payout. */
 export function withdrawSignedDest(tx, act) {
-  if (typeof tx?.to === 'string' && tx.to !== '') return tx.to;
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   const note = outs.find((row) => String(row?.kind || '') === KIND_WITHDRAW);
   return dest20Hex(note?.dest20) || dest20Hex(tx?.dest20) || String(act?.payout || '');
@@ -2137,7 +2189,7 @@ export function publicVaultView(state, nowMs) {
     epochBps: Number(state.epochBps ?? GENESIS_BPS),
     epochIndex: Number(state.epochIndex || 0),
     freezeEpochIndex: Number(state.freeze?.epochIndex || 0),
-    liveHashBonusNanos: asNum(state.liveHashBonusNanos || 1n),
+    liveHashBonusNanos: asNum(hashBonusUnitNanos(state.liveHashBonusNanos)),
     bonusEnacted: !!state.bonusEnacted,
     currentEpoch: Number(state.currentEpoch || 0),
     enactedUp: Number(state.enactedUp || 0),
@@ -2847,8 +2899,8 @@ export function sealEpochLocks(state, epoch) {
 }
 
 export function deposit({
-  state, dest, portalId, nanos, nowMs, payout, payoutPortalId, ownerPub,
-  commit, blind, rangeProof, piProof, unlock, rangeCommit,
+  state, dest, portalId, nanos, nowMs, payout, payoutPortalId, ownerPub, spendPub,
+  commit, blind, rangeProof, piProof, unlock, rangeCommit, sameLock = false,
 } = {}) {
   const id = portalKey(portalId || dest);
   if (!id) return { ok: false, reason: 'bad_dest' };
@@ -2860,12 +2912,24 @@ export function deposit({
   // No clock, no credit. A later pin must not inherit an unpinned lock.
   if (!(Number(state?.genesisMs) > 0)) return { ok: false, reason: 'clock' };
   const p = portalOf(state, id);
+  const priorTranches = Array.isArray(p.tranches) ? p.tranches.length : 0;
+  const priorOwner = /^[0-9a-f]{64}$/.test(String(p.ownerPub || ''));
   const pub = String(ownerPub || '').replace(/^0x/i, '').toLowerCase();
+  const signer = String(spendPub || '').replace(/^0x/i, '').toLowerCase();
   const given = /^[0-9a-f]{64}$/.test(pub);
+  const signed = /^[0-9a-f]{64}$/.test(signer);
   const have = /^[0-9a-f]{64}$/.test(String(p.ownerPub || ''));
-  if (!given) return { ok: false, reason: 'owner_missing' };
-  if (have && p.ownerPub !== pub) return { ok: false, reason: 'unsigned' };
-  if (!have) p.ownerPub = pub;
+  // The owner check is first, same as the EVM. A different key is unsigned
+  // even when the portal id is also a duplicate. A fixture with no signer
+  // leaves spendPub empty and is not this check.
+  if (signed && ((given && signer !== pub) || (have && signer !== String(p.ownerPub).toLowerCase()))) {
+    return { ok: false, reason: 'unsigned' };
+  }
+  if (have && given && p.ownerPub !== pub) return { ok: false, reason: 'unsigned' };
+  // A second credit of this same lock is not a second portal. Another tx is.
+  if ((priorTranches > 0 || priorOwner) && !sameLock) return { ok: false, reason: 'portal_exists' };
+  if (!have && given) p.ownerPub = pub;
+  else if (!have && signed) p.ownerPub = signer;
   if (payoutPortalId && isPortalId(payoutPortalId) && !p.payoutPortalId) {
     p.payoutPortalId = String(payoutPortalId).toLowerCase();
   }
@@ -3411,8 +3475,9 @@ export function kt10WithdrawBlind(to, nanos, id = '', nonce) {
   throw new Error('kt10_blind');
 }
 
-function sealedReserveVout(to, n, kind, r, spendSeed = null) {
-  const d20 = hash20FromAddress(to);
+function sealedReserveVout(to, n, kind, r, spendSeed = null, lockIndex = 0) {
+  const one = kind === KIND_LOCK && spendSeed != null ? portalDest20FromSeed(spendSeed, lockIndex) : null;
+  const d20 = one || hash20FromAddress(to);
   if (!d20) return { address: to, nanos: n, kind };
   if (kind === KIND_WITHDRAW && !positiveUnits(n)) {
     return { address: to, nanos: n, kind };
@@ -3423,8 +3488,8 @@ function sealedReserveVout(to, n, kind, r, spendSeed = null) {
   if (note.valueProof && typeof note.valueProof === 'object') {
     note.valueProof = { ...note.valueProof, v: n };
   }
-  note.dest20 = d20;
-  note.portalId = portalIdFor(to, spendSeed);
+  note.dest20 = Buffer.from(d20);
+  note.portalId = kind === KIND_LOCK ? portalIdFor(to, spendSeed, lockIndex) : portalIdFor(to, spendSeed);
   return { ...note, address: to };
 }
 
@@ -3446,16 +3511,17 @@ function exactFloorNanos(nanos) {
   return n;
 }
 
-function lockLeafOutput(to, amount, blind, timeLock, lockEpoch, unlockAtMs, spendSeed = null) {
+function lockLeafOutput(to, amount, blind, timeLock, lockEpoch, unlockAtMs, spendSeed = null, lockIndex = 0) {
   const C = pointBytes(commit(amount, blind));
   const range = proveRange(amount, blind);
-  const d20 = hash20FromAddress(to);
+  const one = spendSeed != null ? portalDest20FromSeed(spendSeed, lockIndex) : null;
+  const d20 = one || hash20FromAddress(to);
   const out = {
     kind: KIND_LOCK,
     commit: C,
     rangeProof: range,
     address: to,
-    portalId: portalIdFor(to, spendSeed),
+    portalId: portalIdFor(to, spendSeed, lockIndex),
   };
   if (d20) out.dest20 = Buffer.from(d20);
   if (timeLock) {
@@ -3470,7 +3536,7 @@ function lockLeafOutput(to, amount, blind, timeLock, lockEpoch, unlockAtMs, spen
 
 export function lockTx({
   from, to, nanos, id, lockEpoch = null, unlockAtMs = null, timeLock = false, spendSeed = null,
-  ownerPub = null, blind = null, bps = null,
+  ownerPub = null, blind = null, bps = null, lockIndex = 0,
 } = {}) {
   const n = exactFloorNanos(nanos);
   const amount = BigInt(n);
@@ -3488,7 +3554,7 @@ export function lockTx({
     }
     change = amount - pi * BigInt(count);
   }
-  const vout = leaves.map((leaf) => lockLeafOutput(to, leaf.amount, leaf.blind, timeLock, lockEpoch, unlockAtMs, spendSeed));
+  const vout = leaves.map((leaf) => lockLeafOutput(to, leaf.amount, leaf.blind, timeLock, lockEpoch, unlockAtMs, spendSeed, lockIndex));
   if (change > 0n) {
     const cr = randomScalar();
     vout.push({
@@ -3506,7 +3572,7 @@ export function lockTx({
     from,
     to,
     nanos: 0,
-    portalId: portalIdFor(to, spendSeed),
+    portalId: portalIdFor(to, spendSeed, lockIndex),
     payoutPortalId: portalIdFor(from, spendSeed),
     vin: [vinDest20(from)],
     vout,
@@ -3602,10 +3668,11 @@ export function buildFundedWithdraw(body = {}) {
   if (!body || typeof body !== 'object') return null;
   if (body.from != null && String(body.from) !== '') return null;
   if (body.payer != null && String(body.payer) !== '') return null;
-  const namedTo = String(body.to || '');
-  const hasTo = isDestAddress(namedTo);
+  // `to` and payoutPortalId name the address. The payout is dest20 only.
+  if (body.to != null && String(body.to) !== '') return null;
+  if (body.payoutPortalId != null && String(body.payoutPortalId) !== '') return null;
   const payout20 = postedPayoutDest20(body.dest20);
-  if (!hasTo && !payout20) return null;
+  if (!payout20) return null;
   const n = exactFloorNanos(body.nanos);
   if (n == null || n < 0) return null;
   const proofs = [];
@@ -3626,27 +3693,20 @@ export function buildFundedWithdraw(body = {}) {
     ? body.principalProofs
     : (body.principalProof ? [body.principalProof] : []);
   if (!retire.length || !principal.length) return null;
-  const tx = hasTo
-    ? withdrawTx({
-      to: namedTo,
-      nanos: n,
-      id: body.id,
-      nonce: body.withdrawNonce,
-      portalId: body.portalId,
-      payoutPortalId: body.payoutPortalId,
-    })
-    : {
-      id: body.id == null || String(body.id) === '' ? `wd-${randomBytes(8).toString('hex')}` : String(body.id),
-      programId: RESERVE_PROGRAM,
-      kind: KIND_WITHDRAW,
-      nanos: n,
-      portalId: isPortalId(body.portalId) ? String(body.portalId).toLowerCase() : '',
-      dest20: payout20,
-      vin: [],
-      vout: [],
-      ...(body.withdrawNonce != null && body.withdrawNonce !== '' ? { withdrawNonce: body.withdrawNonce } : {}),
-    };
+  const tx = {
+    id: body.id == null || String(body.id) === '' ? `wd-${randomBytes(8).toString('hex')}` : String(body.id),
+    programId: RESERVE_PROGRAM,
+    kind: KIND_WITHDRAW,
+    nanos: n,
+    portalId: isPortalId(body.portalId) ? String(body.portalId).toLowerCase() : '',
+    dest20: payout20,
+    vin: [],
+    vout: [],
+    ...(body.withdrawNonce != null && body.withdrawNonce !== '' ? { withdrawNonce: body.withdrawNonce } : {}),
+  };
   delete tx.from;
+  delete tx.to;
+  delete tx.payoutPortalId;
   const posted = Array.isArray(body.vout) ? body.vout.filter((o) => o && (o.commit || o.kind)) : [];
   if (posted.length) tx.vout = posted;
   tx.vin = vins.map((v) => {
@@ -4345,16 +4405,18 @@ function maybeTallyBallots(state, height) {
  */
 const LEAKED_LEAF_VOTE_FIELDS = ['feeInput', 'parentTx', 'parent'];
 
-function valueHasSsa1(value, seen) {
+function valueHasAddrLeak(value, seen) {
   if (value == null) return false;
-  if (typeof value === 'string') return value.includes('ssa1');
+  if (typeof value === 'string') {
+    return value.includes('ssa1') || value.includes('she1') || value.includes('shear1');
+  }
   if (typeof value !== 'object') return false;
   if (seen.has(value)) return false;
   seen.add(value);
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) return false;
-  if (Array.isArray(value)) return value.some((row) => valueHasSsa1(row, seen));
+  if (Array.isArray(value)) return value.some((row) => valueHasAddrLeak(row, seen));
   for (const row of Object.values(value)) {
-    if (valueHasSsa1(row, seen)) return true;
+    if (valueHasAddrLeak(row, seen)) return true;
   }
   return false;
 }
@@ -4368,7 +4430,32 @@ export function compactLockLeakRejected(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== KIND_LOCK) return null;
   if (tx?.to != null && String(tx.to) !== '') return { ok: false, reason: 'vote_leak' };
-  if (valueHasSsa1(tx, new Set())) return { ok: false, reason: 'vote_leak' };
+  if (tx?.from != null && String(tx.from) !== '') return { ok: false, reason: 'vote_leak' };
+  if (tx?.payer != null && String(tx.payer) !== '') return { ok: false, reason: 'vote_leak' };
+  if (valueHasAddrLeak(tx, new Set())) return { ok: false, reason: 'vote_leak' };
+  return null;
+}
+
+/**
+ * A withdraw names the lock by portalId. `from`, `to`, `payer`, and
+ * payoutPortalId are the address, including a payout id that matches the lock.
+ * ssa1, she1, and shear1 strings are the same leak.
+ */
+export function withdrawLeakRejected(tx) {
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (kind !== KIND_WITHDRAW) return null;
+  if (tx?.from != null && String(tx.from) !== '') return { ok: false, reason: 'vote_leak' };
+  if (tx?.to != null && String(tx.to) !== '') return { ok: false, reason: 'vote_leak' };
+  if (tx?.payer != null && String(tx.payer) !== '') return { ok: false, reason: 'vote_leak' };
+  if (tx?.payoutPortalId != null && String(tx.payoutPortalId) !== '') return { ok: false, reason: 'vote_leak' };
+  if (valueHasAddrLeak(tx, new Set())) return { ok: false, reason: 'vote_leak' };
+  // The identity spend key is the wallet address. An FS-1 withdraw does not carry it.
+  if (tx?.spendPub != null && String(tx.spendPub) !== '') {
+    try {
+      const blob = Buffer.from(asU8(tx.fs1));
+      if (blob.length > 0 && blob[0] === 0xf1) return { ok: false, reason: 'vote_leak' };
+    } catch { /* a withdraw with no FS-1 blob is not this rule */ }
+  }
   return null;
 }
 
@@ -4705,6 +4792,7 @@ export function applyReserveBlock({
         state.deferEpochRoll = false;
         return finishReserveApply(results);
       }
+      let openedHere = false;
       for (const credit of credits) {
         const got = deposit({
           state,
@@ -4719,7 +4807,10 @@ export function applyReserveBlock({
           payout: act.payout,
           payoutPortalId: act.payoutPortalId,
           ownerPub: tx.ownerPub || tx.spendPub,
+          spendPub: tx.spendPub,
+          sameLock: openedHere,
         });
+        if (got.ok) openedHere = true;
         results.push({ action: KIND_LOCK, ...got });
         if (!got.ok) {
           state.deferEpochRoll = false;

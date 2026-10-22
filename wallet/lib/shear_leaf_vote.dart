@@ -121,7 +121,15 @@ Map<String, Object?>? buildLeafVote({
   if (t is! List<int> || t.length != 32) return null;
   final commit = _commitBytes(note['commit']);
   if (commit == null || !_tildeBindsCommit(commit, tilde, t)) return null;
-  // The wire allowlist is blob, cTilde, and spendTag. t and the raw commit stay here.
+  // t proved the binding. It is not a wire field, and it does not stay in memory.
+  if (t is Uint8List) {
+    t.fillRange(0, t.length, 0);
+  } else {
+    for (var i = 0; i < t.length; i++) {
+      t[i] = 0;
+    }
+  }
+  // The wire allowlist is blob, cTilde, and spendTag. t and the raw commit stay off the body.
   final posted = <String, Object?>{
     'blob': raw,
     'cTilde': Uint8List.fromList(tilde),

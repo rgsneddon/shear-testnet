@@ -536,10 +536,8 @@ Map<String, dynamic> proveFs1SpendWire(Map<String, dynamic> input) {
 Map<String, dynamic> fs1PostedProof(Uint8List record) {
   if (record.length != kFs1RecordBytes || record[0] != kFs1Wire) throw StateError('fs1_record');
   return {
-    'admit_proof': true,
-    'v': 3,
-    'spendTag': Uint8List.fromList(record.sublist(1, 33)),
     'blob': record,
     'cTilde': Uint8List.fromList(record.sublist(33, 65)),
+    'spendTag': Uint8List.fromList(record.sublist(1, 33)),
   };
 }

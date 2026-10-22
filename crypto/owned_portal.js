@@ -214,8 +214,14 @@ export function encodeDeposit(dest, amountOrCommit, nowTs, ownerCommit = undefin
     if (joined === undefined) joined = n >= BigInt(PI_SHE_NANOS);
   }
   rememberLock(dest, word, nowTs);
-  const use = ownerCommit === undefined ? ownerFor(dest).commit : ownerCommit;
-  return encodeDepositRaw(dest, word, nowTs, use, joined === true);
+  // A missing owner, or the one-time owner commit, is signed here. The
+  // commitment is chosen above, so the signature has to be made after it.
+  let auth = ownerCommit;
+  if (auth == null) auth = { key: ownerFor(dest).key };
+  else if (isCommitWord(auth) && commitBuf(auth).equals(Buffer.from(ownerFor(dest).commit))) {
+    auth = { key: ownerFor(dest).key };
+  }
+  return encodeDepositRaw(dest, word, nowTs, auth, joined === true);
 }
 
 /** Auth defaults to the one-time owner of `dest`. The signed principal is 0. */

@@ -21,9 +21,9 @@ import {
   portalIdFromDest,
   rewardClaimTx,
   provePrincipalOpen,
-  rewardOwnerCommit,
   signWithdrawReward,
   snapshotPeriodRoot,
+  withdrawSignedDest,
   trialReserveApply,
   withdrawTx,
 } from './reserve_vault.js';
@@ -193,7 +193,7 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
       owner.dest,
       proved[0].locks[0].commit,
       T0,
-      rewardOwnerCommit(owner.pub),
+      { key: owner.key },
       true,
     ))).ok, true);
     assert.equal((await callReserve(late, encodeCommitEpochStartRoot(0, root))).ok, true);
@@ -304,10 +304,11 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
       dest20,
     });
     assert.ok(periodClaim);
+    const payout = withdrawSignedDest(tx);
     signWithdrawReward(tx, owner.key, {
       portalId: portal,
       nanos: PI_SHE_NANOS,
-      dest: owner.dest,
+      dest: payout,
       state: undo,
       nowMs: at,
     });
@@ -335,11 +336,11 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
 
     const evmUndo = await bootReserveEvm();
     assert.equal((await callReserve(evmUndo, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(evmUndo, encodeDeposit(owner.dest, note.commit, T0, rewardOwnerCommit(owner.pub), true))).ok, true);
+    assert.equal((await callReserve(evmUndo, encodeDeposit(owner.dest, note.commit, T0, { key: owner.key }, true))).ok, true);
     assert.equal((await callReserve(evmUndo, encodeCommitEpochStartRoot(0, root))).ok, true);
     const sm = evmUndo.evm.stateManager;
     await sm.checkpoint();
-    const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
+    const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: payout });
     const drew = await callReserve(evmUndo, encodeWithdrawRetire(owner.dest, at, auth, packRetireBlob([retire.proof])));
     assert.equal(drew.ok, true, drew.reason);
     assert.equal(decodeWithdraw(drew.returnValue).principal, PI_SHE_NANOS);

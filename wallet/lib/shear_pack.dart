@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import 'shear_ed25519.dart';
 import 'shear_identity.dart';
 import 'shear_note.dart';
 
@@ -251,13 +252,46 @@ String reservePortalId(String dest) {
   return sha256.convert([...utf8.encode('shear-portal-v1'), ...utf8.encode(dest)]).toString();
 }
 
-/// portalId = H(shear-portal-id-v1, dest20, r). r = H(shear-portal-r-v1, spendSeed).
-/// Same tags as crypto/reserve_vault.js and shear_reserve.dart. Null when dest20 or the seed is missing.
-String? reservePortalIdFromSeed(String dest, List<int> spendSeed) {
+Uint8List _portalIndexBytes(int lockIndex) {
+  final b = Uint8List(4);
+  final n = lockIndex < 0 ? 0 : lockIndex;
+  b[0] = n & 0xff;
+  b[1] = (n >> 8) & 0xff;
+  b[2] = (n >> 16) & 0xff;
+  b[3] = (n >> 24) & 0xff;
+  return b;
+}
+
+/// One-time subaddress for this lock. The address is not an input.
+Uint8List? reservePortalDest20FromSeed(List<int> spendSeed, [int lockIndex = 0]) {
+  if (spendSeed.length != 32) return null;
+  final seed = Uint8List.fromList(spendSeed);
+  final idx = _portalIndexBytes(lockIndex);
+  final one = sha256.convert(<int>[...utf8.encode('shear-portal-spend-v1'), ...seed, ...idx]).bytes;
+  return destCommitFromSpendPub(ed25519PublicFromSeed(Uint8List.fromList(one)));
+}
+
+/// portalId = H(tag, one-time dest20, r). r = H(tag, seed, lockIndex).
+/// [dest] is not hashed. Null when the seed is missing.
+String? reservePortalIdFromSeed(String dest, List<int> spendSeed, [int lockIndex = 0]) {
+  if (spendSeed.length != 32) return null;
+  final d20 = reservePortalDest20FromSeed(spendSeed, lockIndex);
+  if (d20 == null) return null;
+  final seed = Uint8List.fromList(spendSeed);
+  final idx = _portalIndexBytes(lockIndex);
+  final blind = sha256.convert(<int>[...utf8.encode('shear-portal-r-v1'), ...seed, ...idx]).bytes;
+  return sha256.convert(<int>[...utf8.encode('shear-portal-id-v1'), ...d20, ...blind]).toString();
+}
+
+/// Payout portal. dest20 is the address hash and r uses lock index 0.
+/// A lock portal is [reservePortalIdFromSeed], which does not use the address.
+String? reserveAddressPortalId(String dest, List<int> spendSeed) {
   if (spendSeed.length != 32) return null;
   final d20 = hash20FromAddress(dest);
   if (d20 == null) return null;
-  final blind = sha256.convert(<int>[...utf8.encode('shear-portal-r-v1'), ...spendSeed]).bytes;
+  final seed = Uint8List.fromList(spendSeed);
+  final idx = _portalIndexBytes(0);
+  final blind = sha256.convert(<int>[...utf8.encode('shear-portal-r-v1'), ...seed, ...idx]).bytes;
   return sha256.convert(<int>[...utf8.encode('shear-portal-id-v1'), ...d20, ...blind]).toString();
 }
 

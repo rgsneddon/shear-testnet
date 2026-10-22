@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { mempoolPressure } from '../../crypto/levy.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
-import { MAGIC_TESTNET, HASH_TX_LIVE, consensusFingerprint } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, HASH_TX_LIVE, consensusFingerprint, hashBonusUnitNanos } from '../../crypto/asert.js';
 import { fs1AnchorRows } from '../../crypto/admit_v3.js';
 import { isDestAddress, encodeDest } from '../../crypto/address.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
@@ -393,7 +393,7 @@ export function createRpc({
         votes: pub.votes,
         totalStakedNanos: pub.totalStakedNanos,
         totalIdleNanos: pub.totalIdleNanos,
-        liveHashBonusNanos: Number(vault.liveHashBonusNanos || 1),
+        liveHashBonusNanos: hashBonusUnitNanos(vault.liveHashBonusNanos),
       };
       const address = String(params.address || params[0] || '');
       if (!address) return out;

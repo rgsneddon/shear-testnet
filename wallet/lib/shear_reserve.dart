@@ -4,10 +4,13 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import 'shear_admit.dart';
+import 'shear_ed25519.dart';
 import 'shear_identity.dart';
 import 'shear_leaf_vote.dart';
 import 'shear_ledger.dart';
 import 'shear_levy.dart';
+import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 import 'shear_vault_reward.dart';
@@ -270,7 +273,8 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
     nanos: (proof['nanos'] as num?)?.toInt() ?? 0,
   );
   if (!local && ledger.pool != null) {
-    await ledger.pool!.postRaw(body);
+    final ack = await ledger.pool!.postRaw(body);
+    if (!_votePostOk(ack)) return null;
   }
   final settled = reserve.withdraw(dest: dest, nowMs: nowMs, payout: payout);
   if (settled == null) return null;
@@ -355,20 +359,32 @@ Map<String, dynamic>? _freshWithdrawNote(List<Map<String, dynamic>> notes) {
   return null;
 }
 
+bool _same20(List<int> a, List<int> b) {
+  if (a.length < 20 || b.length < 20) return false;
+  for (var i = 0; i < 20; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// The leaf's portal, or the seed scan whose one-time dest20 matches.
+/// A bounded scan: a wallet does not open an unbounded index.
 String? _carriedPortalId(List<Map<String, Object?>> leaves, Uint8List spendSeed) {
-  final blind = portalBlindFromSeed(spendSeed);
-  if (blind == null) return null;
-  Uint8List? lockDest;
   for (final leaf in leaves) {
     final pid = leaf['portalId'];
     if (pid is String && RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(pid)) return pid.toLowerCase();
+  }
+  final known = portalsFromSeed(spendSeed, 64);
+  for (final leaf in leaves) {
     final raw = leaf['dest20'];
-    if (lockDest == null && raw is List<int> && raw.length == 20) {
-      lockDest = Uint8List.fromList(raw);
+    if (raw is! List<int> || raw.length < 20) continue;
+    for (final row in known) {
+      final d20 = row['dest20'];
+      final id = row['portalId'];
+      if (d20 is List<int> && id is String && _same20(d20, raw)) return id;
     }
   }
-  if (lockDest == null) return null;
-  return portalIdFromDest20(lockDest, blind);
+  return null;
 }
 
 /// Post a proved withdraw. The spend is a fresh FS-1 proof. The payout is a
@@ -399,11 +415,18 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   final portalId = _carriedPortalId(leaves, spendSeed);
   final host = _freshWithdrawNote(ledger.notes);
   if (portalId == null || host == null) return null;
-  final payout20 = randomBytes(20);
   final wdId = withdrawId ?? 'wd-$nowMs';
   final nonce = withdrawNonce != null && withdrawNonce.length == 32
       ? Uint8List.fromList(withdrawNonce)
       : randomBytes(32);
+  final payout20 = withdrawPayoutDest20(spendSeed, portalId, nonce);
+  if (payout20 == null) return null;
+  final sealedReceipt = attachAdmitPub(
+    nativeSealNote(nanos, dest20: payout20, kind: 'withdraw'),
+    spendSeed: spendSeed,
+  );
+  sealedReceipt['kind'] = 'withdraw';
+  sealedReceipt['dest20'] = payout20;
   late final ({
     List<Map<String, dynamic>> vin,
     List<Map<String, dynamic>> proofs,
@@ -415,7 +438,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   try {
     spent = await ledger.spendFs1Notes(
       notes: [host],
-      sealed: const <Map<String, dynamic>>[],
+      sealed: <Map<String, dynamic>>[sealedReceipt],
       fee: 0,
       spendSeed: spendSeed,
       kind: 'withdraw',
@@ -453,11 +476,23 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
     spendSeed: spendSeed,
     withdrawNonce: nonce,
     releaseEpoch: reserve.currentEpoch,
+    vout: <Map<String, Object?>>[Map<String, Object?>.from(sealedReceipt)],
   );
   if (built == null) return null;
-  if (built.containsKey('from') || built.containsKey('to') || built.containsKey('payoutPortalId')) {
+  if (built.containsKey('from') || built.containsKey('to') || built.containsKey('payoutPortalId') || built.containsKey('spendPub')) {
     return null;
   }
+  final payoutSeed = withdrawPayoutSeed(spendSeed, portalId, nonce);
+  ledger.notes.add(<String, dynamic>{
+    'kind': 'withdraw',
+    'dest20': Uint8List.fromList(payout20),
+    'commit': sealedReceipt['commit'],
+    'noteCommit': sealedReceipt['noteCommit'],
+    'r': sealedReceipt['r'],
+    'portalId': portalId,
+    'withdrawNonce': nonce,
+    if (payoutSeed != null) 'payoutSeed': payoutSeed,
+  });
   if (built['rewardSig'] is! List<int> || (built['rewardSig'] as List).length != 64) return null;
   if (local || ledger.pool == null) return null;
   final ack = await ledger.pool!.postRaw(_hexPost(built));
@@ -604,11 +639,92 @@ class ReserveRewards {
 
 const String kPortalBlindTag = 'shear-portal-r-v1';
 const String kPortalIdTag = 'shear-portal-id-v1';
+const String kPortalSpendTag = 'shear-portal-spend-v1';
 
-/// r = H(tag, spendSeed). Domain-separated from the portal owner key.
-Uint8List? portalBlindFromSeed(Uint8List spendSeed) {
+Uint8List portalIndexBytes(int lockIndex) {
+  final b = Uint8List(4);
+  final n = lockIndex < 0 ? 0 : lockIndex;
+  b[0] = n & 0xff;
+  b[1] = (n >> 8) & 0xff;
+  b[2] = (n >> 16) & 0xff;
+  b[3] = (n >> 24) & 0xff;
+  return b;
+}
+
+/// r = H(tag, spendSeed, lockIndex). One portal per lock.
+Uint8List? portalBlindFromSeed(Uint8List spendSeed, [int lockIndex = 0]) {
   if (spendSeed.length != 32) return null;
-  return Uint8List.fromList(sha256.convert(<int>[...utf8.encode(kPortalBlindTag), ...spendSeed]).bytes);
+  return Uint8List.fromList(sha256.convert(<int>[
+    ...utf8.encode(kPortalBlindTag),
+    ...spendSeed,
+    ...portalIndexBytes(lockIndex),
+  ]).bytes);
+}
+
+/// One-time spend seed for this lock. Recovery scans the index.
+Uint8List? portalSpendSeed(Uint8List spendSeed, [int lockIndex = 0]) {
+  if (spendSeed.length != 32) return null;
+  return Uint8List.fromList(sha256.convert(<int>[
+    ...utf8.encode(kPortalSpendTag),
+    ...spendSeed,
+    ...portalIndexBytes(lockIndex),
+  ]).bytes);
+}
+
+/// One-time payout key. The identity spend key is not the payout.
+Uint8List? withdrawPayoutSeed(Uint8List spendSeed, String portalId, List<int> nonce) {
+  if (spendSeed.length != 32 || nonce.length != 32) return null;
+  final hex = portalId.startsWith('0x') ? portalId.substring(2) : portalId;
+  if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(hex)) return null;
+  final id = <int>[];
+  for (var i = 0; i < 64; i += 2) {
+    id.add(int.parse(hex.substring(i, i + 2), radix: 16));
+  }
+  return Uint8List.fromList(sha256.convert(<int>[
+    ...utf8.encode('shear-withdraw-payout-v1'),
+    ...spendSeed,
+    ...id,
+    ...nonce,
+  ]).bytes);
+}
+
+/// dest20 the wallet can spend. Re-derived from the seed, the portal, and the nonce.
+Uint8List? withdrawPayoutDest20(Uint8List spendSeed, String portalId, List<int> nonce) {
+  final one = withdrawPayoutSeed(spendSeed, portalId, nonce);
+  if (one == null) return null;
+  return destCommitFromSpendPub(ed25519PublicFromSeed(one));
+}
+
+/// True when this note pays the one-time dest the seed can spend.
+bool recognisesWithdrawPayout(Map<String, dynamic> note, Uint8List spendSeed, String portalId, List<int> nonce) {
+  final want = withdrawPayoutDest20(spendSeed, portalId, nonce);
+  final got = note['dest20'];
+  if (want == null || got is! List<int> || got.length < 20) return false;
+  for (var i = 0; i < 20; i++) {
+    if (got[i] != want[i]) return false;
+  }
+  return true;
+}
+
+/// Fresh subaddress dest20. Not the identity address and not the height-0 vault dest.
+Uint8List? portalDest20FromSeed(Uint8List spendSeed, [int lockIndex = 0]) {
+  final one = portalSpendSeed(spendSeed, lockIndex);
+  if (one == null) return null;
+  return destCommitFromSpendPub(ed25519PublicFromSeed(one));
+}
+
+/// Every portal this seed opens, in lock-index order.
+List<Map<String, Object>> portalsFromSeed(Uint8List spendSeed, int count) {
+  final out = <Map<String, Object>>[];
+  for (var i = 0; i < count; i++) {
+    final dest20 = portalDest20FromSeed(spendSeed, i);
+    final blind = portalBlindFromSeed(spendSeed, i);
+    if (dest20 == null || blind == null) break;
+    final id = portalIdFromDest20(dest20, blind);
+    if (id == null) break;
+    out.add(<String, Object>{'lockIndex': i, 'dest20': dest20, 'portalId': id});
+  }
+  return out;
 }
 
 /// portalId = H(tag, dest20, r). The address is not an input.

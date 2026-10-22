@@ -817,7 +817,9 @@ export function compactTx(tx) {
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
   // The owner signature is checked on the sealed body. A b-spend keeps spendPub.
-  if ((keepDest || poolWithdraw || reserveTx || kind === 'b-spend') && tx.spendPub) out.spendPub = tx.spendPub;
+  // An FS-1 withdraw and an FS-1 lock do not publish the identity spend key.
+  const hideSpend = kind === 'withdraw' || kind === 'lock';
+  if (!hideSpend && (keepDest || poolWithdraw || reserveTx || kind === 'b-spend') && tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   if (tx.admit_proof) {
     if (tx.admit_proof.blob || tx.admit_proof.v === 3) {
@@ -845,6 +847,12 @@ export function compactTx(tx) {
     }
     delete out.admit_proof.members;
     delete out.members;
+  }
+  // Rebuild before the tag canonicalization so a lying spendTag is still
+  // replaced, and compactValue's extra keys do not survive.
+  if (admitWireStrictTx(tx)) {
+    if (tx.admit_proof && typeof tx.admit_proof === 'object') out.admit_proof = admitThree(tx.admit_proof);
+    if (Array.isArray(tx.admit_proofs)) out.admit_proofs = tx.admit_proofs.filter(Boolean).map(admitThree);
   }
   if (tx.spendTag) out.spendTag = tx.spendTag;
   // A present JSON tag is replaced by the blob tag, so a lie does not survive.
@@ -878,11 +886,45 @@ export function compactTx(tx) {
   if (tx.excess) out.excess = tx.excess;
   if (reserveFields) {
     if (reserveFields.portalId) out.portalId = reserveFields.portalId;
-    if (reserveFields.payoutPortalId) out.payoutPortalId = reserveFields.payoutPortalId;
+    if (kind !== 'withdraw' && reserveFields.payoutPortalId) out.payoutPortalId = reserveFields.payoutPortalId;
     if (reserveFields.programId) out.programId = reserveFields.programId;
     if (reserveFields.kind === 'vote') out.choice = reserveFields.choice;
   }
+  if (kind === 'withdraw') delete out.payoutPortalId;
+  // The EVM lock checks this signature. A compact body that drops it cannot replay.
+  if (kind === 'lock' && tx.lockAuth) out.lockAuth = compactValue(tx.lockAuth);
   return out;
+}
+
+function blobIsFs1Wire(value) {
+  try {
+    const raw = Buffer.from(asU8(value));
+    return raw.length > 0 && raw[0] === 0xf1;
+  } catch {
+    return false;
+  }
+}
+
+function admitWireStrictTx(tx) {
+  const kind = String(tx?.kind || '');
+  if (kind === 'leaf-vote' || kind === 'withdraw' || kind === 'lock') return true;
+  if (blobIsFs1Wire(tx?.fs1)) return true;
+  if (tx?.admit_proof && blobIsFs1Wire(tx.admit_proof.blob)) return true;
+  if (Array.isArray(tx?.admit_proofs)) {
+    for (const proof of tx.admit_proofs) {
+      if (proof && blobIsFs1Wire(proof.blob)) return true;
+    }
+  }
+  return false;
+}
+
+function admitThree(proof) {
+  if (!proof || typeof proof !== 'object') return {};
+  const row = {};
+  if (proof.blob != null && proof.blob !== '') row.blob = proof.blob;
+  if (proof.cTilde != null && proof.cTilde !== '') row.cTilde = proof.cTilde;
+  if (proof.spendTag != null && proof.spendTag !== '') row.spendTag = proof.spendTag;
+  return row;
 }
 
 /**
@@ -892,7 +934,8 @@ export function compactTx(tx) {
 export function admitWireTx(tx) {
   const wire = compactTx(tx);
   if (!wire || typeof wire !== 'object' || wire.coinbase) return wire;
-  if (tx?.spendPub && !wire.spendPub) {
+  const wireKind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (tx?.spendPub && !wire.spendPub && wireKind !== 'withdraw' && wireKind !== 'lock') {
     wire.spendPub = typeof tx.spendPub === 'string'
       ? tx.spendPub
       : Buffer.from(tx.spendPub).toString('hex');

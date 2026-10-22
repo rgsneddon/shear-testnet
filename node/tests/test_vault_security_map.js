@@ -75,6 +75,7 @@ import {
   SYSTEM,
   createAddressFromString,
 } from '../../crypto/reserve_evm.js';
+import { ownerFor } from '../../crypto/owned_portal.js';
 
 const T0 = 1_700_000_000_000;
 const END = T0 + RESERVE_EPOCH_MS;
@@ -296,7 +297,9 @@ describe('Vault Security test map', () => {
       height: 2,
       genesisMs: T0,
     });
-    assert.equal(second.ok, true, second.reason);
+    // One portal per lock. A second lock of the same portal id is a duplicate.
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, 'portal_exists');
     const stranger = owner();
     const foreign = notedOwnerLock(who, 'lock-stranger', stranger.pub);
     const denied = applyReserveBlock({
@@ -791,7 +794,9 @@ describe('Vault Security test map', () => {
     const results = [];
     for (const caller of callers) {
       const s = await bootReserveEvm();
-      const lock = await callReserve(s, encodeDeposit('ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq', PI_SHE_NANOS, T0), { caller });
+      const lockDest = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+      const lockOwner = ownerFor(lockDest);
+      const lock = await callReserve(s, encodeDeposit(lockDest, Buffer.alloc(32, 9), T0, { key: lockOwner.key }), { caller });
       const vote = await callReserve(s, encodeVote('ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq', 1, T0 + 2), { caller });
       const observe = await callReserve(s, encodeObserveRate(9999, Math.floor(T0 / 1000)), { caller, staticCall: true });
       const enacted = await callReserve(s, encodeEnact(END), { caller });

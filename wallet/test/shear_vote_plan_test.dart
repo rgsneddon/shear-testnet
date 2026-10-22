@@ -113,6 +113,7 @@ void main() {
       {'kind': 'send', 'commit': ownedHex, 'parentTx': 'r'},
     ];
     final picked = <String>[];
+    Uint8List? blinded;
     final vote = buildLeafVote(
       vote: {
         'voteProof': 'proof',
@@ -140,6 +141,7 @@ void main() {
         blob[0] = 0xf1;
         final fs1 = List<int>.filled(41, 1);
         fs1[0] = 0xf1;
+        blinded = t;
         return {
           'fs1': fs1,
           'excess': List<int>.filled(32, 8),
@@ -167,6 +169,8 @@ void main() {
     expect((vote['vin'] as List).first['commit'], tilde);
     expect(tilde, isNot(owned));
     expect((vote['vout'] as List), isEmpty);
+    expect(blinded, isNotNull);
+    expect(blinded!.every((b) => b == 0), isTrue);
     expect(
       buildLeafVote(
         vote: {'voteProof': 'proof', 'height': 40},
@@ -276,7 +280,16 @@ void main() {
 
   test('android backup excludes the Shear vote plan directory', () {
     final xml = File('android/app/src/main/res/xml/data_extraction_rules.xml').readAsStringSync();
+    // The session file is files/Shear/session.json. The plan is files/Shear/vote.
+    // app_flutter/vote is not that directory.
     expect(xml.contains('domain="file" path="Shear/vote/"'), isTrue);
+    expect(xml.contains('app_flutter/vote/'), isFalse);
+    final plan = File('lib/shear_vote_plan.dart').readAsStringSync();
+    expect(plan.contains('excludeVotePlanFromBackup(dir)'), isTrue);
+    expect(plan.contains('NSURLIsExcludedFromBackupKey'), isTrue);
+    final ledger = File('lib/shear_ledger.dart').readAsStringSync();
+    expect(ledger.contains("keepT: kind == 'leaf-vote'"), isTrue);
+    expect(ledger.contains('keepT: true'), isFalse);
   });
 
   test('a plan for a new epoch replaces the file and a reward-claim is not a fee', () {

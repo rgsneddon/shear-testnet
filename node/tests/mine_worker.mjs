@@ -12,6 +12,8 @@ const GEN = 0;
 const STATUS = 1;
 const DONE = 2;
 const READY = 3;
+// Byte 16 is the winning nonce. The try counter lives past the hash.
+const TRIED_AT = 184;
 const HEADER_AT = 24;
 const HASH_AT = 152;
 const HEADER_LEN = 128;
@@ -22,7 +24,8 @@ if (parentPort && workerData?.role === 'lane') {
   const i32 = new Int32Array(sab);
   const nonce64 = new BigUint64Array(sab, 16, 1);
   const bytes = new Uint8Array(sab);
-  try { setHashBackend('jit'); } catch { /* interpreter still hashes */ }
+  const tried32 = new Uint32Array(sab, TRIED_AT, 1);
+  try { setHashBackend(workerData.backend || 'jit'); } catch { /* interpreter still hashes */ }
   parentPort.on('message', (msg) => {
     if (!msg || msg.type !== 'mine') return;
     const gen = msg.gen | 0;
@@ -33,6 +36,7 @@ if (parentPort && workerData?.role === 'lane') {
     const base = Buffer.from(msg.header);
     for (let i = 0n; i < limit; i += 1n) {
       if (Atomics.load(i32, GEN) !== gen) return;
+      Atomics.add(tried32, 0, 1);
       const n = start + i;
       const header = setNonce(base, n);
       const hash = Buffer.from(shearHash(header));
@@ -58,6 +62,7 @@ const sab = new SharedArrayBuffer(256);
 const i32 = new Int32Array(sab);
 let workers = null;
 let laneCount = 0;
+let laneBackend = 'jit';
 let genSeq = 1;
 
 function sliceRange(total, count) {
@@ -86,8 +91,9 @@ async function waitUntil(slot, pred, timeoutMs) {
   }
 }
 
-async function startLanes(count) {
-  if (workers && laneCount === count) return workers;
+async function startLanes(count, backend) {
+  const name = backend || 'jit';
+  if (workers && laneCount === count && laneBackend === name) return workers;
   if (workers) await closeMineWorkers();
   const url = new URL('./mine_worker.mjs', import.meta.url);
   Atomics.store(i32, READY, 0);
@@ -96,8 +102,9 @@ async function startLanes(count) {
   Atomics.store(i32, GEN, 0);
   workers = [];
   laneCount = count;
+  laneBackend = name;
   for (let i = 0; i < count; i += 1) {
-    const worker = new Worker(url, { workerData: { role: 'lane', sab } });
+    const worker = new Worker(url, { workerData: { role: 'lane', sab, backend: name } });
     worker.on('error', () => {
       if (Atomics.load(i32, STATUS) === 0) {
         Atomics.store(i32, STATUS, 2);
@@ -116,15 +123,18 @@ async function startLanes(count) {
  * `timeoutMs` bounds the wait. Regtest bits-4 searches finish in well under
  * the default. A bits-17 genesis search is ~2^17 hashes and needs a longer bound.
  */
-export async function mineHeaderParallel(header, bits, maxTries = 8_192, threads = os.cpus().length, timeoutMs = 60_000) {
+export async function mineHeaderParallel(header, bits, maxTries = 8_192, threads = os.cpus().length, timeoutMs = 60_000, nonceBase = 0, backend = 'jit') {
   const count = Math.max(1, Math.floor(Number(threads) || os.cpus().length));
-  const pool = await startLanes(count);
+  const pool = await startLanes(count, backend);
   const total = Math.floor(Number(maxTries));
   if (!Number.isInteger(total) || total < 1) throw new Error('maxTries');
+  const origin = Number(nonceBase);
+  if (!Number.isInteger(origin) || origin < 0) throw new Error('nonceBase');
   const gen = ++genSeq;
   const parts = sliceRange(total, pool.length);
   Atomics.store(i32, DONE, 0);
   Atomics.store(i32, STATUS, 0);
+  Atomics.store(new Uint32Array(sab, TRIED_AT, 1), 0, 0);
   Atomics.store(i32, GEN, gen);
   const base = Buffer.from(header);
   for (let i = 0; i < pool.length; i += 1) {
@@ -133,7 +143,7 @@ export async function mineHeaderParallel(header, bits, maxTries = 8_192, threads
       gen,
       lanes: pool.length,
       bits,
-      nonceStart: parts[i].nonceStart,
+      nonceStart: parts[i].nonceStart + origin,
       maxTries: parts[i].maxTries,
       header: base,
     });
@@ -151,10 +161,18 @@ export async function mineHeaderParallel(header, bits, maxTries = 8_192, threads
   };
 }
 
+export function lastMineAttempt() {
+  return {
+    tried: Atomics.load(new Uint32Array(sab, TRIED_AT, 1), 0) >>> 0,
+    status: Atomics.load(i32, STATUS),
+  };
+}
+
 export async function closeMineWorkers() {
   const pool = workers;
   workers = null;
   laneCount = 0;
+  laneBackend = 'jit';
   if (!pool) return;
   await Promise.all(pool.map((w) => w.terminate()));
 }

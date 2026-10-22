@@ -215,6 +215,17 @@ Uint8List withdrawTxDigest({
   parts.add(_lenPref(utf8Bytes((tx['programId'] ?? '').toString())));
   parts.add(_lenPref(utf8Bytes((tx['payoutPortalId'] ?? '').toString().toLowerCase())));
   final nonce = _asBytes(tx['withdrawNonce']);
+  List<int> boundCommit = const [];
+  for (final row in outs) {
+    final o = row is Map ? row : const {};
+    final kind = (o['kind'] ?? '').toString();
+    if (kind != 'withdraw' && kind != 'lock' && kind != 'vote') continue;
+    final commit = _asBytes(o['commit']);
+    if (commit.length == 32) {
+      boundCommit = commit;
+      break;
+    }
+  }
   parts.add(jsReserveSuffix(
     portalId: (tx['portalId'] ?? '').toString(),
     payoutPortalId: (tx['payoutPortalId'] ?? '').toString(),
@@ -222,6 +233,7 @@ Uint8List withdrawTxDigest({
     nanos: (tx['nanos'] as int?) ?? 0,
     id: (tx['id'] ?? '').toString(),
     nonce: nonce,
+    commit: boundCommit,
   ));
   return _sha(_cat(parts));
 }
@@ -363,6 +375,33 @@ const _kPortalOwnerTag = 'shear-portal-owner-v1';
 const _kTrancheSetTag = 'shear-tranche-set-v1';
 const _kWithdrawChainId = 2701;
 
+/// Same chain as JS `trancheSetHash`. Matured plain tranches only.
+Uint8List trancheSetHash(List<Map<String, Object?>> tranches, int chain) {
+  var h = _sha(utf8Bytes(_kTrancheSetTag));
+  final at = chain < 0 ? 0 : chain;
+  for (final tranche in tranches) {
+    final epoch = tranche['epoch'] is int ? tranche['epoch'] as int : 0;
+    if (at <= epoch) continue;
+    if (tranche['noteIsPrincipal'] == true || tranche['notePrincipal'] == true) continue;
+    final commit = _asBytes(tranche['commit']);
+    final raw = commit.length == 32 ? Uint8List.fromList(commit) : Uint8List(32);
+    final remainRaw = tranche['remainMs'];
+    final remain = remainRaw is int && remainRaw > 0 ? remainRaw : 0;
+    h = _sha(<int>[...h, ...raw, ..._u256be(epoch < 0 ? 0 : epoch), ..._u256be(remain)]);
+  }
+  return h;
+}
+
+Uint8List _u256be(int n) {
+  final b = Uint8List(32);
+  var x = BigInt.from(n < 0 ? 0 : n);
+  for (var i = 31; i >= 0; i--) {
+    b[i] = (x & BigInt.from(0xff)).toInt();
+    x >>= 8;
+  }
+  return b;
+}
+
 String _hexOf(List<int> raw) =>
     raw.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
@@ -433,6 +472,7 @@ Map<String, Object?>? buildProvedWithdraw({
   List<int>? withdrawNonce,
   String from = '',
   String payer = '',
+  List<Map<String, Object?>>? tranches,
 }) {
   if (from.isNotEmpty || payer.isNotEmpty) return null;
   if (leaves.isEmpty || leaves.length > 16 || spendSeed.length != 32) return null;
@@ -441,7 +481,6 @@ Map<String, Object?>? buildProvedWithdraw({
       ? Uint8List.fromList(withdrawNonce)
       : Uint8List.fromList(List<int>.generate(32, (i) => (i * 17 + 3) & 0xff));
   final seed = Uint8List.fromList(spendSeed);
-  final spendPub = ed25519PublicFromSeed(seed);
   final payout = Uint8List.fromList(dest20);
   final body = buildFundedWithdraw(
     dest20: payout,
@@ -515,15 +554,15 @@ Map<String, Object?>? buildProvedWithdraw({
     magic: keccak256(utf8Bytes(magic)),
     chainId: _kWithdrawChainId,
     epoch: releaseEpoch,
-    trancheSet: _sha(utf8Bytes(_kTrancheSetTag)),
+    trancheSet: tranches == null ? _sha(utf8Bytes(_kTrancheSetTag)) : trancheSetHash(tranches, releaseEpoch),
     txBind: digest,
   );
   if (message == null) return null;
   body['ownerPub'] = _hexOf(ed25519PublicFromSeed(ownerSeed));
   body['rewardSig'] = ed25519Sign(ownerSeed, message);
-  body['spendPub'] = spendPub;
-  body['sig'] = ed25519Sign(seed, jsWithdrawSpendMessage(body));
-  if (body.containsKey('from') || body.containsKey('to') || body.containsKey('payoutPortalId')) {
+  body.remove('spendPub');
+  body.remove('sig');
+  if (body.containsKey('from') || body.containsKey('to') || body.containsKey('payoutPortalId') || body.containsKey('spendPub')) {
     return null;
   }
   return body;

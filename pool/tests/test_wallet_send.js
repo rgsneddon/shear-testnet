@@ -33,7 +33,9 @@ function url(path) {
 
 function spendSig({ from, to, amount, open, identity, kind = 'send', choice = 'hold' }) {
   const nanos = kind === 'vote' ? 0 : Math.round(amount * NANOS_PER_SHE);
-  const fee = levyNanos(nanos, { depth: 0 });
+  // A portal vote moves no value. Consensus refuses a nonzero fee, and the
+  // pool rebuilds fee 0 when the post omits it. The signature has to be over that zero.
+  const fee = kind === 'vote' ? 0 : levyNanos(nanos, { depth: 0 });
   let tx = {
     kind,
     from,
@@ -617,8 +619,9 @@ describe('pool send reconstruct and Join vault', () => {
       programId: RESERVE_PROGRAM,
       open,
     }, { store, miners: new Map(), queueSend: (t) => posted.push(t) && t });
+    // A lock that names `to` is a leak. The pool refuses it before a balance check.
     assert.equal(deny.status, 400);
-    assert.equal(deny.json.reason, 'insufficient');
+    assert.equal(deny.json.reason, 'vote_leak');
     assert.equal(posted.length, 0);
 
     const signedLock = spendSig({ from: silent, to: vault, amount: she, identity: alice, kind: 'lock' });
@@ -636,14 +639,9 @@ describe('pool send reconstruct and Join vault', () => {
       posted.push(tx);
       return tx;
     } });
-    assert.equal(ok.status, 200, ok.json.reason);
-    assert.equal(ok.json.ok, true);
-    assert.equal(ok.json.tx.kind, 'lock');
-    assert.equal(ok.json.tx.programId, RESERVE_PROGRAM);
-    assert.equal(posted[0].kind, 'lock');
-    assert.equal(posted[0].programId, RESERVE_PROGRAM);
-    assert.equal(Number(posted[0].nanos), PI_SHE_NANOS);
-    assert.ok(ok.json.fromBalance < 10);
+    assert.equal(ok.status, 400);
+    assert.equal(ok.json.reason, 'vote_leak');
+    assert.equal(posted.length, 0);
 
     const skipLevy = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
@@ -654,6 +652,50 @@ describe('pool send reconstruct and Join vault', () => {
     }, { store, miners: new Map(), queueSend: (t) => posted.push(t) && t });
     assert.equal(skipLevy.status, 400);
     assert.equal(skipLevy.json.reason, 'bad_kind');
+  });
+
+  it('a lock with to gets 400 and a compact lock with no to is queued', () => {
+    const store = storeWith({});
+    const leaked = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      to: 'ssa1qqleak',
+      portalId: 'ab'.repeat(32),
+      nanos: PI_SHE_NANOS,
+      fs1: 'f100',
+    }, { store, miners: new Map(), queueSend: () => ({ id: 'no' }) });
+    assert.equal(leaked.status, 400);
+    assert.equal(leaked.json.reason, 'vote_leak');
+
+    const dest20 = Buffer.alloc(20, 7);
+    const commit = Buffer.alloc(32, 3);
+    const posted = [];
+    const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      portalId: 'ab'.repeat(32),
+      dest20: dest20.toString('hex'),
+      nanos: PI_SHE_NANOS,
+      fee: levyNanos(PI_SHE_NANOS),
+      fs1: 'f100',
+      vin: [{ commit }],
+      vout: [{ kind: 'lock', dest20, commit, portalId: 'ab'.repeat(32) }],
+      admit_proofs: [{ blob: Buffer.from([1]), cTilde: commit, spendTag: Buffer.alloc(32, 2) }],
+    }, {
+      store,
+      miners: new Map(),
+      queueSend: (t) => {
+        posted.push(t);
+        return { id: 'lock-compact', ...t };
+      },
+    });
+    assert.equal(ok.status, 200, ok.json?.reason);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].kind, 'lock');
+    assert.equal(posted[0].from, undefined);
+    assert.equal(posted[0].to, undefined);
+    assert.equal(posted[0].spendPub, undefined);
+    assert.equal(posted[0].portalId, 'ab'.repeat(32));
   });
 
   it('painted Continuum lock and send post when chain notes do not cover', () => {
@@ -713,8 +755,9 @@ describe('pool send reconstruct and Join vault', () => {
       spendPub: signedLock.spendPub,
       vout: signedLock.vout,
     }, ctx);
+    // A lock carrying `to` is vote_leak, before the spendable check.
     assert.equal(lock.status, 400);
-    assert.equal(lock.json.reason, 'insufficient');
+    assert.equal(lock.json.reason, 'vote_leak');
     assert.equal(posted.length, 0);
 
     const rec = reconstructOwner(store, silent);
@@ -778,8 +821,8 @@ describe('pool send reconstruct and Join vault', () => {
     signSpendTx(bare, alice.privateKey);
     const noOwed = chain.queueTx(bare);
     assert.equal(noOwed.ok, false);
-    // A cleartext from/vin is a public debit. ADMITv3 rejects it before a balance check.
-    assert.equal(noOwed.reason, 'admit_version');
+    // A lock that still carries from/to is a leak. The leak gate refuses it before ADMITv3.
+    assert.equal(noOwed.reason, 'vote_leak');
     assert.equal(chain.mempool.length, 0);
 
     const boundNanos = Math.round(0.2 * NANOS_PER_SHE);
@@ -814,8 +857,9 @@ describe('pool send reconstruct and Join vault', () => {
       spendPub: signedLock.spendPub,
       vout: signedLock.vout,
     }, ctx);
+    // A lock carrying `to` is vote_leak, before the spendable check.
     assert.equal(lock.status, 400);
-    assert.equal(lock.json.reason, 'insufficient');
+    assert.equal(lock.json.reason, 'vote_leak');
     assert.equal(chain.mempool.filter((m) => m.kind === 'lock').length, 0);
 
     const sendNanos = Math.round(0.2 * NANOS_PER_SHE);
@@ -864,7 +908,7 @@ describe('pool send reconstruct and Join vault', () => {
       vout: signedLock.vout,
     }, ctx);
     assert.equal(again.status, 400);
-    assert.equal(again.json.reason, 'insufficient');
+    assert.equal(again.json.reason, 'vote_leak');
     assert.equal(chain.mempool.filter((m) => m.kind === 'lock').length, 0);
   });
 

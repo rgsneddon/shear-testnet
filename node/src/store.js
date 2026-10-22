@@ -70,7 +70,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit, leafVoteLeakRejected, compactLockLeakRejected, commitVaultLockRoot } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit, leafVoteLeakRejected, compactLockLeakRejected, withdrawLeakRejected, commitVaultLockRoot } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -1632,7 +1632,7 @@ export function createStore(dir, {
       });
     }
     if (!rows.length) return rows;
-    const walked = fillSnapInterest(rows, blocks.slice(0, rows.length));
+    const walked = fillSnapInterest(rows, blocks.slice(0, rows.length), { magic: bookMagic });
     if (!walked.ok) return null;
     return rows;
   }
@@ -2792,7 +2792,7 @@ export function createStore(dir, {
     } : null, {
       spentB,
       tipHeight,
-      hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
+      hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       evmSession,
       evmHistory: blocks,
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH)),
@@ -3586,6 +3586,8 @@ export function createStore(dir, {
     if (leakedVote) return leakedVote;
     const leakedLock = compactLockLeakRejected(tx);
     if (leakedLock) return leakedLock;
+    const leakedWithdraw = withdrawLeakRejected(tx);
+    if (leakedWithdraw) return leakedWithdraw;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a
@@ -3903,7 +3905,7 @@ export function createStore(dir, {
     const owedWalk = verifyOpts.owedWalk || { owedIn: [], hashAcceptedSeries: [] };
     const owedUnit = verifyOpts.unitAt != null
       ? hashBonusUnitNanos(verifyOpts.unitAt)
-      : hashBonusUnitNanos(vault?.liveHashBonusNanos || 1);
+      : hashBonusUnitNanos(vault?.liveHashBonusNanos);
     const chainTip = Number.isInteger(verifyOpts.burialTip)
       ? verifyOpts.burialTip
       : forkBurial(fork);
@@ -4014,39 +4016,51 @@ export function createStore(dir, {
     const { trialVault, noVault } = trialVaultForFork(fork);
     const forkRun = forkRunState(fork);
     const burialTip = forkBurial(fork);
-    const step = (i) => {
-      if (i >= at) return null;
-      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
-        ...verifyOpts,
-        noVault: !!noVault,
-        owedWalk,
-        unitAt: units[i],
-        burialTip,
-        ...forkRun.opts(),
+    // A long prefix is a loop. Recursing once per block overflows on a
+    // multi-thousand-block adopt, which hid the earlier body fault.
+    const takeOne = (i, c) => {
+      if (!c?.ok) return { ok: false, reason: c.reason, at: i };
+      const lean = leanBlock({
+        ...fork[i],
+        magic: bookMagic,
+        hash: c.hash,
+        height: i + 1,
+        weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
+        bSpendIds: Array.isArray(c.bSpendIds) ? c.bSpendIds : [],
       });
-      const take = (c) => {
-        if (!c?.ok) return { ok: false, reason: c.reason, at: i };
-        const lean = leanBlock({
-          ...fork[i],
-          magic: bookMagic,
-          hash: c.hash,
-          height: i + 1,
-          weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
-          bSpendIds: Array.isArray(c.bSpendIds) ? c.bSpendIds : [],
-        });
-        accepted.push(lean);
-        const stepped = forkRun.take(c, lean);
-        if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply_state', at: i };
-        if (!noVault && trialVault) {
-          const applied = applyReserveBlock(vaultArgs(trialVault, lean, accepted.slice(0, -1)));
-          if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
-        }
-        return step(i + 1);
-      };
-      if (check && typeof check.then === 'function') return check.then(take);
-      return take(check);
+      accepted.push(lean);
+      const stepped = forkRun.take(c, lean);
+      if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply_state', at: i };
+      if (!noVault && trialVault) {
+        const applied = applyReserveBlock(vaultArgs(trialVault, lean, accepted.slice(0, -1)));
+        if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
+      }
+      return null;
     };
-    const fault = step(0);
+    const runFrom = (start) => {
+      for (let i = start; i < at; i += 1) {
+        const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
+          ...verifyOpts,
+          noVault: !!noVault,
+          owedWalk,
+          unitAt: units[i],
+          burialTip,
+          ...forkRun.opts(),
+        });
+        if (check && typeof check.then === 'function') {
+          const index = i;
+          return check.then((c) => {
+            const found = takeOne(index, c);
+            if (found) return found;
+            return runFrom(index + 1);
+          });
+        }
+        const found = takeOne(i, check);
+        if (found) return found;
+      }
+      return null;
+    };
+    const fault = runFrom(0);
     if (fault && typeof fault.then === 'function') return fault.then((found) => found || gated);
     return fault || gated;
   }
@@ -4286,19 +4300,35 @@ export function createStore(dir, {
     return finish(assessHeader(block, prev, opts));
   }
 
-  /** Header proof-of-work and the cheap header rules, before any owed walk. */
+  /**
+   * Header proof-of-work and the cheap header rules, before any owed walk.
+   * The sync path is a loop: a few thousand blocks (a voted unit change)
+   * overflowed the old per-block recursion inside adopt.
+   */
   function gateForkHeaders(fork, parent, history, verifyOpts) {
-    const step = (i, prev) => {
-      if (i >= fork.length) return { ok: true };
-      const got = gateOneHeader(fork[i], prev, history, verifyOpts);
-      const take = (assessed) => {
-        if (!assessed?.ok) return { ok: false, reason: assessed?.reason || 'pow', at: i };
-        return step(i + 1, gatePrevFrom(fork[i], assessed.hash, prev));
-      };
-      if (got && typeof got.then === 'function') return got.then(take);
-      return take(got);
+    const resume = async (start, assessed, prev) => {
+      if (!assessed?.ok) return { ok: false, reason: assessed?.reason || 'pow', at: start };
+      let p = gatePrevFrom(fork[start], assessed.hash, prev);
+      for (let i = start + 1; i < fork.length; i += 1) {
+        const got = gateOneHeader(fork[i], p, history, verifyOpts);
+        const next = got && typeof got.then === 'function' ? await got : got;
+        if (!next?.ok) return { ok: false, reason: next?.reason || 'pow', at: i };
+        p = gatePrevFrom(fork[i], next.hash, p);
+      }
+      return { ok: true };
     };
-    return step(0, parent);
+    let prev = parent;
+    for (let i = 0; i < fork.length; i += 1) {
+      const got = gateOneHeader(fork[i], prev, history, verifyOpts);
+      if (got && typeof got.then === 'function') {
+        const at = i;
+        const parentHere = prev;
+        return got.then((assessed) => resume(at, assessed, parentHere));
+      }
+      if (!got?.ok) return { ok: false, reason: got?.reason || 'pow', at: i };
+      prev = gatePrevFrom(fork[i], got.hash, prev);
+    }
+    return { ok: true };
   }
 
   /** Same gate for a chain that does not share this store's prefix. */
@@ -4673,91 +4703,104 @@ export function createStore(dir, {
     }
     const owedWalk = { owedIn: seeded.rows, hashAcceptedSeries: seeded.series.slice() };
     const suffixSnaps = [];
-    const step = (i) => {
-      if (i >= fork.length) {
-        return {
-          ok: true,
-          blocks: out,
-          owedRows: owedWalk.owedIn,
-          owedSeries: owedWalk.hashAcceptedSeries.slice(),
-          owedSnaps: seeded.snaps.concat(suffixSnaps),
-          supply,
-          units: allUnits,
-          burialTip: tipH,
-        };
+    const done = () => ({
+      ok: true,
+      blocks: out,
+      owedRows: owedWalk.owedIn,
+      owedSeries: owedWalk.hashAcceptedSeries.slice(),
+      owedSnaps: seeded.snaps.concat(suffixSnaps),
+      supply,
+      units: allUnits,
+      burialTip: tipH,
+    });
+    // Same rule as the header gate: a long suffix must not recurse per block.
+    const takeOne = (i, c, beforeSpent, structuralH, blockTip) => {
+      if (!c?.ok) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return c;
       }
-      const beforeSpent = new Set(trialSpent);
-      const structuralH = (Number(prev?.height) || 0) + 1;
-      const blockTip = headerRunTip(fork[i], structuralH, tipH, verifyOpts.provenBurialAt);
-      const check = verifyBlock(fork[i], parentView(prev), {
-        ...verifyOpts,
-        hashBonusNanos: allUnits[rows.length + i],
+      const owedUnit = allUnits[rows.length + i];
+      const owedNext = advanceHashOwed({
         owedIn: owedWalk.owedIn,
-        hashAcceptedSeries: owedWalk.hashAcceptedSeries,
-        spentB: trialSpent,
-        trustedPowHash: trustedHashFor(fork[i], verifyOpts),
-        tipHeight: structuralH,
-        burialTip: blockTip,
-        evmHistory: rows.concat(out),
-        parentSupply: supply,
-        parentFluxset: flux,
-        noteAtAnchor: (anchor) => noteFromAnchor(flux, anchors, anchor),
-        grandparentHeader: grandparentHeader(rows.concat(out)),
-        sealedIntervalsMs: headerGapsMs(rows.concat(out)),
-        nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
-        genesisMs: genesisHeaderMs(rows) || Number(verifyOpts.genesisMs) || 0,
-        reserveState: trialVault,
-        committedBps: Number(trialVault.epochBps ?? GENESIS_BPS),
-        ...oracleVerifyFields(rows.concat(out), (Number(prev?.height) || 0) + 1),
-        magic: bookMagic,
+        acceptedSeries: owedWalk.hashAcceptedSeries,
+        block: fork[i],
+        unit: owedUnit,
+        height: structuralH,
+        tipHeight: blockTip,
       });
-      const take = (c) => {
-        if (!c?.ok) {
-          rollbackSpent(trialSpent, beforeSpent);
-          return c;
-        }
-        const owedUnit = allUnits[rows.length + i];
-        const owedNext = advanceHashOwed({
-          owedIn: owedWalk.owedIn,
-          acceptedSeries: owedWalk.hashAcceptedSeries,
-          block: fork[i],
-          unit: owedUnit,
-          height: structuralH,
-          tipHeight: blockTip,
+      if (!owedNext.ok) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return { ok: false, reason: owedNext.reason || 'hash_owed' };
+      }
+      stampCredits(fork[i], owedUnit);
+      owedWalk.owedIn = owedNext.rows;
+      owedWalk.hashAcceptedSeries = owedNext.acceptedSeries;
+      owedSeed.suffixAdvances += 1;
+      const at = rows.length + i;
+      if (keepOwedIndex(at, tipAt)) {
+        suffixSnaps.push({
+          at,
+          rows: copyOwedRows(owedNext.rows),
+          seriesEnd: owedNext.acceptedSeries.length,
         });
-        if (!owedNext.ok) {
-          rollbackSpent(trialSpent, beforeSpent);
-          return { ok: false, reason: owedNext.reason || 'hash_owed' };
-        }
-        stampCredits(fork[i], owedUnit);
-        owedWalk.owedIn = owedNext.rows;
-        owedWalk.hashAcceptedSeries = owedNext.acceptedSeries;
-        owedSeed.suffixAdvances += 1;
-        const at = rows.length + i;
-        if (keepOwedIndex(at, tipAt)) {
-          suffixSnaps.push({
-            at,
-            rows: copyOwedRows(owedNext.rows),
-            seriesEnd: owedNext.acceptedSeries.length,
+      }
+      const lean = leanVerified(fork[i], c, prev);
+      lean.bSpendIds = spentDelta(beforeSpent, trialSpent);
+      const applied = applyReserveBlock(vaultArgs(trialVault, lean, rows.concat(out)));
+      if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
+      if (!c.supplyState) return { ok: false, reason: 'supply_state' };
+      supply = c.supplyState;
+      appendFluxBlock(flux, lean);
+      const ah = Number(lean.height) || 0;
+      anchors[ah] = anchorRecord(flux, false);
+      out.push(lean);
+      prev = lean;
+      return null;
+    };
+    const runFrom = (start) => {
+      for (let i = start; i < fork.length; i += 1) {
+        const beforeSpent = new Set(trialSpent);
+        const structuralH = (Number(prev?.height) || 0) + 1;
+        const blockTip = headerRunTip(fork[i], structuralH, tipH, verifyOpts.provenBurialAt);
+        const check = verifyBlock(fork[i], parentView(prev), {
+          ...verifyOpts,
+          hashBonusNanos: allUnits[rows.length + i],
+          owedIn: owedWalk.owedIn,
+          hashAcceptedSeries: owedWalk.hashAcceptedSeries,
+          spentB: trialSpent,
+          trustedPowHash: trustedHashFor(fork[i], verifyOpts),
+          tipHeight: structuralH,
+          burialTip: blockTip,
+          evmHistory: rows.concat(out),
+          parentSupply: supply,
+          parentFluxset: flux,
+          noteAtAnchor: (anchor) => noteFromAnchor(flux, anchors, anchor),
+          grandparentHeader: grandparentHeader(rows.concat(out)),
+          sealedIntervalsMs: headerGapsMs(rows.concat(out)),
+          nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
+          genesisMs: genesisHeaderMs(rows) || Number(verifyOpts.genesisMs) || 0,
+          reserveState: trialVault,
+          committedBps: Number(trialVault.epochBps ?? GENESIS_BPS),
+          ...oracleVerifyFields(rows.concat(out), (Number(prev?.height) || 0) + 1),
+          magic: bookMagic,
+        });
+        if (check && typeof check.then === 'function') {
+          const index = i;
+          const spentSnap = beforeSpent;
+          const heightHere = structuralH;
+          const tipHere = blockTip;
+          return check.then((c) => {
+            const failed = takeOne(index, c, spentSnap, heightHere, tipHere);
+            if (failed) return failed;
+            return runFrom(index + 1);
           });
         }
-        const lean = leanVerified(fork[i], c, prev);
-        lean.bSpendIds = spentDelta(beforeSpent, trialSpent);
-        const applied = applyReserveBlock(vaultArgs(trialVault, lean, rows.concat(out)));
-        if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
-        if (!c.supplyState) return { ok: false, reason: 'supply_state' };
-        supply = c.supplyState;
-        appendFluxBlock(flux, lean);
-        const ah = Number(lean.height) || 0;
-        anchors[ah] = anchorRecord(flux, false);
-        out.push(lean);
-        prev = lean;
-        return step(i + 1);
-      };
-      if (check && typeof check.then === 'function') return check.then(take);
-      return take(check);
+        const failed = takeOne(i, check, beforeSpent, structuralH, blockTip);
+        if (failed) return failed;
+      }
+      return done();
     };
-    return step(0);
+    return runFrom(0);
   }
 
   /** Keep a competing branch until it has more work, then adopt it in place. */

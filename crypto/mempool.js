@@ -14,7 +14,7 @@ import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRej
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
-import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected, leafVoteLeakRejected, compactLockLeakRejected } from './reserve_vault.js';
+import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected, leafVoteLeakRejected, compactLockLeakRejected, withdrawLeakRejected } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -129,6 +129,8 @@ export function admitMempool(pool, tx, opts = {}) {
   }
   const leakedLock = compactLockLeakRejected(tx);
   if (leakedLock) return leakedLock;
+  const leakedWithdraw = withdrawLeakRejected(tx);
+  if (leakedWithdraw) return leakedWithdraw;
   const feeHit = feeFieldRejected(tx);
   if (feeHit) return feeHit;
   const spendFee = bSpendFeeRejected(tx);
@@ -330,12 +332,14 @@ export function admitMempool(pool, tx, opts = {}) {
     if (!stake.ok) return { ...stake, vault: true };
     // A carried vault already includes every accepted reserve tx. Trial only
     // this one. A caller with no carried vault still trials the prefix once.
+    // The trial stays on a clone. Levy and the fee cap are checked after it,
+    // and a reject must not leave the deposit on the caller's vault.
     const useCarried = Object.prototype.hasOwnProperty.call(opts, 'reserveCarried');
     const tried = trialReserveApply({
       state: useCarried ? opts.reserveCarried : (opts.reserveState || null),
       txs: useCarried ? [tx] : [...prior, tx],
       nowMs: Number(opts.nowMs) || 0,
-      inPlace: useCarried && !!opts.reserveCarried,
+      inPlace: false,
       deferVaultRoot: opts.deferVaultRoot === true,
     });
     if (!tried.ok) return { ok: false, reason: tried.reason || 'no_vault', vault: true };

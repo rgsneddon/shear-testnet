@@ -19,6 +19,7 @@ import {
   PI_SHE_NANOS,
   RESERVE_EPOCH_MS,
   RESERVE_PROGRAM,
+  hashBonusUnitNanos,
 } from '../../crypto/asert.js';
 import { epochMs } from '../../crypto/pot_sched.js';
 import { newIdentity, encodeDest, hash20FromAddress, admitBaseFromAddress, destCommitFromSpendPub } from '../../crypto/address.js';
@@ -554,7 +555,7 @@ async function sameVerdict(store, tx, reason, wall) {
     txs: [...user, tx],
     parentBlocks: store.blocks,
     parentFluxset: store.fluxset().pubs,
-    hashBonusNanos: Number(store.reserveVault.liveHashBonusNanos || 1),
+    hashBonusNanos: hashBonusUnitNanos(store.reserveVault.liveHashBonusNanos),
   });
   const appended = await Promise.resolve(store.append({
     header: block.header,

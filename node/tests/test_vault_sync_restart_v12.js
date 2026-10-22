@@ -57,6 +57,7 @@ import {
   cloneVault,
   chainPeriodIndex,
   consensusUnlockPeriod,
+  lockUnlockOf,
   leafEpochsToBurn,
   portalIdFromDest,
   portalIdFromDest20,
@@ -258,6 +259,11 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
       const { tpl } = await mine(store, who.dest);
       coins.push(potOf(tpl, who));
     }
+    // A second wallet. Its π lock stays live through the withdraw and the restart.
+    for (let n = 0; n < 4; n += 1) {
+      const { tpl } = await mine(store, pay.dest);
+      coins.push(potOf(tpl, pay));
+    }
     while (store.tip().height < 100) await mine(store, who.dest);
   });
 
@@ -265,14 +271,17 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  async function lockOne() {
+  async function lockOne(person, id) {
     const view = liveCoins(store, coins, spent);
-    const use = view.coins.filter((c) => c.who === who).slice(0, 4);
+    const use = view.coins.filter((c) => c.who === person).slice(0, 4);
     assert.equal(use.length, 4, 'lock inputs');
     const total = use.reduce((s, c) => s + c.v, 0);
     const blind = randomScalar();
     const scalar = randomScalar();
-    const unlock = consensusUnlockPeriod(0);
+    // The leaf unlock is the chain epoch at the header stamp. A later lock
+    // sits in the next epoch, so period 0 would be commit_sum.
+    const clock = lockUnlockOf(store.reserveVault, lastStamp(store));
+    const unlock = consensusUnlockPeriod(clock.epoch);
     const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
     assert.ok(leaf, 'leaf');
     const funded = pointBytes(commit(PI_SHE_NANOS, blind));
@@ -280,7 +289,7 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.equal(leaf.commit.equals(funded), false, 'nonzero funding gap');
     const range = proveRange(PI_SHE_NANOS, blind);
     assert.ok(range, 'range');
-    const d20 = hash20FromAddress(who.dest);
+    const d20 = hash20FromAddress(person.dest);
     const ph = placeholders(4);
     let fee = LEVY_FLOOR_UNITS;
     let tx = null;
@@ -295,21 +304,21 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
           rangeProof: range,
           r: scalarBytes(blind),
           dest20: Buffer.from(d20),
-          portalId: who.portalId,
+          portalId: person.portalId,
           viewTag: Buffer.from([1]),
         },
-        hiddenChange(changeN, d20, who.base),
+        hiddenChange(changeN, d20, person.base),
       ];
       const draft = compactTx({
-        id: 'sync-lock',
+        id,
         kind: 'lock',
         anchor: view.anchor,
         fee,
         nanos: 0,
         programId: RESERVE_PROGRAM,
-        portalId: who.portalId,
-        payoutPortalId: who.portalId,
-        ownerPub: who.pub,
+        portalId: person.portalId,
+        payoutPortalId: person.portalId,
+        ownerPub: person.pub,
         vaultLockNote: leaf.note,
         vin: ph.vin,
         vout: outs,
@@ -329,8 +338,8 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.ok(tx, 'lock fee');
     // Current law: the queued lock carries portalId and dest20. The address is not on the wire.
     assert.equal(tx.to, undefined);
-    tx.dest20 = Buffer.from(hash20FromAddress(who.dest));
-    signSpendTx(tx, who.key);
+    tx.dest20 = Buffer.from(hash20FromAddress(person.dest));
+    signSpendTx(tx, person.key);
     const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, 0);
     assert.ok(fund, 'fund');
     tx.piProof = proveRange(0n, blind);
@@ -342,13 +351,13 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     const queued = store.queueTx(tx);
     assert.equal(queued.ok, true, `lock queue ${queued.reason}`);
     const sealed = await mine(store, who.dest);
-    assert.ok(sealed.tpl.txs.some((row) => row.id === 'sync-lock'), 'lock template');
-    const wired = sealed.tpl.txs.find((row) => row.id === 'sync-lock');
+    assert.ok(sealed.tpl.txs.some((row) => row.id === id), 'lock template');
+    const wired = sealed.tpl.txs.find((row) => row.id === id);
     // The address binding moved onto dest20. `to` stays off the mined lock.
     assert.equal(wired.to, undefined, 'lock address stays off the wire');
     assert.equal(JSON.stringify(wired).includes('ssa1'), false, 'lock wire has no ssa1');
     const wiredLock = wired.vout.find((row) => String(row?.kind || '') === 'lock');
-    const want20 = Buffer.from(hash20FromAddress(who.dest));
+    const want20 = Buffer.from(hash20FromAddress(person.dest));
     assert.ok(Buffer.from(wiredLock.dest20).equals(want20), 'lock dest20');
     assert.ok(Buffer.from(wired.dest20).equals(want20), 'lock body dest20');
     for (const c of use) spent.add(c.commit.toString('hex'));
@@ -357,10 +366,10 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
       r: Buffer.from(asU8(change.r)),
       v: total - tx.fee - PI_SHE_NANOS,
       commit: Buffer.from(asU8(change.commit)),
-      x: admitScalarFromSeed(who.spendSeed, change),
-      who,
+      x: admitScalarFromSeed(person.spendSeed, change),
+      who: person,
     });
-    locked = { who, leaf, scalar, blind, unlock };
+    return { who: person, leaf, scalar, blind, unlock };
   }
 
   function buildWithdraw(row, id, now) {
@@ -436,7 +445,10 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.equal(built.from, undefined, `${id} built from`);
     assert.equal(built.payoutPortalId, undefined, `${id} built payout`);
     built.dest20 = Buffer.from(d20);
-    signSpendTx(built, who.key);
+    // An FS-1 withdraw is the SAL plus the owner reward signature. The
+    // identity spend key on that body is vote_leak.
+    delete built.spendPub;
+    delete built.sig;
     // The owner signs π. The receipt above is π plus the arrival stub.
     const payoutHex = Buffer.from(built.dest20).toString('hex');
     signWithdrawReward(built, who.key, {
@@ -451,7 +463,7 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
   }
 
   it('syncs a fresh peer and restarts across lock, claim, vote, and withdraw', async () => {
-    await lockOne();
+    locked = await lockOne(who, 'sync-lock');
     assert.ok(Number(store.reserveVault.genesisMs) > 0, 'genesis');
     while (store.tip().height < 240) await mine(store, who.dest);
     const root = String(store.reserveVault.epochStartRoots?.['1'] || '');
@@ -587,6 +599,14 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     }
     assert.equal(changeSeen, true, 'vote change matured');
 
+    // The second π lock is in the snapshot. The withdraw is only in the suffix.
+    const liveLock = await lockOne(pay, 'sync-lock-live');
+    assert.notEqual(liveLock.who.portalId, who.portalId, 'second portal');
+    assert.ok(store.reserveVault.portals[liveLock.who.portalId], 'live portal');
+    const snapNames = ['book.snap', 'vault.snap', 'reserve.json'];
+    const snapHeight = store.tip().height;
+    const snapSaved = snapNames.map((name) => fs.readFileSync(path.join(dir, name)));
+
     const wall = lastStamp(store) + 1_000;
     const withdrawTx = buildWithdraw(locked, 'sync-withdraw', wall);
     resetFs1Tree();
@@ -594,7 +614,9 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.equal(wdQueued.ok, true, `withdraw queue ${wdQueued.reason}`);
     const wdBlock = await mine(store, who.dest, wall);
     assert.ok(wdBlock.tpl.txs.some((row) => row.id === 'sync-withdraw'), 'withdraw template');
+    assert.ok(wdBlock.tpl.height > snapHeight, 'snap is below the withdraw');
     assert.ok(store.reserveVault.portals[who.portalId], 'portal');
+    assert.ok(store.reserveVault.portals[liveLock.who.portalId], 'live portal after withdraw');
 
     const tallH = voteCloseHeight(census.openHeight, MAGIC_TESTNET) + VOTE_FINALITY_BLOCKS;
     // The tally height is not mined here. Applying it on the live vault
@@ -613,11 +635,8 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.equal(step.tallied, true);
     assert.equal(step.step, 1);
 
-    // One more block, then put the previous snap back. The reload is the
-    // snapshot-plus-later-blocks path. A new process does not share this
-    // process's FS-1 tree.
-    const snapNames = ['book.snap', 'vault.snap', 'reserve.json'];
-    const snapSaved = snapNames.map((name) => fs.readFileSync(path.join(dir, name)));
+    // One more block, then put the pre-withdraw snap back. The suffix
+    // contains the withdraw. The second π lock is already in that snap.
     await mine(store, who.dest);
     snapNames.forEach((name, i) => fs.writeFileSync(path.join(dir, name), snapSaved[i]));
     const liveTip = store.tip();
@@ -641,9 +660,11 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.equal(restarted.circulating, liveAudit.circulatingNanos);
     assert.equal(restarted.identityOk, true, 'restart identity');
     assert.equal(restarted.principal, liveIdentity.principalNanos);
+    assert.ok(Number(restarted.principal) > 0, 'restarted principal');
     assert.equal(restarted.vaultRoot, String(store.reserveVault.vaultLockRoot || ''));
     assert.deepEqual(restarted.portals, Object.keys(store.reserveVault.portals || {}).sort());
     assert.ok(restarted.portals.includes(who.portalId), 'restart portal');
+    assert.ok(restarted.portals.includes(liveLock.who.portalId), 'restart live portal');
     // A fresh peer reads the wire in its own process. It does not append
     // the parent's block objects, and it does not rebuild the portal id.
     const wirePath = path.join(dir, 'wire-blocks.jsonl');

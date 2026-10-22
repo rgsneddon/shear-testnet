@@ -71,6 +71,7 @@ error AlreadyMinted();
 error NotePrincipal();
 error Unsigned();
 error OwnerMissing();
+error PortalExists();
 error ClaimUnavailable();
 error RetireCap();
 
@@ -589,13 +590,14 @@ contract Reserve {
     }
 
     /// The amount is the commitment. `nanos` is not an argument.
-    function lock(bytes calldata dest, bytes32 commit, uint256 nowTs, bytes32 ownerCommit, bool qualifies) external onlyShear {
-        _lock(dest, commit, nowTs, false, ownerCommit, qualifies);
+    /// auth is ownerPub(32) || sig(64) over the portal id and the commitment.
+    function lock(bytes calldata dest, bytes32 commit, uint256 nowTs, bytes calldata auth, bool qualifies) external onlyShear {
+        _lock(dest, commit, nowTs, false, auth, qualifies);
     }
 
     /// Same credit as lock, with the time-locked note flag set.
-    function lockNote(bytes calldata dest, bytes32 commit, uint256 nowTs, bool notePrincipal, bytes32 ownerCommit, bool qualifies) external onlyShear {
-        _lock(dest, commit, nowTs, notePrincipal, ownerCommit, qualifies);
+    function lockNote(bytes calldata dest, bytes32 commit, uint256 nowTs, bool notePrincipal, bytes calldata auth, bool qualifies) external onlyShear {
+        _lock(dest, commit, nowTs, notePrincipal, auth, qualifies);
     }
 
     /// A withdraw in this block keeps this portal's legacy principal.
@@ -624,23 +626,38 @@ contract Reserve {
         delete heldShas;
     }
 
-    function _lock(bytes calldata dest, bytes32 commit, uint256 nowTs, bool notePrincipal, bytes32 ownerCommit, bool qualifies) internal {
+    /// The owner signs the portal id, the commitment, the book magic, and the chain.
+    /// A copied owner hash is not a signature. A short blob is not an owner.
+    function _lockAuthOk(bytes32 id, bytes32 commit, bytes calldata auth) internal view returns (bytes32 ownerCommit) {
+        if (auth.length < 96) revert OwnerMissing();
+        if (!_ed25519(
+            _authPub(auth),
+            auth[32:96],
+            abi.encodePacked("shear-lock-owner-v1", id, commit, magic, _u64le(block.chainid))
+        )) revert Unsigned();
+        return _ownerCommit(_authPub(auth));
+    }
+
+    function _lock(bytes calldata dest, bytes32 commit, uint256 nowTs, bool notePrincipal, bytes calldata auth, bool qualifies) internal {
         if (commit == bytes32(0)) revert BadAmount();
         if (dest.length == 0) revert BadDest();
         if (clockGenesis == 0) revert ClockUnpinned();
         if (epochStart != 0 && !bonusEnacted && remainingMs(nowTs) == 0) revert NeedEnact();
         if (bonusEnacted && !deferEpochRoll) _syncEpoch(nowTs);
         (bytes32 id, bytes32 shaId) = _portalKey(dest);
+        bytes32 ownerCommit = _lockAuthOk(id, commit, auth);
         if (!portalListed[id]) {
             portalListed[id] = true;
             portalKeys.push(id);
             portalSha[id] = shaId;
         }
         Portal storage p = portals[id];
-        // Every lock names its owner. A later lock must name the same one.
-        if (ownerCommit == bytes32(0)) revert OwnerMissing();
+        // A later lock is the same owner key. A different signer is unsigned.
+        // The owner slot is the portal. A second lock, even after the tranche
+        // is spent, is a duplicate portal id.
         bytes32 prior = ownerOf[id];
         if (prior != bytes32(0) && prior != ownerCommit) revert Unsigned();
+        if (prior != bytes32(0) || p.tranches.length != 0) revert PortalExists();
         if (prior == bytes32(0)) ownerOf[id] = ownerCommit;
         _settle(p, nowTs);
         uint256 idx = _chainEpoch(nowTs);

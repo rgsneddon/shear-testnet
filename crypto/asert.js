@@ -261,15 +261,15 @@ export const VAULT_ACCRUAL_LAW = 'epoch-total-bps';
  * and a claim's public nanos. The coinbase commitment sum is pot + hash +
  * levy; reward.minted is a claim output and is not part of that sum. An
  * unindexed hidden withdraw fails closed as stake_reward. portalId is
- * H(tag, dest20, r) with r seed-derived, not the public address. Compact
- * lock and withdraw bodies do not carry `to`. The gap opening is A1 and
- * zGap once; the claim header does not repeat them.
+ * H(tag, one-time dest20, r) and r is H(tag, seed, lockIndex). One lock,
+ * one portal. Compact lock and withdraw bodies do not carry `to`. The gap
+ * opening is A1 and zGap once; the claim header does not repeat them.
  */
 export const DIGEST_LOCK_STAMP = 'unlockAtMs+lockEpoch';
 export const COMPACT_VAULT_WIRE = 'roots+census+claimNanos';
 export const COINBASE_PUBLIC_TOTAL = 'pot+hash+levy';
 export const UNINDEXED_WITHDRAW = 'stake_reward';
-export const PORTAL_ID_LAW = 'H(tag,dest20,r)';
+export const PORTAL_ID_LAW = 'H(tag,oneTimeDest20,r(seed,lockIndex))';
 export const COMPACT_TO = 'dropped';
 export const VAULT_GAP_LAW = 'A1-once';
 /**
@@ -459,12 +459,21 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `HASH_UNIT_FLOOR=${HASH_BONUS_NANOS_FLOOR}`,
     'HASH_BONUS_STEP=1rho',
     'HASH_BONUS_OFF=0',
+    'HASH_BONUS_MINE=0',
     `VAULT_TESTNET_DAY=${VAULT_TESTNET_DAY_BLOCKS}`,
     `DIGEST_STAMP=${DIGEST_LOCK_STAMP}`,
     `COMPACT_VAULT=${COMPACT_VAULT_WIRE}`,
     `COINBASE_TOTAL=${COINBASE_PUBLIC_TOTAL}`,
     `UNINDEXED_WITHDRAW=${UNINDEXED_WITHDRAW}`,
     `PORTAL_ID=${PORTAL_ID_LAW}`,
+    'PORTAL_PER_LOCK=1',
+    'PORTAL_DUP=refuse',
+    'WITHDRAW_LEAK=refuse',
+    'WITHDRAW_SPENDPUB=refuse',
+    'ADMIT_KEYS=strict3',
+    'LOCK_OWNER=signer',
+    'HASH_BONUS_CEIL=none',
+    'P2P_HELLO=fingerprint',
     `COMPACT_TO=${COMPACT_TO}`,
     `VAULT_GAP=${VAULT_GAP_LAW}`,
     `POT_PROP=${POT_PROP}`,

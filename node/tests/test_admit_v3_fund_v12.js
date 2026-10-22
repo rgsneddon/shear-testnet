@@ -15,10 +15,10 @@ import { bookSealKeyPath } from '../src/book_seal_key.js';
 import { buildTemplate, verifyBlock } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { MAGIC_TESTNET, RESERVE_PROGRAM, TARGET_BLOCK_INTERVAL_MS, MTP_FUTURE_MS, MTP_WINDOW } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM, TARGET_BLOCK_INTERVAL_MS, MTP_FUTURE_MS, MTP_WINDOW } from '../../crypto/asert.js';
 import { epochMs } from '../../crypto/pot_sched.js';
-import { newIdentity, encodeDest, hash20FromAddress, admitBaseFromAddress } from '../../crypto/address.js';
-import { lockTx, voteTx, withdrawTx, VOTE_HOLD, previewWithdraw, withdrawMintId, portalIdFromDest, portalBlindFromSeed, portalIdFromDest20 } from '../../crypto/reserve_vault.js';
+import { newIdentity, encodeDest, hash20FromAddress, admitBaseFromAddress, destCommitFromSpendPub, ed25519RawPub } from '../../crypto/address.js';
+import { lockTx, voteTx, withdrawTx, VOTE_HOLD, previewWithdraw, withdrawMintId, portalIdFromDest, portalBlindFromSeed, portalIdFromDest20, portalsFromSeed, portalOwnerKey } from '../../crypto/reserve_vault.js';
 import { signSpendTx, typedCommitSum, verifySpendSig } from '../../crypto/spend.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { levyNeed, splitLevy, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
@@ -38,20 +38,38 @@ import {
   pointFrom,
   randomScalar,
   scalarBytes,
+  commit,
   kernelExcess,
   openedCoinbaseNanos,
+  proveRange,
   sealCoinbaseNote,
+  sealHiddenNote,
   sealNote,
 } from '../../crypto/note.js';
+import { viewTagOf } from '../../crypto/dummy.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { portalPrincipalNanos } from '../../crypto/reserve_vault.js';
+import {
+  buildFundedWithdraw,
+  chainPeriodIndex,
+  consensusUnlockPeriod,
+  leafEpochsToBurn,
+  leafStubNanos,
+  lockUnlockOf,
+  proveLockEquality,
+  provePrincipalOpen,
+  signWithdrawReward,
+} from '../../crypto/reserve_vault.js';
 import {
   walletAnchor,
   txDigestV3,
   admitV3Context,
   fundingJroot,
 } from '../../crypto/admit_v3.js';
-import { FS1_RECORD_BYTES, FS1_WIRE, fs1BlobLen, fs1ProveSpend } from '../../crypto/fs1_spend.js';
+import { FS1_RECORD_BYTES, FS1_WIRE, fs1BlobLen, fs1ProveSpend, resetFs1Tree, txBodyDigestFs1 } from '../../crypto/fs1_spend.js';
+import { fs1NativeLoaded } from '../../crypto/native_admit.js';
+import { proveLeafRetire, proveLeafVote, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { censusOf, proposalId } from '../../crypto/leaf_vote.js';
 
 const KINDS = ['lock', 'vote', 'withdraw'];
 const AMOUNTS = [1, 1_000_000, 50_000_000_000];
@@ -425,6 +443,384 @@ function proveChanged(tx, { x, index, flux, note, anchor, noteR, noteV, receiptN
   return settled;
 }
 
+function lifePayer() {
+  const id = newIdentity();
+  const commit20 = destCommitFromSpendPub(id.spendPub);
+  const dest = encodeDest(commit20, id.admitBase);
+  const portal = portalsFromSeed(id.spendSeed, 1)[0];
+  const ownerKey = portalOwnerKey(id.spendSeed, portal.portalId);
+  const ownerPub = ed25519RawPub(ownerKey);
+  return {
+    id,
+    dest,
+    spendSeed: id.spendSeed,
+    base: id.admitBase,
+    pub: ownerPub.toString('hex'),
+    key: ownerKey,
+    portalId: portal.portalId,
+    portalDest: Buffer.from(portal.dest20),
+    spend20: destCommitFromSpendPub(ownerPub),
+  };
+}
+
+function lifeStamp(store) {
+  const tip = store.tip();
+  return tip ? Number(decodeHeader(Buffer.from(tip.header)).timestamp) : T0;
+}
+
+async function lifeMine(store, dest, now) {
+  const at = now == null ? Math.max(T0, lifeStamp(store) + 90_000) : now;
+  const { tpl } = store.template({ miner: dest, shareBits: 4, now: at });
+  const got = await Promise.resolve(store.append({
+    header: tpl.header,
+    height: tpl.height,
+    txs: tpl.txs,
+    samples: tpl.samples,
+    shareBatch: tpl.shareBatch || [],
+    miner: dest,
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
+  }, { trustedPowHash: easyPowHash(), skipSharePow: true }));
+  assert.equal(got.ok, true, `life append ${got.reason || ''} ${got.error || ''} h=${tpl.height}`);
+  return { tpl, got };
+}
+
+async function lifeAdvance(store, dest, targetMs) {
+  let guard = 0;
+  while (lifeStamp(store) < targetMs) {
+    assert.ok(guard < 2000, 'clock');
+    guard += 1;
+    await lifeMine(store, dest, Math.min(targetMs, lifeStamp(store) + 15 * 60_000));
+  }
+}
+
+function lifePot(tpl, who) {
+  const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+  assert.ok(pot && pot.r, 'pot opening');
+  return {
+    r: Buffer.from(asU8(pot.r)),
+    v: openedCoinbaseNanos(pot),
+    commit: Buffer.from(asU8(pot.commit)),
+    x: admitScalarFromSeed(who.spendSeed, pot),
+    who,
+  };
+}
+
+function lifeSlack(outs) {
+  let bytes = 0;
+  for (const o of outs) if (o?.rangeProof) bytes += Buffer.from(asU8(o.rangeProof)).length;
+  return Math.ceil((bytes * 2) / 2048) + 8;
+}
+
+function lifePh(k) {
+  const fs1 = Buffer.alloc(fs1BlobLen(k), 255);
+  fs1[0] = FS1_WIRE;
+  const proofs = [];
+  for (let i = 0; i < k; i += 1) {
+    const blob = Buffer.alloc(FS1_RECORD_BYTES, 255);
+    blob[0] = FS1_WIRE;
+    proofs.push({ blob, cTilde: Buffer.alloc(32, 255), spendTag: Buffer.alloc(32, 255) });
+  }
+  return { fs1, proofs, vin: proofs.map(() => ({ commit: Buffer.alloc(32, 255) })) };
+}
+
+function lifeCoins(store, coins, spent) {
+  const height = store.tip().height + 1;
+  const anchor = walletAnchor(height);
+  assert.ok(anchor, `anchor at ${height}`);
+  const live = store.anchorNote(anchor);
+  assert.ok(live && live.n >= 1, `anchor ${anchor}`);
+  const at = new Map();
+  for (let i = 0; i < live.n; i += 1) {
+    at.set(Buffer.from(asU8(live.commits[i])).toString('hex'), i);
+  }
+  const out = [];
+  for (const c of coins) {
+    const key = c.commit.toString('hex');
+    if (spent.has(key) || !at.has(key)) continue;
+    out.push({ ...c, index: at.get(key) });
+  }
+  return { anchor, live, coins: out };
+}
+
+function lifeChange(nanos, dest20, admitBase) {
+  let note = attachAdmitPub(sealHiddenNote(nanos, { dest20, kind: 'send', admitBase }), { admitBase });
+  note = { ...note, kind: 'send', dest20: Buffer.from(dest20), viewTag: viewTagOf(note.noteCommit) };
+  delete note.valueProof;
+  return note;
+}
+
+function lifeProve(tx, use, anchor, live, outs) {
+  const proven = fs1ProveSpend({
+    live,
+    anchor,
+    indices: use.map((c) => c.index),
+    xs: use.map((c) => c.x),
+    tx,
+    magic: MAGIC_TESTNET,
+  });
+  assert.ok(proven, 'fs1 prove');
+  const excess = kernelExcess(outs, use.map((c, i) => ({ r: c.r, t: proven.t[i] })));
+  assert.ok(excess, 'excess');
+  const settled = compactTx({
+    ...tx,
+    vin: proven.proofs.map((p) => ({ commit: Buffer.from(p.cTilde) })),
+    vout: outs,
+    fs1: proven.fs1,
+    admit_proofs: proven.proofs,
+    excess,
+  });
+  assert.ok(txBodyDigestFs1(settled, MAGIC_TESTNET).equals(proven.digest), 'digest');
+  return settled;
+}
+
+async function lifeLock(store, person, coins, spent, id) {
+  const view = lifeCoins(store, coins, spent);
+  const use = view.coins.filter((c) => c.who === person).slice(0, 4);
+  assert.equal(use.length, 4, 'lock inputs');
+  const total = use.reduce((s, c) => s + c.v, 0);
+  const blind = randomScalar();
+  const scalar = randomScalar();
+  const clock = lockUnlockOf(store.reserveVault, lifeStamp(store));
+  const unlock = consensusUnlockPeriod(clock.epoch);
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+  assert.ok(leaf, 'leaf');
+  const funded = pointBytes(commit(PI_SHE_NANOS, blind));
+  const range = proveRange(PI_SHE_NANOS, blind);
+  assert.ok(range, 'range');
+  const change20 = hash20FromAddress(person.dest);
+  const ph = lifePh(4);
+  let fee = LEVY_FLOOR_UNITS;
+  let tx = null;
+  let spentOuts = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const changeN = total - fee - PI_SHE_NANOS;
+    assert.ok(changeN > 0, `lock change ${changeN}`);
+    const outs = [
+      {
+        kind: 'lock',
+        commit: funded,
+        rangeProof: range,
+        r: scalarBytes(blind),
+        dest20: Buffer.from(person.portalDest),
+        portalId: person.portalId,
+        viewTag: Buffer.from([1]),
+      },
+      lifeChange(changeN, change20, person.base),
+    ];
+    const draft = compactTx({
+      id,
+      kind: 'lock',
+      anchor: view.anchor,
+      fee,
+      nanos: 0,
+      programId: RESERVE_PROGRAM,
+      portalId: person.portalId,
+      payoutPortalId: person.portalId,
+      ownerPub: person.pub,
+      vaultLockNote: leaf.note,
+      vin: ph.vin,
+      vout: outs,
+      fs1: ph.fs1,
+      admit_proofs: ph.proofs,
+    });
+    const need = levyNeed(draft);
+    if (fee >= need && fee <= LEVY_CAP_NANOS) {
+      tx = lifeProve(draft, use, view.anchor, view.live, outs);
+      spentOuts = outs;
+      break;
+    }
+    const next = need + lifeSlack(outs);
+    assert.ok(next > fee && next <= LEVY_CAP_NANOS, `lock levy ${need}`);
+    fee = next;
+  }
+  assert.ok(tx, 'lock fee');
+  // The output dest is the one-time portal. The body dest is the owner key,
+  // which is what the spend signature binds. The proof names this inclusion.
+  tx.dest20 = Buffer.from(person.spend20);
+  signSpendTx(tx, person.key);
+  const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, store.tip().height + 1);
+  assert.ok(fund, 'fund');
+  const lockOut = tx.vout.find((row) => String(row?.kind || '') === 'lock');
+  assert.ok(lockOut, 'lock out');
+  lockOut.fundProof = fund;
+  // The π opening is what lets the portal join and open the chain epoch.
+  // A hidden lock with no piProof stays a tranche and never starts the clock.
+  tx.piProof = proveRange(0n, blind);
+  assert.ok(tx.piProof, 'pi');
+  resetFs1Tree();
+  const queued = store.queueTx(tx, { nowMs: lifeStamp(store) });
+  assert.equal(queued.ok, true, `lock queue ${queued.reason}`);
+  const sealed = await lifeMine(store, person.dest);
+  assert.ok(sealed.tpl.txs.some((row) => row.id === id), 'lock template');
+  for (const c of use) spent.add(c.commit.toString('hex'));
+  const change = spentOuts[1];
+  coins.push({
+    r: Buffer.from(asU8(change.r)),
+    v: total - tx.fee - PI_SHE_NANOS,
+    commit: Buffer.from(asU8(change.commit)),
+    x: admitScalarFromSeed(person.spendSeed, change),
+    who: person,
+  });
+  return { leaf, scalar, blind, unlock };
+}
+
+async function lifeVote(store, person, coins, spent, row) {
+  const voteProof = proveLeafVote({
+    locks: [{
+      amount: PI_SHE_NANOS,
+      scalar: row.scalar,
+      blind: row.blind,
+      unlockEpoch: row.unlock,
+    }],
+    which: 0,
+    epoch: 1,
+    choice: 1,
+    seq: 1,
+    proposalId: proposalId(1, 'hb'),
+    dest20: hash20FromAddress(person.dest),
+  });
+  assert.ok(voteProof, 'vote proof');
+  assert.equal(voteProof.rootHex, store.reserveVault.epochStartRoots['1'], 'vote root');
+  const view = lifeCoins(store, coins, spent);
+  const use = view.coins.filter((c) => c.who === person).slice(0, 1);
+  assert.equal(use.length, 1, 'vote input');
+  const d20 = hash20FromAddress(person.dest);
+  const ph = lifePh(1);
+  let fee = LEVY_FLOOR_UNITS;
+  let vote = null;
+  let voteOuts = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const changeN = use[0].v - fee;
+    assert.ok(changeN > 0, `vote change ${changeN}`);
+    const outs = [lifeChange(changeN, d20, person.base)];
+    const draft = compactTx({
+      id: 'life-vote',
+      kind: 'leaf-vote',
+      anchor: view.anchor,
+      fee,
+      programId: RESERVE_PROGRAM,
+      voteProof: voteProof.blob,
+      voteOutput: voteProof.note,
+      choice: 1,
+      voteSeq: 1,
+      voteParam: 'hb',
+      earnEpoch: 1,
+      vin: ph.vin,
+      vout: outs,
+      fs1: ph.fs1,
+      admit_proofs: ph.proofs,
+    });
+    const need = levyNeed(draft);
+    if (fee >= need && fee <= LEVY_CAP_NANOS) {
+      vote = lifeProve(draft, use, view.anchor, view.live, outs);
+      voteOuts = outs;
+      break;
+    }
+    fee = need + lifeSlack(outs);
+  }
+  assert.ok(vote, 'vote fee');
+  resetFs1Tree();
+  const voteQueued = store.queueTx(vote, { nowMs: lifeStamp(store) });
+  assert.equal(voteQueued.ok, true, `vote queue ${voteQueued.reason}`);
+  const voteBlock = await lifeMine(store, person.dest);
+  assert.ok(voteBlock.tpl.txs.some((t) => t.id === 'life-vote'), 'vote template');
+  for (const c of use) spent.add(c.commit.toString('hex'));
+  const voteChange = voteOuts[0];
+  coins.push({
+    r: Buffer.from(asU8(voteChange.r)),
+    v: use[0].v - vote.fee,
+    commit: Buffer.from(asU8(voteChange.commit)),
+    x: admitScalarFromSeed(person.spendSeed, voteChange),
+    who: person,
+  });
+  let changeSeen = false;
+  for (let i = 0; i < 40 && !changeSeen; i += 1) {
+    const seen = lifeCoins(store, coins, spent);
+    changeSeen = seen.coins.some((c) => c.who === person);
+    if (!changeSeen) await lifeMine(store, person.dest);
+  }
+  assert.equal(changeSeen, true, 'vote change matured');
+}
+
+function lifeWithdraw(store, person, coins, spent, row, id, now) {
+  const view = lifeCoins(store, coins, spent);
+  const use = view.coins.filter((c) => c.who === person).slice(0, 1);
+  assert.equal(use.length, 1, `${id} change`);
+  const stub = leafStubNanos(store.reserveVault, [row.leaf.commit.toString('hex')]);
+  assert.ok(stub > 0n, 'testnet arrival stub');
+  const withdrawNanos = PI_SHE_NANOS + Number(stub);
+  const d20 = hash20FromAddress(person.dest);
+  const ph = lifePh(1);
+  let fee = LEVY_FLOOR_UNITS;
+  let body = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const changeN = use[0].v - fee;
+    assert.ok(changeN > 0, `${id} withdraw change`);
+    const receipt = attachAdmitPub(sealNote(withdrawNanos, { dest20: d20, kind: 'withdraw' }), { admitBase: person.base });
+    receipt.kind = 'withdraw';
+    receipt.dest20 = Buffer.from(d20);
+    const change = lifeChange(changeN, d20, person.base);
+    const draft = compactTx({
+      id,
+      kind: 'withdraw',
+      anchor: view.anchor,
+      fee,
+      nanos: withdrawNanos,
+      programId: RESERVE_PROGRAM,
+      portalId: person.portalId,
+      ownerPub: person.pub,
+      dest20: Buffer.from(d20),
+      vin: ph.vin,
+      vout: [receipt, change],
+      fs1: ph.fs1,
+      admit_proofs: ph.proofs,
+    });
+    const need = levyNeed(draft);
+    if (fee >= need && fee <= LEVY_CAP_NANOS) {
+      body = lifeProve(draft, use, view.anchor, view.live, [receipt, change]);
+      break;
+    }
+    fee = need + lifeSlack([receipt, change]);
+  }
+  assert.ok(body, `${id} withdraw fee`);
+  body.nanos = withdrawNanos;
+  body.dest20 = Buffer.from(d20);
+  const period = chainPeriodIndex(store.reserveVault, now);
+  const burn = leafEpochsToBurn(store.reserveVault, row.leaf.note.toString('hex'), period);
+  assert.equal(burn.length, 3, `${id} burn ${burn.join(',')}`);
+  const retire = proveLeafRetire({
+    scalar: row.scalar,
+    epochs: burn,
+    leaf: row.leaf.note,
+    txBind: txDigestV3(body, MAGIC_TESTNET),
+    unlockEpoch: period,
+  });
+  assert.ok(retire, `${id} retire`);
+  body.retireProof = retire.proof || retire;
+  body.principalProof = provePrincipalOpen(
+    row.leaf.commit, PI_SHE_NANOS, row.blind, body, person.portalId, MAGIC_TESTNET, row.unlock,
+  );
+  assert.ok(body.principalProof, `${id} principal`);
+  const built = buildFundedWithdraw(body);
+  assert.ok(built, `${id} builder`);
+  built.dest20 = Buffer.from(d20);
+  delete built.spendPub;
+  delete built.sig;
+  signWithdrawReward(built, person.key, {
+    portalId: person.portalId,
+    nanos: PI_SHE_NANOS,
+    dest: Buffer.from(built.dest20).toString('hex'),
+    state: store.reserveVault,
+    nowMs: now,
+  });
+  for (const c of use) spent.add(c.commit.toString('hex'));
+  return built;
+}
+
 describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, () => {
   it('unfunded and public-debit typed txs never queue, at every amount', () => {
     const who = payer();
@@ -480,28 +876,66 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
     }
   });
 
-  it('a byte-3 lock is vault_unavailable and does not spend the note', { timeout: 30_000 }, async () => {
-    const commit = Buffer.alloc(32, 4);
-    const blob = Buffer.alloc(129, 0);
-    blob[0] = 3;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-fund-'));
+  it('supply stays verified after a real lock, vote, and withdraw', { timeout: 600_000 }, async () => {
+    assert.equal(fs1NativeLoaded(), true, 'native FS-1 addon');
+    const who = lifePayer();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v3-life-'));
+    const store = createStore(dir);
+    const coins = [];
+    const spent = new Set();
     try {
-      const store = createStore(dir);
-      const queued = store.queueTx({
-        id: 'byte3-lock',
-        kind: 'lock',
-        vin: [{ commit }],
-        admit_proofs: [{ blob, cTilde: commit }],
-      });
-      assert.equal(queued.reason, 'vault_unavailable');
-      assert.equal(store.fluxset().spendTags.has(Buffer.alloc(32).toString('hex')), false);
+      for (let n = 0; n < 4; n += 1) {
+        const { tpl } = await lifeMine(store, who.dest);
+        coins.push(lifePot(tpl, who));
+      }
+      while (store.tip().height < 100) await lifeMine(store, who.dest);
+      const locked = await lifeLock(store, who, coins, spent, 'life-lock');
+      // A hidden lock does not move the public integer. The live principal
+      // is the commitment sum, and totalLockedNanos stays 0.
+      const held = store.reserveVault.portals?.[who.portalId];
+      assert.equal(held?.tranches?.length, 1, 'locked');
+      assert.match(String(store.reserveVault.vaultPrincipalSum || ''), /^[0-9a-f]{64}$/);
+      assert.equal(BigInt(store.reserveVault.totalLockedNanos || 0), 0n, 'public integer stays 0');
+      while (store.tip().height < 240) await lifeMine(store, who.dest);
+      assert.equal(String(store.reserveVault.epochStartRoots?.['1'] || ''), store.reserveVault.vaultLockRoot, 'period root');
+      const genesis = Number(store.reserveVault.genesisMs);
+      await lifeAdvance(store, who.dest, genesis + RESERVE_EPOCH_MS);
+      // The boundary block enacts the ballot and stays on epoch 0. The
+      // following block opens epoch 1. MTP can clamp one requested step,
+      // so keep stepping until the roll lands.
+      let rolls = 0;
+      while (Number(store.reserveVault.currentEpoch) < 1 && rolls < 6) {
+        rolls += 1;
+        await lifeMine(store, who.dest, lifeStamp(store) + 15 * 60_000);
+      }
+      assert.equal(
+        store.reserveVault.currentEpoch,
+        1,
+        `epoch rolled enacted=${store.reserveVault.bonusEnacted} start=${store.reserveVault.epochStartMs} tip=${lifeStamp(store)} genesis=${genesis}`,
+      );
+      const census = censusOf(store.reserveVault, 1);
+      assert.ok(census && census.leafCount >= 1, 'census');
+      await lifeVote(store, who, coins, spent, locked);
+      const wall = lifeStamp(store) + 1_000;
+      const withdrawTx = lifeWithdraw(store, who, coins, spent, locked, 'life-withdraw', wall);
+      resetFs1Tree();
+      const wdQueued = store.queueTx(withdrawTx, { nowMs: wall });
+      assert.equal(wdQueued.ok, true, `withdraw queue ${wdQueued.reason}`);
+      const wdBlock = await lifeMine(store, who.dest, wall);
+      assert.ok(wdBlock.tpl.txs.some((row) => row.id === 'life-withdraw'), 'withdraw template');
+      const released = store.reserveVault.portals?.[who.portalId];
+      assert.equal(released?.tranches?.length || 0, 0, 'tranche released');
+      assert.equal(String(store.reserveVault.vaultPrincipalSum || ''), '', 'principal sum cleared');
+      assert.equal(BigInt(store.reserveVault.totalLockedNanos || 0), 0n, 'locked back to 0');
+      const liveSupply = auditCirculatingSupply(store.blocks);
+      assert.equal(liveSupply.status, 'verified', liveSupply.reason || String(liveSupply.differenceNanos));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it('FS-1 funding past the gate is commit_sum on the queue and on append, and the book stays supply-verified', { timeout: 180_000 }, async () => {
-    // Stage 3b. A byte-3 bucket stays vault_unavailable. An FS-1 lock at
+    // Stage 3b. An FS-1 lock at
     // height 17 is past the gate, so a nonzero output gap is commit_sum on
     // the queue and on append. The coinbase book that funded the note stays
     // supply-verified.

@@ -151,6 +151,10 @@ export function voteCloseDay(magic = MAGIC_TESTNET) {
   return days - cut;
 }
 
+/**
+ * First block of voteCloseDay. The day count is VAULT_DAY_BLOCKS (960) on
+ * every book, including testnet. It is not the 24-block testnet vault day.
+ */
 export function voteCloseHeight(openHeight, magic = MAGIC_TESTNET) {
   const openH = Math.floor(Number(openHeight));
   const day = voteCloseDay(magic);
@@ -208,6 +212,7 @@ export function stepRate(current, dir, floor, ceil) {
   return next;
 }
 
+/** Unused. The hash bonus has no ceiling. A passed vote steps one rho, floor 0. */
 export function hashBonusCeiling() {
   return HASH_BONUS_NANOS;
 }

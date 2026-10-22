@@ -1,6 +1,6 @@
 import net from 'node:net';
-import { randomBytes } from 'node:crypto';
-import { MAGIC_TESTNET, PRODUCT_VERSION, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { createHash, randomBytes } from 'node:crypto';
+import { MAGIC_TESTNET, PRODUCT_VERSION, SAMPLE_PRUNE_CONFIRMATIONS, consensusFingerprint } from '../../crypto/asert.js';
 import { freshMinerRounds, safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
 import {
@@ -966,15 +966,26 @@ export function countLiveOnline({ peers = [], includeSelf = true } = {}) {
   return (includeSelf ? 1 : 0) + seen.size;
 }
 
+/** sha256 of the consensus fingerprint string. A hello carries this hex. */
+export function fingerprintHelloHash(magic = MAGIC_TESTNET, override = null) {
+  if (override != null) {
+    const given = String(override).trim().toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(given)) return given;
+  }
+  return createHash('sha256').update(consensusFingerprint(magic), 'utf8').digest('hex');
+}
+
 export function createP2p({
   store,
   port = P2P_PORT,
   host = '0.0.0.0',
   magic = MAGIC_TESTNET,
+  fingerprint = null,
   fluffDelayMs: fluffMs = null,
   stemRng = Math.random,
   maxPeers = p2pMaxPeers(),
 } = {}) {
+  const selfFingerprint = fingerprintHelloHash(magic, fingerprint);
   const sockets = new Set();
   const peers = new Map();
   const linking = new Set();
@@ -1719,11 +1730,23 @@ export function createP2p({
     broadcast({ type: 'census', magic, hop: 0, nodes: directCensus() });
   }
 
+  function refuseHello(sock, reason) {
+    try {
+      console.error(JSON.stringify({ event: 'p2p_refuse', reason }));
+    } catch { /* ignore */ }
+    try { sock.destroy(); } catch { /* ignore */ }
+  }
+
   function handle(sock, msg) {
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'hello') {
       if (msg.magic !== magic) {
-        sock.destroy();
+        refuseHello(sock, 'magic');
+        return;
+      }
+      const theirs = String(msg.fingerprint || '').trim().toLowerCase();
+      if (theirs !== selfFingerprint) {
+        refuseHello(sock, 'fingerprint');
         return;
       }
     } else if (msg.magic && msg.magic !== magic) {
@@ -2268,7 +2291,14 @@ export function createP2p({
     });
     sock.on('close', () => drop(sock));
     sock.on('error', () => drop(sock));
-    send(sock, { type: 'hello', magic, ua: P2P_UA, port: listenPortOf(), nodeId: selfId });
+    send(sock, {
+      type: 'hello',
+      magic,
+      fingerprint: selfFingerprint,
+      ua: P2P_UA,
+      port: listenPortOf(),
+      nodeId: selfId,
+    });
     send(sock, tipMsg());
   }
 

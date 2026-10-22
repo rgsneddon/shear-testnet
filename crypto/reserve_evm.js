@@ -11,10 +11,10 @@ import { EMPTY_ROOT } from './merkle.js';
 import {
   reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth,
   lockQualifies, lockFundingRejected, lockUnlockOf, consensusUnlockPeriod,
-  portalIdFromDest, withdrawSignedDest,
+  portalIdFromDest, withdrawSignedDest, signRewardAuth, verifyRewardAuth,
 } from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
-import { ED25519_SPKI_PREFIX } from './address.js';
+import { ED25519_SPKI_PREFIX, ed25519RawPub } from './address.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
 import {
@@ -93,47 +93,119 @@ export function encodeBytes(data) {
   return concat(len, padded);
 }
 
-function ownerWord(ownerCommit) {
-  const word = new Uint8Array(32);
-  if (ownerCommit == null || ownerCommit === '') return word;
-  const raw = Buffer.isBuffer(ownerCommit)
-    ? ownerCommit
-    : Buffer.from(String(ownerCommit).replace(/^0x/i, ''), 'hex');
-  if (raw.length === 32) word.set(raw);
+function u64le(n) {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(BigInt(n));
+  return b;
+}
+
+/** Storage id lock() will use. A 32-byte dest is that word. A longer dest is keccak. */
+export function evmPortalId(dest) {
+  let raw;
+  if (typeof dest === 'string') raw = Buffer.from(dest, 'utf8');
+  else {
+    try { raw = Buffer.from(asU8(dest)); } catch { return null; }
+  }
+  if (raw.length === 0) return null;
+  if (raw.length === 32) return raw.equals(Buffer.alloc(32)) ? null : raw;
+  return Buffer.from(keccak256(Buffer.concat([Buffer.from('shear-portal-v1'), raw])));
+}
+
+/** shear-lock-owner-v1 || portalId || commit || magic || chainId le64. */
+export function lockOwnerMessage(portalId, commit, magic = null, chainId = SHEAR_EVM_CHAIN_ID) {
+  let id;
+  let word;
+  try {
+    id = Buffer.from(asU8(portalId));
+    word = Buffer.from(asU8(commit));
+  } catch {
+    return null;
+  }
+  if (id.length !== 32 || word.length !== 32) return null;
+  const mag = Buffer.from(magic ? asU8(magic) : shearMagicBytes());
+  if (mag.length !== 32) return null;
+  return Buffer.concat([
+    Buffer.from('shear-lock-owner-v1'),
+    id,
+    word,
+    mag,
+    u64le(chainId),
+  ]);
+}
+
+/** ownerPub(32) || sig(64). A 32-byte owner hash is not this blob. */
+export function signLockAuth(dest, commit, privateKey, magic = null, chainId = SHEAR_EVM_CHAIN_ID) {
+  if (!privateKey) return null;
+  const id = evmPortalId(dest);
+  let word;
+  try { word = Buffer.from(asU8(commit)); } catch { return null; }
+  if (!id || word.length !== 32) return null;
+  const message = lockOwnerMessage(id, word, magic, chainId);
+  const sigHex = signRewardAuth(message, privateKey);
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) return null;
+  let pub;
+  try { pub = Buffer.from(ed25519RawPub(privateKey)); } catch { return null; }
+  if (pub.length !== 32) return null;
+  return Buffer.concat([pub, Buffer.from(sigHex, 'hex')]);
+}
+
+function commitWord(commit) {
+  const word = Buffer.alloc(32);
+  try {
+    const raw = Buffer.isBuffer(commit) ? commit : Buffer.from(asU8(commit));
+    if (raw.length === 32) word.set(raw);
+  } catch { /* the contract rejects a zero commitment */ }
   return word;
 }
 
-export function encodeDeposit(dest, commit, nowTs, ownerCommit = null, qualifies = false) {
-  const body = encodeBytes(dest);
-  const word = Buffer.alloc(32);
-  const raw = Buffer.isBuffer(commit) ? commit : Buffer.from(String(commit || '').replace(/^0x/i, ''), 'hex');
-  if (raw.length === 32) word.set(raw);
+function authBytes(dest, commit, ownerAuth) {
+  if (ownerAuth && typeof ownerAuth === 'object' && !Buffer.isBuffer(ownerAuth) && !(ownerAuth instanceof Uint8Array)) {
+    if (ownerAuth.key) return signLockAuth(dest, commit, ownerAuth.key, ownerAuth.magic, ownerAuth.chainId) || new Uint8Array();
+    return new Uint8Array();
+  }
+  if (ownerAuth == null || ownerAuth === '') return new Uint8Array();
+  try {
+    const raw = Buffer.from(asU8(ownerAuth));
+    if (raw.length === 96) return raw;
+  } catch { /* not an auth blob */ }
+  return new Uint8Array();
+}
+
+export function encodeDeposit(dest, commit, nowTs, ownerAuth = null, qualifies = false) {
+  const word = commitWord(commit);
+  const destBody = encodeBytes(dest);
+  const authBody = encodeBytes(authBytes(dest, word, ownerAuth));
+  const destOff = 160;
+  const authOff = destOff + destBody.length;
   return concat(
-    selector('lock(bytes,bytes32,uint256,bytes32,bool)'),
-    pad32(160),
+    selector('lock(bytes,bytes32,uint256,bytes,bool)'),
+    pad32(destOff),
     word,
     pad32(nowTs),
-    ownerWord(ownerCommit),
+    pad32(authOff),
     pad32(qualifies ? 1 : 0),
-    body,
+    destBody,
+    authBody,
   );
 }
 
 /** Time-locked note. The bool is the tranche flag withdraw() will not pay. */
-export function encodeLockNote(dest, commit, nowTs, notePrincipal = true, ownerCommit = null, qualifies = false) {
-  const body = encodeBytes(dest);
-  const word = Buffer.alloc(32);
-  const raw = Buffer.isBuffer(commit) ? commit : Buffer.from(String(commit || '').replace(/^0x/i, ''), 'hex');
-  if (raw.length === 32) word.set(raw);
+export function encodeLockNote(dest, commit, nowTs, notePrincipal = true, ownerAuth = null, qualifies = false) {
+  const word = commitWord(commit);
+  const destBody = encodeBytes(dest);
+  const authBody = encodeBytes(authBytes(dest, word, ownerAuth));
+  const destOff = 192;
+  const authOff = destOff + destBody.length;
   return concat(
-    selector('lockNote(bytes,bytes32,uint256,bool,bytes32,bool)'),
-    pad32(192),
+    selector('lockNote(bytes,bytes32,uint256,bool,bytes,bool)'),
+    pad32(destOff),
     word,
     pad32(nowTs),
     pad32(notePrincipal ? 1 : 0),
-    ownerWord(ownerCommit),
+    pad32(authOff),
     pad32(qualifies ? 1 : 0),
-    body,
+    destBody,
+    authBody,
   );
 }
 
@@ -530,6 +602,7 @@ function evmRevertReason(res) {
     const sel = Buffer.from(ret.subarray(0, 4));
     if (sel.equals(Buffer.from(selector('ClaimUnavailable()')))) return 'claim_unavailable';
     if (sel.equals(Buffer.from(selector('OwnerMissing()')))) return 'owner_missing';
+    if (sel.equals(Buffer.from(selector('PortalExists()')))) return 'portal_exists';
     if (sel.equals(Buffer.from(selector('Unsigned()')))) return 'unsigned';
     if (sel.equals(Buffer.from(selector('AlreadyMinted()')))) return 'already_minted';
     if (sel.equals(Buffer.from(selector('NotVoter()')))) return 'not_voter';
@@ -848,6 +921,53 @@ function carriedPortalBytes(tx) {
   return null;
 }
 
+function lockCommitForEvm(tx) {
+  try {
+    const note = tx?.vaultLockNote ? Buffer.from(asU8(tx.vaultLockNote)) : null;
+    if (note && note.length >= 64) return Buffer.from(note.subarray(32, 64));
+  } catch { /* a note that is not bytes falls through to the lock output */ }
+  const outs = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === 'lock');
+  const raw = outs[0]?.commit;
+  if (!raw) return null;
+  try {
+    const word = Buffer.from(asU8(raw));
+    return word.length === 32 ? word : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pub hex when lockAuth is the owner signature over this lock's portal and
+ * leaf commit. A copied ownerPub with no matching signature is not an owner.
+ */
+export function verifyLockAuth(tx, magic = null) {
+  let raw;
+  try { raw = Buffer.from(asU8(tx?.lockAuth)); } catch { return null; }
+  if (raw.length !== 96) return null;
+  const commit = lockCommitForEvm(tx);
+  const dest = destBytesForEvm(tx, null);
+  if (!commit || !dest) return null;
+  const id = evmPortalId(dest);
+  if (!id) return null;
+  const pub = raw.subarray(0, 32).toString('hex');
+  const sig = raw.subarray(32).toString('hex');
+  const message = lockOwnerMessage(id, commit, magic);
+  if (!verifyRewardAuth(message, pub, sig)) return null;
+  return pub;
+}
+
+/** Stamp the owner signature a block replay will check. The spend sig is separate. */
+export function attachLockAuth(tx, privateKey) {
+  if (!tx || String(tx.kind || tx.vout?.[0]?.kind || '') !== 'lock') return tx;
+  if (tx.lockAuth) return tx;
+  const commit = lockCommitForEvm(tx);
+  if (!commit || !privateKey) return tx;
+  const auth = signLockAuth(destBytesForEvm(tx, null), commit, privateKey);
+  if (auth) tx.lockAuth = auth;
+  return tx;
+}
+
 function destBytesForEvm(tx, act) {
   // A compact lock carries H(tag, dest20, r). That 32-byte id is the EVM key.
   // lockTx and withdrawTx stamp that id when a spend seed is present. A
@@ -878,8 +998,8 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
-    const pub = String(tx?.ownerPub || tx?.spendPub || '').replace(/^0x/i, '');
-    const owner = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
+    // The owner is the signature, not a copied hash of ownerPub.
+    const owner = tx?.lockAuth || null;
     // The retire proof opens the leaf commitment, the same one the JS vault
     // stores. The funding output is that commitment minus the unlock point.
     let note = null;

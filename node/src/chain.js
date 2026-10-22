@@ -81,7 +81,7 @@ import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected, rollRewardRejected, leafVoteFundingRejected, leafVoteLeakRejected, compactLockLeakRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected, rollRewardRejected, leafVoteFundingRejected, leafVoteLeakRejected, compactLockLeakRejected, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -2329,6 +2329,8 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (leakedVote) return leakedVote;
     const leakedLock = compactLockLeakRejected(bodyTxs[i]);
     if (leakedLock) return leakedLock;
+    const leakedWithdraw = withdrawLeakRejected(bodyTxs[i]);
+    if (leakedWithdraw) return leakedWithdraw;
     const unsignedField = unsignedBodyField(bodyTxs[i]);
     if (unsignedField) return unsignedField;
   }
@@ -3599,6 +3601,9 @@ function stepLoaded(state, list, i) {
   if (state.oracleActivationHeight !== undefined) {
     oracle.activationHeight = state.oracleActivationHeight;
   }
+  // The block paid the unit that was already live. Enact in this block
+  // changes the next one. A voted 0 must not be rechecked as 1.
+  const unitNow = hashBonusUnitNanos(state.vault?.liveHashBonusNanos);
   const body = verifyBlockConsensus(block, prevBlock, {
     trustedPowHash: link,
     loadReplay: true,
@@ -3616,7 +3621,7 @@ function stepLoaded(state, list, i) {
     hashAcceptedSeries: state.acceptedSeries,
     spentB: state.spentB,
     magic: state.magic || MAGIC_TESTNET,
-    hashBonusNanos: HASH_BONUS_NANOS,
+    hashBonusNanos: unitNow,
     grandparentHeader: i >= 2 ? list[i - 2].header : null,
     parentFluxset: state.flux,
     parentSpendTags: state.flux.spendTags,
@@ -3641,7 +3646,7 @@ function stepLoaded(state, list, i) {
     owedIn: state.owedIn,
     acceptedSeries: state.acceptedSeries,
     block,
-    unit: HASH_BONUS_NANOS,
+    unit: unitNow,
     tipHeight: burial,
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'hash_owed' };

@@ -17,7 +17,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
-import { PI_SHE_NANOS, RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { PI_SHE_NANOS, RESERVE_PROGRAM, hashBonusUnitNanos } from '../../crypto/asert.js';
 import { publicReserveReceipt, publicReserveReceiptRejected, moneyNeedsRange } from '../../crypto/dummy.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
@@ -222,7 +222,7 @@ async function mineAppend(store, miner, txs, now) {
     txs,
     parentBlocks: store.blocks,
     parentFluxset: store.fluxset().pubs,
-    hashBonusNanos: Number(store.reserveVault.liveHashBonusNanos || 1),
+    hashBonusNanos: hashBonusUnitNanos(store.reserveVault.liveHashBonusNanos),
   });
   assert.equal(built.bits, bits, 'regtest template bits');
   assert.equal(decodeHeader(built.header).bits, bits);
@@ -439,7 +439,7 @@ describe('P0 public reserve receipt', () => {
         parentFluxset: parentFlux,
         parentSpendTags: parentFlux.spendTags,
         evmHistory: store.blocks.slice(),
-        hashBonusNanos: Number(parentVault.liveHashBonusNanos || 1),
+        hashBonusNanos: hashBonusUnitNanos(parentVault.liveHashBonusNanos),
         nowMs: Date.now(),
       };
       const liveBlock = {

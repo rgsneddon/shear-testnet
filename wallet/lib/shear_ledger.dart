@@ -1927,10 +1927,14 @@ Uint8List _withdrawNonce(Uint8List? nonce) {
 /// Public nanos + dest20 + noteCommitOfDest20, with `commit` so wallet_api
 /// keeps this body instead of minting a fresh seal after the spend sig.
 /// A withdraw uses a hash-derived non-zero r. Value 0 is not a withdrawal.
-Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {String id = '', Uint8List? nonce}) {
+Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {String id = '', Uint8List? nonce, Uint8List? spendSeed, int lockIndex = 0}) {
   final units = tryU64Units(nanos) ?? BigInt.zero;
   final shown = u64OnWire(units);
-  final d20 = hash20FromAddress(to);
+  // A lock pays a fresh subaddress. A withdraw or a seed-less lock keeps the address hash.
+  final oneTime = kind == 'lock' && spendSeed != null && spendSeed.length == 32
+      ? reservePortalDest20FromSeed(spendSeed, lockIndex)
+      : null;
+  final d20 = oneTime ?? hash20FromAddress(to);
   if (d20 == null) return {'address': to, 'nanos': shown, 'kind': kind};
   if (kind == 'withdraw' && units <= BigInt.zero) {
     return {'address': to, 'nanos': shown, 'kind': kind};
@@ -1981,6 +1985,7 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
   final nanosUnits = tryU64Units(input['nanos']) ?? BigInt.zero;
   final spendSeed = input['spendSeed'] is Uint8List ? input['spendSeed'] as Uint8List : null;
   final shared = input['shared'] is Uint8List ? input['shared'] as Uint8List : null;
+  final lockIndex = input['lockIndex'] is int ? input['lockIndex'] as int : 0;
   final spec = <Map<String, dynamic>>[
     for (final raw in (input['vouts'] as List? ?? const []))
       if (raw is Map) Map<String, dynamic>.from(raw),
@@ -1993,6 +1998,8 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
         (o['kind'] as String?) ?? kind,
         id: (input['id'] as String?) ?? '',
         nonce: input['withdrawNonce'] is Uint8List ? input['withdrawNonce'] as Uint8List : null,
+        spendSeed: kind == 'lock' ? spendSeed : null,
+        lockIndex: lockIndex,
       ),
   ];
   if (kind == 'lock') _stampLockNote(sealed, input);
@@ -2010,18 +2017,23 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
       }
     }
   }
-  String idFor(String dest) {
+  String idFor(String dest, {bool lockPortal = false}) {
     if (spendSeed != null && spendSeed.length == 32) {
-      final hidden = reservePortalIdFromSeed(dest, spendSeed);
+      final hidden = lockPortal
+          ? reservePortalIdFromSeed(dest, spendSeed, lockIndex)
+          : reserveAddressPortalId(dest, spendSeed);
       if (hidden != null) return hidden;
     }
     return reservePortalId(dest);
   }
-  final portalId = kind == 'withdraw' ? idFor(from) : idFor(to);
+  final portalId = kind == 'lock' ? idFor(to, lockPortal: true) : idFor(kind == 'withdraw' ? from : to);
   final payoutPortalId = kind == 'withdraw' ? idFor(to) : idFor(from);
   if (kind == 'lock') {
     for (final note in sealed) {
-      if ((note['kind'] ?? kind).toString() == 'lock') note['portalId'] = portalId;
+      if ((note['kind'] ?? kind).toString() == 'lock') {
+        note['portalId'] = portalId;
+        note['lockIndex'] = lockIndex;
+      }
     }
   } else if (kind == 'withdraw') {
     for (final note in sealed) {
@@ -3336,6 +3348,23 @@ class ShearLedger implements ReadProofSink {
     _openedProofs[key] = nanos;
   }
 
+  /// Next unused lock index. Recovery scans the seed; a new lock must not reuse one.
+  int _nextLockIndex() {
+    var max = -1;
+    var bare = 0;
+    for (final note in _notes) {
+      if ((note['kind'] ?? '').toString() != 'lock') continue;
+      final idx = note['lockIndex'];
+      if (idx is int) {
+        if (idx > max) max = idx;
+      } else {
+        bare++;
+      }
+    }
+    if (bare - 1 > max) max = bare - 1;
+    return max + 1;
+  }
+
   /// Keep the lock note's blind. The chain drops it, and the spend needs it
   /// once the epoch ends.
   void _rememberTimeLock(List<Map<String, dynamic>> sealed, String dest) {
@@ -3355,6 +3384,9 @@ class ShearLedger implements ReadProofSink {
         'admitPub': o['admitPub'],
         'unlockAtMs': unlock,
         if (o['lockEpoch'] != null) 'lockEpoch': o['lockEpoch'],
+        if (o['lockIndex'] is int) 'lockIndex': o['lockIndex'],
+        if (o['portalId'] != null) 'portalId': o['portalId'],
+        if (o['dest20'] != null) 'dest20': o['dest20'],
         if (o['valueProof'] != null) 'valueProof': o['valueProof'],
         if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
         if (o['nanos'] != null) 'nanos': o['nanos'],
@@ -7466,7 +7498,8 @@ class ShearLedger implements ReadProofSink {
       fee: fee,
       spendSeed: spendSeed,
       kind: kind,
-      keepT: true,
+      // t is only for the leaf-vote cTilde check. A send or withdraw does not keep it.
+      keepT: kind == 'leaf-vote',
       portalId: portalId,
       programId: programId,
       id: id,
@@ -8621,6 +8654,7 @@ class ShearLedger implements ReadProofSink {
         'programId': programId ?? '',
         if (sendKind == 'lock' && lockEpoch != null) 'lockEpoch': lockEpoch,
         if (sendKind == 'lock' && unlockAtMs != null) 'unlockAtMs': unlockAtMs,
+        if (sendKind == 'lock') 'lockIndex': _nextLockIndex(),
       });
       final sealed = <Map<String, dynamic>>[
         for (final raw in (built['vouts'] as List))
@@ -8641,6 +8675,11 @@ class ShearLedger implements ReadProofSink {
       final pub = built['pub'];
       if (sig is Uint8List) sigHex = _bytesHex(sig);
       if (pub is Uint8List) spendPubHex = _bytesHex(pub);
+      // An FS-1 lock is authorised by the SAL. The identity spend key stays off the wire.
+      if (sendKind == 'lock') {
+        sigHex = null;
+        spendPubHex = null;
+      }
       final boundFee = built['fee'];
       if (boundFee is int && boundFee > 0) reserveFee = boundFee;
       if (built['id'] is String) postedWithdrawId = built['id'] as String;
@@ -9438,11 +9477,39 @@ Future<String> continuumTipReport({List<String>? seeds, HttpClient? http}) async
   ].join('\n');
 }
 
+/// 20-byte dest on a lock output, as 40 hex chars. An address is not a dest20.
+String? _lockDest20Hex(List<dynamic>? vout) {
+  if (vout == null) return null;
+  for (final o in vout) {
+    if (o is! Map) continue;
+    final d = o['dest20'];
+    if (d is Uint8List && d.length == 20) return _bytesHex(d);
+    if (d is String) {
+      final hex = d.startsWith('0x') ? d.substring(2) : d;
+      if (RegExp(r'^[0-9a-fA-F]{40}$').hasMatch(hex)) return hex.toLowerCase();
+    }
+  }
+  return null;
+}
+
+Map<String, dynamic> _lockPostRow(Map<dynamic, dynamic> raw) {
+  final out = <String, dynamic>{};
+  for (final e in raw.entries) {
+    final key = e.key.toString();
+    if (key == 'address' || key == 'from' || key == 'to' || key == 'spendPub' || key == 'sig') continue;
+    final v = e.value;
+    if (v is String && (v.contains('ssa1') || v.contains('she1') || v.contains('shear1'))) continue;
+    out[key] = v;
+  }
+  return out;
+}
+
 /// Body for POST /api/wallet/send. A flow send (kind send) posts the sealed tx only:
 /// no from, to, amount, nanos, change, open, or painted owed (AL-3). Its recipient must
-/// carry an admit base, or there is no key to encrypt amtCt to (AL-7). Lock, vote, and
-/// withdraw keep their public-amount body. Locked leaves and vote-plan.json stay on
-/// this device: this map has no lockedLeaves and no planDir.
+/// carry an admit base, or there is no key to encrypt amtCt to (AL-7). A lock posts
+/// portalId, dest20, vout, and the FS-1 proof, with no from, to, or spendPub.
+/// Vote and withdraw keep their public-amount body. Locked leaves and vote-plan.json
+/// stay on this device: this map has no lockedLeaves and no planDir.
 Map<String, dynamic> walletSendBody({
   required String from,
   required String to,
@@ -9508,6 +9575,32 @@ Map<String, dynamic> walletSendBody({
       if (anchor != null && anchor > 0) 'anchor': anchor,
       if (id != null && id.isNotEmpty) 'id': id,
       if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+    };
+  }
+  if (kind == 'lock') {
+    final rows = vout == null
+        ? null
+        : <dynamic>[
+            for (final o in vout)
+              if (o is Map) _lockPostRow(o) else o,
+          ];
+    return {
+      'kind': 'lock',
+      if (programId != null && programId.isNotEmpty) 'programId': programId,
+      if (portalId != null && portalId.isNotEmpty) 'portalId': portalId,
+      if (_lockDest20Hex(rows) != null) 'dest20': _lockDest20Hex(rows),
+      if (nanosWire != null && nanosWire.isNotEmpty) 'nanos': nanosWire,
+      if (nanosWire == null || nanosWire.isEmpty) 'amount': amount,
+      if (fee != null) 'fee': fee,
+      if (vin != null) 'vin': vin,
+      if (rows != null) 'vout': rows,
+      if (excess != null) 'excess': excess,
+      if (admitProof != null) 'admit_proof': admitProof,
+      if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
+      if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
+      if (fs1 != null && fs1.isNotEmpty) 'fs1': fs1,
+      if (anchor != null && anchor > 0) 'anchor': anchor,
+      if (id != null && id.isNotEmpty) 'id': id,
     };
   }
   return {

@@ -73,6 +73,7 @@ import {
   stepHashBonus,
   tallyBallot,
   voteCloseDay,
+  voteCloseHeight,
   voteKey,
   voteWindowOpen,
 } from './leaf_vote.js';
@@ -162,6 +163,10 @@ describe('leaf ballot window, step, and wording', () => {
   it('uses the stake cutoff, and mainnet closes on day 301', () => {
     assert.equal(voteCloseDay(MAGIC_MAINNET), 301);
     assert.equal(voteCloseDay(MAGIC_TESTNET), 3);
+    // Close is the first block of that day, in 960-block days on both books.
+    assert.equal(voteCloseHeight(0, MAGIC_MAINNET), 301 * VAULT_DAY_BLOCKS);
+    assert.equal(voteCloseHeight(0, MAGIC_TESTNET), 3 * VAULT_DAY_BLOCKS);
+    assert.equal(VAULT_DAY_BLOCKS, 960);
     for (const epoch of EPOCHS) {
       for (const leaves of SIZES) {
         for (const day of DAYS) {
@@ -204,6 +209,19 @@ describe('leaf ballot window, step, and wording', () => {
     assert.match(consensusFingerprint(), new RegExp(`VOTE_CAP=${MAX_BLOCK_LEAF_VOTES}`));
   });
 
+  it('JS and the EVM step the hash bonus 1 to 2 to 3 with no ceiling', async () => {
+    const session = await bootReserveEvm();
+    const pairs = [[1, 1, 2], [2, 1, 3], [3, -1, 2], [1, -1, 0], [0, -1, 0], [0, 1, 1]];
+    for (const [cur, dir, want] of pairs) {
+      assert.equal(stepHashBonus(cur, dir), want, `${cur} ${dir}`);
+      const got = await callReserve(session, encodeStepBonus(cur, dir), { staticCall: true });
+      assert.equal(got.ok, true, `${cur} ${dir} ${got.reason}`);
+      const raw = Buffer.from(got.returnValue);
+      const evm = BigInt(`0x${raw.subarray(raw.length - 32).toString('hex')}`);
+      assert.equal(evm, BigInt(want), `${cur} ${dir} evm`);
+    }
+  });
+
   it('plans one send per locked leaf and does not export the vote key', () => {
     assert.equal(castVotePlan(4), null);
     const fees = ['11', '22', '33', '44'].map((b) => b.repeat(32));
@@ -242,7 +260,12 @@ describe('leaf ballot window, step, and wording', () => {
     saveVotePlan(dir, plan);
     const loaded = loadVotePlan(dir);
     assert.deepEqual(loaded.txs, plan.txs);
-    assert.equal(statSync(votePlanPath(dir)).mode & 0o777, 0o600);
+    // The writer asks for mode 0600. Windows stat reports 0666 for every file,
+    // the same way the pool ident boot test skips the mode check on win32.
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(votePlanPath(dir)).mode & 0o777, 0o600);
+    }
+    assert.match(readFileSync(new URL('./leaf_vote.js', import.meta.url), 'utf8'), /mode: 0o600/);
     const posted = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', {
       kind: 'send',
       lockedLeaves: [{ commit: 'ab'.repeat(32) }],

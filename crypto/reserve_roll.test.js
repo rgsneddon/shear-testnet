@@ -19,6 +19,7 @@ import {
   rollTrancheSet,
   signRollReward,
   signWithdrawReward,
+  withdrawSignedDest,
   withdrawTx,
 } from './reserve_vault.js';
 import {
@@ -64,7 +65,7 @@ function openState(owner, when = T0) {
 async function openEvm(owner, commit = Buffer.alloc(32, 9), when = T0) {
   const session = await bootReserveEvm();
   assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-  assert.equal((await callReserve(session, encodeDeposit(owner.dest, commit, when, rewardOwnerCommit(owner.pub), true))).ok, true);
+  assert.equal((await callReserve(session, encodeDeposit(owner.dest, commit, when, { key: owner.key }, true))).ok, true);
   return session;
 }
 
@@ -198,7 +199,7 @@ describe('a roll is the owner signed transaction', () => {
     signWithdrawReward(tx, owner.key, {
       portalId: portalIdFromDest(owner.dest),
       nanos: open.nanos,
-      dest: owner.dest,
+      dest: withdrawSignedDest(tx),
       state,
       nowMs: at,
     });
@@ -216,11 +217,12 @@ describe('a roll is the owner signed transaction', () => {
       nowMs: at,
       genesisMs: T0,
     });
-    assert.equal(paid.ok, true, paid.reason);
-    const row = paid.find((item) => item.action === 'withdraw');
-    assert.equal(row.principal, PI_SHE_NANOS);
-    assert.equal(row.interest, 0);
+    // The deposit is an unindexed hidden commitment. A matching owner
+    // signature does not make it a receipt, and it pays nothing.
+    assert.equal(paid.ok, false);
+    assert.equal(paid.reason, 'stake_reward');
     assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal(Number(state.mintBankNanos || 0), 0);
 
     const session = await openEvm(owner, lockedCommit);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: evmAuth.rewardSig, dest: owner.dest });

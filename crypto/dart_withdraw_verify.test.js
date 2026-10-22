@@ -9,8 +9,9 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAGIC_TESTNET, PI_SHE_NANOS } from './asert.js';
+import { destCommitFromSpendPub, ed25519PrivateFromSeed, ed25519RawPub } from './address.js';
 import { txDigestV3 } from './admit_v3.js';
-import { verifySpendSig } from './spend.js';
+import { verifySealedNote } from './note.js';
 import { reserveMagicBytes, verifyPrincipalOpen, verifyRewardAuth, withdrawOwnerMessage } from './reserve_vault.js';
 import { verifyLeafRetire } from './vault_reward_fs1.js';
 import { fs1VerifySpend, txBodyDigestFs1 } from './fs1_spend.js';
@@ -21,7 +22,19 @@ const wallet = path.join(root, 'wallet');
 const BYTE_KEYS = new Set([
   'dest20', 'spendPub', 'sig', 'withdrawNonce', 'excess', 'fs1',
   'commit', 'blob', 'cTilde', 'spendTag', 'R', 'z', 'note',
+  'r', 'noteCommit', 'admitPub', 'rangeProof',
 ]);
+
+/** Same bytes as withdrawPayoutDest20 in the Dart wallet. */
+function payoutDest20(seed, portalHex, nonce) {
+  const one = createHash('sha256').update(Buffer.concat([
+    Buffer.from('shear-withdraw-payout-v1'),
+    Buffer.from(seed),
+    Buffer.from(portalHex, 'hex'),
+    Buffer.from(nonce),
+  ])).digest();
+  return Buffer.from(destCommitFromSpendPub(ed25519RawPub(ed25519PrivateFromSeed(one))));
+}
 
 function asHexBuf(raw) {
   const hex = String(raw || '');
@@ -83,13 +96,11 @@ describe('Dart withdraw verifies in JS', () => {
     assert.equal(tx.vin.length, 2);
     assert.equal(tx.admit_proofs.length, 2);
     assert.equal(Buffer.from(tx.dest20).length, 20);
-    assert.equal(Buffer.from(tx.spendPub).length, 32);
-    assert.equal(Buffer.from(tx.sig).length, 64);
+    assert.equal(tx.spendPub, undefined);
+    assert.equal(tx.sig, undefined);
     assert.equal(Buffer.from(tx.withdrawNonce).length, 32);
     assert.equal(tx.retireProofs.length, 2);
     assert.equal(tx.principalProofs.length, 2);
-    tx.sig = Buffer.from(tx.sig).toString('hex');
-    tx.spendPub = Buffer.from(tx.spendPub).toString('hex');
     const digest = txDigestV3(tx, MAGIC_TESTNET);
     for (let i = 0; i < 2; i += 1) {
       const proof = Buffer.from(tx.retireProofs[i]);
@@ -107,12 +118,20 @@ describe('Dart withdraw verifies in JS', () => {
       );
       assert.equal(opened, true, `principal ${i}`);
     }
-    assert.equal(verifySpendSig(tx), true);
     const rewardHex = String(tx.rewardSig || '');
     assert.match(rewardHex, /^[0-9a-f]{128}$/);
     assert.match(String(tx.ownerPub || ''), /^[0-9a-f]{64}$/);
     const destHex = Buffer.from(tx.dest20).toString('hex');
-    assert.equal(destHex, '11' + '00'.repeat(19));
+    const seed = Buffer.alloc(32);
+    seed[0] = 9;
+    const nonce = Buffer.alloc(32);
+    nonce[31] = 7;
+    const want = payoutDest20(seed, tx.portalId, nonce);
+    assert.equal(destHex, want.toString('hex'));
+    assert.equal(tx.vout.length, 1);
+    assert.equal(tx.vout[0].kind, 'withdraw');
+    assert.equal(verifySealedNote(tx.vout[0], tx.nanos), true);
+    assert.equal(Buffer.from(tx.vout[0].dest20).equals(want), true);
     const message = withdrawOwnerMessage({
       nullifier: tx.portalId,
       nanos: PI_SHE_NANOS * 2,

@@ -39,7 +39,9 @@ jobs:
         run: cargo test -p shear-fs1 --release --features insecure-test-generators
   node-routes:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Adopt, parity, frontier burial, and the full p2p file are each a
+    # long native run. 60 minutes no longer covers them with the lane tests.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -75,3 +77,27 @@ jobs:
         run: node --test node/tests/test_withdraw_ship_v12.js
       - name: Fresh peer sync and restart across lock, claim, vote, and withdraw
         run: node --test node/tests/test_vault_sync_restart_v12.js
+      - name: Fingerprint pins, admit keys, portal, owner, leak, snap, claim bound
+        run: node --test --test-concurrency=1 crypto/asert.test.js node/tests/test_admit_keys_v12.js node/tests/test_portal_per_lock_v12.js node/tests/test_lock_owner_bind_v12.js node/tests/test_lock_replay_auth_v12.js node/tests/test_withdraw_leak_v12.js node/tests/test_snap_fill_linear_v12.js node/tests/test_claim_mint_bound_v12.js node/tests/test_p2p_fingerprint_v12.js
+      - name: Hash bonus law, including the JS and EVM 1 to 2 to 3 pin
+        run: node --test --test-concurrency=1 --test-timeout=1800000 crypto/leaf_vote.test.js
+      - name: Dart-built withdraw is accepted by the node queue
+        run: node --test --test-concurrency=1 --test-timeout=1800000 node/tests/test_dart_withdraw_queue_v12.js
+      - name: Privacy walk, including the compact reserve key check
+        run: node --test --test-concurrency=1 tests/privacy.walk.js
+      - name: Pool refuses a lock that carries to
+        run: node --test --test-concurrency=1 pool/tests/test_wallet_send.js
+      - name: A rejected or retagged fund body cannot satisfy another tx
+        run: node --test --test-concurrency=1 --test-timeout=1800000 node/tests/test_fund_verdict_v12.js
+      - name: k reserve txs cost one apply each
+        run: node --test --test-concurrency=1 --test-timeout=1800000 node/tests/test_reserve_trial_v12.js
+      - name: Supply stays verified after a real lock, vote, and withdraw
+        run: node --test --test-concurrency=1 --test-timeout=1800000 node/tests/test_admit_v3_fund_v12.js
+      - name: Vault parity, including the unowned vote fee
+        run: node --test --test-concurrency=1 --test-timeout=1800000 node/tests/test_vault_parity_v12.js
+      - name: Heavier branch that changes the hash-bonus unit is adopted
+        run: node --test --test-concurrency=1 --test-timeout=2700000 node/tests/test_adopt_unit_v12.js
+      - name: Lock anchored before the side tip still verifies
+        run: node --test --test-concurrency=1 --test-timeout=2700000 node/tests/test_frontier_burial_v12.js
+      - name: P2P, including the FS-1 leaf vote that paints pending
+        run: node --test --test-concurrency=1 --test-timeout=2700000 node/tests/test_p2p.js

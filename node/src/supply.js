@@ -51,7 +51,7 @@ import {
   lockNotePrincipal,
   releasedWithdrawPrincipal,
 } from '../../crypto/reserve_vault.js';
-import { reserveApplyFields } from '../../crypto/reserve_oracle.js';
+import { reserveApplyFields, windowBlocksFor } from '../../crypto/reserve_oracle.js';
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
 function safeNum(n) {
@@ -102,6 +102,22 @@ function vaultApply(state, block, prior, applyOpts = {}) {
     }),
     requireStakeReward: applyOpts.requireStakeReward === true,
   });
+}
+
+/**
+ * Prior the oracle and the genesis clock need.
+ * A report outside the last `windowBlocksFor(magic)` blocks does not count.
+ * The genesis header stays at index 0 so the clock does not move.
+ */
+function priorForOracle(list, index, magic) {
+  const i = Math.max(0, Math.floor(Number(index) || 0));
+  if (i <= 0 || !Array.isArray(list) || !list.length) return [];
+  const cap = windowBlocksFor(magic);
+  const width = Number.isInteger(cap) && cap > 0 ? cap : list.length;
+  const start = Math.max(0, i - width);
+  const window = list.slice(start, i);
+  if (start === 0) return window;
+  return [list[0], ...window];
 }
 
 function asLocked(value) {
@@ -252,7 +268,7 @@ export function vaultBefore(blocks, index) {
   const end = Math.max(0, Math.min(Number(index) || 0, list.length));
   let vault = emptyVault();
   for (let i = 0; i < end; i += 1) {
-    const applied = vaultApply(vault, list[i], list.slice(0, i));
+    const applied = vaultApply(vault, list[i], priorForOracle(list, i, MAGIC_TESTNET));
     if (!applied || applied.ok !== true) return null;
   }
   return vault;
@@ -556,14 +572,15 @@ function replayedPrincipal(vault) {
  * `blocks[i]`. The walk is the load replay: stake rewards required, prior
  * blocks in view. A miss is not published.
  */
-export function fillSnapInterest(rows, blocks) {
+export function fillSnapInterest(rows, blocks, opts = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   const snaps = Array.isArray(rows) ? rows : [];
   if (!snaps.length || snaps.length !== list.length) return { ok: false, reason: 'supply_state' };
   let vault = null;
   let interest = 0n;
   let permitted = 0n;
-  const replay = { requireStakeReward: true, magic: MAGIC_TESTNET };
+  const magic = opts && opts.magic ? String(opts.magic) : MAGIC_TESTNET;
+  const replay = { requireStakeReward: true, magic };
   for (let i = 0; i < list.length; i += 1) {
     const row = snaps[i];
     if (!row) return { ok: false, reason: 'supply_state' };
@@ -579,14 +596,14 @@ export function fillSnapInterest(rows, blocks) {
     if (interest !== permitted) return { ok: false, reason: 'supply' };
     row.mintedInterest = interest;
     row.permittedInterest = permitted;
-    const advanced = vaultAfterBlock(vault, list[i], list.slice(0, i), replay);
+    const advanced = vaultAfterBlock(vault, list[i], priorForOracle(list, i, magic), replay);
     if (!advanced.ok) return { ok: false, reason: 'supply' };
     vault = advanced.vault;
     const principal = replayedPrincipal(vault);
     if (principal == null) return { ok: false, reason: 'supply' };
     row.vaultPrincipal = principal;
   }
-  return { ok: true, reason: '' };
+  return { ok: true, reason: '', magic: vault && vault.magic ? vault.magic : magic };
 }
 
 /** Scalar snap plus the owed rows the caller still has. */
@@ -614,7 +631,7 @@ export function supplyFromScalar(scalar, {
     dust: BigInt(scalar.dust || 0),
     overflow: BigInt(scalar.overflow || 0),
     acceptedSeries: Array.isArray(acceptedSeries) ? acceptedSeries.slice() : [],
-    liveUnit: Number(scalar.liveUnit) || HASH_BONUS_NANOS,
+    liveUnit: hashBonusUnitNanos(scalar.liveUnit),
     genesisMs: Number(scalar.genesisMs) || 0,
     owedKnown: owedKnown === true,
   };
@@ -799,6 +816,8 @@ function accountBlock(prev, block, opts = {}) {
     Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : block?.height,
   );
   if (!reward.ok) return { reason: reward.reason || 'supply', state };
+  // stakeRewardSupply returns claimed 0. Claim nanos live in reward.minted,
+  // and applyRewardClaim accepts them only when they equal the proof reward.
   const claimedReward = reward.claimed || 0n;
   // A claim mint is the claim output, not a coinbase output. Counting it
   // here made the first honest claim block fail the coinbase sum.
@@ -922,9 +941,10 @@ export function foldSupply(blocks, opts = {}) {
     // replaying the vault at 0 records a different arrival stub than the step.
     const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: h };
     // Same prior and stake-reward rule as the store's vault apply.
-    const advanced = vaultAfterBlock(vault, vaultBlock, list.slice(0, i), {
+    const foldMagic = opts.magic || MAGIC_TESTNET;
+    const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, i, foldMagic), {
       requireStakeReward: true,
-      magic: opts.magic || MAGIC_TESTNET,
+      magic: foldMagic,
     });
     if (!advanced.ok) return { ok: false, reason: 'supply', state: null };
     vault = advanced.vault;
@@ -1195,7 +1215,7 @@ export function auditCirculatingSupply(blocks, opts = {}) {
       const withdrawn = openedWithdrawPrincipal(list[bi], vault, headerMs(list[bi]));
       // prior is the prefix this block was applied on. An empty prior
       // installs this header as genesis and skips the epoch boundary.
-      const advanced = vaultAfterBlock(vault, list[bi], list.slice(0, bi), {
+      const advanced = vaultAfterBlock(vault, list[bi], priorForOracle(list, bi, magic), {
         requireStakeReward: true,
         magic,
       });

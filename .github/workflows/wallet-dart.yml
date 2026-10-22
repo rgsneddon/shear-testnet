@@ -28,7 +28,7 @@ jobs:
         working-directory: wallet
         run: |
           flutter pub get
-          flutter test test/shear_vote_plan_test.dart test/shear_portal_id_test.dart
+          flutter test test/shear_vote_plan_test.dart test/shear_portal_id_test.dart test/wallet_send_body_al_test.dart
       - name: Admit library the withdraw prover loads
         run: cargo build --release --manifest-path crypto/native/admit/Cargo.toml
       - name: UI leaf vote posts a real proof

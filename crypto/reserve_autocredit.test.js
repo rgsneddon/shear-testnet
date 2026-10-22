@@ -471,12 +471,12 @@ describe('aggregated reward root', () => {
     assert.equal(doubled.ok, false);
     assert.equal(doubled.reason, 'claim_unavailable');
     assert.equal(Number(supplyState.totalLockedNanos), 0);
+    // A matured hidden commitment with no lock-note index is not a receipt.
+    // It does not pay principal 0, and it does not mint.
     const principal = withdraw({ state: supplyState, dest: lockDest, nowMs: later });
-    assert.equal(principal.ok, true, principal.reason);
-    assert.equal(principal.principal, 0);
-    assert.equal(principal.interest, 0);
-    assert.equal(principal.earned, 0);
-    assert.equal(supplyState.pendingWithdraw.length, 1);
+    assert.equal(principal.ok, false);
+    assert.equal(principal.reason, 'stake_reward');
+    assert.equal((supplyState.pendingWithdraw || []).length, 0);
     assert.equal(Number(supplyState.totalLockedNanos), 0);
     assert.equal(Number(supplyState.mintBankNanos), 0);
   });
@@ -515,7 +515,12 @@ describe('aggregated reward root', () => {
     assert.equal(Number(state.totalLockedNanos), beforeLocked);
     assert.equal(Number(state.mintBankNanos), 0);
     assert.equal(state.rewardRoots[String(plan.index)], undefined);
-    assert.equal(withdraw({ state, dest, nowMs: draw }).ok, true);
+    // The rejected trial left the lock in place. That lock is still an
+    // unindexed hidden commitment, so it is not a withdraw receipt.
+    const left = withdraw({ state, dest, nowMs: draw });
+    assert.equal(left.ok, false);
+    assert.equal(left.reason, 'stake_reward');
+    assert.equal(Number(state.mintBankNanos), 0);
   });
 
   it('matches the EVM root, refuses every claim, and pays principal only', async () => {
@@ -530,7 +535,7 @@ describe('aggregated reward root', () => {
     const commit = Buffer.from(state.portals[portalIdFromDest(dest)].tranches[0].commit, 'hex');
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(dest, commit, when, rewardOwnerCommit(alice.pub)))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, commit, when, { key: alice.key }))).ok, true);
     const committed = await callReserve(session, encodeCommitRewards(draw, plan.root));
     assert.equal(committed.ok, true, committed.reason);
     assert.equal(decodeBytes32(committed.returnValue), plan.root);

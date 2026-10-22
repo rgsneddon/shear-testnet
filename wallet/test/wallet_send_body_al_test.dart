@@ -101,9 +101,41 @@ void main() {
     expect(() => body(vout: bare), err('send_vout_not_wrapped'));
   });
 
-  test('lock keeps its public-amount body', () {
-    final b = body(kind: 'lock');
-    expect(b['from'], src);
+  test('a lock post has portalId, dest20, vout, and fs1, and no to, from, or ssa1', () {
+    final dest20 = Uint8List(20)..[0] = 0x11;
+    final b = walletSendBody(
+      from: src,
+      to: to,
+      amount: 1,
+      nanosWire: '314159265358',
+      kind: 'lock',
+      programId: 'shear-reserve-v1',
+      portalId: 'ab' * 32,
+      spendPub: 'cc' * 32,
+      sig: 'dd' * 64,
+      fs1: 'f1${'00' * 8}',
+      vin: const [{'commit': 'ee'}],
+      vout: [
+        {'kind': 'lock', 'address': src, 'dest20': dest20, 'commit': 'ff' * 32, 'portalId': 'ab' * 32},
+      ],
+      admitProofs: const [
+        {'blob': '01', 'cTilde': '02', 'spendTag': '03'},
+      ],
+    );
     expect(b['kind'], 'lock');
+    expect(b['portalId'], 'ab' * 32);
+    expect(b['dest20'], '11${'00' * 19}');
+    expect(b['fs1'], 'f1${'00' * 8}');
+    expect(b['vout'], isA<List>());
+    expect(b.containsKey('from'), isFalse);
+    expect(b.containsKey('to'), isFalse);
+    expect(b.containsKey('spendPub'), isFalse);
+    expect(b.containsKey('sig'), isFalse);
+    final encoded = b.toString();
+    expect(encoded.contains('ssa1'), isFalse);
+    expect(encoded.contains('she1'), isFalse);
+    expect(encoded.contains('shear1'), isFalse);
+    final row = (b['vout'] as List).first as Map;
+    expect(row.containsKey('address'), isFalse);
   });
 }

@@ -26,6 +26,8 @@ import {
   ed25519SeedOf,
   stealthSpendPrivate,
   hash20FromAddress,
+  destCommitFromSpendPub,
+  ed25519RawPub,
 } from '../crypto/address.js';
 import {
   hasherPayoutDest,
@@ -40,7 +42,8 @@ import { signSpendTx, verifySpendSig, verifyFundedBody } from '../crypto/spend.j
 import { attachDummyOuts } from '../crypto/dummy.js';
 import { admitMempool, emptyMempool } from '../crypto/mempool.js';
 import { levyNanos } from '../crypto/levy.js';
-import { NANOS_PER_SHE, HASH_TX_LIVE, SPENDABLE_CONFIRMATIONS, consensusFingerprint } from '../crypto/asert.js';
+import { NANOS_PER_SHE, HASH_TX_LIVE, SPENDABLE_CONFIRMATIONS, consensusFingerprint, RESERVE_PROGRAM } from '../crypto/asert.js';
+import { portalOwnerKey } from '../crypto/reserve_vault.js';
 import { sealShewallBin, openShewallBin, sealShewallBinPbkdf2, openAndResealShewallBin, shewallNeedsMigrate, packShewall, SHEWALL_ENC_KIND, SHEWALL_ENC_KIND_V1 } from '../crypto/shewall_bin.js';
 import { RPC_HOST } from '../node/src/rpc.js';
 import { admitClient, serializeMinerRow, publicMinerTag } from '../pool/src/pool.js';
@@ -409,5 +412,65 @@ describe('privacy.walk', () => {
     assert.equal(shewallNeedsMigrate(migrated), false);
     assert.equal(openShewallBin(migrated, 'correct-horse').equals(packed), true);
     assert.throws(() => openShewallBin(Buffer.from('{"wallet":true}'), 'x'), /json_refused/);
+  });
+
+  it('a compact reserve lock and withdraw publish no key of the fixture wallet', () => {
+    const alice = newIdentity();
+    const ident = Buffer.from(destCommitFromSpendPub(alice.spendPub));
+    const portalId = 'ab'.repeat(32);
+    const ownerPub = ed25519RawPub(portalOwnerKey(alice.spendSeed, portalId)).toString('hex');
+    const spendPub = Buffer.from(alice.spendPub).toString('hex');
+    const fs1 = Buffer.from([0xf1, 1, 2, 3]);
+    const withdraw = compactTx({
+      kind: 'withdraw',
+      programId: RESERVE_PROGRAM,
+      portalId,
+      ownerPub,
+      spendPub,
+      sig: 'cd'.repeat(64),
+      fs1,
+      rewardSig: '11'.repeat(64),
+      vin: [{ commit: Buffer.alloc(32, 4) }],
+      vout: [{ kind: 'withdraw', dest20: Buffer.alloc(20, 5), commit: Buffer.alloc(32, 6) }],
+    });
+    const lock = compactTx({
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      portalId,
+      ownerPub,
+      spendPub,
+      sig: 'cd'.repeat(64),
+      fs1,
+      payoutPortalId: portalId,
+      vin: [],
+      vout: [{ kind: 'lock', dest20: Buffer.alloc(20, 7) }],
+    });
+    assert.equal(withdraw.spendPub, undefined);
+    assert.equal(lock.spendPub, undefined);
+    const keys = [];
+    const seen = new Set();
+    const walk = (value) => {
+      if (value == null) return;
+      if (typeof value === 'string') {
+        if (/^[0-9a-f]{64}$/i.test(value)) keys.push(Buffer.from(value, 'hex'));
+        return;
+      }
+      if (typeof value !== 'object') return;
+      if (seen.has(value)) return;
+      seen.add(value);
+      if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+        if (value.length === 32) keys.push(Buffer.from(value));
+        return;
+      }
+      const rows = Array.isArray(value) ? value : Object.values(value);
+      for (const row of rows) walk(row);
+    };
+    walk(withdraw);
+    walk(lock);
+    const identPub = Buffer.from(alice.spendPub);
+    for (const key of keys) {
+      assert.equal(key.equals(identPub), false);
+      assert.equal(Buffer.from(destCommitFromSpendPub(key)).equals(ident), false);
+    }
   });
 });

@@ -410,7 +410,10 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
     assert.equal(built.to, undefined, `${id} built address`);
     assert.equal(built.payoutPortalId, undefined, `${id} built payout`);
     built.dest20 = Buffer.from(d20);
-    signSpendTx(built, who.key);
+    // An FS-1 withdraw authorises with the SAL and the owner rewardSig.
+    // spendPub on that body is the identity key, and consensus refuses it.
+    delete built.spendPub;
+    delete built.sig;
     // The owner signs π. The receipt is π plus the arrival stub.
     signWithdrawReward(built, who.key, {
       portalId: who.portalId,
