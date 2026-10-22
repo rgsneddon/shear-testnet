@@ -81,6 +81,7 @@ Future<void> _nodeProcMain(Map<String, Object?> msg) async {
       (msg['args']! as List).cast<String>(),
       workingDirectory: msg['cwd'] as String?,
       environment: Map<String, String>.from(msg['env']! as Map),
+      includeParentEnvironment: false,
       mode: ProcessStartMode.normal,
     );
   } catch (e) {

@@ -12,6 +12,7 @@ import 'shear_ledger.dart';
 import 'shear_levy.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
+import 'shear_public_confirm.dart';
 import 'shear_ristretto.dart';
 import 'shear_vault_reward.dart';
 import 'shear_vote_plan.dart';
@@ -251,7 +252,11 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
   required Uint8List spendSeed,
   Map<String, dynamic>? vaultProof,
   bool local = false,
+  bool publicIpConsent = false,
 }) async {
+  if (!local && !publicNodePostAllowed(consent: publicIpConsent)) {
+    throw StateError(kPublicIpWaitCopy);
+  }
   final due = reserve.portal(dest).claimableRewards;
   if (due <= 0) return null;
   final slot = vaultClaimSlotMs(reserve, reserve.portal(dest).lockEpoch, dest: dest);
@@ -401,16 +406,22 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveWithdraw(
   String? restFrame,
   String? paymentCode,
   bool allowPublicHttp = false,
+  bool publicIpConsent = false,
   List<Map<String, Object?>>? leaves,
   String? withdrawId,
   List<int>? withdrawNonce,
 }) async {
   restFrame;
   paymentCode;
-  allowPublicHttp;
   payout;
   final nanos = reserveWithdrawPayoutNanos(reserve, dest, nowMs);
   if (nanos <= 0) return null;
+  // A public post waits for consent before any body is built. No leaves still
+  // pays nothing: there is no `from` send.
+  final publicHttp = allowPublicHttp || !local;
+  if (publicHttp && !publicNodePostAllowed(consent: publicIpConsent)) {
+    throw StateError(kPublicIpWaitCopy);
+  }
   if (leaves == null || leaves.isEmpty || spendSeed == null || spendSeed.length != 32) return null;
   final portalId = _carriedPortalId(leaves, spendSeed);
   final host = _freshWithdrawNote(ledger.notes);
@@ -522,10 +533,14 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveRoll(
   String? restFrame,
   String? paymentCode,
   bool allowPublicHttp = false,
+  bool publicIpConsent = false,
   Map<String, dynamic>? vaultProof,
 }) async {
   if (!reserve.epochIsOver(nowMs)) return null;
   if (reserve.portal(dest).nanos <= 0) return null;
+  if (!local && !publicNodePostAllowed(consent: publicIpConsent)) {
+    throw StateError(kPublicIpWaitCopy);
+  }
   final portal = reserve.portal(dest);
   final interest = portal.claimableRewards > 0
       ? portal.claimableRewards
@@ -575,6 +590,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveRoll(
     restFrame: restFrame,
     paymentCode: paymentCode,
     allowPublicHttp: allowPublicHttp || !local,
+    publicConsent: publicIpConsent,
     nanosWire: '0',
   );
   if (tx.kind != 'roll') return null;
@@ -1265,6 +1281,7 @@ Future<ReserveDepositResult> postReserveDeposit({
   required int depth,
   Uint8List? spendSeed,
   bool local = true,
+  bool publicIpConsent = false,
 }) async {
   if (she <= 0 || !isDestAddress(dest)) {
     return const ReserveDepositResult(posted: false, remark: 'bad_amount');
@@ -1303,7 +1320,12 @@ Future<ReserveDepositResult> postReserveDeposit({
       keepHome: true,
     );
     final clock = reserve.epochStartMs > 0 ? reserve.epochStartMs : null;
+    if (!local && !publicNodePostAllowed(consent: publicIpConsent)) {
+      ledger.restorePaintedBook(mark);
+      return const ReserveDepositResult(posted: false, remark: kPublicIpWaitCopy);
+    }
     final tx = await ledger.send(
+      publicConsent: publicIpConsent,
       from: from,
       to: dest,
       amount: she,
@@ -1462,9 +1484,13 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
   String? paymentCode,
   Uint8List? spendSeed,
   bool local = true,
+  bool publicIpConsent = false,
   int? nowMs,
 }) async {
   nowMs;
+  if (!local && !publicNodePostAllowed(consent: publicIpConsent)) {
+    return const ReserveVoteResult(enacted: false, remark: kPublicIpWaitCopy);
+  }
   final gate = reserveVoteGate(ledger, reserve, dest);
   if (gate != null) return ReserveVoteResult(enacted: false, remark: gate);
   final count = reserve.portal(dest).nanos ~/ kPiSheNanos;

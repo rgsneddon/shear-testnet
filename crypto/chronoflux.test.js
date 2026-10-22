@@ -32,10 +32,10 @@ import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest,
 import { vaultDest, destForLogin } from './flow_sheet.js';
 import { verifyRange, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
 import { attachAdmitPub } from './admit.js';
-import { PI_SHE_NANOS, GENESIS_BITS_PACKED, NANOS_PER_SHE, POOL_FEE_BPS } from './asert.js';
+import { PI_SHE_NANOS, GENESIS_BITS_PACKED, NANOS_PER_SHE, POOL_FEE_BPS, HASH_BONUS_NANOS } from './asert.js';
 import { digestTx, buildTemplate, verifyBlock, GENESIS_PREV } from '../node/src/chain.js';
 import { poolWithdrawTx } from './levy.js';
-import { attachDummyOuts } from './dummy.js';
+import { attachDummyOuts, publicExplorerRow } from './dummy.js';
 import { admitMempool, emptyMempool } from './mempool.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -649,5 +649,86 @@ describe('chronoflux prune + collate', () => {
     const hashRow = unlabeled.find((r) => r.kind === 'hash');
     assert.equal(hashRow.nanos, 1);
     assert.equal(hashRow.to, '');
+  });
+
+  it('sealed coinbase vout recovers ssa1 from dest20 when no address is stored', () => {
+    const dest20 = Buffer.alloc(20, 0x11);
+    const named = encodeDest(Buffer.alloc(20, 0x22));
+    const bare = sealCoinbaseNote(1000, { dest20, kind: 'hash' });
+    assert.equal(bare.address, undefined);
+    const kept = sealCoinbaseNote(2000, { dest20, kind: 'pot' });
+    kept.address = named;
+    const bad = sealCoinbaseNote(3, { kind: 'hash' });
+    bad.dest20 = Buffer.alloc(7, 0x33);
+    const rows = sealedExplorerRows({
+      height: 21,
+      hash: Buffer.alloc(32, 0x9d),
+      txs: [{ coinbase: true, vout: [bare, kept, bad] }],
+    });
+    assert.equal(rows[0].to, encodeDest(dest20));
+    assert.equal(rows[0].toDeclared, true);
+    assert.equal(rows[1].to, named);
+    assert.equal(rows[1].toDeclared, undefined);
+    assert.equal(rows[2].to, '');
+    assert.equal(rows[2].toDeclared, undefined);
+    const pub = publicExplorerRow(rows[0]);
+    assert.equal(Object.hasOwn(pub, 'toDeclared'), false);
+    assert.equal(pub.to, undefined);
+  });
+
+  it('a 32-byte mismatching noteCommit gets no label', () => {
+    const dest20 = Buffer.alloc(20, 0x31);
+    const foreign = noteCommitOfDest20(Buffer.alloc(20, 0x32));
+    const vout = sealCoinbaseNote(7, { dest20, noteCommit: foreign, kind: 'hash' });
+    assert.equal(vout.address, undefined);
+    const rows = sealedExplorerRows({
+      height: 22,
+      hash: Buffer.alloc(32, 0x9e),
+      txs: [{ coinbase: true, vout: [vout] }],
+    });
+    assert.equal(rows[0].to, '');
+    assert.equal(rows[0].toDeclared, undefined);
+  });
+
+  it('a missing or short noteCommit gets no label', () => {
+    const dest20 = Buffer.alloc(20, 0x41);
+    const missing = sealCoinbaseNote(8, { dest20, kind: 'hash' });
+    delete missing.noteCommit;
+    const short = sealCoinbaseNote(9, { dest20, kind: 'hash' });
+    short.noteCommit = Buffer.alloc(8, 2);
+    const rows = sealedExplorerRows({
+      height: 23,
+      hash: Buffer.alloc(32, 0x9f),
+      txs: [{ coinbase: true, vout: [missing, short] }],
+    });
+    assert.equal(rows[0].to, '');
+    assert.equal(rows[0].toDeclared, undefined);
+    assert.equal(rows[1].to, '');
+    assert.equal(rows[1].toDeclared, undefined);
+  });
+
+  it('a dest20 label off the payout schedule is declared, not proof of payee', () => {
+    const dest20 = Buffer.alloc(20, 0x51);
+    const declared = sealCoinbaseNote(11, { dest20, kind: 'hash' });
+    const off = sealedExplorerRows({
+      height: 24,
+      hash: Buffer.alloc(32, 0xa1),
+      txs: [{ coinbase: true, vout: [declared] }],
+    });
+    assert.equal(off[0].to, encodeDest(dest20));
+    assert.equal(off[0].toDeclared, true);
+    const pub = publicExplorerRow(off[0]);
+    assert.equal(Object.hasOwn(pub, 'toDeclared'), false);
+    assert.equal(pub.to, undefined);
+    const onSchedule = sealCoinbaseNote(4 * HASH_BONUS_NANOS, { dest20, kind: 'hash' });
+    const paid = sealedExplorerRows({
+      height: 25,
+      hash: Buffer.alloc(32, 0xa2),
+      aLeaves: [{ noteCommit: noteCommitOfDest20(dest20), count: 4 }],
+      txs: [{ coinbase: true, vout: [onSchedule] }],
+    });
+    const paidRow = paid.find((r) => r.kind === 'hash');
+    assert.equal(paidRow.to, encodeDest(dest20));
+    assert.equal(paidRow.toDeclared, undefined);
   });
 });

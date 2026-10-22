@@ -97,6 +97,8 @@ void main() {
       ],
     }));
 
+    // The recorder is the post under test. Consent is set so the public-dial
+    // gate does not refuse this wire.
     final result = await castPlannedLeafVotes(
       ledger: ledger,
       reserve: reserve,
@@ -106,6 +108,7 @@ void main() {
       choice: kVoteIncrease,
       spendSeed: seed,
       local: false,
+      publicIpConsent: true,
     );
     expect(result.enacted, isTrue, reason: result.remark);
     expect(posts, hasLength(1));

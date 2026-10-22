@@ -107,6 +107,7 @@ void main() {
         ),
         amount: 1,
         nanosWire: wire,
+        publicIpConsent: true,
       );
       expect(blocked.posted, isFalse, reason: wire);
       expect(blocked.remark, 'send_in_flight', reason: wire);
@@ -817,6 +818,7 @@ void main() {
         dest: dest,
         payout: dest,
         nowMs: now,
+        publicIpConsent: true,
       );
       expect(posted, isNull, reason: 'principal=$principal');
       expect(pool.posts, isEmpty);
@@ -918,6 +920,7 @@ class _RecordChange extends ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    bool publicConsent = false,
     String? nanosWire,
     String? id,
     String? withdrawNonce,
@@ -981,6 +984,7 @@ class _RecordWithdraw extends ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    bool publicConsent = false,
     String? nanosWire,
     String? id,
     String? withdrawNonce,

@@ -21,8 +21,8 @@ import { SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, HASH_BONUS_NANOS, 
 import { packShareBatchBytes } from './pack.js';
 import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custodyPoolDestOf, coinbasePotIsCustodial, openedCoinbaseNanos } from './coinbase_notes.js';
 import { poolFeeDest } from './levy.js';
-import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags, AMOUNT_CT_BYTES } from './note.js';
-import { hash20FromAddress } from './address.js';
+import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags, AMOUNT_CT_BYTES, noteCommitOfDest20 } from './note.js';
+import { encodeDest, hash20FromAddress } from './address.js';
 import { canonicalReserveFields } from './reserve_vault.js';
 import { compactHashLedger, freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
 
@@ -188,11 +188,25 @@ export function sealedExplorerRows(block) {
         else if (sealedV > 0 && verifySealedNote(o, sealedV)) nanos = sealedV;
         else nanos = openedCoinbaseNanos(o, potNanos);
       }
+      let recovered = '';
+      if (!hit.address && !o.address && toDest20) {
+        try {
+          // Display only, same gate as coinbase_notes.js: a dest20 label needs a
+          // 32-byte noteCommit that is that dest. Missing or short commits stay blank.
+          // Off the payout schedule this string is a declared dest, not proof of payee.
+          const nc = Buffer.from(asU8(o.noteCommit));
+          if (nc.length === 32 && nc.equals(noteCommitOfDest20(toDest20))) {
+            recovered = encodeDest(toDest20);
+          }
+        } catch { recovered = ''; }
+      }
+      const to = hit.address || o.address || recovered;
       rows.push({
         id: `${hid}-${o.kind || 'cb'}-${i}`,
         kind: o.kind === 'hash' ? 'hash' : (o.kind === 'lock' || o.kind === 'vote' || o.kind === 'withdraw' ? o.kind : 'coinbase'),
         from: 'coinbase',
-        to: hit.address || o.address || '',
+        to,
+        ...(recovered ? { toDeclared: true } : {}),
         nanos,
         height,
         confirmed: true,
