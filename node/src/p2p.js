@@ -2129,13 +2129,14 @@ export function createP2p({
       const job = scheduleP2pVerify(() => {
         const before = store.tip();
         // IBD validates every block. A peer-advertised height is not a skip.
-        const go = () => Promise.resolve(store.ingest(fork, {
+        // A synchronous ingest throw still rejects, so early.release runs.
+        const go = () => Promise.resolve().then(() => store.ingest(fork, {
           offLoopPow: true,
         })).then((got) => ({ got, before }));
         if (!extendsTip) return go();
         return rejectUnprovenTipExtend(store, fork[0]).then((early) => {
           if (early.reason) return { got: { ok: false, reason: early.reason, tip: before }, before };
-          return Promise.resolve().then(go).then((out) => {
+          return go().then((out) => {
             early.release?.();
             return out;
           }, (err) => {
