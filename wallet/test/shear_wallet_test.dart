@@ -1315,6 +1315,7 @@ void main() {
       'dests': ['d'],
       'tip': 100,
       'confs': 9,
+      'allowBare': true,
     });
     wideWatch.stop();
     expect(wideWatch.elapsedMilliseconds, lessThan(2000));
@@ -1337,6 +1338,7 @@ void main() {
       'dests': ['d'],
       'tip': 100,
       'confs': 9,
+      'allowBare': true,
     });
     expect(dustPlan['covered'], isTrue);
     expect((dustPlan['batches'] as List).length, 1);

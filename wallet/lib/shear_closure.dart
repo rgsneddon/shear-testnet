@@ -125,6 +125,14 @@ bool localNodeMatchesSeeker({required int nodeHeight, required bool ibd, require
   return !ibd && nodeHeight > 0 && seekerTip > 0 && nodeHeight >= seekerTip;
 }
 
+/// Desktop P2P, Solo, and own-node take note depth from that node's tip.
+/// Connect bare does not: it checks a header or a FlyClient sample.
+bool desktopNodeTipCounts(ClosureSendMode mode, {required bool ownNode}) {
+  if (ownNode) return true;
+  return mode == ClosureSendMode.localNode ||
+      mode == ClosureSendMode.localNodeFull;
+}
+
 bool _bookPinChanged(String? from, String? to) {
   final a = (from ?? '').trim().toLowerCase();
   final b = (to ?? '').trim().toLowerCase();

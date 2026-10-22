@@ -44,7 +44,7 @@ void main() {
           'staked': principal,
           'idle': 0,
         });
-        final leftNanos = principal > 0 ? 0 : noteNanos;
+        final leftNanos = principal >= noteNanos ? 0 : noteNanos - principal;
         final leftShe = leftNanos / kUnitsPerShe;
         expect(
           ledger.usableSpendable(home),
@@ -111,11 +111,11 @@ void main() {
       'staked': kUnitsPerShe,
       'idle': 0,
     });
-    expect(ledger.usableSpendable(home), closeTo(0, 1e-12));
+    expect(ledger.usableSpendable(home), closeTo(1, 1e-12));
     ledger.vaultLockedNanos = 0;
     expect(
       ledger.usableSpendable(home),
-      closeTo(0, 1e-12),
+      closeTo(1, 1e-12),
       reason: 'a thin stats zero does not restore spendable',
     );
   });
@@ -229,15 +229,20 @@ void main() {
     fresh.settleTo(9);
     fresh.restoreSessionNotes(saved, covered: 9, paymentCode: id2.paymentCode);
     final home = fresh.homeDest(id2.address, paymentCode: id2.paymentCode);
-    // One note covers the principal, so the whole note is reserved.
-    expect(fresh.usableSpendable(home), closeTo(0, 1e-9));
+    expect(
+      fresh.usableSpendable(home),
+      closeTo((noteNanos - principal) / kUnitsPerShe, 1e-9),
+    );
     await fresh.followOffUi(
       restFrame: id2.address,
       paymentCode: id2.paymentCode,
       full: false,
       chain: false,
     );
-    expect(fresh.usableSpendable(home), closeTo(0, 1e-9));
+    expect(
+      fresh.usableSpendable(home),
+      closeTo((noteNanos - principal) / kUnitsPerShe, 1e-9),
+    );
   });
 }
 

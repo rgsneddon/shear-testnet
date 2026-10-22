@@ -27,7 +27,7 @@ void main() {
     expect(body.contains('_kickNotesForTip'), isTrue);
   });
 
-  test('confirmations follow a checked header, not a host live height', () {
+  test('a host live height and a 1-bit header are not spendable depth', () {
     final ledger = ShearLedger();
     ledger.noteLiveHeight(9);
     ledger.noteCovered(9);
@@ -39,12 +39,12 @@ void main() {
     expect(ledger.notesCovered, 9);
     expect(ledger.bookTip, 0);
     ledger.applyTipHeader(_checkedHeader(), sealedHeight: 11);
-    expect(ledger.bookTip, 11);
-    expect(ledger.confirmationsOf(1), 11);
-    expect(ledger.confirmationsOf(3), 9);
+    expect(ledger.bookTip, 0);
+    expect(ledger.confirmationsOf(1), 0);
+    expect(ledger.confirmationsOf(3), 0);
     ledger.noteCovered(11);
-    expect(ledger.bookTip, 11);
-    expect(ledger.confirmationsOf(4), 8);
+    expect(ledger.bookTip, 0);
+    expect(ledger.confirmationsOf(4), 0);
   });
 
   test('pool stats fill the continuity box and do not move the tip', () async {

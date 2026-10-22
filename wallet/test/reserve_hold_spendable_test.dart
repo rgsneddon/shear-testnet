@@ -66,13 +66,13 @@ void main() {
     fresh.setReserveHeldNanos(vault!, kUnitsPerShe);
     expect(
       fresh.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(0, 1e-9),
+      closeTo(0.48, 1e-9),
     );
     fresh.setReserveHeldNanos(vault, kUnitsPerShe);
     expect(
       fresh.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(0, 1e-9),
+      closeTo(0.48, 1e-9),
     );
-    expect(fresh.usableSpendable(home), closeTo(0, 1e-9));
+    expect(fresh.usableSpendable(home), closeTo(0.48, 1e-9));
   });
 }

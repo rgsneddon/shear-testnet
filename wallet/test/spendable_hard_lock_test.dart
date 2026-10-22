@@ -49,7 +49,7 @@ void main() {
     },
   );
 
-  test('a host live height is not spendable depth; a checked header is', () {
+  test('a host live height is not spendable depth; only v3 plus ASERT is', () {
     final ledger = ShearLedger();
     ledger.noteLiveHeight(40);
     ledger.noteCovered(4);
@@ -57,13 +57,127 @@ void main() {
     expect(ledger.bookTip, 0);
     expect(ledger.notesCovered, 4);
     expect(ledger.confirmationsOf(1), 0);
-    ledger.applyTipHeader(_powHeader(), sealedHeight: 40);
-    expect(ledger.bookTip, 40);
-    expect(ledger.confirmationsOf(1), 40);
+    final header = _mineV3Header();
+    ledger.applyTipHeader(header, sealedHeight: 2);
+    expect(ledger.bookTip, 0, reason: 'no genesis anchor');
+    ledger.bindCheckedGenesisMs(_v3GenesisMs);
+    ledger.applyTipHeader(header, sealedHeight: 2);
+    expect(ledger.bookTip, 2);
+    expect(ledger.confirmationsOf(1), 2);
     ledger.noteLiveHeight(55);
     expect(ledger.sealedHeight, 55);
+    expect(ledger.bookTip, 2);
+
+    final wrongHeight = ShearLedger()..bindCheckedGenesisMs(_v3GenesisMs);
+    wrongHeight.applyTipHeader(header, sealedHeight: 9);
+    expect(wrongHeight.bookTip, 0, reason: 'wrong height');
+
+    final low = Uint8List.fromList(header);
+    low[108] = 1;
+    low[109] = 0;
+    low[110] = 0;
+    low[111] = 0;
+    final lowBits = ShearLedger()..bindCheckedGenesisMs(_v3GenesisMs);
+    lowBits.applyTipHeader(low, sealedHeight: 2);
+    expect(lowBits.bookTip, 0, reason: 'low bits');
+
+    final forged = Uint8List.fromList(header);
+    var missed = false;
+    for (var i = 0; i < 32 && !missed; i++) {
+      forged[36] = i;
+      final digest = shearHashV3(forged);
+      if (digest != null && !shearMeetsTarget(digest, _v3LivePacked)) {
+        missed = true;
+      }
+    }
+    expect(missed, isTrue);
+    final forgedBook = ShearLedger()..bindCheckedGenesisMs(_v3GenesisMs);
+    forgedBook.applyTipHeader(forged, sealedHeight: 2);
+    expect(forgedBook.bookTip, 0, reason: 'forged header');
+  });
+
+  test('desktop own-node depth comes from the node tip without settleTo', () {
+    expect(
+      desktopNodeTipCounts(ClosureSendMode.connectBare, ownNode: false),
+      isFalse,
+    );
+    expect(
+      desktopNodeTipCounts(ClosureSendMode.connectBare, ownNode: true),
+      isTrue,
+    );
+    expect(
+      desktopNodeTipCounts(ClosureSendMode.localNode, ownNode: false),
+      isTrue,
+    );
+    expect(
+      desktopNodeTipCounts(ClosureSendMode.localNodeFull, ownNode: false),
+      isTrue,
+    );
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    ledger.rememberNote(_coin(dest, nanos: kUnitsPerShe, height: 1));
+    ledger.noteLiveHeight(40);
+    expect(ledger.bookTip, 0);
+    expect(ledger.settledHeight, 0);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      0,
+    );
+    ledger.noteNodeCheckedTip(40);
     expect(ledger.bookTip, 40);
-    expect(ledger.confirmationsOf(1), 40);
+    expect(ledger.settledHeight, 0);
+    final shown = ledger.spendableOwned(
+      id.address,
+      paymentCode: id.paymentCode,
+    );
+    expect(shown, greaterThan(0));
+    expect(
+      ledger.plannerSelectableNanos(id.address, paymentCode: id.paymentCode),
+      ledger.displayedSpendableNanos(id.address, paymentCode: id.paymentCode),
+    );
+  });
+
+  test('a 1.48 note under a 1 SHE stake shows 0.48 and the stake returns as change', () async {
+    const noteNanos = 148000000000;
+    const freeNanos = 48000000000;
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final note = _coin(home, nanos: noteNanos, height: 1, salt: 11);
+    ledger.noteNodeCheckedTip(40);
+    ledger.rememberNote(note);
+    ledger.setReserveHeldNanos(home, kUnitsPerShe);
+    expect(
+      ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+      closeTo(0.48, 1e-9),
+    );
+    expect(
+      ledger.displayedSpendableNanos(id.address, paymentCode: id.paymentCode),
+      BigInt.from(freeNanos),
+    );
+    expect(
+      ledger.plannerSelectableNanos(id.address, paymentCode: id.paymentCode),
+      BigInt.from(freeNanos),
+    );
+    final bobId = createIdentity();
+    final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(
+      bobId.address,
+      paymentCode: bobId.paymentCode,
+    );
+    final tx = await ledger.send(
+      from: home,
+      to: bob,
+      amount: 0.48,
+      nanosWire: '$freeNanos',
+      local: true,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: hexToBytes(id.seedHex),
+      spendNote: note,
+    );
+    expect(tx.to, bob);
+    expect(debugLastChangeNanos, BigInt.from(kUnitsPerShe));
   });
 
   test('displayed Spendable matches the planner max-send sum', () {
@@ -289,7 +403,7 @@ void main() {
       _coin(heldDest, nanos: 5 * kUnitsPerShe, height: 1, salt: 6),
     );
     heldBook.setReserveHeldNanos(heldDest, 3 * kUnitsPerShe);
-    check(heldBook, held, BigInt.from(5 * kUnitsPerShe), 'partial hold');
+    check(heldBook, held, BigInt.from(7 * kUnitsPerShe), 'partial hold');
   });
 
   test('a send and a consolidation during follow leave the book consistent', () async {
@@ -439,7 +553,11 @@ void main() {
               .join(),
     };
     expect(during.length, greaterThan(before.length));
-    expect(ledger.notes.any((n) => n['spent'] == true), isTrue);
+    final spentBySend = <String>{
+      for (final n in ledger.notes)
+        if (n['spent'] == true) _commitHex(n),
+    }..remove('');
+    expect(spentBySend, isNotEmpty);
     if (!gate.isCompleted) gate.complete();
     await follow.timeout(const Duration(seconds: 40));
     final after = <String>[
@@ -453,7 +571,14 @@ void main() {
     for (final born in during.difference(before)) {
       expect(after.contains(born), isTrue, reason: born);
     }
-    expect(ledger.notes.any((n) => n['spent'] == true), isTrue);
+    for (final spent in spentBySend) {
+      final still = [
+        for (final n in ledger.notes)
+          if (_commitHex(n) == spent) n,
+      ];
+      expect(still, isNotEmpty, reason: spent);
+      expect(still.every((n) => n['spent'] == true), isTrue, reason: spent);
+    }
     expect(ledger.notesCovered, greaterThanOrEqualTo(cursor));
     final owned = BigInt.from(
       (ledger.spendableOwned(id.address, paymentCode: id.paymentCode) *
@@ -621,20 +746,44 @@ class _MidPool extends ShearPoolClient {
   };
 }
 
-Uint8List _powHeader() {
-  final h = Uint8List(shearHeaderLen);
-  h[0] = 1;
-  var ts = 1700000000000;
-  for (var i = 0; i < 8; i++) {
-    h[100 + i] = ts & 0xff;
-    ts >>= 8;
+const _v3GenesisMs = 1700000000000;
+const _v3AsertGapMs = 93690000;
+const _v3LivePacked = 4 * 65536;
+
+/// A real ShearHash-v3 header whose bits are the height-2 ASERT quote.
+Uint8List _mineV3Header() {
+  final js = File('../crypto/shear_hash.js');
+  expect(js.existsSync(), isTrue, reason: js.absolute.path);
+  final script = 'import { shearHash, meetsTarget } from ${jsonEncode(Uri.file(js.absolute.path).toString())};\n'
+      'const bits = $_v3LivePacked;\n'
+      'const h = Buffer.alloc(128);\n'
+      'h[0] = 1;\n'
+      'h.writeBigUInt64LE(BigInt("${_v3GenesisMs + _v3AsertGapMs}"), 100);\n'
+      'h.writeUInt32LE(bits, 108);\n'
+      'for (let n = 0; n < 10000; n++) {\n'
+      '  h.writeBigUInt64LE(BigInt(n), 112);\n'
+      '  if (meetsTarget(shearHash(h), bits)) {\n'
+      '    process.stdout.write(h.toString("hex"));\n'
+      '    process.exit(0);\n'
+      '  }\n'
+      '}\n'
+      'process.exit(2);\n';
+  final result = Process.runSync('node', ['--input-type=module', '-e', script]);
+  expect(result.exitCode, 0, reason: result.stderr.toString());
+  final hex = RegExp(r'[0-9a-f]{256}')
+      .firstMatch(result.stdout.toString().toLowerCase())!
+      .group(0)!;
+  final out = Uint8List(128);
+  for (var i = 0; i < 128; i++) {
+    out[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
   }
-  h[108] = 1;
-  for (var nonce = 0; nonce < 100000; nonce++) {
-    shearSetNonce(h, nonce);
-    if (shearMeetsTarget(shearHash(h), 1)) return h;
-  }
-  throw StateError('pow');
+  return out;
+}
+
+String _commitHex(Map<dynamic, dynamic> note) {
+  final c = note['commit'];
+  if (c is! Uint8List || c.isEmpty) return '';
+  return c.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 }
 
 Map<String, dynamic> _coin(

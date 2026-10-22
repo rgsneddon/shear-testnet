@@ -340,6 +340,9 @@ class SendProgress {
 /// Isolate stamp of the last [selectSpendNotesWire]. Differs from the UI isolate.
 String debugSendSelectStamp = '';
 
+/// Change output of the last send, in nanos. The held part of a note.
+BigInt? debugLastChangeNanos;
+
 /// Nanos strings the last selection put in a batch. Digit strings, not doubles.
 List<String> debugSendSelectNanos = <String>[];
 
@@ -751,7 +754,7 @@ bool spendableNote(
   return true;
 }
 
-/// Notes a max send can draw, after the same whole-note hold as the batches.
+/// Notes a max send can draw, after the same exact hold as the batches.
 class SpendablePool {
   const SpendablePool(this.free, this.freeSum, this.noPlain);
   final List<Map<String, dynamic>> free;
@@ -774,7 +777,7 @@ SpendablePool poolSpendableNotes(Map<String, dynamic> input) {
   final dests = <String>{
     for (final d in (input['dests'] as List? ?? const [])) d.toString(),
   };
-  final allowBare = input['allowBare'] != false;
+  final allowBare = input['allowBare'] == true;
   final rows = <Map<String, dynamic>>[];
   final openedLocks = <Map<String, dynamic>>[];
   for (var i = 0; i < notes.length; i++) {
@@ -807,20 +810,118 @@ SpendablePool poolSpendableNotes(Map<String, dynamic> input) {
     rows.add(row);
   }
   rows.sort((a, b) => (a['nanos'] as BigInt).compareTo(b['nanos'] as BigInt));
-  var reserved = BigInt.zero;
-  var start = 0;
-  if (hold > BigInt.zero) {
-    for (; start < rows.length && reserved < hold; start++) {
-      reserved += rows[start]['nanos'] as BigInt;
+  // Exact hold: peel the stake off the smallest notes. A partly held note
+  // stays spendable for the free slice, and a send returns the held part
+  // as change. `nanos` is that slice. `gross` is the whole note.
+  var left = hold;
+  final free = <Map<String, dynamic>>[];
+  for (final row in rows) {
+    final nanos = row['nanos'] as BigInt;
+    if (left <= BigInt.zero) {
+      free.add(row);
+      continue;
     }
+    if (nanos <= left) {
+      left -= nanos;
+      continue;
+    }
+    free.add({
+      'i': row['i'],
+      'nanos': nanos - left,
+      'gross': nanos,
+      'held': left,
+      'addr': row['addr'],
+    });
+    left = BigInt.zero;
   }
-  final free = <Map<String, dynamic>>[...rows.sublist(start), ...openedLocks];
+  free.addAll(openedLocks);
   free.sort((a, b) => (b['nanos'] as BigInt).compareTo(a['nanos'] as BigInt));
   final freeSum = free.fold<BigInt>(
     BigInt.zero,
     (s, r) => s + (r['nanos'] as BigInt),
   );
   return SpendablePool(free, freeSum, rows.isEmpty);
+}
+
+BigInt _heldOfRow(Map<String, dynamic> row) {
+  final held = row['held'];
+  if (held is BigInt && held > BigInt.zero) return held;
+  final gross = row['gross'];
+  final nanos = row['nanos'];
+  if (gross is BigInt && nanos is BigInt && gross > nanos) return gross - nanos;
+  return BigInt.zero;
+}
+
+/// Pay and change for one note. A positive hold returns whole as change.
+/// A max pay that leaves the levy no room takes the levy out of the pay.
+({BigInt pay, BigInt change}) holdProtectedPay({
+  required BigInt noteNanos,
+  required BigInt payNanos,
+  required BigInt feeNanos,
+  required BigInt heldNanos,
+}) {
+  var held = heldNanos;
+  if (held < BigInt.zero) held = BigInt.zero;
+  if (held > noteNanos) held = noteNanos;
+  final room = noteNanos - held;
+  final fee = feeNanos < BigInt.zero ? BigInt.zero : feeNanos;
+  var pay = payNanos < BigInt.zero ? BigInt.zero : payNanos;
+  if (pay > room) pay = room;
+  if (held > BigInt.zero && pay + fee > room) {
+    final over = pay + fee - room;
+    pay = over >= pay ? BigInt.zero : pay - over;
+  }
+  var change = noteNanos - pay - fee;
+  if (change < BigInt.zero) change = BigInt.zero;
+  return (pay: pay, change: change);
+}
+
+/// Genesis-anchored aserti3-2d. Same numbers as crypto/asert.js.
+const int kAsertTargetMs = 90000;
+const int kAsertHalflifeMs = 2 * 60 * 60 * 1000;
+const int kAsertBitsScale = 65536;
+const int kAsertLiveMinBits = 4;
+const int kAsertMaxBits = 256;
+const int kGenesisBits = 17;
+const int kGenesisBitsPacked = kGenesisBits * kAsertBitsScale;
+
+class AsertQuote {
+  const AsertQuote({required this.ok, required this.packed});
+  final bool ok;
+  final int packed;
+}
+
+BigInt _divRoundNearest(BigInt numer, BigInt denom) {
+  final neg = numer.isNegative;
+  final abs = neg ? -numer : numer;
+  final q = (abs + (denom ~/ BigInt.two)) ~/ denom;
+  return neg ? -q : q;
+}
+
+/// Exact packed quote. No parent timestamp, so no emergency ease window.
+AsertQuote asertQuoteForHeight({
+  required int anchorTimeMs,
+  required int blockTimeMs,
+  required int blockHeight,
+  int anchorHeight = 1,
+  int anchorBits = kGenesisBitsPacked,
+}) {
+  if (anchorTimeMs <= 0 || blockTimeMs <= 0 || blockHeight <= anchorHeight) {
+    return const AsertQuote(ok: false, packed: 0);
+  }
+  final numer =
+      BigInt.from(blockHeight - anchorHeight) * BigInt.from(kAsertTargetMs) -
+      BigInt.from(blockTimeMs - anchorTimeMs);
+  final deltaQ = _divRoundNearest(
+    numer * BigInt.from(kAsertBitsScale),
+    BigInt.from(kAsertHalflifeMs),
+  );
+  final minQ = BigInt.from(kAsertLiveMinBits * kAsertBitsScale);
+  final maxQ = BigInt.from(kAsertMaxBits * kAsertBitsScale);
+  var next = BigInt.from(anchorBits) + deltaQ;
+  if (next < minQ) next = minQ;
+  if (next > maxQ) next = maxQ;
+  return AsertQuote(ok: true, packed: next.toInt());
 }
 
 /// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
@@ -844,7 +945,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   final free = pool.free;
   final freeSum = pool.freeSum;
   final batches = <Map<String, dynamic>>[];
-  var remaining = need;
+    var remaining = need;
   var cursor = 0;
   var feeSum = BigInt.zero;
   while (remaining > BigInt.zero && cursor < free.length) {
@@ -862,24 +963,42 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
           memo: memo,
         ),
       );
+      final heldBack = taken.fold<BigInt>(
+        BigInt.zero,
+        (s, r) => s + _heldOfRow(r),
+      );
       if (sum >= remaining + fee) break;
+      // The stake stays change. A max send of the free slice is still covered.
+      if (heldBack > BigInt.zero && sum >= remaining && fee < sum) break;
     }
     final fee = BigInt.from(
       estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo),
     );
-    final room = sum - fee;
-    if (room <= BigInt.zero) {
-      return {
-        'stamp': stamp,
-        'covered': false,
-        'empty': false,
-        'shortFee': true,
-        'batches': batches,
-        'feeShe': _sheOfNanos(feeSum + fee),
-        'spendableNanos': freeSum.toString(),
-      };
+    final heldBack = taken.fold<BigInt>(
+      BigInt.zero,
+      (s, r) => s + _heldOfRow(r),
+    );
+    final BigInt pay;
+    if (heldBack > BigInt.zero &&
+        sum >= remaining &&
+        sum < remaining + fee &&
+        fee < sum) {
+      pay = remaining;
+    } else {
+      final room = sum - fee;
+      if (room <= BigInt.zero) {
+        return {
+          'stamp': stamp,
+          'covered': false,
+          'empty': false,
+          'shortFee': true,
+          'batches': batches,
+          'feeShe': _sheOfNanos(feeSum + fee),
+          'spendableNanos': freeSum.toString(),
+        };
+      }
+      pay = room < remaining ? room : remaining;
     }
-    final pay = room < remaining ? room : remaining;
     batches.add({
       'pay': _sheOfNanos(pay),
       'payNanos': pay.toString(),
@@ -1138,6 +1257,7 @@ Future<Map<String, dynamic>> creditFollowWorker(
   }
   if (pool != null && publicConsent) pool.publicConsent = true;
   final ledger = ShearLedger(pool: pool);
+  ledger._stampSpendTagsInline = true;
   try {
     ledger.installCreditFollow(spec);
     final rest = spec['restFrame']?.toString() ?? '';
@@ -2782,17 +2902,13 @@ Future<ContinuumSendResult> submitContinuumSend({
     );
   }
   try {
-    // Weight quote, not the amount-bps figure. Depth surge is not the consensus levy.
+    // The levy is quoted when the send is built. It is not taken off this figure.
     depth;
-    final levy = estimateSendLevyUnits(
-      inputs: 1,
-      outputs: 3,
-      memo: memo != null && memo.isNotEmpty,
-    );
     final exactWire = nanosWire != null && RegExp(r'^\d+$').hasMatch(nanosWire);
     final fromDouble = BigInt.from((amount * kUnitsPerShe).round());
     final lossyAmount = exactWire && fromDouble != BigInt.parse(nanosWire!);
-    final need = amount + levy / kUnitsPerShe;
+    // The figure is gross. The levy is taken at send time, not off the figure.
+    final need = amount;
     if (!lossyAmount) {
       final painted = paintedContinuumSpendable(
         ledger,
@@ -4019,14 +4135,6 @@ class ShearLedger implements ReadProofSink {
             _noteBytes(row['commit']),
           ))
             continue;
-          final seed = spendSeed;
-          if (seed != null &&
-              seed.length == 32 &&
-              (row['spendTag']?.toString() ?? '').isEmpty &&
-              noteHasSealedSpendBytes(row)) {
-            final tag = _noteSpendTagHex(seed, row);
-            if (tag != null) row['spendTag'] = tag;
-          }
           rememberNote(row);
           _rememberProofRow(row);
           if (row['proofChecked'] == true) {
@@ -4596,6 +4704,21 @@ class ShearLedger implements ReadProofSink {
   /// carries a height is not spendable.
   int get bookTip => _verifiedTip;
 
+  /// Desktop P2P, Solo, or own-node. [height] is that node's own checked tip.
+  /// Connect bare does not call this.
+  void noteNodeCheckedTip(int height) {
+    if (height < 1) return;
+    if (height > _verifiedTip) _verifiedTip = height;
+  }
+
+  /// Genesis time from a height-1 header this wallet checked. A later tip
+  /// quotes ASERT from it. The test binds the anchor it mined against.
+  int? _asertGenesisMs;
+
+  void bindCheckedGenesisMs(int ms) {
+    if (ms > 0) _asertGenesisMs = ms;
+  }
+
   /// A flyclient sample this wallet already checked. Moves the spendable tip.
   void noteVerifiedHeight(int height) {
     if (height < 1) return;
@@ -4607,9 +4730,11 @@ class ShearLedger implements ReadProofSink {
     settleTo(_verifiedTip);
   }
 
-  /// Recomputed ShearHash meets the header bits. A zero-bits blob does not.
-  bool _headerPowOk(Uint8List header) {
-    if (header.length != shearHeaderLen) return false;
+  /// ShearHash-v3 meets this header, and the bits are the ASERT quote for
+  /// [sealedHeight]. Any bits above zero is not enough. A missing v3 backend
+  /// leaves depth unknown.
+  bool _headerPowOk(Uint8List header, {required int sealedHeight}) {
+    if (sealedHeight < 1 || header.length != shearHeaderLen) return false;
     final version =
         header[0] |
         (header[1] << 8) |
@@ -4622,8 +4747,23 @@ class ShearLedger implements ReadProofSink {
     for (var i = 0; i < 4; i++) {
       bits |= header[108 + i] << (8 * i);
     }
-    if (bits <= 0) return false;
-    return shearMeetsTarget(shearHash(header), bits);
+    // Packed Q16.16. An integer difficulty, including 1 bit, is not ASERT.
+    if (bits < kAsertBitsScale) return false;
+    final digest = shearHashV3(header);
+    if (digest == null || !shearMeetsTarget(digest, bits)) return false;
+    if (sealedHeight == 1) {
+      if (bits != kGenesisBitsPacked) return false;
+      _asertGenesisMs = ts;
+      return true;
+    }
+    final genesis = _asertGenesisMs;
+    if (genesis == null || genesis <= 0) return false;
+    final quote = asertQuoteForHeight(
+      anchorTimeMs: genesis,
+      blockTimeMs: ts,
+      blockHeight: sealedHeight,
+    );
+    return quote.ok && bits == quote.packed;
   }
 
   /// Record how far a notes response reached. Never moves backward.
@@ -4707,7 +4847,8 @@ class ShearLedger implements ReadProofSink {
       }
       _headerTimestampMs = ts;
     }
-    if (_headerPowOk(header) && sealedHeight > _verifiedTip) {
+    if (_headerPowOk(header, sealedHeight: sealedHeight) &&
+        sealedHeight > _verifiedTip) {
       _verifiedTip = sealedHeight;
     }
     _advanceSealed(sealedHeight);
@@ -6117,7 +6258,7 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Nanos the Spendable figure is naming for [restFrame].
-  /// Same whole-note hold and the same note rows as a max send.
+  /// Same exact hold and the same note rows as a max send.
   BigInt displayedSpendableNanos(String restFrame, {String? paymentCode}) {
     refreshTimeLockedNotes();
     final pool = poolSpendableNotes(
@@ -6403,13 +6544,9 @@ class ShearLedger implements ReadProofSink {
   }
 
   void _markNotesSpentByTag() {
-    final seed = spendSeed;
-    if (seed == null || seed.length != 32) return;
     for (final n in _notes) {
-      final have = n['spendTag']?.toString() ?? '';
-      final tag = have.isNotEmpty ? have : _noteSpendTagHex(seed, n);
-      if (tag == null || tag.isEmpty) continue;
-      n['spendTag'] = tag;
+      final tag = n['spendTag']?.toString() ?? '';
+      if (tag.isEmpty) continue;
       if (_spentTagHex.contains(tag.toLowerCase())) n['spent'] = true;
     }
   }
@@ -6420,6 +6557,7 @@ class ShearLedger implements ReadProofSink {
     try {
       final live = await client.fluxset().timeout(const Duration(seconds: 2));
       _takeSpendTags(live);
+      await _stampSpendTagsOffUi();
       _markNotesSpentByTag();
     } catch (_) {}
   }
@@ -8379,8 +8517,42 @@ class ShearLedger implements ReadProofSink {
 
   final Set<String> _spentTagHex = {};
 
-  String? _noteSpendTagHex(Uint8List spendSeed, Map<String, dynamic> note) {
-    return spendTagHexOf(spendSeed, note);
+  /// The credit worker is already off the UI isolate. A nested [Isolate.run]
+  /// from it never finishes, so that worker stamps in place.
+  bool _stampSpendTagsInline = false;
+
+  /// Held nanos on [note] from the same peel as the Spendable figure.
+  BigInt _heldNanosOf(
+    Map<String, dynamic> note,
+    String? restFrame,
+    String? paymentCode,
+  ) {
+    var index = -1;
+    for (var i = 0; i < _notes.length; i++) {
+      if (identical(_notes[i], note)) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) {
+      final want = _commitHexOf(note);
+      if (want.isNotEmpty) {
+        for (var i = 0; i < _notes.length; i++) {
+          if (_commitHexOf(_notes[i]) == want) {
+            index = i;
+            break;
+          }
+        }
+      }
+    }
+    if (index < 0) return BigInt.zero;
+    final pool = poolSpendableNotes(
+      _spendPlanInput(restFrame ?? _restFrame ?? '', paymentCode, 0),
+    );
+    for (final row in pool.free) {
+      if (row['i'] == index) return _heldOfRow(row);
+    }
+    return BigInt.zero;
   }
 
   Future<void> _stampSpendTagsOffUi() async {
@@ -8400,9 +8572,11 @@ class ShearLedger implements ReadProofSink {
       });
     }
     if (index.isEmpty) return;
-    final tags = await Isolate.run(
-      () => <String?>[for (final n in payload) spendTagHexOf(seed, n)],
-    );
+    final tags = _stampSpendTagsInline
+        ? <String?>[for (final n in payload) spendTagHexOf(seed, n)]
+        : await Isolate.run(
+            () => <String?>[for (final n in payload) spendTagHexOf(seed, n)],
+          );
     for (var j = 0; j < index.length; j++) {
       final tag = tags[j];
       if (tag != null && tag.isNotEmpty) _notes[index[j]]['spendTag'] = tag;
@@ -9458,7 +9632,7 @@ class ShearLedger implements ReadProofSink {
       final owned = restFrame == null
           ? usable
           : spendableOwned(restFrame, paymentCode: paymentCode);
-      if (usable + 1e-12 < needShe && owned + 1e-12 < needShe) {
+      if (usable + 1e-12 < amount && owned + 1e-12 < amount) {
         throw StateError('insufficient');
       }
       final pk = payKey(src);
@@ -9478,11 +9652,11 @@ class ShearLedger implements ReadProofSink {
         _spendable[src] = fromNotes;
       }
     }
-    if (sendKind != 'withdraw' && spendable(src) < needShe) {
+    if (sendKind != 'withdraw' && spendable(src) < amount) {
       final owned = restFrame == null
           ? spendable(src)
           : spendableOwned(restFrame, paymentCode: paymentCode);
-      if (owned + 1e-12 < needShe) throw StateError('insufficient');
+      if (owned + 1e-12 < amount) throw StateError('insufficient');
     }
     Map<String, dynamic>? spent;
     Map<String, dynamic>? chosen;
@@ -9596,12 +9770,29 @@ class ShearLedger implements ReadProofSink {
     if (fundedUnits != null &&
         (chosen != null || spendNote != null) &&
         noteNanosExact((chosen ?? spendNote)!) != null) {
-      final cost = payUnits + feeUnits;
-      if (cost > fundedUnits) throw StateError('insufficient');
-      final next = fundedUnits - cost;
-      if (next.bitLength > 64) throw StateError('fee_short');
-      changeUnits = next;
+      final note = (chosen ?? spendNote)!;
+      final heldUnits = _heldNanosOf(note, restFrame, paymentCode);
+      if (heldUnits > BigInt.zero) {
+        final split = holdProtectedPay(
+          noteNanos: fundedUnits,
+          payNanos: payUnits,
+          feeNanos: feeUnits,
+          heldNanos: heldUnits,
+        );
+        if (payUnits > BigInt.zero && split.pay <= BigInt.zero) {
+          throw StateError('insufficient');
+        }
+        payUnits = split.pay;
+        changeUnits = split.change;
+      } else {
+        final cost = payUnits + feeUnits;
+        if (cost > fundedUnits) throw StateError('insufficient');
+        final next = fundedUnits - cost;
+        if (next.bitLength > 64) throw StateError('fee_short');
+        changeUnits = next;
+      }
     }
+    debugLastChangeNanos = changeUnits;
     if (sendKind == 'send') {
       String? portal;
       if (restFrame != null && (viewSecret ?? '').isNotEmpty) {

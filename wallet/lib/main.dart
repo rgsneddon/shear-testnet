@@ -374,6 +374,15 @@ class ShearWalletAppState extends State<ShearWalletApp>
     if (st != null) {
       sidecar.reportedHeight = st.height;
       sidecar.reportedIbd = st.ibd;
+      if (!st.ibd &&
+          desktopNodeTipCounts(
+            sidecar.committed,
+            ownNode:
+                session.ownNodeUrl.trim().isNotEmpty ||
+                ledger.pool?.usesOwnNode == true,
+          )) {
+        ledger.noteNodeCheckedTip(st.height);
+      }
       matched = sidecar.takeOverIfMatched();
     }
     _requestShellPaint();
