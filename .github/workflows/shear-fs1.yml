@@ -89,6 +89,8 @@ jobs:
       - name: Wallet package for the withdraw emitter
         working-directory: wallet
         run: flutter pub get
+      - name: Admit library the Dart withdraw prover loads
+        run: cargo build --release --manifest-path crypto/native/admit/Cargo.toml
       - name: Dart-built withdraw is accepted by the node queue
         run: node --test --test-concurrency=1 --test-timeout=1800000 node/tests/test_dart_withdraw_queue_v12.js
       - name: Privacy walk, including the compact reserve key check
