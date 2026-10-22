@@ -185,13 +185,13 @@ const kAndroidNodeMissingCopy =
 
 /// What a full node on this device actually reveals. P2P peers see the IP.
 const kLocalNodeIpCopy =
-    'A full node on this device. It syncs over P2P only. Only your own node and its P2P peers see your IP. The public node never gets your view key or your sends.';
+    'A full node on this device. It syncs over P2P only. $kOwnNodeIpCopy The public node never gets your view key or your sends.';
 
 /// p2P Node. A full node on this device, without `--solo`.
 const kLocalNodeModeCopy =
     'p2P Node. A full node on this device, without --solo. '
     'It requests each next block in order until the tip and does not mine. '
-    'It syncs over P2P only. Only your own node and its P2P peers see your IP. '
+    'It syncs over P2P only. $kOwnNodeIpCopy '
     'The public node never gets your view key or your sends. '
     'Start resumes from the saved height. Stop saves that height and leaves the book.';
 
@@ -199,7 +199,7 @@ const kLocalNodeModeCopy =
 const kLocalNodeFullModeCopy =
     'Full Node. The same full node, with --solo on the command line before it syncs, '
     'so this device can solo mine. '
-    'It syncs over P2P only. Only your own node and its P2P peers see your IP. '
+    'It syncs over P2P only. $kOwnNodeIpCopy '
     'The public node never gets your view key or your sends. '
     'Start resumes from the saved height. Stop saves that height and leaves the book.';
 
@@ -309,7 +309,7 @@ Map<String, String> closureSpawnEnv(
     'SHEAR_GETBLOCK_BATCH': '1',
     'SHEAR_SOLO': (!android && mode == ClosureSendMode.localNodeFull) ? '1' : '0',
     'SHEAR_FAST_SYNC': '1',
-    // Port 30303 is fleet-only. This wallet syncs over P2P. Public HTTP follow stays off.
+    // This wallet syncs over P2P. Public HTTP follow stays off.
     'SHEAR_HTTP_FOLLOW': '0',
     'SHEARK_POOL': shearKPoolUrl(publicPool: publicStratum),
   };

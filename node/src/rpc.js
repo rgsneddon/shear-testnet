@@ -168,36 +168,58 @@ function headerOne(value) {
   return value;
 }
 
+function ipv4Loopback(name) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(name);
+  if (!m) return false;
+  const parts = m.slice(1).map((s) => Number(s));
+  if (parts.some((n) => !Number.isInteger(n) || n > 255)) return false;
+  return parts[0] === 127;
+}
+
+/** 127.0.0.0/8, localhost, ::1, and IPv4-mapped ::ffff:127.x.x.x. */
+export function hostIsLoopback(name) {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n || n === '0.0.0.0' || n === '::' || n === '*') return false;
+  if (n === 'localhost' || n === '::1') return true;
+  if (ipv4Loopback(n)) return true;
+  if (n.startsWith('::ffff:') && ipv4Loopback(n.slice('::ffff:'.length))) return true;
+  return false;
+}
+
+/** True when this process is bound to loopback, including 127/8 and ::ffff:127.x.x.x. */
+export function rpcLoopbackBind(bind) {
+  let name = String(bind || '').trim().toLowerCase();
+  if (name.startsWith('[') && name.endsWith(']')) name = name.slice(1, -1);
+  return hostIsLoopback(name);
+}
+
+function portOk(tail) {
+  if (!/^\d+$/.test(tail)) return false;
+  const port = Number(tail);
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
 /** Loopback names only, with an optional numeric port. Anything else is a rebind. */
 export function rpcHostAllowed(header) {
   const raw = String(headerOne(header) ?? '').trim().toLowerCase();
   if (!raw || /[\s@/\\]/.test(raw)) return false;
-  let name = raw;
   if (raw.startsWith('[')) {
     const end = raw.indexOf(']');
     if (end < 2) return false;
-    name = raw.slice(1, end);
+    const name = raw.slice(1, end);
     const rest = raw.slice(end + 1);
     if (rest) {
       if (!rest.startsWith(':')) return false;
-      const tail = rest.slice(1);
-      if (!/^\d+$/.test(tail)) return false;
-      const port = Number(tail);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+      if (!portOk(rest.slice(1))) return false;
     }
-    return name === '::1';
+    return hostIsLoopback(name);
   }
+  if (hostIsLoopback(raw)) return true;
   const colon = raw.lastIndexOf(':');
-  if (colon > 0) {
-    const tail = raw.slice(colon + 1);
-    if (/^\d+$/.test(tail)) {
-      const port = Number(tail);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
-      name = raw.slice(0, colon);
-    }
+  if (colon > 0 && portOk(raw.slice(colon + 1))) {
+    return hostIsLoopback(raw.slice(0, colon));
   }
-  if (!name || name.includes(':')) return false;
-  return name === '127.0.0.1' || name === 'localhost';
+  return false;
 }
 
 /** A present Origin is a browser. The sidecar does not serve one. */
@@ -206,24 +228,23 @@ export function rpcOriginAllowed(origin) {
   return raw == null || String(raw) === '';
 }
 
-/** Host, Origin, and the header token apply only to a loopback bind that has a token. */
-export function rpcSidecarGate(bind, token) {
-  const name = String(bind || '').trim().toLowerCase();
-  const loopback = name === '127.0.0.1' || name === 'localhost' || name === '::1' || name === '[::1]';
-  return loopback && String(token || '').trim() !== '';
+/** Constant-time equality. A length mismatch still compares, then fails. */
+function tokenEquals(got, want) {
+  const a = Buffer.from(String(want ?? ''));
+  const b = Buffer.from(String(got ?? ''));
+  if (a.length !== b.length) {
+    if (a.length > 0) crypto.timingSafeEqual(a, Buffer.alloc(a.length));
+    return false;
+  }
+  if (a.length === 0) return true;
+  return crypto.timingSafeEqual(a, b);
 }
 
 function rpcTokenAllowed(req, token) {
   const want = String(token || '');
   if (!want.trim()) return true;
   const got = String(headerOne(req.headers['x-shear-rpc-token']) || '');
-  const a = Buffer.from(want);
-  const b = Buffer.from(got);
-  if (a.length !== b.length) {
-    crypto.timingSafeEqual(a, Buffer.alloc(a.length));
-    return false;
-  }
-  return crypto.timingSafeEqual(a, b);
+  return tokenEquals(got, want);
 }
 
 function refuseRpc(req, res, reason) {
@@ -286,7 +307,7 @@ export function createRpc({
     const mutating = new Set(['addnode']);
     if (mutating.has(m) && String(token || '').trim()) {
       const tok = String(params.token || params.rpcToken || '');
-      if (tok !== String(token)) return { ok: false, reason: 'rpc_token' };
+      if (!tokenEquals(tok, token)) return { ok: false, reason: 'rpc_token' };
     }
     if (m === 'getpolicy' || m === 'policy') {
       return { ok: true, ...(typeof store.getpolicy === 'function' ? store.getpolicy() : {}) };
@@ -299,10 +320,10 @@ export function createRpc({
     }
     if (m === 'addnode') {
       const tok = String(params.token || params.rpcToken || '');
-      if (String(token || '').trim() && tok !== String(token)) {
+      if (String(token || '').trim() && !tokenEquals(tok, token)) {
         return { ok: false, reason: 'rpc_token' };
       }
-      if ((bind === '0.0.0.0' || bind === '::') && tok !== String(token || '')) {
+      if ((bind === '0.0.0.0' || bind === '::') && !tokenEquals(tok, String(token || ''))) {
         return { ok: false, reason: 'rpc_token' };
       }
       const hostP = String(params.host || params[0] || '');
@@ -472,9 +493,9 @@ export function createRpc({
     return { ok: false, reason: 'unknown_method', method: m };
   }
 
-  const gate = rpcSidecarGate(bind, token);
+  const loopback = rpcLoopbackBind(bind);
   const server = http.createServer(async (req, res) => {
-    if (gate) {
+    if (loopback) {
       if (!rpcHostAllowed(req.headers.host)) {
         refuseRpc(req, res, 'rpc_host');
         return;

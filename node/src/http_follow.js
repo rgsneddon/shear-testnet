@@ -2,7 +2,7 @@ import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js
 import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { decodeWireBlock } from './p2p.js';
 
-/** Public node HTTP. Port 30303 stays fleet-only; these are the same hosts on 443. */
+/** Public HTTPS hosts. The desktop wallet does not follow them unless SHEAR_HTTP_FOLLOW is 1. */
 export const HTTP_FOLLOW_SEEDS = [
   'https://p2p.shear.digital',
   'https://r2r.shear.digital',

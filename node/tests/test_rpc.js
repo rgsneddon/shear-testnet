@@ -6,7 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { encodeDest } from '../../crypto/address.js';
 import { createStore } from '../src/store.js';
-import { createRpc } from '../src/rpc.js';
+import { createRpc, hostIsLoopback, rpcHostAllowed, rpcLoopbackBind } from '../src/rpc.js';
 import { decodeHeader } from '../../crypto/header.js';
 
 function destMiner() {
@@ -93,6 +93,16 @@ describe('node RPC', () => {
     const denied = rpc.dispatch('addnode', { host: '1.1.1.1', port: 30303 });
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'rpc_token');
+    const short = rpc.dispatch('addnode', { host: '1.1.1.1', port: 30303, token: 'x' });
+    assert.equal(short.ok, false);
+    assert.equal(short.reason, 'rpc_token');
+    const long = rpc.dispatch('addnode', { host: '1.1.1.1', port: 30303, token: 'secret-extra' });
+    assert.equal(long.ok, false);
+    assert.equal(long.reason, 'rpc_token');
+    const src = fs.readFileSync(new URL('../src/rpc.js', import.meta.url), 'utf8');
+    const add = src.slice(src.indexOf("const mutating = new Set(['addnode'])"), src.indexOf("const hostP"));
+    assert.match(add, /tokenEquals/);
+    assert.doesNotMatch(add, /!==/);
   });
 
   it('serves stats, headers, compact blocks, and jroot for wallet node-sync', async () => {
@@ -149,7 +159,26 @@ describe('node RPC', () => {
     }
   });
 
-  it('gates Host, Origin, and the token only on a loopback bind that has a token', async () => {
+  it('checks Host and Origin on every loopback bind, and the token only when one is set', async () => {
+    assert.equal(rpcLoopbackBind('127.0.0.1'), true);
+    assert.equal(rpcLoopbackBind('127.255.255.255'), true);
+    assert.equal(rpcLoopbackBind('127.0.0.0'), true);
+    assert.equal(rpcLoopbackBind('[::1]'), true);
+    assert.equal(rpcLoopbackBind('::ffff:127.0.0.1'), true);
+    assert.equal(rpcLoopbackBind('[::ffff:127.9.0.1]'), true);
+    assert.equal(rpcLoopbackBind('0.0.0.0'), false);
+    assert.equal(rpcLoopbackBind('::'), false);
+    assert.equal(rpcLoopbackBind('192.168.1.10'), false);
+    assert.equal(rpcLoopbackBind('10.1.2.3'), false);
+    assert.equal(hostIsLoopback('::ffff:127.0.0.1'), true);
+    assert.equal(hostIsLoopback('::ffff:8.8.8.8'), false);
+    assert.equal(rpcHostAllowed('127.9.0.1:18332'), true);
+    assert.equal(rpcHostAllowed('127.0.0.1:18332'), true);
+    assert.equal(rpcHostAllowed('[::ffff:127.0.0.1]:18332'), true);
+    assert.equal(rpcHostAllowed('::ffff:127.0.0.1'), true);
+    assert.equal(rpcHostAllowed('[::1]:18332'), true);
+    assert.equal(rpcHostAllowed('192.168.1.10'), false);
+    assert.equal(rpcHostAllowed('127.0.0.1.evil.test'), false);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-rpc-guard-'));
     const store = createStore(dir);
     const askOn = (port, headers) => new Promise((resolve, reject) => {
@@ -182,12 +211,51 @@ describe('node RPC', () => {
       assert.equal(named.status, 200);
       const nginx = await askOn(bound.port, { host: '127.0.0.1:18332' });
       assert.equal(nginx.status, 200);
+      const eight = await askOn(bound.port, { host: '127.4.5.6:18332' });
+      assert.equal(eight.status, 200);
+      const mapped = await askOn(bound.port, { host: '[::ffff:127.0.0.1]:18332' });
+      assert.equal(mapped.status, 200);
+      const v6open = await askOn(bound.port, { host: `[::1]:${bound.port}` });
+      assert.equal(v6open.status, 200);
       const host = await askOn(bound.port, { host: 'p2p.shear.digital' });
-      assert.equal(host.status, 200);
+      assert.equal(host.status, 403);
+      assert.equal(host.json.reason, 'rpc_host');
       const origin = await askOn(bound.port, { host: `127.0.0.1:${bound.port}`, origin: 'https://evil.example' });
-      assert.equal(origin.status, 200);
+      assert.equal(origin.status, 403);
+      assert.equal(origin.json.reason, 'rpc_origin');
     } finally {
       await open.close();
+    }
+
+    const wide = createRpc({ store, port: 0, host: '127.8.8.8' });
+    const wideBound = await wide.listen();
+    try {
+      const askWide = (headers) => new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.8.8.8',
+          port: wideBound.port,
+          path: '/policy',
+          method: 'GET',
+          headers,
+        }, (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            let json = {};
+            try { json = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { /* */ }
+            resolve({ status: res.statusCode, json });
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+      const okWide = await askWide({ host: '127.8.8.8:18332' });
+      assert.equal(okWide.status, 200);
+      const deniedWide = await askWide({ host: '10.1.2.3' });
+      assert.equal(deniedWide.status, 403);
+      assert.equal(deniedWide.json.reason, 'rpc_host');
+    } finally {
+      await wide.close();
     }
 
     const locked = createRpc({ store, port: 0, host: '127.0.0.1', token: 'launch-token' });

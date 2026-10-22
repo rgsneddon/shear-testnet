@@ -56,22 +56,38 @@ void main() {
   });
 
   test('local node copy says who sees the IP', () {
-    expect(kLocalNodeIpCopy, contains('Only your own node and its P2P peers see your IP'));
+    const qualified =
+        'With your own node, only that node and its P2P peers (by default the Shear seed hosts) see your IP.';
+    final bare = ['Only your own node and its ', 'P2P peers see your IP.'].join();
+    expect(kOwnNodeIpCopy, qualified);
+    expect(kPublicNodeEverySendCopy, endsWith(qualified));
+    expect(kLocalNodeIpCopy, contains(qualified));
     expect(kLocalNodeIpCopy, contains('syncs over P2P only'));
-    expect(kLocalNodeIpCopy.contains('seed hosts'), isFalse);
     expect(kLocalNodeIpCopy, contains('The public node never gets your view key or your sends.'));
-    expect(kLocalNodeModeCopy, contains('Only your own node and its P2P peers see your IP'));
-    expect(kLocalNodeFullModeCopy, contains('Only your own node and its P2P peers see your IP'));
-    expect(kLocalNodeModeCopy.contains('seed hosts'), isFalse);
-    expect(kLocalNodeFullModeCopy.contains('seed hosts'), isFalse);
+    expect(kLocalNodeModeCopy, contains(qualified));
+    expect(kLocalNodeFullModeCopy, contains(qualified));
     expect(kLocalNodeModeCopy.contains('Best privacy'), isFalse);
     expect(kLocalNodeFullModeCopy.contains('Best privacy'), isFalse);
     final ui = File('lib/main.dart').readAsStringSync();
     final closure = File('lib/shear_closure.dart').readAsStringSync();
+    final docs = File('../site/docs/content.js').readAsStringSync();
     expect(ui.contains('Best privacy'), isFalse);
     expect(ui.contains('Nothing is sent to a public node'), isFalse);
     expect(closure.contains('Best privacy'), isFalse);
     expect(ui, contains('kLocalNodeIpCopy'));
+    expect(docs, contains(kPublicNodeEverySendCopy));
+    expect(closure.contains('Port 30303 is fleet-only'), isFalse);
+    expect(File('../node/src/http_follow.js').readAsStringSync().contains('fleet-only'), isFalse);
+    final hits = <String>[];
+    for (final root in [Directory('lib'), Directory('../site'), Directory('../node')]) {
+      for (final entity in root.listSync(recursive: true)) {
+        if (entity is! File) continue;
+        final path = entity.path;
+        if (!path.endsWith('.dart') && !path.endsWith('.js') && !path.endsWith('.md')) continue;
+        if (entity.readAsStringSync().contains(bare)) hits.add(path);
+      }
+    }
+    expect(hits, isEmpty);
   });
 
   test('a P2P spawn carries a fresh token and loopback binds', () async {

@@ -11,12 +11,16 @@ const kUnprivateConfirmTitle = 'Public node may see your IP';
 
 const kUnprivateConfirmLabel = 'I already use a VPN / I accept exposing my IP';
 
+/// Who sees the IP when this device runs the node. P2P, Solo, and the public-node warning share it.
+const kOwnNodeIpCopy =
+    'With your own node, only that node and its P2P peers (by default the Shear seed hosts) see your IP.';
+
 /// Connect bare consent, settings, docs, and wallet help share this sentence.
 const kPublicNodeEverySendCopy =
     'The public node can see your IP on every send and every sync, not just once. '
     'In public mode, history requests carry your view key, so that operator can see incoming payments. '
     'Use a VPN, or point Continuum at your own node. '
-    'Only your own node and its P2P peers see your IP.';
+    '$kOwnNodeIpCopy';
 
 const kUnprivateConfirmHelper = kPublicNodeEverySendCopy;
 
