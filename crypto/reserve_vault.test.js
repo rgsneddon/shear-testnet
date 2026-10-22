@@ -36,6 +36,8 @@ import {
   portalIdFromDest20,
   portalBlindFromSeed,
   compactLockLeakRejected,
+  lockTx as lockTxRaw,
+  withdrawTx as withdrawTxRaw,
   observeRate,
   portalRewards,
   previewWithdraw,
@@ -877,6 +879,35 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const named = compactLockLeakRejected({ kind: 'lock', portalId: pid, memo: 'pay ssa1qq' });
     assert.equal(named.reason, 'vote_leak');
     assert.equal(compactLockLeakRejected({ kind: 'lock', portalId: pid, dest20: Buffer.from(d20) }), null);
+  });
+
+  it('lockTx with a spend seed carries a portal id the address does not recompute', () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const vault = destOf(alice);
+    const payer = destOf(bob);
+    const seed = alice.spendSeed;
+    const want = portalIdFromDest20(hash20FromAddress(vault), portalBlindFromSeed(seed));
+    const pay = portalIdFromDest20(hash20FromAddress(payer), portalBlindFromSeed(seed));
+    const tx = lockTxRaw({ from: payer, to: vault, nanos: 1000, id: 'lock-seeded-portal', spendSeed: seed });
+    assert.equal(typeof want, 'string');
+    assert.equal(want.length, 64);
+    assert.notEqual(tx.portalId, portalIdFromDest(vault));
+    assert.equal(tx.portalId, want);
+    assert.equal(tx.vout[0].portalId, want);
+    assert.notEqual(tx.payoutPortalId, portalIdFromDest(payer));
+    assert.equal(tx.payoutPortalId, pay);
+    const wrapped = lockTx({ from: payer, to: vault, nanos: 1000, id: 'lock-seeded-wrapped', spendSeed: seed });
+    assert.equal(wrapped.portalId, want);
+    assert.equal(wrapped.vout[0].portalId, want);
+    const wd = withdrawTxRaw({ from: vault, to: payer, nanos: 1000, id: 'wd-seeded-portal', spendSeed: seed });
+    assert.notEqual(wd.portalId, portalIdFromDest(vault));
+    assert.equal(wd.portalId, want);
+    assert.equal(wd.vout[0].portalId, pay);
+    // A lock with no spend seed has no r. The address id remains for that call.
+    const plain = lockTxRaw({ from: payer, to: vault, nanos: 1000, id: 'lock-unseeded-portal' });
+    assert.equal(plain.portalId, portalIdFromDest(vault));
+    assert.equal(plain.vout[0].portalId, portalIdFromDest(vault));
   });
 
   it('a compact lock with no lock note is refused, and so is the wire copy', () => {

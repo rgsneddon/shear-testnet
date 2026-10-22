@@ -2010,6 +2010,24 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
       }
     }
   }
+  String idFor(String dest) {
+    if (spendSeed != null && spendSeed.length == 32) {
+      final hidden = reservePortalIdFromSeed(dest, spendSeed);
+      if (hidden != null) return hidden;
+    }
+    return reservePortalId(dest);
+  }
+  final portalId = kind == 'withdraw' ? idFor(from) : idFor(to);
+  final payoutPortalId = kind == 'withdraw' ? idFor(to) : idFor(from);
+  if (kind == 'lock') {
+    for (final note in sealed) {
+      if ((note['kind'] ?? kind).toString() == 'lock') note['portalId'] = portalId;
+    }
+  } else if (kind == 'withdraw') {
+    for (final note in sealed) {
+      note['portalId'] = payoutPortalId;
+    }
+  }
   final postedVout = _postedVout(sealed);
   final wire = flowPostHex(<String, dynamic>{'vin': const <Map<String, dynamic>>[], 'vout': postedVout});
   final hexVout = List<dynamic>.from(wire['vout'] as List? ?? const []);
@@ -2036,13 +2054,13 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     nanos: shownNanos is int ? shownNanos : jsSafeInt(shownNanos),
     id: withdrawId,
     withdrawNonce: withdrawNonceHex,
+    portalTo: kind == 'withdraw' ? payoutPortalId : portalId,
+    portalFrom: kind == 'withdraw' ? portalId : payoutPortalId,
   );
   final fee = taxed ? bindStableWeightFee(draft, maxLevy: maxLevy) : 0;
   if (taxed && !weightFeeCovers(fee, draft, maxLevy: maxLevy)) {
     throw StateError('fee_short');
   }
-  final portalId = kind == 'withdraw' ? reservePortalId(from) : reservePortalId(to);
-  final payoutPortalId = kind == 'withdraw' ? reservePortalId(to) : reservePortalId(from);
   final commit = sealed.isNotEmpty ? _noteBytes(sealed.first['commit']) : null;
   final vp = sealed.isNotEmpty ? sealed.first['valueProof'] : null;
   final suffixNanos = jsSafeInt(vp is Map ? vp['v'] : shownNanos);
@@ -2100,10 +2118,12 @@ Map<String, dynamic> _reservePoolDraft({
   required int nanos,
   String? id,
   String? withdrawNonce,
+  String? portalTo,
+  String? portalFrom,
 }) {
   final stamp = DateTime.now().millisecondsSinceEpoch.toString();
-  final portalTo = reservePortalId(to);
-  final portalFrom = reservePortalId(from);
+  final portalToId = portalTo ?? reservePortalId(to);
+  final portalFromId = portalFrom ?? reservePortalId(from);
   final d20 = hash20FromAddress(from) ?? Uint8List(20);
   final vinBuf = <String, dynamic>{
     'address': from,
@@ -2120,8 +2140,8 @@ Map<String, dynamic> _reservePoolDraft({
       'from': from,
       'to': to,
       'choice': choice,
-      'portalId': portalTo,
-      'payoutPortalId': portalFrom,
+      'portalId': portalToId,
+      'payoutPortalId': portalFromId,
       'vin': [vinBuf],
       'vout': vout,
       'payer': from,
@@ -2137,8 +2157,8 @@ Map<String, dynamic> _reservePoolDraft({
       'to': to,
       'nanos': nanos,
       if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
-      'portalId': portalFrom,
-      'payoutPortalId': portalTo,
+      'portalId': portalFromId,
+      'payoutPortalId': portalToId,
       'vin': <Map<String, dynamic>>[],
       'vout': vout,
       'amount': _jsSheAmount(nanos),
@@ -2152,8 +2172,8 @@ Map<String, dynamic> _reservePoolDraft({
       'from': from,
       'to': to,
       'nanos': 0,
-      'portalId': portalTo,
-      'payoutPortalId': portalTo,
+      'portalId': portalToId,
+      'payoutPortalId': portalToId,
       'vin': [vinBuf],
       'vout': const <Map<String, dynamic>>[],
       'amount': 0,
@@ -2166,8 +2186,8 @@ Map<String, dynamic> _reservePoolDraft({
     'from': from,
     'to': to,
     'nanos': nanos,
-    'portalId': portalTo,
-    'payoutPortalId': portalFrom,
+    'portalId': portalToId,
+    'payoutPortalId': portalFromId,
     'vin': [vinBuf],
     'vout': vout,
     'memoCt': null,
@@ -8572,6 +8592,8 @@ class ShearLedger implements ReadProofSink {
     int? reserveFee;
     String? postedWithdrawId;
     String? postedWithdrawNonce;
+    String? postedPortalId;
+    String? postedPayoutPortalId;
     if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw' || sendKind == 'roll') {
       if (spendSeed != null && spendSeed.length == 32) {
         if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
@@ -8623,6 +8645,12 @@ class ShearLedger implements ReadProofSink {
       if (boundFee is int && boundFee > 0) reserveFee = boundFee;
       if (built['id'] is String) postedWithdrawId = built['id'] as String;
       if (built['withdrawNonce'] is String) postedWithdrawNonce = built['withdrawNonce'] as String;
+      if (built['portalId'] is String && (built['portalId'] as String).isNotEmpty) {
+        postedPortalId = built['portalId'] as String;
+      }
+      if (sendKind != 'withdraw' && built['payoutPortalId'] is String && (built['payoutPortalId'] as String).isNotEmpty) {
+        postedPayoutPortalId = built['payoutPortalId'] as String;
+      }
     } else {
       postedVin = _postedVin(vin);
       postedVout = _postedVout(vouts);
@@ -8679,6 +8707,8 @@ class ShearLedger implements ReadProofSink {
           fee: reserveFee ?? (fs1Hex != null ? flowFee : null),
           id: postedWithdrawId,
           withdrawNonce: postedWithdrawNonce,
+          portalId: postedPortalId,
+          payoutPortalId: postedPayoutPortalId,
           fs1: fs1Hex,
           anchor: fs1Anchor,
         );
@@ -9285,6 +9315,8 @@ class ShearPoolClient {
     String? nanosWire,
     String? id,
     String? withdrawNonce,
+    String? portalId,
+    String? payoutPortalId,
     String? fs1,
     int? anchor,
   }) {
@@ -9315,6 +9347,8 @@ class ShearPoolClient {
       nanosWire: nanosWire,
       id: id,
       withdrawNonce: withdrawNonce,
+      portalId: portalId,
+      payoutPortalId: payoutPortalId,
       fs1: fs1,
       anchor: anchor,
     ), legacyPoolSend: legacyPoolSend);
@@ -9436,6 +9470,8 @@ Map<String, dynamic> walletSendBody({
   String? nanosWire,
   String? id,
   String? withdrawNonce,
+  String? portalId,
+  String? payoutPortalId,
   String? fs1,
   int? anchor,
 }) {
@@ -9501,6 +9537,8 @@ Map<String, dynamic> walletSendBody({
     if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
     if (id != null && id.isNotEmpty) 'id': id,
     if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+    if (portalId != null && portalId.isNotEmpty) 'portalId': portalId,
+    if (kind != 'withdraw' && payoutPortalId != null && payoutPortalId.isNotEmpty) 'payoutPortalId': payoutPortalId,
   };
 }
 

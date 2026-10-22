@@ -255,10 +255,27 @@ export function portalIdFromDest20(dest20, r) {
     .digest('hex');
 }
 
-/** Address-only id. Compact locks do not use this. A peer must not rebuild a portal from it. */
+/** Address-only id. A seeded compact lock does not use this. A peer must not rebuild a portal from it. */
 export function portalIdFromDest(dest) {
   const d = String(dest || '');
   return createHash('sha256').update('shear-portal-v1').update(d).digest('hex');
+}
+
+/**
+ * Seeded portal id. r comes only from the spend seed. No seed, or a dest
+ * that is not a 20-byte address, has no r, so the caller keeps the address id.
+ * A present seed and dest20 never fall back to that address id.
+ */
+function portalIdFor(dest, spendSeed) {
+  if (spendSeed != null) {
+    const d20 = hash20FromAddress(dest);
+    const blind = portalBlindFromSeed(spendSeed);
+    if (d20 && blind) {
+      const id = portalIdFromDest20(d20, blind);
+      if (id) return id;
+    }
+  }
+  return dest ? portalIdFromDest(dest) : '';
 }
 
 export function isPortalId(s) {
@@ -3394,7 +3411,7 @@ export function kt10WithdrawBlind(to, nanos, id = '', nonce) {
   throw new Error('kt10_blind');
 }
 
-function sealedReserveVout(to, n, kind, r) {
+function sealedReserveVout(to, n, kind, r, spendSeed = null) {
   const d20 = hash20FromAddress(to);
   if (!d20) return { address: to, nanos: n, kind };
   if (kind === KIND_WITHDRAW && !positiveUnits(n)) {
@@ -3407,7 +3424,7 @@ function sealedReserveVout(to, n, kind, r) {
     note.valueProof = { ...note.valueProof, v: n };
   }
   note.dest20 = d20;
-  note.portalId = portalIdFromDest(to);
+  note.portalId = portalIdFor(to, spendSeed);
   return { ...note, address: to };
 }
 
@@ -3429,7 +3446,7 @@ function exactFloorNanos(nanos) {
   return n;
 }
 
-function lockLeafOutput(to, amount, blind, timeLock, lockEpoch, unlockAtMs) {
+function lockLeafOutput(to, amount, blind, timeLock, lockEpoch, unlockAtMs, spendSeed = null) {
   const C = pointBytes(commit(amount, blind));
   const range = proveRange(amount, blind);
   const d20 = hash20FromAddress(to);
@@ -3438,7 +3455,7 @@ function lockLeafOutput(to, amount, blind, timeLock, lockEpoch, unlockAtMs) {
     commit: C,
     rangeProof: range,
     address: to,
-    portalId: portalIdFromDest(to),
+    portalId: portalIdFor(to, spendSeed),
   };
   if (d20) out.dest20 = Buffer.from(d20);
   if (timeLock) {
@@ -3471,7 +3488,7 @@ export function lockTx({
     }
     change = amount - pi * BigInt(count);
   }
-  const vout = leaves.map((leaf) => lockLeafOutput(to, leaf.amount, leaf.blind, timeLock, lockEpoch, unlockAtMs));
+  const vout = leaves.map((leaf) => lockLeafOutput(to, leaf.amount, leaf.blind, timeLock, lockEpoch, unlockAtMs, spendSeed));
   if (change > 0n) {
     const cr = randomScalar();
     vout.push({
@@ -3482,7 +3499,6 @@ export function lockTx({
   }
   const rate = bps == null ? GENESIS_BPS : Math.floor(Number(bps));
   const capProof = proveLockCap(leaves[0].amount, leaves[0].blind, rate);
-  void spendSeed;
   const tx = {
     id,
     programId: RESERVE_PROGRAM,
@@ -3490,8 +3506,8 @@ export function lockTx({
     from,
     to,
     nanos: 0,
-    portalId: portalIdFromDest(to),
-    payoutPortalId: portalIdFromDest(from),
+    portalId: portalIdFor(to, spendSeed),
+    payoutPortalId: portalIdFor(from, spendSeed),
     vin: [vinDest20(from)],
     vout,
   };
@@ -3521,16 +3537,17 @@ export function lockTx({
   return tx;
 }
 
-export function withdrawTx({ from, to, nanos, id, nonce, portalId, payoutPortalId } = {}) {
+export function withdrawTx({ from, to, nanos, id, nonce, portalId, payoutPortalId, spendSeed = null } = {}) {
   const n = exactFloorNanos(nanos);
   const ident = id == null || String(id) === '' ? freshWithdrawId() : String(id);
   const blindNonce = positiveUnits(n)
     ? (nonce == null ? randomBytes(32) : withdrawNonceBytes(nonce))
     : null;
   const blind = blindNonce ? kt10WithdrawBlind(to, n, ident, blindNonce) : null;
-  const fromId = from ? portalIdFromDest(from) : '';
+  const fromId = from ? portalIdFor(from, spendSeed) : '';
   const pid = String(portalId || fromId || '').toLowerCase();
-  const pay = String(payoutPortalId || (to ? portalIdFromDest(to) : '') || pid).toLowerCase();
+  const payDefault = to ? portalIdFor(to, spendSeed) : '';
+  const pay = String(payoutPortalId || payDefault || pid).toLowerCase();
   const tx = {
     id: ident,
     programId: RESERVE_PROGRAM,
@@ -3541,7 +3558,7 @@ export function withdrawTx({ from, to, nanos, id, nonce, portalId, payoutPortalI
     portalId: pid,
     payoutPortalId: pay,
     vin: [],
-    vout: [sealedReserveVout(to, n, KIND_WITHDRAW, blind)],
+    vout: [sealedReserveVout(to, n, KIND_WITHDRAW, blind, spendSeed)],
   };
   if (from) tx.from = from;
   if (blindNonce) tx.withdrawNonce = Buffer.from(blindNonce).toString('hex');

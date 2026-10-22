@@ -1798,6 +1798,19 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           ...(multiProofs ? { admit_proofs: body.admit_proofs } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
+    if ((isLock || isVote) && draft) {
+      const carriedPortal = String(body.portalId || '').replace(/^0x/i, '').toLowerCase();
+      const carriedPayout = String(body.payoutPortalId || '').replace(/^0x/i, '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(carriedPortal)) {
+        draft.portalId = carriedPortal;
+        if (!postedVout.length && Array.isArray(draft.vout)) {
+          for (const row of draft.vout) {
+            if (row && (row.kind === 'lock' || row.kind === 'vote')) row.portalId = carriedPortal;
+          }
+        }
+      }
+      if (/^[0-9a-f]{64}$/.test(carriedPayout)) draft.payoutPortalId = carriedPayout;
+    }
     if (isWithdraw && !draft) {
       return { status: 400, json: { ok: false, reason: 'withdraw_funding' } };
     }

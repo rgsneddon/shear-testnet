@@ -246,9 +246,19 @@ Uint8List spendMessage({
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
 }
 
-/// Same portal id `crypto/reserve_vault.js` puts on a lock, vote, or withdraw.
+/// Address hash. A seeded compact lock does not use this.
 String reservePortalId(String dest) {
   return sha256.convert([...utf8.encode('shear-portal-v1'), ...utf8.encode(dest)]).toString();
+}
+
+/// portalId = H(shear-portal-id-v1, dest20, r). r = H(shear-portal-r-v1, spendSeed).
+/// Same tags as crypto/reserve_vault.js and shear_reserve.dart. Null when dest20 or the seed is missing.
+String? reservePortalIdFromSeed(String dest, List<int> spendSeed) {
+  if (spendSeed.length != 32) return null;
+  final d20 = hash20FromAddress(dest);
+  if (d20 == null) return null;
+  final blind = sha256.convert(<int>[...utf8.encode('shear-portal-r-v1'), ...spendSeed]).bytes;
+  return sha256.convert(<int>[...utf8.encode('shear-portal-id-v1'), ...d20, ...blind]).toString();
 }
 
 Uint8List _dest20Bytes(dynamic v) {

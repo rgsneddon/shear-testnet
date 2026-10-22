@@ -850,8 +850,9 @@ function carriedPortalBytes(tx) {
 
 function destBytesForEvm(tx, act) {
   // A compact lock carries H(tag, dest20, r). That 32-byte id is the EVM key.
-  // lockTx and withdrawTx also stamp portalIdFromDest(address). That hash is
-  // not the compact id, and an address deposit lives under the address.
+  // lockTx and withdrawTx stamp that id when a spend seed is present. A
+  // seed-less call still stamps portalIdFromDest(address). An address
+  // deposit lives under the address.
   const carried = carriedPortalBytes(tx);
   const address = txDestOf(tx) || txFromOf(tx) || '';
   if (carried) {

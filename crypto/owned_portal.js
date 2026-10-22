@@ -3,14 +3,16 @@
  * Each portal gets its own owner key, derived from that wallet secret and
  * the portal id. The wallet spend key is not the owner key.
  */
-import { ed25519RawPub, newIdentity } from './address.js';
+import { ed25519RawPub, hash20FromAddress, newIdentity } from './address.js';
 import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
 import { commit, pointBytes, randomScalar } from './note.js';
 import {
   deposit as depositRaw,
   lockTx as lockTxRaw,
   packRewardAuth,
+  portalBlindFromSeed,
   portalIdFromDest,
+  portalIdFromDest20,
   portalOwnerKey,
   reserveMagicBytes,
   rewardOwnerCommit,
@@ -32,12 +34,20 @@ function givenOwner(value) {
   return /^[0-9a-f]{64}$/i.test(pub) ? pub.toLowerCase() : '';
 }
 
-/** One-time owner for `dest`. An explicit pub overrides it and cannot sign. */
-export function ownerFor(dest) {
-  const id = portalIdFromDest(dest);
+/** H(tag, dest20, r) from this wallet seed. Null when dest20 or r is missing. */
+function hiddenPortalId(dest, seed = portalOwner.privateKey) {
+  const d20 = hash20FromAddress(dest);
+  const blind = portalBlindFromSeed(seed);
+  if (!d20 || !blind) return null;
+  return portalIdFromDest20(d20, blind);
+}
+
+/** One-time owner for `dest`. The key is bound to the hidden portal id, not the address hash. */
+export function ownerFor(dest, seed = null) {
+  const id = hiddenPortalId(dest, seed || portalOwner.privateKey) || portalIdFromDest(dest);
   const key = portalOwnerKey(portalOwner.privateKey, id);
   const pub = Buffer.from(ed25519RawPub(key)).toString('hex');
-  return { key, pub, commit: rewardOwnerCommit(pub) };
+  return { key, pub, commit: rewardOwnerCommit(pub), portalId: id };
 }
 
 export const portalOwnerCommit = ownerFor('portal-owner').commit;
@@ -128,19 +138,31 @@ export function deposit(args = {}) {
 }
 
 export function lockTx(args = {}) {
-  const ownerPub = givenOwner(args.ownerPub) || ownerFor(args.to || args.from).pub;
+  const dest = args.to || args.from;
+  let ownerPub = givenOwner(args.ownerPub);
+  if (!ownerPub) {
+    const id = args.spendSeed != null
+      ? (hiddenPortalId(dest, args.spendSeed) || portalIdFromDest(dest))
+      : ownerFor(dest).portalId;
+    const key = portalOwnerKey(portalOwner.privateKey, id);
+    ownerPub = key ? Buffer.from(ed25519RawPub(key)).toString('hex') : ownerFor(dest).pub;
+  }
   return lockTxRaw({ ...args, ownerPub });
 }
 
 export function ownerWithdrawAuth(dest, principal, bind = null) {
   const who = bind?.ownerKey
-    ? { key: bind.ownerKey, pub: Buffer.from(ed25519RawPub(bind.ownerKey)).toString('hex') }
+    ? {
+      key: bind.ownerKey,
+      pub: Buffer.from(ed25519RawPub(bind.ownerKey)).toString('hex'),
+      portalId: hiddenPortalId(dest) || portalIdFromDest(dest),
+    }
     : ownerFor(dest);
   const spec = withdrawAuthBind(bind?.nowMs, principal, { ...(bind || {}), dest });
   const tx = { to: dest };
   const signNanos = bind?.signNanos != null ? bind.signNanos : 0;
   signWithdrawReward(tx, who.key, {
-    portalId: portalIdFromDest(dest),
+    portalId: who.portalId,
     nanos: signNanos,
     dest,
     epoch: spec.epoch,
@@ -158,10 +180,15 @@ export function withdrawTx(args = {}, principal = null) {
   const portal = args.from;
   const signed = principal != null || Number(args.nanos) > 0;
   if (portal && signed && nanos != null && Number(nanos) >= 0) {
-    const who = ownerFor(portal);
+    const hidden = args.spendSeed != null ? hiddenPortalId(portal, args.spendSeed) : null;
+    const carried = String(tx.portalId || '').toLowerCase();
+    const signId = hidden && carried === hidden ? hidden : (carried || portalIdFromDest(portal));
+    const key = hidden
+      ? portalOwnerKey(portalOwner.privateKey, hidden)
+      : ownerFor(portal).key;
     const spec = withdrawAuthBind(args.nowMs ?? (BIND_GENESIS_MS + RESERVE_EPOCH_MS), nanos, args.authBind || null);
-    signWithdrawReward(tx, who.key, {
-      portalId: portalIdFromDest(portal),
+    signWithdrawReward(tx, key || ownerFor(portal).key, {
+      portalId: signId,
       nanos,
       dest: args.to,
       epoch: spec.epoch,
