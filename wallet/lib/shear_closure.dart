@@ -126,7 +126,7 @@ bool localNodeMatchesSeeker({required int nodeHeight, required bool ibd, require
 }
 
 /// Desktop P2P, Solo, and own-node take note depth from that node's tip.
-/// Connect bare does not: it checks a header or a FlyClient sample.
+/// Connect bare does not. Depth is the checked header chain.
 bool desktopNodeTipCounts(ClosureSendMode mode, {required bool ownNode}) {
   if (ownNode) return true;
   return mode == ClosureSendMode.localNode ||

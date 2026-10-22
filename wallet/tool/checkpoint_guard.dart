@@ -2,10 +2,19 @@ import 'dart:io';
 
 import 'package:shear_wallet/shear_checkpoint.dart';
 
-/// Fails the process when an empty or malformed pin would ship.
-/// The v12 placeholder is rejected by [requireReleaseCheckpoint] and the
-/// process exits 0 only because that rejection happened. A real pin must pass.
-void main() {
+/// Without `--release`, this is the pull-request self-test: a placeholder must
+/// be rejected by [requireReleaseCheckpoint], and a real pin must pass.
+/// `--release` is the release job. A placeholder or empty pin exits 1.
+void main(List<String> args) {
+  if (args.contains('--release')) {
+    try {
+      requireReleaseCheckpoint();
+    } on StateError catch (e) {
+      stderr.writeln('checkpoint pin guard: $e');
+      exit(1);
+    }
+    return;
+  }
   final placeholder =
       kCheckpointIsPlaceholder || !checkpointPinWellFormed(kReleaseCheckpoint);
   if (!placeholder) {

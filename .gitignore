@@ -9,6 +9,9 @@ sheark-miner/ShearK-Miner-mainnet
 sheark-miner/dist/
 crypto/native/shearhash.node
 wallet/native/libshear_v3.so
+wallet/native/libshear_v3.dylib
+wallet/native/shear_v3.dll
+wallet/native/build/
 crypto/native/*.dll
 crypto/native/shearadmit.node
 crypto/native/*.node

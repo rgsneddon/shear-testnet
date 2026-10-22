@@ -1,6 +1,17 @@
 /// PLACEHOLDER until the v12 testnet cut fills [kReleaseCheckpoint].
-/// A release build refuses to start while this is true. Tests install a fixture.
+/// A release build shows the checkpoint-missing screen while this is true.
+/// Tests install a fixture.
 const bool kCheckpointIsPlaceholder = true;
+
+/// v12 genesis header time in milliseconds. 0 until the cut publishes it.
+/// [releaseCheckpointReady] stays false while this is 0.
+const int kV12GenesisMs = 0;
+
+/// Consensus ASERT anchor height. chain.js headerLinkReason uses 1.
+const int kConsensusAnchorHeight = 1;
+
+/// GENESIS_BITS_PACKED. 17 bits in Q16.16. chain.js anchor for a non-genesis parent.
+const int kConsensusAnchorBits = 17 * 65536;
 
 /// Shipped pin. Empty on purpose until the cut. [requireReleaseCheckpoint]
 /// rejects it. Do not put a host header here.
@@ -56,12 +67,15 @@ bool _hex32(String hex) {
 }
 
 /// A pin a release can ship. The placeholder fails this.
+/// The ASERT anchor is consensus: height 1 and [kConsensusAnchorBits].
 bool checkpointPinWellFormed(CheckpointPin pin) {
   if (pin.network.isEmpty || pin.height < 11) return false;
   if (!_hex32(pin.hashHex)) return false;
   if (pin.timeMs <= 0 || pin.bits < 65536) return false;
-  if (pin.anchorHeight < 1 || pin.anchorHeight > pin.height) return false;
-  if (pin.anchorTimeMs <= 0 || pin.anchorBits < 65536) return false;
+  final pinBits = pin.bits / 65536;
+  if (pinBits < 4 || pinBits > 256) return false;
+  if (pin.anchorHeight != kConsensusAnchorHeight) return false;
+  if (pin.anchorTimeMs <= 0 || pin.anchorBits != kConsensusAnchorBits) return false;
   if (pin.priorTimesMs.length != 10) return false;
   var prev = 0;
   for (final t in pin.priorTimesMs) {
@@ -72,16 +86,23 @@ bool checkpointPinWellFormed(CheckpointPin pin) {
   return true;
 }
 
-/// Throws when the shipped pin is missing or malformed. Release and CI call this.
-void requireReleaseCheckpoint([CheckpointPin? pin]) {
+/// True when [pin] may ship: not a placeholder, well formed, and its anchor
+/// time is the published v12 genesis millisecond.
+bool releaseCheckpointReady([CheckpointPin? pin]) {
   final got = pin ?? kReleaseCheckpoint;
-  if (kCheckpointIsPlaceholder || !checkpointPinWellFormed(got)) {
-    throw StateError('checkpoint_pin');
-  }
+  if (kCheckpointIsPlaceholder || !checkpointPinWellFormed(got)) return false;
+  if (kV12GenesisMs <= 0 || got.anchorTimeMs != kV12GenesisMs) return false;
+  return true;
 }
 
-/// Release startup. Debug and tests keep running on the placeholder.
-void guardReleaseCheckpoint() {
-  if (!const bool.fromEnvironment('dart.vm.product')) return;
-  requireReleaseCheckpoint();
+/// Throws when the shipped pin is missing or malformed. Release CI calls this.
+void requireReleaseCheckpoint([CheckpointPin? pin]) {
+  if (!releaseCheckpointReady(pin)) throw StateError('checkpoint_pin');
+}
+
+/// Release startup. Debug and tests keep the normal shell.
+/// A product build with no pin shows [CheckpointMissingApp] instead of throwing.
+bool releaseCheckpointMissing() {
+  if (!const bool.fromEnvironment('dart.vm.product')) return false;
+  return !releaseCheckpointReady();
 }

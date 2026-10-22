@@ -87,7 +87,10 @@ const kExplains = [
 final List<String> debugPopulationOrder = <String>[];
 
 Future<void> main(List<String> args) async {
-  guardReleaseCheckpoint();
+  if (releaseCheckpointMissing()) {
+    runApp(const CheckpointMissingApp());
+    return;
+  }
   armWalletConnect();
   final tipFlag = args.indexOf('--print-tip');
   if (tipFlag >= 0) {
@@ -105,6 +108,23 @@ Future<void> main(List<String> args) async {
   }
   registerShearLicenses();
   runApp(ShearWalletApp(demoTx: kDebugMode, biometrics: DeviceBiometrics()));
+}
+
+/// Release build whose checkpoint pin is still empty. Debug and tests do not
+/// reach this. The text is the whole screen.
+class CheckpointMissingApp extends StatelessWidget {
+  const CheckpointMissingApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(
+      home: Scaffold(
+        body: Center(
+          child: Text('checkpoint missing', key: Key('checkpoint-missing')),
+        ),
+      ),
+    );
+  }
 }
 
 /// Parent env for the node, without bootstrap or seed overrides. Windows still needs SystemRoot and PATH.
@@ -288,6 +308,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
   bool _showCtfTranscript = false;
   Timer? _accrualTick;
   Timer? _preloginTick;
+  bool _preloginBusy = false;
   int _tipWatchGen = 0;
   bool _tipBusy = false;
   bool _creditBusy = false;
@@ -523,6 +544,11 @@ class ShearWalletAppState extends State<ShearWalletApp>
   @override
   void initState() {
     super.initState();
+    final headers = verifiedHeaderStorePath(session.store.path);
+    if (headers.isNotEmpty) ledger.bindHeaderStore(headers);
+    ledger.onHeaderProgress = () {
+      if (mounted) _requestShellPaint();
+    };
     WidgetsBinding.instance.addObserver(this);
     final beside = File(Platform.resolvedExecutable).parent.path;
     final dataDir = closureNodeDataDir(
@@ -676,7 +702,13 @@ class ShearWalletAppState extends State<ShearWalletApp>
         _preloginTick?.cancel();
         return;
       }
-      unawaited(once());
+      if (_preloginBusy) return;
+      _preloginBusy = true;
+      unawaited(
+        once().whenComplete(() {
+          _preloginBusy = false;
+        }),
+      );
     });
   }
 
@@ -2856,13 +2888,22 @@ class ShearWalletAppState extends State<ShearWalletApp>
 
   /// One spinner. No step list. The bar stays so the shell is still responding.
   Widget _bookLoading() {
-    return const Center(
+    final verify = ledger.headerVerifyLine;
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          CircularProgressIndicator(key: Key('continuum-loading')),
-          SizedBox(height: 16),
-          Text('Loading', key: Key('continuum-loading-label')),
+          const CircularProgressIndicator(key: Key('continuum-loading')),
+          const SizedBox(height: 16),
+          const Text('Loading', key: Key('continuum-loading-label')),
+          if (verify != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              verify,
+              key: const Key('header-verify-progress'),
+              style: const TextStyle(fontSize: 13),
+            ),
+          ],
         ],
       ),
     );
@@ -2911,6 +2952,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      if (ledger.headerVerifyLine != null)
+        Text(
+          ledger.headerVerifyLine!,
+          key: const Key('header-verify-progress'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 13),
+        ),
       if (unconfirmed > 0)
         Text(
           'Unconfirmed  ${formatShe(unconfirmed)} SHE',

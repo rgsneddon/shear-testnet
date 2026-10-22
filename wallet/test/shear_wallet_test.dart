@@ -2806,7 +2806,7 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 3)));
 
-  test('runTipAccrualTick clears busy after throw and hang so the next tick runs', () async {
+  test('runTipAccrualTick clears busy after throw, and a hang stays busy until it finishes', () async {
     var busy = false;
     var runs = 0;
     await runTipAccrualTick(
@@ -2828,12 +2828,18 @@ void main() {
     );
     expect(runs, 2);
     expect(busy, isFalse);
-    await runTipAccrualTick(
+    final hung = Completer<void>();
+    final stalled = runTipAccrualTick(
       busy: busy,
       setBusy: (v) => busy = v,
       timeout: const Duration(milliseconds: 40),
-      work: () => Completer<void>().future,
+      work: () => hung.future,
     );
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(busy, isTrue);
+    hung.complete();
+    await stalled;
+    await Future<void>.delayed(const Duration(milliseconds: 30));
     expect(busy, isFalse);
     await runTipAccrualTick(
       busy: busy,

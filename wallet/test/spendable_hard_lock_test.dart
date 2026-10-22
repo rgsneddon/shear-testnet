@@ -9,6 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_checkpoint.dart';
+import 'package:shear_wallet/shear_tip_tick.dart';
+import 'package:shear_wallet/shear_v3_ffi.dart';
 import 'package:shear_wallet/shear_closure.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_hash.dart';
@@ -89,14 +91,28 @@ void main() {
       expect(_hexOf(second!), _v3CkptDigest);
       expect(warm.elapsedMilliseconds, lessThan(cold.elapsedMilliseconds));
       expect(cold.elapsedMilliseconds, lessThan(3000));
+      final fresh = <int>[];
       for (final entry in {
         _v3SelfHex(): _v3SelfDigest,
         _v3PatHeader: _v3PatDigest,
         _v3GenesisHeader: _v3GenesisDigest,
         _v3ChildHeader: _v3ChildDigest,
       }.entries) {
-        expect(_hexOf(shearHashV3(_hexBytes(entry.key))!), entry.value);
+        final sw = Stopwatch()..start();
+        final got = shearHashV3(_hexBytes(entry.key));
+        sw.stop();
+        fresh.add(sw.elapsedMilliseconds);
+        expect(_hexOf(got!), entry.value);
       }
+      final mean = fresh.reduce((a, b) => a + b) / fresh.length;
+      const headersPerDay = 960;
+      // ignore: avoid_print
+      print(
+        'SHEAR_V3_NEWKEY_MS ${fresh.join(",")} mean=${mean.toStringAsFixed(1)} '
+        'day=${(mean * headersPerDay / 1000).toStringAsFixed(0)}s '
+        'week=${(mean * headersPerDay * 7 / 1000).toStringAsFixed(0)}s '
+        'fortnight=${(mean * headersPerDay * 14 / 1000).toStringAsFixed(0)}s',
+      );
       final quote = asertQuoteForHeight(
         anchorTimeMs: _v3GenesisMs,
         blockTimeMs: _v3ChildMs,
@@ -111,9 +127,81 @@ void main() {
 
   test('the release guard fails on an empty checkpoint pin', () {
     expect(kCheckpointIsPlaceholder, isTrue);
+    expect(kV12GenesisMs, 0);
+    expect(releaseCheckpointReady(), isFalse);
+    expect(releaseCheckpointMissing(), isFalse);
     expect(checkpointPinWellFormed(kReleaseCheckpoint), isFalse);
     expect(requireReleaseCheckpoint, throwsStateError);
     expect(checkpointPinWellFormed(_fixturePin()), isTrue);
+    expect(_fixturePin().anchorHeight, kConsensusAnchorHeight);
+    expect(_fixturePin().anchorBits, kGenesisBitsPacked);
+    expect(_fixturePin().anchorBits, kConsensusAnchorBits);
+    final drifted = CheckpointPin(
+      network: _fixturePin().network,
+      height: _fixturePin().height,
+      hashHex: _fixturePin().hashHex,
+      timeMs: _fixturePin().timeMs,
+      bits: _fixturePin().bits,
+      anchorHeight: 19,
+      anchorTimeMs: _fixturePin().anchorTimeMs,
+      anchorBits: kGenesisBitsPacked,
+      priorTimesMs: _fixturePin().priorTimesMs,
+    );
+    expect(checkpointPinWellFormed(drifted), isFalse);
+    final wrongBits = CheckpointPin(
+      network: _fixturePin().network,
+      height: _fixturePin().height,
+      hashHex: _fixturePin().hashHex,
+      timeMs: _fixturePin().timeMs,
+      bits: _fixturePin().bits,
+      anchorHeight: 1,
+      anchorTimeMs: _fixturePin().anchorTimeMs,
+      anchorBits: 4 * 65536,
+      priorTimesMs: _fixturePin().priorTimesMs,
+    );
+    expect(checkpointPinWellFormed(wrongBits), isFalse);
+    final ignored = ShearLedger()..installCheckpoint(drifted);
+    expect(ignored.bookTip, 0);
+    expect(isPackedBits(65535), isFalse);
+    expect(isPackedBits(kGenesisBitsPacked), isTrue);
+    final quote = asertQuoteForHeight(
+      anchorTimeMs: _fixturePin().anchorTimeMs,
+      blockTimeMs: _v3CkptMs,
+      blockHeight: 20,
+      anchorHeight: 1,
+      anchorBits: kGenesisBitsPacked,
+      parentTimeMs: _v3GenesisMs,
+    );
+    expect(quote.packed, 4 * 65536);
+    expect(unpackBits(quote.packed), kAsertLiveMinBits);
+    expect(consensusBitsOk(quote.packed, quote), isTrue);
+    expect(consensusBitsOk(1, quote), isFalse);
+    expect(
+      verifiedHeaderStorePath(r'C:\Shear\session.json'),
+      r'C:\Shear\verified-headers.json',
+    );
+    expect(
+      verifiedHeaderStorePath('/home/a/.shear/session.json'),
+      '/home/a/.shear/verified-headers.json',
+    );
+    expect(
+      shearV3BundledLibrary(operatingSystem: 'linux', exeDir: '/opt/shear'),
+      '/opt/shear/lib/libshear_v3.so',
+    );
+    expect(
+      shearV3BundledLibrary(
+        operatingSystem: 'windows',
+        exeDir: r'C:\Shear',
+      ),
+      r'C:\Shear\shear_v3.dll',
+    );
+    expect(
+      shearV3BundledLibrary(
+        operatingSystem: 'macos',
+        exeDir: '/App/Contents/MacOS',
+      ),
+      '/App/Contents/Frameworks/libshear_v3.dylib',
+    );
   });
 
   test(
@@ -208,14 +296,180 @@ void main() {
         hashHex: '11${_v3GenesisDigest.substring(2)}',
         timeMs: _v3GenesisMs,
         bits: 4 * 65536,
-        anchorHeight: 19,
-        anchorTimeMs: _v3GenesisMs,
-        anchorBits: 4 * 65536,
+        anchorHeight: 1,
+        anchorTimeMs: _fixturePin().anchorTimeMs,
+        anchorBits: kGenesisBitsPacked,
         priorTimesMs: _fixturePin().priorTimesMs,
       );
       final wrongBook = ShearLedger()..installCheckpoint(wrong);
       wrongBook.applyTipHeader(child, sealedHeight: 20);
       expect(wrongBook.bookTip, 19, reason: 'wrong checkpoint');
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  testWidgets('a release build with no pin shows checkpoint missing', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const CheckpointMissingApp());
+    expect(find.text('checkpoint missing'), findsOneWidget);
+  });
+
+  test('a timed-out tip tick stays busy until that pass finishes', () async {
+    var busy = false;
+    final gate = Completer<void>();
+    var runs = 0;
+    final stalled = runTipAccrualTick(
+      busy: busy,
+      setBusy: (v) => busy = v,
+      timeout: const Duration(milliseconds: 40),
+      work: () {
+        runs++;
+        return gate.future;
+      },
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(busy, isTrue);
+    expect(runs, 1);
+    await runTipAccrualTick(
+      busy: busy,
+      setBusy: (v) => busy = v,
+      work: () async {
+        runs++;
+      },
+    );
+    expect(runs, 1);
+    gate.complete();
+    await stalled;
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(busy, isFalse);
+  });
+
+  test(
+    'one catch-up runs at a time and a gap on disk still resumes',
+    () async {
+      final dir = Directory.systemTemp.createTempSync('shear-hdr-gap-');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      final path = '${dir.path}/verified-headers.json';
+      final child = _hexBytes(_v3CkptHeader);
+      final ledger = ShearLedger()
+        ..installCheckpoint(_fixturePin(), storePath: path)
+        ..bindHeaderClock(_v3CkptMs);
+      var fetches = 0;
+      final gate = Completer<void>();
+      final entered = Completer<void>();
+      final first = ledger.catchUpVerifiedChain(
+        20,
+        fetch: (from, to) async {
+          fetches++;
+          if (!entered.isCompleted) entered.complete();
+          await gate.future;
+          return [(height: 20, header: child)];
+        },
+      );
+      await entered.future;
+      final second = ledger.catchUpVerifiedChain(
+        99,
+        fetch: (from, to) async {
+          fetches++;
+          return [(height: 20, header: child)];
+        },
+      );
+      gate.complete();
+      final tips = await Future.wait([first, second]);
+      expect(fetches, 1);
+      expect(tips, [20, 20]);
+      expect(ledger.bookTip, 20);
+
+      const resumeTipMs = 1600005490000;
+      final rows = <Map<String, Object>>[];
+      Uint8List? prevId;
+      for (var h = 69; h <= 79; h++) {
+        final id = Uint8List.fromList(List<int>.filled(32, h == 79 ? 0x11 : h));
+        final prev = prevId ?? Uint8List(32);
+        final header = _linkedHeader(
+          prev: prev,
+          timestampMs: resumeTipMs - (80 - h) * 90000,
+          bits: 4 * 65536,
+        );
+        rows.add({
+          'h': h,
+          't': resumeTipMs - (80 - h) * 90000,
+          'hdr': _hexOf(header),
+          'id': _hexOf(id),
+        });
+        prevId = id;
+      }
+      rows.add({
+        'h': 80,
+        't': resumeTipMs,
+        'hdr': _v3ResumeHeader,
+        'id': _v3ResumeDigest,
+      });
+      final gapPath = '${dir.path}/gap.json';
+      File(gapPath).writeAsStringSync(
+        jsonEncode({'v': 2, 'pin': _fixturePin().hashHex, 'rows': rows}),
+      );
+      final resumed = ShearLedger()..bindHeaderClock(resumeTipMs);
+      resumed.installCheckpoint(_fixturePin(), storePath: gapPath);
+      expect(resumed.bookTip, 80);
+      expect(resumed.headerVerifyLine, isNull);
+      final behind = ShearLedger()
+        ..installCheckpoint(_fixturePin())
+        ..bindHeaderClock(_v3CkptMs);
+      await behind.catchUpVerifiedChain(
+        100,
+        fetch: (from, to) async => [(height: 20, header: child)],
+      );
+      expect(behind.bookTip, 20);
+      expect(behind.headerVerifyLine, 'Verifying headers 1/81');
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'a heavier branch inside the checked range rolls the tip back',
+    () async {
+      final id = createIdentity();
+      final ledger = ShearLedger()
+        ..bindIdentity(id)
+        ..bindHeaderClock(1600000180000)
+        ..installCheckpoint(_fixturePin());
+      final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+      ledger.rememberNote(_coin(dest, nanos: kUnitsPerShe, height: 13));
+      ledger.noteLiveHeight(40);
+      final child = _hexBytes(_v3CkptHeader);
+      final extend = _hexBytes(_v3ExtendHeader);
+      final sibling = _hexBytes(_v3SiblingHeader);
+      final tip = await ledger.catchUpVerifiedChain(
+        21,
+        fetch: (from, to) async => [
+          (height: 20, header: child),
+          (height: 21, header: extend),
+        ],
+      );
+      expect(tip, 21);
+      expect(ledger.confirmationsOf(13), 9);
+      expect(
+        ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+        greaterThan(0),
+      );
+      final rolled = await ledger.catchUpVerifiedChain(
+        20,
+        fetch: (from, to) async => [(height: 20, header: sibling)],
+      );
+      expect(rolled, 20);
+      expect(ledger.bookTip, 20);
+      expect(ledger.confirmationsOf(13), 8);
+      expect(
+        ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+        0,
+      );
+      ledger.noteHostReorg(<int>[20]);
+      expect(ledger.bookTip, 19);
+      expect(ledger.confirmationsOf(13), lessThan(9));
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
@@ -1116,6 +1370,10 @@ class _MidPool extends ShearPoolClient {
 }
 
 const _v3GenesisMs = 1600000000000;
+
+/// ASERT anchor time that makes the committed child quote equal 4 packed bits.
+const _v3AnchorMs = 1599904780000;
+const _v3CkptMs = 1600000090000;
 const _v3ChildMs = 1600007199000;
 const _v3ChildBits = 1049404;
 const _v3SelfDigest =
@@ -1136,6 +1394,14 @@ const _v3CkptDigest =
     '03b471fcb9e55ab73e6238cca90506433490143b0f343eb08edc4aa28d9cf117';
 const _v3CkptHeader =
     '010000000000062e313064a7eb815f40f8d0c5ead15fd47d4ac293aaac7e09c9ea8fa4b70000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000090df6f87740100000000040001000000000000000000000000000000';
+const _v3SiblingHeader =
+    '010000000000062e313064a7eb815f40f8d0c5ead15fd47d4ac293aaac7e09c9ea8fa4b70000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000090df6f87740100000000040007000000000000000000000000000000';
+const _v3ExtendHeader =
+    '0100000003b471fcb9e55ab73e6238cca90506433490143b0f343eb08edc4aa28d9cf11700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000203f718774010000000004000e000000000000000000000000000000';
+const _v3ResumeHeader =
+    '010000001111111111111111111111111111111111111111111111111111111111111111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005045c287740100000000040011000000000000000000000000000000';
+const _v3ResumeDigest =
+    '0863cf26ddd32776c8d6b950eb6f1d80b6f3cfdfe2a10a63b128cb1c0cf95e13';
 
 CheckpointPin _fixturePin() {
   const time = _v3GenesisMs;
@@ -1145,9 +1411,9 @@ CheckpointPin _fixturePin() {
     hashHex: _v3GenesisDigest,
     timeMs: time,
     bits: 4 * 65536,
-    anchorHeight: 19,
-    anchorTimeMs: time,
-    anchorBits: 4 * 65536,
+    anchorHeight: 1,
+    anchorTimeMs: _v3AnchorMs,
+    anchorBits: kGenesisBitsPacked,
     priorTimesMs: [for (var i = 10; i >= 1; i--) time - i * 90000],
   );
 }

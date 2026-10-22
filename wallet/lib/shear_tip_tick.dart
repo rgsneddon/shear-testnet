@@ -99,8 +99,9 @@ void pinWalletHttp(HttpClient client, {required bool Function() allowPublic}) {
 
 /// Accrual-tick guard for Continuum tip polls.
 ///
-/// [tipBusy] must clear on success, throw, timeout, and cancel so a hung RPC
-/// cannot freeze the displayed tip until restart.
+/// [tipBusy] clears when the pass finishes. A timeout does not clear it
+/// while that pass is still running, so the next tick cannot start a second
+/// native hash.
 const kWalletTipTimeout = Duration(seconds: 8);
 /// Connect Bare asks for the tip and any seals still missing, on this cadence.
 const kWalletHotPoll = Duration(seconds: 8);
@@ -132,12 +133,24 @@ Future<void> runTipAccrualTick({
 }) async {
   if (busy) return;
   setBusy(true);
+  var done = false;
+  final job = work().whenComplete(() {
+    done = true;
+  });
   try {
-    await work().timeout(timeout);
+    await job.timeout(timeout);
   } catch (_) {
-    // Keep last good sealed tip. Next tick retries.
+    // Keep last good sealed tip. Next tick retries once this pass finishes.
   } finally {
-    setBusy(false);
+    if (done) {
+      setBusy(false);
+    } else {
+      unawaited(
+        job.whenComplete(() {
+          setBusy(false);
+        }),
+      );
+    }
   }
 }
 
