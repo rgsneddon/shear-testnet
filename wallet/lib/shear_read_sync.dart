@@ -109,6 +109,86 @@ bool isNodeHttpHost(String host) {
   return h == 'p2p.shear.digital' || h == 'r2r.shear.digital' || h == 'b2b.shear.digital';
 }
 
+/// Public node and pool addresses. An own-node URL must not be one of these.
+/// This list is a refusal, not a dial target.
+const kRefusedPublicNodeIps = <String>{
+  '77.42.91.84',
+  '157.180.70.110',
+  '2.28.8.89',
+  '178.156.222.223',
+};
+
+/// Dotted IPv4, or the IPv4 inside an IPv4-mapped IPv6 address.
+String? ipv4OfAddress(InternetAddress addr) {
+  if (addr.type == InternetAddressType.IPv4) return addr.address;
+  final b = addr.rawAddress;
+  if (b.length == 16 &&
+      b[10] == 0xff &&
+      b[11] == 0xff &&
+      b.sublist(0, 10).every((x) => x == 0)) {
+    return '${b[12]}.${b[13]}.${b[14]}.${b[15]}';
+  }
+  return null;
+}
+
+/// Host form used for the refuse list. Mapped IPv6 becomes dotted IPv4.
+String canonicalHost(String host) {
+  var h = host.trim().toLowerCase();
+  while (h.endsWith('.')) {
+    h = h.substring(0, h.length - 1);
+  }
+  if (h.startsWith('[') && h.endsWith(']') && h.length > 2) {
+    h = h.substring(1, h.length - 1);
+  }
+  final zone = h.indexOf('%');
+  if (zone >= 0) h = h.substring(0, zone);
+  final addr = InternetAddress.tryParse(h);
+  if (addr == null) return h;
+  return ipv4OfAddress(addr) ?? addr.address;
+}
+
+/// Decimal, hex, octal, and short forms are not a dotted quad or a canonical IPv6.
+bool hostIsNonCanonicalNumeric(String host) {
+  final h = host.trim().toLowerCase();
+  if (h.contains('%')) return true;
+  if (RegExp(r'^0x[0-9a-f]+$').hasMatch(h)) return true;
+  if (RegExp(r'^\d+$').hasMatch(h)) return true;
+  // A label that is only hex, not a name that happens to contain "0x".
+  if (h.split('.').any((part) => RegExp(r'^0x[0-9a-f]+$').hasMatch(part))) return true;
+  if (RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(h)) {
+    for (final part in h.split('.')) {
+      if (part.length > 1 && part.startsWith('0')) return true;
+      final n = int.tryParse(part);
+      if (n == null || n > 255) return true;
+    }
+    return false;
+  }
+  if (RegExp(r'^\d+(\.\d+){1,2}$').hasMatch(h)) return true;
+  return false;
+}
+
+/// 0.0.0.0 and :: are not an own node.
+bool hostIsUnspecified(String host) {
+  final h = canonicalHost(host);
+  return h == '0.0.0.0' || h == '::' || h == '0:0:0:0:0:0:0:0';
+}
+
+/// True for a public Shear host or a known public-node address.
+bool isPublicWalletHost(String? urlOrHost) {
+  if (urlOrHost == null || urlOrHost.isEmpty) return false;
+  var host = urlOrHost.trim().toLowerCase();
+  if (host.contains('://')) {
+    host = Uri.tryParse(host)?.host.toLowerCase() ?? '';
+  }
+  host = canonicalHost(host);
+  if (host.isEmpty) return false;
+  if (kRefusedPublicNodeIps.contains(host)) return true;
+  if (host == 'shear.digital' || host.endsWith('.shear.digital')) return true;
+  if (isNodeHttpHost(host)) return true;
+  if (isPublicPoolHttp('https://$host')) return true;
+  return false;
+}
+
 String _trimBase(String raw) {
   var s = raw.trim();
   if (s.endsWith('/')) s = s.substring(0, s.length - 1);
@@ -139,32 +219,47 @@ String walletSendBase(String? url) {
 /// Spend hosts in try order. The public pool is included only when
 /// [legacyPoolSend] is set and the configured host is already a pool.
 /// A pinned non-pool URL is the only target, so a test node is not rewritten.
-List<String> nodeSendTargets(String? base, {String? pinned, bool legacyPoolSend = false}) {
+List<String> nodeSendTargets(
+  String? base, {
+  String? pinned,
+  bool legacyPoolSend = false,
+  bool publicConsent = false,
+}) {
   if (legacyPoolSend) {
     final raw = (pinned != null && pinned.trim().isNotEmpty) ? pinned : (base ?? '');
-    if (isPublicPoolHttp(raw) || isPoolLedgerHost(raw)) return [_trimBase(raw)];
+    if (isPublicPoolHttp(raw) || isPoolLedgerHost(raw)) {
+      if (!publicConsent && isPublicWalletHost(raw)) return [kLocalNodeRpc];
+      return [_trimBase(raw)];
+    }
   }
   if (pinned != null &&
       pinned.trim().isNotEmpty &&
       !isPublicPoolHttp(pinned) &&
       !isPoolLedgerHost(pinned)) {
+    if (!publicConsent && isPublicWalletHost(pinned)) return [kLocalNodeRpc];
     return [_trimBase(pinned)];
   }
   final out = <String>[];
   void add(String raw) {
     final s = _trimBase(raw);
     if (s.isEmpty || out.contains(s)) return;
+    if (!publicConsent && isPublicWalletHost(s)) return;
     if (isPublicPoolHttp(s) || isPoolLedgerHost(s)) return;
     out.add(s);
   }
-  if (base != null && isWalletSendSeed(base)) {
+  if (publicConsent && base != null && isWalletSendSeed(base)) {
+    add(base);
+  } else if (base != null && isWalletSendSeed(base) && !isPublicWalletHost(base)) {
     add(base);
   } else {
     add(kLocalNodeRpc);
   }
-  for (final seed in kPublicNodeSeeds) {
-    add(seed);
+  if (publicConsent) {
+    for (final seed in kPublicNodeSeeds) {
+      add(seed);
+    }
   }
+  if (out.isEmpty) add(kLocalNodeRpc);
   return out;
 }
 
@@ -219,6 +314,7 @@ Future<String> firstLiveNodeSeed(
   List<String> seeds, {
   Duration budget = const Duration(seconds: 4),
   Duration grace = kLiveSeedGrace,
+  bool publicConsent = false,
 }) async {
   final usable = <String>[];
   final seen = <String>{};
@@ -226,6 +322,7 @@ Future<String> firstLiveNodeSeed(
     var s = raw.trim();
     if (s.endsWith('/')) s = s.substring(0, s.length - 1);
     if (s.isEmpty || isPoolLedgerHost(s) || !seen.add(s)) continue;
+    if (!publicConsent && isPublicWalletHost(s)) continue;
     usable.add(s);
   }
   if (usable.isEmpty) return '';
@@ -240,7 +337,7 @@ Future<String> firstLiveNodeSeed(
 
   for (final seed in usable) {
     unawaited(() async {
-      final height = await probeNodeSeedHeight(seed, budget: budget);
+      final height = await probeNodeSeedHeight(seed, budget: budget, allowPublic: publicConsent);
       if (!done.isCompleted && height != null && height > bestH) {
         bestH = height;
         best = seed;
@@ -262,12 +359,25 @@ Future<String> firstLiveNodeSeed(
 }
 
 /// Height of one node `/stats`, or null when the seed is not the live book.
-Future<int?> probeNodeSeedHeight(String base, {Duration budget = const Duration(seconds: 4)}) async {
+Future<int?> probeNodeSeedHeight(
+  String base, {
+  Duration budget = const Duration(seconds: 4),
+  bool allowPublic = false,
+}) async {
   final http = HttpClient()..connectionTimeout = budget;
+  pinWalletHttp(http, allowPublic: () => allowPublic);
   try {
     for (final path in const ['/stats', '/api/stats']) {
-      final req = await http.getUrl(Uri.parse('$base$path')).timeout(budget);
+      final target = Uri.parse('$base$path');
+      final req = await http.getUrl(target).timeout(budget);
+      stampLocalRpc(req, target);
+      req.followRedirects = false;
+      req.maxRedirects = 0;
       final res = await req.close().timeout(budget);
+      if (res.statusCode >= 300 && res.statusCode < 400) {
+        await res.drain<void>();
+        continue;
+      }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         await res.drain<void>();
         continue;
@@ -608,15 +718,39 @@ class ShearReadSync {
             ...seeds.where((s) => !isPoolLedgerHost(s)),
         ])),
         _http = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8)),
-        _rng = random ?? Random();
+        _rng = random ?? Random() {
+    pinWalletHttp(_http, allowPublic: () => publicConsent);
+  }
+
+  /// True when this sync's sockets go through the consent dial.
+  bool get debugConnectPinned => walletConnectPinned(_http);
 
   final List<String> seeds;
   final String? userUrl;
   final Duration jitter;
-  final HttpClient _http;
+  HttpClient _http;
   final Random _rng;
 
+  void rebindHttp(HttpClient http) {
+    _http = http;
+    pinWalletHttp(_http, allowPublic: () => publicConsent);
+  }
+
   String? liveBase;
+
+  /// Set while an own node is the only read target. [findLiveNode] must not probe.
+  bool blockPublicProbe = false;
+
+  /// Public seeds stay dark until the user accepts the public-node sentence.
+  bool publicConsent = false;
+
+  Iterable<String> get consentSeeds sync* {
+    for (final seed in seeds) {
+      if (!publicConsent && isPublicWalletHost(seed)) continue;
+      yield seed;
+    }
+  }
+
   DateTime? _backoffUntil;
   int _failures = 0;
   final Set<int> _proven = {};
@@ -783,6 +917,7 @@ class ShearReadSync {
   }
 
   Future<String?> findLiveNode({bool keepOnMiss = false}) async {
+    if (blockPublicProbe) return liveBase;
     if (jitter > Duration.zero) {
       final cap = jitter.inMilliseconds;
       if (cap > 0) {
@@ -790,7 +925,7 @@ class ShearReadSync {
       }
     }
     final probes = <String, ({int height, String genesis})>{};
-    final found = await Future.wait(seeds.map((seed) async {
+    final found = await Future.wait(consentSeeds.map((seed) async {
       final p = await _probe(seed);
       return MapEntry(seed, p);
     }));
@@ -1259,7 +1394,7 @@ class ShearReadSync {
 
   Future<List<(String, int)>> _rankFlyclientPeers() async {
     final probes = <String, ({int height, String genesis})>{};
-    final found = await Future.wait(seeds.map((seed) async {
+    final found = await Future.wait(consentSeeds.map((seed) async {
       final p = await _probe(seed);
       return MapEntry(seed, p);
     }));
@@ -1320,8 +1455,13 @@ class ShearReadSync {
   }
 
   Future<Map<String, dynamic>?> _get(String base, String path) async {
+    if (!publicConsent && isPublicWalletHost(base)) return null;
     try {
-      final req = await _http.getUrl(Uri.parse('$base$path'));
+      final target = Uri.parse('$base$path');
+      final req = await _http.getUrl(target);
+      stampLocalRpc(req, target);
+      req.followRedirects = false;
+      req.maxRedirects = 0;
       final res = await req.close();
       if (res.statusCode < 200 || res.statusCode >= 300) {
         await res.drain<void>();

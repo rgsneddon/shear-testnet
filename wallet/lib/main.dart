@@ -32,7 +32,7 @@ import 'shear_levy.dart';
 import 'shear_eip712.dart';
 import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
-import 'shear_privacy_hop.dart';
+import 'shear_public_confirm.dart';
 import 'shear_closure.dart';
 import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
@@ -69,6 +69,7 @@ const kExplains = [
 final List<String> debugPopulationOrder = <String>[];
 
 Future<void> main(List<String> args) async {
+  armWalletConnect();
   final tipFlag = args.indexOf('--print-tip');
   if (tipFlag >= 0) {
     final report = await continuumTipReport();
@@ -85,6 +86,25 @@ Future<void> main(List<String> args) async {
   }
   registerShearLicenses();
   runApp(ShearWalletApp(demoTx: kDebugMode, biometrics: DeviceBiometrics()));
+}
+
+/// Parent env for the node, without bootstrap or seed overrides. Windows still needs SystemRoot and PATH.
+Map<String, String> sharedNodeLaunchEnv(
+  Map<String, String> parent,
+  Map<String, String> env, {
+  String? workDir,
+}) {
+  final merged = Map<String, String>.from(parent)..addAll(env);
+  merged.remove('SHEAR_BOOTSTRAP');
+  merged.remove('SHEAR_BOOTSTRAP_URL');
+  merged.remove('SHEAR_SEEDS');
+  if (workDir != null && workDir.isNotEmpty) {
+    final delim = Platform.isWindows ? ';' : ':';
+    final extra =
+        '$workDir${Platform.pathSeparator}runtime$delim$workDir${Platform.pathSeparator}crypto${Platform.pathSeparator}native';
+    merged['PATH'] = '$extra$delim${merged['PATH'] ?? ''}';
+  }
+  return merged;
 }
 
 class ShearWalletApp extends StatefulWidget {
@@ -105,11 +125,12 @@ class ShearWalletApp extends StatefulWidget {
     this.pickQrImage,
     this.startUnlocked = false,
     this.skipPoolSync = false,
-    this.privacyHop,
+    this.askPublicNode = false,
     this.postReserveLock = false,
-    this.hopFeePay,
     this.hostAndroid,
     this.bookLoading = false,
+    this.nodeBinary,
+    this.startNode,
   });
 
   final ShearSession? session;
@@ -118,6 +139,12 @@ class ShearWalletApp extends StatefulWidget {
   /// Local observation only: confirm one testnet round so Shearview/Resistance have a tx.
   final bool demoTx;
   final ShearReserve? reserve;
+  /// Test hook. When set, boot can spawn this binary instead of the pack.
+  final String? nodeBinary;
+
+  /// Test hook. Counts or replaces the sidecar process start.
+  final ClosureProcessStart? startNode;
+
   /// Test hook. Production fetches the origin named in the vort1. key.
   final Future<Vortice?> Function(String key)? downloadVortice;
   final ShearBiometrics? biometrics;
@@ -137,14 +164,11 @@ class ShearWalletApp extends StatefulWidget {
   final bool startUnlocked;
   /// Tests: skip unlock HTTP so the sign-pull dialog can be driven without a hung pool.
   final bool skipPoolSync;
-  /// Residual hop controller. Tests inject a mock.
-  final PrivacyHopController? privacyHop;
+
+  /// Tests: show the first-run public-node screen even when [skipPoolSync] is set.
+  final bool askPublicNode;
   /// Tests: post Reserve lock to [ledger.pool] even when [skipPoolSync] is set.
   final bool postReserveLock;
-
-  /// Test hook. Production pays the hop fee with [ShearLedger.send], whose
-  /// seal/prove runs in [Isolate.run]. A slow hook must not run in the confirm turn.
-  final Future<void> Function()? hopFeePay;
 
   /// Null uses the real platform. Tests set this so a phone bar can be
   /// measured on a desktop host. iOS will use this same coins-only shell.
@@ -210,8 +234,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   final shearviewQuery = TextEditingController();
   bool _vorticeBusy = false;
   late final ShearReserve reserve = widget.reserve ?? ShearReserve();
-  late final PrivacyHopController hop =
-      widget.privacyHop ?? PrivacyHopController();
   late final ShearNodeSidecar sidecar;
   NodeProcHandle? _nodeHandle;
   Timer? _nodeLogPaint;
@@ -270,17 +292,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   late final List<ScrollController> _tabScroll;
   final _depositsScroll = ScrollController();
   bool _reserveUnprivateOk = false;
+  bool _awaitingPublicChoice = false;
+
+  /// False while a locked session still holds the default Connect bare mode.
+  /// Persist must not write that default over the sealed choice.
+  bool _nodeChoiceLive = false;
+  bool _localNodePending = false;
+  bool _localChoiceOpening = false;
+  final _ownNodeCtrl = TextEditingController();
+  String? _ownNodeError;
   String? _reserveDepositProgress;
-  /// Hop fee already posted this process. VPN grant / retry must not pay again.
-  bool _hopFeePaidSession = false;
-  bool _hopBusy = false;
-  String? _hopProgress;
   int _owedAnchorMs = 0;
   double _owedAnchorShe = 0;
-
-  void _onHop() {
-    if (mounted) setState(() {});
-  }
 
   final List<String> _pendingNodeLines = [];
   Future<void>? _nodeLogApply;
@@ -325,6 +348,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       matched = sidecar.takeOverIfMatched();
     }
     _requestShellPaint();
+    if (_localNodePending && sidecar.honest) unawaited(_finishLocalChoice());
     if (sidecar.localSyncNoticeDue(caughtTip: matched)) _showLocalNodeSynced();
     if (sidecar.hasHeldBlocks) unawaited(_openSidecarProofs());
   }
@@ -411,14 +435,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Future<void> _startSharedNode(String binary, Map<String, String> env, List<String> args) async {
     await _stopSharedNode();
-    final merged = Map<String, String>.from(Platform.environment)..addAll(env);
     final work = sidecar.workDir;
-    if (work != null && work.isNotEmpty) {
-      final delim = Platform.isWindows ? ';' : ':';
-      final extra =
-          '$work${Platform.pathSeparator}runtime$delim$work${Platform.pathSeparator}crypto${Platform.pathSeparator}native';
-      merged['PATH'] = '$extra$delim${merged['PATH'] ?? ''}';
-    }
+    final merged = sharedNodeLaunchEnv(Platform.environment, env, workDir: work);
     final handle = await startNodeProcessOffUi(
       binary: binary,
       args: args,
@@ -460,25 +478,26 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       override: Platform.environment['SHEAR_NODE_BIN'],
       besideDir: beside,
     );
+    _ownNodeCtrl.text = session.ownNodeUrl;
     sidecar = ShearNodeSidecar(
       android: widget.hostAndroid ?? (!kIsWeb && Platform.isAndroid),
       storedMode: widget.session?.closureSendMode,
-      nodeBinary: packed?.binary,
+      nodeBinary: widget.nodeBinary ?? packed?.binary,
       dataDir: dataDir,
       datadirEmpty: () => closureDatadirEmpty(dataDir),
-      startProcess: _startSharedNode,
+      startProcess: widget.startNode ?? _startSharedNode,
       onStop: _stopSharedNode,
     )
       ..proofSink = ledger
       ..nodeScript = packed?.script
       ..workDir = packed?.workDir;
     _tabScroll = List.generate(kTabs.length, (_) => ScrollController());
-    hop.addListener(_onHop);
     _boot();
   }
 
   @override
   void dispose() {
+    _ownNodeCtrl.dispose();
     flowTo.dispose();
     flowAmt.dispose();
     flowMemo.dispose();
@@ -491,8 +510,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       c.dispose();
     }
     _depositsScroll.dispose();
-    hop.removeListener(_onHop);
-    unawaited(hop.disconnect());
     WidgetsBinding.instance.removeObserver(this);
     _tipWatchGen += 1;
     _accrualTick?.cancel();
@@ -521,14 +538,42 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (unlocked && !widget.skipPoolSync) _startAccrualTick(immediate: true);
   }
 
+  /// Copy the unlocked choice onto the sidecar. A locked session still has the
+  /// default Connect bare string, and that default is not the stored choice.
+  void _installStoredNodeChoice() {
+    final mode = closureModeFromStored(session.closureSendMode, android: _hostAndroid);
+    sidecar
+      ..committed = mode
+      ..pending = mode;
+    _nodeChoiceLive = true;
+  }
+
+  Future<void> _spawnStoredNode() {
+    if (_hostAndroid) return Future<void>.value();
+    final underTest = Platform.environment['FLUTTER_TEST'] == 'true';
+    if (underTest && widget.startNode == null) return Future<void>.value();
+    final mode = sidecar.committed;
+    if (mode == ClosureSendMode.localNode || mode == ClosureSendMode.localNodeFull) {
+      return sidecar.apply();
+    }
+    return Future<void>.value();
+  }
+
+  void _keepStoredNodeChoice() {
+    if (!_nodeChoiceLive) return;
+    session.closureSendMode = closureModeStored(sidecar.committed);
+  }
+
   Future<void> _boot() async {
     id = await session.loadOrCreate();
     _themeMode = session.darkMode ? ThemeMode.dark : ThemeMode.light;
-    sidecar
-      ..committed = closureModeFromStored(session.closureSendMode, android: _hostAndroid)
-      ..pending = closureModeFromStored(session.closureSendMode, android: _hostAndroid);
-    if (!_hostAndroid && Platform.environment['FLUTTER_TEST'] != 'true') {
-      unawaited(sidecar.startDesktopBook());
+    // A locked seal has not been opened, so the in-memory mode is still the
+    // default. Do not copy that default, and do not start a node from it.
+    if (session.needsUnlock) {
+      _nodeChoiceLive = false;
+    } else if (!_nodeChoiceLive) {
+      _installStoredNodeChoice();
+      unawaited(_spawnStoredNode());
     }
     _syncJoinRoster();
     try {
@@ -594,10 +639,41 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (_vorticeBusy) return;
     _vorticeBusy = true;
     try {
-      final got = widget.downloadVortice != null
-          ? await widget.downloadVortice!(key)
-          : await downloadVorticeFromOrigin(key);
-      if (!mounted || got == null) return;
+      final origin = parsed.origin ?? '';
+      var consent = session.publicNodeConsent;
+      if (widget.downloadVortice == null && origin.isNotEmpty && await vorticeOriginIsPublic(origin) && !consent) {
+        if (!mounted) return;
+        // The app state sits above MaterialApp. The navigator context can show the dialog.
+        final dialogContext = _nav.currentContext;
+        if (dialogContext == null || !dialogContext.mounted) return;
+        // One fetch. Settings and the sealed consent stay as they were.
+        final once = await _confirmPublicIp(dialogContext);
+        if (!once) {
+          _snack.currentState?.showSnackBar(
+            const SnackBar(content: Text(kPublicNodeEverySendCopy)),
+          );
+          return;
+        }
+        consent = true;
+      }
+      final Vortice? got;
+      try {
+        got = widget.downloadVortice != null
+            ? await widget.downloadVortice!(key)
+            : await downloadVorticeFromOrigin(key, publicConsent: consent);
+      } on StateError catch (e) {
+        if (mounted) {
+          _snack.currentState?.showSnackBar(SnackBar(content: Text(e.message)));
+        }
+        return;
+      }
+      if (!mounted) return;
+      if (got == null) {
+        _snack.currentState?.showSnackBar(
+          const SnackBar(content: Text('Could not fetch that vortice.')),
+        );
+        return;
+      }
       final next = deployVortice(vortices, got);
       if (next.length == vortices.length) return;
       session.deployedVortices = next
@@ -853,6 +929,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _enterWallet(String pw) async {
     _preloginTick?.cancel();
     if (session.identity == null) return;
+    // Unlock has applied the sealed choice. Start that node now, before any
+    // later Apply can write the pre-unlock Connect bare default back.
+    if (!_nodeChoiceLive) {
+      _installStoredNodeChoice();
+      unawaited(_spawnStoredNode());
+    }
     // Write the scrubbed book before any credit follow re-reads session.json.
     // Otherwise the worker would put the stub height 20 back.
     if (session.bookCacheNeedsPersist) {
@@ -892,6 +974,25 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (session.rememberedReserve != null) {
       reserve.installRemembered(ledger, session.rememberedReserve!);
     }
+    _ownNodeCtrl.text = session.ownNodeUrl;
+    await _applyOwnNode();
+    if (!mounted) return;
+    if (_needsPublicChoice()) {
+      setState(() {
+        _lockError = null;
+        unlocked = true;
+        _awaitingPublicChoice = true;
+        _verifying = false;
+      });
+      return;
+    }
+    _armRememberedConsent();
+    await _openWalletBody();
+  }
+
+  /// Spendable paints before sync chrome. Public reads start only after the
+  /// remembered choice, and a local node does not dial a public host.
+  Future<void> _openWalletBody() async {
     if (!widget.skipPoolSync) {
       // _finishUnlockSync paints the shell before its credit await.
       if (!mounted || id == null) return;
@@ -1523,7 +1624,125 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       themeMode: _themeMode,
       themeAnimationDuration: Duration.zero,
       home: Builder(
-        builder: (ctx) => unlocked ? _shell(ctx) : _lockGate(ctx),
+        builder: (ctx) {
+          if (!unlocked) return _lockGate(ctx);
+          if (_awaitingPublicChoice) return _publicNodeChoice(ctx);
+          return _shell(ctx);
+        },
+      ),
+    );
+  }
+
+  Widget _publicNodeChoice(BuildContext context) {
+    if (_localNodePending) {
+      final running = sidecar.running;
+      return Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: ListView(
+                padding: const EdgeInsets.all(24),
+                children: [
+                  Text(
+                    running ? 'Syncing the local node' : 'Local node',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(sidecar.progress, key: const Key('local-node-progress')),
+                  if (!running) ...[
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Spendable stays hidden until this node is synced. '
+                      '$kLocalNodeIpCopy',
+                    ),
+                  ],
+                  if (running && !sidecar.honest) ...[
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Spendable appears when this node is synced. '
+                      '$kLocalNodeIpCopy',
+                      key: Key('local-node-sync-wait'),
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  TextButton(
+                    key: const Key('local-node-choose-other'),
+                    onPressed: _backFromLocalChoice,
+                    child: const Text('Choose another way'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: ListView(
+              padding: const EdgeInsets.all(24),
+              children: [
+                const Text(
+                  'How should Continuum reach the book?',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 12),
+                const Text(kPublicNodeEverySendCopy, key: Key('public-node-choice-copy')),
+                const SizedBox(height: 16),
+                FilledButton(
+                  key: const Key('public-node-choice-accept'),
+                  onPressed: _acceptPublicFromChoice,
+                  child: const Text(kUnprivateConfirmLabel),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  key: const Key('public-node-choice-own'),
+                  controller: _ownNodeCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Own node',
+                    helperText: 'host:port or https://host:port. http is only for this machine, a private IP, or a .local name.',
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    key: const Key('public-node-choice-own-save'),
+                    onPressed: _saveOwnNode,
+                    child: const Text('Use this node'),
+                  ),
+                ),
+                if (!_hostAndroid) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Start local node',
+                    key: Key('public-node-choice-local'),
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const Text(kLocalNodeIpCopy, key: Key('local-node-ip-copy')),
+                  const Text(
+                    'Choose the existing P2P node, or the existing solo node.',
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton(
+                    key: const Key('public-node-choice-p2p'),
+                    onPressed: () => _chooseExistingLocalMode(ClosureSendMode.localNode),
+                    child: const Text('P2P node'),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton(
+                    key: const Key('public-node-choice-solo'),
+                    onPressed: () => _chooseExistingLocalMode(ClosureSendMode.localNodeFull),
+                    child: const Text('Solo node'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -2015,34 +2234,6 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               Expanded(child: pages[tab]()),
             ],
           ),
-          if (_hopProgress != null)
-            Positioned.fill(
-              child: AbsorbPointer(
-                child: ColoredBox(
-                  color: const Color(0x66000000),
-                  child: Center(
-                    child: Card(
-                      key: const Key('reserve-hop-progress'),
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            const SizedBox(width: 16),
-                            Text(_hopProgress!, key: const Key('reserve-hop-progress-text')),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -2958,6 +3149,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             });
             return;
           }
+          if (continuumPayable(flowTo.text)) {
+            final consent = await _flowPublicConsent(context);
+            if (!consent || !mounted) {
+              setState(() {
+                _flowSendAdvisory = kPublicIpWaitCopy;
+                _flowSendOk = false;
+              });
+              return;
+            }
+          }
           final bare = sidecar.committed == ClosureSendMode.connectBare;
           final progress = SendProgress();
           _watchFlowProgress(progress);
@@ -2979,6 +3180,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               spendSeed: hexToBytes(ident.seedHex),
               local: false,
               allowPublicHttp: bare,
+              publicNode: _flowPostsToPublicNode(),
+              publicIpConsent: _flowPostsToPublicNode() && _reserveUnprivateOk,
               depth: _mempoolDepth,
               progress: progress,
             );
@@ -3032,6 +3235,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             ? null
             : () async {
           if (!claimSingleSubmit(held: _flowSending)) return;
+          final consent = await _flowPublicConsent(context);
+          if (!consent || !mounted) {
+            setState(() {
+              _flowSendAdvisory = kPublicIpWaitCopy;
+              _flowSendOk = false;
+            });
+            return;
+          }
           final who = id;
           if (who == null) return;
           final progress = SendProgress();
@@ -3049,6 +3260,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               spendSeed: hexToBytes(who.seedHex),
               progress: progress,
               allowPublicHttp: sidecar.committed == ClosureSendMode.connectBare,
+              publicNode: _flowPostsToPublicNode(),
+              publicIpConsent: _flowPostsToPublicNode() && _reserveUnprivateOk,
             );
             if (!mounted) return;
             setState(() {
@@ -3463,6 +3676,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       setState(() => _reserveDepositProgress = 'Consolidating Continuum notes for Deposit…');
       await _yieldUiFrame();
     }
+    final local = reserveLockPostsLocal(
+      hasPool: ledger.pool != null,
+      skipPoolSync: widget.skipPoolSync,
+      postReserveLock: widget.postReserveLock,
+    );
+    final consent = await _ensurePublicIpConsent(context, local: local);
+    if (!consent || !mounted) {
+      if (mounted) setState(() => _reserveDepositProgress = null);
+      return;
+    }
     final result = await postReserveDeposit(
       ledger: ledger,
       reserve: reserve,
@@ -3472,11 +3695,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       she: she,
       depth: _mempoolDepth,
       spendSeed: hexToBytes(ident.seedHex),
-      local: reserveLockPostsLocal(
-        hasPool: ledger.pool != null,
-        skipPoolSync: widget.skipPoolSync,
-        postReserveLock: widget.postReserveLock,
-      ),
+      local: local,
+      publicIpConsent: !local && _reserveUnprivateOk,
     );
     if (!result.posted || result.tx == null) {
       if (mounted) setState(() => _reserveDepositProgress = null);
@@ -3515,136 +3735,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// One frame of budget so the pay/connect card paints before fee crypto or Connect.
   Future<void> _yieldUiFrame() => Future<void>.delayed(const Duration(milliseconds: 1));
 
-  Future<void> _payHopFee(ShearIdentity ident, double need) async {
-    final hook = widget.hopFeePay;
-    if (hook != null) {
-      await hook();
-      return;
-    }
-    final from = ledger.spendFrom(
-      ident.address,
-      paymentCode: ident.paymentCode,
-      amount: need,
-    );
-    // Spendable covers the fee. Do not scan the note book or wait for one
-    // sealed note. Same path on every platform.
-    await ledger.send(
-      from: from,
-      to: kPrivacyHopFeeDest,
-      amount: kPrivacyHopFeeShe,
-      kind: 'hop-fee',
-      local: ledger.pool == null || widget.skipPoolSync,
-      restFrame: ident.address,
-      paymentCode: ident.paymentCode,
-      spendSeed: hexToBytes(ident.seedHex),
-      allowPublicHttp: true,
-    );
-  }
-
-  Future<void> _reserveHopToggle(BuildContext context, ShearIdentity ident) async {
-    if (_hopBusy) return;
-    if (hop.isUp || hop.isConnecting) {
-      await hop.disconnect();
-      return;
-    }
-    if (!privacyHopFeeDestOk(kPrivacyHopFeeDest)) {
-      _snack.currentState?.showSnackBar(
-        const SnackBar(content: Text('Hop fee dest is not the pool ssa1')),
-      );
-      return;
-    }
-    var need = kPrivacyHopFeeShe;
-    if (!_hopFeePaidSession) {
-      final depth = await _mempoolDepthNow();
-      final feeNanos = (kPrivacyHopFeeShe * kUnitsPerShe).round();
-      final feeL = levyNanos(feeNanos, depth: depth);
-      need = kPrivacyHopFeeShe + feeL / kUnitsPerShe;
-      if (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) < need) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(
-              'Not enough Continuum spendable for hop fee $kPrivacyHopFeeSheText + tx fee ${formatShe(feeL / kUnitsPerShe)} SHE',
-            ),
-          ));
-        }
-        return;
-      }
-      final go = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          key: const Key('reserve-hop-fee-confirm'),
-          title: Text(kPrivacyHopFeeConfirmTitle),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(kPrivacyHopFeeConfirmBody),
-              const SizedBox(height: 8),
-              Text(
-                _txFeeAdvice(feeNanos, oneFeeTo: 'pay the Privacy hop fee', depth: depth),
-                key: const Key('reserve-hop-fee-levy'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              key: const Key('reserve-hop-fee-cancel'),
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              key: const Key('reserve-hop-fee-accept'),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: Text(kPrivacyHopFeePayLabel),
-            ),
-          ],
-        ),
-      );
-      if (go != true || !mounted) return;
-    }
-    setState(() => _hopBusy = true);
-    try {
-      if (!_hopFeePaidSession) {
-        setState(() => _hopProgress = kHopProgressPaying);
-        await _yieldUiFrame();
-        if (!mounted) return;
-        try {
-          await _payHopFee(ident, need);
-        } catch (e) {
-          if (mounted) {
-            setState(() => _hopProgress = null);
-            _snack.currentState?.showSnackBar(
-              SnackBar(content: Text(hopFeeAdvisoryOf(e))),
-            );
-          }
-          return;
-        }
-        if (!mounted) return;
-        _hopFeePaidSession = true;
-      }
-      setState(() => _hopProgress = kHopProgressConnecting);
-      await _yieldUiFrame();
-      if (!mounted) return;
-      final ok = await hop.connect();
-      if (!mounted) return;
-      setState(() => _hopProgress = null);
-      if (!ok) {
-        _snack.currentState?.showSnackBar(
-          SnackBar(content: Text(hop.message.isEmpty ? 'Privacy hop unreachable' : hop.message)),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _hopBusy = false;
-          if (!hop.isConnecting) _hopProgress = null;
-        });
-      }
-    }
-  }
-
-  Future<void> _reserveUnprivateConfirm(BuildContext context) async {
+  Future<bool> _confirmPublicIp(BuildContext context) async {
     final go = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -3672,8 +3763,222 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ],
       ),
     );
-    if (go == true && mounted) {
-      setState(() => _reserveUnprivateOk = true);
+    return go == true;
+  }
+
+  Future<void> _reserveUnprivateConfirm(BuildContext context) async {
+    if (await _confirmPublicIp(context) && mounted) await _rememberPublicConsent();
+  }
+
+  bool _usesPublicNodeNow() =>
+      sidecar.committed == ClosureSendMode.connectBare &&
+      !ownNodeSkipsPublicConsent(session.ownNodeUrl);
+
+  bool _needsPublicChoice() {
+    if (ownNodeSkipsPublicConsent(session.ownNodeUrl) && _ownNodeError == null) return false;
+    if (sidecar.committed != ClosureSendMode.connectBare) return false;
+    if (session.publicNodeConsent || session.publicNodeChoiceMade) return false;
+    if (widget.skipPoolSync && !widget.askPublicNode) return false;
+    return true;
+  }
+
+  void _armRememberedConsent() {
+    if (session.publicNodeConsent && _usesPublicNodeNow()) {
+      _reserveUnprivateOk = true;
+      ledger.pool?.publicConsent = true;
+    }
+  }
+
+  Future<void> _rememberPublicConsent() async {
+    session.publicNodeConsent = true;
+    session.publicNodeChoiceMade = true;
+    _reserveUnprivateOk = true;
+    _awaitingPublicChoice = false;
+    _localNodePending = false;
+    if (_usesPublicNodeNow()) ledger.pool?.publicConsent = true;
+    if (mounted) setState(() {});
+    // Disk seal is slow. A send that just accepted must not wait on it.
+    unawaited(_persistQuiet());
+  }
+
+  Future<void> _persistQuiet() async {
+    try {
+      await session.persist();
+    } catch (_) {}
+  }
+
+  Future<void> _revokePublicConsent() async {
+    session.publicNodeConsent = false;
+    session.publicNodeChoiceMade = true;
+    _reserveUnprivateOk = false;
+    ledger.pool?.stopPublicReads();
+    if (mounted) setState(() {});
+    try {
+      await session.persist();
+    } catch (_) {}
+  }
+
+  void _syncPublicReadsToMode() {
+    if (_usesPublicNodeNow() && session.publicNodeConsent) {
+      _reserveUnprivateOk = true;
+      ledger.pool?.publicConsent = true;
+    } else if (!_usesPublicNodeNow()) {
+      ledger.pool?.stopPublicReads();
+    }
+  }
+
+  Future<void> _acceptPublicFromChoice() async {
+    await _rememberPublicConsent();
+    if (!mounted) return;
+    await _openWalletBody();
+  }
+
+  /// Desktop only. P2P and solo are the existing Closure modes, not a new launcher.
+  Future<void> _chooseExistingLocalMode(ClosureSendMode mode) async {
+    if (_hostAndroid) return;
+    if (mode != ClosureSendMode.localNode && mode != ClosureSendMode.localNodeFull) return;
+    ledger.pool?.stopPublicReads();
+    session.publicNodeConsent = false;
+    _reserveUnprivateOk = false;
+    sidecar.select(mode);
+    final msg = await sidecar.apply();
+    if (!mounted) return;
+    _keepStoredNodeChoice();
+    session.publicNodeChoiceMade = sidecar.running;
+    _localNodePending = true;
+    setState(() => _ownNodeError = msg);
+    try {
+      await session.persist();
+    } catch (_) {}
+    if (sidecar.honest) await _finishLocalChoice();
+  }
+
+  Future<void> _finishLocalChoice() async {
+    if (_localChoiceOpening || !sidecar.honest) return;
+    _localChoiceOpening = true;
+    session.publicNodeChoiceMade = true;
+    _localNodePending = false;
+    _awaitingPublicChoice = false;
+    ledger.pool?.stopPublicReads();
+    if (mounted) setState(() {});
+    try {
+      await session.persist();
+    } catch (_) {}
+    if (!mounted) return;
+    await _openWalletBody();
+  }
+
+  Future<void> _backFromLocalChoice() async {
+    sidecar.select(ClosureSendMode.connectBare);
+    await sidecar.apply();
+    if (!mounted) return;
+    _keepStoredNodeChoice();
+    session.publicNodeChoiceMade = false;
+    _localNodePending = false;
+    ledger.pool?.stopPublicReads();
+    setState(() => _ownNodeError = null);
+    try {
+      await session.persist();
+    } catch (_) {}
+  }
+
+  void _selectSendMode(ClosureSendMode mode) {
+    setState(() => sidecar.select(mode));
+    // Consent is armed when Apply commits Connect bare, not when the radio moves.
+    if (mode != ClosureSendMode.connectBare) {
+      ledger.pool?.stopPublicReads();
+    }
+  }
+
+  /// Public-node posts wait on the VPN / IP confirm. A local or own-node post does not.
+  Future<bool> _ensurePublicIpConsent(BuildContext context, {required bool local}) async {
+    if (local || _reserveUnprivateOk || ownNodeSkipsPublicConsent(session.ownNodeUrl)) return true;
+    await _reserveUnprivateConfirm(context);
+    return _reserveUnprivateOk;
+  }
+
+  bool _flowPostsToPublicNode() {
+    if (sidecar.committed != ClosureSendMode.connectBare) return false;
+    return !ownNodeSkipsPublicConsent(session.ownNodeUrl);
+  }
+
+  Future<bool> _flowPublicConsent(BuildContext context) async {
+    if (!_flowPostsToPublicNode()) return true;
+    return _ensurePublicIpConsent(context, local: false);
+  }
+
+  /// Lookup finishes before the own node is used. A DNS miss keeps the saved URL.
+  Future<void> _applyOwnNode() async {
+    final url = session.ownNodeUrl.trim();
+    if (url.isEmpty) {
+      ledger.pool?.useOwnNode(null);
+      return;
+    }
+    if (parseOwnNodeUrl(url) == null) {
+      ledger.pool?.useOwnNode(null);
+      return;
+    }
+    ledger.pool?.useOwnNode(null);
+    ledger.pool?.publicConsent = false;
+    final check = await checkOwnNodeUrl(url);
+    if (!mounted || session.ownNodeUrl.trim() != url.trim()) return;
+    if (check.url == null) {
+      ledger.pool?.useOwnNode(null);
+      setState(() {
+        _ownNodeError = check.dnsFailed ? kOwnNodeUnresolvedCopy : kOwnNodeUrlError;
+      });
+      return;
+    }
+    setState(() => _ownNodeError = null);
+    ledger.pool?.stopPublicReads();
+    ledger.pool?.useOwnNode(check.url);
+  }
+
+  Future<void> _saveOwnNode() async {
+    final fromChoice = _awaitingPublicChoice;
+    final raw = _ownNodeCtrl.text;
+    if (raw.trim().isEmpty) {
+      setState(() {
+        _ownNodeError = null;
+        session.ownNodeUrl = '';
+        _ownNodeCtrl.text = '';
+      });
+      ledger.pool?.useOwnNode(null);
+      if (session.publicNodeConsent) _armRememberedConsent();
+      try {
+        await session.persist();
+      } catch (_) {}
+      return;
+    }
+    final err = ownNodeUrlError(raw);
+    if (err != null) {
+      setState(() => _ownNodeError = err);
+      return;
+    }
+    final check = await checkOwnNodeUrl(raw);
+    if (!mounted) return;
+    if (check.url == null) {
+      setState(() {
+        _ownNodeError = check.dnsFailed ? kOwnNodeUnresolvedCopy : kOwnNodeUrlError;
+      });
+      return;
+    }
+    setState(() {
+      _ownNodeError = null;
+      session.ownNodeUrl = check.url!;
+      _ownNodeCtrl.text = check.url!;
+      session.publicNodeConsent = false;
+      session.publicNodeChoiceMade = true;
+      _reserveUnprivateOk = false;
+    });
+    ledger.pool?.stopPublicReads();
+    ledger.pool?.useOwnNode(check.url);
+    try {
+      await session.persist();
+    } catch (_) {}
+    if (fromChoice && mounted) {
+      _awaitingPublicChoice = false;
+      await _openWalletBody();
     }
   }
 
@@ -3714,17 +4019,29 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final posted = await postReserveWithdraw(
-      ledger,
-      reserve: reserve,
-      dest: dest,
-      payout: to,
-      nowMs: now,
-      spendSeed: hexToBytes(ident.seedHex),
-      local: ledger.pool == null || widget.skipPoolSync,
-      restFrame: ident.address,
-      paymentCode: ident.paymentCode,
-    );
+    final local = ledger.pool == null || widget.skipPoolSync;
+    final consent = await _ensurePublicIpConsent(context, local: local);
+    if (!consent || !mounted) return;
+    final ({ShearTx tx, Map<String, int> settled})? posted;
+    try {
+      posted = await postReserveWithdraw(
+        ledger,
+        reserve: reserve,
+        dest: dest,
+        payout: to,
+        nowMs: now,
+        spendSeed: hexToBytes(ident.seedHex),
+        local: local,
+        restFrame: ident.address,
+        paymentCode: ident.paymentCode,
+        publicIpConsent: !local && _reserveUnprivateOk,
+      );
+    } on StateError catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+      return;
+    }
     if (posted == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3844,7 +4161,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     );
     if (go != true || !mounted) return;
-    final tun = hop.tunVerified && !hop.probeOnly;
+    final local = ledger.pool == null || widget.skipPoolSync;
+    final consent = await _ensurePublicIpConsent(context, local: local);
+    if (!consent || !mounted) return;
     final result = await commandReserveVote(
       ledger: ledger,
       reserve: reserve,
@@ -3854,8 +4173,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       choice: choice,
       depth: depth,
       spendSeed: hexToBytes(ident.seedHex),
-      local: ledger.pool == null || widget.skipPoolSync,
-      privacyHopUp: tun,
+      local: local,
+      publicIpConsent: !local && _reserveUnprivateOk,
     );
     if (context.mounted) {
       final messenger = ScaffoldMessenger.of(context);
@@ -4393,7 +4712,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Future<void> _applyResistancePath(BuildContext context, Future<String> Function() run) async {
     final msg = await run();
-    session.closureSendMode = closureModeStored(sidecar.committed);
+    _keepStoredNodeChoice();
     if (!widget.skipPoolSync) await session.persist();
     if (!mounted || !context.mounted) return;
     setState(() {});
@@ -4433,11 +4752,35 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         value: ClosureSendMode.connectBare,
         groupValue: sidecar.pending,
         title: const Text('Connect Bare'),
-        subtitle: Text(_hostAndroid
-            ? kConnectBareCopy
-            : 'Connect bare. You push a signed send. This device still runs the book node so blocks can land. No tunnel.'),
-        onChanged: (v) => setState(() => sidecar.select(v!)),
+        subtitle: const Text(kConnectBareCopy),
+        onChanged: (v) => _selectSendMode(v!),
       ),
+      if (sidecar.pending == ClosureSendMode.connectBare) ...[
+        const Text(kPublicNodeEverySendCopy, key: Key('connect-bare-ip-copy')),
+        TextField(
+          key: const Key('connect-own-node'),
+          controller: _ownNodeCtrl,
+          decoration: InputDecoration(
+            labelText: 'Own node',
+            helperText:
+                'Optional. host:port or https://host:port. A bare public host uses https. '
+                'http is only for this machine, a private IP, or a .local name. '
+                'LAN http exposes your read openings to the LAN. '
+                'Own node means a node you run, not a public Shear host. '
+                'Empty uses the public node when Public node is on in Settings.',
+            errorText: _ownNodeError,
+          ),
+          onSubmitted: (_) => _saveOwnNode(),
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            key: const Key('connect-own-node-save'),
+            onPressed: _saveOwnNode,
+            child: const Text('Save node'),
+          ),
+        ),
+      ],
       if (!_hostAndroid)
         RadioListTile<ClosureSendMode>(
           key: const Key('closure-send-path-local'),
@@ -4446,7 +4789,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           groupValue: sidecar.pending,
           title: const Text('p2P Node'),
           subtitle: const Text(kLocalNodeModeCopy),
-          onChanged: (v) => setState(() => sidecar.select(v!)),
+          onChanged: (v) => _selectSendMode(v!),
         ),
       if (!_hostAndroid)
         RadioListTile<ClosureSendMode>(
@@ -4456,7 +4799,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           groupValue: sidecar.pending,
           title: const Text('Full Node'),
           subtitle: const Text(kLocalNodeFullModeCopy),
-          onChanged: (v) => setState(() => sidecar.select(v!)),
+          onChanged: (v) => _selectSendMode(v!),
         ),
       FilledButton(
         key: const Key('closure-apply'),
@@ -4469,7 +4812,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             );
             final msg = await sidecar.apply();
             ledger.onClosureApply(bookChanged: sidecar.rescanFromGenesis);
-            session.closureSendMode = closureModeStored(sidecar.committed);
+            _keepStoredNodeChoice();
+            _syncPublicReadsToMode();
             if (!widget.skipPoolSync) {
               Zone.root.run(() {
                 unawaited(_followBalancesAfterApply(ident));
@@ -4487,6 +4831,20 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
       const SizedBox(height: 16),
       const Text('Settings', style: TextStyle(fontWeight: FontWeight.w700)),
+      SwitchListTile(
+        key: const Key('settings-public-node'),
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Public node'),
+        subtitle: const Text(kPublicNodeEverySendCopy),
+        value: session.publicNodeConsent,
+        onChanged: (on) {
+          if (on) {
+            unawaited(_reserveUnprivateConfirm(context));
+          } else {
+            unawaited(_revokePublicConsent());
+          }
+        },
+      ),
       SwitchListTile(
         key: const Key('settings-dark-mode'),
         contentPadding: EdgeInsets.zero,

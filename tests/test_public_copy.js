@@ -86,7 +86,7 @@ const CLAIM_SURFACES = [...new Set([
   'explorer/explorer.html',
   'wallet/lib/main.dart',
   'wallet/lib/shear_closure.dart',
-  'wallet/lib/shear_privacy_hop.dart',
+  'wallet/lib/shear_public_confirm.dart',
   'wallet/lib/shear_cli.dart',
   'node/src/help.js',
 ])];
@@ -345,7 +345,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
       'wallet/lib/main.dart',
       'wallet/lib/shear_closure.dart',
       'wallet/lib/shear_cli.dart',
-      'wallet/lib/shear_privacy_hop.dart',
+      'wallet/lib/shear_public_confirm.dart',
       'node/src/help.js',
       'node/src/rpc.js',
       'specs/law.md',

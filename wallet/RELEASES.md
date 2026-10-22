@@ -77,11 +77,13 @@ Reserve send is the unprivate path. Vortex says a send shows your IP to the node
 
 ## 0.46
 
-Reserve hop fee collates a sealed note when Continuum spendable already covers 0.05 SHE plus the levy. An empty or incomplete note book no longer claims that cover. Pool HTML and other non-JSON bodies surface as `pool returned an error page (http_N)`, not a FormatException. A successful Reserve lock shows **Sent — please wait 6 confirmations**. Lock, vote, and withdraw still post the sealed public-nanos vout. Fee stays **0.05 SHE**. ShearK pin stays **2.5**. Do not recut 0.45. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`MACBOOK-HANDOFF.md`).
+Reserve hop fee (removed) collates a sealed note when Continuum spendable already covers 0.05 SHE plus the levy. An empty or incomplete note book no longer claims that cover. Pool HTML and other non-JSON bodies surface as `pool returned an error page (http_N)`, not a FormatException. A successful Reserve lock shows **Sent — please wait 6 confirmations**. Lock, vote, and withdraw still post the sealed public-nanos vout. Fee stays **0.05 SHE**. ShearK pin stays **2.5**. Do not recut 0.45. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`MACBOOK-HANDOFF.md`).
 
 ## 0.45
 
-Privacy hop fee crypto (range proof + BP+/ADMIT) runs off the UI isolate. Android shows **Paying hop fee…** then **Connecting Privacy hop…**. Handshake budget is 15s and 3 tries. A VPN permission grant resumes connect without paying the 0.05 SHE fee again in the same session. Fee and connect failures snack the real reason and leave the hop off or in error. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. Reserve lock, vote, and withdraw post the sealed public-nanos vout the pool verifies. ShearK pin stays **2.5**. Do not recut 0.44. Android `.apk` and the Windows zip packed on Windows. Linux and Arch zips packed on the Helsinki pack host. macOS `.dmg` is a MacBook handoff (MacBook cut).
+The Privacy hop, Android VpnService, and RPT client described in 0.45–0.43 are not in the current wallet. Reserve lock, vote, and withdraw on the public node wait for the VPN / IP-exposure confirm. Historical notes below stay as a record of those cuts.
+
+Privacy hop fee crypto (removed) (range proof + BP+/ADMIT) runs off the UI isolate. Android shows **Paying hop fee…** then **Connecting Privacy hop…**. Handshake budget is 15s and 3 tries. A VPN permission grant resumes connect without paying the 0.05 SHE fee again in the same session. Fee and connect failures snack the real reason and leave the hop off or in error. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. Reserve lock, vote, and withdraw post the sealed public-nanos vout the pool verifies. ShearK pin stays **2.5**. Do not recut 0.44. Android `.apk` and the Windows zip packed on Windows. Linux and Arch zips packed on the Helsinki pack host. macOS `.dmg` is a MacBook handoff (MacBook cut).
 
 ## 0.44
 

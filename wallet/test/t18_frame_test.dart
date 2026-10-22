@@ -76,6 +76,8 @@ void main() {
     await tester.enterText(find.byKey(const Key('flow-amount')), '0.2');
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.pump();
 
     expect(find.byKey(const Key('flow-send-progress')), findsOneWidget);
     expect(find.byKey(const Key('flow-send-cancel')), findsOneWidget);
@@ -188,8 +190,14 @@ void main() {
         await tester.enterText(find.widgetWithText(TextField, 'Memo (optional)'), 'note');
       }
       typed.stop();
-      final sent = Stopwatch()..start();
       await tester.tap(find.byKey(const Key('flow-send')));
+      await tester.pump();
+      final accept = find.byKey(const Key('reserve-unprivate-accept'));
+      if (accept.evaluate().isNotEmpty) {
+        await tester.tap(accept);
+      }
+      final sent = Stopwatch()..start();
+      await tester.pump();
       sent.stop();
 
       final hold = <int>[];
@@ -368,6 +376,7 @@ class _HoldSendPool extends ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    bool publicConsent = false,
     String? nanosWire,
     String? id,
     String? withdrawNonce,
