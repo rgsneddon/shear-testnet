@@ -81,6 +81,14 @@ jobs:
         run: node --test --test-concurrency=1 crypto/asert.test.js node/tests/test_admit_keys_v12.js node/tests/test_portal_per_lock_v12.js node/tests/test_lock_owner_bind_v12.js node/tests/test_lock_replay_auth_v12.js node/tests/test_withdraw_leak_v12.js node/tests/test_snap_fill_linear_v12.js node/tests/test_claim_mint_bound_v12.js node/tests/test_p2p_fingerprint_v12.js
       - name: Hash bonus law, including the JS and EVM 1 to 2 to 3 pin
         run: node --test --test-concurrency=1 --test-timeout=1800000 crypto/leaf_vote.test.js
+      - name: Flutter for the Dart withdraw body
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Wallet package for the withdraw emitter
+        working-directory: wallet
+        run: flutter pub get
       - name: Dart-built withdraw is accepted by the node queue
         run: node --test --test-concurrency=1 --test-timeout=1800000 node/tests/test_dart_withdraw_queue_v12.js
       - name: Privacy walk, including the compact reserve key check

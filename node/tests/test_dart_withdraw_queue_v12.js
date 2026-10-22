@@ -439,7 +439,8 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () 
         encoding: 'utf8',
         timeout: 600_000,
       });
-    assert.equal(ran.status, 0, ran.stderr || ran.stdout || 'dart withdraw');
+    const dartErr = ran.error ? String(ran.error.message || ran.error) : '';
+    assert.equal(ran.status, 0, dartErr || ran.stderr || ran.stdout || 'dart withdraw');
     const line = String(ran.stdout || '').split(/\r?\n/).map((row) => row.trim()).filter((row) => row.startsWith('{')).pop();
     assert.ok(line, ran.stdout || ran.stderr || 'no withdraw json');
     const body = revive(JSON.parse(line));
