@@ -6,6 +6,7 @@ import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveR
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
+import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
   buildTemplate,
   verifyBlock,
@@ -35,6 +36,7 @@ import {
   headerLinkReason,
   rootHeaderReason,
   discardPreparedHeader,
+  holdPreparedHeader,
   noteFromAnchor,
   OWED_CHECKPOINT_SPACING,
   keepsFrontier,
@@ -44,6 +46,7 @@ import {
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
+import { ensureDatadir } from './datadir_acl.js';
 import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
@@ -76,8 +79,8 @@ import {
   vaultSealBanner,
 } from '../../crypto/vault_seal.js';
 import { explorerSpendable } from '../../crypto/chronoflux.js';
-import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField } from '../../crypto/spend.js';
-import { valueOpenRejected } from '../../crypto/chronoflux.js';
+import { fundedDebit, reconcileSpendable, mempoolDebitNanos, flowSendNeedsOpen, verifyDestOpening, verifySpendSig, reserveAuth, typedCommitRejected, typedCommitSum, boundReserveWithdraw, reserveWithdrawMintId, spendPackDigest, verifyPoolWithdrawBound, paintedSpendSig, unsignedRefusedSpend, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected } from '../../crypto/spend.js';
+import { valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { checkAdmitAnchor, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected, v3BucketProofRejected } from '../../crypto/fs1_send_gate.js';
 import { txNoteRuleRejected } from '../../crypto/n1.js';
@@ -88,8 +91,11 @@ import {
   readChainBin,
   packEpochBlock,
   appendChainBin,
+  chainRecordIndex,
+  spliceChainRecordAt,
   readChainSegments,
   writeChainSegments,
+  replaceSegmentRecord,
   segmentFileName,
   segmentRecordBodies,
   CHAIN_SEGMENT_BLOCKS,
@@ -124,7 +130,7 @@ import {
 
 /** Full book.snap rewrite cadence after the opening window. Short books snap every block. */
 export const BOOK_SNAP_EVERY = 32;
-import { flowNeedsDummy } from '../../crypto/dummy.js';
+import { flowNeedsDummy, publicReserveReceiptRejected } from '../../crypto/dummy.js';
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
@@ -299,13 +305,15 @@ export function createStore(dir, {
   // caller pin) refuses it outright. An unpinned open still needs the permit
   // that only node/tests/regtest_store.js can seal. Env vars do not.
   // magic wins when a caller sets it. network stays the node and datadir path.
+  // The check runs before the datadir is created or locked down, so a refused
+  // regtest open does not touch the directory.
   const configuredMagic = String(magicIn || network || MAGIC_TESTNET);
   if (configuredMagic === MAGIC_REGTEST) {
     const genesisPin = String(genesisHash || '');
     if (genesisPin) throw new Error('regtest_genesis_pin');
     if (!regtestPermitOk(regtestPermit)) throw new Error('regtest_magic');
   }
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDatadir(dir);
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
   const segDir = path.join(dir, 'segments');
@@ -559,6 +567,21 @@ export function createStore(dir, {
     supplyTip = folded.state;
   }
   if (blocks.length) noteBurial(Number(blocks[blocks.length - 1].height) || blocks.length);
+  // Snap and a suffix prefix skip verifyBlock. The b-spend predicate still runs,
+  // including the vin format check verifyBlock runs before bindBSpend.
+  if ((loadMode === 'snap' || loadMode === 'suffix') && blocks.length) {
+    for (const block of blocks) {
+      const rows = Array.isArray(block?.txs) ? block.txs : [];
+      for (const tx of rows) {
+        const vinAdmit = bSpendVinRejected(tx);
+        if (vinAdmit) throw new Error(vinAdmit.reason || 'vin_link');
+        const spendFee = bSpendFeeRejected(tx);
+        if (spendFee) throw new Error(spendFee.reason || 'fee');
+      }
+    }
+    const sealedSpend = chainBSpendsRejected(blocks);
+    if (sealedSpend) throw new Error(sealedSpend.reason || 'unsigned');
+  }
   if (loadMode !== 'snap' && loadMode !== 'suffix') restoreSpentB();
 
   function segmentNames() {
@@ -1854,6 +1877,33 @@ export function createStore(dir, {
     return blocks.length ? blocks[blocks.length - 1] : null;
   }
 
+  // One buried body replaces one length-prefixed record. A null result means
+  // the segment was torn or short, and the caller repacks those segments.
+  function spliceChangedRecords(image, idxs) {
+    const bySeg = new Map();
+    for (const i of idxs) {
+      const seg = Math.floor(i / CHAIN_SEGMENT_BLOCKS);
+      if (!bySeg.has(seg)) bySeg.set(seg, []);
+      bySeg.get(seg).push(i);
+    }
+    const written = new Map();
+    for (const [seg, list] of bySeg) {
+      list.sort((a, b) => b - a);
+      const file = path.join(segDir, segmentFileName(seg));
+      let buf = null;
+      for (const i of list) {
+        buf = replaceSegmentRecord(file, i % CHAIN_SEGMENT_BLOCKS, image[i]);
+        if (!buf) return false;
+      }
+      written.set(seg, buf);
+    }
+    for (const [seg, buf] of written) {
+      while (segLive.length < seg) segLive.push({ hash: createHash('sha256'), length: 0 });
+      segLive[seg] = { hash: createHash('sha256').update(buf), length: buf.length };
+    }
+    return written.size > 0;
+  }
+
   function pruneBuried() {
     const tipH = tip()?.height || 0;
     const asked = Number(pruneAfter);
@@ -1863,6 +1913,7 @@ export function createStore(dir, {
     );
     const dirtySegs = new Set();
     const dirtyIdx = [];
+    const changedIdx = [];
     for (let i = 0; i < blocks.length; i += 1) {
       const b = blocks[i];
       if (b.samplesPruned === true && !shouldPruneSamples(b.height, tipH, pruneDepth)) {
@@ -1870,6 +1921,7 @@ export function createStore(dir, {
         if (!lifted) continue;
         blocks[i] = lifted;
         dirtySegs.add(Math.floor(i / CHAIN_SEGMENT_BLOCKS));
+        changedIdx.push(i);
         noteUnprunedBody(i, packEpochBlock(lifted));
         noteReplacedBlock(i);
         continue;
@@ -1884,6 +1936,7 @@ export function createStore(dir, {
       if ((next.txs?.[0]?.vout || []).length !== nVout) throw new Error('prune_dropped_coinbase');
       blocks[i] = next;
       dirtyIdx.push(i);
+      changedIdx.push(i);
       dirtySegs.add(Math.floor(i / CHAIN_SEGMENT_BLOCKS));
     }
     if (dirtySegs.size) {
@@ -1896,11 +1949,15 @@ export function createStore(dir, {
             : b
         ))
         : blocks;
+      // One buried body is one record. Repacking the whole segment rewrites
+      // hundreds of untouched blocks on every append past the prune depth.
+      const spliced = segmented && changedIdx.length > 0 && changedIdx.length <= 4
+        && spliceChangedRecords(image, changedIdx);
       if (!segmented) {
         writeChainSegments(segDir, image);
         segmented = true;
         loadSegLive();
-      } else {
+      } else if (!spliced) {
         writeChainSegments(segDir, image, { only: dirtySegs });
         for (const idx of dirtySegs) rehashSegmentFile(idx);
       }
@@ -1914,18 +1971,120 @@ export function createStore(dir, {
     return dirtySegs.size > 0;
   }
 
+  // Record offsets for the published image. A full rewrite drops the cache.
+  // Between 200-block snapshots the file still has to match this tip: one
+  // newly buried body is spliced and the new tip is appended. The prefix
+  // is not rewritten, so append cost stays flat.
+  let bootIndex = null;
+
+  function bootstrapPruneDepth() {
+    const asked = Number(pruneAfter);
+    return Math.max(
+      SAMPLE_PRUNE_CONFIRMATIONS,
+      Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : SAMPLE_PRUNE_CONFIRMATIONS,
+    );
+  }
+
+  function rewriteBootstrapImage() {
+    bootIndex = null;
+    try { writeLatestBootstrap(dir, blocks); } catch { /* observer must not halt append */ }
+  }
+
+  function extendBootstrapImage(manifest) {
+    const tipH = Number(tip()?.height || 0);
+    const published = Number(manifest?.height) || 0;
+    const paths = latestPaths(dir);
+    if (!published || tipH < published || !fs.existsSync(paths.bin)) {
+      rewriteBootstrapImage();
+      return;
+    }
+    const anchor = blocks[published - 1];
+    if (!anchor || Number(anchor.height) !== published || hex32(anchor.hash) !== String(manifest.hash || '')) {
+      rewriteBootstrapImage();
+      return;
+    }
+    if (tipH === published) return;
+    if (!bootIndex || bootIndex.length !== published) bootIndex = chainRecordIndex(paths.bin);
+    if (!bootIndex || bootIndex.length !== published) {
+      rewriteBootstrapImage();
+      return;
+    }
+    const depth = bootstrapPruneDepth();
+    for (let h = published + 1; h <= tipH; h += 1) {
+      const bury = h - depth;
+      if (bury >= 1) {
+        const victim = blocks[bury - 1];
+        const rec = bootIndex[bury - 1];
+        if (victim && victim.samplesPruned === true && rec) {
+          const newLen = spliceChainRecordAt(paths.bin, rec, victim);
+          if (newLen == null) {
+            bootIndex = null;
+            rewriteBootstrapImage();
+            return;
+          }
+          const delta = newLen - rec.len;
+          rec.len = newLen;
+          for (let i = bury; i < bootIndex.length; i += 1) bootIndex[i].off += delta;
+        }
+      }
+      const block = blocks[h - 1];
+      if (!block || Number(block.height) !== h) {
+        bootIndex = null;
+        rewriteBootstrapImage();
+        return;
+      }
+      const prev = bootIndex[bootIndex.length - 1];
+      const eof = prev.off + 4 + prev.len;
+      let size = 0;
+      try { size = fs.statSync(paths.bin).size; } catch { size = -1; }
+      if (size !== eof) {
+        bootIndex = null;
+        rewriteBootstrapImage();
+        return;
+      }
+      const written = appendChainBin(paths.bin, block);
+      if (!written || written.length < 4) {
+        bootIndex = null;
+        rewriteBootstrapImage();
+        return;
+      }
+      bootIndex.push({ off: eof, len: written.length - 4 });
+    }
+    if (bootIndex.length !== tipH) {
+      bootIndex = null;
+      rewriteBootstrapImage();
+      return;
+    }
+    const last = blocks[tipH - 1];
+    const next = {
+      ...manifest,
+      height: tipH,
+      hash: hex32(last.hash),
+      n: tipH,
+      checkpoint: bootstrapCheckpoint(tipH),
+      createdAt: Date.now(),
+    };
+    const tmp = `${paths.json}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify(next)}\n`);
+    fs.renameSync(tmp, paths.json);
+  }
+
   function maybePublishBootstrap() {
     const tipH = Number(tip()?.height || 0);
-    let last = 0;
+    const paths = latestPaths(dir);
+    let manifest = null;
     try {
-      const paths = latestPaths(dir);
-      if (fs.existsSync(paths.json)) {
-        const manifest = JSON.parse(fs.readFileSync(paths.json, 'utf8'));
-        last = Number(manifest.checkpoint) || 0;
-      }
-    } catch { last = 0; }
-    if (!shouldPublishBootstrap(tipH, last)) return;
-    try { writeLatestBootstrap(dir, blocks); } catch { /* observer must not halt append */ }
+      if (fs.existsSync(paths.json)) manifest = JSON.parse(fs.readFileSync(paths.json, 'utf8'));
+    } catch { manifest = null; }
+    const last = Number(manifest?.checkpoint) || 0;
+    // The 200-block cadence still rewrites the whole image. A tip between
+    // those heights has to be in the file too, or a bootstrap node stops
+    // on the previous snapshot.
+    if (!manifest || shouldPublishBootstrap(tipH, last)) {
+      rewriteBootstrapImage();
+      return;
+    }
+    try { extendBootstrapImage(manifest); } catch { /* observer must not halt append */ }
   }
 
   function hourlyWork(nowMs) {
@@ -2906,7 +3065,7 @@ export function createStore(dir, {
       let checked;
       if (decoded.prevBlockHash.equals(GENESIS_PREV)) {
         if (blocks.length) { offerStats.orphaned += 1; continue; }
-        checked = rootHeaderReason(header, hash);
+        checked = rootHeaderReason(header, hash, bookMagic);
         rootMs = Number(decoded.timestamp);
       } else {
         const local = localBlockByHex(prevHex);
@@ -2920,7 +3079,7 @@ export function createStore(dir, {
           }
         }
         if (!parent) { offerStats.orphaned += 1; continue; }
-        checked = headerLinkReason(header, hash, parent, { genesisMs: rootMs || 0 });
+        checked = headerLinkReason(header, hash, parent, { genesisMs: rootMs || 0, magic: bookMagic });
       }
       if (!checked.ok) { out.dropped = true; break; }
       const row = {
@@ -2952,7 +3111,19 @@ export function createStore(dir, {
   }
 
   function rememberProvenRow(row) {
-    const kept = { hex: row.hex, header: row.header, hash: row.hash, prevHex: row.prevHex, height: row.height, rootMs: row.rootMs };
+    let timeMs = Number(row.timeMs);
+    if (!Number.isFinite(timeMs)) {
+      try { timeMs = Number(decodeHeader(Buffer.from(row.header)).timestamp); } catch { timeMs = NaN; }
+    }
+    const kept = {
+      hex: row.hex,
+      header: row.header,
+      hash: row.hash,
+      prevHex: row.prevHex,
+      height: row.height,
+      rootMs: row.rootMs,
+      timeMs,
+    };
     provenRows.delete(row.hex);
     provenRows.set(row.hex, kept);
     linkHeaderRow(kept);
@@ -3028,9 +3199,12 @@ export function createStore(dir, {
    * not burial. Each bad link drops the peers that offered it, so a retry
    * costs at most one hash batch per bad peer.
    */
-  function proveBurial(block, verifyOpts = {}) {
+  function proveBurial(block, verifyOpts = {}, anchor = null) {
     const parent = tip();
-    const h = (Number(parent?.height) || 0) + 1;
+    // A fork block is not this tip plus one. The caller passes that block's
+    // own height and the MTP of the chain under it. Null keeps the tip path.
+    const anchored = !!(anchor && Number.isInteger(anchor.height) && anchor.height > 0);
+    const h = anchored ? anchor.height : ((Number(parent?.height) || 0) + 1);
     const fail = { ok: false, reason: 'samples_pruned' };
     let claimed;
     let own;
@@ -3039,8 +3213,12 @@ export function createStore(dir, {
       own = decodeHeader(Buffer.from(block.header));
     } catch { return fail; }
     if (claimed.length !== 32) return fail;
-    const genesisMs = blocks.length ? blockTimeMs(blocks[0]) : Number(own.timestamp);
-    const mtp = blocks.slice(-(MTP_WINDOW - 1)).map(blockTimeMs).concat([Number(own.timestamp)]);
+    const genesisMs = anchored && Number(anchor.genesisMs) > 0
+      ? Number(anchor.genesisMs)
+      : (blocks.length ? blockTimeMs(blocks[0]) : Number(own.timestamp));
+    const mtp = anchored && Array.isArray(anchor.mtp) && anchor.mtp.length
+      ? anchor.mtp.slice()
+      : blocks.slice(-(MTP_WINDOW - 1)).map(blockTimeMs).concat([Number(own.timestamp)]);
     const nowMs = verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now();
     const trust = verifyOpts.trustBlockHash === true;
     const standIn = verifyOpts.trustedHeaderHashes instanceof Set ? verifyOpts.trustedHeaderHashes : null;
@@ -3052,23 +3230,38 @@ export function createStore(dir, {
       const window = mtp.slice();
       const link = (i, ready) => {
         const got = Buffer.from(ready || []);
-        const linked = got.equals(rows[i].hash)
-          ? headerLinkReason(rows[i].header, got, up, { genesisMs, mtpTimestamps: window, nowMs })
+        const row = rows[i];
+        // This header's ShearHash and link already passed. Walk the cached
+        // timestamp so the next new header still sees a real MTP window.
+        if (
+          known(row)
+          && got.length === 32
+          && got.equals(row.hash)
+          && row.prevHex === up.hash.toString('hex')
+          && Number.isFinite(row.timeMs)
+        ) {
+          window.push(row.timeMs);
+          if (window.length > MTP_WINDOW) window.shift();
+          up = { header: row.header, hash: row.hash, height: h + i + 1 };
+          return true;
+        }
+        const linked = got.equals(row.hash)
+          ? headerLinkReason(row.header, got, up, { genesisMs, mtpTimestamps: window, nowMs, magic: bookMagic })
           : { ok: false };
         if (!linked.ok) {
-          const bad = offeredRows.get(rows[i].hex);
+          const bad = offeredRows.get(row.hex);
           const senders = [...(bad?.senders || [])];
           for (const slotKey of [...(bad?.slots || [])]) {
             for (const p of senders) dropOfferPeer(p, slotKey, nowMs);
             if (!senders.length) evictOfferSlot(slotKey);
           }
-          if (provenRows.has(rows[i].hex)) {
-            provenRows.delete(rows[i].hex);
-            unlinkHeaderRow(rows[i].hex, rows[i].prevHex);
+          if (provenRows.has(row.hex)) {
+            provenRows.delete(row.hex);
+            unlinkHeaderRow(row.hex, row.prevHex);
           }
           return false;
         }
-        if (!trust) rememberProvenRow(offeredRows.get(rows[i].hex) || rows[i]);
+        if (!trust) rememberProvenRow(offeredRows.get(row.hex) || row);
         window.push(Number(linked.decoded.timestamp));
         if (window.length > MTP_WINDOW) window.shift();
         up = { header: rows[i].header, hash: rows[i].hash, height: h + i + 1 };
@@ -3183,17 +3376,46 @@ export function createStore(dir, {
       }
     }
     if (block?.samplesPruned === true) {
-      const proved = proveBurial(block, verifyOpts);
       // No proven run is samples_pruned before any header hash. A height field
       // that is not this tip plus one still answers height first.
       const structuralH = (Number(tip()?.height) || 0) + 1;
       const liedHeight = block.height != null && block.height !== '' && Number(block.height) !== structuralH;
+      // One or two new headers still have to hash. The block header can hash
+      // on the other worker at the same time. A long run keeps both workers.
+      // Advertised height is not an input. A failed run discards the hash.
+      let earlyHash = null;
+      const overlapPow = !!verifyOpts.offLoopPow
+        && !verifyOpts.trustedPowHash
+        && verifyOpts.trustBlockHash !== true
+        && block.header;
+      if (overlapPow) {
+        let claimedHex = '';
+        try { claimedHex = Buffer.from(block.hash).toString('hex'); } catch { claimedHex = ''; }
+        const rows = claimedHex ? offeredPath(claimedHex) : null;
+        if (rows) {
+          let unknown = 0;
+          for (const row of rows) {
+            if (!provenRows.has(row.hex)) unknown += 1;
+            if (unknown > 2) break;
+          }
+          if (unknown >= 1 && unknown <= 2) {
+            earlyHash = hashHeaderOffLoop(Buffer.from(block.header)).then((hash) => {
+              holdPreparedHeader(block.header, hash);
+              return hash;
+            }, () => null);
+          }
+        }
+      }
+      const proved = proveBurial(block, verifyOpts);
       const go = (p) => {
         if (p.ok) return appendVerified(block, verifyOpts, p);
         if (liedHeight) return appendVerified(block, verifyOpts, null);
+        if (earlyHash) discardPreparedHeader(block.header);
         return { ok: false, reason: 'samples_pruned', tip: tip() };
       };
-      if (proved && typeof proved.then === 'function') return proved.then(go);
+      const waitEarly = earlyHash || Promise.resolve(null);
+      if (proved && typeof proved.then === 'function') return Promise.all([proved, waitEarly]).then(([p]) => go(p));
+      if (earlyHash) return waitEarly.then(() => go(proved));
       return go(proved);
     }
     return appendVerified(block, verifyOpts, null);
@@ -3376,9 +3598,13 @@ export function createStore(dir, {
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
+    const feeHit = feeFieldRejected(tx);
+    if (feeHit) return feeHit;
+    const spendFee = bSpendFeeRejected(tx);
+    if (spendFee) return spendFee;
     const bucket = v3BucketProofRejected(tx);
     if (bucket) return bucket;
-    const noteRule = txNoteRuleRejected(tx);
+    const noteRule = txNoteRuleRejected(tx, 1);
     if (noteRule) return noteRule;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
@@ -3411,6 +3637,8 @@ export function createStore(dir, {
     if (open) return open;
     const leafAsk = bLeafAskRejected(tx);
     if (leafAsk) return leafAsk;
+    const vinAdmit = bSpendVinRejected(tx);
+    if (vinAdmit) return vinAdmit;
     if (String(tx.kind || '') === 'b-spend') {
       const tipNow = tip();
       let boundB;
@@ -3514,6 +3742,8 @@ export function createStore(dir, {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    const publicReceipt = publicReserveReceiptRejected(tx);
+    if (publicReceipt) return publicReceipt;
     if (txIsReserveAction(tx) && mempool.filter(txIsReserveAction).length >= RESERVE_ACTION_CAP) {
       return { ok: false, reason: 'reserve_cap' };
     }
@@ -3532,7 +3762,8 @@ export function createStore(dir, {
       const id = reserveWithdrawMintId(m, reserveVault);
       if (id) drawn.add(id);
     }
-    const stake = boundReserveWithdraw(tx, reserveVault, drawn);
+    const stamp = headerStamp(opts.nowMs);
+    const stake = boundReserveWithdraw(tx, reserveVault, drawn, stamp);
     if (!stake.ok) return stake;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
     const debit = fundedDebit(tx);
@@ -3563,7 +3794,6 @@ export function createStore(dir, {
       } catch { /* ignore */ }
       return auth;
     }
-    const stamp = headerStamp(opts.nowMs);
     if (txIsReserveAction(tx)) {
       if (vaultSeal && !tipHasSealAncestry()) return { ok: false, reason: 'no_vault' };
       ensureMempoolVault(stamp);
@@ -3643,6 +3873,16 @@ export function createStore(dir, {
     return verifyOpts?.trustedPowHash || null;
   }
 
+  // A header run buries only the pruned block it stands above. The fork's
+  // own length stays the tip for every other block.
+  function headerRunTip(block, structuralH, chainTip, at) {
+    if (block?.samplesPruned !== true || !at) return chainTip;
+    const own = Number(at[structuralH]);
+    if (!Number.isInteger(own) || !(own > chainTip)) return chainTip;
+    if (!shouldPruneSamples(structuralH, own)) return chainTip;
+    return own;
+  }
+
   function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null, verifyOpts = {}) {
     const noVault = verifyOpts.noVault === true;
     const vault = noVault ? null : (trialVault || reserveVault);
@@ -3676,9 +3916,10 @@ export function createStore(dir, {
     const owedUnit = verifyOpts.unitAt != null
       ? hashBonusUnitNanos(verifyOpts.unitAt)
       : hashBonusUnitNanos(vault?.liveHashBonusNanos || 1);
-    const burialTip = Number.isInteger(verifyOpts.burialTip)
+    const chainTip = Number.isInteger(verifyOpts.burialTip)
       ? verifyOpts.burialTip
       : forkBurial(fork);
+    const burialTip = headerRunTip(fork[i], parentH + 1, chainTip, verifyOpts.provenBurialAt);
     const check = verifyBlock(fork[i], prev, {
       parentSupply: verifyOpts.parentSupply,
       parentFluxset: verifyOpts.parentFlux,
@@ -4480,6 +4721,8 @@ export function createStore(dir, {
         };
       }
       const beforeSpent = new Set(trialSpent);
+      const structuralH = (Number(prev?.height) || 0) + 1;
+      const blockTip = headerRunTip(fork[i], structuralH, tipH, verifyOpts.provenBurialAt);
       const check = verifyBlock(fork[i], parentView(prev), {
         ...verifyOpts,
         hashBonusNanos: allUnits[rows.length + i],
@@ -4487,8 +4730,8 @@ export function createStore(dir, {
         hashAcceptedSeries: owedWalk.hashAcceptedSeries,
         spentB: trialSpent,
         trustedPowHash: trustedHashFor(fork[i], verifyOpts),
-        tipHeight: Number(prev?.height || 0) + 1,
-        burialTip: tipH,
+        tipHeight: structuralH,
+        burialTip: blockTip,
         evmHistory: rows.concat(out),
         parentSupply: supply,
         parentFluxset: flux,
@@ -4513,8 +4756,8 @@ export function createStore(dir, {
           acceptedSeries: owedWalk.hashAcceptedSeries,
           block: fork[i],
           unit: owedUnit,
-          height: Number(fork[i]?.height) || (Number(prev?.height || 0) + 1),
-          tipHeight: tipH,
+          height: structuralH,
+          tipHeight: blockTip,
         });
         if (!owedNext.ok) {
           rollbackSpent(trialSpent, beforeSpent);
@@ -4582,6 +4825,7 @@ export function createStore(dir, {
         return { ok: false, reason: 'bad_header', tip: tip() };
       }
       if (!prefer) {
+        rememberRunBurial(staged, verified.burialTip, verifyOpts.provenBurialAt);
         stageSide(anchor, staged);
         return { ok: false, reason: 'side_hold', tip: tip() };
       }
@@ -4772,10 +5016,9 @@ export function createStore(dir, {
   function adopt(fork, verifyOpts = {}) {
     if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
     const verified = verifyOpts.offLoopPow ? verifyForkAsync(fork, verifyOpts) : verifyFork(fork, verifyOpts);
-    if (verified && typeof verified.then === 'function') {
-      return verified.then((v) => finishAdopt(v, verifyOpts));
-    }
-    return finishAdopt(verified, verifyOpts);
+    const take = (v) => finishAdopt(v, verifyOpts);
+    if (verified && typeof verified.then === 'function') return verified.then(take);
+    return take(verified);
   }
 
   function finishAdopt(verified, verifyOpts = {}) {
@@ -4842,9 +5085,11 @@ export function createStore(dir, {
       const adoptedTip = Number(accepted[accepted.length - 1]?.height) || accepted.length;
       // One burial tip for the prefix and the suffix: the chain being adopted.
       // Verify already returned this height. The local tip does not raise it.
-      const suffixBurial = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
+      // A pruned suffix block keeps that tip unless its own header run is deeper.
+      let suffixBurial = Number.isInteger(verified.burialTip) && verified.burialTip >= 0
         ? verified.burialTip
         : adoptedTip;
+      const chainBurial = suffixBurial;
       let adoptedSupply;
       let stagedFlux;
       let stagedVault;
@@ -4872,9 +5117,11 @@ export function createStore(dir, {
         for (let i = lca; i < accepted.length; i += 1) {
           if (verifyOpts.throwSupply === true && i === lca) throw new Error('supply_throw');
           const block = accepted[i];
+          const stepH = Number(block?.height) || i + 1;
+          suffixBurial = headerRunTip(block, stepH, chainBurial, verifyOpts.provenBurialAt);
           const stepped = supplyStep(carriedSupply, block, {
             unit: units && units[i] != null ? units[i] : undefined,
-            height: Number(block?.height) || i + 1,
+            height: stepH,
             tipHeight: suffixBurial,
             genesisMs: carriedSupply.genesisMs,
             blockHash: block?.hash,
@@ -4920,6 +5167,7 @@ export function createStore(dir, {
         const event = makeReorgEvent({ fromBlocks, toBlocks: accepted, lca });
         blocks.length = 0;
         for (const b of accepted) blocks.push(b);
+        rememberRunBurial(accepted, chainBurial, verifyOpts.provenBurialAt);
         owedRows = verified.owedRows || [];
         acceptedSeries = (verified.owedSeries || []).slice();
         owedSeriesAll = acceptedSeries;
@@ -4982,6 +5230,109 @@ export function createStore(dir, {
     return commit(spent);
   }
 
+  // The header run is stored against the block hash, including a side chain
+  // that has not won yet. A later extension reads it back. The chain tip is
+  // not raised for blocks this run does not stand above.
+  function rememberRunBurial(list, chainTip, at) {
+    if (!at) return;
+    const floor = Number(chainTip) || 0;
+    let noted = false;
+    for (const b of list || []) {
+      const h = Number(b?.height) || 0;
+      const own = Number(at[h]);
+      if (b?.samplesPruned !== true) continue;
+      if (!Number.isInteger(own) || !(own > floor) || !shouldPruneSamples(h, own)) continue;
+      if (provenTipOf(b) != null) continue;
+      burialProof.note(blockHex(b), h, own);
+      noted = true;
+    }
+    if (noted) burialProof.save();
+  }
+
+  function locateFork(fork) {
+    let decoded;
+    try { decoded = decodeHeader(Buffer.from(fork[0].header)); } catch { return null; }
+    const t = tip();
+    const prev = decoded.prevBlockHash;
+    if (t ? prev.equals(Buffer.from(t.hash)) : prev.equals(GENESIS_PREV)) {
+      return { parentH: Number(t?.height) || 0, prefix: blocks.slice() };
+    }
+    const prevHex = Buffer.from(prev).toString('hex').toLowerCase();
+    const anchorIdx = indexByHex(blocks, prevHex);
+    if (anchorIdx >= 0) {
+      const parent = blocks[anchorIdx];
+      return {
+        parentH: Number(parent?.height) || (anchorIdx + 1),
+        prefix: blocks.slice(0, anchorIdx + 1),
+      };
+    }
+    if (sideBlocks.length && prevHex === sideTipHash()) {
+      const chain = sideChain();
+      const last = chain[chain.length - 1];
+      return { parentH: Number(last?.height) || chain.length, prefix: chain };
+    }
+    if (prev.equals(GENESIS_PREV)) return { parentH: 0, prefix: [] };
+    return null;
+  }
+
+  function burialAnchor(block, structuralH, history) {
+    let ownTs = 0;
+    try { ownTs = Number(decodeHeader(Buffer.from(block.header)).timestamp); } catch { ownTs = 0; }
+    const prior = (history || []).slice(-(MTP_WINDOW - 1)).map(blockTimeMs);
+    const genesisMs = history && history.length ? blockTimeMs(history[0]) : ownTs;
+    return { height: structuralH, genesisMs, mtp: prior.concat([ownTs]) };
+  }
+
+  function heightFieldLied(block, structuralH) {
+    return block?.height != null && block.height !== '' && Number(block.height) !== structuralH;
+  }
+
+  // Fork and adopt paths. A tip-extending single block stays on append, which
+  // already proves. A missing run is not hashed; verify answers continuity
+  // or height before samples_pruned. A full run is hashed off-loop when the
+  // caller asked for that, and only that block's tip is raised.
+  function ensurePrunedBurial(fork, verifyOpts) {
+    const located = locateFork(fork);
+    if (!located) return { ok: true, verifyOpts };
+    const { parentH, prefix } = located;
+    const forkTip = parentH + fork.length;
+    const need = [];
+    for (let i = 0; i < fork.length; i += 1) {
+      const block = fork[i];
+      if (block?.samplesPruned !== true) continue;
+      const structuralH = parentH + i + 1;
+      if (shouldPruneSamples(structuralH, forkTip)) continue;
+      if (heightFieldLied(block, structuralH)) continue;
+      let hex = '';
+      try { hex = Buffer.from(block.hash).toString('hex'); } catch { hex = ''; }
+      // No cached run is not hashed. Verify still answers continuity, height,
+      // then samples_pruned. A present run is the only thing proved here.
+      if (!hex || !offeredPath(hex)) continue;
+      need.push({ block, structuralH, index: i });
+    }
+    if (!need.length) return { ok: true, verifyOpts };
+    const proveAt = (n, at) => {
+      if (n >= need.length) return { ok: true, verifyOpts: { ...verifyOpts, provenBurialAt: at } };
+      const item = need[n];
+      const history = prefix.concat(fork.slice(0, item.index));
+      const proved = proveBurial(item.block, verifyOpts, burialAnchor(item.block, item.structuralH, history));
+      const take = (p) => {
+        const next = p?.ok ? { ...at, [item.structuralH]: p.top } : at;
+        return proveAt(n + 1, next);
+      };
+      if (proved && typeof proved.then === 'function') return proved.then(take);
+      return take(proved);
+    };
+    return proveAt(0, {});
+  }
+
+  function ingestBuried(fork, verifyOpts, apply) {
+    const ready = ensurePrunedBurial(fork, verifyOpts);
+    const go = (row) => (row?.ok ? apply(row.verifyOpts) : row);
+    if (ready && typeof ready.then === 'function') return ready.then(go);
+    return go(ready);
+  }
+
   let offLoopGate = Promise.resolve();
 
   function ingestInner(fork, verifyOpts = {}) {
@@ -5021,15 +5372,15 @@ export function createStore(dir, {
       return last;
     }
     if (extendsTip && fork.length > 1) {
-      if (!blocks.length) return adopt(fork, verifyOpts);
-      return stageOrAdopt(fork, verifyOpts, blocks.length - 1);
+      if (!blocks.length) return ingestBuried(fork, verifyOpts, (opts) => adopt(fork, opts));
+      return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, blocks.length - 1));
     }
     const prevHex = Buffer.from(decoded.prevBlockHash).toString('hex').toLowerCase();
     const anchorIdx = indexByHex(blocks, prevHex);
     if (anchorIdx >= 0 || (sideBlocks.length && prevHex === sideTipHash())) {
-      return stageOrAdopt(fork, verifyOpts, anchorIdx);
+      return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, anchorIdx));
     }
-    return adopt(fork, verifyOpts);
+    return ingestBuried(fork, verifyOpts, (opts) => adopt(fork, opts));
   }
 
   function ingest(fork, verifyOpts = {}) {
@@ -5421,8 +5772,6 @@ export function createStore(dir, {
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
       prepareCoinbase: (cb) => {
-        const pulling = pendingTxs.some((tx) => String(tx?.kind || tx?.vout?.[0]?.kind || '') === 'withdraw');
-        if (pulling) return;
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
       },

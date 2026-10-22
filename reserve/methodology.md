@@ -56,7 +56,7 @@ Internals and the contract encoding use **tenths of a basis point** (integer):
 - 1% = 100 bp = **1000** tenths-bp
 - 3.625% = 362.5 bp = **3625** tenths-bp
 
-Each bank's `normalisedInteger` in `latest.json` is this tenth-of-a-basis-point integer. The file's `consensusBps` is the trimmed mean in whole basis points. It does not carry a separate untrimmed average.
+Each bank's `normalisedInteger` in `latest.json` is this tenth-of-a-basis-point integer. The file's `consensusBps` is the plain average in whole basis points.
 
 ## Update rule
 
@@ -72,16 +72,16 @@ Do **not** ingest SOFR, SONIA, €STR, TONA, CORRA, SARON, AONIA, effective fede
 
 The chain does not fetch the URLs above. A live read of a central-bank website is not deterministic: pages, clocks, and intermediaries differ, so two nodes are not required to observe the same bytes. That fetch is not a consensus input.
 
-Every node freezes the same epoch rate from the attested tenths hardcoded in `crypto/reserve_oracle.js` (`BUNDLED_POLICY_TENTHS`). Those integers match `normalisedInteger` in `latest.json` as of 2026-08-01. The file is documentation. A node does not read it, `dataDir/oracle-snapshot.json`, a coinbase field, or `SHEAR_ORACLE_BPS` to choose the rate.
+Every node freezes the same epoch rate from the attested tenths hardcoded in `crypto/reserve_oracle.js` (`BUNDLED_POLICY_TENTHS`). Those integers match `normalisedInteger` in `latest.json`, observed 2026-10-15. The file is documentation. A node does not read it, `dataDir/oracle-snapshot.json`, a coinbase field, or `SHEAR_ORACLE_BPS` to choose the rate. Each bank's rate, source URL, and effective date are in `docs/genesis-basket-2026-10-15.md`.
 
 Quorum is exactly the 14 ids above, once each, with those tenths. A shorter list, a duplicate, an unknown id, or a different tenth is not a quorum and leaves the previous epoch's bps in place.
 
-The consensus rate is the trimmed mean: drop the two lowest and two highest tenths, half-up the middle 10, then half-up to whole bps. This bundle's middle sums to 28400 tenths → 2840 → **284** bps. Negative tenths stay in the average. The 0 floor applies only to that result. The collector does not publish an untrimmed arithmetic mean beside that figure.
+The consensus rate is the plain average of every in-range tenth. Negatives keep their sign. Half-up the sum by the count, then half-up to whole bps. This bundle sums to 39400 tenths → 2814 → **281** bps. The 0 floor applies only to that result. Per-bank bounds stay −1% to +100%.
 
-The rate is written only when an epoch opens. A vote moves the hash-bonus unit and does not move this rate. Mid-epoch, `epochBps` does not change. There is no per-epoch step and no aggregate cap: the freeze is the trimmed mean, then the 0 floor. A source outside −1%..+100% (−1000..+100000 tenths) is `bad_rate`. Fewer than 10 banks with a 2/3 supermajority leaves the previous freeze in place once 3b is active.
+The rate is written only when an epoch opens. A vote moves the hash-bonus unit and does not move this rate. Mid-epoch, `epochBps` does not change. There is no per-epoch step and no aggregate cap: the freeze is the plain average, then the 0 floor. A source outside −1%..+100% (−1000..+100000 tenths) is `bad_rate`. Fewer than 10 banks with a 2/3 supermajority leaves the previous freeze in place once 3b is active.
 
-Until the oracle activation height, every epoch freezes the genesis rate, 284 bps, floored at 0. A lone producer observe is `observe_unattested` and cannot select the rate. Templates do not pre-fill miner reports. After activation, the rate is the hardened miner median: each bank needs the same tenth from at least 2/3 of the window, at least 10 banks must clear that bar, then the trimmed mean is floored at 0. Otherwise the previous rate is kept. The window is one week of block heights: 6720 blocks on mainnet at 90 seconds. Testnet uses that same week as a fraction of its epoch (67 blocks). A producer with more than 40% of the window is an alert, not a rate change. `oracle-snapshot.json` and `latest.json` are display only.
+Until the oracle activation height, every epoch freezes the genesis rate, 281 bps, floored at 0. A lone producer observe is `observe_unattested` and cannot select the rate. Templates do not pre-fill miner reports. After activation, the rate is the hardened miner median: each bank needs the same tenth from at least 2/3 of the window, at least 10 banks must clear that bar, then the plain average of those medians is floored at 0. Otherwise the previous rate is kept. The window is one week of block heights: 6720 blocks on mainnet at 90 seconds. Testnet uses that same week as a fraction of its epoch (67 blocks). A producer with more than 40% of the window is an alert, not a rate change. `oracle-snapshot.json` and `latest.json` are display only.
 
-## Example (fixture `snapshot_a`)
+## Example (bundle observed 2026-10-15)
 
-Fed 3.50–3.75 → 3.625. The consensus figure for this fixture is the trimmed mean, **284** bps.
+Fed 3.75–4.00 → 3.875. The consensus figure for this bundle is the plain average, **281** bps.

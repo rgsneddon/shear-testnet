@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { hash20FromAddress, newIdentity } from '../../crypto/address.js';
+import { encodeDest, hash20FromAddress, newIdentity } from '../../crypto/address.js';
 import {
   GENESIS_BITS_PACKED,
   MAGIC_TESTNET,
@@ -40,9 +40,13 @@ import { merkleRoot } from '../../crypto/merkle.js';
 const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fee-fold-keys-'));
 process.env.SHEAR_SEAL_KEY_DIR = keyDir;
 
+// A v12 pool-fee note pays the sink or a payable dest (dest20 || admit base)
+// that carries a wrap (poolFeeNoteBound). The fee dest here is a hasher or a
+// stranger, so every dest the test makes is payable.
 function minerDest() {
   const id = newIdentity();
-  return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+  const short = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+  return encodeDest(hash20FromAddress(short), id.admitBase);
 }
 
 function tmp(tag) {

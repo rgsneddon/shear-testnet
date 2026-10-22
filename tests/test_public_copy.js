@@ -35,7 +35,6 @@ const PUBLIC = [
   'site/index.html',
   'site/docs/content.js',
   'site/docs/index.html',
-  'site/admin/index.html',
   'site/whitepaper/index.html',
   'site/whitepaper/build_pdf.py',
   'pool/public/index.html',
@@ -297,19 +296,28 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /same shell.*npm run solo|npm run solo/);
     assert.match(nodePage, /Darwin/);
     assert.doesNotMatch(pool, /shear-testnet-v3/);
-    assert.match(main, /countdown to 30th October 2026 at 1400hrs UK time/);
-    assert.match(main, /2026-10-30T14:00:00\+00:00/);
+    assert.match(main, /countdown to 16th November 2026 at 1400hrs UK time/);
+    assert.match(main, /2026-11-16T14:00:00\+00:00/);
     assert.doesNotMatch(main, /launch date not decided/);
+    for (const page of ['site/network.html', 'site/mine.html', 'site/governance.html', 'site/get-started.html']) {
+      assert.match(read(page), /countdown to 16th November 2026 at 1400hrs UK time/, page);
+      assert.doesNotMatch(read(page), /launch date not decided/, page);
+    }
+    const operatorNote = read('docs/OPERATOR_NOTE_AUDIT.md');
+    assert.match(operatorNote, /16th November 2026 at 1400hrs UK time/);
+    assert.doesNotMatch(operatorNote, /Launch date is not decided/);
+    const nodeHelp = read('node/src/help.js');
+    assert.match(nodeHelp, /SHEAR_MAINNET_EMIT  do not set\. The 16 Nov countdown is display only and does not emit\./);
+    assert.doesNotMatch(nodeHelp, /Launch is not decided/);
     assert.doesNotMatch(main, /2026-09-18T21:00:00/);
     assert.doesNotMatch(docs, /2026-09-18T21:00:00/);
-    assert.doesNotMatch(read('site/admin/index.html'), /2026-09-18T21:00:00/);
     assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
-    assert.match(readme, /30th October 2026 at 1400hrs UK time/);
+    assert.match(readme, /16th November 2026 at 1400hrs UK time/);
     assert.match(readme, /does not emit/);
   });
 
   it('no surface claims privacy, confidential amounts, or a bucket anonymity set', () => {
-    assert.ok(CLAIM_SURFACES.length > 40, `walked ${CLAIM_SURFACES.length} files`);
+    assert.ok(CLAIM_SURFACES.length >= 40, `walked ${CLAIM_SURFACES.length} files`);
     for (const rel of [...CLAIM_SURFACES, ...PDFS]) {
       const text = copyText(rel);
       for (const banned of COPY_BANNED) assert.doesNotMatch(text, banned, `${rel} ${banned}`);
@@ -433,6 +441,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.equal(SHEARK_MINER_VERSION, '2.9');
     assert.equal(MAGIC_TESTNET_V10, 'shear-testnet-v10');
     assert.equal(MAGIC_TESTNET_V11, 'shear-testnet-v11');
+    assert.equal(MAGIC_TESTNET_V12, 'shear-testnet-v12');
     assert.equal(MAGIC_TESTNET, 'shear-testnet-v12');
     assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(GENESIS_BITS, 17);

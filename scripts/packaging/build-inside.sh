@@ -70,9 +70,9 @@ su -s /bin/bash builder -c '/usr/local/bin/as-builder flutter config --no-analyt
 su -s /bin/bash builder -c '/usr/local/bin/as-builder flutter --version'
 su -s /bin/bash builder -c '/usr/local/bin/as-builder dart --version'
 
-log "npm ci"
+log "npm ci --ignore-scripts"
 cd "${SRC}"
-npm ci --no-audit --no-fund
+npm ci --no-audit --no-fund --ignore-scripts
 
 log "randomx"
 RX="${SRC}/crypto/randomx"
@@ -86,7 +86,7 @@ make -C "${SRC}/sheark-miner" -j"${JOBS}"
 bash "${SRC}/sheark-miner/pack/selftest.sh" "${SRC}/sheark-miner/ShearK-Miner"
 
 log "native addons"
-cargo build --release --locked --manifest-path "${SRC}/crypto/native/admit/Cargo.toml"
+bash "${SRC}/crypto/native/build-linux-admit-so.sh" --locked
 make -C "${SRC}/crypto/native" shearhash.node shearadmit.node
 test -f "${SRC}/crypto/native/shearhash.node"
 test -f "${SRC}/crypto/native/shearadmit.node"

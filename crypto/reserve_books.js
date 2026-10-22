@@ -47,6 +47,6 @@ export const MAGIC_TESTNET_V9 = bookMagic('MAGIC_TESTNET_V9');
 export const MAGIC_TESTNET_V10 = bookMagic('MAGIC_TESTNET_V10');
 export const MAGIC_TESTNET_V11 = bookMagic('MAGIC_TESTNET_V11');
 export const MAGIC_TESTNET_V12 = bookMagic('MAGIC_TESTNET_V12');
-/** ADMITv2 privacy-class book. Empty cut. */
+/** Live book. Note principal leaves only through a levy-paying withdraw. */
 export const MAGIC_TESTNET = MAGIC_TESTNET_V12;
 export const MAGIC_MAINNET = bookMagic('MAGIC_MAINNET');

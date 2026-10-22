@@ -3,13 +3,21 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView, freshStealthDest } from '../../crypto/address.js';
-import { spendBox, admitSend } from '../../tests/spend_box.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
-import { HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS, SAMPLE_PRUNE_CONFIRMATIONS, BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
-import { levyNanos } from '../../crypto/levy.js';
-import { attachDummyOuts } from '../../crypto/dummy.js';
-import { signSpendTx } from '../../crypto/spend.js';
+import { newIdentity, freshStealthDest, hash20FromAddress, encodeDest } from '../../crypto/address.js';
+import { spendBox } from '../../tests/spend_box.js';
+import { HASH_BONUS_NANOS, SAMPLE_PRUNE_CONFIRMATIONS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { levyNeed, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
+import { viewTagOf } from '../../crypto/dummy.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+import { admitScalarFromSeed, attachAdmitPub } from '../../crypto/admit.js';
+import { asU8, kernelExcess, openedCoinbaseNanos, sealHiddenNote, sealNote } from '../../crypto/note.js';
+import { readyHeight, walletAnchor } from '../../crypto/admit_v3.js';
+import {
+  FS1_RECORD_BYTES,
+  FS1_WIRE,
+  fs1BlobLen,
+  fs1ProveSpend,
+} from '../../crypto/fs1_spend.js';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { createStore } from '../src/store.js';
 import { reconstructOwner } from '../../pool/src/wallet_api.js';
@@ -39,6 +47,85 @@ function trust(block) {
   return { trustedPowHash: block.trustedPowHash || block.hash, skipSharePow: true };
 }
 
+function hiddenOut(nanos, dest20, admitBase, kind) {
+  // A dummy is publicly zero. The flow check opens that proof. Pay and change stay hidden.
+  if (kind === 'dummy') {
+    let note = sealNote(0, { dest20, kind: 'dummy' });
+    note = attachAdmitPub(note, admitBase ? { admitBase } : {});
+    return { ...note, kind: 'dummy', dest20: Buffer.from(dest20), viewTag: viewTagOf(note.noteCommit) };
+  }
+  const sealed = admitBase
+    ? sealHiddenNote(nanos, { dest20, kind, admitBase })
+    : sealHiddenNote(nanos, { dest20, kind });
+  let note = attachAdmitPub(sealed, admitBase ? { admitBase } : {});
+  note = { ...note, kind, dest20: Buffer.from(dest20), viewTag: viewTagOf(note.noteCommit) };
+  delete note.valueProof;
+  return note;
+}
+
+function rangeSlack(outs) {
+  let bytes = 0;
+  for (const o of outs) if (o?.rangeProof) bytes += Buffer.from(asU8(o.rangeProof)).length;
+  return Math.ceil((bytes * 2) / 2048) + 8;
+}
+
+/** One FS-1 send. Byte-2 admit blobs are rejected, so the sealed id has to be a real proof. */
+function fs1Send({ id, coin, anchor, live, magic, outsOf }) {
+  const ph = Buffer.alloc(fs1BlobLen(1), 255);
+  ph[0] = FS1_WIRE;
+  const blob = Buffer.alloc(FS1_RECORD_BYTES, 255);
+  blob[0] = FS1_WIRE;
+  const proofs = [{ admit_proof: true, v: 3, spendTag: Buffer.alloc(32, 255), blob, cTilde: Buffer.alloc(32, 255) }];
+  let fee = LEVY_FLOOR_UNITS;
+  let outs = null;
+  let draft = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const room = coin.v - fee;
+    if (room < 1) return null;
+    outs = outsOf(room);
+    draft = compactTx({
+      id,
+      kind: 'send',
+      anchor,
+      fee,
+      vin: [{ commit: Buffer.alloc(32, 255) }],
+      vout: outs,
+      fs1: ph,
+      admit_proofs: proofs,
+      excess: Buffer.alloc(32, 255),
+    });
+    const need = levyNeed(draft);
+    if (fee >= need && fee <= LEVY_CAP_NANOS) break;
+    const next = need + rangeSlack(outs);
+    if (!(next > fee && next <= LEVY_CAP_NANOS)) return null;
+    fee = next;
+    draft = null;
+  }
+  if (!draft) return null;
+  const proven = fs1ProveSpend({
+    live,
+    anchor,
+    indices: [coin.index],
+    xs: [coin.x],
+    tx: draft,
+    magic,
+  });
+  if (!proven) return null;
+  const excess = kernelExcess(outs, [{ r: coin.r, t: proven.t[0] }]);
+  if (!excess) return null;
+  return compactTx({
+    id,
+    kind: 'send',
+    anchor,
+    fee: draft.fee,
+    vin: [{ commit: Buffer.from(proven.proofs[0].cTilde) }],
+    vout: outs,
+    fs1: proven.fs1,
+    admit_proofs: proven.proofs,
+    excess,
+  });
+}
+
 describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, () => {
   it('collates hashes, prunes sample bodies, keeps sealed txs for explorer', async () => {
     const alice = newIdentity();
@@ -46,10 +133,12 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     const aliceBox = spendBox(alice);
     const destA = aliceBox.dest;
     const destB = freshStealthDest(bob).dest;
+    // Same dest20 as the history address, with Alice's admit base so the pot is spendable.
+    const minerDest = encodeDest(hash20FromAddress(destA), alice.admitBase);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-prune-'));
     const store = createStore(dir, { pruneAfter: 2 });
     const fat = Array.from({ length: 250 }, (_, i) => ({
-      miner: destA,
+      miner: minerDest,
       nonce: String(i),
       tag: 'a',
       count: 1,
@@ -59,60 +148,70 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     const b1 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
-      miner: destA,
+      miner: minerDest,
       bits: GENESIS_BITS_PACKED,
       now: t0,
       samples: fat,
     }));
+    const born = (b1.txs[0].vout || []).find((o) => o.kind === 'pot');
+    assert.ok(born && born.r && born.commit, 'height-1 pot opening');
+    const potR = Buffer.from(asU8(born.r));
+    const potV = openedCoinbaseNanos(born);
+    assert.ok(potV > 0, 'pot value');
     const a1 = await Promise.resolve(store.append(b1, trust(b1)));
     assert.equal(a1.ok, true, a1.reason);
     assert.equal(store.blocks[0].samples.length, 1);
     assert.equal(store.blocks[0].samples[0].count, 250);
     assert.equal(store.blocks[0].txs[0].samples, undefined);
+    const storedPot = (store.blocks[0].txs[0].vout || []).find((o) => o.kind === 'pot');
+    assert.ok(Buffer.from(asU8(storedPot.commit)).equals(Buffer.from(asU8(born.commit))), 'pot commit survived append');
 
-    let lastPot = null;
-    for (let i = 1; i < SPENDABLE_CONFIRMATIONS + 1; i += 1) {
+    const includeAt = readyHeight(1);
+    while (store.tip().height < includeAt - 1) {
       const parent = store.tip();
       const parentH = decodeHeader(Buffer.from(parent.header));
       const nxt = mine(buildTemplate({
         prev: parent.hash,
         prevHeader: parent.header,
         height: parent.height + 1,
-        miner: destA,
+        miner: minerDest,
         bits: GENESIS_BITS_PACKED,
         now: Number(parentH.timestamp) + 90_000,
       }));
-      const pot = (nxt.txs[0].vout || []).find((o) => o.kind === 'pot');
-      lastPot = {
-        commit: pot.commit,
-        noteCommit: pot.noteCommit,
-        r: pot.r,
-        index: nxt.txs[0].vout.indexOf(pot),
-      };
       assert.equal((await Promise.resolve(store.append(nxt, trust(nxt)))).ok, true);
     }
-    const fee = levyNanos(3);
-    const change = BLOCK_SUBSIDY_NANOS - 3 - fee;
-    const send = attachDummyOuts({
+    const anchor = walletAnchor(includeAt);
+    const live = store.anchorNote(anchor);
+    assert.ok(live && live.n >= 1, `anchor ${anchor}`);
+    let index = -1;
+    const wantCommit = Buffer.from(asU8(storedPot.commit));
+    for (let i = 0; i < live.n; i += 1) {
+      if (Buffer.from(asU8(live.commits[i])).equals(wantCommit)) index = i;
+    }
+    assert.ok(index >= 0, 'height-1 pot is inside the anchor');
+    const pay20 = hash20FromAddress(destB);
+    const change20 = hash20FromAddress(destA);
+    const send = fs1Send({
       id: 'send-forever',
-      kind: 'send',
-      from: destA,
-      to: destB,
-      nanos: 3,
-      fee,
-      changeNanos: change,
-      open: destOpeningFromView(alice.viewKey, alice.spendPub, 0),
-      vin: [{
-        commit: lastPot.commit,
-        address: destA,
-      }],
-      vout: [
-        { address: destB, nanos: 3, kind: 'send' },
-        { address: destA, nanos: change, kind: 'send' },
-      ],
-    }, { spent: lastPot });
-    admitSend(send, { id: alice, spent: { ...lastPot, kind: 'pot' }, blocks: store.blocks });
-    signSpendTx(send, aliceBox.key);
+      coin: {
+        index,
+        r: potR,
+        v: potV,
+        x: admitScalarFromSeed(alice.spendSeed, storedPot),
+      },
+      anchor,
+      live,
+      magic: store.magic,
+      outsOf: (room) => {
+        const pay = Math.max(1, Math.floor(room / 3));
+        return [
+          hiddenOut(pay, pay20, bob.admitBase, 'send'),
+          hiddenOut(room - pay, change20, alice.admitBase, 'send'),
+          hiddenOut(0, Buffer.alloc(20, 4), null, 'dummy'),
+        ];
+      },
+    });
+    assert.ok(send, 'send-forever proof');
     const parentSend = store.tip();
     const parentSendH = decodeHeader(Buffer.from(parentSend.header));
     const sendBlock = mine(buildTemplate({
@@ -121,7 +220,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       prevBlock: parentSend,
       parentBlocks: store.blocks,
       height: parentSend.height + 1,
-      miner: destA,
+      miner: minerDest,
       bits: GENESIS_BITS_PACKED,
       now: Number(parentSendH.timestamp) + 90_000,
       txs: [send],

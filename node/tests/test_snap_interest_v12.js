@@ -7,7 +7,7 @@ import { potSubsidyAt, MS_PER_DAY, EPOCH_DAYS_TESTNET } from '../../crypto/pot_s
 import { PI_SHE_NANOS, GENESIS_BPS, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
 import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
-import { lockTx, withdrawTx } from '../../crypto/reserve_vault.js';
+import { lockTx, withdrawTx } from '../../crypto/owned_portal.js';
 import { coinbaseTx } from '../src/chain.js';
 import { fillSnapInterest, foldSupply, supplyFromScalar } from '../src/supply.js';
 
@@ -22,6 +22,19 @@ function minerDest() {
 function portalDest() {
   const id = newIdentity();
   return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+}
+
+function noteFund(tx) {
+  const n = Math.floor(Number(tx.nanos) || 0);
+  const sealed = sealCoinbaseNote(n, { dest20: Buffer.alloc(20, 0x91), kind: 'pot' });
+  const prev = tx.vin && tx.vin[0] ? tx.vin[0] : {};
+  tx.vin = [{
+    ...prev,
+    commit: sealed.commit,
+    valueProof: sealed.valueProof,
+    rangeProof: sealed.rangeProof,
+  }];
+  return tx;
 }
 
 function header(ts) {
@@ -92,20 +105,20 @@ describe('VS-1 snap interest', () => {
     const drawTs = GENESIS + EPOCH_MS + 1;
     const chain = [
       blockAt(GENESIS, miner, [{ nanos: potAt(GENESIS), kind: 'pot' }], [
-        lockTx({ from: miner, to: portal, nanos: stake, id: 'lock-snap' }),
+        noteFund(lockTx({ from: miner, to: portal, nanos: stake, id: 'lock-snap' })),
       ]),
       blockAt(drawTs, miner, [{ nanos: potAt(drawTs), kind: 'pot' }], [
-        withdrawTx({ from: portal, to: miner, nanos: stake + one, id: 'draw-snap' }),
+        withdrawTx({ from: portal, to: miner, nanos: stake, id: 'draw-snap' }),
       ]),
     ];
     const folded = foldSupply(chain, { genesisMs: GENESIS });
     assert.equal(folded.ok, true, folded.reason);
-    assert.equal(folded.state.mintedInterest, BigInt(one));
-    assert.equal(folded.state.permittedInterest, BigInt(one));
+    assert.equal(folded.state.mintedInterest, 0n);
+    assert.equal(folded.state.permittedInterest, 0n);
 
     const kept = supplyFromScalar(folded.state, { owedKnown: true });
-    assert.equal(kept.mintedInterest, BigInt(one));
-    assert.equal(kept.permittedInterest, BigInt(one));
+    assert.equal(kept.mintedInterest, 0n);
+    assert.equal(kept.permittedInterest, 0n);
 
     let walked = foldSupply([chain[0]], { genesisMs: GENESIS });
     assert.equal(walked.ok, true, walked.reason);
@@ -118,7 +131,7 @@ describe('VS-1 snap interest', () => {
     assert.equal(filled.ok, true, filled.reason);
     assert.equal(rows[0].mintedInterest, 0n);
     assert.equal(rows[0].permittedInterest, 0n);
-    assert.equal(rows[1].mintedInterest, BigInt(one));
-    assert.equal(rows[1].permittedInterest, BigInt(one));
+    assert.equal(rows[1].mintedInterest, 0n);
+    assert.equal(rows[1].permittedInterest, 0n);
   });
 });

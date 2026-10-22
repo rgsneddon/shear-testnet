@@ -2,7 +2,8 @@ Vendored from https://github.com/monero-oxide/monero-oxide
 commit 77788c368145127f2dde2ac3e2ddce919f3ddd01
 trees: crypto/helioselene, crypto/divisors, crypto/generalized-bulletproofs, crypto/fcmps
 
-Each directory keeps its upstream LICENSE. Copyright Luke Parker, years as in that file. Licence MIT.
+Each directory keeps its upstream LICENSE. Licence MIT. Copyright Luke Parker, years as in each file;
+generalized-bulletproofs also carries Copyright (c) 2025 monero-oxide Developers.
 
 Not imported: monero-fcmp-plus-plus and monero-fcmp-plus-plus-generators.
 Those are Monero's Ed25519 wrapper and Monero generators. Shear does not use them.

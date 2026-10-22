@@ -14,6 +14,7 @@ function sectionRun() {
     '  Default start never pulls a bootstrap. Empty datadir syncs height 1, 2, 3, … to the tip.',
     '  A datadir that already has blocks resumes from that tip and syncs to the network tip.',
     '  Optional: SHEAR_BOOTSTRAP=1 or --bootstrap=URL on an empty book installs boot.shear.digital once.',
+    '  node node/src/node.js --datadir PATH  real datadir, when the default path is a junction',
     '  node node/src/node.js --status        print height/hash/jroot/peers from datadir and exit',
     '  node node/src/node.js --print-config  JSON pin (magic, admit, mainnet=false)',
     '  node node/src/node.js --help | -h | help [topic]',
@@ -28,6 +29,7 @@ function sectionEnv() {
     'Env:',
     '  SHEAR_DATA          datadir. Windows %APPDATA%\\Shear\\testnet-v11 (Roaming). Unix ~/.shear/testnet-v11.',
     '                      Same path for Shear Sentinel v19 and Continuum 0.72.',
+    '  --datadir PATH      same directory as SHEAR_DATA. Use it when that path is a junction.',
     '  SHEAR_NETWORK       shear-testnet-v12 (this book). shear-v1 waits for genesis.',
     '  SHEAR_P2P_PORT      default 30303',
     '  SHEAR_P2P_BIND      default 0.0.0.0',
@@ -46,7 +48,7 @@ function sectionEnv() {
     '  SHEAR_STRATUM       solo stratum port (default 1111)',
     '  SHEAR_STRATUM_BIND  solo stratum bind (default 127.0.0.1)',
     '  SHEARK_MINER        optional path to ShearK-Miner 2.8 if shearhash.node is missing',
-    '  SHEAR_MAINNET_EMIT  do not set. Launch is not decided.',
+    '  SHEAR_MAINNET_EMIT  do not set. The 16 Nov countdown is display only and does not emit.',
     '  SHEAR_MAINNET_EMIT_CONFIRM  do not set.',
   ];
 }
@@ -161,7 +163,7 @@ export function printHelp(topic) {
   const tail = [
     '',
     'RPC is loopback. Do not bind RPC to the public internet.',
-    'Mainnet shear-v1 is not live. The public countdown is 30th October 2026 at 1400hrs UK time. That countdown is a display date and does not emit. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET.',
+    'Mainnet shear-v1 is not live. The public countdown is 16th November 2026 at 1400hrs UK time. That countdown is a display date and does not emit. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET.',
     'Build native addons on this box: cmake randomx, then make -C crypto/native',
   ];
   const body = {

@@ -8,7 +8,8 @@ import { merkleRoot, merkleProof, merkleBound } from './merkle.js';
 import { packALeafV5, packBLeaf, packDigest } from './pack.js';
 import { noteCommitOfDest20, openedCoinbaseNanos, flowBLockNanos, verifyFlowConservation } from './note.js';
 import { hash20FromAddress, dest20MatchesSpendPub } from './address.js';
-import { spendPubFromTx, verifySpendSig } from './spend.js';
+import { spendPubFromTx, verifySpendSig, bSpendFeeRejected } from './spend.js';
+import { bSpendVinRejected } from './chronoflux.js';
 import { decodeHeader } from './header.js';
 import { SPENDABLE_CONFIRMATIONS } from './asert.js';
 
@@ -118,11 +119,15 @@ export function bProof(bLeaves, index) {
 }
 
 /** The block this node already has at `height`, or null. A tx field is not a block. */
-export function chainBlockAt(height, history, prev) {
+export function chainBlockAt(height, history, prev, blockAt) {
   const h = Number(height);
   if (!Number.isInteger(h) || h < 1) return null;
   const hit = (b) => !!(b && b.header && Number(b.height) === h);
   if (hit(prev)) return prev;
+  if (blockAt && typeof blockAt.get === 'function') {
+    const found = blockAt.get(h);
+    return hit(found) ? found : null;
+  }
   if (history && typeof history.length === 'number') {
     for (let i = history.length - 1; i >= 0; i -= 1) {
       const b = history[i];
@@ -274,12 +279,12 @@ function bSpendOwnerRejected(tx, leaf, outs) {
  * Every output opens, the opened sum is the leaf unit, every output pays
  * leaf.dest20, and the leaf owner signs the spend.
  */
-export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spent = null } = {}) {
+export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spent = null, blockAt = null } = {}) {
   try {
     const leaf = canonicalBLeaf(tx);
     if (!leaf) return { ok: false, reason: 'leaf' };
     const commitH = Number(tx?.commitHeight || 0);
-    const block = chainBlockAt(commitH, history, prev);
+    const block = chainBlockAt(commitH, history, prev, blockAt);
     if (!block?.header) return { ok: false, reason: 'pre_seal' };
     const outs = Array.isArray(tx?.vout) ? tx.vout : [];
     if (!outs.length) return { ok: false, reason: 'commit_sum' };
@@ -307,6 +312,45 @@ export function bindBSpend(tx, { history = null, prev = null, tipHeight = 0, spe
   } catch {
     return { ok: false, reason: 'leaf' };
   }
+}
+
+/**
+ * Same b-spend predicate verifyBlock uses, for a load that does not replay
+ * the body. An unsigned compact spend does not pass. The spent set is local.
+ */
+export function chainBSpendsRejected(blocks) {
+  const spent = new Set();
+  const list = Array.isArray(blocks) ? blocks : [];
+  const blockAt = new Map();
+  for (let i = 0; i < list.length; i += 1) {
+    const block = list[i];
+    const prev = i > 0 ? list[i - 1] : null;
+    const parentHeight = Number(prev?.height || 0);
+    const txs = Array.isArray(block?.txs) ? block.txs : [];
+    for (const tx of txs) {
+      if (!tx || tx.coinbase || tx.kind !== 'b-spend') continue;
+      const vinAdmit = bSpendVinRejected(tx);
+      if (vinAdmit) return vinAdmit;
+      const spendFee = bSpendFeeRejected(tx);
+      if (spendFee) return spendFee;
+      let got;
+      try {
+        got = bindBSpend(tx, {
+          history: list,
+          prev,
+          tipHeight: parentHeight + 1,
+          spent,
+          blockAt,
+        });
+      } catch {
+        return { ok: false, reason: 'leaf' };
+      }
+      if (!got || !got.ok) return got || { ok: false, reason: 'leaf' };
+    }
+    const h = Number(block?.height);
+    if (block?.header && Number.isInteger(h) && h >= 1) blockAt.set(h, block);
+  }
+  return null;
 }
 
 function leafDest20(tx) {

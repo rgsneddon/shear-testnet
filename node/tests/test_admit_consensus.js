@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -121,7 +122,7 @@ function identityDest() {
   };
 }
 
-describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', () => {
+describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeout: fileCapMs(import.meta.url) }, () => {
   it('honest spent-note send with admit_proof against the real fluxset is ok; sampled / missing / reused tag fail; compact self-minted C_in is confidential', () => {
     const { dest, spendSeed, key } = identityDest();
     const genesis = mine(buildTemplate({

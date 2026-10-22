@@ -26,8 +26,8 @@ pub use generators::{generators_digest, generators_match_derivation, GENERATOR_D
 pub use leaf::{leaf_bytes, leaf_from_bytes, leaf_of, ChainNote, LEAF_BYTES};
 pub use membership::{
   branch_blinds_per_input, empty_leaf, proof_len, prove, prove_prepared, prove_threaded, root_bytes,
-  tree_capacity, verify, Fs1Error, Fs1Params, Fs1Tree, OpenNote, PreparedBlinds, Proved, Tree, DEPTH,
-  NOTE_CHANGE, NOTE_PAYMENT,
+  tree_capacity, verify, Fs1Error, Fs1Params, Fs1Tree, OpenNote, PreparedBlinds, Proved, Tree,
+  ADMIT_CYCLE, CYCLE_C1, CYCLE_C2, DEPTH, NOTE_CHANGE, NOTE_PAYMENT,
 };
 pub use rulings::{
   consensus_accepts, reserve_wu, verify_weight, wallet_pad, INPUT_MAX, INPUT_MIN, PREFERRED_INPUTS,

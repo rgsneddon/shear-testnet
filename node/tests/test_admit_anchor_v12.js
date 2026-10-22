@@ -69,8 +69,14 @@ describe('ADMITv3 anchor on queue and verify', () => {
           vin: [{ anchor: Q * 2 }],
           vout: [{ kind: 'lock', nanos, address: who.dest }],
         };
+        // `anchor` is not a signed vin key. queueTx and verifyBlock reject
+        // that key as unsigned before checkAdmitAnchor. Reordering those
+        // gates would change the consensus reason. The quantum split is
+        // still the pure rule.
+        assert.equal(checkAdmitAnchor(split, 1).reason, 'admit_anchor_quantum');
         const queuedSplit = store.queueTx(split);
-        assert.equal(queuedSplit.reason, 'admit_anchor_quantum', String(nanos));
+        assert.equal(queuedSplit.ok, false, String(nanos));
+        assert.equal(queuedSplit.reason, 'unsigned', String(nanos));
         const note = sealNote(nanos, { dest20: hash20FromAddress(who.dest), kind: 'lock' });
         const unanchored = {
           id: `plain-${nanos}`,

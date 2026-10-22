@@ -10,10 +10,9 @@ import { isSpendableHeight, valueOpenRejected } from './chronoflux.js';
 import { paymentIdHash, hash20FromAddress, destOpeningFromView, ED25519_SPKI_PREFIX, ed25519RawPub, destMatchesSpendPub, dest20MatchesSpendPub, encodeDest, isStealthKey, stealthSign, stealthSpendPubFrom, ed25519PrivateFromSeed } from './address.js';
 import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
-import { claimedVoutNanos, flowNeedsDummy, publicReserveReceipt } from './dummy.js';
+import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote } from './note.js';
-import { interestNanos } from './reserve_oracle.js';
-import { portalIdFromDest, withdrawMintId, reserveDigestSuffix } from './reserve_vault.js';
+import { portalIdFromDest, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { typedAdmitStructure } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -49,11 +48,48 @@ function lenPref(buf) {
   return Buffer.concat([n, body]);
 }
 
+/** Not a legal fee. Legal fees are 0..2^53-1, and those encodings have a zero high byte. */
+const FEE_ILLEGAL = Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+
+/**
+ * Absent (missing, null, or undefined) is 0.
+ * A number-typed integer in 0..2^53-1 is itself.
+ * Anything else is null: a string, a float, NaN, a negative, or an integer above 2^53-1.
+ */
+export function postedFeeNanos(tx) {
+  if (!tx || typeof tx !== 'object') return 0;
+  if (tx.fee == null) return 0;
+  const fee = tx.fee;
+  if (typeof fee !== 'number' || !Number.isSafeInteger(fee) || fee < 0) return null;
+  return fee;
+}
+
+/** The fee field is not absent and not a number-typed integer in 0..2^53-1. */
+export function feeFieldRejected(tx) {
+  if (!tx || typeof tx !== 'object' || Array.isArray(tx) || Buffer.isBuffer(tx)) return null;
+  if (postedFeeNanos(tx) == null) return { ok: false, reason: 'fee' };
+  return null;
+}
+
+/**
+ * A b-spend's outputs must sum to the leaf, and the fee is not taken from that
+ * leaf or from any other note. A positive fee would still be added to the
+ * block levy and minted as finder-fee and reserve-fee rows. Only absent or 0.
+ */
+export function bSpendFeeRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = String(tx.kind || tx.vout?.[0]?.kind || '');
+  if (kind !== 'b-spend') return null;
+  const paid = postedFeeNanos(tx);
+  if (paid == null || paid !== 0) return { ok: false, reason: 'fee' };
+  return null;
+}
+
 function canonicalFee(tx) {
-  const n = Math.floor(Number(tx?.fee || 0));
-  const v = Number.isSafeInteger(n) && n > 0 ? n : 0;
+  const n = postedFeeNanos(tx);
+  if (n == null) return FEE_ILLEGAL;
   const out = Buffer.alloc(8);
-  out.writeBigUInt64LE(BigInt(v));
+  out.writeBigUInt64LE(BigInt(n));
   return out;
 }
 
@@ -126,7 +162,13 @@ export function spendPackDigest(tx) {
     bFlag: tx?.bFlag || tx?.kind === 'b-spend' ? 1 : 0,
   }));
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return flowAmtDigest(packed, tx?.vout);
+  if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') {
+    const flowed = flowAmtDigest(packed, tx?.vout);
+    // A b-spend fee is signed, and consensus only allows absent or 0.
+    // An alias does not hash as that zero. Sends stay on the packed body.
+    if (kind !== 'b-spend') return flowed;
+    return createHash('sha256').update(flowed).update(canonicalFee(tx)).digest();
+  }
   // Portal, fee, and the admit blob are signed. A stolen sig cannot be
   // retargeted, repriced, or pointed at a different proof. Flow sends stay
   // on the packed body alone.
@@ -189,7 +231,13 @@ export function verifySpendSig(tx) {
   const pubRaw = spendPubFromTx(tx);
   if (!pubRaw) return false;
   const from = String(tx?.from || tx?.vin?.[0]?.address || '');
-  if (from && !destMatchesSpendPub(from, pubRaw)) return false;
+  if (from) {
+    if (!destMatchesSpendPub(from, pubRaw)) return false;
+  } else {
+    const vin = Array.isArray(tx?.vin) ? tx.vin[0] : null;
+    const d20 = vin?.dest20 || tx?.dest20;
+    if (!d20 || !dest20MatchesSpendPub(d20, pubRaw)) return false;
+  }
   const sigHex = String(tx?.sig || tx?.signature || '').replace(/^0x/i, '');
   if (!/^[0-9a-f]{128}$/i.test(sigHex)) return false;
   try {
@@ -532,12 +580,13 @@ export const BODY_SECRET_KEYS = new Set([
 const BODY_KEYS = new Set([
   'id', 'kind', 'from', 'to', 'nanos', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
-  'portalId', 'payoutPortalId', 'programId', 'choice',
+  'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig',
   'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
   'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
   'samples', 'weight', 'changeNanos', 'amount', 'payer', 'sponsor',
   'coinbase', 'carryNanos', 'share', 'withdrawNonce', 'reports', 'rateCommit', 'rewardRoot',
   'nullifier',
+  'ownerPub',
   'hashOwed', 'hashOwedRest', 'hashOwedLocal', 'hashOwedRoot', 'hashCreditRoot',
   'hashBonusUnit', 'hashAcceptedUnits', 'hashDustNanos', 'hashOwedOverflowNanos',
   'hashCredits', 'shareSlotRoot', 'issuedJobKeys', 'observe',
@@ -716,7 +765,6 @@ export function typedCommitRejected(tx) {
  */
 export function typedCommitSum(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
-  if (publicReserveReceipt(tx)) return { ok: true, skip: true };
   if (kind !== 'lock' && kind !== 'vote' && kind !== 'withdraw') return { ok: true, skip: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   if (!outs.length) return { ok: false, reason: 'commit_sum' };
@@ -786,35 +834,74 @@ function voutDest20(o) {
  * Owner key recorded on the portal, plus any earlier lock in this body.
  * `seenOwners` is a Map of portal id → spendPub hex for the block being checked.
  */
+/**
+ * A fresh portal is the funder's spend address. The vault stores that dest,
+ * so the portal links to the funder. A derived portal address is allowed
+ * when this same spend key owns it: the portal id is that dest's id either
+ * way. A stranger's key cannot take the owner slot.
+ */
+function freshLockBound(tx, pubRaw) {
+  const dest = reservePortalDest(tx);
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const o = outs.find((row) => String(row?.kind || 'lock') === 'lock') || outs[0] || {};
+  let ownedDest = '';
+  if (dest && destMatchesSpendPub(dest, pubRaw)) ownedDest = dest;
+  else if (o?.dest20 && dest20MatchesSpendPub(o.dest20, pubRaw)) {
+    try { ownedDest = encodeDest(Buffer.from(o.dest20)); } catch { ownedDest = ''; }
+  }
+  if (!ownedDest) return false;
+  const pid = String(tx?.portalId || o?.portalId || '').toLowerCase();
+  if (pid && pid !== portalIdFromDest(ownedDest)) return false;
+  return true;
+}
+
 export function reserveAuth(tx, reserveState = null, seenOwners = null) {
   if (!reserveNeedsPortalOpen(tx)) return { ok: true };
-  // A public dest20 receipt has no spendPub. The opened v is the body.
-  // A sealed note still needs the owner signature, and a missing one is unsigned.
-  if (publicReserveReceipt(tx)) return { ok: true };
+  const kind = reserveKindOf(tx);
+  const pubRaw = spendPubFromTx(tx);
+  // A sealed note needs the owner signature. A missing one is unsigned.
+  // A public dest20 receipt has no spend key, so it is not an open.
   if (!verifyReservePortalOpen(tx)) {
     return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
   }
   const ref = reservePortalRef(tx);
   if (!ref.ok) return ref;
-  const pub = spendPubFromTx(tx).toString('hex').toLowerCase();
+  const spend = pubRaw.toString('hex').toLowerCase();
+  const ownerPub = String(tx?.ownerPub || '').replace(/^0x/i, '').toLowerCase();
   const recorded = String(reserveState?.portals?.[ref.id]?.ownerPub || '').toLowerCase();
   const seen = seenOwners instanceof Map ? String(seenOwners.get(ref.id) || '') : '';
   const want = recorded || seen;
-  if (want && want !== pub) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
-  if (reserveKindOf(tx) === 'withdraw' && recorded && recorded !== pub) {
-    return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  if (kind === 'lock' && !want) {
+    if (!freshLockBound(tx, pubRaw)) {
+      return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+    }
+    if (!/^[0-9a-f]{64}$/.test(ownerPub)) {
+      return { ok: false, reason: 'owner_missing', from: reservePortalDest(tx) };
+    }
+    if (seenOwners instanceof Map && ref.id) seenOwners.set(ref.id, ownerPub);
+    return { ok: true };
   }
-  if (seenOwners instanceof Map && ref.id && reserveKindOf(tx) === 'lock') {
-    seenOwners.set(ref.id, pub);
+  if (kind === 'lock' && want) {
+    const presented = ownerPub || spend;
+    if (presented !== want) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
+  }
+  if (kind === 'withdraw' && !want) {
+    return { ok: false, reason: 'owner_missing', from: reservePortalDest(tx) };
+  }
+  if (seenOwners instanceof Map && ref.id && kind === 'lock') {
+    seenOwners.set(ref.id, ownerPub || spend);
   }
   return { ok: true };
 }
 
 /**
  * A withdraw pays only stake that is already locked. Principal 0 cannot
- * withdraw any amount. The cap is principal plus this epoch's interest.
+ * withdraw any amount. The cap is the withdrawable legacy principal. The
+ * stake reward is not part of it. A missing header time pays no principal.
+ * A portal with no tranche list is one legacy credit: withdrawablePrincipal
+ * includes it only after its lock epoch has ended.
  */
-export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
+export function boundReserveWithdraw(tx, reserveState = null, drawn = null, clockMs = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return { ok: true };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
@@ -830,12 +917,17 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   const portals = reserveState?.portals || {};
   const dest = ref.from;
   let portal = (ref.id && portals[ref.id]) || (dest && portals[dest]) || null;
-  const staked = Math.max(0, Math.floor(Number(portal?.staked || 0)));
-  const idle = Math.max(0, Math.floor(Number(portal?.idle || 0)));
-  const principal = staked + idle;
+  const owner = String(portal?.ownerPub || '').replace(/^0x/i, '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(owner)) return { ok: false, reason: 'owner_missing' };
+  const clock = Number(clockMs);
+  // No header time is not a license to pay every locked nanos.
+  const duePrincipal = Number.isFinite(clock) && clock > 0
+    ? Math.max(0, Math.floor(Number(withdrawablePrincipal(reserveState, portal, clock)) || 0))
+    : 0;
+  const principal = duePrincipal;
   if (!(principal > 0)) return { ok: false, reason: 'insufficient' };
-  const bps = Math.max(0, Math.floor(Number(reserveState?.epochBps || 0)));
-  const cap = principal + interestNanos(staked, bps);
+  const due = Math.max(0, Math.floor(Number(withdrawPaysInterest(reserveState, portal, clock)) || 0));
+  const cap = principal + due;
   if (claimed > cap) return { ok: false, reason: 'insufficient' };
   if (portal?.payout) {
     const want = hash20FromAddress(portal.payout);
@@ -854,7 +946,8 @@ export function boundReserveWithdraw(tx, reserveState = null, drawn = null) {
   if (String(tx?.programId || '') !== RESERVE_PROGRAM) {
     return { ok: false, reason: 'mint_forbidden' };
   }
-  // The label is not an amount. The output must open to exactly principal + interest.
+  // The label is not an amount. The output must open to exactly the
+  // withdrawable legacy principal. A time-locked note is not part of it.
   if (!o?.commit || !o?.valueProof || !verifySealedNote(o, cap)) {
     return { ok: false, reason: 'mint_amount' };
   }
@@ -870,6 +963,9 @@ export function fundedDebit(tx) {
   if (!tx || tx.coinbase) return null;
   if (tx.mint && String(tx.kind || '') !== 'pool-withdraw') return null;
   const kind = txKind(tx);
+  // Sealed lock, vote, and withdraw are funded by a note, not an address
+  // balance. A public receipt is public_receipt in verifyFundedBody before
+  // this return, so it is not an unfunded debit.
   if (!kind || kind === 'lock' || kind === 'vote' || kind === 'withdraw') return null;
   let from = kind === 'vote'
     ? String(tx.payer || tx.vin?.[0]?.address || '')
@@ -943,12 +1039,14 @@ export function mempoolDebitNanos(txs, address) {
  * Walk body txs in order. An address balance is not value: a debit that is
  * not a note-bound Flow spend is rejected. `spendableOf` is ignored.
  */
-export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null } = {}) {
+export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserveState = null, nowMs = null } = {}) {
   void spendableOf;
   const seen = seenDigests instanceof Set ? seenDigests : new Set();
   const seenOwners = new Map();
   const drawn = new Set();
   for (const tx of body || []) {
+    const publicReceipt = publicReserveReceiptRejected(tx);
+    if (publicReceipt) return publicReceipt;
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;
     const pull = custodialPullRejected(tx);
@@ -961,7 +1059,7 @@ export function verifyFundedBody(body, spendableOf, { seenDigests = null, reserv
     if (typed) return typed;
     const open = valueOpenRejected(tx);
     if (open) return open;
-    const stake = boundReserveWithdraw(tx, reserveState, drawn);
+    const stake = boundReserveWithdraw(tx, reserveState, drawn, nowMs);
     if (!stake.ok) return stake;
     const kind = reserveKindOf(tx);
     if (kind === 'lock' || kind === 'vote' || kind === 'withdraw') {

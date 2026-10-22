@@ -28,7 +28,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Pool: https://pool.shear.digital
 - Chain: `shear-testnet-v12`
 
-Mainnet `shear-v1` is **not live**. The public countdown is 30th October 2026 at 1400hrs UK time. That countdown is a display date. It is not genesis and it does not emit. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not set those env vars.
+Mainnet `shear-v1` is **not live**. The public countdown is 16th November 2026 at 1400hrs UK time. That countdown is a display date. It is not genesis and it does not emit. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not set those env vars.
 
 Block pot starts at **1.00 SHE** and falls **0.01 SHE per Vortex epoch** to a **0.20 SHE** floor. Testnet epochs are **4 days** (so rollovers can be watched); mainnet epochs are **400 days**. Hash bonus stays governance-voted. The lock issuance rate is frozen when an epoch opens. A vote does not set it. The amount paid on withdraw is the Reserve reward. Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins. The pot schedule is not votable.
 
@@ -63,7 +63,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 git clone https://github.com/rgsneddon/shear-testnet.git
 cd shear-testnet
 git checkout main
-npm ci
+npm ci --ignore-scripts
 cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
 cmake --build crypto/randomx/build -j"$(nproc)"
 make -C crypto/native
@@ -149,4 +149,16 @@ Backup: encrypted `shewall.bin` (same file in GUI and CLI; v1 files still open a
 
 ## Secrets
 
-Never commit `SHEAR_DATA`, `admin.enc`, PEMs, or a live admin hostname. Pool admin host is `SHEAR_ADMIN_HOST` on the box only. Default seed is the hostname `p2p.shear.digital:30303` (also `r2r.shear.digital:30303`, `b2b.shear.digital:30303`) — never a raw IP in public copy.
+Never commit `SHEAR_DATA` or PEMs. Default seed is the hostname `p2p.shear.digital:30303` (also `r2r.shear.digital:30303`, `b2b.shear.digital:30303`) — never a raw IP in public copy.
+
+## Licence and credits
+
+Shear is released under the MIT License ([LICENSE](LICENSE)), copyright (c) 2026 Shear contributors.
+
+The Shear concept was inspired by Roy D Herbert, and the Chronoflux Principia.
+
+That line is an attribution. It is not a licence grant.
+
+Shear includes third-party code under its own licences: RandomX (BSD-3-Clause), the monero-oxide FCMP++ crates (MIT), Rust crates, npm packages, Dart packages, Android libraries and bundled runtimes such as Node.js, OpenSSL and libsodium. [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) carries every licence text and copyright line, [LICENSES/](LICENSES/) holds the full licence texts, and every release pack ships both. The wallet shows the same notices under Closure → About and licences. [docs/licensing-audit.md](docs/licensing-audit.md) lists each component and the licensing decisions.
+
+The MIT License does not cover the Nevia and Urema typefaces used by the websites. They belong to their owners, are not in this repository, and are copied onto the sites at deploy time under their webfont licences (`deploy/install_fonts.sh`). The RandomX audit reports are linked from [crypto/randomx/audits/](crypto/randomx/audits/README.md) rather than copied. Contributions are signed off under the Developer Certificate of Origin ([CONTRIBUTING.md](CONTRIBUTING.md)).

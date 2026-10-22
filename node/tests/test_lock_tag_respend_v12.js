@@ -4,6 +4,7 @@
  * The amount is whatever the coinbase opened to. The tag is the proof bytes.
  */
 import { describe, it } from 'node:test';
+import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -220,7 +221,7 @@ function userTxs(tpl) {
   return (tpl.txs || []).filter((tx) => tx && !tx.coinbase);
 }
 
-describe('v12 omitted lock spend tag', () => {
+describe('v12 omitted lock spend tag', { timeout: fileCapMs(import.meta.url) }, () => {
   it('a field-less lock is spent, and a later re-spend of that note is rejected', { timeout: 180_000 }, async () => {
     const who = payer();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-tag-'));

@@ -95,11 +95,14 @@ function pinShares(header, rows) {
 
 function appendTpl(store, dest, tag, when, shares) {
   const tip = store.tip();
-  if (shares?.length && tip?.header) pinShares(tip.header, shares);
+  const bound = (shares || []).map((row) => (
+    row?.verifiedHeader || !tip?.header ? row : { ...row, verifiedHeader: tip.header }
+  ));
+  if (bound.length && tip?.header) pinShares(tip.header, bound);
   const { tpl } = store.template({
     miner: dest,
     now: when,
-    shareBatch: shares || [],
+    shareBatch: bound,
   });
   return store.append({
     header: tpl.header,
@@ -248,6 +251,9 @@ describe('HASH_OWED_RECOVER_V1', () => {
     let accepted = [];
     let now = 1_700_000_000_000;
     for (let h = 1; h <= tip; h += 1) {
+      const shareBatch = h === 2 && prevHeader
+        ? pair.map((row) => ({ ...row, verifiedHeader: prevHeader }))
+        : [];
       const tpl = buildTemplate({
         prev: prevHash,
         prevHeader,
@@ -256,7 +262,7 @@ describe('HASH_OWED_RECOVER_V1', () => {
         miner: dest,
         now,
         bits: GENESIS_BITS_PACKED,
-        shareBatch: h === 2 ? pair : [],
+        shareBatch,
         hashOwedIn: owedIn,
         hashAcceptedSeries: accepted,
         parentBlocks: genesisOnly,
@@ -338,15 +344,29 @@ describe('HASH_OWED_RECOVER_V1', () => {
         ),
       },
     ];
+    const parent = buildTemplate({
+      prev: GENESIS_PREV,
+      height: 1,
+      miner: dest,
+      now: 1_700_000_000_000,
+      bits: GENESIS_BITS_PACKED,
+      potShares: [{ address: dest, nanos: 1, kind: 'pot' }],
+      hashOwedIn: [],
+      hashAcceptedSeries: [],
+      parentBlocks: [],
+      parentFluxset: [],
+    });
     for (const item of cases) {
       assert.ok(item.shares.length <= cap);
+      const seated = item.shares.map((row) => ({ ...row, verifiedHeader: parent.header }));
       const tpl = buildTemplate({
-        prev: GENESIS_PREV,
-        height: 1,
+        prev: easyPow(1),
+        prevHeader: parent.header,
+        height: 2,
         miner: dest,
-        now: 1_700_000_000_000,
+        now: 1_700_000_000_000 + 90_000,
         bits: GENESIS_BITS_PACKED,
-        shareBatch: item.shares,
+        shareBatch: seated,
         potShares: [{ address: dest, nanos: 1, kind: 'pot' }],
         hashOwedIn: [],
         hashAcceptedSeries: [],
@@ -359,7 +379,7 @@ describe('HASH_OWED_RECOVER_V1', () => {
         shareBatch: tpl.shareBatch || [],
         hashCredits: tpl.hashCredits,
         miner: dest,
-        height: 1,
+        height: 2,
         hash: easyPow(5000 + item.want),
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
@@ -372,7 +392,15 @@ describe('HASH_OWED_RECOVER_V1', () => {
       assert.equal((pruned.shareBatch || []).length, 0);
       assert.equal((pruned.hashCredits || []).length > 0, item.want > 0);
       assert.equal(replayHashOwed([pruned]).ok, false);
-      const fromShares = replayHashOwed([block]);
+      const parentBlock = {
+        header: parent.header,
+        txs: parent.txs,
+        shareBatch: [],
+        hashCredits: parent.hashCredits || [],
+        height: 1,
+        hash: easyPow(1),
+      };
+      const fromShares = replayHashOwed([parentBlock, block]);
       assert.equal(fromShares.ok, true, fromShares.reason);
       assert.equal(fromShares.rows.length, item.want);
       const buriedFresh = freshForBlock(pruned, HASH_BONUS_NANOS, Number(pruned.height) + SAMPLE_PRUNE_CONFIRMATIONS);
