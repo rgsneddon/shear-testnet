@@ -2135,7 +2135,7 @@ export function createP2p({
         if (!extendsTip) return go();
         return rejectUnprovenTipExtend(store, fork[0]).then((early) => {
           if (early.reason) return { got: { ok: false, reason: early.reason, tip: before }, before };
-          return go().then((out) => {
+          return Promise.resolve().then(go).then((out) => {
             early.release?.();
             return out;
           }, (err) => {

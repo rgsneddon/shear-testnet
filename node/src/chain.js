@@ -2245,15 +2245,21 @@ export async function headerPowReason(block, prev, opts = {}) {
     priorHeader: opts.grandparentHeader || null,
   });
   if (!ready.ok) return { reason: ready.reason || 'pow', release: null };
-  const assessed = assessHeader(block, prev, {
-    ...opts,
-    preparedHash: peekPreparedHeader(block.header),
-    consumePrepared: false,
-    stopAfterPow: true,
-    trustedPowHash: null,
-    offLoopPow: false,
-    probeBody: false,
-  });
+  let assessed;
+  try {
+    assessed = assessHeader(block, prev, {
+      ...opts,
+      preparedHash: peekPreparedHeader(block.header),
+      consumePrepared: false,
+      stopAfterPow: true,
+      trustedPowHash: null,
+      offLoopPow: false,
+      probeBody: false,
+    });
+  } catch (err) {
+    ready.cleanup?.();
+    throw err;
+  }
   if (!assessed.ok) {
     ready.cleanup?.();
     return { reason: assessed.reason || 'pow', release: null };
