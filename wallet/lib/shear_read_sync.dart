@@ -368,7 +368,9 @@ Future<int?> probeNodeSeedHeight(
   pinWalletHttp(http, allowPublic: () => allowPublic);
   try {
     for (final path in const ['/stats', '/api/stats']) {
-      final req = await http.getUrl(Uri.parse('$base$path')).timeout(budget);
+      final target = Uri.parse('$base$path');
+      final req = await http.getUrl(target).timeout(budget);
+      stampLocalRpc(req, target);
       req.followRedirects = false;
       req.maxRedirects = 0;
       final res = await req.close().timeout(budget);
@@ -719,6 +721,9 @@ class ShearReadSync {
         _rng = random ?? Random() {
     pinWalletHttp(_http, allowPublic: () => publicConsent);
   }
+
+  /// True when this sync's sockets go through the consent dial.
+  bool get debugConnectPinned => walletConnectPinned(_http);
 
   final List<String> seeds;
   final String? userUrl;
@@ -1452,7 +1457,9 @@ class ShearReadSync {
   Future<Map<String, dynamic>?> _get(String base, String path) async {
     if (!publicConsent && isPublicWalletHost(base)) return null;
     try {
-      final req = await _http.getUrl(Uri.parse('$base$path'));
+      final target = Uri.parse('$base$path');
+      final req = await _http.getUrl(target);
+      stampLocalRpc(req, target);
       req.followRedirects = false;
       req.maxRedirects = 0;
       final res = await req.close();

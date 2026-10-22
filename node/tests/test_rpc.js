@@ -148,6 +148,94 @@ describe('node RPC', () => {
       await rpc.close();
     }
   });
+
+  it('refuses a non-loopback Host, any Origin, and a bad sidecar token', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-rpc-guard-'));
+    const store = createStore(dir);
+    const open = createRpc({ store, port: 0, host: '127.0.0.1' });
+    const bound = await open.listen();
+    const ask = (headers) => new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: bound.port,
+        path: '/policy',
+        method: 'GET',
+        headers,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          let json = {};
+          try { json = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { /* */ }
+          resolve({ status: res.statusCode, json });
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    try {
+      const ok = await ask({ host: `127.0.0.1:${bound.port}` });
+      assert.equal(ok.status, 200);
+      assert.equal(ok.json.consensus_min, 9);
+      const named = await ask({ host: 'localhost:18332' });
+      assert.equal(named.status, 200);
+      const host = await ask({ host: 'p2p.shear.digital' });
+      assert.equal(host.status, 403);
+      assert.equal(host.json.reason, 'rpc_host');
+      const mapped = await ask({ host: '127.0.0.1.evil.test' });
+      assert.equal(mapped.status, 403);
+      assert.equal(mapped.json.reason, 'rpc_host');
+      const origin = await ask({ host: `127.0.0.1:${bound.port}`, origin: 'https://evil.example' });
+      assert.equal(origin.status, 403);
+      assert.equal(origin.json.reason, 'rpc_origin');
+      const nullOrigin = await ask({ host: `127.0.0.1:${bound.port}`, origin: 'null' });
+      assert.equal(nullOrigin.status, 403);
+      assert.equal(nullOrigin.json.reason, 'rpc_origin');
+    } finally {
+      await open.close();
+    }
+
+    const locked = createRpc({ store, port: 0, host: '127.0.0.1', token: 'launch-token' });
+    const lockedBound = await locked.listen();
+    const askLocked = (headers) => new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: lockedBound.port,
+        path: '/policy',
+        method: 'GET',
+        headers,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          let json = {};
+          try { json = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { /* */ }
+          resolve({ status: res.statusCode, json });
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    try {
+      const missing = await askLocked({ host: `127.0.0.1:${lockedBound.port}` });
+      assert.equal(missing.status, 403);
+      assert.equal(missing.json.reason, 'rpc_token');
+      const wrong = await askLocked({
+        host: `127.0.0.1:${lockedBound.port}`,
+        'x-shear-rpc-token': 'nope',
+      });
+      assert.equal(wrong.status, 403);
+      assert.equal(wrong.json.reason, 'rpc_token');
+      const right = await askLocked({
+        host: `localhost:${lockedBound.port}`,
+        'x-shear-rpc-token': 'launch-token',
+      });
+      assert.equal(right.status, 200);
+      assert.equal(right.json.ok, true);
+    } finally {
+      await locked.close();
+    }
+  });
 });
 
 function post(url, body) {

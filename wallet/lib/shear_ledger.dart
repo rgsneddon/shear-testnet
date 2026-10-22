@@ -900,14 +900,23 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
 /// Tip, balance, notes, and history run here. The UI isolate only adopts the
 /// book the worker already collated.
 Future<void> creditFollowEntry(List<dynamic> args) async {
+  armWalletConnect();
   final specJson = args.isEmpty ? '' : args[0]?.toString() ?? '';
   final port = args.length > 1 ? args[1] : null;
   if (port is! SendPort) return;
   try {
     final out = await creditFollowWorker(specJson, port);
-    port.send(<String, dynamic>{'event': 'done', 'out': out});
+    port.send(<String, dynamic>{
+      'event': 'done',
+      'out': out,
+      'connectPinned': walletConnect != null,
+    });
   } catch (e) {
-    port.send(<String, dynamic>{'event': 'error', 'message': e.toString()});
+    port.send(<String, dynamic>{
+      'event': 'error',
+      'message': e.toString(),
+      'connectPinned': walletConnect != null,
+    });
   }
 }
 
@@ -8869,6 +8878,12 @@ class ShearPoolClient {
     pinWalletHttp(_http, allowPublic: () => _publicConsent);
   }
 
+  /// True when this client's sockets go through the consent dial.
+  bool get debugConnectPinned => walletConnectPinned(_http);
+
+  /// The client the pool dials with. Tests set findProxy and certificate checks here.
+  HttpClient get debugHttp => _http;
+
   static HttpClient _freshHttp() => HttpClient()
     ..connectionTimeout = const Duration(seconds: 8)
     ..idleTimeout = const Duration(seconds: 30);
@@ -8905,13 +8920,12 @@ class ShearPoolClient {
   }
 
   void _abandonInFlight() {
+    if (!_ownsHttp) return;
     final old = _http;
-    if (_ownsHttp) {
-      _http = _freshHttp();
-      pinWalletHttp(_http, allowPublic: () => _publicConsent);
-      _sync?.rebindHttp(_http);
-    }
     old.close(force: true);
+    _http = _freshHttp();
+    pinWalletHttp(_http, allowPublic: () => _publicConsent);
+    _sync?.rebindHttp(_http);
   }
 
   /// Reads and posts use only this node. Null returns to the public seeds.
@@ -9065,7 +9079,9 @@ class ShearPoolClient {
     if (!_publicConsent && _ownNode == null && isPublicWalletHost(base)) {
       throw StateError(kLocalNodeDownCopy);
     }
-    final req = await _http.getUrl(Uri.parse('$base$path'));
+    final target = Uri.parse('$base$path');
+    final req = await _http.getUrl(target);
+    stampLocalRpc(req, target);
     req.followRedirects = false;
     req.maxRedirects = 0;
     if (open != null && open.isNotEmpty) {
@@ -9115,7 +9131,9 @@ class ShearPoolClient {
     if (!_publicConsent && _ownNode == null && isPublicWalletHost(base)) {
       throw StateError(kLocalNodeDownCopy);
     }
-    final req = await _http.postUrl(Uri.parse('$base$path'));
+    final target = Uri.parse('$base$path');
+    final req = await _http.postUrl(target);
+    stampLocalRpc(req, target);
     req.followRedirects = false;
     req.maxRedirects = 0;
     req.persistentConnection = false;

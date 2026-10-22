@@ -6,20 +6,55 @@ import 'shear_json_bounds.dart';
 
 /// Installed by the consent library. Connects to the address just resolved
 /// and keeps the URI host as SNI and the Host header.
+///
+/// [proxyHost] is the configured proxy. The pin connects to that proxy after
+/// the same refusal checks. It does not dial the target directly instead.
 typedef WalletConnect = Future<ConnectionTask<Socket>> Function(
   Uri uri, {
   required bool allowPublic,
+  String? proxyHost,
+  int? proxyPort,
 });
 
 WalletConnect? walletConnect;
+
+/// [HttpClient.connectionFactory] is a setter only. This records each client
+/// whose factory [pinWalletHttp] assigned.
+final Expando<bool> _walletConnectPinned = Expando<bool>('walletConnectPinned');
+
+/// True after [pinWalletHttp] installed the consent dial on [client].
+bool walletConnectPinned(HttpClient client) => _walletConnectPinned[client] == true;
+
+/// Per-launch secret for the sidecar RPC. Empty until that process is spawned.
+String? localRpcToken;
+
+/// Header the sidecar node requires when [localRpcToken] is set.
+const kLocalRpcTokenHeader = 'X-Shear-Rpc-Token';
+
+/// Loopback RPC only. Public hosts never receive the token.
+void stampLocalRpc(HttpClientRequest req, Uri uri) {
+  final token = localRpcToken;
+  if (token == null || token.isEmpty) return;
+  final host = uri.host.toLowerCase();
+  if (host != '127.0.0.1' && host != 'localhost' && host != '::1') return;
+  req.headers.set(kLocalRpcTokenHeader, token);
+}
 
 /// Every wallet [HttpClient] dials through [walletConnect] when it is set.
 void pinWalletHttp(HttpClient client, {required bool Function() allowPublic}) {
   final connect = walletConnect;
   if (connect == null) return;
+  // SecureSocket.secure uses default validation. A callback must not weaken it.
+  client.badCertificateCallback = null;
   client.connectionFactory = (uri, proxyHost, proxyPort) {
-    return connect(uri, allowPublic: allowPublic());
+    return connect(
+      uri,
+      allowPublic: allowPublic(),
+      proxyHost: proxyHost,
+      proxyPort: proxyPort,
+    );
   };
+  _walletConnectPinned[client] = true;
 }
 
 /// Accrual-tick guard for Continuum tip polls.
@@ -103,6 +138,7 @@ Future<void> listenNodeTips({
     while (!cancelled()) {
       try {
         final req = await client.getUrl(uri);
+        stampLocalRpc(req, uri);
         req.followRedirects = false;
         req.maxRedirects = 0;
         req.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');

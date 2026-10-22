@@ -644,6 +644,244 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     expect(find.byKey(const Key('reserve-unprivate-confirm')), findsNothing);
   });
+
+  testWidgets('boot in Connect bare with no consent starts no node', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('boot-bare-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+    });
+    expect(session.publicNodeConsent, isFalse);
+    expect(session.closureSendMode, kClosureModeBare);
+    var calls = 0;
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      startUnlocked: true,
+      skipPoolSync: true,
+      nodeBinary: 'node',
+      startNode: (binary, env, args) async {
+        calls += 1;
+      },
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    expect(calls, 0);
+    expect(File('lib/main.dart').readAsStringSync().contains('startDesktopBook'), isFalse);
+  });
+
+  testWidgets('a remembered P2P choice is what starts the node', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('boot-p2p-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+    });
+    session.closureSendMode = kClosureModeLocal;
+    session.publicNodeChoiceMade = true;
+    var calls = 0;
+    Map<String, String>? env;
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      startUnlocked: true,
+      skipPoolSync: true,
+      nodeBinary: 'node',
+      startNode: (binary, got, args) async {
+        calls += 1;
+        env = got;
+      },
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pump();
+    expect(calls, 1);
+    expect(env!['SHEAR_RPC_TOKEN'], isNotEmpty);
+    expect(env!['SHEAR_P2P_BIND'], '127.0.0.1');
+    expect(env!['SHEAR_STRATUM_BIND'], '127.0.0.1');
+    expect(session.publicNodeConsent, isFalse);
+  });
+
+  testWidgets('Public node turns on only after the IP confirm', (tester) async {
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final dir = Directory.systemTemp.createTempSync('settings-public-on-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+    });
+    session.publicNodeChoiceMade = true;
+    session.publicNodeConsent = false;
+    final saw = _Saw();
+    final http = _SawClient(saw, fail: true);
+    final client = ShearPoolClient(
+      http: http,
+      sync: ShearReadSync(http: http, seeds: const ['http://127.0.0.1:9'], jitter: Duration.zero),
+    );
+    addTearDown(client.close);
+    final ledger = ShearLedger(pool: client)..bindIdentity(session.identity!);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Closure'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('settings-public-node')));
+    await tester.tap(find.byKey(const Key('settings-public-node')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsOneWidget);
+    expect(session.publicNodeConsent, isFalse);
+    expect(client.publicConsent, isFalse);
+    await tester.tap(find.byKey(const Key('reserve-unprivate-cancel')));
+    await tester.pump();
+    expect(session.publicNodeConsent, isFalse);
+    await tester.ensureVisible(find.byKey(const Key('settings-public-node')));
+    await tester.tap(find.byKey(const Key('settings-public-node')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.pump();
+    expect(session.publicNodeConsent, isTrue);
+    expect(client.publicConsent, isTrue);
+  });
+
+  testWidgets('Connect bare arms consent when Apply commits, not when the radio moves', (tester) async {
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final dir = Directory.systemTemp.createTempSync('apply-consent-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+    });
+    session.publicNodeConsent = true;
+    session.publicNodeChoiceMade = true;
+    session.closureSendMode = kClosureModeLocal;
+    final saw = _Saw();
+    final http = _SawClient(saw, fail: true);
+    final client = ShearPoolClient(
+      http: http,
+      sync: ShearReadSync(http: http, seeds: const ['http://127.0.0.1:9'], jitter: Duration.zero),
+    );
+    addTearDown(client.close);
+    final ledger = ShearLedger(pool: client)..bindIdentity(session.identity!);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    expect(client.publicConsent, isFalse);
+    await tester.tap(find.text('Closure'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('closure-send-path-bare')));
+    await tester.tap(find.byKey(const Key('closure-send-path-bare')));
+    await tester.pump();
+    expect(client.publicConsent, isFalse);
+    expect(session.publicNodeConsent, isTrue);
+    await tester.ensureVisible(find.byKey(const Key('closure-apply')));
+    await tester.tap(find.byKey(const Key('closure-apply')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(client.publicConsent, isTrue);
+  });
+
+  testWidgets('accepting a vortice fetch leaves Public node off and the next public call asks', (tester) async {
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final dir = Directory.systemTemp.createTempSync('vortice-once-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await tester.runAsync(() async {
+      await session.loadOrCreate();
+      await session.setPassword('test-pass-1');
+    });
+    session.publicNodeChoiceMade = true;
+    session.publicNodeConsent = false;
+    final saw = _Saw();
+    final http = _SawClient(saw, fail: true);
+    final client = ShearPoolClient(
+      http: http,
+      sync: ShearReadSync(http: http, seeds: const ['http://127.0.0.1:9'], jitter: Duration.zero),
+    );
+    addTearDown(client.close);
+    final ident = session.identity!;
+    final ledger = ShearLedger(pool: client)..bindIdentity(ident);
+    final bobId = createIdentity();
+    final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(
+      bobId.address,
+      paymentCode: bobId.paymentCode,
+    );
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      startUnlocked: true,
+      skipPoolSync: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    final key = mintVorticeDeployKey(
+      programId: 'once-demo',
+      name: 'Once',
+      origin: 'https://rx.shear.digital/v.json',
+      source: '{}',
+    )!;
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.tap(find.text('Add new vortice'));
+    await tester.pump();
+    await tester.enterText(find.byKey(const Key('vortice-key')), key);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-unprivate-accept')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsNothing);
+    expect(session.publicNodeConsent, isFalse);
+    expect(client.publicConsent, isFalse);
+    await tester.tap(find.text('Closure'));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('settings-public-node')));
+    final tile = tester.widget<SwitchListTile>(find.byKey(const Key('settings-public-node')));
+    expect(tile.value, isFalse);
+    await tester.tap(find.text('Flow'));
+    await tester.pump();
+    await tester.enterText(find.widgetWithText(TextField, 'To (she1, ssa1, or shear1)'), bob);
+    await tester.enterText(find.byKey(const Key('flow-amount')), '0.2');
+    await tester.tap(find.byKey(const Key('flow-send')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-unprivate-confirm')), findsOneWidget);
+    expect(session.publicNodeConsent, isFalse);
+  });
 }
 
 /// Flutter's test binding stubs `HttpClient()` to HTTP 400.

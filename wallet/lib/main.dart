@@ -69,6 +69,7 @@ const kExplains = [
 final List<String> debugPopulationOrder = <String>[];
 
 Future<void> main(List<String> args) async {
+  armWalletConnect();
   final tipFlag = args.indexOf('--print-tip');
   if (tipFlag >= 0) {
     final report = await continuumTipReport();
@@ -109,6 +110,8 @@ class ShearWalletApp extends StatefulWidget {
     this.postReserveLock = false,
     this.hostAndroid,
     this.bookLoading = false,
+    this.nodeBinary,
+    this.startNode,
   });
 
   final ShearSession? session;
@@ -117,6 +120,12 @@ class ShearWalletApp extends StatefulWidget {
   /// Local observation only: confirm one testnet round so Shearview/Resistance have a tx.
   final bool demoTx;
   final ShearReserve? reserve;
+  /// Test hook. When set, boot can spawn this binary instead of the pack.
+  final String? nodeBinary;
+
+  /// Test hook. Counts or replaces the sidecar process start.
+  final ClosureProcessStart? startNode;
+
   /// Test hook. Production fetches the origin named in the vort1. key.
   final Future<Vortice?> Function(String key)? downloadVortice;
   final ShearBiometrics? biometrics;
@@ -456,10 +465,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     sidecar = ShearNodeSidecar(
       android: widget.hostAndroid ?? (!kIsWeb && Platform.isAndroid),
       storedMode: widget.session?.closureSendMode,
-      nodeBinary: packed?.binary,
+      nodeBinary: widget.nodeBinary ?? packed?.binary,
       dataDir: dataDir,
       datadirEmpty: () => closureDatadirEmpty(dataDir),
-      startProcess: _startSharedNode,
+      startProcess: widget.startNode ?? _startSharedNode,
       onStop: _stopSharedNode,
     )
       ..proofSink = ledger
@@ -518,8 +527,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     sidecar
       ..committed = closureModeFromStored(session.closureSendMode, android: _hostAndroid)
       ..pending = closureModeFromStored(session.closureSendMode, android: _hostAndroid);
-    if (!_hostAndroid && Platform.environment['FLUTTER_TEST'] != 'true') {
-      unawaited(sidecar.startDesktopBook());
+    // Connect bare never starts a node. P2P and Solo start only after that choice,
+    // including a choice already stored from an earlier launch.
+    final underTest = Platform.environment['FLUTTER_TEST'] == 'true';
+    if (!_hostAndroid && (!underTest || widget.startNode != null)) {
+      final mode = sidecar.committed;
+      if (mode == ClosureSendMode.localNode || mode == ClosureSendMode.localNodeFull) {
+        unawaited(sidecar.apply());
+      }
     }
     _syncJoinRoster();
     try {
@@ -589,16 +604,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       var consent = session.publicNodeConsent;
       if (widget.downloadVortice == null && origin.isNotEmpty && await vorticeOriginIsPublic(origin) && !consent) {
         if (!mounted) return;
-        await _reserveUnprivateConfirm(context);
-        consent = session.publicNodeConsent;
-        if (!consent) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text(kPublicNodeEverySendCopy)),
-            );
-          }
+        // The app state sits above MaterialApp. The navigator context can show the dialog.
+        final dialogContext = _nav.currentContext;
+        if (dialogContext == null || !dialogContext.mounted) return;
+        // One fetch. Settings and the sealed consent stay as they were.
+        final once = await _confirmPublicIp(dialogContext);
+        if (!once) {
+          _snack.currentState?.showSnackBar(
+            const SnackBar(content: Text(kPublicNodeEverySendCopy)),
+          );
           return;
         }
+        consent = true;
       }
       final Vortice? got;
       try {
@@ -607,13 +624,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             : await downloadVorticeFromOrigin(key, publicConsent: consent);
       } on StateError catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+          _snack.currentState?.showSnackBar(SnackBar(content: Text(e.message)));
         }
         return;
       }
       if (!mounted) return;
       if (got == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        _snack.currentState?.showSnackBar(
           const SnackBar(content: Text('Could not fetch that vortice.')),
         );
         return;
@@ -1592,14 +1609,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                     const SizedBox(height: 12),
                     const Text(
                       'Spendable stays hidden until this node is synced. '
-                      'Nothing is sent to a public node while it starts.',
+                      '$kLocalNodeIpCopy',
                     ),
                   ],
                   if (running && !sidecar.honest) ...[
                     const SizedBox(height: 12),
                     const Text(
                       'Spendable appears when this node is synced. '
-                      'Nothing is sent to a public node while it starts.',
+                      '$kLocalNodeIpCopy',
                       key: Key('local-node-sync-wait'),
                     ),
                   ],
@@ -1660,8 +1677,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                     key: Key('public-node-choice-local'),
                     style: TextStyle(fontWeight: FontWeight.w700),
                   ),
+                  const Text(kLocalNodeIpCopy, key: Key('local-node-ip-copy')),
                   const Text(
-                    'A full node on this device. Best privacy: the wallet does not use the public node. '
                     'Choose the existing P2P node, or the existing solo node.',
                   ),
                   const SizedBox(height: 8),
@@ -3673,7 +3690,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// One frame of budget so the pay/connect card paints before fee crypto or Connect.
   Future<void> _yieldUiFrame() => Future<void>.delayed(const Duration(milliseconds: 1));
 
-  Future<void> _reserveUnprivateConfirm(BuildContext context) async {
+  Future<bool> _confirmPublicIp(BuildContext context) async {
     final go = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -3701,7 +3718,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ],
       ),
     );
-    if (go == true && mounted) await _rememberPublicConsent();
+    return go == true;
+  }
+
+  Future<void> _reserveUnprivateConfirm(BuildContext context) async {
+    if (await _confirmPublicIp(context) && mounted) await _rememberPublicConsent();
   }
 
   bool _usesPublicNodeNow() =>
@@ -3818,11 +3839,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   void _selectSendMode(ClosureSendMode mode) {
     setState(() => sidecar.select(mode));
-    if (mode == ClosureSendMode.connectBare) {
-      if (session.publicNodeConsent && session.ownNodeUrl.trim().isEmpty) {
-        ledger.pool?.publicConsent = true;
-      }
-    } else {
+    // Consent is armed when Apply commits Connect bare, not when the radio moves.
+    if (mode != ClosureSendMode.connectBare) {
       ledger.pool?.stopPublicReads();
     }
   }
@@ -4778,7 +4796,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         value: session.publicNodeConsent,
         onChanged: (on) {
           if (on) {
-            unawaited(_rememberPublicConsent());
+            unawaited(_reserveUnprivateConfirm(context));
           } else {
             unawaited(_revokePublicConsent());
           }

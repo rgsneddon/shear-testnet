@@ -285,7 +285,9 @@ Future<Vortice?> downloadVorticeFromOrigin(
   final client = http ?? HttpClient();
   pinWalletHttp(client, allowPublic: () => publicConsent);
   try {
-    final req = await client.getUrl(Uri.parse(parsed.origin!));
+    final target = Uri.parse(parsed.origin!);
+    final req = await client.getUrl(target);
+    stampLocalRpc(req, target);
     req.followRedirects = false;
     req.maxRedirects = 0;
     final res = await req.close();

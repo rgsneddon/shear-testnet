@@ -137,15 +137,19 @@ Future<bool> vorticeOriginIsPublic(String origin) async {
   return false;
 }
 
-/// Dial [uri] at the address resolved now. SNI and Host stay [uri.host].
-Future<ConnectionTask<Socket>> walletConnectTask(Uri uri, {required bool allowPublic}) async {
-  final host = uri.host;
-  final port = uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80);
+/// Addresses that may be dialled, in resolver order. A refused address is
+/// skipped. The next address is tried. An empty result throws.
+Future<List<InternetAddress>> _dialableAddresses(
+  String host, {
+  required int port,
+  required bool allowPublic,
+  required bool refuseCleartext,
+}) async {
   if (host.isEmpty || host.contains('%')) {
     throw SocketException('refused host', port: port);
   }
-  final literal = InternetAddress.tryParse(host);
   final List<InternetAddress> addrs;
+  final literal = InternetAddress.tryParse(host);
   if (literal != null) {
     addrs = [literal];
   } else {
@@ -156,39 +160,128 @@ Future<ConnectionTask<Socket>> walletConnectTask(Uri uri, {required bool allowPu
     }
   }
   if (addrs.isEmpty) throw SocketException('dns failed', port: port);
-  InternetAddress? chosen;
+  final allowed = <InternetAddress>[];
+  var sawPublic = false;
+  var sawUnspecified = false;
+  var sawClear = false;
   for (final addr in addrs) {
     final canon = ipv4OfAddress(addr) ?? addr.address;
-    if (hostIsUnspecified(canon)) throw const SocketException('unspecified address');
+    if (hostIsUnspecified(canon)) {
+      sawUnspecified = true;
+      continue;
+    }
     if (isPublicWalletHost(canon) && !allowPublic) {
-      throw const SocketException('public node refused');
+      sawPublic = true;
+      continue;
     }
-    if (uri.scheme == 'http' && !ownNodeAllowsHttp(canon) && !addr.isLoopback) {
-      throw const SocketException('cleartext refused');
+    if (refuseCleartext && !ownNodeAllowsHttp(canon) && !addr.isLoopback) {
+      sawClear = true;
+      continue;
     }
-    chosen ??= addr;
+    allowed.add(addr);
   }
-  final addr = chosen!;
-  if (uri.scheme == 'https') {
-    // This SDK's connectionFactory is not wrapped in TLS, and
-    // SecureSocket.startConnect has no separate SNI argument. Connect to the
-    // checked address, then handshake with the name so the certificate matches.
-    final tcp = await Socket.startConnect(addr, port);
-    return ConnectionTask.fromSocket(
-      tcp.socket.then((plain) => SecureSocket.secure(plain, host: host)),
-      tcp.cancel,
+  if (allowed.isNotEmpty) return allowed;
+  if (sawPublic) throw SocketException('public node refused', port: port);
+  if (sawUnspecified) throw const SocketException('unspecified address');
+  if (sawClear) throw const SocketException('cleartext refused');
+  throw SocketException('connect failed', port: port);
+}
+
+/// Try [addrs] in order. [tlsHost] handshakes with default validation.
+ConnectionTask<Socket> _connectOrdered(
+  List<InternetAddress> addrs,
+  int port, {
+  String? tlsHost,
+}) {
+  Socket? live;
+  var cancel = false;
+  Future<Socket> open() async {
+    Object? last;
+    for (final addr in addrs) {
+      if (cancel) throw const SocketException('cancelled');
+      Socket? plain;
+      try {
+        plain = await Socket.connect(addr, port, timeout: const Duration(seconds: 8));
+        live = plain;
+        if (cancel) {
+          plain.destroy();
+          throw const SocketException('cancelled');
+        }
+        if (tlsHost == null) return plain;
+        // Default trust store. badCertificateCallback is not consulted.
+        final secured = await SecureSocket.secure(plain, host: tlsHost);
+        live = secured;
+        if (cancel) {
+          secured.destroy();
+          throw const SocketException('cancelled');
+        }
+        return secured;
+      } catch (e) {
+        try {
+          plain?.destroy();
+        } catch (_) {}
+        live = null;
+        last = e;
+      }
+    }
+    if (last is SocketException) throw last;
+    throw SocketException('${last ?? 'connect failed'}');
+  }
+
+  return ConnectionTask.fromSocket(open(), () {
+    cancel = true;
+    final sock = live;
+    live = null;
+    try {
+      sock?.destroy();
+    } catch (_) {}
+  });
+}
+
+/// Dial [uri] at each resolved address in order. SNI and Host stay [uri.host].
+///
+/// A configured proxy is dialled instead of the target, after the same
+/// refusal checks on both. The target is not contacted directly.
+Future<ConnectionTask<Socket>> walletConnectTask(
+  Uri uri, {
+  required bool allowPublic,
+  String? proxyHost,
+  int? proxyPort,
+}) async {
+  final host = uri.host;
+  final port = uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80);
+  final targets = await _dialableAddresses(
+    host,
+    port: port,
+    allowPublic: allowPublic,
+    refuseCleartext: uri.scheme == 'http',
+  );
+  if (proxyHost != null && proxyHost.isNotEmpty) {
+    final pPort = proxyPort ?? 0;
+    if (pPort <= 0 || pPort > 65535) {
+      throw SocketException('proxy refused', port: pPort);
+    }
+    final proxies = await _dialableAddresses(
+      proxyHost,
+      port: pPort,
+      allowPublic: allowPublic,
+      refuseCleartext: false,
     );
+    return _connectOrdered(proxies, pPort);
   }
-  return Socket.startConnect(addr, port);
+  // This SDK's connectionFactory is not wrapped in TLS. Handshake here so
+  // the certificate is checked against [host] and a callback cannot skip it.
+  return _connectOrdered(
+    targets,
+    port,
+    tlsHost: uri.scheme == 'https' ? host : null,
+  );
 }
 
-bool _armWalletConnect() {
+/// Each isolate has its own [walletConnect]. Call this from that isolate's entry.
+void armWalletConnect() {
   walletConnect = walletConnectTask;
-  return true;
 }
-
-/// Forces the pin to install when this library loads.
-final bool walletConnectReady = _armWalletConnect();
 
 /// Empty input keeps the public node. Anything else must be an own-node URL.
 String? ownNodeUrlError(String raw) {

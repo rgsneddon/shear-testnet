@@ -162,6 +162,47 @@ function json(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
+function headerOne(value) {
+  if (Array.isArray(value)) return value.length ? value[0] : '';
+  return value;
+}
+
+/** Loopback names only, with an optional numeric port. Anything else is a rebind. */
+export function rpcHostAllowed(header) {
+  const raw = String(headerOne(header) ?? '').trim().toLowerCase();
+  if (!raw || /[\s@/\\]/.test(raw)) return false;
+  let name = raw;
+  const colon = raw.lastIndexOf(':');
+  if (colon > 0) {
+    const tail = raw.slice(colon + 1);
+    if (/^\d+$/.test(tail)) {
+      const port = Number(tail);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+      name = raw.slice(0, colon);
+    }
+  }
+  if (!name || name.includes(':')) return false;
+  return name === '127.0.0.1' || name === 'localhost';
+}
+
+/** A present Origin is a browser. The sidecar does not serve one. */
+export function rpcOriginAllowed(origin) {
+  const raw = headerOne(origin);
+  return raw == null || String(raw) === '';
+}
+
+function rpcTokenAllowed(req, token) {
+  const want = String(token || '');
+  if (!want.trim()) return true;
+  const got = headerOne(req.headers['x-shear-rpc-token']);
+  return String(got || '') === want;
+}
+
+function refuseRpc(req, res, reason) {
+  try { req.resume(); } catch { /* ignore */ }
+  json(res, 403, { ok: false, reason });
+}
+
 export function createRpc({
   store,
   p2p = null,
@@ -404,6 +445,18 @@ export function createRpc({
   }
 
   const server = http.createServer(async (req, res) => {
+    if (!rpcHostAllowed(req.headers.host)) {
+      refuseRpc(req, res, 'rpc_host');
+      return;
+    }
+    if (!rpcOriginAllowed(req.headers.origin)) {
+      refuseRpc(req, res, 'rpc_origin');
+      return;
+    }
+    if (!rpcTokenAllowed(req, token)) {
+      refuseRpc(req, res, 'rpc_token');
+      return;
+    }
     const url = new URL(req.url, 'http://127.0.0.1');
     if (url.pathname === '/events') {
       res.writeHead(200, {

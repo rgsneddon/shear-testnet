@@ -152,6 +152,7 @@ Future<int> runShearCli(
   StringBuffer? stderr,
   Map<String, String>? env,
 }) async {
+  armWalletConnect();
   final outBuf = stdout ?? StringBuffer();
   final errBuf = stderr ?? StringBuffer();
   final out = _BufSink(outBuf);
