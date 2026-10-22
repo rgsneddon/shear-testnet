@@ -92,7 +92,13 @@ describe('p2p fingerprint handshake', { timeout: 20000 }, () => {
       const bound = await pair.a.listen();
       await pair.b.listen();
       await pair.b.connect('127.0.0.1', bound.port);
-      await waitUntil(() => pair.a.peers.size === 1 && pair.b.peers.size === 1);
+      // attach() inserts the socket before hello is read, so peers.size
+      // becomes 1 with an empty nodeId. Wait until both hellos land.
+      await waitUntil(() => [pair.a, pair.b].every((node) => {
+        if (node.peers.size !== 1) return false;
+        const rec = [...node.peers.values()][0];
+        return /^[0-9a-f]{8,32}$/.test(String(rec?.nodeId || ''));
+      }));
       for (const node of [pair.a, pair.b]) {
         const rec = [...node.peers.values()][0];
         assert.match(String(rec.nodeId || ''), /^[0-9a-f]{8,32}$/);
