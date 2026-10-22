@@ -40,6 +40,7 @@ import {
   lockTx,
   MAX_BLOCK_RETIRE_DLEQS,
   retireCapHit,
+  retireBlobRejected,
   txRetireDleqs,
 } from './reserve_vault.js';
 import {
@@ -1942,6 +1943,13 @@ describe('vault-lock reward proof', () => {
     });
     assert.equal(packed.ok, false);
     assert.equal(packed.reason, 'retire_cap');
+    // One body with the same 22 proofs is over 64 DLEQs. The leaf-count
+    // unsigned refusal does not hide the block cap.
+    const bodyCap = retireBlobRejected({
+      kind: 'withdraw',
+      retireProofs: made.map((row) => row.retireProof),
+    });
+    assert.equal(bodyCap && bodyCap.reason, 'retire_cap');
   });
 
   it('starts a period on the empty root so a later lock is not in that root', () => {

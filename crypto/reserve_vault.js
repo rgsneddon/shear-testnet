@@ -5129,6 +5129,23 @@ export function retireCapHit(included, tx) {
   return null;
 }
 
+/**
+ * One body whose declared retire rows already exceed the block cap.
+ * A torn header is left to the caller's own refusal. The 16-leaf cap
+ * stays unsigned when the declared sum still fits in 64.
+ */
+function excessRetireCap(proofList) {
+  if (!Array.isArray(proofList) || !proofList.length) return null;
+  let dleqs = 0;
+  for (const proof of proofList) {
+    const rows = retireDeclaredRows(proof);
+    if (rows == null || rows > MAX_RETIRE_ROWS) return null;
+    dleqs += rows;
+    if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'retire_cap' };
+  }
+  return null;
+}
+
 function proofListOf(tx, retireProof) {
   if (Array.isArray(tx?.retireProofs) && tx.retireProofs.length) return tx.retireProofs;
   if (retireProof) return [retireProof];
@@ -5183,6 +5200,8 @@ function openIndexedLeaves({
   if (want == null || want <= 0n) return { ok: false, reason: 'mint_amount' };
   const k = proofList.length;
   if (!Number.isSafeInteger(k) || k < 1) return { ok: false, reason: 'mint_amount' };
+  const overCap = excessRetireCap(proofList);
+  if (overCap) return overCap;
   if (k > MAX_LOCK_LEAVES) return { ok: false, reason: 'unsigned' };
   if (openList.length !== k) return { ok: false, reason: 'stake_reward' };
   const seenProof = new Set();
@@ -5203,7 +5222,8 @@ function openIndexedLeaves({
     if (rows == null) return { ok: false, reason: 'stake_reward' };
     if (rows > MAX_RETIRE_ROWS) return { ok: false, reason: 'unsigned' };
     dleqs += rows;
-    if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'unsigned' };
+    // Over the block's 64-DLEQ retire budget. Same reason as applyReserveBlock.
+    if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'retire_cap' };
     const burned = verifyLeafRetire(proof, null, magic);
     if (!burned || !burned.txBind.equals(bind)) return { ok: false, reason: 'stake_reward' };
     if (burned.unlock !== BigInt(chainNow)) return { ok: false, reason: 'stake_reward' };
@@ -5279,6 +5299,8 @@ export function releasedWithdrawPrincipal(state, tx, nowMs) {
 export function retireBlobRejected(tx, state = null, nowMs = null) {
   const proofList = proofListOf(tx, null);
   if (!proofList.length) return null;
+  const overCap = excessRetireCap(proofList);
+  if (overCap) return overCap;
   if (proofList.length > MAX_LOCK_LEAVES) return { ok: false, reason: 'unsigned' };
   const magic = state?.magic || MAGIC_TESTNET;
   let dleqs = 0;
@@ -5287,7 +5309,8 @@ export function retireBlobRejected(tx, state = null, nowMs = null) {
     if (rows == null) return { ok: false, reason: 'stake_reward' };
     if (rows > MAX_RETIRE_ROWS) return { ok: false, reason: 'unsigned' };
     dleqs += rows;
-    if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'unsigned' };
+    // Over the block's 64-DLEQ retire budget. Same reason as applyReserveBlock.
+    if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'retire_cap' };
     if (!verifyLeafRetire(proof, null, magic)) return { ok: false, reason: 'stake_reward' };
   }
   if (!state || nowMs == null) return null;
@@ -5372,6 +5395,8 @@ export function withdraw({
       : (principalProof ? [principalProof] : []);
     const indexed = hiddenCommits.filter((hex) => state.vaultLockIndex?.[hex]);
     if (proofList.length) {
+      const overCap = excessRetireCap(proofList);
+      if (overCap) return overCap;
       if (proofList.length > MAX_LOCK_LEAVES) return { ok: false, reason: 'unsigned' };
       let dleqs = 0;
       for (const proof of proofList) {
@@ -5379,7 +5404,8 @@ export function withdraw({
         if (rows == null) return { ok: false, reason: 'stake_reward' };
         if (rows > MAX_RETIRE_ROWS) return { ok: false, reason: 'unsigned' };
         dleqs += rows;
-        if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'unsigned' };
+        // Over the block's 64-DLEQ retire budget. Same reason as applyReserveBlock.
+        if (dleqs > MAX_BLOCK_RETIRE_DLEQS) return { ok: false, reason: 'retire_cap' };
         if (!verifyLeafRetire(proof, null, state?.magic || MAGIC_TESTNET)) {
           return { ok: false, reason: 'stake_reward' };
         }
