@@ -32,6 +32,18 @@ let workerActive = 0;
 let workerMaxActive = 0;
 const waiters = [];
 
+/**
+ * A lane that has not answered one header in this long is hung. Its jobs
+ * fail as a local worker fault and the lanes restart. Light RandomX hashes
+ * one header in milliseconds, so this only trips on a stuck child.
+ */
+export const HASH_WORKER_TIMEOUT_MS = 120_000;
+
+function workerTimeoutMs(env = process.env) {
+  const n = Number(env?.SHEAR_HASH_WORKER_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : HASH_WORKER_TIMEOUT_MS;
+}
+
 export function p2pHashCap() {
   return P2P_VERIFY_CAP;
 }
@@ -72,9 +84,11 @@ function failPending(err) {
   for (const proc of dead) {
     try { proc.kill(); } catch { /* ignore */ }
   }
+  workerActive = 0;
   if (!pending.size) return;
-  for (const [, job] of pending) job.reject(err);
+  const jobs = [...pending.values()];
   pending.clear();
+  for (const job of jobs) job.reject(err);
 }
 
 function bootChild() {
@@ -118,8 +132,14 @@ function pickChild() {
 function post(header) {
   const id = (seq += 1);
   const headerHex = Buffer.from(header).toString('hex');
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+  return new Promise((resolveJob, rejectJob) => {
+    const timer = setTimeout(() => {
+      if (pending.get(id)?.timer === timer) failPending(new Error('hash_worker_timeout'));
+    }, workerTimeoutMs());
+    timer.unref?.();
+    const resolve = (v) => { clearTimeout(timer); resolveJob(v); };
+    const reject = (e) => { clearTimeout(timer); rejectJob(e); };
+    pending.set(id, { resolve, reject, timer });
     let proc;
     try {
       proc = pickChild();

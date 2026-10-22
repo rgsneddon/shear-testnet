@@ -4365,7 +4365,7 @@ export function createStore(dir, {
     if (offLoop) {
       return hashHeaderOffLoop(Buffer.from(block.header)).then((hash) => (
         finish(assessHeader(block, prev, { ...opts, preparedHash: hash }))
-      ));
+      ), () => finish({ ok: false, reason: 'pow_worker' }));
     }
     return finish(assessHeader(block, prev, opts));
   }

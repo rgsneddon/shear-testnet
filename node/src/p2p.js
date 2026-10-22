@@ -736,9 +736,11 @@ export function isUpgradeableIngestFail(reason) {
  * `side_hold` is a competing branch that has not won fork-choice yet.
  * `not_heavier` must not poison that branch: a later child can still carry more work.
  * `samples_pruned` means the burial run is not here yet. A later header page can bury it.
+ * `pow_worker` is a local hash-worker fault. It says nothing about the block or the peer.
  * Upgradeable reasons (`evm`, `unsigned`, `admit_membership`) use a TTL, not `failed` forever. */
 export function isFinalIngestFail(reason) {
   const r = String(reason || '');
+  if (r === 'pow_worker') return false;
   if (r === 'prev' || r === 'hash_bonus' || r === 'side_hold' || r === 'not_heavier') return false;
   if (r === 'samples_pruned') return false;
   if (isUpgradeableIngestFail(r)) return false;

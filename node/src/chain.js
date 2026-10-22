@@ -1856,8 +1856,10 @@ async function prepareOffLoopPow(block, prev, { skipSharePow = false, priorHeade
     try {
       hashes = await Promise.all(pending.map((hdr) => hashHeaderOffLoop(hdr)));
     } catch {
-      return { ok: false, reason: 'pow' };
+      // The local hash worker failed. Nothing about the block is known yet.
+      return { ok: false, reason: 'pow_worker' };
     }
+    if (hashes.length !== pending.length) return { ok: false, reason: 'pow_worker' };
   }
   let cursor = 0;
   if (!headerReady) {
