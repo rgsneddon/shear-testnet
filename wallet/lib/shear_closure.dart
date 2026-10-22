@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math';
 
+import 'shear_public_confirm.dart';
 import 'shear_read_open.dart';
+import 'shear_tip_tick.dart';
 
 enum ClosureSendMode { connectBare, localNode, localNodeFull }
 
@@ -180,22 +183,31 @@ const kAndroidNodeMissingCopy =
     'This Android pack does not include a node runtime, so Run node cannot start on the phone. '
     'Continuum stays on Connect bare. The light seeker still follows the live tip.';
 
+/// What a full node on this device actually reveals. P2P peers see the IP.
+const kLocalNodeIpCopy =
+    'A full node on this device. It syncs over P2P only. $kOwnNodeIpCopy The public node never gets your view key or your sends.';
+
 /// p2P Node. A full node on this device, without `--solo`.
 const kLocalNodeModeCopy =
     'p2P Node. A full node on this device, without --solo. '
     'It requests each next block in order until the tip and does not mine. '
+    'It syncs over P2P only. $kOwnNodeIpCopy '
+    'The public node never gets your view key or your sends. '
     'Start resumes from the saved height. Stop saves that height and leaves the book.';
 
 /// Full Node. `--solo` is the first command argument, before the node syncs.
 const kLocalNodeFullModeCopy =
     'Full Node. The same full node, with --solo on the command line before it syncs, '
-    'so this device can solo mine. Start resumes from the saved height. '
-    'Stop saves that height and leaves the book.';
+    'so this device can solo mine. '
+    'It syncs over P2P only. $kOwnNodeIpCopy '
+    'The public node never gets your view key or your sends. '
+    'Start resumes from the saved height. Stop saves that height and leaves the book.';
 
 /// Connect bare pushes a signed send. Nodes verify it. No tunnel on this device.
 const kConnectBareCopy =
     'Connect bare. You push a signed send. Each node verifies it on the book it holds. '
-    'Flow sends are off until the ADMITv3 full-set proof ships. No tunnel and no node on this device.';
+    'Flow sends are off until the ADMITv3 full-set proof ships. No tunnel and no node on this device. '
+    '$kPublicNodeEverySendCopy';
 
 /// Published snapshot. Used only when the wallet node datadir is empty.
 const kPublicBootstrapUrl = 'https://boot.shear.digital';
@@ -271,23 +283,34 @@ String closureChipKey(ClosureSendMode mode) {
 }
 
 /// Spawn environment for the wallet node. Bootstrap is set only for an empty book.
+/// 32 random bytes, hex. One token per node process, not a stored secret.
+String freshRpcToken() {
+  final rand = Random.secure();
+  final bytes = List<int>.generate(32, (_) => rand.nextInt(256));
+  return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+}
+
 Map<String, String> closureSpawnEnv(
   ClosureSendMode mode, {
   required bool android,
   required String dataDir,
   bool emptyDatadir = false,
   bool publicStratum = false,
+  String? rpcToken,
 }) {
   return <String, String>{
     'SHEAR_RPC_BIND': '127.0.0.1',
     'SHEAR_RPC_PORT': '18332',
+    'SHEAR_RPC_TOKEN': rpcToken ?? '',
+    'SHEAR_STRATUM_BIND': '127.0.0.1',
+    'SHEAR_P2P_BIND': '127.0.0.1',
     'SHEAR_DATA': dataDir,
     'SHEAR_MAX_PEERS': android ? '8' : '16',
     'SHEAR_GETBLOCK_BATCH': '1',
     'SHEAR_SOLO': (!android && mode == ClosureSendMode.localNodeFull) ? '1' : '0',
     'SHEAR_FAST_SYNC': '1',
-    // Port 30303 is fleet-only. Desktop follows the same hosts over HTTPS.
-    'SHEAR_HTTP_FOLLOW': android ? '0' : '1',
+    // This wallet syncs over P2P. Public HTTP follow stays off.
+    'SHEAR_HTTP_FOLLOW': '0',
     'SHEARK_POOL': shearKPoolUrl(publicPool: publicStratum),
   };
 }
@@ -459,6 +482,9 @@ class ShearNodeSidecar {
   /// Set when [nodeBinary] is a Node runtime and the Shear entry is [nodeScript].
   String? nodeScript;
   String? workDir;
+
+  /// Token of the process started by the last successful spawn. Empty when stopped.
+  String rpcToken = '';
 
   /// Last status line from the local node, compared with [seekerTip].
   int reportedHeight = 0;
@@ -680,6 +706,9 @@ class ShearNodeSidecar {
     running = false;
     honest = false;
     listenPort = null;
+    rpcToken = '';
+    localRpcToken = null;
+    localRpcPort = null;
     if (onStop != null) await onStop!();
   }
 
@@ -734,7 +763,14 @@ class ShearNodeSidecar {
     }
     committed = next;
     final empty = datadirEmpty?.call() ?? emptyDatadir;
-    lastEnv = closureSpawnEnv(next, android: android, dataDir: dataDir, emptyDatadir: empty);
+    final token = freshRpcToken();
+    lastEnv = closureSpawnEnv(
+      next,
+      android: android,
+      dataDir: dataDir,
+      emptyDatadir: empty,
+      rpcToken: token,
+    );
     lastArgs = closureSpawnArgs(emptyDatadir: empty, mode: next, android: android);
     listenPort = closureStratumPort(next, android: android);
     if (nodeBinary == null || nodeBinary!.isEmpty || startProcess == null) {
@@ -755,52 +791,28 @@ class ShearNodeSidecar {
       progress = 'Local node did not start. $e';
       return progress;
     }
+    rpcToken = token;
+    localRpcToken = token;
+    localRpcPort = int.tryParse(lastEnv['SHEAR_RPC_PORT'] ?? '') ?? 18332;
     running = true;
     honest = false;
     return progress;
   }
 
-  /// Desktop Connect bare still sends as Connect bare. The book process
-  /// listens, so Windows can allow it, and follows public nodes over HTTPS
-  /// when port 30303 has no peer. That process writes the chain files.
-  /// Android never starts it. Apply of Connect bare still stops it.
+  /// Connect bare does not start a node. P2P and Solo spawn from [apply].
   Future<String> startDesktopBook() => _enqueue(_startDesktopBookBody);
 
   Future<String> _startDesktopBookBody() async {
     if (android) return progress;
+    if (committed == ClosureSendMode.connectBare) {
+      if (running) await _stopNow();
+      lastEnv = {};
+      lastArgs = const [];
+      progress = kConnectBareCopy;
+      return progress;
+    }
     if (running) return progress;
-    if (committed != ClosureSendMode.connectBare) return _applyBody();
-    final empty = datadirEmpty?.call() ?? emptyDatadir;
-    lastEnv = closureSpawnEnv(
-      ClosureSendMode.localNode,
-      android: false,
-      dataDir: dataDir,
-      emptyDatadir: empty,
-    );
-    lastArgs = const [];
-    listenPort = null;
-    if (nodeBinary == null || nodeBinary!.isEmpty || startProcess == null) {
-      running = false;
-      honest = false;
-      progress = kDesktopNodeMissingCopy;
-      return progress;
-    }
-    final spawnArgs = <String>[
-      if (nodeScript != null && nodeScript!.isNotEmpty) nodeScript!,
-      ...lastArgs,
-    ];
-    try {
-      await startProcess!(nodeBinary!, lastEnv, spawnArgs);
-    } catch (e) {
-      running = false;
-      honest = false;
-      progress = 'Local node did not start. $e';
-      return progress;
-    }
-    running = true;
-    honest = false;
-    progress = 'Syncing the book on this device.';
-    return progress;
+    return _applyBody();
   }
 
   /// Resistance Start. Resume the saved tip and request each later block. No tunnel.

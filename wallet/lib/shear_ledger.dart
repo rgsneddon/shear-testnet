@@ -13,6 +13,7 @@ import 'shear_read_sync.dart';
 import 'shear_session.dart';
 import 'shear_ed25519.dart';
 import 'shear_pack.dart';
+import 'shear_public_confirm.dart';
 import 'shear_admit.dart';
 import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
@@ -899,14 +900,32 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
 /// Tip, balance, notes, and history run here. The UI isolate only adopts the
 /// book the worker already collated.
 Future<void> creditFollowEntry(List<dynamic> args) async {
-  final specJson = args.isEmpty ? '' : args[0]?.toString() ?? '';
+  armWalletConnect();
+  var specJson = args.isEmpty ? '' : args[0]?.toString() ?? '';
   final port = args.length > 1 ? args[1] : null;
   if (port is! SendPort) return;
   try {
+    final decoded = jsonDecode(specJson);
+    if (decoded is Map) {
+      final spec = Map<String, dynamic>.from(decoded);
+      armLocalRpcFromSpec(spec);
+      specJson = jsonEncode(spec);
+    } else {
+      localRpcToken = null;
+      localRpcPort = null;
+    }
     final out = await creditFollowWorker(specJson, port);
-    port.send(<String, dynamic>{'event': 'done', 'out': out});
+    port.send(<String, dynamic>{
+      'event': 'done',
+      'out': out,
+      'connectPinned': walletConnect != null,
+    });
   } catch (e) {
-    port.send(<String, dynamic>{'event': 'error', 'message': e.toString()});
+    port.send(<String, dynamic>{
+      'event': 'error',
+      'message': e.toString(),
+      'connectPinned': walletConnect != null,
+    });
   }
 }
 
@@ -918,24 +937,42 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
   final spendableFirst = spec['spendableFirst'] == true;
   // Unlock often runs before the UI has a live base. Android has no local
   // node, so the worker asks the public book itself. The UI isolate stays free.
-  if (spendableFirst && base.isEmpty) {
+  final ownNode = spec['ownNode'] == true;
+  final publicConsent = spec['publicConsent'] == true;
+  if (ownNode && base.isNotEmpty) {
+    final accepted = await acceptOwnNodeUrl(base);
+    base = accepted ?? '';
+  }
+  if (spendableFirst &&
+      creditFollowProbesPublic(ownNode: ownNode, base: base, publicConsent: publicConsent)) {
     final seeds = <String>[
       for (final s in (spec['nodeSeeds'] as List?) ?? const <dynamic>[]) s.toString(),
     ];
-    base = await firstLiveNodeSeed(seeds.isEmpty ? kPublicNodeSeeds : seeds);
+    base = await firstLiveNodeSeed(
+      seeds.isEmpty ? kPublicNodeSeeds : seeds,
+      publicConsent: true,
+    );
   }
   // A dead port must not hold the lock screen. A real TLS notes read still
   // has to finish; 400ms dropped every phone handshake and left spendable at 0.
+  final workerHttp = spendableFirst
+      ? (HttpClient()
+        ..connectionTimeout = const Duration(seconds: 4)
+        ..idleTimeout = const Duration(seconds: 8))
+      : null;
+  if (workerHttp != null) {
+    pinWalletHttp(workerHttp, allowPublic: () => publicConsent);
+  }
   final pool = base.isEmpty
       ? null
       : ShearPoolClient(
           baseUrl: base,
-          http: spendableFirst
-              ? (HttpClient()
-                ..connectionTimeout = const Duration(seconds: 4)
-                ..idleTimeout = const Duration(seconds: 8))
-              : null,
+          http: workerHttp,
         );
+  if (pool != null && ownNode) {
+    pool.useOwnNode(base);
+  }
+  if (pool != null && publicConsent) pool.publicConsent = true;
   final ledger = ShearLedger(pool: pool);
   try {
     ledger.installCreditFollow(spec);
@@ -1021,7 +1058,7 @@ int debugReserveIsolateRuns = 0;
 /// when the seal ran in [Isolate.run].
 String debugReserveOffIsolateStamp = '';
 
-/// Seal Flow vouts (range proof + admit pub). Production hop-fee pay calls this
+/// Seal Flow vouts (range proof + admit pub). Production sends call this
 /// via [Isolate.run] so the UI isolate can keep pumping frames.
 Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
   final spendSeed = input['spendSeed'] as Uint8List;
@@ -1152,7 +1189,7 @@ Map<String, dynamic> signSpendWire(Map<String, dynamic> input) {
 
 /// flutter_tester does not finish [Isolate.run] inside one pumped frame, so
 /// plate tests sign on the caller. Production leaves FLUTTER_TEST unset and
-/// signs off the UI isolate. [SHEAR_FLOW_OFF_UI] forces that production hop.
+/// signs off the UI isolate. [SHEAR_FLOW_OFF_UI] forces that off-UI path.
 /// Signing does not start the native prover.
 bool _signOnCaller() =>
     !_flowOffUiForced() && Platform.environment['FLUTTER_TEST'] == 'true';
@@ -2385,8 +2422,9 @@ Future<ContinuumSendResult> submitContinuumSend({
   String? memo,
   Uint8List? spendSeed,
   bool local = false,
-  bool privacyHopUp = false,
   bool allowPublicHttp = false,
+  bool publicNode = true,
+  bool publicIpConsent = false,
   int depth = 0,
   SendProgress? progress,
   String? nanosWire,
@@ -2398,6 +2436,9 @@ Future<ContinuumSendResult> submitContinuumSend({
   }
   if (amount <= 0 && (nanosWire == null || nanosWire.isEmpty)) {
     return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+  }
+  if (publicNode && !local && !publicNodePostAllowed(consent: publicIpConsent)) {
+    return ContinuumSendResult(posted: false, to: candidate, remark: kPublicIpWaitCopy);
   }
   if (!ledger.beginSend()) {
     return ContinuumSendResult(posted: false, to: candidate, remark: 'send_in_flight');
@@ -2441,12 +2482,12 @@ Future<ContinuumSendResult> submitContinuumSend({
         from: from,
         to: candidate,
         amount: amount,
+        publicConsent: publicIpConsent,
         memo: memo,
         local: local,
         restFrame: restFrame,
         paymentCode: paymentCode,
         spendSeed: spendSeed,
-        privacyHopUp: privacyHopUp,
         allowPublicHttp: allowPublicHttp,
         paintedCover: gap > 1e-12,
         progress: progress,
@@ -2556,10 +2597,10 @@ String voteFailCopy(Object error) {
   }
   return error.toString();
 }
-/// Hop-fee picker had no sealed note, and the rest-frame sum could not cover the fee.
+/// The picker had no sealed note, and the rest-frame sum could not cover the send.
 /// One Flow input spends one note. A user send of the sum posts one transaction per note.
 const kErrNoSealedNote =
-    'No sealed Continuum note ready for the hop fee — wait for sync/confirms';
+    'No sealed Continuum note ready — wait for sync/confirms';
 /// Pool answered with an HTML error page (or other non-JSON). Never surface FormatException.
 const kErrPoolHtml = 'pool returned HTML';
 
@@ -2648,59 +2689,16 @@ String flowSendAdvisoryOf(Object error) {
   return kErrSendGeneric;
 }
 
-/// Submit snack that keeps the reason body. Hop-fee pay uses this so a pool
-/// rejection is not collapsed to [kErrSendGeneric]. Raw `no_note` and HTML
-/// parse failures are rewritten; a real pool reason is kept.
-String hopFeeAdvisoryOf(Object error) {
-  if (error is FormatException) return kErrPoolHtml;
-  var msg = '';
-  if (error is StateError) {
-    msg = error.message.trim();
-  } else if (error is ArgumentError) {
-    msg = error.message?.toString().trim() ?? '';
-  } else {
-    msg = error.toString().trim();
-    const prefixes = <String>[
-      'Bad state: ',
-      'Invalid argument(s): ',
-      'FormatException: ',
-      'Exception: ',
-    ];
-    for (final p in prefixes) {
-      if (msg.startsWith(p)) {
-        msg = msg.substring(p.length).trim();
-        break;
-      }
-    }
-  }
-  if (msg.isEmpty) return kErrSendGeneric;
-  if (msg == 'no_note') return kErrNoSealedNote;
-  if (msg == 'unsigned') return kErrLockUnsigned;
-  if (msg.startsWith('pool returned an error page') || msg == kErrPoolHtml) return msg;
-  final low = msg.toLowerCase();
-  if (low.contains('<html') ||
-      low.contains('<!doctype') ||
-      low.contains('formatexception') ||
-      low.contains('unexpected character')) {
-    final code = RegExp(r'http_(\d+)').firstMatch(msg);
-    if (code != null) return 'pool returned an error page (http_${code.group(1)})';
-    return kErrPoolHtml;
-  }
-  return msg;
-}
-
 /// Public alias of [_sendHumanError] for unit tests.
 StateError sendHumanError(
   String? reason,
   String? baseUrl, {
-  bool hopUp = false,
   bool allowPublicHttp = false,
   String? kind,
 }) =>
     _sendHumanError(
       reason,
       baseUrl,
-      hopUp: hopUp,
       allowPublicHttp: allowPublicHttp,
       kind: kind,
     );
@@ -2708,7 +2706,6 @@ StateError sendHumanError(
 StateError _sendHumanError(
   String? reason,
   String? baseUrl, {
-  bool hopUp = false,
   bool allowPublicHttp = false,
   String? kind,
 }) {
@@ -2731,9 +2728,8 @@ StateError _sendHumanError(
     return StateError(kErrLockUnsigned);
   }
   final url = baseUrl ?? '';
-  // Hop up, or an explicit public-HTTP allow (hop fee, confirmed unprivate),
-  // keeps the server reason. Do not rewrite those to the IP-leak advisory.
-  if (url.contains('pool.shear.digital') && !hopUp && !allowPublicHttp) {
+  // An explicit public-HTTP allow keeps the server reason.
+  if (url.contains('pool.shear.digital') && !allowPublicHttp) {
     return StateError(kErrPublicHttp);
   }
   return StateError(why);
@@ -5041,10 +5037,12 @@ class ShearLedger implements ReadProofSink {
   /// mean. The explorer reads those from the pool stats feed. A loopback book
   /// (tests) does not call the public pool. Phone wallets do not call this.
   /// Returns true when a displayed figure changed.
-  Future<bool> readContinuityFigures() async {
+  Future<bool> readContinuityFigures({ShearPoolClient Function(String baseUrl)? open}) async {
+    if (pool?.usesOwnNode == true) return false;
+    if (pool?.publicConsent != true) return false;
     final host = Uri.tryParse(pool?.baseUrl ?? '')?.host ?? '';
     if (host == '127.0.0.1' || host == 'localhost' || host == '::1') return false;
-    final client = ShearPoolClient(baseUrl: kPublicPoolHttp);
+    final client = open != null ? open(kPublicPoolHttp) : ShearPoolClient(baseUrl: kPublicPoolHttp);
     try {
       final json = await client.stats().timeout(const Duration(seconds: 6));
       final before = '$networkHashrate|$sealedMeanBlockMs|$circulatingNanos|$potEmittedNanos|$networkWorkBits|$emittedAtHeight';
@@ -5075,8 +5073,13 @@ class ShearLedger implements ReadProofSink {
         // findLiveNode waits out the slowest seed. A dead loopback then
         // expires this tick before a public node is adopted, and the bar
         // stays "not connected".
-        if (sync != null && (sync.liveBase == null || sync.liveBase!.isEmpty)) {
-          final found = await firstLiveNodeSeed(sync.seeds);
+        if (sync != null &&
+            !pool!.usesOwnNode &&
+            (sync.liveBase == null || sync.liveBase!.isEmpty)) {
+          final found = await firstLiveNodeSeed(
+            sync.seeds,
+            publicConsent: pool!.publicConsent,
+          );
           if (found.isNotEmpty) sync.liveBase = found;
         }
       }
@@ -6036,7 +6039,7 @@ class ShearLedger implements ReadProofSink {
       'full': full,
       'restFrame': restFrame,
       'paymentCode': paymentCode ?? '',
-      'baseUrl': (pool != null && pool!.isPinned) ? pool!.baseUrl : '',
+      'baseUrl': creditFollowReadBase(pool),
       'address': _restFrame ?? restFrame,
       'seedHex': spendSeed == null ? '' : _bytesHex(spendSeed!),
       'viewKey': viewSecret ?? '',
@@ -6325,17 +6328,16 @@ class ShearLedger implements ReadProofSink {
     String? sessionPassword,
     void Function()? onCoins,
   }) async {
-    final pinned = pool != null && pool!.isPinned;
     final spec = <String, dynamic>{
       'full': full,
       'chain': chain,
       'spendableFirst': spendableFirst,
       'restFrame': restFrame,
       'paymentCode': paymentCode ?? '',
-      'baseUrl': pinned ? pool!.baseUrl : (pool?.sync?.liveBase ?? ''),
-      'nodeSeeds': [
-        for (final s in (pool?.sync?.seeds ?? kPublicNodeSeeds)) s,
-      ],
+      'baseUrl': creditFollowReadBase(pool),
+      'ownNode': pool?.usesOwnNode == true,
+      'publicConsent': pool?.publicConsent == true,
+      'nodeSeeds': creditFollowReadSeeds(pool),
       'address': _restFrame ?? restFrame,
       'seedHex': spendSeed == null ? '' : _bytesHex(spendSeed!),
       'viewKey': viewSecret ?? '',
@@ -6360,6 +6362,14 @@ class ShearLedger implements ReadProofSink {
         for (final e in _reserveHeldNanos.entries) e.key: e.value.toString(),
       },
     };
+    // The launch token lives in this isolate. The worker is another isolate,
+    // so the spec carries it. armLocalRpcFromSpec removes it before any export.
+    final rpcTok = localRpcToken;
+    final rpcPort = localRpcPort;
+    if (rpcTok != null && rpcTok.isNotEmpty && rpcPort != null) {
+      spec['rpcToken'] = rpcTok;
+      spec['rpcPort'] = rpcPort;
+    }
     // A sealed session is already on disk. The worker opens it. Encoding the
     // in-memory book here is what froze Verifying on 0.68 (Windows and Android).
     if (sessionPath != null && sessionPath.isNotEmpty) {
@@ -7563,6 +7573,7 @@ class ShearLedger implements ReadProofSink {
         restFrame: restFrame,
         paymentCode: paymentCode,
         spendSeed: seed,
+        publicNode: false,
       );
       _payoutConsolidateRounds += n;
     } catch (_) {
@@ -7588,8 +7599,12 @@ class ShearLedger implements ReadProofSink {
     required Uint8List spendSeed,
     SendProgress? progress,
     bool allowPublicHttp = false,
-    bool privacyHopUp = false,
+    bool publicNode = true,
+    bool publicIpConsent = false,
   }) async {
+    if (publicNode && !publicNodePostAllowed(consent: publicIpConsent)) {
+      throw StateError(kPublicIpWaitCopy);
+    }
     var rounds = 0;
     for (var guard = 0; guard < 100000; guard++) {
       if (progress?.cancelRequested == true) throw StateError('send_cancelled');
@@ -7642,7 +7657,7 @@ class ShearLedger implements ReadProofSink {
         paymentCode: paymentCode,
         spendSeed: spendSeed,
         allowPublicHttp: allowPublicHttp,
-        privacyHopUp: privacyHopUp,
+        publicConsent: publicIpConsent,
         progress: progress,
         proveDone: 0,
         proveTotal: take.length,
@@ -7667,14 +7682,14 @@ class ShearLedger implements ReadProofSink {
     required Uint8List spendSeed,
     String? memo,
     bool allowPublicHttp = false,
-    bool privacyHopUp = false,
+    bool publicConsent = false,
     SendProgress? progress,
     int proveDone = 0,
     int proveTotal = 1,
   }) async {
     if (notes.isEmpty) throw StateError(kErrNoSealedNote);
     if (pool == null) throw StateError(kErrNoSealedNote);
-    if (!localSendReady(pool!.baseUrl) && !privacyHopUp && !allowPublicHttp) {
+    if (!localSendReady(pool!.baseUrl) && !allowPublicHttp) {
       throw StateError(kErrPublicHttp);
     }
     final src = (notes.first['address'] ?? notes.first['dest'])?.toString() ?? '';
@@ -7795,6 +7810,7 @@ class ShearLedger implements ReadProofSink {
       throw StateError('fee_short');
     }
     final json = await pool!.send(
+      publicConsent: publicConsent,
       from: src,
       to: destTo,
       amount: _sheOfExactNanos(payUnits.toString()) ?? payShe,
@@ -7918,8 +7934,8 @@ class ShearLedger implements ReadProofSink {
     int? unlockAtMs,
     String? change,
     Uint8List? spendSeed,
-    bool privacyHopUp = false,
     bool allowPublicHttp = false,
+    bool publicConsent = false,
     bool paintedCover = false,
     SendProgress? progress,
     String? nanosWire,
@@ -7931,6 +7947,7 @@ class ShearLedger implements ReadProofSink {
         from: src,
         to: to,
         amount: pay,
+        publicConsent: publicConsent,
         memo: memo,
         local: local,
         kind: kind,
@@ -7944,7 +7961,6 @@ class ShearLedger implements ReadProofSink {
         unlockAtMs: unlockAtMs,
         change: change,
         spendSeed: spendSeed,
-        privacyHopUp: privacyHopUp,
         allowPublicHttp: allowPublicHttp,
         paintedCover: paintedCover,
         progress: progress,
@@ -8028,7 +8044,6 @@ class ShearLedger implements ReadProofSink {
           spendSeed: spendSeed,
           memo: memo,
           allowPublicHttp: allowPublicHttp,
-          privacyHopUp: privacyHopUp,
           progress: progress,
           proveDone: done,
           proveTotal: totalProofs,
@@ -8108,8 +8123,8 @@ class ShearLedger implements ReadProofSink {
     int? unlockAtMs,
     String? change,
     Uint8List? spendSeed,
-    bool privacyHopUp = false,
     bool allowPublicHttp = false,
+    bool publicConsent = false,
     bool paintedCover = false,
     SendProgress? progress,
     Map<String, dynamic>? spendNote,
@@ -8144,7 +8159,6 @@ class ShearLedger implements ReadProofSink {
     if (!local &&
         pool != null &&
         !localSendReady(pool!.baseUrl) &&
-        !privacyHopUp &&
         !allowPublicHttp) {
       throw StateError(kErrPublicHttp);
     }
@@ -8330,7 +8344,7 @@ class ShearLedger implements ReadProofSink {
       // 9 confirmations stay in force. A balance snapshot does not make a
       // young note spendable.
       // After the picker misses, the book is the notes we can actually spend
-      // so Continuum does not keep claiming a cover the hop fee cannot use.
+      // so Continuum does not keep claiming a cover this send cannot use.
       if (spent == null) {
         final keys = <String>{payKey(src), payKey(from)};
         if (restFrame != null) {
@@ -8573,6 +8587,7 @@ class ShearLedger implements ReadProofSink {
         });
         final proof = wire['admitProof'];
         return pool!.send(
+          publicConsent: publicConsent,
           from: src,
           to: destTo,
           amount: sendKind == 'vote' ? 0 : amount,
@@ -8633,7 +8648,6 @@ class ShearLedger implements ReadProofSink {
         lastErr = _sendHumanError(
           json['reason']?.toString(),
           pool?.baseUrl,
-          hopUp: privacyHopUp,
           allowPublicHttp: allowPublicHttp,
           kind: sendKind,
         );
@@ -8832,6 +8846,38 @@ class ShearLedger implements ReadProofSink {
   }
 }
 
+/// Unlock probes public seeds only after consent, with no own node and no base.
+bool creditFollowProbesPublic({
+  required bool ownNode,
+  required String base,
+  bool publicConsent = false,
+}) =>
+    publicConsent && !ownNode && base.trim().isEmpty;
+
+/// Read base for the credit-follow worker. An own node replaces the public book.
+/// A public live base is not passed on without consent.
+String creditFollowReadBase(ShearPoolClient? pool) {
+  if (pool != null && pool.usesOwnNode) return pool.baseUrl;
+  if (pool != null && pool.isPinned) {
+    if (!pool.publicConsent && isPublicWalletHost(pool.baseUrl)) return '';
+    return pool.baseUrl;
+  }
+  final live = pool?.sync?.liveBase ?? '';
+  if (live.isEmpty) return '';
+  if (pool?.publicConsent != true && isPublicWalletHost(live)) return '';
+  return live;
+}
+
+/// Seeds the worker may probe. An own node is the only seed.
+List<String> creditFollowReadSeeds(ShearPoolClient? pool) {
+  if (pool != null && pool.usesOwnNode) return [pool.baseUrl];
+  final consent = pool?.publicConsent == true;
+  return [
+    for (final s in (pool?.sync?.seeds ?? kPublicNodeSeeds))
+      if (consent || !isPublicWalletHost(s)) s,
+  ];
+}
+
 class ShearPoolClient {
   /// Production (no [baseUrl]) reads headers 1…tip from a live seed. Tests pin [baseUrl].
   ShearPoolClient({
@@ -8840,18 +8886,85 @@ class ShearPoolClient {
     ShearReadSync? sync,
     String? userUrl,
   })  : _pinned = baseUrl,
-        _http = http ?? (HttpClient()
-          ..connectionTimeout = const Duration(seconds: 8)
-          ..idleTimeout = const Duration(seconds: 30)) {
+        _ownsHttp = http == null,
+        _http = http ?? _freshHttp() {
     _sync = sync ??
         (baseUrl == null
             ? ShearReadSync(http: _http, userUrl: userUrl)
             : null);
+    pinWalletHttp(_http, allowPublic: () => _publicConsent);
   }
 
+  /// True when this client's sockets go through the consent dial.
+  bool get debugConnectPinned => walletConnectPinned(_http);
+
+  /// The client the pool dials with. Tests set findProxy and certificate checks here.
+  HttpClient get debugHttp => _http;
+
+  static HttpClient _freshHttp() => HttpClient()
+    ..connectionTimeout = const Duration(seconds: 8)
+    ..idleTimeout = const Duration(seconds: 30);
+
   final String? _pinned;
-  final HttpClient _http;
+  final bool _ownsHttp;
+  HttpClient _http;
   ShearReadSync? _sync;
+  String? _ownNode;
+  bool _publicConsent = false;
+
+  /// Public seeds and the public pool stay dark until this is set.
+  bool get publicConsent => _publicConsent;
+  set publicConsent(bool value) {
+    final dropping = _publicConsent && !value;
+    _publicConsent = value;
+    _sync?.publicConsent = value;
+    if (!value) _dropPublicLiveBase();
+    if (dropping) _abandonInFlight();
+  }
+
+  /// Revoke, or a switch off the public path. Clears a public read base and
+  /// drops sockets that were already open to it.
+  void stopPublicReads() {
+    _publicConsent = false;
+    _sync?.publicConsent = false;
+    _dropPublicLiveBase();
+    _abandonInFlight();
+  }
+
+  void _dropPublicLiveBase() {
+    final live = _sync?.liveBase;
+    if (live != null && isPublicWalletHost(live)) _sync!.liveBase = null;
+  }
+
+  void _abandonInFlight() {
+    if (!_ownsHttp) return;
+    final old = _http;
+    old.close(force: true);
+    _http = _freshHttp();
+    pinWalletHttp(_http, allowPublic: () => _publicConsent);
+    _sync?.rebindHttp(_http);
+  }
+
+  /// Reads and posts use only this node. Null returns to the public seeds.
+  void useOwnNode(String? url) {
+    if (url == null || url.trim().isEmpty) {
+      if (_sync != null && _sync!.liveBase == _ownNode) _sync!.liveBase = null;
+      _sync?.blockPublicProbe = false;
+      _ownNode = null;
+      return;
+    }
+    final parsed = parseOwnNodeUrl(url);
+    if (parsed == null) {
+      throw ArgumentError(ownNodeUrlError(url) ?? kOwnNodeUrlError);
+    }
+    _ownNode = parsed;
+    if (_sync != null) {
+      _sync!.liveBase = parsed;
+      _sync!.blockPublicProbe = true;
+    }
+  }
+
+  bool get usesOwnNode => _ownNode != null;
   final Set<int> _pinnedProven = {};
   int _pinnedTip = 0;
 
@@ -8861,7 +8974,15 @@ class ShearPoolClient {
 
   String? get genesisHex => _sync?.genesisHex ?? _pinnedGenesis;
 
-  String get baseUrl => _pinned ?? _sync?.liveBase ?? kWalletDefaultSeed;
+  String get baseUrl {
+    if (_ownNode != null) return _ownNode!;
+    if (_pinned != null && (_publicConsent || !isPublicWalletHost(_pinned!))) return _pinned!;
+    final live = _sync?.liveBase;
+    if (live != null && live.isNotEmpty && (_publicConsent || !isPublicWalletHost(live))) {
+      return live;
+    }
+    return kWalletDefaultSeed;
+  }
 
   int get provenHeaders => _sync?.provenHeaders ?? _pinnedProven.length;
   int get wantedHeaders =>
@@ -8881,7 +9002,7 @@ class ShearPoolClient {
       );
 
   Future<void> followLive() async {
-    if (_pinned != null) {
+    if (_ownNode != null || _pinned != null) {
       await _provePinned();
       return;
     }
@@ -8971,12 +9092,23 @@ class ShearPoolClient {
   }
 
   Future<Map<String, dynamic>> _getRaw(String path, {String? open}) async {
-    final req = await _http.getUrl(Uri.parse('$baseUrl$path'));
+    final base = baseUrl;
+    if (!_publicConsent && _ownNode == null && isPublicWalletHost(base)) {
+      throw StateError(kLocalNodeDownCopy);
+    }
+    final target = Uri.parse('$base$path');
+    final req = await _http.getUrl(target);
+    stampLocalRpc(req, target);
+    req.followRedirects = false;
+    req.maxRedirects = 0;
     if (open != null && open.isNotEmpty) {
       req.headers.set('X-Shear-Open', open);
     }
     final res = await req.close();
     final text = await utf8.decodeStream(res);
+    if (res.statusCode >= 300 && res.statusCode < 400) {
+      throw StateError('redirect');
+    }
     final map = _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
     // GET fallbacks try the next path on non-2xx. HTML already threw above.
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -8994,9 +9126,11 @@ class ShearPoolClient {
     return null;
   }
 
-  Future<void> _ensureBase() async {
-    if (_pinned != null) return;
+  Future<void> _ensureBase({bool? publicConsent}) async {
+    if (_ownNode != null || _pinned != null) return;
     if (_sync?.liveBase != null) return;
+    final allowed = publicConsent ?? _publicConsent;
+    if (!allowed) return;
     await _sync?.findLiveNode();
   }
 
@@ -9011,7 +9145,14 @@ class ShearPoolClient {
   }
 
   Future<Map<String, dynamic>> _postOnce(String base, String path, Map<String, dynamic> body) async {
-    final req = await _http.postUrl(Uri.parse('$base$path'));
+    if (!_publicConsent && _ownNode == null && isPublicWalletHost(base)) {
+      throw StateError(kLocalNodeDownCopy);
+    }
+    final target = Uri.parse('$base$path');
+    final req = await _http.postUrl(target);
+    stampLocalRpc(req, target);
+    req.followRedirects = false;
+    req.maxRedirects = 0;
     req.persistentConnection = false;
     req.headers.contentType = ContentType.json;
     final payload = utf8.encode(jsonEncode(body));
@@ -9022,54 +9163,61 @@ class ShearPoolClient {
     req.contentLength = payload.length;
     req.add(payload);
     final res = await req.close();
+    if (res.statusCode >= 300 && res.statusCode < 400) {
+      await res.drain<void>();
+      throw StateError('redirect');
+    }
     final text = await utf8.decodeStream(res);
     return _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
   }
 
-  /// Non-spend posts (history, withdraw) keep their previous host.
-  /// A spend never uses this. The public pool is not a broadcast fallback.
-  String _nonSpendPostBase(String? url) {
+  /// Non-spend posts (history, register) keep the configured host.
+  /// The public pool is not a substitute, and it is not a fallback unless
+  /// [publicConsent] is set. A spend never uses this.
+  String _nonSpendPostBase(String? url, {bool publicConsent = false}) {
     String trim(String raw) {
       final s = raw.trim();
       return s.endsWith('/') ? s.substring(0, s.length - 1) : s;
     }
     if (url != null && url.isNotEmpty) {
-      if (isPublicPoolHttp(url)) return trim(url);
-      final u = Uri.tryParse(url);
-      if (u != null) {
-        final host = u.host.toLowerCase();
-        if ((host == '127.0.0.1' || host == 'localhost' || host == '::1') &&
-            (u.port == 18332 || u.port == 8088)) {
-          return trim(url);
-        }
+      if (isPublicPoolHttp(url) || isPublicWalletHost(url)) {
+        if (publicConsent) return trim(url);
+        return kLocalNodeRpc;
       }
+      final u = Uri.tryParse(url);
+      if (u != null && u.host.isNotEmpty) return trim(url);
     }
-    return kPublicPoolHttp;
+    if (publicConsent) return kPublicPoolHttp;
+    return kLocalNodeRpc;
   }
 
   Future<Map<String, dynamic>> _post(
     String path,
     Map<String, dynamic> body, {
     bool legacyPoolSend = false,
+    bool publicConsent = false,
   }) async {
-    await _ensureBase();
+    await _ensureBase(publicConsent: publicConsent);
     if (path == '/api/wallet/send') {
-      return _postSpend(path, body, legacyPoolSend: legacyPoolSend);
+      return _postSpend(path, body, legacyPoolSend: legacyPoolSend, publicConsent: publicConsent);
     }
-    final first = _pinned ?? _nonSpendPostBase(baseUrl);
+    final first = _ownNode ?? _pinned ?? _nonSpendPostBase(baseUrl, publicConsent: publicConsent);
     try {
       return await _postOnce(first, path, body);
     } on FormatException {
-      if (_pinned == null) _sync?.noteFailure();
+      if (_pinned == null && _ownNode == null) _sync?.noteFailure();
       throw StateError(kErrPoolHtml);
     } on SocketException {
-      if (_pinned != null || isPublicPoolHttp(first)) {
-        if (_pinned == null) _sync?.noteFailure();
+      if (_ownNode != null || _pinned != null || isPublicPoolHttp(first) || !publicConsent) {
+        if (_pinned == null && _ownNode == null) _sync?.noteFailure();
+        if (!publicConsent && _ownNode == null && _pinned == null) {
+          throw StateError(kLocalNodeDownCopy);
+        }
         rethrow;
       }
       return _postOnce(kPublicPoolHttp, path, body);
     } catch (_) {
-      if (_pinned == null) _sync?.noteFailure();
+      if (_pinned == null && _ownNode == null) _sync?.noteFailure();
       rethrow;
     }
   }
@@ -9080,8 +9228,14 @@ class ShearPoolClient {
     String path,
     Map<String, dynamic> body, {
     bool legacyPoolSend = false,
+    bool publicConsent = false,
   }) async {
-    final targets = nodeSendTargets(baseUrl, pinned: _pinned, legacyPoolSend: legacyPoolSend);
+    final targets = nodeSendTargets(
+      baseUrl,
+      pinned: _ownNode ?? _pinned,
+      legacyPoolSend: legacyPoolSend,
+      publicConsent: publicConsent,
+    );
     Object? last;
     for (final base in targets) {
       try {
@@ -9098,7 +9252,10 @@ class ShearPoolClient {
         last = e;
       }
     }
-    if (_pinned == null) _sync?.noteFailure();
+    if (_pinned == null && _ownNode == null) _sync?.noteFailure();
+    if (!publicConsent && _ownNode == null && _pinned == null) {
+      throw StateError(kLocalNodeDownCopy);
+    }
     if (last != null) throw last;
     throw StateError('node not running');
   }
@@ -9198,6 +9355,7 @@ class ShearPoolClient {
     int? fee,
     int paintedOwedNanos = 0,
     bool legacyPoolSend = false,
+    bool publicConsent = false,
     String? nanosWire,
     String? id,
     String? withdrawNonce,
@@ -9233,7 +9391,7 @@ class ShearPoolClient {
       withdrawNonce: withdrawNonce,
       fs1: fs1,
       anchor: anchor,
-    ), legacyPoolSend: legacyPoolSend);
+    ), legacyPoolSend: legacyPoolSend, publicConsent: publicConsent);
   }
 
   Future<Map<String, dynamic>> fluxset() async {
