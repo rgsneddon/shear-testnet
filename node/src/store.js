@@ -33,6 +33,7 @@ import {
   V12_GENESIS_BLOCK_HASH,
   V12_BOOTSTRAP_CHECKPOINT,
   assessHeader,
+  headerPowReason,
   headerLinkReason,
   rootHeaderReason,
   discardPreparedHeader,
@@ -3363,9 +3364,80 @@ export function createStore(dir, {
     return assessed?.reason || 'pow';
   }
 
+  /** Header-target options for a block on this tip. The book's own magic. */
+  function tipExtendPowOpts(nowMs = Date.now()) {
+    const n = blocks.length;
+    return {
+      grandparentHeader: n >= 2 ? blocks[n - 2]?.header || null : null,
+      magic: bookMagic,
+      nowMs,
+    };
+  }
+
+  function tipPowView(t) {
+    return {
+      hash: t.hash,
+      header: t.header,
+      height: t.height,
+      txs: t.txs,
+      bLeaves: t.bLeaves,
+      weight: t.weight,
+      shareBatch: t.shareBatch,
+      rootA: t.rootA,
+      rootB: t.rootB,
+    };
+  }
+
+  function extendsThisTip(block) {
+    const t = tip();
+    if (!t?.hash || !t.header || !block?.header) return false;
+    try {
+      return decodeHeader(Buffer.from(block.header)).prevBlockHash.equals(Buffer.from(t.hash));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Off-loop header target for one block on this tip, before its claimed hash
+   * is compared to the book. `{ applies: false }` for any other block.
+   * `release` drops the stash when the full check does not consume it.
+   */
+  function tipExtendPowReason(block, nowMs = Date.now()) {
+    if (!extendsThisTip(block)) return Promise.resolve({ applies: false });
+    return headerPowReason(block, tipPowView(tip()), tipExtendPowOpts(nowMs)).then((early) => (
+      early.reason
+        ? { applies: true, reason: early.reason }
+        : { applies: true, reason: null, release: early.release }
+    ));
+  }
+
   function append(block, verifyOpts = {}) {
     const early = unprovenAppendReason(block, verifyOpts);
     if (early) return { ok: false, reason: early, tip: tip() };
+    // The off-loop path proves the header target here, so every caller of
+    // append is gated, not only p2p. A trusted hash is the caller's own proof.
+    const offLoopGate = !!verifyOpts.offLoopPow
+      && verifyOpts.probeBody !== true
+      && block?.samplesPruned !== true
+      && !trustedHashFor(block, verifyOpts)
+      && extendsThisTip(block);
+    if (offLoopGate) {
+      return tipExtendPowReason(block).then((gate) => {
+        if (gate.reason) return { ok: false, reason: gate.reason, tip: tip() };
+        return Promise.resolve().then(() => appendProven(block, verifyOpts)).then((out) => {
+          gate.release?.();
+          return out;
+        }, (err) => {
+          gate.release?.();
+          throw err;
+        });
+      });
+    }
+    return appendProven(block, verifyOpts);
+  }
+
+  function appendProven(block, verifyOpts) {
     const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
     if (incoming && incoming.length === 32) {
       for (const b of blocks) {
@@ -5977,6 +6049,8 @@ export function createStore(dir, {
     },
     hashTxLive: HASH_TX_LIVE,
     magic: bookMagic,
+    tipExtendPowOpts,
+    tipExtendPowReason,
     consensusFingerprint,
     pause,
     reorgHaltDepth: haltDepth,

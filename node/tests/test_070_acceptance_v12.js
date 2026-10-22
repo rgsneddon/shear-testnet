@@ -667,11 +667,23 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
     const jobAt = src.indexOf('const job = scheduleP2pVerify', haveAt);
     const jobEnd = src.indexOf('job.then', jobAt);
     const job = src.slice(jobAt, jobEnd);
-    const earlyCall = job.indexOf('rejectUnprovenTipExtend(store, fork[0])');
-    const reasonAt = job.indexOf('if (early.reason)');
-    const successGo = job.indexOf('return go()', reasonAt);
-    assert.ok(earlyCall >= 0 && reasonAt > earlyCall && successGo > reasonAt);
-    assert.match(job, /if\s*\(\s*!extendsTip\s*\)\s*return go\(\)/);
+    assert.match(job, /store\.ingest\(fork,\s*\{\s*offLoopPow: true/);
+    // The header target runs inside store.append, so every off-loop caller
+    // is gated before the claimed hash meets the book, not only this job.
+    const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
+    const appendKey = 'function append(block, verifyOpts = {}) {';
+    const appendAt = storeSrc.indexOf(appendKey);
+    assert.ok(appendAt >= 0, 'store append');
+    const appendSrc = braceBody(storeSrc, appendAt + appendKey.length - 1);
+    const gateCall = appendSrc.indexOf('tipExtendPowReason(block)');
+    const reasonAt = appendSrc.indexOf('if (gate.reason)', gateCall);
+    const provenAt = appendSrc.indexOf('appendProven(block, verifyOpts)', reasonAt);
+    assert.ok(gateCall >= 0 && reasonAt > gateCall && provenAt > reasonAt);
+    assert.doesNotMatch(appendSrc, /not_heavier/);
+    const provenKey = 'function appendProven(block, verifyOpts) {';
+    const provenFnAt = storeSrc.indexOf(provenKey);
+    assert.ok(provenFnAt > appendAt, 'appendProven');
+    assert.match(braceBody(storeSrc, provenFnAt + provenKey.length - 1), /not_heavier/);
 
     const dest = minerDest();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-070-p3-'));
@@ -710,6 +722,12 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
       assert.notEqual(got.reason, 'not_heavier');
       assert.equal(scans, 0, `book scan ${scans}`);
       assertOwedStill(before, snapStats(store), 'tip-extend pow');
+      assert.equal(Buffer.from(store.tip().hash).toString('hex'), tipHex);
+      const viaIngest = await store.ingest([collide], { offLoopPow: true });
+      assert.equal(viaIngest.ok, false);
+      assert.equal(viaIngest.reason, 'pow', viaIngest.reason);
+      assert.equal(scans, 0, `book scan via ingest ${scans}`);
+      assertOwedStill(before, snapStats(store), 'tip-extend pow via ingest');
       assert.equal(Buffer.from(store.tip().hash).toString('hex'), tipHex);
       const flipped = flipVersion(tipTemplate(store, dest));
       flipped.hash = Buffer.from(store.tip().hash);

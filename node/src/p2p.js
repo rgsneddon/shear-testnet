@@ -882,10 +882,11 @@ export function blockExtendsTip(store, block) {
  */
 export async function rejectUnprovenTipExtend(store, block) {
   if (!blockExtendsTip(store, block)) return { applies: false };
+  if (typeof store.tipExtendPowReason === 'function') return store.tipExtendPowReason(block);
   const view = tipView(store);
   const early = await headerPowReason(block, view.prev, {
     grandparentHeader: view.grandparent,
-    magic: MAGIC_TESTNET,
+    magic: store.magic,
     nowMs: Date.now(),
   });
   if (early.reason) return { applies: true, reason: early.reason };
@@ -2129,21 +2130,12 @@ export function createP2p({
       const job = scheduleP2pVerify(() => {
         const before = store.tip();
         // IBD validates every block. A peer-advertised height is not a skip.
-        // A synchronous ingest throw still rejects, so early.release runs.
+        // store.append proves a tip extension's header target before the
+        // claimed hash meets the book. A synchronous ingest throw rejects.
         const go = () => Promise.resolve().then(() => store.ingest(fork, {
           offLoopPow: true,
         })).then((got) => ({ got, before }));
-        if (!extendsTip) return go();
-        return rejectUnprovenTipExtend(store, fork[0]).then((early) => {
-          if (early.reason) return { got: { ok: false, reason: early.reason, tip: before }, before };
-          return go().then((out) => {
-            early.release?.();
-            return out;
-          }, (err) => {
-            early.release?.();
-            throw err;
-          });
-        });
+        return go();
       });
       job.then(({ got, before }) => {
         const rec = peers.get(sock);

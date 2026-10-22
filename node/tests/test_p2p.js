@@ -55,7 +55,6 @@ import {
   locatorHashes,
 } from '../src/p2p.js';
 import { DEFAULT_SEEDS } from '../src/node.js';
-import { holdPreparedHeader } from '../src/chain.js';
 import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import { printConfig, startNode, createStore } from '../src/node.js';
 import { countSyncedOnline, countLiveOnline, isFinalIngestFail, recordIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
@@ -100,13 +99,6 @@ async function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
   });
 }
 
-// Fixture blocks carry a stand-in hash, not ShearHash work. P2P proves a
-// tip-extend header against the shared prepared stash before ingest, and the
-// ingest drops that entry, so the stand-in is held again for the next peer.
-function holdStandIn(header, hash) {
-  if (header && hash) holdPreparedHeader(Buffer.from(header), Buffer.from(hash));
-}
-
 // A peer that syncs these funding blocks checks the header hash the sender
 // stored. The gossip assert is the tx, not a second genesis search.
 function trustIngest(node) {
@@ -114,11 +106,7 @@ function trustIngest(node) {
   node.store.ingest = (blocks, opts = {}) => {
     const h = blocks?.[0]?.hash;
     const trusted = h ? Buffer.from(h) : null;
-    const out = orig(blocks, { ...opts, trustedPowHash: trusted, skipSharePow: true });
-    Promise.resolve(out).then(() => setImmediate(() => {
-      for (const blk of blocks || []) holdStandIn(blk?.header, blk?.hash);
-    }), () => {});
-    return out;
+    return orig(blocks, { ...opts, trustedPowHash: trusted, skipSharePow: true });
   };
 }
 
@@ -147,7 +135,6 @@ async function appendTrusted(store, dest, seq) {
     weight: tpl.weight,
   }, { trustedPowHash: pow, skipSharePow: true });
   assert.equal(got.ok, true, got.reason);
-  holdStandIn(tpl.header, pow);
   return { tpl, opening };
 }
 
@@ -1035,7 +1022,6 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
           weight: tpl.weight,
         }, { trustedPowHash: pow, skipSharePow: true });
         assert.equal(mined.ok, true, mined.reason);
-        holdStandIn(tpl.header, pow);
       }
       assert.equal(a.store.tip().height, want);
       const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hdrq-b-'));
