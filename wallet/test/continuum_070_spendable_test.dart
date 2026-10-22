@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_eip712.dart';
+import 'package:shear_wallet/shear_hash.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
@@ -38,10 +39,12 @@ void main() {
         'amount': 1.0,
         'nanos': kUnitsPerShe,
         'commit': Uint8List(32)..[0] = 4,
+        'noteCommit': Uint8List(32)..[0] = 6,
         'r': Uint8List(32)..[0] = 5,
       });
       ledger.rememberDest(home);
       ledger.restoreSealedTip(20);
+      ledger.settleTo(20);
       ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
 
       final opened = ledger.spendableOwned(
@@ -179,7 +182,13 @@ void main() {
           );
         } else if (path == '/stats' || path == '/api/stats') {
           req.response.write(
-            jsonEncode({'ok': true, 'height': 20, 'balance': 9, 'owedPi': 3}),
+            jsonEncode({
+              'ok': true,
+              'height': 20,
+              'header': _checkedHeaderHex(),
+              'balance': 9,
+              'owedPi': 3,
+            }),
           );
         } else {
           req.response.statusCode = 500;
@@ -207,10 +216,12 @@ void main() {
         'amount': 1.0,
         'nanos': kUnitsPerShe,
         'commit': Uint8List(32)..[0] = 7,
+        'noteCommit': Uint8List(32)..[0] = 6,
         'r': Uint8List(32)..[0] = 8,
       });
       ledger.rememberDest(home);
       ledger.restoreSealedTip(20);
+      ledger.settleTo(20);
       ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
       final opened = ledger.spendableOwned(
         id.address,
@@ -320,10 +331,12 @@ void main() {
         'amount': 1.0,
         'nanos': kUnitsPerShe,
         'commit': Uint8List(32)..[0] = 9,
+        'noteCommit': Uint8List(32)..[0] = 6,
         'r': Uint8List(32)..[0] = 4,
       });
       ledger.rememberDest(home);
       ledger.restoreSealedTip(387);
+      ledger.settleTo(387);
       ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
       expect(
         ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
@@ -421,7 +434,13 @@ void main() {
           );
         } else if (path == '/stats' || path == '/api/stats') {
           req.response.write(
-            jsonEncode({'ok': true, 'height': 20, 'balance': 9, 'owedPi': 3}),
+            jsonEncode({
+              'ok': true,
+              'height': 20,
+              'header': _checkedHeaderHex(),
+              'balance': 9,
+              'owedPi': 3,
+            }),
           );
         } else {
           req.response.statusCode = 404;
@@ -578,6 +597,7 @@ void main() {
           (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
       final feeShe = feeNanos / kUnitsPerShe;
       var tip = 9;
+      final headerHex = _checkedHeaderHex();
       final wires = <Map<String, dynamic>>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(() => server.close(force: true));
@@ -591,6 +611,7 @@ void main() {
             jsonEncode({
               'ok': true,
               'height': tip,
+              'header': headerHex,
               'magic': 'shear-testnet-v11',
               'network': 'shear-testnet-v11',
             }),
@@ -681,6 +702,7 @@ void main() {
           (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
       final feeShe = feeNanos / kUnitsPerShe;
       var tip = 9;
+      final headerHex = _checkedHeaderHex();
       final wires = <Map<String, dynamic>>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(() => server.close(force: true));
@@ -694,6 +716,7 @@ void main() {
             jsonEncode({
               'ok': true,
               'height': tip,
+              'header': headerHex,
               'magic': 'shear-testnet-v11',
               'network': 'shear-testnet-v11',
             }),
@@ -827,7 +850,13 @@ void main() {
           );
         } else if (path == '/stats' || path == '/api/stats') {
           req.response.write(
-            jsonEncode({'ok': true, 'height': 20, 'balance': 9, 'owedPi': 3}),
+            jsonEncode({
+              'ok': true,
+              'height': 20,
+              'header': _checkedHeaderHex(),
+              'balance': 9,
+              'owedPi': 3,
+            }),
           );
         } else {
           req.response.statusCode = 404;
@@ -919,6 +948,7 @@ void main() {
             jsonEncode({
               'ok': true,
               'height': 20,
+              'header': _checkedHeaderHex(),
               'magic': 'shear-testnet-v11',
               'network': 'shear-testnet-v11',
             }),
@@ -1002,6 +1032,7 @@ void main() {
           (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
       final feeShe = feeNanos / kUnitsPerShe;
       var tip = 14;
+      final headerHex = _checkedHeaderHex();
       final wires = <Map<String, dynamic>>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(() => server.close(force: true));
@@ -1016,6 +1047,7 @@ void main() {
             jsonEncode({
               'ok': true,
               'height': tip,
+              'header': headerHex,
               'magic': 'shear-testnet-v11',
               'network': 'shear-testnet-v11',
             }),
@@ -1235,6 +1267,7 @@ void main() {
           jsonEncode({
             'ok': true,
             'height': 20,
+            'header': _checkedHeaderHex(),
             'magic': kBookMagic,
             'network': kBookMagic,
           }),
@@ -1346,10 +1379,12 @@ void main() {
       'amount': 1.0,
       'nanos': kUnitsPerShe,
       'commit': Uint8List(32)..[0] = 3,
+      'noteCommit': Uint8List(32)..[0] = 6,
       'r': Uint8List(32)..[0] = 9,
     });
     ledger.rememberDest(home);
     ledger.restoreSealedTip(40);
+    ledger.settleTo(40);
     ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
     await ledger.syncBalancesOnly(id.address, paymentCode: id.paymentCode);
     expect(paths.where((p) => p.contains('stats')), isNotEmpty);
@@ -1413,6 +1448,24 @@ void main() {
     await hung.close(force: true);
     await Future<void>.delayed(const Duration(milliseconds: 100));
   });
+}
+
+String _checkedHeaderHex() {
+  final h = Uint8List(shearHeaderLen);
+  h[0] = 1;
+  var ts = 1700000000000;
+  for (var i = 0; i < 8; i++) {
+    h[100 + i] = ts & 0xff;
+    ts >>= 8;
+  }
+  h[108] = 1;
+  for (var nonce = 0; nonce < 100000; nonce++) {
+    shearSetNonce(h, nonce);
+    if (shearMeetsTarget(shearHash(h), 1)) {
+      return h.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    }
+  }
+  throw StateError('pow');
 }
 
 String _hex(Object? v) {

@@ -19,6 +19,7 @@ import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
+import 'shear_hash.dart';
 import 'shear_tip_tick.dart';
 
 const kSheDecimals = 11;
@@ -658,6 +659,21 @@ bool noteHasSealedSpendBytes(Map<dynamic, dynamic> n) {
       blind.isNotEmpty;
 }
 
+/// Spend-tag point, off the UI isolate. The predicate reads the stamp only.
+String? spendTagHexOf(Uint8List spendSeed, Map<String, dynamic> note) {
+  try {
+    final spentNote = {
+      'kind': (note['kind'] as String?) ?? 'pot',
+      'commit': _noteBytes(note['commit'])!,
+      'noteCommit': _noteBytes(note['noteCommit'])!,
+    };
+    final x = admitScalarFromSeed(spendSeed, spentNote);
+    return _bytesHex(pointBytes(spendTagPoint(x, admitPub(x))));
+  } catch (_) {
+    return null;
+  }
+}
+
 /// A lock note stays locked until the tip time reaches its unlock.
 /// No unlock on the note stays locked. Any other kind keeps its own flag.
 bool lockNoteIsLocked(Map<String, dynamic> note, int? tipMs) {
@@ -677,27 +693,23 @@ bool lockNoteIsLocked(Map<String, dynamic> note, int? tipMs) {
 /// [tip], a verified open, exact nanos, and sealed spend bytes. [tip] is the
 /// verified tip, not the notes scan cursor.
 ///
-/// Spend bytes a send can use. `sealed: false` is not a coin. A note that
-/// carries noteCommit needs the commit, that note commit, and the opening.
-/// A book row that stored only the commit and the opening still counts: that
-/// is the opened coin the figure already spends.
+/// Spend bytes a send can build. A planner row stores that decision in
+/// `sealed` after [noteHasSealedSpendBytes]. A book row needs the commit,
+/// the note commit, and the opening. Commit and opening without noteCommit
+/// throw `no_note` at send build, so they are not spendable.
 bool spendBytesOk(Map<dynamic, dynamic> note) {
-  if (note.containsKey('sealed')) return note['sealed'] == true;
+  if (note.containsKey('sealed') && note['sealed'] != true) return false;
   final hasCommit = note.containsKey('commit');
   final hasNote = note.containsKey('noteCommit');
   final hasBlind = note.containsKey('r');
-  if (!hasCommit && !hasNote && !hasBlind) return true;
-  final commit = _noteBytes(note['commit']);
-  final blind = _noteBytes(note['r']);
-  if (commit == null || commit.isEmpty || blind == null || blind.isEmpty)
-    return false;
-  if (hasNote) return noteHasSealedSpendBytes(note);
-  return true;
+  if (!hasCommit && !hasNote && !hasBlind) {
+    return !note.containsKey('sealed') || note['sealed'] == true;
+  }
+  return noteHasSealedSpendBytes(note);
 }
 
-/// An amount-only quote omits `verified` and `sealed`. Those two gates apply
-/// when the key is present. Sealed bytes apply when the note carries commit,
-/// noteCommit, or r.
+/// An amount-only quote omits `verified` and `sealed`. A book row does not:
+/// it needs `verified == true` and [noteHasSealedSpendBytes].
 bool spendableNote(
   Map<dynamic, dynamic> note, {
   required int tip,
@@ -723,7 +735,6 @@ bool spendableNote(
       if (tip < height || (tip - height + 1) < confirmations) return false;
     }
   }
-  if (note.containsKey('verified') && note['verified'] != true) return false;
   final nanos = noteNanosExact(note);
   if (nanos == null || nanos <= BigInt.zero) return false;
   final bare =
@@ -733,30 +744,23 @@ bool spendableNote(
       !note.containsKey('r');
   if (bare) {
     if (!allowBare) return false;
-  } else if (!spendBytesOk(note)) {
-    return false;
+  } else {
+    if (note['verified'] != true) return false;
+    if (!spendBytesOk(note)) return false;
   }
   return true;
 }
 
-/// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
-/// Same note gate as the Spendable figure. Production calls this from [Isolate.run].
-Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
-  final stamp = identityHashCode(Isolate.current).toString();
+/// Notes a max send can draw, after the same whole-note hold as the batches.
+class SpendablePool {
+  const SpendablePool(this.free, this.freeSum, this.noPlain);
+  final List<Map<String, dynamic>> free;
+  final BigInt freeSum;
+  final bool noPlain;
+}
+
+SpendablePool poolSpendableNotes(Map<String, dynamic> input) {
   final notes = input['notes'] as List? ?? const [];
-  final need = input['needNanos'] != null
-      ? _nanosFromAmountField(input['needNanos'])
-      : _sheToNanos(input['needShe']);
-  final memo = input['memo'] == true;
-  final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
-  final measured = measuredInputCap(
-    outputs: outputs < 1 ? 1 : outputs,
-    memo: memo,
-  );
-  final asked = (input['cap'] as num?)?.toInt();
-  final cap = (asked == null || asked < 1 || asked > measured)
-      ? measured
-      : asked;
   final tip = (input['tip'] as num?)?.toInt() ?? 0;
   final floor = (input['confs'] as num?)?.toInt() ?? 9;
   final tipMs = (input['tipMs'] as num?)?.toInt();
@@ -770,6 +774,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   final dests = <String>{
     for (final d in (input['dests'] as List? ?? const [])) d.toString(),
   };
+  final allowBare = input['allowBare'] != false;
   final rows = <Map<String, dynamic>>[];
   final openedLocks = <Map<String, dynamic>>[];
   for (var i = 0; i < notes.length; i++) {
@@ -781,7 +786,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
       confirmations: floor,
       tipMs: tipMs,
       spentTags: spentTags,
-      allowBare: true,
+      allowBare: allowBare,
     )) {
       continue;
     }
@@ -791,8 +796,6 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     final nanos = noteNanosExact(n);
     if (nanos == null || nanos <= BigInt.zero) continue;
     final row = {'i': i, 'nanos': nanos, 'addr': addr};
-    // An unlocked lock note is the principal. The hold still covers the coins
-    // that funded it, so this note is not one of the coins the hold reserves.
     if ((n['kind'] ?? '').toString() == 'lock') {
       final raw = n['unlockAtMs'];
       final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
@@ -817,6 +820,29 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     BigInt.zero,
     (s, r) => s + (r['nanos'] as BigInt),
   );
+  return SpendablePool(free, freeSum, rows.isEmpty);
+}
+
+/// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
+/// Same note gate as the Spendable figure. Production calls this from [Isolate.run].
+Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  final need = input['needNanos'] != null
+      ? _nanosFromAmountField(input['needNanos'])
+      : _sheToNanos(input['needShe']);
+  final memo = input['memo'] == true;
+  final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
+  final measured = measuredInputCap(
+    outputs: outputs < 1 ? 1 : outputs,
+    memo: memo,
+  );
+  final asked = (input['cap'] as num?)?.toInt();
+  final cap = (asked == null || asked < 1 || asked > measured)
+      ? measured
+      : asked;
+  final pool = poolSpendableNotes(input);
+  final free = pool.free;
+  final freeSum = pool.freeSum;
   final batches = <Map<String, dynamic>>[];
   var remaining = need;
   var cursor = 0;
@@ -878,7 +904,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   return {
     'stamp': stamp,
     'covered': covered,
-    'empty': rows.isEmpty,
+    'empty': pool.noPlain,
     'shortFee': shortFee,
     'batches': batches,
     'feeShe': _sheOfNanos(feeSum),
@@ -3993,6 +4019,14 @@ class ShearLedger implements ReadProofSink {
             _noteBytes(row['commit']),
           ))
             continue;
+          final seed = spendSeed;
+          if (seed != null &&
+              seed.length == 32 &&
+              (row['spendTag']?.toString() ?? '').isEmpty &&
+              noteHasSealedSpendBytes(row)) {
+            final tag = _noteSpendTagHex(seed, row);
+            if (tag != null) row['spendTag'] = tag;
+          }
           rememberNote(row);
           _rememberProofRow(row);
           if (row['proofChecked'] == true) {
@@ -4173,6 +4207,9 @@ class ShearLedger implements ReadProofSink {
   /// Selected dest index (0 .. destCount-1).
   int destIndex = 0;
   int _sealedHeight = 0;
+
+  /// Height whose header this wallet checked. Zero means depth is unknown.
+  int _verifiedTip = 0;
 
   /// Last height whose open-round pending was settled. Display [sealedHeight]
   /// can run ahead (1s tip poll); settlement uses this so confirmRound still
@@ -4503,6 +4540,7 @@ class ShearLedger implements ReadProofSink {
     _openCollated = false;
     _openedProofs.clear();
     _sealedHeight = 0;
+    _verifiedTip = 0;
     _settledHeight = 0;
     lag1Root = null;
     tipHeight = 1;
@@ -4553,9 +4591,40 @@ class ShearLedger implements ReadProofSink {
     return live > _sealedHeight ? live : _sealedHeight;
   }
 
-  /// Confirmation depth for Spendable and the planner. The verified tip
-  /// ([displayHeight]), not the notes scan cursor ([notesCovered]).
-  int get bookTip => displayHeight;
+  /// Confirmation depth for Spendable and the planner. A host `/stats`
+  /// height is not this. Zero means the depth is unknown, so a note that
+  /// carries a height is not spendable.
+  int get bookTip => _verifiedTip;
+
+  /// A flyclient sample this wallet already checked. Moves the spendable tip.
+  void noteVerifiedHeight(int height) {
+    if (height < 1) return;
+    if (height > _verifiedTip) _verifiedTip = height;
+    if (height > _sealedHeight) {
+      noteLiveHeight(height);
+      return;
+    }
+    settleTo(_verifiedTip);
+  }
+
+  /// Recomputed ShearHash meets the header bits. A zero-bits blob does not.
+  bool _headerPowOk(Uint8List header) {
+    if (header.length != shearHeaderLen) return false;
+    final version =
+        header[0] |
+        (header[1] << 8) |
+        (header[2] << 16) |
+        (header[3] << 24);
+    if (version < 1) return false;
+    final ts = headerTimestampMs(header);
+    if (ts == null || ts <= 0) return false;
+    var bits = 0;
+    for (var i = 0; i < 4; i++) {
+      bits |= header[108 + i] << (8 * i);
+    }
+    if (bits <= 0) return false;
+    return shearMeetsTarget(shearHash(header), bits);
+  }
 
   /// Record how far a notes response reached. Never moves backward.
   void noteCovered(int height) {
@@ -4638,6 +4707,9 @@ class ShearLedger implements ReadProofSink {
       }
       _headerTimestampMs = ts;
     }
+    if (_headerPowOk(header) && sealedHeight > _verifiedTip) {
+      _verifiedTip = sealedHeight;
+    }
     _advanceSealed(sealedHeight);
   }
 
@@ -4670,7 +4742,7 @@ class ShearLedger implements ReadProofSink {
     final prev = _sealedHeight;
     if (sealedHeight < 1) {
       // Unreachable/failed RPC must not paint 0 over a remembered tip.
-      settleTo(_sealedHeight);
+      settleTo(bookTip);
       return;
     }
     tipHeight = sealedHeight + 1;
@@ -5279,7 +5351,7 @@ class ShearLedger implements ReadProofSink {
     );
     if (existing != null) {
       if (height > _sealedHeight) _sealedHeight = height;
-      settleTo(_sealedHeight);
+      settleTo(bookTip);
       prune();
       _collapseDuplicateReceipts();
       return _txs.firstWhere((t) => t.id == roundId, orElse: () => existing);
@@ -5314,7 +5386,7 @@ class ShearLedger implements ReadProofSink {
       if (_txs[i].confirmed) continue;
       _txs[i] = _txs[i].copyWith(height: _txs[i].height ?? height);
     }
-    settleTo(_sealedHeight);
+    settleTo(bookTip);
     prune();
     _collapseDuplicateReceipts();
     final kept = _txs.cast<ShearTx?>().firstWhere(
@@ -5408,13 +5480,10 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Disconnect orphaned heights; rows bounce to pending.
+  /// Does not delete notes. A host height list is not a reason to drop coins.
   void bounceHeights(Iterable<int> heights) {
     final drop = heights.toSet();
     if (drop.isEmpty) return;
-    _notes.removeWhere((n) {
-      final h = (n['height'] as num?)?.toInt() ?? 0;
-      return h >= 1 && drop.contains(h);
-    });
     for (var i = 0; i < _txs.length; i++) {
       final h = _txs[i].height ?? 0;
       if (!drop.contains(h)) continue;
@@ -5444,6 +5513,7 @@ class ShearLedger implements ReadProofSink {
   /// Move immature credits into spendable once the committing block is accepted.
   /// Six confirmations is the fingerprint floor. A freeze banner does not hold them.
   void settleTo(int tip) {
+    if (tip > _verifiedTip) _verifiedTip = tip;
     if (tip > _sealedHeight) _sealedHeight = tip;
     final keep = <({String dest, double amount, int height})>[];
     for (final row in _immature) {
@@ -5726,21 +5796,11 @@ class ShearLedger implements ReadProofSink {
   double spendableOwned(String restFrame, {String? paymentCode}) {
     spendPub ??= decodePaymentCode(paymentCode ?? '')?['spendPub'];
     _dropProgramVaults();
-    final seen = <String>{};
-    var n = 0.0;
-    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
-      if (!isDestAddress(d)) continue;
-      final key = payKey(d);
-      if (!isDestAddress(key) || !seen.add(key)) continue;
-      if (_isProgramVaultDest(key)) continue;
-      n += _shownSpendable(key);
-    }
-    // confirmRound before a spend pub parks the coin on the shear1 rest-frame.
-    // payKey aliases an ssa once a spend pub exists; that book is already summed.
-    if (!isDestAddress(restFrame) && payKey(restFrame) == restFrame) {
-      n += _shownSpendable(restFrame);
-    }
-    return n;
+    refreshTimeLockedNotes();
+    final pool = poolSpendableNotes(
+      _spendPlanInput(restFrame, paymentCode, 0),
+    );
+    return _sheOfNanos(pool.freeSum);
   }
 
   /// Vortex Flow figure. One reconstruct input. Exact note nanos win when the
@@ -5878,26 +5938,7 @@ class ShearLedger implements ReadProofSink {
   }
 
   double _grossShown(String key) {
-    final cap = _verifiedConfirmedShe(key);
-    final pk = payKey(key);
-    if (cap != null) {
-      _unverifiedExternal.remove(pk);
-      _externalShe.remove(pk);
-      if ((spendable(pk) - cap).abs() > 1e-12) _spendable[pk] = cap;
-      return cap;
-    }
-    // Settled history is not a second coin. A larger pool figure does not raise this.
-    final rest = _bookMinusUnverified(pk, spendable(key));
-    final settled = _settledNodeShe[pk] ?? 0;
-    if (settled <= 1e-12 || rest + 1e-12 >= settled) return rest;
-    final book = spendable(key);
-    final external = _externalShe[pk];
-    if (external != null &&
-        book + 1e-12 >= settled &&
-        external + 1e-12 >= book) {
-      return settled;
-    }
-    return rest;
+    return _sheOfNanos(_spendableNanosOn(payKey(key)));
   }
 
   /// One reserve principal for the whole wallet. The vault dest is not where the
@@ -6000,11 +6041,18 @@ class ShearLedger implements ReadProofSink {
 
   double _shownSpendable(String key) {
     final pk = payKey(key);
-    if (_reserveHoldShe() <= 1e-12 && _lockDebitShe.isEmpty)
-      return _grossShown(pk);
-    final shares = _spendableAfterHold();
-    if (shares.containsKey(pk)) return shares[pk]!;
-    return _grossShown(pk);
+    final frame = _restFrame ?? '';
+    if (frame.isEmpty) return _sheOfNanos(_spendableNanosOn(pk));
+    refreshTimeLockedNotes();
+    final pool = poolSpendableNotes(_spendPlanInput(frame, null, 0));
+    var n = BigInt.zero;
+    for (final row in pool.free) {
+      final addr = row['addr']?.toString() ?? '';
+      if (addr == key || addr == pk || payKey(addr) == pk) {
+        n += row['nanos'] as BigInt;
+      }
+    }
+    return _sheOfNanos(n);
   }
 
   /// Notes minus a vault lock. The pending debit and the confirmed principal
@@ -6026,19 +6074,6 @@ class ShearLedger implements ReadProofSink {
     if (nanos != null && nanos > BigInt.zero) {
       _lockDebitNanos[pk] = (_lockDebitNanos[pk] ?? BigInt.zero) + nanos;
     }
-  }
-
-  /// Null cap: the pool figure is not spendable. A confirmRound credit that
-  /// settled locally is what remains after that figure is removed.
-  /// A recorded 0 is a zero pool figure, not a claim on coins landed later.
-  double _bookMinusUnverified(String pk, double book) {
-    if (_externalShe.containsKey(pk)) {
-      final local = book - (_externalShe[pk] ?? 0);
-      if (local <= 1e-12) return 0;
-      return local;
-    }
-    if (_unverifiedExternal.contains(pk)) return 0;
-    return book;
   }
 
   /// Null when this dest has not presented a complete value proof.
@@ -6077,29 +6112,18 @@ class ShearLedger implements ReadProofSink {
 
   String? _spendTagFor(Map<String, dynamic> n) {
     final stamped = n['spendTag']?.toString();
-    if (stamped != null && stamped.isNotEmpty) return stamped;
-    if (_spentTagHex.isEmpty) return null;
-    final seed = spendSeed;
-    if (seed == null || seed.length != 32) return null;
-    return _noteSpendTagHex(seed, n);
+    if (stamped == null || stamped.isEmpty) return null;
+    return stamped;
   }
 
   /// Nanos the Spendable figure is naming for [restFrame].
+  /// Same whole-note hold and the same note rows as a max send.
   BigInt displayedSpendableNanos(String restFrame, {String? paymentCode}) {
     refreshTimeLockedNotes();
-    final owned = _spendDests(restFrame, paymentCode: paymentCode);
-    var total = BigInt.zero;
-    for (final n in _notes) {
-      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
-      if (addr.isEmpty ||
-          (!owned.contains(addr) && !owned.contains(payKey(addr))))
-        continue;
-      if (!_noteIsSpendable(n)) continue;
-      final nanos = noteNanosExact(n);
-      if (nanos == null) continue;
-      total += nanos;
-    }
-    return total;
+    final pool = poolSpendableNotes(
+      _spendPlanInput(restFrame, paymentCode, 0),
+    );
+    return pool.freeSum;
   }
 
   /// Nanos [selectSpendNotesWire] would treat as free for a max send.
@@ -6123,6 +6147,11 @@ class ShearLedger implements ReadProofSink {
       if (addr.isEmpty) continue;
       if (isBindable(addr, restFrame: restFrame, paymentCode: paymentCode))
         dests.add(addr);
+    }
+    if (restFrame.isNotEmpty &&
+        !isDestAddress(restFrame) &&
+        payKey(restFrame) == restFrame) {
+      dests.add(restFrame);
     }
     return dests;
   }
@@ -6246,6 +6275,36 @@ class ShearLedger implements ReadProofSink {
 
   final List<String> _noteSnap = [];
   final List<String> _removedThisFollow = [];
+  int _followFlight = 0;
+  final Set<String> _uiCommitsAtFollow = <String>{};
+
+  String _commitHexOf(Map<dynamic, dynamic> n) {
+    final c = _noteBytes(n['commit']);
+    if (c == null || c.isEmpty) return '';
+    return _bytesHex(c);
+  }
+
+  void _armFollowFlight() {
+    if (_followFlight == 0) {
+      _uiCommitsAtFollow.clear();
+      for (final n in _notes) {
+        final hex = _commitHexOf(n);
+        if (hex.isNotEmpty) _uiCommitsAtFollow.add(hex);
+      }
+    }
+    _followFlight++;
+  }
+
+  void _disarmFollowFlight() {
+    if (_followFlight > 0) _followFlight--;
+    if (_followFlight == 0) _uiCommitsAtFollow.clear();
+  }
+
+  bool _bornDuringFollow(Map<dynamic, dynamic> n) {
+    if (_followFlight < 1) return false;
+    final hex = _commitHexOf(n);
+    return hex.isNotEmpty && !_uiCommitsAtFollow.contains(hex);
+  }
 
   void _beginNoteFollow() {
     _noteSnap
@@ -6285,13 +6344,15 @@ class ShearLedger implements ReadProofSink {
     var sawNotes = false;
     var hostHeight = 0;
     if (pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
-      // Height before the open, so the first verified note is already mature
-      // and can paint. This is one stats read, not a header walk.
+      // One stats read. A header whose ShearHash meets its bits sets the
+      // spendable tip. A host height with no checked header does not.
       try {
         final json = await pool!.stats().timeout(const Duration(seconds: 2));
         final h = (json['height'] as num?)?.toInt() ?? 0;
         hostHeight = h;
-        if (h > _sealedHeight) noteLiveHeight(h);
+        if (h > 0) {
+          applyTipHex(json['header']?.toString() ?? '', sealedHeight: h);
+        }
         _applyReorgList(json['orphans'] ?? json['reorgHeights']);
       } catch (_) {}
       try {
@@ -6321,16 +6382,10 @@ class ShearLedger implements ReadProofSink {
     return recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
   }
 
-  /// Chain spend tags and reorg heights land on the note set during follow.
-  /// A send is not the first time a spent note leaves Spendable.
+  /// Host `orphans` / `reorgHeights` are not headers this wallet checked.
+  /// They do not delete notes or move the scan cursor.
   void _applyReorgList(Object? raw) {
-    if (raw is! List) return;
-    final heights = <int>[
-      for (final h in raw)
-        if (h is num && h.toInt() >= 1) h.toInt(),
-    ];
-    if (heights.isEmpty) return;
-    bounceHeights(heights);
+    if (raw == null) return;
   }
 
   void _takeSpendTags(Map<String, dynamic> live) {
@@ -6348,14 +6403,14 @@ class ShearLedger implements ReadProofSink {
   }
 
   void _markNotesSpentByTag() {
-    if (_spentTagHex.isEmpty) return;
     final seed = spendSeed;
     if (seed == null || seed.length != 32) return;
     for (final n in _notes) {
-      final tag = _noteSpendTagHex(seed, n);
-      if (tag == null || !_spentTagHex.contains(tag)) continue;
-      n['spent'] = true;
+      final have = n['spendTag']?.toString() ?? '';
+      final tag = have.isNotEmpty ? have : _noteSpendTagHex(seed, n);
+      if (tag == null || tag.isEmpty) continue;
       n['spendTag'] = tag;
+      if (_spentTagHex.contains(tag.toLowerCase())) n['spent'] = true;
     }
   }
 
@@ -6548,8 +6603,8 @@ class ShearLedger implements ReadProofSink {
     var bestShe = -1.0;
     for (final n in _notes) {
       if (!_noteOnDest(n, dest)) continue;
-      final tag = _noteSpendTagHex(spendSeed, n);
-      if (tag != null && _spentTagHex.contains(tag)) n['spent'] = true;
+      final tag = (n['spendTag'] ?? '').toString().toLowerCase();
+      if (tag.isNotEmpty && _spentTagHex.contains(tag)) n['spent'] = true;
       if (!_noteIsSpendable(n, ignoreConfs: ignoreConfs)) continue;
       final noteShe = _storedNoteShe(n) ?? _noteSheOf(n, amountFallback);
       if (noteShe + 1e-18 < needShe) continue;
@@ -6747,7 +6802,7 @@ class ShearLedger implements ReadProofSink {
       if (beforeHeight > 0 && tipSealed == beforeHeight + 1) {
         confirmRound(address: address, pot: 0, height: beforeHeight + 1);
       }
-      if (beforeHeight > 0) settleTo(tipSealed);
+      if (beforeHeight > 0) settleTo(bookTip);
     }
     if (_isProgramVaultDest(address)) {
       _dropProgramVaults();
@@ -6851,6 +6906,7 @@ class ShearLedger implements ReadProofSink {
       'proofChecked': _proofCheckedDests.toList(),
       'unverifiedExternal': _unverifiedExternal.toList(),
       'sealed': _sealedHeight,
+      'verifiedTip': _verifiedTip,
       'settled': _settledHeight,
       'notesAt': _followEncode(_notesAt),
       'notesCovered': _notesCovered,
@@ -6987,6 +7043,8 @@ class ShearLedger implements ReadProofSink {
     if (incomingSealed != null && incomingSealed > _sealedHeight) {
       _sealedHeight = incomingSealed;
     }
+    final incomingTip = (spec['verifiedTip'] as num?)?.toInt() ?? 0;
+    if (incomingTip > _verifiedTip) _verifiedTip = incomingTip;
     _settledHeight = (spec['settled'] as num?)?.toInt() ?? _settledHeight;
     _notesAt
       ..clear()
@@ -7074,7 +7132,8 @@ class ShearLedger implements ReadProofSink {
     // send can draw. A pool balance in [spec] does not raise that sum.
     final kept = <Map<String, dynamic>>[
       for (final n in _notes)
-        if (n['verified'] == true) Map<String, dynamic>.from(n),
+        if (n['verified'] == true || _bornDuringFollow(n))
+          Map<String, dynamic>.from(n),
     ];
     final keptProofs = Set<String>.from(_proofCheckedDests);
     final rawNotes = spec['notes'];
@@ -7129,10 +7188,14 @@ class ShearLedger implements ReadProofSink {
     final listed = spec['listedCommits'];
     if (listed is List && listed.isNotEmpty) {
       final have = <String>{for (final e in listed) e.toString()};
+      final born = <String>{
+        for (final n in kept)
+          if (_bornDuringFollow(n)) _commitHexOf(n),
+      };
       _notes.removeWhere((n) {
-        final c = _noteBytes(n['commit']);
-        if (c == null) return false;
-        return !have.contains(_bytesHex(c));
+        final hex = _commitHexOf(n);
+        if (hex.isEmpty || born.contains(hex)) return false;
+        return !have.contains(hex);
       });
       _openedProofs.removeWhere((k, _) => !have.contains(k.split('|').first));
     }
@@ -7179,6 +7242,33 @@ class ShearLedger implements ReadProofSink {
   /// Balance poll or full credit sync. HTTP and note scan run in [Isolate.run].
   /// This isolate only copies the worker's collated book back.
   Future<double> followOffUi({
+    required String restFrame,
+    String? paymentCode,
+    required bool full,
+    bool chain = true,
+    bool spendableFirst = false,
+    String? sessionPath,
+    String? sessionPassword,
+    void Function()? onCoins,
+  }) async {
+    _armFollowFlight();
+    try {
+      return await _followOffUiBody(
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        full: full,
+        chain: chain,
+        spendableFirst: spendableFirst,
+        sessionPath: sessionPath,
+        sessionPassword: sessionPassword,
+        onCoins: onCoins,
+      );
+    } finally {
+      _disarmFollowFlight();
+    }
+  }
+
+  Future<double> _followOffUiBody({
     required String restFrame,
     String? paymentCode,
     required bool full,
@@ -7422,7 +7512,7 @@ class ShearLedger implements ReadProofSink {
     // Node bodies and the history just pulled. A tip that did not move still
     // credits every opened owner land. Pool balance is not in that material.
     creditKnownNodeLands();
-    settleTo(_sealedHeight);
+    settleTo(bookTip);
     // Opened coins with 9 confirmations are the book. The pre-notes snapshot
     // must not write a 0 or an inflated figure back over that sum. Without a
     // proof, the snapshot still caps a higher local pile. Vault dests stay out.
@@ -8290,16 +8380,32 @@ class ShearLedger implements ReadProofSink {
   final Set<String> _spentTagHex = {};
 
   String? _noteSpendTagHex(Uint8List spendSeed, Map<String, dynamic> note) {
-    try {
-      final spentNote = {
-        'kind': (note['kind'] as String?) ?? 'pot',
-        'commit': _noteBytes(note['commit'])!,
-        'noteCommit': _noteBytes(note['noteCommit'])!,
-      };
-      final x = admitScalarFromSeed(spendSeed, spentNote);
-      return _bytesHex(pointBytes(spendTagPoint(x, admitPub(x))));
-    } catch (_) {
-      return null;
+    return spendTagHexOf(spendSeed, note);
+  }
+
+  Future<void> _stampSpendTagsOffUi() async {
+    final seed = spendSeed;
+    if (seed == null || seed.length != 32) return;
+    final index = <int>[];
+    final payload = <Map<String, dynamic>>[];
+    for (var i = 0; i < _notes.length; i++) {
+      final n = _notes[i];
+      if ((n['spendTag']?.toString() ?? '').isNotEmpty) continue;
+      if (!noteHasSealedSpendBytes(n)) continue;
+      index.add(i);
+      payload.add({
+        'kind': (n['kind'] ?? 'pot').toString(),
+        'commit': _noteBytes(n['commit']),
+        'noteCommit': _noteBytes(n['noteCommit']),
+      });
+    }
+    if (index.isEmpty) return;
+    final tags = await Isolate.run(
+      () => <String?>[for (final n in payload) spendTagHexOf(seed, n)],
+    );
+    for (var j = 0; j < index.length; j++) {
+      final tag = tags[j];
+      if (tag != null && tag.isNotEmpty) _notes[index[j]]['spendTag'] = tag;
     }
   }
 
@@ -8465,21 +8571,14 @@ class ShearLedger implements ReadProofSink {
     bool memo = false,
     String? needNanos,
   }) {
-    final seed = spendSeed;
     final snap = <Map<String, dynamic>>[
       for (final n in _notes)
         {
           'spent': n['spent'] == true,
           'reorged': n['reorged'] == true,
           'locked': n['locked'] == true,
-          if (n.containsKey('verified')) 'verified': n['verified'] == true,
-          // A bare amount quote omits sealed. Forcing false would hide it from
-          // the planner while a direct select still counts it.
-          if (n.containsKey('sealed') ||
-              n.containsKey('commit') ||
-              n.containsKey('noteCommit') ||
-              n.containsKey('r'))
-            'sealed': spendBytesOk(n),
+          'verified': n['verified'] == true,
+          'sealed': noteHasSealedSpendBytes(n),
           'address': (n['address'] ?? n['dest'])?.toString() ?? '',
           'height': n['height'],
           'amount': n['amount'],
@@ -8487,13 +8586,14 @@ class ShearLedger implements ReadProofSink {
           'verifiedNanos': n['verifiedNanos'],
           'kind': (n['kind'] ?? '').toString(),
           'unlockAtMs': n['unlockAtMs'],
-          if (seed != null && seed.length == 32)
-            'spendTag': _noteSpendTagHex(seed, n),
+          if ((n['spendTag']?.toString() ?? '').isNotEmpty)
+            'spendTag': n['spendTag'].toString(),
         },
     ];
     return <String, dynamic>{
       'notes': snap,
       'needShe': amount,
+      'allowBare': false,
       if (needNanos != null && needNanos.isNotEmpty) 'needNanos': needNanos,
       'cap': kMaxInputsPerSend,
       'tip': bookTip,
@@ -8516,6 +8616,7 @@ class ShearLedger implements ReadProofSink {
     bool memo = false,
     String? needNanos,
   }) async {
+    await _stampSpendTagsOffUi();
     refreshTimeLockedNotes();
     // flutter_tester's later Isolate.run nulls this closure hook on the
     // caller. The closure captured here survives that, and selection still
@@ -9403,6 +9504,7 @@ class ShearLedger implements ReadProofSink {
       } else {
         // Pull the pool note list when the local book has no covering note.
         await _fluxColumns();
+        await _stampSpendTagsOffUi();
         Map<String, dynamic>? pick(
           String fromDest, {
           bool ignoreConfs = false,

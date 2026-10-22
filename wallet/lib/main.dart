@@ -2173,6 +2173,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
       if (sync.flyclientOk && !disagree && sync.flyclientTip > 0) {
         final beforeTip = ledger.sealedHeight;
         if (sync.flyclientTip > ledger.sealedHeight) {
+          ledger.noteVerifiedHeight(sync.flyclientTip);
           ledger.noteLiveHeight(sync.flyclientTip);
         }
         if (ledger.sealedHeight > beforeTip) {

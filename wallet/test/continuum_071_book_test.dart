@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_hash.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_note.dart';
@@ -26,23 +27,23 @@ void main() {
     expect(body.contains('_kickNotesForTip'), isTrue);
   });
 
-  test('confirmations follow the verified tip, not the notes scan cursor', () {
+  test('confirmations follow a checked header, not a host live height', () {
     final ledger = ShearLedger();
     ledger.noteLiveHeight(9);
     ledger.noteCovered(9);
-    expect(ledger.bookTip, 9);
-    expect(ledger.notesCovered, 9);
-    expect(ledger.confirmationsOf(1), 9);
-    expect(ledger.confirmationsOf(2), 8);
+    expect(ledger.sealedHeight, 9);
+    expect(ledger.bookTip, 0);
+    expect(ledger.confirmationsOf(1), 0);
     ledger.noteLiveHeight(11);
     expect(ledger.sealedHeight, 11);
     expect(ledger.notesCovered, 9);
+    expect(ledger.bookTip, 0);
+    ledger.applyTipHeader(_checkedHeader(), sealedHeight: 11);
     expect(ledger.bookTip, 11);
     expect(ledger.confirmationsOf(1), 11);
     expect(ledger.confirmationsOf(3), 9);
     ledger.noteCovered(11);
     expect(ledger.bookTip, 11);
-    expect(ledger.confirmationsOf(3), 9);
     expect(ledger.confirmationsOf(4), 8);
   });
 
@@ -500,6 +501,7 @@ void main() {
     final saved = ledger.exportNotesForSession();
     final fresh = ShearLedger()..bindIdentity(id);
     fresh.restoreSealedTip(9);
+    fresh.settleTo(9);
     fresh.restoreSessionNotes(saved, covered: 9, paymentCode: id.paymentCode);
     expect(fresh.restoredBook, isTrue);
     expect(
@@ -619,6 +621,22 @@ Map<String, dynamic> _feeNote(String dest, {required int height}) {
     'valueProof': {'R': value['R'], 'z': value['z'], 'v': fee},
     'height': height,
   };
+}
+
+Uint8List _checkedHeader() {
+  final h = Uint8List(shearHeaderLen);
+  h[0] = 1;
+  var ts = 1700000000000;
+  for (var i = 0; i < 8; i++) {
+    h[100 + i] = ts & 0xff;
+    ts >>= 8;
+  }
+  h[108] = 1;
+  for (var nonce = 0; nonce < 100000; nonce++) {
+    shearSetNonce(h, nonce);
+    if (shearMeetsTarget(shearHash(h), 1)) return h;
+  }
+  throw StateError('pow');
 }
 
 String _commitHex(Uint8List b) =>

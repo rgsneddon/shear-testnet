@@ -44,7 +44,7 @@ void main() {
           'staked': principal,
           'idle': 0,
         });
-        final leftNanos = noteNanos - principal;
+        final leftNanos = principal > 0 ? 0 : noteNanos;
         final leftShe = leftNanos / kUnitsPerShe;
         expect(
           ledger.usableSpendable(home),
@@ -111,14 +111,11 @@ void main() {
       'staked': kUnitsPerShe,
       'idle': 0,
     });
-    expect(
-      ledger.usableSpendable(home),
-      closeTo((mature - kUnitsPerShe) / kUnitsPerShe, 1e-12),
-    );
+    expect(ledger.usableSpendable(home), closeTo(0, 1e-12));
     ledger.vaultLockedNanos = 0;
     expect(
       ledger.usableSpendable(home),
-      closeTo((mature - kUnitsPerShe) / kUnitsPerShe, 1e-12),
+      closeTo(0, 1e-12),
       reason: 'a thin stats zero does not restore spendable',
     );
   });
@@ -229,22 +226,18 @@ void main() {
     expect(reserve.portal(vault).nanos, principal);
     fresh.bindIdentity(id2);
     fresh.restoreSealedTip(9);
+    fresh.settleTo(9);
     fresh.restoreSessionNotes(saved, covered: 9, paymentCode: id2.paymentCode);
     final home = fresh.homeDest(id2.address, paymentCode: id2.paymentCode);
-    expect(
-      fresh.usableSpendable(home),
-      closeTo((noteNanos - principal) / kUnitsPerShe, 1e-9),
-    );
+    // One note covers the principal, so the whole note is reserved.
+    expect(fresh.usableSpendable(home), closeTo(0, 1e-9));
     await fresh.followOffUi(
       restFrame: id2.address,
       paymentCode: id2.paymentCode,
       full: false,
       chain: false,
     );
-    expect(
-      fresh.usableSpendable(home),
-      closeTo((noteNanos - principal) / kUnitsPerShe, 1e-9),
-    );
+    expect(fresh.usableSpendable(home), closeTo(0, 1e-9));
   });
 }
 
@@ -259,6 +252,8 @@ ShearLedger _openedBook(ShearIdentity id, int noteNanos) {
     'dest': home,
     'kind': 'pool-fee',
     'commit': commit,
+    'noteCommit': Uint8List.fromList(List<int>.filled(32, 7)),
+    'r': Uint8List.fromList(List<int>.filled(32, 8)),
     'amount': noteNanos / kUnitsPerShe,
     'height': 1,
     'verified': true,
@@ -272,6 +267,7 @@ ShearLedger _openedBook(ShearIdentity id, int noteNanos) {
   final saved = ledger.exportNotesForSession();
   final fresh = ShearLedger()..bindIdentity(id);
   fresh.restoreSealedTip(9);
+  fresh.settleTo(9);
   fresh.restoreSessionNotes(saved, covered: 9, paymentCode: id.paymentCode);
   return fresh;
 }

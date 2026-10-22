@@ -42,6 +42,8 @@ void main() {
       'dest': home,
       'kind': 'pool-fee',
       'commit': commit,
+      'noteCommit': Uint8List.fromList(List<int>.filled(32, 5)),
+      'r': Uint8List.fromList(List<int>.filled(32, 6)),
       'amount': 1.48,
       'height': 1,
       'verified': true,
@@ -55,6 +57,7 @@ void main() {
     final saved = ledger.exportNotesForSession();
     final fresh = ShearLedger()..bindIdentity(id);
     fresh.restoreSealedTip(9);
+    fresh.settleTo(9);
     fresh.restoreSessionNotes(saved, covered: 9, paymentCode: id.paymentCode);
     expect(
       fresh.spendableOwned(id.address, paymentCode: id.paymentCode),
@@ -63,13 +66,13 @@ void main() {
     fresh.setReserveHeldNanos(vault!, kUnitsPerShe);
     expect(
       fresh.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(0.48, 1e-9),
+      closeTo(0, 1e-9),
     );
     fresh.setReserveHeldNanos(vault, kUnitsPerShe);
     expect(
       fresh.spendableOwned(id.address, paymentCode: id.paymentCode),
-      closeTo(0.48, 1e-9),
+      closeTo(0, 1e-9),
     );
-    expect(fresh.usableSpendable(home), closeTo(0.48, 1e-9));
+    expect(fresh.usableSpendable(home), closeTo(0, 1e-9));
   });
 }

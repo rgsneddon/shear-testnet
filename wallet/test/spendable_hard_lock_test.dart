@@ -9,8 +9,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_closure.dart';
+import 'package:shear_wallet/shear_eip712.dart';
+import 'package:shear_wallet/shear_hash.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_native_prove.dart';
+import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_public_confirm.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:shear_wallet/shear_session.dart';
@@ -26,6 +30,7 @@ void main() {
       final ledger = ShearLedger()..bindIdentity(id);
       final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
       ledger.noteLiveHeight(40);
+      ledger.settleTo(40);
       ledger.rememberNote(_coin(dest, nanos: _savedNanos, height: 1));
       ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
       expect(
@@ -44,12 +49,20 @@ void main() {
     },
   );
 
-  test('confirmations use the verified tip when the scan cursor is behind', () {
+  test('a host live height is not spendable depth; a checked header is', () {
     final ledger = ShearLedger();
     ledger.noteLiveHeight(40);
     ledger.noteCovered(4);
-    expect(ledger.bookTip, 40);
+    expect(ledger.sealedHeight, 40);
+    expect(ledger.bookTip, 0);
     expect(ledger.notesCovered, 4);
+    expect(ledger.confirmationsOf(1), 0);
+    ledger.applyTipHeader(_powHeader(), sealedHeight: 40);
+    expect(ledger.bookTip, 40);
+    expect(ledger.confirmationsOf(1), 40);
+    ledger.noteLiveHeight(55);
+    expect(ledger.sealedHeight, 55);
+    expect(ledger.bookTip, 40);
     expect(ledger.confirmationsOf(1), 40);
   });
 
@@ -60,6 +73,7 @@ void main() {
       final ledger = ShearLedger()..bindIdentity(id);
       final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
       ledger.noteLiveHeight(100);
+      ledger.settleTo(100);
       ledger.noteCovered(3);
       final eligible = _coin(
         dest,
@@ -96,6 +110,7 @@ void main() {
     final tag = _spendTagHex(book.ledger.spendSeed!, note);
     expect(tag, isNotEmpty);
     book.ledger.noteLiveHeight(40);
+    book.ledger.settleTo(40);
     book.ledger.rememberNote(note);
     book.ledger.recheckRestFrameSpendable(
       book.id.address,
@@ -141,12 +156,15 @@ void main() {
     );
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('a reorg drops an opened note from Spendable', () async {
+  test('a host reorg list does not wipe an opened note', () async {
     final book = await _liveBook();
     addTearDown(() async => book.close());
     final kept = _coin(book.dest, nanos: 100000000000, height: 3, salt: 3);
     final orphan = _coin(book.dest, nanos: _savedNanos, height: 7, salt: 7);
     book.ledger.noteLiveHeight(40);
+    book.ledger.settleTo(40);
+    book.ledger.noteCovered(4);
+    final cursor = book.ledger.notesCovered;
     book.ledger.rememberNote(kept);
     book.ledger.rememberNote(orphan);
     book.ledger.recheckRestFrameSpendable(
@@ -171,23 +189,282 @@ void main() {
       sessionPath: book.session.store.path,
       sessionPassword: book.session.password,
     );
-    expect(book.ledger.notes.any((n) => n['height'] == 7), isFalse);
+    expect(book.ledger.notes.any((n) => n['height'] == 7), isTrue);
     expect(book.ledger.notes.any((n) => n['height'] == 3), isTrue);
+    expect(book.ledger.notesCovered, greaterThanOrEqualTo(cursor));
     expect(
       book.ledger.displayedSpendableNanos(
         book.id.address,
         paymentCode: book.id.paymentCode,
       ),
-      BigInt.from(100000000000),
+      BigInt.from(100000000000 + _savedNanos),
     );
     expect(
       book.ledger.plannerSelectableNanos(
         book.id.address,
         paymentCode: book.id.paymentCode,
       ),
-      BigInt.from(100000000000),
+      BigInt.from(100000000000 + _savedNanos),
     );
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('painted Spendable equals the max send', () {
+    BigInt painted(ShearLedger ledger, ShearIdentity id) {
+      final she = ledger.spendableOwned(
+        id.address,
+        paymentCode: id.paymentCode,
+      );
+      return BigInt.from((she * kUnitsPerShe).round());
+    }
+
+    void check(ShearLedger ledger, ShearIdentity id, BigInt want, String why) {
+      final planned = ledger.plannerSelectableNanos(
+        id.address,
+        paymentCode: id.paymentCode,
+      );
+      expect(painted(ledger, id), planned, reason: why);
+      expect(planned, want, reason: why);
+      expect(
+        paintedContinuumSpendable(
+          ledger,
+          id.address,
+          paymentCode: id.paymentCode,
+        ),
+        closeTo(want.toDouble() / kUnitsPerShe, 1e-9),
+        reason: why,
+      );
+    }
+
+    final plain = createIdentity();
+    final plainBook = ShearLedger()..bindIdentity(plain);
+    final plainDest = plainBook.homeDest(
+      plain.address,
+      paymentCode: plain.paymentCode,
+    );
+    plainBook.settleTo(40);
+    plainBook.confirmRound(address: plainDest, pot: 8, height: 1);
+    expect(plainBook.spendable(plainDest), greaterThan(0));
+    check(plainBook, plain, BigInt.zero, 'map fallback');
+
+    final mixed = createIdentity();
+    final mixedBook = ShearLedger()..bindIdentity(mixed);
+    final mixedDest = mixedBook.homeDest(
+      mixed.address,
+      paymentCode: mixed.paymentCode,
+    );
+    mixedBook.settleTo(40);
+    mixedBook.rememberNote(_coin(mixedDest, nanos: kUnitsPerShe, height: 1));
+    mixedBook.rememberNote(
+      _coin(mixedDest, nanos: 9 * kUnitsPerShe, height: 1, salt: 2)
+        ..remove('noteCommit'),
+    );
+    mixedBook.rememberNote({
+      'address': mixedDest,
+      'dest': mixedDest,
+      'amount': 4.0,
+      'nanos': 4 * kUnitsPerShe,
+      'height': 1,
+    });
+    mixedBook.rememberNote(
+      _coin(mixedDest, nanos: 2 * kUnitsPerShe, height: 1, salt: 3)
+        ..['verified'] = false,
+    );
+    mixedBook.rememberNote(
+      _coin(mixedDest, nanos: 2 * kUnitsPerShe, height: 1, salt: 4)
+        ..remove('verified'),
+    );
+    check(mixedBook, mixed, BigInt.from(kUnitsPerShe), 'unsealed bare unverified');
+
+    final held = createIdentity();
+    final heldBook = ShearLedger()..bindIdentity(held);
+    final heldDest = heldBook.homeDest(
+      held.address,
+      paymentCode: held.paymentCode,
+    );
+    heldBook.settleTo(40);
+    heldBook.rememberNote(
+      _coin(heldDest, nanos: 5 * kUnitsPerShe, height: 1, salt: 5),
+    );
+    heldBook.rememberNote(
+      _coin(heldDest, nanos: 5 * kUnitsPerShe, height: 1, salt: 6),
+    );
+    heldBook.setReserveHeldNanos(heldDest, 3 * kUnitsPerShe);
+    check(heldBook, held, BigInt.from(5 * kUnitsPerShe), 'partial hold');
+  });
+
+  test('a send and a consolidation during follow leave the book consistent', () async {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    final probe = ShearLedger()..bindIdentity(id);
+    final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
+    final d20 = hash20FromAddress(dest)!;
+    final notes = <Map<String, dynamic>>[];
+    final pubs = <Uint8List>[];
+    final commits = <Uint8List>[];
+    for (var i = 0; i < 2; i++) {
+      var note = nativeSealNote(kUnitsPerShe, dest20: d20, kind: 'pot');
+      note = attachAdmitPub(note, admitBase: pointFrom(admitBaseBytes(seed)));
+      note = compactSealedVout(note);
+      note['height'] = 2;
+      notes.add(note);
+      final x = admitScalarFromSeed(seed, note);
+      pubs.add(pointBytes(admitPub(x)));
+      commits.add(note['commit'] as Uint8List);
+    }
+    final commitHex = commits
+        .map((c) => c.map((b) => b.toRadixString(16).padLeft(2, '0')).join())
+        .toList();
+    final pubHex = pubs
+        .map((c) => c.map((b) => b.toRadixString(16).padLeft(2, '0')).join())
+        .toList();
+    final gate = Completer<void>();
+    var heldNotes = false;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      if (!gate.isCompleted) gate.complete();
+      await server.close(force: true);
+    });
+    server.listen((req) async {
+      try {
+        final path = req.uri.path;
+        if (path.contains('notes') && !heldNotes) {
+          heldNotes = true;
+          await gate.future;
+        }
+        req.response.headers.contentType = ContentType.json;
+        if (path.contains('fluxset')) {
+          req.response.write(
+            jsonEncode({
+              'ok': true,
+              'pubs': pubHex,
+              'commits': commitHex,
+              'anchors': [
+                {'height': 8, 'n': pubs.length},
+              ],
+              'spendTags': const <String>[],
+            }),
+          );
+        } else if (path.contains('notes')) {
+          req.response.write(
+            jsonEncode({
+              'ok': true,
+              'notes': [
+                for (final c in commitHex) {'commit': c, 'height': 2},
+              ],
+            }),
+          );
+        } else if (req.method == 'POST') {
+          req.response.write(
+            jsonEncode({
+              'ok': true,
+              'tx': {'id': 'mid-follow', 'from': dest, 'to': dest, 'amount': 0},
+            }),
+          );
+        } else {
+          req.response.write(
+            jsonEncode({'ok': true, 'height': 40, 'balance': 0}),
+          );
+        }
+        await req.response.close();
+      } catch (_) {}
+    });
+    final pool = _MidPool(
+      pubHex,
+      commitHex,
+      'http://127.0.0.1:${server.port}',
+    );
+    addTearDown(pool.close);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.ingestSealedVouts(
+      notes,
+      spendSeed: seed,
+      dest: dest,
+      prev: Uint8List(32),
+      startIndex: 0,
+    );
+    ledger.settleTo(40);
+    ledger.setReserveHeldNanos(dest, 0);
+    final holdBefore = ledger.plannerSelectableNanos(
+      id.address,
+      paymentCode: id.paymentCode,
+    );
+    expect(holdBefore, greaterThan(BigInt.zero));
+    final before = <String>{
+      for (final n in ledger.notes)
+        if (n['commit'] != null)
+          (n['commit'] as Uint8List)
+              .map((b) => b.toRadixString(16).padLeft(2, '0'))
+              .join(),
+    };
+    final cursor = ledger.notesCovered;
+    final follow = ledger.followOffUi(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      full: false,
+      chain: true,
+      spendableFirst: true,
+    );
+    final deadline = DateTime.now().add(const Duration(seconds: 20));
+    while (!heldNotes && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(heldNotes, isTrue);
+    final bobId = createIdentity();
+    final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(
+      bobId.address,
+      paymentCode: bobId.paymentCode,
+    );
+    await ledger.send(
+      from: dest,
+      to: bob,
+      amount: 0.2,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: seed,
+      allowPublicHttp: true,
+    );
+    final rounds = await ledger.consolidateSpendableNotes(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      spendSeed: seed,
+      allowPublicHttp: true,
+      publicNode: false,
+    );
+    expect(rounds, greaterThanOrEqualTo(0));
+    final during = <String>{
+      for (final n in ledger.notes)
+        if (n['commit'] is Uint8List)
+          (n['commit'] as Uint8List)
+              .map((b) => b.toRadixString(16).padLeft(2, '0'))
+              .join(),
+    };
+    expect(during.length, greaterThan(before.length));
+    expect(ledger.notes.any((n) => n['spent'] == true), isTrue);
+    if (!gate.isCompleted) gate.complete();
+    await follow.timeout(const Duration(seconds: 40));
+    final after = <String>[
+      for (final n in ledger.notes)
+        if (n['commit'] is Uint8List)
+          (n['commit'] as Uint8List)
+              .map((b) => b.toRadixString(16).padLeft(2, '0'))
+              .join(),
+    ];
+    expect(after.toSet().length, after.length);
+    for (final born in during.difference(before)) {
+      expect(after.contains(born), isTrue, reason: born);
+    }
+    expect(ledger.notes.any((n) => n['spent'] == true), isTrue);
+    expect(ledger.notesCovered, greaterThanOrEqualTo(cursor));
+    final owned = BigInt.from(
+      (ledger.spendableOwned(id.address, paymentCode: id.paymentCode) *
+              kUnitsPerShe)
+          .round(),
+    );
+    expect(
+      owned,
+      ledger.plannerSelectableNanos(id.address, paymentCode: id.paymentCode),
+    );
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   for (final mode in const ['connect-bare', 'own-node', 'p2p', 'solo']) {
     testWidgets('restored $mode book shows Syncing before the first read', (
@@ -204,6 +481,7 @@ void main() {
     final book = (await tester.runAsync(_liveBook))!;
     addTearDown(() async => book.close());
     book.ledger.noteLiveHeight(40);
+    book.ledger.settleTo(40);
     book.ledger.rememberNote(
       _coin(book.dest, nanos: _savedNanos, height: 1, salt: 4),
     );
@@ -274,6 +552,89 @@ void main() {
   testWidgets('an unresolved own node says not syncing', (tester) async {
     await _blocked(tester, own: true);
   }, timeout: const Timeout(Duration(minutes: 2)));
+}
+
+class _MidPool extends ShearPoolClient {
+  _MidPool(this.pubHex, this.commitHex, String baseUrl)
+    : super(
+        baseUrl: baseUrl,
+        http: HttpClient()..idleTimeout = const Duration(milliseconds: 50),
+      );
+  final List<String> pubHex;
+  final List<String> commitHex;
+
+  @override
+  Future<Map<String, dynamic>> fluxset() async => {
+    'ok': true,
+    'pubs': pubHex,
+    'commits': commitHex,
+    'anchors': [
+      {'height': 8, 'n': pubHex.length},
+    ],
+    'spendTags': const <String>[],
+  };
+
+  @override
+  Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
+
+  @override
+  Future<Map<String, dynamic>> send({
+    required String from,
+    required String to,
+    required double amount,
+    Map<String, dynamic>? memoCt,
+    String? open,
+    String? sig,
+    String? portalOpen,
+    String? kind,
+    String? programId,
+    String? choice,
+    int? currentEpoch,
+    int? epochStartMs,
+    String? change,
+    String? spendPub,
+    String? ephPub,
+    List<dynamic>? vin,
+    List<dynamic>? vout,
+    dynamic excess,
+    Map<String, dynamic>? admitProof,
+    List<Map<String, dynamic>>? admitProofs,
+    String? spendTag,
+    int? fee,
+    int paintedOwedNanos = 0,
+    bool legacyPoolSend = false,
+    bool publicConsent = false,
+    String? nanosWire,
+    String? id,
+    String? withdrawNonce,
+    String? fs1,
+    int? anchor,
+  }) async => {
+    'ok': true,
+    'tx': {
+      'id': 'mid-follow',
+      'from': from,
+      'to': to,
+      'amount': amount,
+      'kind': kind ?? 'send',
+    },
+  };
+}
+
+Uint8List _powHeader() {
+  final h = Uint8List(shearHeaderLen);
+  h[0] = 1;
+  var ts = 1700000000000;
+  for (var i = 0; i < 8; i++) {
+    h[100 + i] = ts & 0xff;
+    ts >>= 8;
+  }
+  h[108] = 1;
+  for (var nonce = 0; nonce < 100000; nonce++) {
+    shearSetNonce(h, nonce);
+    if (shearMeetsTarget(shearHash(h), 1)) return h;
+  }
+  throw StateError('pow');
 }
 
 Map<String, dynamic> _coin(
@@ -433,6 +794,7 @@ Future<void> _restoredHidesUntilRead(WidgetTester tester, String mode) async {
   addTearDown(() async => book.close());
   book.hold.hold = true;
   book.ledger.noteLiveHeight(40);
+  book.ledger.settleTo(40);
   book.ledger.rememberNote(
     _coin(book.dest, nanos: _savedNanos, height: 1, salt: 9),
   );
@@ -499,6 +861,7 @@ Future<void> _blocked(WidgetTester tester, {required bool own}) async {
   final book = (await tester.runAsync(_liveBook))!;
   addTearDown(() async => book.close());
   book.ledger.noteLiveHeight(40);
+  book.ledger.settleTo(40);
   book.ledger.rememberNote(
     _coin(book.dest, nanos: _savedNanos, height: 1, salt: 11),
   );
