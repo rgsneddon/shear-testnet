@@ -46,6 +46,12 @@ const kSpendableSyncing = 'Syncing…';
 /// Connect bare without consent, or an own node that did not resolve.
 const kSpendableNotSyncing = 'not syncing: choose a node';
 
+/// Recipient amount on the flow screen, before the user sends.
+Widget flowRecipientAmountLine(String? she) {
+  if (she == null || she.isEmpty) return const SizedBox.shrink();
+  return Text('Recipient $she SHE', key: const Key('flow-recipient-amount'));
+}
+
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
 
@@ -312,6 +318,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
   bool get debugFlowSending => _flowSending;
   SendProgress? get debugFlowProgress => _flowProgress;
   String? _flowFeeQuote;
+  String? _flowRecipientShe;
   String? _flowProgressText;
   SendProgress? _flowProgress;
   int _flowQuoteGen = 0;
@@ -2581,17 +2588,33 @@ class ShearWalletAppState extends State<ShearWalletApp>
     final amt = double.tryParse(flowAmt.text) ?? 0;
     final memo = flowMemo.text.trim().isNotEmpty;
     if (ident == null || amt <= 0) {
-      if (mounted && gen == _flowQuoteGen) setState(() => _flowFeeQuote = null);
+      if (mounted && gen == _flowQuoteGen) {
+        setState(() {
+          _flowFeeQuote = null;
+          _flowRecipientShe = null;
+        });
+      }
       return;
     }
+    final wire = parseSheDecimalToNanos(flowAmt.text.trim());
     final units = await ledger.quoteSendLevyUnits(
       restFrame: ident.address,
       paymentCode: ident.paymentCode,
       amount: amt,
       memo: memo,
     );
+    final shown = await ledger.quoteConfirmRecipientShe(
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
+      amount: amt,
+      nanosWire: wire,
+      memo: memo,
+    );
     if (!mounted || gen != _flowQuoteGen) return;
-    setState(() => _flowFeeQuote = formatShe(units / kUnitsPerShe));
+    setState(() {
+      _flowFeeQuote = formatShe(units / kUnitsPerShe);
+      _flowRecipientShe = shown;
+    });
   }
 
   void _noteFlowTo(String raw) {
@@ -3456,6 +3479,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
         _flowFeeQuote == null ? 'Fee …' : 'Fee $_flowFeeQuote SHE',
         key: const Key('flow-send-fee'),
       ),
+      flowRecipientAmountLine(_flowRecipientShe),
       if (_flowProgressText != null)
         Text(_flowProgressText!, key: const Key('flow-send-progress')),
       FilledButton(

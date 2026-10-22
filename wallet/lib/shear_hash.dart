@@ -1,9 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+
+import 'shear_hash_v3.dart' as v3;
 
 /// Port of miner/src/shear_hash.c (ShearHash-v1, 8 rounds).
 const shearPersonal = 'ShearHash-v1';
@@ -91,56 +92,14 @@ bool shearMeetsTarget(List<int> hash, int bits) {
 
 final Map<String, Uint8List> _v3ByHeader = {};
 
-/// Consensus ShearHash-v3 (crypto/shear_hash.js). Not [shearHash], which is v1.
-/// Null when the v3 backend is missing: depth stays unknown.
+/// Consensus ShearHash-v3. Pure Dart port of crypto/shear_hash.js. Not [shearHash].
+/// Null when the header is not 128 bytes.
 Uint8List? shearHashV3(Uint8List header) {
   if (header.length != shearHeaderLen) return null;
   final hex = [for (final b in header) b.toRadixString(16).padLeft(2, '0')].join();
   final hit = _v3ByHeader[hex];
   if (hit != null) return hit;
-  final got = _runShearHashV3(hex);
-  if (got != null) _v3ByHeader[hex] = got;
+  final got = Uint8List.fromList(v3.shearHashV3(header));
+  _v3ByHeader[hex] = got;
   return got;
-}
-
-String? _consensusShearHashJs() {
-  final env = Platform.environment['SHEAR_HASH_JS'];
-  if (env != null && env.isNotEmpty && File(env).existsSync()) {
-    return File(env).absolute.path;
-  }
-  for (final name in const [
-    'crypto/shear_hash.js',
-    '../crypto/shear_hash.js',
-    '../../crypto/shear_hash.js',
-  ]) {
-    final file = File(name);
-    if (file.existsSync()) return file.absolute.path;
-  }
-  return null;
-}
-
-Uint8List? _runShearHashV3(String headerHex) {
-  final js = _consensusShearHashJs();
-  if (js == null) return null;
-  final script = 'import { shearHash } from ${jsonEncode(Uri.file(js).toString())};\n'
-      'const d = shearHash(Buffer.from(process.argv[1], "hex"));\n'
-      'process.stdout.write(Buffer.from(d).toString("hex"));\n';
-  try {
-    final result = Process.runSync(
-      'node',
-      ['--input-type=module', '-e', script, headerHex],
-    );
-    if (result.exitCode != 0) return null;
-    final out = result.stdout.toString().trim().toLowerCase();
-    final match = RegExp(r'[0-9a-f]{64}').allMatches(out);
-    if (match.isEmpty) return null;
-    final hex = match.last.group(0)!;
-    final bytes = Uint8List(32);
-    for (var i = 0; i < 32; i++) {
-      bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
-    }
-    return bytes;
-  } catch (_) {
-    return null;
-  }
 }

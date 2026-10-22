@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'shear_ctf.dart';
@@ -342,6 +343,12 @@ String debugSendSelectStamp = '';
 
 /// Change output of the last send, in nanos. The held part of a note.
 BigInt? debugLastChangeNanos;
+
+/// Recipient nanos of the last send, after a hold kept the fee off the stake.
+BigInt? debugLastPayNanos;
+
+/// Fee nanos reserved by the last send.
+BigInt? debugLastFeeNanos;
 
 /// Nanos strings the last selection put in a batch. Digit strings, not doubles.
 List<String> debugSendSelectNanos = <String>[];
@@ -886,9 +893,24 @@ const int kGenesisBits = 17;
 const int kGenesisBitsPacked = kGenesisBits * kAsertBitsScale;
 
 class AsertQuote {
-  const AsertQuote({required this.ok, required this.packed});
+  const AsertQuote({
+    required this.ok,
+    required this.packed,
+    this.eased = 0,
+    this.easeBits = 0,
+  });
   final bool ok;
   final int packed;
+  final int eased;
+  final double easeBits;
+}
+
+/// Same window as crypto/asert.js bitsAcceptAsert. Exact packed bits, or any
+/// packed word in [eased, packed] when own-timestamp emergency ease applies.
+bool bitsAcceptAsert(int got, AsertQuote quote) {
+  if (!quote.ok) return false;
+  if (quote.easeBits > 0) return got <= quote.packed && got >= quote.eased;
+  return got == quote.packed;
 }
 
 BigInt _divRoundNearest(BigInt numer, BigInt denom) {
@@ -898,13 +920,15 @@ BigInt _divRoundNearest(BigInt numer, BigInt denom) {
   return neg ? -q : q;
 }
 
-/// Exact packed quote. No parent timestamp, so no emergency ease window.
+/// Exact packed quote. [parentTimeMs] opens the same emergency ease window
+/// as crypto/asert.js asertNextBits.
 AsertQuote asertQuoteForHeight({
   required int anchorTimeMs,
   required int blockTimeMs,
   required int blockHeight,
   int anchorHeight = 1,
   int anchorBits = kGenesisBitsPacked,
+  int? parentTimeMs,
 }) {
   if (anchorTimeMs <= 0 || blockTimeMs <= 0 || blockHeight <= anchorHeight) {
     return const AsertQuote(ok: false, packed: 0);
@@ -921,7 +945,25 @@ AsertQuote asertQuoteForHeight({
   var next = BigInt.from(anchorBits) + deltaQ;
   if (next < minQ) next = minQ;
   if (next > maxQ) next = maxQ;
-  return AsertQuote(ok: true, packed: next.toInt());
+  var eased = next;
+  var easeBits = 0.0;
+  if (parentTimeMs != null) {
+    final gap = blockTimeMs - parentTimeMs;
+    final trigger = 8 * kAsertTargetMs;
+    if (gap > trigger) {
+      final raw = math.log(gap / trigger) / math.ln2;
+      easeBits = raw < 0 ? 0 : (raw > 2 ? 2 : raw);
+      var easedQ = next - BigInt.from((easeBits * kAsertBitsScale).round());
+      if (easedQ < minQ) easedQ = minQ;
+      eased = easedQ;
+    }
+  }
+  return AsertQuote(
+    ok: true,
+    packed: next.toInt(),
+    eased: eased.toInt(),
+    easeBits: easeBits,
+  );
 }
 
 /// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
@@ -945,7 +987,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   final free = pool.free;
   final freeSum = pool.freeSum;
   final batches = <Map<String, dynamic>>[];
-    var remaining = need;
+  var remaining = need;
   var cursor = 0;
   var feeSum = BigInt.zero;
   while (remaining > BigInt.zero && cursor < free.length) {
@@ -979,11 +1021,25 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
       (s, r) => s + _heldOfRow(r),
     );
     final BigInt pay;
-    if (heldBack > BigInt.zero &&
-        sum >= remaining &&
-        sum < remaining + fee &&
-        fee < sum) {
-      pay = remaining;
+    if (heldBack > BigInt.zero) {
+      final split = holdProtectedPay(
+        noteNanos: sum + heldBack,
+        payNanos: remaining,
+        feeNanos: fee,
+        heldNanos: heldBack,
+      );
+      if (split.pay <= BigInt.zero) {
+        return {
+          'stamp': stamp,
+          'covered': false,
+          'empty': false,
+          'shortFee': true,
+          'batches': batches,
+          'feeShe': _sheOfNanos(feeSum + fee),
+          'spendableNanos': freeSum.toString(),
+        };
+      }
+      pay = split.pay;
     } else {
       final room = sum - fee;
       if (room <= BigInt.zero) {
@@ -1014,7 +1070,13 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
       ],
     });
     feeSum += fee;
-    remaining -= pay;
+    // The fee came out of the requested pay so the stake stays whole.
+    // That reduced payment is the whole send.
+    if (heldBack > BigInt.zero && pay < remaining) {
+      remaining = BigInt.zero;
+    } else {
+      remaining -= pay;
+    }
   }
   final covered = remaining <= BigInt.zero && batches.isNotEmpty;
   // Notes can cover the payment and still miss the weight levy. That is a
@@ -1258,6 +1320,7 @@ Future<Map<String, dynamic>> creditFollowWorker(
   if (pool != null && publicConsent) pool.publicConsent = true;
   final ledger = ShearLedger(pool: pool);
   ledger._stampSpendTagsInline = true;
+  ledger._v3HashInline = true;
   try {
     ledger.installCreditFollow(spec);
     final rest = spec['restFrame']?.toString() ?? '';
@@ -4650,6 +4713,7 @@ class ShearLedger implements ReadProofSink {
     _sealedHeight = 0;
     _verifiedTip = 0;
     _settledHeight = 0;
+    _checkedHeaders.clear();
     lag1Root = null;
     tipHeight = 1;
   }
@@ -4711,12 +4775,49 @@ class ShearLedger implements ReadProofSink {
     if (height > _verifiedTip) _verifiedTip = height;
   }
 
-  /// Genesis time from a height-1 header this wallet checked. A later tip
-  /// quotes ASERT from it. The test binds the anchor it mined against.
-  int? _asertGenesisMs;
+  /// Network genesis. Empty until the v12 cut publishes a hash. A host
+  /// header cannot fill these in.
+  static const String kNetworkGenesisHash = '';
+  static const int kNetworkGenesisMs = 0;
 
-  void bindCheckedGenesisMs(int ms) {
-    if (ms > 0) _asertGenesisMs = ms;
+  /// Pinned genesis hash and time. Empty until [kNetworkGenesisHash] or a
+  /// test installs them. A host-labelled height 1 does not set this.
+  Uint8List? _genesisPinHash;
+  int? _genesisPinMs;
+
+  /// Verifier clock for the future-time bound. Tests pin it. Production uses
+  /// the wall clock.
+  int? _headerNowMs;
+
+  final List<({int height, Uint8List hash, int timeMs})> _checkedHeaders = [];
+  final Map<String, Uint8List> _v3Ready = {};
+
+  /// The credit worker is already off the UI isolate.
+  bool _v3HashInline = false;
+
+  void _installNetworkPin() {
+    if (_genesisPinHash != null) return;
+    final hex = kNetworkGenesisHash;
+    if (hex.length != 64 || kNetworkGenesisMs <= 0) return;
+    final hash = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      hash[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    _genesisPinHash = hash;
+    _genesisPinMs = kNetworkGenesisMs;
+  }
+
+  /// Install the network genesis pin. The header must still hash to [hash]
+  /// and carry [timeMs]. It does not by itself move the spendable tip.
+  void bindGenesisPin(Uint8List hash, int timeMs) {
+    if (hash.length != 32 || timeMs <= 0) return;
+    _genesisPinHash = Uint8List.fromList(hash);
+    _genesisPinMs = timeMs;
+  }
+
+  /// Test clock for the header future-time bound.
+  void bindHeaderClock(int nowMs) {
+    if (nowMs > 0) _headerNowMs = nowMs;
   }
 
   /// A flyclient sample this wallet already checked. Moves the spendable tip.
@@ -4730,40 +4831,147 @@ class ShearLedger implements ReadProofSink {
     settleTo(_verifiedTip);
   }
 
-  /// ShearHash-v3 meets this header, and the bits are the ASERT quote for
-  /// [sealedHeight]. Any bits above zero is not enough. A missing v3 backend
-  /// leaves depth unknown.
-  bool _headerPowOk(Uint8List header, {required int sealedHeight}) {
-    if (sealedHeight < 1 || header.length != shearHeaderLen) return false;
-    final version =
-        header[0] |
-        (header[1] << 8) |
-        (header[2] << 16) |
-        (header[3] << 24);
-    if (version < 1) return false;
-    final ts = headerTimestampMs(header);
-    if (ts == null || ts <= 0) return false;
+  static const int _kHeaderAheadMs = 15000;
+  static const int _kMtpFutureMs = 2 * 60 * 60 * 1000;
+  static const int _kMtpWindow = 11;
+
+  int _headerVersion(Uint8List header) =>
+      header[0] | (header[1] << 8) | (header[2] << 16) | (header[3] << 24);
+
+  int _headerBits(Uint8List header) {
     var bits = 0;
     for (var i = 0; i < 4; i++) {
       bits |= header[108 + i] << (8 * i);
     }
-    // Packed Q16.16. An integer difficulty, including 1 bit, is not ASERT.
+    return bits;
+  }
+
+  bool _prevIsZero(Uint8List header) {
+    for (var i = 4; i < 36; i++) {
+      if (header[i] != 0) return false;
+    }
+    return true;
+  }
+
+  bool _prevEquals(Uint8List header, Uint8List hash) {
+    if (hash.length != 32) return false;
+    for (var i = 0; i < 32; i++) {
+      if (header[4 + i] != hash[i]) return false;
+    }
+    return true;
+  }
+
+  ({int height, Uint8List hash, int timeMs})? _checkedAt(int height) {
+    for (final row in _checkedHeaders) {
+      if (row.height == height) return row;
+    }
+    return null;
+  }
+
+  int _medianTimes(List<int> times) {
+    if (times.isEmpty) return 0;
+    final sorted = List<int>.from(times)..sort();
+    return sorted[(sorted.length - 1) ~/ 2];
+  }
+
+  /// Structural link, MTP, and future-time. No hash yet.
+  bool _headerCandidate(Uint8List header, int sealedHeight) {
+    if (sealedHeight < 1 || header.length != shearHeaderLen) return false;
+    if (_headerVersion(header) != 1) return false;
+    final ts = headerTimestampMs(header);
+    if (ts == null || ts <= 0) return false;
+    final bits = _headerBits(header);
     if (bits < kAsertBitsScale) return false;
-    final digest = shearHashV3(header);
+    if (sealedHeight == 1) {
+      _installNetworkPin();
+      final pin = _genesisPinHash;
+      final pinMs = _genesisPinMs;
+      if (pin == null || pinMs == null) return false;
+      if (bits != kGenesisBitsPacked || !_prevIsZero(header)) return false;
+      return ts == pinMs;
+    }
+    final parent = _checkedAt(sealedHeight - 1);
+    if (parent == null || !_prevEquals(header, parent.hash)) return false;
+    if (ts <= parent.timeMs) return false;
+    final window = <int>[];
+    final from = sealedHeight - _kMtpWindow;
+    for (var h = from < 1 ? 1 : from; h < sealedHeight; h++) {
+      final row = _checkedAt(h);
+      if (row != null) window.add(row.timeMs);
+    }
+    if (window.isEmpty) window.add(parent.timeMs);
+    if (ts > _medianTimes(window) + _kMtpFutureMs) return false;
+    final now = _headerNowMs ?? DateTime.now().millisecondsSinceEpoch;
+    if (ts > now + _kHeaderAheadMs || ts > now + _kMtpFutureMs) return false;
+    return true;
+  }
+
+  void _rememberChecked(int height, Uint8List hash, int timeMs) {
+    _checkedHeaders.removeWhere((row) => row.height == height);
+    _checkedHeaders.add((
+      height: height,
+      hash: Uint8List.fromList(hash),
+      timeMs: timeMs,
+    ));
+  }
+
+  Uint8List? _digestOf(Uint8List header) {
+    final hex = _bytesHex(header);
+    final ready = _v3Ready[hex];
+    if (ready != null) return ready;
+    if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
+      final digest = shearHashV3(header);
+      if (digest != null) _v3Ready[hex] = digest;
+      return digest;
+    }
+    return null;
+  }
+
+  /// Hash a tip header off the UI isolate, then [applyTipHex] can use it.
+  Future<void> _prepareTipHash(String headerHex, int sealedHeight) async {
+    final raw = headerFromHex(headerHex);
+    if (raw == null || !_headerCandidate(raw, sealedHeight)) return;
+    final hex = _bytesHex(raw);
+    if (_v3Ready.containsKey(hex)) return;
+    final Uint8List? digest;
+    if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
+      digest = shearHashV3(raw);
+    } else {
+      final copy = Uint8List.fromList(raw);
+      digest = await Isolate.run(() => shearHashV3(copy));
+    }
+    if (digest != null) _v3Ready[hex] = digest;
+  }
+
+  /// ShearHash-v3 meets this header, the prev link reaches a checked header,
+  /// and the bits are the ASERT quote from the pinned genesis. A host height
+  /// is not an anchor.
+  bool _headerPowOk(Uint8List header, {required int sealedHeight}) {
+    if (!_headerCandidate(header, sealedHeight)) return false;
+    final ts = headerTimestampMs(header);
+    final bits = _headerBits(header);
+    if (ts == null) return false;
+    final digest = _digestOf(header);
     if (digest == null || !shearMeetsTarget(digest, bits)) return false;
     if (sealedHeight == 1) {
-      if (bits != kGenesisBitsPacked) return false;
-      _asertGenesisMs = ts;
+      final pin = _genesisPinHash;
+      if (pin == null || !noteBytesEq(digest, pin)) return false;
+      _rememberChecked(1, digest, ts);
       return true;
     }
-    final genesis = _asertGenesisMs;
-    if (genesis == null || genesis <= 0) return false;
+    final genesis = _checkedAt(1);
+    final parent = _checkedAt(sealedHeight - 1);
+    if (genesis == null || parent == null) return false;
     final quote = asertQuoteForHeight(
-      anchorTimeMs: genesis,
+      anchorTimeMs: genesis.timeMs,
       blockTimeMs: ts,
       blockHeight: sealedHeight,
+      anchorBits: kGenesisBitsPacked,
+      parentTimeMs: parent.timeMs,
     );
-    return quote.ok && bits == quote.packed;
+    if (!bitsAcceptAsert(bits, quote)) return false;
+    _rememberChecked(sealedHeight, digest, ts);
+    return true;
   }
 
   /// Record how far a notes response reached. Never moves backward.
@@ -5753,6 +5961,7 @@ class ShearLedger implements ReadProofSink {
       final named = json['genesis']?.toString() ?? '';
       if (named.isNotEmpty) bindChainGenesis(named);
     }
+    await _prepareTipHash(hex, sealed);
     applyTipHex(hex, sealedHeight: sealed);
     _applyReorgList(json['orphans'] ?? json['reorgHeights']);
     if (json.containsKey('hashrate')) networkHashrate = paint.hashrate;
@@ -6492,7 +6701,9 @@ class ShearLedger implements ReadProofSink {
         final h = (json['height'] as num?)?.toInt() ?? 0;
         hostHeight = h;
         if (h > 0) {
-          applyTipHex(json['header']?.toString() ?? '', sealedHeight: h);
+          final tipHex = json['header']?.toString() ?? '';
+          await _prepareTipHash(tipHex, h);
+          applyTipHex(tipHex, sealedHeight: h);
         }
         _applyReorgList(json['orphans'] ?? json['reorgHeights']);
       } catch (_) {}
@@ -8813,6 +9024,35 @@ class ShearLedger implements ReadProofSink {
     return raw;
   }
 
+  /// Recipient SHE the flow screen shows before a send. Same split as the post.
+  Future<String?> quoteConfirmRecipientShe({
+    required String restFrame,
+    String? paymentCode,
+    required double amount,
+    String? nanosWire,
+    bool memo = false,
+  }) async {
+    final plan = await _planSpendOffUi(
+      restFrame,
+      paymentCode,
+      amount,
+      memo: memo,
+      needNanos: nanosWire,
+    );
+    if (plan['covered'] != true) return null;
+    final batches = plan['batches'];
+    if (batches is! List || batches.isEmpty) return null;
+    var pay = BigInt.zero;
+    for (final batch in batches) {
+      if (batch is! Map) continue;
+      final n = BigInt.tryParse('${batch['payNanos'] ?? ''}');
+      if (n == null || n <= BigInt.zero) return null;
+      pay += n;
+    }
+    if (pay.bitLength >= 63) return null;
+    return formatSheFromNanos(pay.toInt());
+  }
+
   /// Weight-levy quote for [amount]. Selection runs off the UI isolate.
   /// [nanosWire] is the exact nanos digit string. It wins over the SHE double
   /// so an amount above 2^53 is the same integer the selector spends.
@@ -9049,10 +9289,30 @@ class ShearLedger implements ReadProofSink {
         throw StateError('fee_short');
       payUnits = BigInt.from(rounded);
     }
-    if (payUnits + fee > inputSum) payUnits = inputSum - fee;
+    var heldUnits = BigInt.zero;
+    for (final n in notes) {
+      heldUnits += _heldNanosOf(n, restFrame, paymentCode);
+    }
+    if (heldUnits > BigInt.zero) {
+      final split = holdProtectedPay(
+        noteNanos: inputSum,
+        payNanos: payUnits,
+        feeNanos: fee,
+        heldNanos: heldUnits,
+      );
+      payUnits = split.pay;
+    } else if (payUnits + fee > inputSum) {
+      payUnits = inputSum - fee;
+    }
     if (payUnits <= BigInt.zero || payUnits.bitLength > 64)
       throw StateError('fee_short');
     final change = inputSum - payUnits - fee;
+    if (heldUnits > BigInt.zero && change < heldUnits) {
+      throw StateError('fee_short');
+    }
+    debugLastPayNanos = payUnits;
+    debugLastFeeNanos = fee;
+    debugLastChangeNanos = change;
     if (change < BigInt.zero || change.bitLength > 64)
       throw StateError('fee_short');
     final payNanos = u64OnWire(payUnits);
@@ -9245,7 +9505,7 @@ class ShearLedger implements ReadProofSink {
       _dests.add(changeDest);
     }
     final echoed = Map<String, dynamic>.from(json['tx'] as Map);
-    echoed['amount'] ??= _sheOfExactNanos(payUnits.toString()) ?? payShe;
+    echoed['amount'] = _sheOfExactNanos(payUnits.toString()) ?? payShe;
     echoed['from'] ??= src;
     final raw = ShearTx.fromJson(echoed);
     final tx = ShearTx(
@@ -9259,6 +9519,95 @@ class ShearLedger implements ReadProofSink {
       memo: memoCt != null || raw.memo,
       memoPlain: memo,
       memoCt: memoCt ?? raw.memoCt,
+      change: changeDest,
+    );
+    _txs.add(tx);
+    return tx;
+  }
+
+  /// Local multi-note send. The same hold split as [_sendManyNotes], without
+  /// a proof, so a test can see the recipient, the fee, and the change.
+  Future<ShearTx> _sendLocalHeldBatch({
+    required String from,
+    required String to,
+    required double amount,
+    required String restFrame,
+    String? paymentCode,
+    String? nanosWire,
+    String? memo,
+  }) async {
+    final plan = await _planSpendOffUi(
+      restFrame,
+      paymentCode,
+      amount,
+      memo: memo != null && memo.isNotEmpty,
+      needNanos: nanosWire,
+    );
+    if (plan['covered'] != true) {
+      if (plan['shortFee'] == true) throw StateError('fee_short');
+      throw StateError('insufficient');
+    }
+    final raw = (plan['batches'] as List? ?? const []).whereType<Map>().toList();
+    if (raw.length != 1) throw StateError('insufficient');
+    final notes = <Map<String, dynamic>>[];
+    for (final spec in (raw.single['notes'] as List? ?? const []).whereType<Map>()) {
+      final i = spec['index'];
+      if (i is! num || i < 0 || i >= _notes.length) continue;
+      notes.add(_notes[i.toInt()]);
+    }
+    if (notes.length < 2) throw StateError('insufficient');
+    var input = BigInt.zero;
+    var held = BigInt.zero;
+    for (final n in notes) {
+      final exact = noteNanosExact(n);
+      if (exact == null) throw StateError('fee_short');
+      input += exact;
+      held += _heldNanosOf(n, restFrame, paymentCode);
+    }
+    final fee = BigInt.from(
+      estimateSendLevyUnits(
+        inputs: notes.length,
+        outputs: 3,
+        memo: memo != null && memo.isNotEmpty,
+      ),
+    );
+    var pay = sendUnitsFromWire(nanosWire);
+    if (pay <= BigInt.zero) {
+      final rounded = (amount * kUnitsPerShe).round();
+      if (rounded > 0) pay = BigInt.from(rounded);
+    }
+    final split = holdProtectedPay(
+      noteNanos: input,
+      payNanos: pay,
+      feeNanos: fee,
+      heldNanos: held,
+    );
+    if (split.pay <= BigInt.zero || split.change < held) {
+      throw StateError('fee_short');
+    }
+    debugLastPayNanos = split.pay;
+    debugLastFeeNanos = fee;
+    debugLastChangeNanos = split.change;
+    final postedShe = _sheOfExactNanos(split.pay.toString()) ?? amount;
+    String? changeDest;
+    if (split.change > BigInt.zero) {
+      changeDest = allocateChangeDest(
+        restFrame,
+        from: from,
+        paymentCode: paymentCode,
+      );
+      _rememberBuiltChange(changeDest, split.change);
+    }
+    for (final n in notes) {
+      n['spent'] = true;
+    }
+    final tx = ShearTx(
+      id: 'send-${DateTime.now().millisecondsSinceEpoch}',
+      from: from,
+      to: to,
+      amount: postedShe,
+      kind: 'send',
+      confirmed: false,
       change: changeDest,
     );
     _txs.add(tx);
@@ -9325,8 +9674,22 @@ class ShearLedger implements ReadProofSink {
       );
     }
 
-    if (sendKind != 'send' || local || paintedCover || restFrame == null) {
+    if (sendKind != 'send' || paintedCover || restFrame == null) {
       return once(amount, from, payNanos: nanosWire);
+    }
+    if (local) {
+      if (_matureOwnedCount(restFrame, paymentCode: paymentCode) <= 1) {
+        return once(amount, from, payNanos: nanosWire);
+      }
+      return _sendLocalHeldBatch(
+        from: from,
+        to: to,
+        amount: amount,
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        nanosWire: nanosWire,
+        memo: memo,
+      );
     }
     if (spendSeed == null || spendSeed.length != 32 || pool == null) {
       return once(amount, from, payNanos: nanosWire);
@@ -9794,6 +10157,13 @@ class ShearLedger implements ReadProofSink {
     }
     debugLastChangeNanos = changeUnits;
     if (sendKind == 'send') {
+      debugLastPayNanos = payUnits;
+      debugLastFeeNanos = feeUnits;
+    }
+    final postedShe = sendKind == 'send'
+        ? (_sheOfExactNanos(payUnits.toString()) ?? amount)
+        : amount;
+    if (sendKind == 'send') {
       String? portal;
       if (restFrame != null && (viewSecret ?? '').isNotEmpty) {
         portal = vaultDest(restFrame, viewKey: viewSecret!);
@@ -10050,7 +10420,7 @@ class ShearLedger implements ReadProofSink {
           publicConsent: publicConsent,
           from: src,
           to: destTo,
-          amount: sendKind == 'vote' ? 0 : amount,
+          amount: sendKind == 'vote' ? 0 : postedShe,
           memoCt: memoCt,
           kind: sendKind,
           programId: programId,
@@ -10146,7 +10516,11 @@ class ShearLedger implements ReadProofSink {
         _noteLockDebit(src, needShe, nanos: payUnits + BigInt.from(levy));
       }
       final echoed = Map<String, dynamic>.from(json['tx'] as Map);
-      echoed['amount'] ??= needShe;
+      if (sendKind == 'send') {
+        echoed['amount'] = postedShe;
+      } else {
+        echoed['amount'] ??= needShe;
+      }
       echoed['from'] ??= src;
       final raw = ShearTx.fromJson(echoed);
       // wallet_api.js sets fromBalance to 0 and sends changeBalance for the
@@ -10156,12 +10530,16 @@ class ShearLedger implements ReadProofSink {
       if (sendKind == 'send') {
         final left = spendable(src) - needShe;
         _spendable[src] = left <= 1e-18 ? 0 : left;
-        final noteChange = fundedShe - needShe;
-        _parkChange(
-          src,
-          changeDest,
-          changeShe: noteChange > 1e-18 ? noteChange : null,
-        );
+        if (changeUnits != null) {
+          _rememberBuiltChange(changeDest, changeUnits);
+        } else {
+          final noteChange = fundedShe - needShe;
+          _parkChange(
+            src,
+            changeDest,
+            changeShe: noteChange > 1e-18 ? noteChange : null,
+          );
+        }
       } else if (sendKind != 'withdraw') {
         final reported = (json['fromBalance'] as num?)?.toDouble();
         var nextBal = reported ?? (spendable(src) - needShe);
@@ -10202,13 +10580,17 @@ class ShearLedger implements ReadProofSink {
         // opened sum and needs this debit once so a 0 book cannot paint it back.
         _noteLockDebit(src, needShe, nanos: payUnits + BigInt.from(levy));
       }
-      _parkChange(src, changeDest, changeShe: fundedShe - needShe);
+      if (sendKind == 'send' && changeUnits != null) {
+        _rememberBuiltChange(changeDest, changeUnits);
+      } else {
+        _parkChange(src, changeDest, changeShe: fundedShe - needShe);
+      }
     }
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
       from: src,
       to: destTo,
-      amount: amount,
+      amount: sendKind == 'send' ? postedShe : amount,
       kind: kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send'),
       confirmed: false,
       memo: memoCt != null,
@@ -10218,6 +10600,15 @@ class ShearLedger implements ReadProofSink {
     );
     _txs.add(tx);
     return tx;
+  }
+
+  void _rememberBuiltChange(String? changeDest, BigInt? changeUnits) {
+    if (changeDest == null || changeDest.isEmpty) return;
+    if (changeUnits == null || changeUnits <= BigInt.zero) return;
+    final she = _sheOfExactNanos(changeUnits.toString());
+    if (she == null || she <= 1e-18) return;
+    _spendable[changeDest] = spendable(changeDest) + she;
+    _dests.add(changeDest);
   }
 
   void _parkChange(String src, String? changeDest, {double? changeShe}) {
