@@ -1460,8 +1460,7 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
 
 /// One FS-1 spend of every input of a send ([proveFs1SpendWire]). Same
 /// off-isolate rule as [sealFlowSpendVouts].
-Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) =>
-    proveFs1SpendWire(input);
+Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) => proveFs1SpendWire(input);
 
 /// Stamp from the worker, including when [sealFlowSpendVouts] throws.
 Map<String, dynamic> _sealFlowStamped(Map<String, dynamic> input) {
