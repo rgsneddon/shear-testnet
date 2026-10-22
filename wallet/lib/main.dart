@@ -88,6 +88,25 @@ Future<void> main(List<String> args) async {
   runApp(ShearWalletApp(demoTx: kDebugMode, biometrics: DeviceBiometrics()));
 }
 
+/// Parent env for the node, without bootstrap or seed overrides. Windows still needs SystemRoot and PATH.
+Map<String, String> sharedNodeLaunchEnv(
+  Map<String, String> parent,
+  Map<String, String> env, {
+  String? workDir,
+}) {
+  final merged = Map<String, String>.from(parent)..addAll(env);
+  merged.remove('SHEAR_BOOTSTRAP');
+  merged.remove('SHEAR_BOOTSTRAP_URL');
+  merged.remove('SHEAR_SEEDS');
+  if (workDir != null && workDir.isNotEmpty) {
+    final delim = Platform.isWindows ? ';' : ':';
+    final extra =
+        '$workDir${Platform.pathSeparator}runtime$delim$workDir${Platform.pathSeparator}crypto${Platform.pathSeparator}native';
+    merged['PATH'] = '$extra$delim${merged['PATH'] ?? ''}';
+  }
+  return merged;
+}
+
 class ShearWalletApp extends StatefulWidget {
   const ShearWalletApp({
     super.key,
@@ -416,14 +435,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Future<void> _startSharedNode(String binary, Map<String, String> env, List<String> args) async {
     await _stopSharedNode();
-    final merged = Map<String, String>.from(Platform.environment)..addAll(env);
     final work = sidecar.workDir;
-    if (work != null && work.isNotEmpty) {
-      final delim = Platform.isWindows ? ';' : ':';
-      final extra =
-          '$work${Platform.pathSeparator}runtime$delim$work${Platform.pathSeparator}crypto${Platform.pathSeparator}native';
-      merged['PATH'] = '$extra$delim${merged['PATH'] ?? ''}';
-    }
+    final merged = sharedNodeLaunchEnv(Platform.environment, env, workDir: work);
     final handle = await startNodeProcessOffUi(
       binary: binary,
       args: args,

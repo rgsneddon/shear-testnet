@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -45,34 +46,61 @@ void main() {
     expect(roster.map((v) => v.name), [reserveVortice.name, kRxPrivacyBrowserName, kRpMailName]);
   });
 
-  test('Rx pane is blocked and the Tor and SOCKS strings are gone', () {
-    final src = File('lib/rx_privacy_browser.dart').readAsStringSync().toLowerCase();
-    expect(src.contains('unprivate unless tor'), isFalse);
-    expect(src.contains('tor routing'), isFalse);
-    expect(src.contains('socks'), isFalse);
-    expect(src.contains('.onion'), isFalse);
-    expect(src.contains('torrouting'), isFalse);
-    expect(RegExp(r'\btor\b').hasMatch(src), isFalse);
-    final remote = rxDecide(url: 'https://example.com/');
-    expect(remote.allowed, isFalse);
-    expect(remote.status, kRxBlockedStatus);
-    expect(remote.reason, 'blocked');
-    final local = rxDecide(url: 'about:newtab');
-    expect(local.allowed, isTrue);
-    expect(local.local, isTrue);
-    expect(local.status, kRxBlockedStatus);
+  test('Tor-down is exact and not private; onion needs Tor', () {
+    final down = rxDecide(torRouting: false, url: 'http://example.onion/');
+    expect(down.allowed, isFalse);
+    expect(down.status, kStatusUnprivateUnlessTor);
+    expect(down.relay, 'blocked');
+    expect(down.looksPrivate, isFalse);
+    final up = rxDecide(torRouting: true, url: 'https://example.com/');
+    expect(up.allowed, isTrue);
+    expect(up.relay, 'tor');
+    expect(up.status, kStatusTorRouting);
+    expect(up.reason, 'clearnet');
+    final onion = rxDecide(torRouting: true, url: 'http://example.onion/');
+    expect(onion.reason, 'onion');
+    expect(onion.relay, 'tor');
   });
 
-  testWidgets('blocked chrome does not leave the start page', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: RxPrivacyBrowserPane())));
-    expect(find.text(kRxBlockedStatus), findsOneWidget);
-    await tester.enterText(find.byKey(const Key('rx-url')), 'https://example.com/');
+  testWidgets('Tor-down chrome blocks Go', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: RxPrivacyBrowserPane(torRouting: false))));
+    expect(find.text(kStatusUnprivateUnlessTor), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('rx-url')), 'https://example.onion/');
     await tester.tap(find.byKey(const Key('rx-go')));
     await tester.pump();
-    expect(find.text(kRxBlockedStatus), findsOneWidget);
+    expect(find.text(kStatusUnprivateUnlessTor), findsOneWidget);
     expect(tester.widget<Text>(find.byKey(const Key('rx-page'))).data, 'about:newtab');
-    expect(find.text('unprivate unless tor'), findsNothing);
-    expect(find.text('Tor routing'), findsNothing);
+    expect(find.text(kStatusTorRouting), findsNothing);
+  });
+
+  test('SOCKS connect sends the onion hostname', () async {
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final hostGot = Completer<String>();
+    server.listen((client) async {
+      final buf = <int>[];
+      var stage = 0;
+      await for (final chunk in client) {
+        buf.addAll(chunk);
+        if (stage == 0 && buf.length >= 3) {
+          client.add([5, 0]);
+          buf.removeRange(0, 3);
+          stage = 1;
+        }
+        if (stage == 1 && buf.length >= 5 && buf[3] == 3) {
+          final n = buf[4];
+          if (buf.length >= 5 + n + 2) {
+            hostGot.complete(String.fromCharCodes(buf.sublist(5, 5 + n)));
+            client.add([5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+            break;
+          }
+        }
+      }
+    });
+    final sock = await Socket.connect(InternetAddress.loopbackIPv4, server.port);
+    await rxSocks5Connect(sock, 'example.onion', 80);
+    expect(await hostGot.future.timeout(const Duration(seconds: 3)), 'example.onion');
+    await sock.close();
+    await server.close();
   });
 
   test('mail password is not spendable; IMAP POP3 SMTP round-trip', () async {

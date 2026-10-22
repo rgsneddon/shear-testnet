@@ -1,38 +1,32 @@
-import 'dart:io';
-
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shear_wallet/shear_node_proc.dart';
+import 'package:shear_wallet/main.dart';
 
 void main() {
-  test('a spawned node does not inherit bootstrap or seed overrides', () async {
-    expect(Platform.environment['PATH'], isNotEmpty);
-    final lines = <String>[];
-    final handle = await startNodeProcessOffUi(
-      binary: '/usr/bin/python3',
-      args: [
-        '-c',
-        'import os, time\n'
-            'time.sleep(0.2)\n'
-            'print("BOOT=" + os.environ.get("SHEAR_BOOTSTRAP", ""))\n'
-            'print("URL=" + os.environ.get("SHEAR_BOOTSTRAP_URL", ""))\n'
-            'print("SEEDS=" + os.environ.get("SHEAR_SEEDS", ""))\n'
-            'print("PATH=" + os.environ.get("PATH", ""))\n'
-            'print("ONLY=" + os.environ.get("ONLY", ""))\n',
-      ],
-      environment: const {'ONLY': 'yes'},
+  test('the shared node launch drops bootstrap and seed overrides', () {
+    final passed = sharedNodeLaunchEnv(
+      {
+        'PATH': '/usr/bin',
+        'SystemRoot': r'C:\Windows',
+        'HOME': '/home/me',
+        'SHEAR_BOOTSTRAP': '1',
+        'SHEAR_BOOTSTRAP_URL': 'https://boot.shear.digital',
+        'SHEAR_SEEDS': 'evil.example:30303',
+      },
+      {
+        'SHEAR_DATA': '/tmp/book',
+        'SHEAR_RPC_BIND': '127.0.0.1',
+        'SHEAR_BOOTSTRAP': '1',
+      },
+      workDir: '/opt/shear',
     );
-    handle.listen(lines.add);
-    final deadline = DateTime.now().add(const Duration(seconds: 10));
-    while (DateTime.now().isBefore(deadline) && !lines.any((line) => line.startsWith('ONLY='))) {
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-    }
-    await handle.kill();
-    expect(lines, contains('BOOT='));
-    expect(lines, contains('URL='));
-    expect(lines, contains('SEEDS='));
-    expect(lines, contains('PATH='));
-    expect(lines, contains('ONLY=yes'));
-    final src = File('lib/shear_node_proc.dart').readAsStringSync();
-    expect(src, contains('includeParentEnvironment: false'));
+    expect(passed.containsKey('SHEAR_BOOTSTRAP'), isFalse);
+    expect(passed.containsKey('SHEAR_BOOTSTRAP_URL'), isFalse);
+    expect(passed.containsKey('SHEAR_SEEDS'), isFalse);
+    expect(passed['SystemRoot'], r'C:\Windows');
+    expect(passed['HOME'], '/home/me');
+    expect(passed['SHEAR_DATA'], '/tmp/book');
+    expect(passed['SHEAR_RPC_BIND'], '127.0.0.1');
+    expect(passed['PATH'], contains('/usr/bin'));
+    expect(passed['PATH'], contains('${'/opt/shear'}/runtime'));
   });
 }

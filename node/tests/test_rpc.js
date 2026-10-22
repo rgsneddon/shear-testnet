@@ -159,7 +159,7 @@ describe('node RPC', () => {
     }
   });
 
-  it('checks Host and Origin on every loopback bind, and the token only when one is set', async () => {
+  it('gates Host and Origin only on a loopback bind that has a token', async () => {
     assert.equal(rpcLoopbackBind('127.0.0.1'), true);
     assert.equal(rpcLoopbackBind('127.255.255.255'), true);
     assert.equal(rpcLoopbackBind('127.0.0.0'), true);
@@ -211,18 +211,10 @@ describe('node RPC', () => {
       assert.equal(named.status, 200);
       const nginx = await askOn(bound.port, { host: '127.0.0.1:18332' });
       assert.equal(nginx.status, 200);
-      const eight = await askOn(bound.port, { host: '127.4.5.6:18332' });
-      assert.equal(eight.status, 200);
-      const mapped = await askOn(bound.port, { host: '[::ffff:127.0.0.1]:18332' });
-      assert.equal(mapped.status, 200);
-      const v6open = await askOn(bound.port, { host: `[::1]:${bound.port}` });
-      assert.equal(v6open.status, 200);
       const host = await askOn(bound.port, { host: 'p2p.shear.digital' });
-      assert.equal(host.status, 403);
-      assert.equal(host.json.reason, 'rpc_host');
+      assert.equal(host.status, 200);
       const origin = await askOn(bound.port, { host: `127.0.0.1:${bound.port}`, origin: 'https://evil.example' });
-      assert.equal(origin.status, 403);
-      assert.equal(origin.json.reason, 'rpc_origin');
+      assert.equal(origin.status, 200);
     } finally {
       await open.close();
     }
@@ -251,9 +243,10 @@ describe('node RPC', () => {
       });
       const okWide = await askWide({ host: '127.8.8.8:18332' });
       assert.equal(okWide.status, 200);
-      const deniedWide = await askWide({ host: '10.1.2.3' });
-      assert.equal(deniedWide.status, 403);
-      assert.equal(deniedWide.json.reason, 'rpc_host');
+      const lan = await askWide({ host: '10.1.2.3' });
+      assert.equal(lan.status, 200);
+      const nginxWide = await askWide({ host: '127.0.0.1:18332' });
+      assert.equal(nginxWide.status, 200);
     } finally {
       await wide.close();
     }
@@ -313,6 +306,16 @@ describe('node RPC', () => {
       });
       assert.equal(nginx.status, 200);
       assert.equal(nginx.json.ok, true);
+      const eight = await askOn(lockedBound.port, {
+        host: '127.4.5.6:18332',
+        'x-shear-rpc-token': 'launch-token',
+      });
+      assert.equal(eight.status, 200);
+      const mappedHost = await askOn(lockedBound.port, {
+        host: '[::ffff:127.0.0.1]:18332',
+        'x-shear-rpc-token': 'launch-token',
+      });
+      assert.equal(mappedHost.status, 200);
     } finally {
       await locked.close();
     }

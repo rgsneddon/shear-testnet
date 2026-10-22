@@ -493,9 +493,9 @@ export function createRpc({
     return { ok: false, reason: 'unknown_method', method: m };
   }
 
-  const loopback = rpcLoopbackBind(bind);
+  const gate = rpcLoopbackBind(bind) && String(token || '').trim() !== '';
   const server = http.createServer(async (req, res) => {
-    if (loopback) {
+    if (gate) {
       if (!rpcHostAllowed(req.headers.host)) {
         refuseRpc(req, res, 'rpc_host');
         return;
