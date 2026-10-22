@@ -521,4 +521,23 @@ describe('chronoflux prune + collate', () => {
     assert.equal(hashRow.nanos, 1);
     assert.equal(hashRow.to, '');
   });
+
+  it('sealed coinbase vout recovers ssa1 from dest20 when no address is stored', () => {
+    const dest20 = Buffer.alloc(20, 0x11);
+    const named = encodeDest(Buffer.alloc(20, 0x22));
+    const bare = sealCoinbaseNote(1000, { dest20, kind: 'hash' });
+    assert.equal(bare.address, undefined);
+    const kept = sealCoinbaseNote(2000, { dest20, kind: 'pot' });
+    kept.address = named;
+    const bad = sealCoinbaseNote(3, { kind: 'hash' });
+    bad.dest20 = Buffer.alloc(7, 0x33);
+    const rows = sealedExplorerRows({
+      height: 21,
+      hash: Buffer.alloc(32, 0x9d),
+      txs: [{ coinbase: true, vout: [bare, kept, bad] }],
+    });
+    assert.equal(rows[0].to, encodeDest(dest20));
+    assert.equal(rows[1].to, named);
+    assert.equal(rows[2].to, '');
+  });
 });
