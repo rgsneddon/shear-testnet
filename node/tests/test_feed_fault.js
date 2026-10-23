@@ -420,6 +420,8 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
         const got = sealNext(store, minerDest(), 8);
         assert.equal(got.ok, false);
         assert.equal(got.reason, 'apply_stage');
+        assert.equal(got.at, 0);
+        assert.ok(got.header);
         assert.equal(got.scorePeer, undefined);
         assert.equal(store.tip(), null);
         assert.equal(store.blocks.length, 0);

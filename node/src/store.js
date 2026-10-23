@@ -3566,6 +3566,18 @@ export function createStore(dir, {
     return after(check);
   }
 
+  function stageFaultRow(i, block, verifyOpts) {
+    if (injectedFault !== 'stage') return null;
+    if (!Number.isInteger(verifyOpts?.stageAt) || verifyOpts.stageAt !== i) return null;
+    return {
+      ok: false,
+      reason: 'apply_stage',
+      at: i,
+      header: block?.header,
+      tip: tip(),
+    };
+  }
+
   function completeAppend(check, block, burial = null) {
     let staged;
     try {
@@ -3579,7 +3591,13 @@ export function createStore(dir, {
       try {
         console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason: detail }));
       } catch { /* ignore */ }
-      return { ok: false, reason: 'apply_stage', tip: tip() };
+      return {
+        ok: false,
+        reason: 'apply_stage',
+        at: 0,
+        header: block?.header,
+        tip: tip(),
+      };
     }
     if (!staged || staged.ready !== true) return staged;
     try {
@@ -4257,6 +4275,8 @@ export function createStore(dir, {
     const forkRun = forkRunState(fork);
     const burialTip = forkBurial(fork);
     for (let i = 0; i < fork.length; i += 1) {
+      const staged = stageFaultRow(i, fork[i], verifyOpts);
+      if (staged) return staged;
       const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
         ...verifyOpts,
         noVault: !!noVault,
@@ -4315,6 +4335,8 @@ export function createStore(dir, {
     const forkRun = forkRunState(fork);
     const burialTip = forkBurial(fork);
     for (let i = 0; i < fork.length; i += 1) {
+      const staged = stageFaultRow(i, fork[i], verifyOpts);
+      if (staged) return staged;
       const check = await Promise.resolve(
         verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault, {
           ...verifyOpts,
@@ -4889,6 +4911,8 @@ export function createStore(dir, {
           burialTip: tipH,
         };
       }
+      const staged = stageFaultRow(i, fork[i], verifyOpts);
+      if (staged) return staged;
       const beforeSpent = new Set(trialSpent);
       const structuralH = (Number(prev?.height) || 0) + 1;
       const blockTip = headerRunTip(fork[i], structuralH, tipH, verifyOpts.provenBurialAt);
