@@ -5,7 +5,7 @@
  * Usage: node tests/verify_posted_reserve.mjs <tx.json>
  */
 import fs from 'node:fs';
-import { NANOS_PER_SHE } from '../crypto/asert.js';
+import { MAGIC_TESTNET, NANOS_PER_SHE } from '../crypto/asert.js';
 import { levyNeed, LEVY_FLOOR_UNITS } from '../crypto/levy.js';
 import { emptyVault } from '../crypto/reserve_vault.js';
 import { handleWalletApi } from '../pool/src/wallet_api.js';
@@ -30,7 +30,7 @@ const store = {
   historyFor: (addr) => rows.filter((r) => r.to === addr || r.from === addr),
   tip: () => ({ height: 20 }),
   mempool: [],
-  reserveVault: emptyVault(),
+  reserveVault: emptyVault(MAGIC_TESTNET),
   vortice: { issued: Object.create(null) },
 };
 const posted = [];

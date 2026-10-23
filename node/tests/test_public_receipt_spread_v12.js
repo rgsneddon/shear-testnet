@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeDest } from '../../crypto/address.js';
-import { PI_SHE_NANOS, RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { publicReserveReceipt, publicReserveReceiptRejected } from '../../crypto/dummy.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
@@ -76,7 +76,7 @@ function reasonOf(got) {
 
 describe('public receipt spread', () => {
   it('rejects every kind, amount, and portal on mempool and funded body', () => {
-    const vault = emptyVault();
+    const vault = emptyVault(MAGIC_TESTNET);
     vault.genesisMs = 1_700_000_000_000;
     for (const kind of ['lock', 'vote', 'withdraw']) {
       for (const portal of [1, 2, 3]) {
@@ -102,7 +102,7 @@ describe('public receipt spread', () => {
     const hexTx = JSON.parse(jsonWire({ tx: pure })).tx;
     assert.equal(publicReserveReceipt(hexTx), false);
     assert.equal(publicReserveReceiptRejected(hexTx), null);
-    const hexFund = verifyFundedBody([hexTx], () => 0, { reserveState: emptyVault() });
+    const hexFund = verifyFundedBody([hexTx], () => 0, { reserveState: emptyVault(MAGIC_TESTNET) });
     assert.equal(hexFund.ok, false);
     assert.notEqual(hexFund.reason, 'public_receipt');
     const addressed = receipt({

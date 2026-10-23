@@ -322,7 +322,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const t0 = 1_700_000_000_000;
     const end = t0 + RESERVE_EPOCH_MS;
     for (const n of [257, 300, 600]) {
-      const state = emptyVault();
+      const state = emptyVault(MAGIC_TESTNET);
       state.genesisMs = t0;
       state.magic = MAGIC_TESTNET;
       const session = await bootReserveEvm();
@@ -379,7 +379,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const gas = {};
     const firstGas = {};
     for (const n of sizes) {
-      const js = emptyVault();
+      const js = emptyVault(MAGIC_TESTNET);
       js.genesisMs = t0;
       const session = await bootReserveEvm();
       assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
@@ -498,7 +498,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
   it('three epochs with no claims each accept their own root', async () => {
     const t0 = 1_700_000_000_000;
     const dest = encodeDest(Buffer.alloc(20, 0x61));
-    const js = emptyVault();
+    const js = emptyVault(MAGIC_TESTNET);
     js.genesisMs = t0;
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
@@ -546,7 +546,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const dest = encodeDest(Buffer.alloc(20, 0xab));
     const owner = newIdentity();
     const ownerPub = Buffer.from(owner.spendPub).toString('hex');
-    const js = emptyVault();
+    const js = emptyVault(MAGIC_TESTNET);
     js.genesisMs = t0;
     assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub }).ok, true);
     assert.equal(enact({ state: js, nowMs: end }).ok, true);
@@ -628,7 +628,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const raw = Buffer.alloc(20, 0xcc);
     const dest = encodeDest(raw);
     const nanos = PI_SHE_NANOS;
-    const js = emptyVault();
+    const js = emptyVault(MAGIC_TESTNET);
     js.genesisMs = t0;
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
@@ -682,7 +682,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const ownerPub = Buffer.from(owner.spendPub).toString('hex');
     const dest = spendDestOf(owner.spendPub);
     const payout = encodeDest(Buffer.alloc(20, 0x31));
-    const js = emptyVault();
+    const js = emptyVault(MAGIC_TESTNET);
     js.genesisMs = t0;
     assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub }).ok, true);
     const id0 = supplyIdentity(js);
@@ -765,7 +765,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const t0 = 1_700_000_000_000;
     const end = t0 + RESERVE_EPOCH_MS;
     const dest = encodeDest(Buffer.alloc(20, 0x91));
-    const js = emptyVault();
+    const js = emptyVault(MAGIC_TESTNET);
     js.genesisMs = t0;
     const missing = depositUnowned({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0 });
     assert.equal(missing.ok, false);
@@ -797,7 +797,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const ownerPub = Buffer.from(owner.spendPub).toString('hex');
     const dest = spendDestOf(owner.spendPub);
     const payout = encodeDest(Buffer.alloc(20, 0x44));
-    const js = emptyVault();
+    const js = emptyVault(MAGIC_TESTNET);
     js.genesisMs = t0;
     assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub }).ok, true);
     const plan = rewardCommitment(js, end);
@@ -879,7 +879,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
       [t0 + 3 * epoch, full * 2],
     ];
     for (const [at, want] of draws) {
-      const js = emptyVault();
+      const js = emptyVault(MAGIC_TESTNET);
       js.genesisMs = t0;
       assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: lateAt }).ok, true);
       const paid = withdraw({ state: js, dest, nowMs: at });
@@ -905,7 +905,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const t0 = 1_700_000_000_000;
     const end = t0 + RESERVE_EPOCH_MS;
     const dest = encodeDest(Buffer.alloc(20, 0x72));
-    const js = emptyVault();
+    const js = emptyVault(MAGIC_TESTNET);
     js.genesisMs = t0;
     assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     const plan = rewardCommitment(js, end);
@@ -935,7 +935,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
 
     const small = PI_SHE_NANOS - 1;
     const quiet = encodeDest(Buffer.alloc(20, 0x73));
-    const below = emptyVault();
+    const below = emptyVault(MAGIC_TESTNET);
     below.genesisMs = t0;
     assert.equal(deposit({ state: below, dest: quiet, nanos: small, nowMs: t0 }).ok, true);
     assert.equal(rewardCommitment(below, end).rows.length, 0);
@@ -966,7 +966,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const epochs = 60;
     const dest = encodeDest(Buffer.alloc(20, 0x92));
     const who = ownerFor(dest);
-    const js = emptyVault();
+    const js = emptyVault(MAGIC_TESTNET);
     js.genesisMs = t0;
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
@@ -992,7 +992,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const epoch = RESERVE_EPOCH_MS;
     const dest = encodeDest(Buffer.alloc(20, 0x93));
     const who = ownerFor(dest);
-    const js = emptyVault();
+    const js = emptyVault(MAGIC_TESTNET);
     js.genesisMs = t0;
     assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub: who.pub }).ok, true);
     const session = await bootReserveEvm();
@@ -1115,7 +1115,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
       fundDest: dest,
       owner: ownerPub,
     });
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     const stolenBlock = await verifyBlock(asBlock(stolenDest), null, { probeBody: true, reserveState: state });
     const swapped = await verifyBlock(asBlock(stolenId), null, { probeBody: true, reserveState: state });

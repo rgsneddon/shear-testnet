@@ -12,7 +12,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createStore } from '../src/store.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { TARGET_BLOCK_INTERVAL_MS, RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
@@ -297,7 +297,7 @@ describe('v12 vault trial does not clone per reserve tx', () => {
   });
 
   it('an in-place trial undoes a miss and keeps a hit on the same vault', () => {
-    const vault = emptyVault();
+    const vault = emptyVault(MAGIC_TESTNET);
     fillPortals(vault, 1_000);
     const n0 = Object.keys(vault.portals).length;
     const locked0 = vault.totalLockedNanos;
@@ -337,7 +337,7 @@ describe('v12 vault trial does not clone per reserve tx', () => {
     assert.equal(vault.totalLockedNanos, expect);
     assert.equal(Object.keys(vault.portals).length, n0 + AMOUNTS.length);
 
-    const live = emptyVault();
+    const live = emptyVault(MAGIC_TESTNET);
     fillPortals(live, 64);
     const liveLocked = live.totalLockedNanos;
     const livePorts = Object.keys(live.portals).length;

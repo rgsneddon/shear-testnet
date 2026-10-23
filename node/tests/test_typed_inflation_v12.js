@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
-import { GENESIS_BITS_PACKED, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, GENESIS_BITS_PACKED, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { sealNote, sealCoinbaseNote } from '../../crypto/note.js';
 import { newIdentity, freshStealthDest, ed25519SeedOf, hash20FromAddress } from '../../crypto/address.js';
 import {
@@ -343,7 +343,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
     const dest = box.dest;
     const pub = box.id.spendPub.toString('hex');
     for (const nanos of [1, PI_SHE_NANOS, PI_SHE_NANOS + 1]) {
-      const state = emptyVault();
+      const state = emptyVault(MAGIC_TESTNET);
       state.genesisMs = 1;
       const credited = deposit({
         state,
@@ -459,7 +459,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
       }, null, LUMP_CLOCK);
       assert.equal(short.reason, 'mint_amount', `${nanos} short ${short.reason}`);
 
-      const vault = emptyVault();
+      const vault = emptyVault(MAGIC_TESTNET);
       vault.genesisMs = 1;
       assert.equal(deposit({ state: vault, dest, nanos, nowMs: 1, payout: dest, payoutPortalId: id }).ok, true);
       const before = Number(vault.totalLockedNanos);

@@ -3405,8 +3405,7 @@ function beginLoaded(blocks, {
   let supply = emptySupplyState();
   let supplyAt = [];
   let anchors = [];
-  const vault = emptyVault();
-  vault.magic = statedMagic(magic);
+  const vault = emptyVault(magic);
   if (start > 0) {
     for (let j = 0; j < start; j += 1) {
       let priorTs = 0;

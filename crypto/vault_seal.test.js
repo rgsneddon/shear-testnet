@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { emptyVault, cloneVault, verifyReservePayout, withdraw, applyReserveBlock, publicVaultView, withdrawTx } from './reserve_vault.js';
 import { deposit } from './owned_portal.js';
-import { PI_SHE_NANOS } from './asert.js';
+import { MAGIC_TESTNET, PI_SHE_NANOS } from './asert.js';
 import { newIdentity } from './address.js';
 import { vaultDest } from './flow_sheet.js';
 import {
@@ -27,13 +27,13 @@ function chain(n, hashByte = 1, genesisByte = 7) {
 
 describe('vault seal commitment', () => {
   it('is stable for empty vaults and changes when the pot moves', () => {
-    const a = vaultCommitment(emptyVault());
-    const b = vaultCommitment(cloneVault(emptyVault()));
+    const a = vaultCommitment(emptyVault(MAGIC_TESTNET));
+    const b = vaultCommitment(cloneVault(emptyVault(MAGIC_TESTNET)));
     assert.equal(a, b);
     assert.match(a, /^[0-9a-f]{64}$/);
     const id = newIdentity();
     const dest = destOf(id);
-    const st = emptyVault();
+    const st = emptyVault(MAGIC_TESTNET);
     const t0 = 1_700_000_000_000;
     st.genesisMs = t0;
     assert.equal(deposit({ state: st, dest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
@@ -44,7 +44,7 @@ describe('vault seal commitment', () => {
   });
 
   it('binds height, checkpoint hash, commitment, and optional genesis', () => {
-    const commit = vaultCommitment(emptyVault());
+    const commit = vaultCommitment(emptyVault(MAGIC_TESTNET));
     const hash = Buffer.alloc(32, 9);
     const genesis = Buffer.alloc(32, 3);
     const s = makeVaultSeal({ height: 1000, hash, commitment: commit, genesisHash: genesis });
@@ -77,7 +77,7 @@ describe('seal ancestry and adopt guard', () => {
     const seal = makeVaultSeal({
       height: 1000,
       hash: from[999].hash,
-      commitment: vaultCommitment(emptyVault()),
+      commitment: vaultCommitment(emptyVault(MAGIC_TESTNET)),
       genesisHash: from[0].hash,
     });
     assert.equal(chainHasSealAncestry(from, seal), true);
@@ -131,7 +131,7 @@ describe('fork has no vault', () => {
   it('a fork does not mint a vault and the master pot stays', () => {
     const id = newIdentity();
     const dest = destOf(id);
-    const live = emptyVault();
+    const live = emptyVault(MAGIC_TESTNET);
     const t0 = 1_700_000_000_000;
     live.genesisMs = t0;
     assert.equal(deposit({ state: live, dest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);

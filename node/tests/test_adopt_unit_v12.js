@@ -438,7 +438,7 @@ describe('v12 adopt keeps the walked hash-bonus unit', { timeout: fileCapMs(impo
       assert.equal(raised, floorUnit + 1);
       await seal(heavy, who.dest, headerTime(heavy.tip()) + STEP);
       assert.equal(Number(heavy.reserveVault.liveHashBonusNanos), raised);
-      const units = bonusUnitsBefore(heavy.blocks);
+      const units = bonusUnitsBefore(heavy.blocks, MAGIC_TESTNET);
       assert.ok(units && units.length === heavy.blocks.length);
       assert.ok(new Set(units).size > 1, `units ${units[0]}..${units[units.length - 1]}`);
       assert.equal(units[units.length - 1], raised);
@@ -458,7 +458,7 @@ describe('v12 adopt keeps the walked hash-bonus unit', { timeout: fileCapMs(impo
       assert.equal(light.tip().height, heavyHeight);
       assert.ok(Buffer.from(light.tip().hash).equals(heavyTip));
       assert.equal(Number(light.reserveVault.liveHashBonusNanos), raised);
-      const adoptedUnits = bonusUnitsBefore(light.blocks);
+      const adoptedUnits = bonusUnitsBefore(light.blocks, MAGIC_TESTNET);
       assert.deepEqual(adoptedUnits, units);
     } finally {
       fs.rmSync(heavyDir, { recursive: true, force: true });

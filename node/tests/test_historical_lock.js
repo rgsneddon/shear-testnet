@@ -92,7 +92,7 @@ describe('sealed reserve-lock prefix', () => {
     assert.equal(rejected.ok, false);
     assert.equal(rejected.reason, 'bits');
 
-    const vault = emptyVault();
+    const vault = emptyVault(MAGIC_TESTNET);
     for (const block of blocks) {
       const ts = Number(decodeHeader(Buffer.from(block.header)).timestamp);
       applyReserveBlock({ state: vault, block, nowMs: ts });

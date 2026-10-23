@@ -127,7 +127,7 @@ describe('VS-1 snap interest', () => {
     rows.push(snapOf(walked.state));
     assert.equal(rows[0].mintedInterest, 0n);
     assert.equal(rows[1].mintedInterest, 0n);
-    const filled = fillSnapInterest(rows, chain);
+    const filled = fillSnapInterest(rows, chain, MAGIC_TESTNET);
     assert.equal(filled.ok, true, filled.reason);
     assert.equal(rows[0].mintedInterest, 0n);
     assert.equal(rows[0].permittedInterest, 0n);

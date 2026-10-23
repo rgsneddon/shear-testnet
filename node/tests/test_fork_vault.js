@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createStore } from '../src/store.js';
 import { decodeHeader } from '../../crypto/header.js';
 import {
+  MAGIC_TESTNET,
   PI_SHE_NANOS,
   SPENDABLE_CONFIRMATIONS,
 } from '../../crypto/asert.js';
@@ -128,7 +129,7 @@ describe('fork trial vault (VS-R1)', () => {
     }
     const before = vaultSnap(local.reserveVault);
     assert.equal(Number(local.reserveVault.totalLockedNanos), 0);
-    const trial = cloneVault(emptyVault());
+    const trial = cloneVault(emptyVault(MAGIC_TESTNET));
     if (peer.reserveVault?.oracle) trial.oracle = JSON.parse(JSON.stringify(peer.reserveVault.oracle));
     let genesisMs = 0;
     let parentMs = 0;

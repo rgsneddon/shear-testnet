@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { encodeHeader, decodeHeader } from '../../crypto/header.js';
 import { FEE_SPLIT_FINDER_BPS, poolFeeDest, reserveFeeDest, splitLevy, unclaimedFinderDest } from '../../crypto/levy.js';
 import { merkleRoot } from '../../crypto/merkle.js';
@@ -111,7 +111,7 @@ describe('finder-fee pays the miner who found the block', () => {
         }
         const bound = coinbaseLevyPays(body, fee);
         assert.equal(bound.ok, true, bound.reason || `fee ${fee}`);
-        const state = emptyVault();
+        const state = emptyVault(MAGIC_TESTNET);
         applyReserveBlock({ state, block: { txs: tpl.txs }, nowMs: NOW });
         assert.equal(Number(state.feeBankNanos), split.reserve, `fee ${fee}`);
         if (split.finder > 0) assert.notEqual(Number(state.feeBankNanos), fee);
@@ -121,7 +121,7 @@ describe('finder-fee pays the miner who found the block', () => {
             ? { ...o, dest20: dest20(finder) }
             : o)),
         };
-        const stolenState = emptyVault();
+        const stolenState = emptyVault(MAGIC_TESTNET);
         applyReserveBlock({ state: stolenState, block: { txs: [stolen] }, nowMs: NOW });
         assert.equal(Number(stolenState.feeBankNanos), 0);
         if (split.reserve > 0) {
@@ -180,7 +180,7 @@ describe('finder-fee pays the miner who found the block', () => {
         assert.equal(droppedReserve.ok, false);
         assert.equal(droppedReserve.reason, 'levy_split');
       }
-      const state = emptyVault();
+      const state = emptyVault(MAGIC_TESTNET);
       applyReserveBlock({ state, block: { txs: shared.txs }, nowMs: NOW });
       assert.equal(Number(state.feeBankNanos), split.reserve, `shared fee ${fee}`);
       if (split.finder <= 0) continue;

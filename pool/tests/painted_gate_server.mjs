@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { NANOS_PER_SHE } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, NANOS_PER_SHE } from '../../crypto/asert.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { createStore } from '../../node/src/store.js';
 import { createPullBook } from '../src/pull_book.js';
@@ -24,7 +24,7 @@ const store = {
     height: 10,
     kind: 'coinbase',
   }],
-  reserveVault: emptyVault(),
+  reserveVault: emptyVault(MAGIC_TESTNET),
   vortice: { issued: Object.create(null) },
 };
 

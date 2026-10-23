@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, levyNeed, mempoolDepthBytes } from '../../crypto/levy.js';
-import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { lockTx, withdrawTx, deposit } from '../../crypto/owned_portal.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
@@ -171,7 +171,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     assert.equal(v1.ok, false);
     assert.equal(v1.reason, 'admit_version');
     const t1 = t0 + RESERVE_EPOCH_MS;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs: t0 });
     const want = PI_SHE_NANOS;
     const wd = withdrawTx({ from: dest, to: dest, nanos: want, id: 'wd-p' });

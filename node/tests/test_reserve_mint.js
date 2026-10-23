@@ -6,6 +6,7 @@ import path from 'node:path';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import {
+  MAGIC_TESTNET,
   RESERVE_PROGRAM,
   NANOS_PER_SHE,
   BLOCK_SUBSIDY_NANOS,
@@ -144,7 +145,7 @@ describe('Reserve mint is sealed-state pure', () => {
     assert.equal(/latest\.json/.test(chainSrc), false);
     assert.equal(BLOCK_SUBSIDY_NANOS, 100_000_000_000);
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = 1_700_000_000_000;
     const id = newIdentity();
     const dest = vaultDest(id.address, { viewKey: id.viewKey });

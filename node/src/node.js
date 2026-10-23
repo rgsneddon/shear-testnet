@@ -174,7 +174,7 @@ export async function startNode({
   // createStore is the one datadir check on this path. applyLatestBootstrap
   // checks before it writes, because that write happens before the store opens.
   const store = await createStore(dataDir, { fastSync: !!fastSync, yieldForeign: true, network });
-  store.reserveVault = store.reserveVault || emptyVault();
+  store.reserveVault = store.reserveVault || emptyVault(store.magic);
   store.oracleSnapshot = loadOracleSnapshot({ dataDir });
   const p2p = createP2p({ store, port: p2pPort, host: p2pBind, magic: store.magic, fluffDelayMs });
   const bound = await p2p.listen();

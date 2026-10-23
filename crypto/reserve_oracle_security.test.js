@@ -156,7 +156,7 @@ describe('oracle security pack (attester keys held)', () => {
     for (const stake of stakes) {
       const who = newIdentity();
       const dest = destOf(who);
-      const state = emptyVault();
+      const state = emptyVault(MAGIC_TESTNET);
       state.genesisMs = T0;
       assert.equal(deposit({ state, dest, nanos: stake, nowMs: T0 }).ok, true);
       state.epochBps = 0;
@@ -166,7 +166,7 @@ describe('oracle security pack (attester keys held)', () => {
       assert.equal(paid.payout, paid.principal);
       assert.equal(paid.principal, stake);
       for (const short of [1, Math.min(NANOS_PER_SHE, stake), stake]) {
-        const again = emptyVault();
+        const again = emptyVault(MAGIC_TESTNET);
         again.genesisMs = T0;
         assert.equal(deposit({ state: again, dest, nanos: stake, nowMs: T0 }).ok, true);
         again.epochBps = 0;
@@ -175,7 +175,7 @@ describe('oracle security pack (attester keys held)', () => {
         assert.equal(got.ok, false, String(short));
         assert.equal(got.reason, 'principal_short');
       }
-      const fat = emptyVault();
+      const fat = emptyVault(MAGIC_TESTNET);
       fat.genesisMs = T0;
       assert.equal(deposit({ state: fat, dest, nanos: stake, nowMs: T0 }).ok, true);
       fat.epochBps = 0;
@@ -317,7 +317,7 @@ describe('oracle security pack (attester keys held)', () => {
       magic: MAGIC_TESTNET,
     }).epochBps, rateA);
     const alice = destOf(newIdentity());
-    const chain = emptyVault();
+    const chain = emptyVault(MAGIC_TESTNET);
     chain.genesisMs = T0;
     assert.equal(deposit({ state: chain, dest: alice, nanos: PI_SHE_NANOS, nowMs: T0 }).ok, true);
     assert.equal(enact({ state: chain, nowMs: END }).ok, true);
@@ -333,7 +333,7 @@ describe('oracle security pack (attester keys held)', () => {
 
   it('Oa-3 the first lock after the boundary does not change the rate', () => {
     for (const at of [END, END + 90_000, END + DAY, END + 3 * DAY]) {
-      const state = emptyVault();
+      const state = emptyVault(MAGIC_TESTNET);
       state.genesisMs = T0;
       const first = destOf(newIdentity());
       const next = destOf(newIdentity());

@@ -65,7 +65,7 @@ function who() {
 }
 
 function vault() {
-  const state = emptyVault();
+  const state = emptyVault(MAGIC_TESTNET);
   state.magic = MAGIC_TESTNET;
   state.genesisMs = T0;
   return state;

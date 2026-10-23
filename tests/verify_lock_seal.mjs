@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { verifySealedNote } from '../crypto/note.js';
 import { emptyVault, verifyReservePayout } from '../crypto/reserve_vault.js';
+import { MAGIC_TESTNET } from '../crypto/asert.js';
 
 const path = process.argv[2];
 if (!path) {
@@ -11,7 +12,7 @@ const tx = JSON.parse(fs.readFileSync(path, 'utf8'));
 const o = Array.isArray(tx.vout) ? tx.vout[0] : null;
 const v = o?.valueProof?.v != null ? Number(o.valueProof.v) : Number(o?.nanos || 0);
 const sealOk = !!(o && o.commit && verifySealedNote(o, v));
-const pay = verifyReservePayout(emptyVault(), { ...tx, kind: tx.kind || 'lock', vout: tx.vout });
+const pay = verifyReservePayout(emptyVault(MAGIC_TESTNET), { ...tx, kind: tx.kind || 'lock', vout: tx.vout });
 const ok = sealOk && pay.ok === true;
 process.stdout.write(`${JSON.stringify({
   ok,

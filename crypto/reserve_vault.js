@@ -877,8 +877,15 @@ function mintEpoch(state, nowMs) {
   return chain > live ? chain : live;
 }
 
+function missingMagic() {
+  const err = new Error('unknown_magic');
+  err.code = 'unknown_magic';
+  return err;
+}
+
 export function emptyVault(magic) {
-  const book = magic == null || magic === '' ? MAGIC_TESTNET : String(magic);
+  if (magic == null || magic === '') throw missingMagic();
+  const book = String(magic);
   return {
     programId: RESERVE_PROGRAM,
     epochStartMs: 0,
@@ -919,9 +926,9 @@ export function emptyVault(magic) {
 
 /** Deep copy for fork trial state. Mutating the clone must not touch `state`. */
 export function cloneVault(state) {
-  const src = state && typeof state === 'object' ? state : emptyVault();
-  const raw = JSON.parse(JSON.stringify(src, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
-  const out = emptyVault();
+  if (!state || typeof state !== 'object') throw missingMagic();
+  const raw = JSON.parse(JSON.stringify(state, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
+  const out = emptyVault(state.magic);
   Object.assign(out, raw);
   out.portals = Object.create(null);
   for (const [k, p] of Object.entries(raw.portals || {})) {
@@ -960,7 +967,7 @@ export function cloneVault(state) {
   out.feeBankNanos = asBig(out.feeBankNanos);
   out.mintBankNanos = asBig(out.mintBankNanos);
   out.rewardPermittedNanos = asBig(out.rewardPermittedNanos);
-  out.blankFork = !!src.blankFork;
+  out.blankFork = !!state.blankFork;
   delete out.vaultSeal;
   return out;
 }
@@ -2620,8 +2627,10 @@ export function unitsAlongChain({
     const recorded = i < unitAt.length ? unitAt[i] : HASH_BONUS_NANOS;
     units.push(hashBonusUnitNanos(recorded));
   }
-  const trial = vault || emptyVault();
-  const bookMagic = statedMagic(magic || trial.magic || null);
+  const trial = vault || emptyVault(magic);
+  const book = magic == null || magic === '' ? trial.magic : magic;
+  if (book == null || book === '') throw missingMagic();
+  const bookMagic = statedMagic(book);
   if (magic) trial.magic = String(magic);
   const blocks = Array.isArray(fork) ? fork : [];
   const priorChain = rows.slice();
@@ -2677,11 +2686,12 @@ export function unitsAlongChain({
 
 /** Hash-bonus unit live at each block, before that block's own enact. */
 export function bonusUnitsBefore(blocks, magic) {
-  const book = magic == null || magic === '' ? null : String(magic);
+  if (magic == null || magic === '') throw missingMagic();
+  const book = String(magic);
   const walked = unitsAlongChain({
     history: [],
     fork: blocks || [],
-    vault: book ? emptyVault(book) : emptyVault(),
+    vault: emptyVault(book),
     magic: book,
     timeOf: (block) => {
       try {
@@ -3335,11 +3345,11 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
  * Coinbase carries a root, not a mint. Supply grows only by claim outputs.
  * Unclaimed rows stay out of minted and permitted interest.
  */
-export function stakeRewardSupply(vault, block, nowMs) {
+export function stakeRewardSupply(vault, block, nowMs, magic) {
   if (stakeRewardNotesOf(block).length) return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
   const got = blockRewardRoot(block);
   if (got === 'bad') return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
-  const state = vault ? cloneVault(vault) : emptyVault();
+  const state = vault ? cloneVault(vault) : emptyVault(magic);
   if (state.blankFork) return { ok: false, reason: 'supply', minted: 0n, permitted: 0n, claimed: 0n };
   if (got) {
     const committed = applyStakeRewards(state, block, nowMs, { require: true });

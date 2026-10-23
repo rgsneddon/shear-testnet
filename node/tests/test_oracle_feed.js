@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { consensusFingerprint, PRODUCT_VERSION } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, consensusFingerprint, PRODUCT_VERSION } from '../../crypto/asert.js';
 import { NODE_DISPLAY } from '../src/product.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { encodeDest } from '../../crypto/address.js';
@@ -10,7 +10,7 @@ import { bpsFromSnapshot, loadOracleSnapshot, oracleView } from '../src/oracle_f
 
 describe('Shear Sentinel staking oracle', () => {
   it('reads the bundled basket without moving the sealed epoch rate', () => {
-    const vault = emptyVault();
+    const vault = emptyVault(MAGIC_TESTNET);
     vault.epochBps = 264;
     vault.oracle.annualBps = 264;
     const snap = loadOracleSnapshot();
@@ -34,7 +34,7 @@ describe('Shear Sentinel staking oracle', () => {
   });
 
   it('a fresh local basket does not name the next freeze', () => {
-    const vault = emptyVault();
+    const vault = emptyVault(MAGIC_TESTNET);
     vault.epochBps = 264;
     const now = Date.parse('2026-09-29T12:00:00Z');
     const snap = {
@@ -53,7 +53,7 @@ describe('Shear Sentinel staking oracle', () => {
   });
 
   it('getoracle and getreserve answer staking without opening a portal', () => {
-    const vault = emptyVault();
+    const vault = emptyVault(MAGIC_TESTNET);
     const dest = encodeDest(Buffer.alloc(20, 4));
     const rpc = createRpc({
       store: {

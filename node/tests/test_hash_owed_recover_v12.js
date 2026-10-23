@@ -470,7 +470,7 @@ describe('HASH_OWED_RECOVER_V1', () => {
       owedIn = hashOwedFromTx(tpl.txs[0]) || [];
       accepted = accepted.concat([BigInt(tpl.txs[0].hashAcceptedUnits || 0)]);
     }
-    const units = bonusUnitsBefore(chain);
+    const units = bonusUnitsBefore(chain, MAGIC_TESTNET);
     assert.deepEqual(units, [1, 1, 2, 2, 1]);
     const stamped = chain.map((b) => Number(b.txs[0].hashBonusUnit));
     assert.deepEqual(stamped, units);

@@ -58,7 +58,7 @@ function destOf(id) {
 
 describe('Reserve vault protocol', () => {
   it('stake rewards are minted in full; the fee bank is not a balance', () => {
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     assert.equal(creditFeeBank(state, 10), 0);
     const paid = payoutStakeReward({ state, reward: 15, id: 'r1' });
     assert.equal(paid.ok, true);
@@ -73,7 +73,7 @@ describe('Reserve vault protocol', () => {
     const wait = payoutStakeReward({ state, reward: 3, id: 'r2', gateOk: false });
     assert.equal(wait.ok, false);
     assert.equal(wait.reason, 'gate_wait');
-    const bank = emptyVault();
+    const bank = emptyVault(MAGIC_TESTNET);
     bank.feeBankNanos = 20n;
     creditFeeBank(bank, 20);
     const covered = payoutStakeReward({ state: bank, reward: 7, id: 'r3' });
@@ -97,7 +97,7 @@ describe('Reserve vault protocol', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     assert.equal(state.epochStartMs, 0);
     const dust = deposit({ state, dest: a, nanos: NANOS_PER_SHE, nowMs: t0 });
@@ -121,7 +121,7 @@ describe('Reserve vault protocol', () => {
     const b = destOf(bob);
     assert.notEqual(portalIdFromDest(a), portalIdFromDest(b));
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     assert.equal(canJoin(state, t0 + Math.floor(RESERVE_EPOCH_MS / 2)), true);
@@ -158,7 +158,7 @@ describe('Reserve vault protocol', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
@@ -186,7 +186,7 @@ describe('Reserve vault protocol', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     const pid = portalIdFromDest(a);
@@ -209,7 +209,7 @@ describe('Reserve vault protocol', () => {
     const U64 = 0xffffffffffffffffn;
     const t0 = 1_700_000_000_000;
     const who = destOf(newIdentity());
-    const rolled = emptyVault();
+    const rolled = emptyVault(MAGIC_TESTNET);
     rolled.genesisMs = t0;
     assert.equal(deposit({ state: rolled, dest: who, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     assert.equal(enact({ state: rolled, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
@@ -229,7 +229,7 @@ describe('Reserve vault protocol', () => {
     assert.notEqual(rolled.portals[id].accruedReward, oldAmount);
     assert.equal(supplyIdentity(rolled).ok, true);
 
-    const zero = emptyVault();
+    const zero = emptyVault(MAGIC_TESTNET);
     zero.genesisMs = t0;
     const zDest = destOf(newIdentity());
     assert.equal(deposit({ state: zero, dest: zDest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
@@ -240,7 +240,7 @@ describe('Reserve vault protocol', () => {
     assert.equal(zero.portals[portalIdFromDest(zDest)].accruedReward, 0n);
     assert.equal(supplyIdentity(zero).ok, true);
 
-    const near = emptyVault();
+    const near = emptyVault(MAGIC_TESTNET);
     near.genesisMs = t0;
     const nDest = destOf(newIdentity());
     const stake = U64 - 5n;
@@ -256,7 +256,7 @@ describe('Reserve vault protocol', () => {
     assert.equal(copied.portals[nearId].accruedReward, stake);
     assert.equal(supplyIdentity(near).ok, true);
 
-    const capped = emptyVault();
+    const capped = emptyVault(MAGIC_TESTNET);
     capped.genesisMs = t0;
     const cDest = destOf(newIdentity());
     assert.equal(deposit({ state: capped, dest: cDest, nanos: U64, nowMs: t0 }).ok, true);
@@ -272,7 +272,7 @@ describe('Reserve vault protocol', () => {
     assert.equal(capped.portals[portalIdFromDest(cDest)].accruedReward, U64);
     assert.equal(supplyIdentity(capped).ok, true);
 
-    const live = emptyVault();
+    const live = emptyVault(MAGIC_TESTNET);
     live.genesisMs = t0;
     const alice = destOf(newIdentity());
     const bob = destOf(newIdentity());
@@ -313,7 +313,7 @@ describe('Reserve vault protocol', () => {
   it('a withdraw leaves the u64 reward cap on the portal', () => {
     const U64 = 0xffffffffffffffffn;
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     const dest = destOf(newIdentity());
     assert.equal(deposit({ state, dest, nanos: U64, nowMs: t0 }).ok, true);
@@ -332,7 +332,7 @@ describe('Reserve vault protocol', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
@@ -355,7 +355,7 @@ describe('Reserve vault protocol', () => {
     const a = destOf(alice);
     const b = destOf(bob);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const start = portalRewards(state, a, t0);
@@ -383,7 +383,7 @@ describe('Reserve vault protocol', () => {
     const a = destOf(alice);
     const b = destOf(bob);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: t0 + 1 });
@@ -406,7 +406,7 @@ describe('Reserve vault protocol', () => {
     const a = destOf(alice);
     const continuum = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0, payout: continuum });
     const early = withdraw({ state, dest: a, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
@@ -433,7 +433,7 @@ describe('Reserve vault protocol', () => {
     const end = lockAt + epoch;
     const alice = newIdentity();
     const dest = destOf(alice);
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = 1_700_000_000_000;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
@@ -487,7 +487,7 @@ describe('Reserve oracle', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     assert.equal(state.oracle.id, RESERVE_ORACLE_ID);
     assert.equal(state.oracle.annualBps, RESERVE_ORACLE_DEFAULT_BPS);
@@ -500,7 +500,7 @@ describe('Reserve oracle', () => {
     assert.equal(mid.ok, true);
     assert.equal(mid.interest, 0);
     assert.equal(mid.earned, interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS, 400));
-    const again = emptyVault();
+    const again = emptyVault(MAGIC_TESTNET);
     again.genesisMs = t0;
     deposit({ state: again, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const refused = observeRate({ state: again, annualBps: 0, nowMs: t0 + 1 });
@@ -520,8 +520,8 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const one = emptyVault();
-    const two = emptyVault();
+    const one = emptyVault(MAGIC_TESTNET);
+    const two = emptyVault(MAGIC_TESTNET);
     one.genesisMs = t0;
     two.genesisMs = t0;
     deposit({ state: one, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
@@ -546,7 +546,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const before = portalEpochInterest(state, state.portals[portalIdFromDest(a)], t0 + RESERVE_EPOCH_MS);
@@ -570,7 +570,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const a = destOf(alice);
     const b = destOf(bob);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     assert.equal(state.epochBps, GENESIS_BPS);
@@ -592,7 +592,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const first = vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
@@ -612,7 +612,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const continuumA = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
     const continuumB = destForLogin(bob.address, { viewKey: bob.viewKey, height: 1 });
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0, payout: continuumA });
     const stolen = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS, payout: continuumB });
@@ -629,7 +629,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const a = destOf(alice);
     const b = destOf(bob);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).ok, true);
@@ -659,7 +659,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     assert.equal(asNumSafe(state.liveHashBonusNanos), 1);
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
@@ -677,7 +677,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     state.liveHashBonusNanos = 0n;
@@ -697,7 +697,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const vault = destOf(alice);
     const continuum = destForLogin(alice.address, { viewKey: alice.viewKey });
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     const pid = portalIdFromDest(vault);
     const lock = compactTx(lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-c' }));
@@ -732,7 +732,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(withdrawn.some((r) => r.action === 'withdraw' && r.ok === true), true, JSON.stringify(withdrawn));
     assert.equal(Number(state.totalLockedNanos), 0);
 
-    const wireState = emptyVault();
+    const wireState = emptyVault(MAGIC_TESTNET);
     const wire = encodeWireBlock({
       header: Buffer.alloc(128),
       hash: Buffer.alloc(32),
@@ -757,7 +757,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const vault = destOf(alice);
     const continuum = destForLogin(alice.address, { viewKey: alice.viewKey });
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     const pid = portalIdFromDest(vault);
     const fat = {
@@ -811,7 +811,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     const due = interestNanos(PI_SHE_NANOS, state.epochBps);
@@ -917,7 +917,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
   it('a rate far from the previous freeze is adopted in full when an epoch opens', () => {
     const alice = newIdentity();
     const a = destOf(alice);
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = 1_700_000_000_000;
     state.epochBps = 0;
     const opened = deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: 1_700_000_000_000 });
@@ -931,7 +931,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
     const end = t0 + RESERVE_EPOCH_MS;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = t0;
     assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     state.epochBps = -250;
@@ -945,7 +945,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(paid.interest, 0);
     assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(paid.payout, paid.principal);
-    const zero = emptyVault();
+    const zero = emptyVault(MAGIC_TESTNET);
     zero.genesisMs = t0;
     assert.equal(deposit({ state: zero, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     zero.epochBps = 0;

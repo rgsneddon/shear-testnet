@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { newIdentity, spendDestOf } from './address.js';
-import { NANOS_PER_SHE } from './asert.js';
+import { MAGIC_TESTNET, NANOS_PER_SHE } from './asert.js';
 import { vaultDest } from './flow_sheet.js';
 import { levyNanos } from './levy.js';
 import { signSpendTx } from './spend.js';
@@ -42,7 +42,7 @@ describe('reserve principal is not spendable', () => {
     assert.equal(typeof payer, 'string');
     assert.equal(typeof vault, 'string');
     assert.notEqual(payer, vault);
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     const locked = applyReserveBlock({
       state,
       block: {

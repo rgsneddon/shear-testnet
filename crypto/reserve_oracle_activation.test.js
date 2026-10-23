@@ -75,7 +75,7 @@ function windowOf(tenths, startHeight, count = W) {
 }
 
 function freshVault() {
-  const state = emptyVault();
+  const state = emptyVault(MAGIC_TESTNET);
   state.genesisMs = T0;
   state.epochStartMs = T0;
   state.currentEpoch = 0;
@@ -466,7 +466,7 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     const preOpen = jsCommit(1, inside, T0 + 1);
     assert.equal(preOpen.ok, false, preOpen.reason);
     assert.equal(preOpen.reason, 'rate_commit');
-    const bare = emptyVault();
+    const bare = emptyVault(MAGIC_TESTNET);
     const beforeGenesis = applyReserveBlock({
       state: bare,
       block: {
@@ -550,7 +550,7 @@ async function satInterest(offset, holdEpochs, rates) {
   const epoch = RESERVE_EPOCH_MS;
   const lockAt = T0 + offset * epoch;
   const drawAt = lockAt + holdEpochs * epoch;
-  const state = emptyVault();
+  const state = emptyVault(MAGIC_TESTNET);
   state.magic = MAGIC_TESTNET;
   const session = await bootReserveEvm();
   const indexes = Object.keys(rates).map(Number).sort((a, b) => a - b);
@@ -699,7 +699,7 @@ async function enactEvm(session, nowMs) {
 async function jsEvmStake({ locks, drawOffset, rates = null }) {
   const epoch = RESERVE_EPOCH_MS;
   const drawAt = T0 + drawOffset * epoch;
-  const state = emptyVault();
+  const state = emptyVault(MAGIC_TESTNET);
   state.magic = MAGIC_TESTNET;
   state.genesisMs = T0;
   const session = await bootReserveEvm();
@@ -856,7 +856,7 @@ describe('the stake-reward cutoff is per network', () => {
     const addAt = T0 + Math.floor(epoch / 2);
     const lateAt = T0 + epoch - quarter + 1000;
     const end = T0 + epoch;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: earlyWho, nanos: PI_SHE_NANOS, nowMs: earlyAt }).ok, true);
@@ -933,7 +933,7 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
 
   async function oneLock(nanos, lockAt, drawAt) {
     const who = minerOf();
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: who, nanos, nowMs: lockAt }).ok, true);
@@ -973,7 +973,7 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     const second = 2;
     const addAt = T0 + epoch;
     const drawAt = T0 + 2 * epoch;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: who, nanos: first, nowMs: T0 }).ok, true);
@@ -1006,7 +1006,7 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     const quarter = Math.floor(epoch / STAKE_CUTOFF_QUARTER_DEN);
     const lateAt = T0 + epoch - quarter + 1000;
     const end = T0 + epoch;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS - 1, nowMs: T0 }).ok, true);
@@ -1064,7 +1064,7 @@ describe('pinClock runs before the first lock in a block', () => {
     assert.equal(paid.interest, 0);
     assert.equal(decodeWithdrawEarned(drawn.returnValue), want);
 
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.magic = MAGIC_TESTNET;
     state.genesisMs = T0;
     state.pendingRates[2] = bps;
@@ -1100,7 +1100,7 @@ describe('pinClock runs before the first lock in a block', () => {
 describe('an unpinned clock rejects a lock', () => {
   it('fails before the pin on an empty vault, a replay, and a sealed boot', () => {
     const who = minerOf();
-    const empty = emptyVault();
+    const empty = emptyVault(MAGIC_TESTNET);
     const denied = deposit({ state: empty, dest: who, nanos: PI_SHE_NANOS, nowMs: T0 });
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'clock');
@@ -1111,7 +1111,7 @@ describe('an unpinned clock rejects a lock', () => {
     assert.equal(after.ok, true, after.reason);
     assert.equal(Number(empty.totalLockedNanos), PI_SHE_NANOS);
 
-    const replay = emptyVault();
+    const replay = emptyVault(MAGIC_TESTNET);
     replay.magic = MAGIC_TESTNET;
     const block = {
       height: 1,
@@ -1124,7 +1124,7 @@ describe('an unpinned clock rejects a lock', () => {
     assert.equal(replayDenied.ok, false);
     assert.equal(replayDenied.reason, 'clock');
     const trialDenied = trialReserveApply({
-      state: emptyVault(),
+      state: emptyVault(MAGIC_TESTNET),
       txs: [lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'trial-unpinned' })],
       nowMs: T0,
       genesisMs: 0,
@@ -1164,7 +1164,7 @@ describe('the block path rolls before its transactions', () => {
     const epoch = RESERVE_EPOCH_MS;
     const who = minerOf();
     const rates = { 1: 300, 2: 400, 3: 500 };
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.magic = MAGIC_TESTNET;
     for (const idx of [1, 2, 3]) state.pendingRates[idx] = rates[idx];
     const session = await bootReserveEvm();
@@ -1258,7 +1258,7 @@ describe('a ≥π withdraw in the second epoch', () => {
   async function secondEpochWithdraw(withRoot) {
     const epoch = RESERVE_EPOCH_MS;
     const who = minerOf();
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.magic = MAGIC_TESTNET;
     const session = await bootReserveEvm();
     const lock = [
@@ -1348,7 +1348,7 @@ describe('a withdraw stays open after the enacting block', () => {
   async function exitLater({ blocksAfter = null, at = null, gapBps = null, laterBps = null } = {}) {
     const epoch = RESERVE_EPOCH_MS;
     const who = minerOf();
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.magic = MAGIC_TESTNET;
     const session = await bootReserveEvm();
     const cb = { coinbase: true, vout: [] };
@@ -1459,7 +1459,7 @@ describe('a no-commit gap keeps the last adopted rate', () => {
     const who = minerOf();
     const adopted = 350;
     const later = 900;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.magic = MAGIC_TESTNET;
     state.pendingRates[1] = adopted;
     state.pendingRates[3] = later;
@@ -1527,7 +1527,7 @@ describe('a skipped commit carries forward', () => {
   it('JS and the EVM pay the next uncommitted epoch at the last gap commit', async () => {
     const epoch = RESERVE_EPOCH_MS;
     const who = minerOf();
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.magic = MAGIC_TESTNET;
     state.pendingRates[2] = 0;
     state.pendingRates[3] = 10000;
@@ -1596,7 +1596,7 @@ describe('the rate lookback is load-bearing', () => {
   it('JS and the EVM pay an unstamped epoch at the last committed rate', async () => {
     const epoch = RESERVE_EPOCH_MS;
     const who = minerOf();
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: T0 }).ok, true);
@@ -1632,7 +1632,7 @@ describe('a lock stays until its epoch ends', () => {
   async function lockEpochOne(who) {
     const epoch = RESERVE_EPOCH_MS;
     const lockAt = T0 + epoch;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
@@ -1675,7 +1675,7 @@ describe('a lock stays until its epoch ends', () => {
     const laterAt = end + 8;
     const boundary = minerOf();
     const after = minerOf();
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: boundary, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
@@ -1728,7 +1728,7 @@ describe('a top-up does not re-lock earlier principal', () => {
     const lockAt = T0;
     const topAt = T0 + epoch + Math.floor(epoch / 2);
     const topEnd = T0 + 2 * epoch;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
@@ -1800,7 +1800,7 @@ describe('a top-up does not re-lock earlier principal', () => {
 describe('an epoch with no commit keeps the running rate', () => {
   it('fixed mode keeps the adopted rate when the next epoch has no commit', () => {
     const epoch = RESERVE_EPOCH_MS;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.genesisMs = T0;
     const who = minerOf();
     assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: T0 }).ok, true);
@@ -1825,7 +1825,7 @@ describe('an epoch with no commit keeps the running rate', () => {
     const epoch = RESERVE_EPOCH_MS;
     const who = minerOf();
     const adopted = 350;
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     state.magic = MAGIC_TESTNET;
     const session = await bootReserveEvm();
     state.pendingRates[1] = adopted;
@@ -1943,7 +1943,7 @@ function extendChain(chain, miner, { from, to, salt, tenths }) {
 }
 
 function committedRate(blocks) {
-  const state = emptyVault();
+  const state = emptyVault(MAGIC_TESTNET);
   state.magic = MAGIC_TESTNET;
   for (let i = 0; i < blocks.length; i += 1) {
     const parent = i > 0 ? blocks[i - 1] : null;

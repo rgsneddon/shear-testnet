@@ -85,23 +85,27 @@ export function blockNeedsReserve(block) {
   return false;
 }
 
-/** Book the replay applies. An omitted argument keeps the vault's own magic. */
-function replayMagic(magic, state) {
-  if (magic != null && magic !== '') return String(magic);
-  if (state && state.magic != null && state.magic !== '') return String(state.magic);
-  return MAGIC_TESTNET;
+/** Book the replay applies. A missing argument is not the v12 clock. */
+function replayMagic(magic) {
+  if (magic == null || magic === '') {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
+  return String(magic);
 }
 
 /** Vault after `block`, or null when this block does not touch a vault. */
 function vaultApply(state, block, prior, magic) {
   const parent = prior?.length ? prior[prior.length - 1] : null;
-  if (state && magic != null && magic !== '') state.magic = String(magic);
+  const book = replayMagic(magic);
+  if (state) state.magic = book;
   return applyReserveBlock({
     state,
     ...reserveApplyFields({
       prior,
       block,
-      magic: replayMagic(magic, state),
+      magic: book,
       parentMs: parent ? headerMs(parent) || 0 : 0,
       genesisMs: headerMs(prior?.[0] || block) || 0,
       nowMs: headerMs(block) || 0,
@@ -758,7 +762,7 @@ function accountBlock(prev, block, opts = {}) {
   state.dust = settled.dust;
   state.overflow = settled.overflow;
   state.carry = carryOut;
-  const reward = stakeRewardSupply(opts.vault, block, ts, opts.oracle);
+  const reward = stakeRewardSupply(opts.vault, block, ts, opts.magic);
   if (!reward.ok) return { reason: reward.reason || 'supply', state };
   const claimedReward = reward.claimed || 0n;
   const publicTotal = potMinted + mintedHashHere + levy + reward.minted;

@@ -148,7 +148,7 @@ function foldOpts() {
 }
 
 function expectSupplyReject(chain, label) {
-  const snap = fillSnapInterest(chain.map(() => ({})), chain);
+  const snap = fillSnapInterest(chain.map(() => ({})), chain, MAGIC_TESTNET);
   assert.equal(snap.ok, false, `${label} snap ${snap.reason}`);
   assert.equal(snap.reason, 'supply', label);
   const folded = foldSupply(chain, foldOpts());
@@ -160,7 +160,7 @@ function expectSupplyReject(chain, label) {
 }
 
 function expectVerified(chain, interest, label) {
-  const snap = fillSnapInterest(chain.map(() => ({})), chain);
+  const snap = fillSnapInterest(chain.map(() => ({})), chain, MAGIC_TESTNET);
   assert.equal(snap.ok, true, `${label} snap ${snap.reason}`);
   const folded = foldSupply(chain, foldOpts());
   assert.equal(folded.ok, true, `${label} fold ${folded.reason}`);
@@ -224,7 +224,7 @@ describe('principal-only withdraw receipts', () => {
     const openedB = honest - 5 - PI_SHE_NANOS;
     assert.equal(openedA + openedB, 0);
     expectSupplyReject(chain, 'offset');
-    const parent = vaultAfterBlock(null, chain[0]);
+    const parent = vaultAfterBlock(null, chain[0], [], MAGIC_TESTNET);
     assert.equal(parent.ok, true);
     const minted = blockWithdrawInterest(parent.vault, chain[1], DRAW);
     const allowed = blockPermittedInterest(parent.vault, chain[1], DRAW);
@@ -287,7 +287,7 @@ describe('principal-only withdraw receipts', () => {
       annualBps: 0,
       observedAtMs: GENESIS,
     });
-    assert.equal(vaultAfterBlock(null, observed).ok, false);
+    assert.equal(vaultAfterBlock(null, observed, [], MAGIC_TESTNET).ok, false);
     const chain = [
       potBlock(GENESIS, miner, [lockOf(miner, first, stake, 'bps-a')]),
       potBlock(GENESIS + 1000, miner, [
@@ -305,14 +305,14 @@ describe('principal-only withdraw receipts', () => {
       ]),
     ];
     expectVerified(chain, 0, 'genesis-rate');
-    let vault = vaultAfterBlock(null, chain[0]);
+    let vault = vaultAfterBlock(null, chain[0], [], MAGIC_TESTNET);
     assert.equal(vault.ok, true);
-    vault = vaultAfterBlock(vault.vault, chain[1]);
+    vault = vaultAfterBlock(vault.vault, chain[1], [], MAGIC_TESTNET);
     assert.equal(vault.ok, true);
     assert.equal(vault.vault.epochBps, GENESIS_BPS);
-    vault = vaultAfterBlock(vault.vault, chain[2]);
+    vault = vaultAfterBlock(vault.vault, chain[2], [], MAGIC_TESTNET);
     assert.equal(vault.ok, true);
-    vault = vaultAfterBlock(vault.vault, chain[3]);
+    vault = vaultAfterBlock(vault.vault, chain[3], [], MAGIC_TESTNET);
     assert.equal(vault.ok, true, 'roll');
     assert.equal(vault.vault.epochBps, GENESIS_BPS);
 
@@ -323,8 +323,8 @@ describe('principal-only withdraw receipts', () => {
       voteTx({ from: floorMiner, dest: voter, choice: VOTE_DECREASE, id: 'floor-down' }),
     ]);
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
-    const seated = vaultAfterBlock(null, opened);
-    const denied = vaultAfterBlock(seated.vault, down);
+    const seated = vaultAfterBlock(null, opened, [], MAGIC_TESTNET);
+    const denied = vaultAfterBlock(seated.vault, down, [], MAGIC_TESTNET);
     assert.equal(denied.ok, false);
     expectSupplyReject([opened, down], 'unit-floor');
   });
@@ -414,7 +414,7 @@ describe('principal-only withdraw receipts', () => {
     assert.equal(parent.ok, true);
     parent.state.mintedInterest = U64;
     parent.state.permittedInterest = U64;
-    const vault = vaultAfterBlock(null, honest[0]);
+    const vault = vaultAfterBlock(null, honest[0], [], MAGIC_TESTNET);
     const stepped = supplyStep(parent.state, honest[1], {
       magic: MAGIC_TESTNET,
       unit: HASH_BONUS_NANOS,
@@ -437,11 +437,11 @@ describe('principal-only withdraw receipts', () => {
     expectVerified([lock, draw], 0, 'withdraw-fork');
     expectVerified([lock, empty], 0, 'reorg-fork');
     const rows = [{}, {}];
-    const snap = fillSnapInterest(rows, [lock, empty]);
+    const snap = fillSnapInterest(rows, [lock, empty], MAGIC_TESTNET);
     assert.equal(snap.ok, true);
     assert.equal(rows[1].mintedInterest, 0n);
     assert.equal(rows[1].permittedInterest, 0n);
-    const kept = fillSnapInterest([{}, {}], [lock, draw]);
+    const kept = fillSnapInterest([{}, {}], [lock, draw], MAGIC_TESTNET);
     assert.equal(kept.ok, true);
   });
 
@@ -450,7 +450,7 @@ describe('principal-only withdraw receipts', () => {
     const portal = portalDest();
     const lock = potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'cons-lock')]);
     const draw = potBlock(DRAW, miner, [drawOf(portal, miner, PI_SHE_NANOS, 'cons-draw')]);
-    const parent = vaultAfterBlock(null, lock);
+    const parent = vaultAfterBlock(null, lock, [], MAGIC_TESTNET);
     assert.equal(parent.ok, true, parent.reason);
     const honest = blockWithdrawInterest(parent.vault, draw, DRAW);
     assert.equal(honest.ok, true, honest.reason);
@@ -513,7 +513,7 @@ describe('principal-only withdraw receipts', () => {
     beside.vout.push({ commit: beside.vout[0].commit });
     assert.equal(reserveAction(beside).opened, true);
     assert.equal(explicitTypedKindRejected(beside)?.reason, 'kind');
-    const parent = vaultAfterBlock(null, lock);
+    const parent = vaultAfterBlock(null, lock, [], MAGIC_TESTNET);
     const bound = boundReserveWithdraw(beside, parent.vault, null, DRAW);
     assert.equal(bound.ok, true, bound.reason);
   });
@@ -549,7 +549,7 @@ describe('principal-only withdraw receipts', () => {
       lockOf(chainMiner, portal, PI_SHE_NANOS, 'vb-lock'),
       lockOf(chainMiner, other, PI_SHE_NANOS, 'vb-lock-b'),
     ]);
-    const vault = vaultAfterBlock(null, lock);
+    const vault = vaultAfterBlock(null, lock, [], MAGIC_TESTNET);
     assert.equal(vault.ok, true, vault.reason);
 
     async function verdictFor(rows) {

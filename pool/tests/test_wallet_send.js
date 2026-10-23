@@ -11,6 +11,7 @@ import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
 import {
+  MAGIC_TESTNET,
   extraMintAllowed,
   RESERVE_PROGRAM,
   JOIN_PROGRAM,
@@ -72,7 +73,7 @@ function storeWith({ rows = [], reserveVault, issued } = {}) {
     historyFor: (addr) => rows.filter((r) => r.to === addr || r.from === addr),
     tip: () => ({ height: 20 }),
     mempool: [],
-    reserveVault: reserveVault || emptyVault(),
+    reserveVault: reserveVault || emptyVault(MAGIC_TESTNET),
     vortice: { issued: issued || Object.create(null) },
   };
 }

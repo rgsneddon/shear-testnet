@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newIdentity, spendDestOf, hash20FromAddress } from '../../crypto/address.js';
 import {
+  MAGIC_TESTNET,
   GENESIS_BITS_PACKED,
   PI_SHE_NANOS,
   RESERVE_EPOCH_MS,
@@ -88,7 +89,7 @@ function owner() {
 
 function openPortal(principal, when = T0, { payout = null } = {}) {
   const who = owner();
-  const state = emptyVault();
+  const state = emptyVault(MAGIC_TESTNET);
   state.genesisMs = T0;
   const got = deposit({
     state,
@@ -137,7 +138,7 @@ describe('Vault Security test map', () => {
       const out = sealed.vout[0];
       const want20 = Buffer.from(hash20FromAddress(who.dest)).toString('hex');
       assert.equal(Buffer.from(out.dest20).toString('hex'), want20);
-      const state = emptyVault();
+      const state = emptyVault(MAGIC_TESTNET);
       const applied = applyReserveBlock({
         state,
         block: {
@@ -177,7 +178,7 @@ describe('Vault Security test map', () => {
     for (const split of splits) {
       for (const bps of [0, 1, 284, 10000]) {
         const who = owner();
-        const state = emptyVault();
+        const state = emptyVault(MAGIC_TESTNET);
         state.genesisMs = T0;
         assert.equal(deposit({
           state, dest: who.dest, nanos: PI_SHE_NANOS, nowMs: T0, ownerPub: who.pub, payout: who.dest,
@@ -308,11 +309,11 @@ describe('Vault Security test map', () => {
   });
 
   it('P3-a transaction fees are not a vault balance or a reward', () => {
-    const dirty = emptyVault();
+    const dirty = emptyVault(MAGIC_TESTNET);
     dirty.feeBankNanos = 1n;
     assert.equal(supplyIdentity(dirty).reason, 'supply');
     for (const n of [1, 3, 17]) {
-      const state = emptyVault();
+      const state = emptyVault(MAGIC_TESTNET);
       state.genesisMs = T0;
       const people = [];
       for (let i = 0; i < n; i += 1) {
@@ -352,7 +353,7 @@ describe('Vault Security test map', () => {
         assert.equal(idn.feeBankRewardNanos, 0);
         assert.equal(mintedSum, 0);
         assert.equal(idn.mintedReward, 0);
-        const minted = payoutStakeReward({ state: emptyVault(), reward, id: `fee-${n}-${bank}` });
+        const minted = payoutStakeReward({ state: emptyVault(MAGIC_TESTNET), reward, id: `fee-${n}-${bank}` });
         assert.equal(minted.fromFee, 0);
         assert.equal(minted.minted, reward);
         assert.equal(minted.source, 'coinbase');
@@ -372,7 +373,7 @@ describe('Vault Security test map', () => {
       };
     })();
     for (const epochs of [1, 5, 40]) {
-      const state = emptyVault();
+      const state = emptyVault(MAGIC_TESTNET);
       state.genesisMs = T0;
       let expected = 0;
       let cursor = T0;
@@ -459,7 +460,7 @@ describe('Vault Security test map', () => {
   it('P4-a and P4-c a miner or pool observe does not move the rate', async () => {
     const ages = [T0, T0 - 13 * DAY, T0 - 15 * DAY];
     const rates = [0, 1, GENESIS_BPS - 100, GENESIS_BPS + 100, 9999, 10000];
-    const state = emptyVault();
+    const state = emptyVault(MAGIC_TESTNET);
     deposit({ state, dest: owner().dest, nanos: PI_SHE_NANOS, nowMs: T0 });
     const prior = state.epochBps;
     for (const k of [1, 5, 13]) {

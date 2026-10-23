@@ -62,7 +62,7 @@ function destOf() {
 }
 
 function freshVault() {
-  const state = emptyVault();
+  const state = emptyVault(MAGIC_TESTNET);
   state.magic = MAGIC_TESTNET;
   state.genesisMs = T0;
   return state;
@@ -489,7 +489,7 @@ describe('time-locked withdraw supply', () => {
   it('a tranche-less legacy balance is one credit due at its lock-epoch end', () => {
     // v12 genesis has no portals. A live lock always records a tranche.
     assert.equal(V12_GENESIS_BLOCK_HASH, '');
-    assert.equal(Object.keys(emptyVault().portals).length, 0);
+    assert.equal(Object.keys(emptyVault(MAGIC_TESTNET).portals).length, 0);
     const recorded = freshVault();
     const recordedDest = destOf();
     assert.equal(applyLock(recorded, plainLock(recordedDest, T0, 'lump-recorded'), T0).ok, true);

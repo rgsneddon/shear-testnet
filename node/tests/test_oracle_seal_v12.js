@@ -6,6 +6,7 @@ import path from 'node:path';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import {
+  MAGIC_TESTNET,
   GENESIS_BITS_PACKED,
   PI_SHE_NANOS,
   RESERVE_EPOCH_MS,
@@ -50,7 +51,7 @@ describe('oracle observe is not a rate', () => {
   it('a local rate and a coinbase observe leave the epoch on the genesis bps', () => {
     for (const bps of RATES) {
       const alice = newIdentity();
-      const local = emptyVault();
+      const local = emptyVault(MAGIC_TESTNET);
       openEpoch(local, destOf(alice), T0);
       assert.equal(enact({ state: local, nowMs: T0 + RESERVE_EPOCH_MS }).ok, true);
       const seen = observeRate({
@@ -64,7 +65,7 @@ describe('oracle observe is not a rate', () => {
       openEpoch(local, destOf(newIdentity()), T0 + RESERVE_EPOCH_MS + 2);
       assert.equal(local.epochBps, GENESIS_BPS, `local ${bps}`);
 
-      const held = emptyVault();
+      const held = emptyVault(MAGIC_TESTNET);
       const holder = destOf(newIdentity());
       openEpoch(held, holder, T0);
       const due = portalEpochInterest(

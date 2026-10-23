@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, BLOCK_SUBSIDY_NANOS, NANOS_PER_SHE, HASH_BONUS_NANOS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { explorerRecentTxs, confirmedBlockTxs, networkSupplySettled, hashBonusEmittedOfBlock } from '../src/wallet_api.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
 import { encodeHeader } from '../../crypto/header.js';
@@ -136,7 +136,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
         txs: [{ coinbase: true, vout: [{ kind: 'pot', noteCommit: Buffer.alloc(32), nanos: 0 }] }],
       });
     }
-    const store = { blocks, tip: () => blocks[2], reserveVault: emptyVault() };
+    const store = { blocks, tip: () => blocks[2], reserveVault: emptyVault(MAGIC_TESTNET) };
     const supply = await networkSupplySettled(store);
     assert.equal(supply.supplyStatus, 'mismatch');
     assert.equal(supply.potNanos, 0);
@@ -172,7 +172,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
       ],
       txs: [{ coinbase: true, vout: [{ kind: 'pot', nanos: 0 }] }],
     }];
-    const store = { blocks, tip: () => blocks[1], reserveVault: emptyVault() };
+    const store = { blocks, tip: () => blocks[1], reserveVault: emptyVault(MAGIC_TESTNET) };
     const fromLeaves = hashBonusEmittedOfBlock(blocks[0], HASH_BONUS_NANOS);
     assert.equal(fromLeaves, 0);
     const fromShares = hashBonusEmittedOfBlock(blocks[1], HASH_BONUS_NANOS);
@@ -241,7 +241,7 @@ describe('mined-block pending uses consensus 6, not pool_merchant 30', () => {
         ],
       }],
     };
-    const vault = emptyVault();
+    const vault = emptyVault(MAGIC_TESTNET);
     vault.mintBankNanos = BigInt(extra);
     vault.totalLockedNanos = BigInt(staked);
     vault.portals.stake = { staked: BigInt(staked), idle: 0n, claimableRewards: 0n };

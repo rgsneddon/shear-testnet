@@ -2,6 +2,9 @@
  * A shear-dev reorg that crosses the 288s epoch must be adopted, and the
  * vault replay must use that book's clock. The v12 replay of the same
  * enactment withdraw is still inside the 4-day epoch and is refused.
+ * Stage 0 rejects a lock, vote, or withdraw that carries a byte-3 bucket
+ * proof before any proof work, so that body is not adopted. The enactment
+ * supply check is the direct dev-clock replay.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,7 +31,7 @@ import {
 import { vaultCommitment } from '../../crypto/vault_seal.js';
 import { createStore } from '../src/node.js';
 import { coinbaseTx } from '../src/chain.js';
-import { foldSupply, vaultAfterBlock, vaultParent } from '../src/supply.js';
+import { auditCirculatingSupply, foldSupply, vaultAfterBlock, vaultParent } from '../src/supply.js';
 
 const GENESIS = 1_700_000_000_000;
 const STEP_MS = 9000;
@@ -119,6 +122,39 @@ describe('shear-dev reorg across an epoch', () => {
     assert.equal(units.length, local.blocks.length);
     const folded = foldSupply(local.blocks, { magic: DEV });
     assert.equal(folded.ok, true, folded.reason);
+    // Stage 0 refuses a lock or withdraw before proof work, on every book.
+    // A heavier body that carries one is not adopted, and the live vault stays.
+    const commit = Buffer.alloc(32, 7);
+    const bucket = (kind) => ({
+      id: `stage0-${kind}`,
+      kind,
+      admit_proof: {
+        v: 3,
+        blob: Buffer.concat([Buffer.from([3]), Buffer.alloc(40, 1)]),
+        cTilde: commit,
+      },
+      vin: [{ commit }],
+    });
+    const lock = bucket('lock');
+    const draw = bucket('withdraw');
+    assert.equal(local.queueTx(lock).reason, 'vault_unavailable');
+    assert.equal(local.queueTx(draw).reason, 'vault_unavailable');
+    const poisoned = peer.blocks.map((block, i) => (
+      i === peer.blocks.length - 1
+        ? { ...block, txs: [...(block.txs || []), lock, draw] }
+        : block
+    ));
+    const refused = await Promise.resolve(local.ingest(poisoned.slice(1), TRUST));
+    assert.equal(refused.ok, false, refused.reason);
+    assert.equal(refused.reason, 'vault_unavailable');
+    assert.equal(local.tip().height, 35);
+    assert.equal(
+      Buffer.from(local.tip().hash).equals(Buffer.from(peer.tip().hash)),
+      true,
+    );
+    assert.equal(local.reserveVault.totalLockedNanos, replay.totalLockedNanos);
+    assert.equal(local.reserveVault.bonusEnacted, replay.bonusEnacted);
+    assert.equal(local.reserveVault.epochStartMs, replay.epochStartMs);
   });
 
   it('replays a lock and enactment withdraw on the dev clock', () => {
@@ -197,11 +233,23 @@ describe('shear-dev reorg across an epoch', () => {
     const replay = vaultParent(chain, chain.length, DEV);
     assert.equal(replay.ok, true);
     sameVault(replay.vault, live);
-    assert.equal(vaultParent(chain, chain.length).ok, false);
+    assert.throws(() => vaultParent(chain, chain.length), /unknown_magic/);
     assert.equal(vaultParent(chain, chain.length, 'shear-testnet-v12').ok, false);
     const units = bonusUnitsBefore(chain, DEV);
     assert.ok(Array.isArray(units));
     assert.equal(units.length, chain.length);
-    assert.equal(bonusUnitsBefore(chain), null);
+    assert.throws(() => bonusUnitsBefore(chain), /unknown_magic/);
+    assert.throws(() => emptyVault(), /unknown_magic/);
+    assert.throws(() => vaultAfterBlock(emptyVault(DEV), chain[0], []), /unknown_magic/);
+    const folded = foldSupply(chain, { genesisMs: GENESIS, magic: DEV });
+    assert.equal(folded.ok, true, folded.reason);
+    assert.equal(folded.state.mintedInterest, 0n);
+    const audit = auditCirculatingSupply(chain, { magic: DEV });
+    assert.equal(audit.status, 'verified', audit.reason);
+    assert.equal(audit.extraMintNanos, 0);
+    assert.equal(audit.measuredHashNanos, 0);
+    assert.equal(audit.vaultPrincipalNanos, 0);
+    assert.equal(live.enactedAtMs, enactAt);
+    assert.equal(replay.vault.enactedAtMs, enactAt);
   });
 });

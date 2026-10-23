@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { admitBaseFromAddress, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
 import { admitBaseScalar } from '../../crypto/admit.js';
-import { NANOS_PER_SHE, RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, NANOS_PER_SHE, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { bindWeightFee, levyNeed, levyNanos } from '../../crypto/levy.js';
 import { noteU64, openNoteAmount, sealHiddenNote, sealNote } from '../../crypto/note.js';
 import { emptyVault, portalIdFromDest, voteTx, vortexSums, withdrawTx } from '../../crypto/reserve_vault.js';
@@ -34,7 +34,7 @@ function store() {
     historyFor: () => [],
     tip: () => ({ height: 20 }),
     mempool: [],
-    reserveVault: emptyVault(),
+    reserveVault: emptyVault(MAGIC_TESTNET),
     vortice: { issued: Object.create(null) },
   };
 }
@@ -257,7 +257,7 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     const dest = spendDestOf(alice.spendPub);
     const samples = [0n, 1n, SCALE, (1n << 53n) + 11n, (1n << 57n) + 5n];
     for (const n of samples) {
-      const vault = emptyVault();
+      const vault = emptyVault(MAGIC_TESTNET);
       const id = portalIdFromDest(dest);
       vault.totalLockedNanos = n;
       vault.portals[id] = { staked: n, idle: 0n, redeemedNanos: 0n };
