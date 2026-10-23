@@ -3417,9 +3417,10 @@ export function createStore(dir, {
     if (early) return { ok: false, reason: early, tip: tip() };
     // The off-loop path proves the header target here, so every caller of
     // append is gated, not only p2p. A trusted hash is the caller's own proof.
+    // samplesPruned is wire data and does not skip it: an unburied pruned
+    // header skips only the slot commitment, never the target.
     const offLoopGate = !!verifyOpts.offLoopPow
       && verifyOpts.probeBody !== true
-      && block?.samplesPruned !== true
       && !trustedHashFor(block, verifyOpts)
       && extendsThisTip(block);
     if (offLoopGate) {

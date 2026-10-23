@@ -35,7 +35,7 @@ import { decodeBookSnap, writeBookSnap } from '../src/book_snap.js';
 import { bookSealKeyPath } from '../src/book_seal_key.js';
 import { buildTemplate, retarget } from '../src/chain.js';
 import { applyVerifiedIpcBlock } from '../src/p2p_ipc.js';
-import { decodeWireBlock, encodeWireBlock, rejectUnprovenTipExtend } from '../src/p2p.js';
+import { decodeWireBlock, encodeWireBlock, isFinalIngestFail, rejectUnprovenTipExtend } from '../src/p2p.js';
 import { createStore, OWED_CHECKPOINT_SPACING } from '../src/store.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 
@@ -728,6 +728,17 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
       assert.equal(viaIngest.reason, 'pow', viaIngest.reason);
       assert.equal(scans, 0, `book scan via ingest ${scans}`);
       assertOwedStill(before, snapStats(store), 'tip-extend pow via ingest');
+      assert.equal(Buffer.from(store.tip().hash).toString('hex'), tipHex);
+      // samplesPruned is a wire field. It does not skip the header target.
+      const prunedCollide = { ...tipTemplate(store, dest), samplesPruned: true };
+      prunedCollide.hash = Buffer.from(store.tip().hash);
+      const viaPruned = await store.ingest([prunedCollide], { offLoopPow: true });
+      assert.equal(viaPruned.ok, false);
+      assert.equal(viaPruned.reason, 'pow', viaPruned.reason);
+      assert.notEqual(viaPruned.reason, 'not_heavier');
+      assert.equal(isFinalIngestFail(viaPruned.reason), true);
+      assert.equal(scans, 0, `book scan via pruned ingest ${scans}`);
+      assertOwedStill(before, snapStats(store), 'tip-extend pruned pow');
       assert.equal(Buffer.from(store.tip().hash).toString('hex'), tipHex);
       const flipped = flipVersion(tipTemplate(store, dest));
       flipped.hash = Buffer.from(store.tip().hash);
