@@ -296,6 +296,15 @@ function faultHooksOpen(magic) {
   const ctx = String(process.env.NODE_TEST_CONTEXT || '');
   return ctx === 'child' || ctx === 'child-v8';
 }
+/** Open-round rows are a format-checked advertisement, not a proof. */
+export const OPEN_ROUND_CAP = 1024;
+/** Distinct tags one peer address may land in the open-round map. */
+export const OPEN_ROUND_PEER_TAGS = 64;
+/** Updates one peer address may land per window. The rest are dropped. */
+export const OPEN_ROUND_PEER_RATE = 64;
+export const OPEN_ROUND_PEER_WINDOW_MS = 30_000;
+const OPEN_ROUND_PEER_BUDGETS = 4096;
+
 /** Two headers pages per peer. A pruned block needs SAMPLE_PRUNE_CONFIRMATIONS of them. */
 export const OFFER_PEER_CAP = 4000;
 export const OFFER_PEER_SLOTS = 8;
@@ -3563,13 +3572,14 @@ export function createStore(dir, {
       staged = stageAppend(check, block, burial);
     } catch (err) {
       // A throw here is local state, still before owedRows is replaced.
-      // The block stays retryable, the peer is scored, and the node stays up.
-      // The log keeps the throw text. The reason the peer sees is stable.
+      // The block stays retryable and the node stays up. The peer is not
+      // scored: the same local bug would otherwise ban every relayer.
+      // The log is the ops signal. The reason the peer sees is stable.
       const detail = String(err?.message || 'apply').slice(0, 80);
       try {
         console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason: detail }));
       } catch { /* ignore */ }
-      return { ok: false, reason: 'apply_stage', scorePeer: true, tip: tip() };
+      return { ok: false, reason: 'apply_stage', tip: tip() };
     }
     if (!staged || staged.ready !== true) return staged;
     try {
@@ -5660,22 +5670,80 @@ export function createStore(dir, {
   let mempoolVault = null;
   const openRound = new Map();
   const OPEN_ROUND_TTL_MS = 180_000;
+  const peerRoundBudget = new Map();
 
-  function noteOpenRound(rows = [], { source = 'local' } = {}) {
+  function dropOldestPeerRound() {
+    let oldestKey = '';
+    let oldestAt = Infinity;
+    for (const [key, row] of openRound) {
+      if (row.source === 'local') continue;
+      if (row.at < oldestAt) {
+        oldestAt = row.at;
+        oldestKey = key;
+      }
+    }
+    if (!oldestKey) return false;
+    openRound.delete(oldestKey);
+    return true;
+  }
+
+  function peerBudget(peer, now) {
+    const key = String(peer || '');
+    let row = peerRoundBudget.get(key);
+    if (row) peerRoundBudget.delete(key);
+    if (!row) {
+      while (peerRoundBudget.size >= OPEN_ROUND_PEER_BUDGETS) {
+        const oldest = peerRoundBudget.keys().next().value;
+        if (oldest == null) break;
+        peerRoundBudget.delete(oldest);
+      }
+      row = { windowStart: now, used: 0, tags: new Set() };
+    } else if (now - row.windowStart >= OPEN_ROUND_PEER_WINDOW_MS) {
+      row.windowStart = now;
+      row.used = 0;
+    }
+    peerRoundBudget.set(key, row);
+    return row;
+  }
+
+  function noteOpenRound(rows = [], { source = 'local', peer = '' } = {}) {
     const now = Date.now();
-    for (const r of rows || []) {
-      const tag = String(r.tag || '').trim().toLowerCase();
+    const local = source === 'local';
+    const inspect = local ? OPEN_ROUND_CAP : OPEN_ROUND_PEER_TAGS * 4;
+    const list = Array.isArray(rows) ? rows.slice(0, inspect) : [];
+    const budget = local ? null : peerBudget(peer, now);
+    const accepted = [];
+    for (const [key, row] of openRound) {
+      if (now - row.at > OPEN_ROUND_TTL_MS) openRound.delete(key);
+    }
+    for (const r of list) {
+      const tag = String(r?.tag || '').trim().toLowerCase();
       if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
       const count = Math.floor(Number(r.count) || 0);
       if (count < 1) continue;
-      const prev = openRound.get(tag);
-      if (!prev || source === 'local' || count >= prev.count || (now - prev.at) > 12_000) {
-        openRound.set(tag, { tag, count, at: now, source: String(source || 'peer') });
+      if (budget) {
+        const known = budget.tags.has(tag);
+        if (!known && budget.tags.size >= OPEN_ROUND_PEER_TAGS) continue;
+        if (budget.used >= OPEN_ROUND_PEER_RATE) continue;
       }
+      const prev = openRound.get(tag);
+      const take = !prev || local || count >= prev.count || (now - prev.at) > 12_000;
+      if (!take) continue;
+      if (!prev && openRound.size >= OPEN_ROUND_CAP && !(local && dropOldestPeerRound())) continue;
+      openRound.set(tag, {
+        tag,
+        count,
+        at: now,
+        source: local ? 'local' : 'peer',
+        peer: local ? '' : String(peer || ''),
+      });
+      if (budget) {
+        budget.used += 1;
+        budget.tags.add(tag);
+      }
+      if (!prev || count > prev.count) accepted.push({ tag, count });
     }
-    for (const [k, v] of openRound) {
-      if (now - v.at > OPEN_ROUND_TTL_MS) openRound.delete(k);
-    }
+    return accepted;
   }
 
   function clearOpenRound() {
