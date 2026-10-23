@@ -197,6 +197,20 @@ describe('chain param table', () => {
     assert.throws(() => genesisSeedPacked('nope'), /unknown_magic/);
   });
 
+  it('regtest and closed v1–v11 books never use the shear-dev row', () => {
+    const dev = chainParams('shear-dev');
+    const v12 = chainParams('shear-testnet-v12');
+    const old = ['shear-regtest'];
+    for (let n = 1; n <= 11; n += 1) old.push(`shear-testnet-v${n}`);
+    assert.equal(old.length, 12);
+    for (const magic of old) {
+      assert.throws(() => chainParams(magic), /unknown_magic/, magic);
+      const row = clockFor(magic);
+      assert.equal(row, v12, magic);
+      assert.notEqual(row, dev, magic);
+    }
+  });
+
   it('ignores env and has no process.env in the table module', () => {
     const before = canonicalParamsJson('shear-testnet-v12');
     const prev = process.env.SHEAR_TARGET_BLOCK_MS;
