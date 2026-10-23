@@ -102,9 +102,11 @@ async function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
   const packed = Number(bits) >= 65536 ? Number(bits) : GENESIS_BITS_PACKED;
   const sb = shareBitsOf(packed);
   const parent = store.tip();
-  const now = parent
-    ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
-    : Date.now();
+  // parent+90s is past the 15s header-ahead cap once the search returns.
+  // templateStampMs stays on the wall and still after the parent.
+  const now = templateStampMs(parent
+    ? Number(decodeHeader(Buffer.from(parent.header)).timestamp)
+    : undefined);
   const { tpl } = store.template({ miner: dest, bits: packed, shareBits: sb, now });
   const wallStart = Date.now();
   let nonceBase = 0;
