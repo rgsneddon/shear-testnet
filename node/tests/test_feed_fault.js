@@ -24,7 +24,12 @@ import { startHttpFollow } from '../src/http_follow.js';
 import { createP2p } from '../src/p2p.js';
 import { attachPoolIpc } from '../src/p2p_ipc.js';
 import { STORE_CORRUPT_EXIT, installNodeGuards } from '../src/process_guard.js';
-import { createStore } from '../src/store.js';
+import {
+  OPEN_ROUND_CAP,
+  OPEN_ROUND_PEER_RATE,
+  OPEN_ROUND_PEER_TAGS,
+  createStore,
+} from '../src/store.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -414,13 +419,48 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
         const got = sealNext(store, minerDest(), 8);
         assert.equal(got.ok, false);
         assert.equal(got.reason, 'apply_stage');
-        assert.equal(got.scorePeer, true);
+        assert.equal(got.scorePeer, undefined);
         assert.equal(store.tip(), null);
         assert.equal(store.blocks.length, 0);
         assert.ok(notes.some((line) => line.includes('"event":"apply_stage"') && line.includes('stage_local')));
       } finally {
         console.error = orig;
       }
+    });
+
+    it('peer work rows are rate-limited and the open-round map is capped', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-open-round-'));
+      const store = createStore(dir, { pruneAfter: 1_000_000 });
+      const tag = (n) => `m${n.toString(16).padStart(8, '0')}`;
+      const flood = [];
+      for (let i = 0; i < 400; i += 1) flood.push({ tag: tag(i), count: 1 });
+      const kept = store.noteOpenRound(flood, { source: 'peer', peer: '203.0.113.8' });
+      assert.equal(kept.length, OPEN_ROUND_PEER_RATE);
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_PEER_RATE);
+      const again = store.noteOpenRound(flood, { source: 'peer', peer: '203.0.113.8' });
+      assert.equal(again.length, 0);
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_PEER_RATE);
+      let next = OPEN_ROUND_PEER_RATE;
+      let peerN = 1;
+      while (store.openRoundRows().length < OPEN_ROUND_CAP) {
+        const batch = [];
+        for (let i = 0; i < OPEN_ROUND_PEER_RATE; i += 1) batch.push({ tag: tag(next + i), count: 1 });
+        next += OPEN_ROUND_PEER_RATE;
+        peerN += 1;
+        store.noteOpenRound(batch, { source: 'peer', peer: `198.51.100.${peerN}` });
+      }
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
+      const overflow = store.noteOpenRound(
+        [{ tag: tag(900000), count: 3 }],
+        { source: 'peer', peer: '203.0.113.9' },
+      );
+      assert.equal(overflow.length, 0);
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
+      assert.ok(OPEN_ROUND_PEER_TAGS < OPEN_ROUND_CAP);
+      const local = store.noteOpenRound([{ tag: tag(900001), count: 9 }], { source: 'local' });
+      assert.equal(local.length, 1);
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
+      assert.equal(store.openRoundRows().some((row) => row.tag === tag(900001) && row.count === 9), true);
     });
 
     it('a partial mempool insert rolls back', () => {

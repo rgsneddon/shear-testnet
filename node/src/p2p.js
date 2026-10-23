@@ -1,7 +1,7 @@
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { MAGIC_TESTNET, PRODUCT_VERSION, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
-import { freshMinerRounds, safeMinerRounds } from './network_report.js';
+import { safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
 import {
   packHashCreditBytes,
@@ -409,11 +409,13 @@ export const P2P_HELLO_MS = 20_000;
  * Census keepalive is broadcastCensus every 2s. It refreshes lastRx, which
  * the idle sweep reads, so a peer that only exchanges census is not idle-evicted.
  * Cap and reserve eviction use capIdleAt. That clock starts at the first hello
- * and moves only when a block from this peer verifies, or a tx, header offer,
- * or miner round from this peer is accepted. Cheap requests, advertisements,
- * census, junk, and unknown types do not move it. Only a peer idle at least
- * idleLimit is dropped. Busy means this peer recently delivered a block that
- * validated, and that credit expires with the idle window.
+ * and moves when a block from this peer verifies, a tx from this peer is
+ * accepted, or this node serves that peer a non-empty getheaders, getblocks,
+ * or getblock. Work rows, header offers, empty replies, and not-found replies
+ * do not move it. Cheap requests, advertisements, census, junk, and unknown
+ * types do not either. Only a peer idle at least idleLimit is dropped.
+ * Busy means this peer recently delivered a block that validated, and that
+ * credit expires with the idle window.
  */
 export const P2P_IDLE_MS = 180_000;
 /** Env overrides cannot go under these. Explicit createP2p options can. */
@@ -835,8 +837,8 @@ export function isUpgradeableIngestFail(reason) {
  * `not_heavier` must not poison that branch: a later child can still carry more work.
  * `samples_pruned` means the burial run is not here yet. A later header page can bury it.
  * `pow_worker` is a local hash-worker fault. It says nothing about the block or the peer.
- * `apply_stage` is a local staging throw. The block stays retryable. The peer
- * is scored from `scorePeer` on the ingest result, not from this predicate.
+ * `apply_stage` is a local staging throw. The block stays retryable and the
+ * peer is not scored: a local bug must not ban the relayers.
  * Upgradeable reasons (`evm`, `unsigned`, `admit_membership`) use a TTL, not `failed` forever. */
 export function isFinalIngestFail(reason) {
   const r = String(reason || '');
@@ -1132,6 +1134,7 @@ export function createP2p({
   idleMs = undefined,
   outboundReserve = undefined,
   evictCooldownMs = undefined,
+  inboundPer24 = P2P_INBOUND_PER24,
 } = {}) {
   const reserveSlots = p2pOutboundReserve(maxPeers, outboundReserve);
   const inboundCap = p2pInboundCap(maxPeers, outboundReserve);
@@ -1140,6 +1143,7 @@ export function createP2p({
   const evictCooldown = evictCooldownMs == null
     ? P2P_EVICT_COOLDOWN_MS
     : Math.max(0, Number(evictCooldownMs) || 0);
+  const per24Cap = Math.max(1, Math.floor(Number(inboundPer24) || P2P_INBOUND_PER24));
   let lastCapEvictAt = 0;
   const sockets = new Set();
   const peers = new Map();
@@ -1946,10 +1950,7 @@ export function createP2p({
     if (msg.type === 'mempool') {
       for (const tx of msg.txs || []) ingestRemoteTx(tx, sock);
       if (typeof store.noteOpenRound === 'function' && Array.isArray(msg.work)) {
-        const before = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
-        store.noteOpenRound(msg.work, { source: 'peer' });
-        const after = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
-        if (freshMinerRounds(before, after).length) noteCapIdle(sock);
+        store.noteOpenRound(msg.work, { source: 'peer', peer: peerRemoteKey(sock) });
       }
       return;
     }
@@ -1958,16 +1959,15 @@ export function createP2p({
       return;
     }
     if (msg.type === 'work') {
-      const before = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
-      if (typeof store.noteOpenRound === 'function') {
-        store.noteOpenRound(msg.rows || [], { source: 'peer' });
-      }
-      const after = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
-      const fresh = freshMinerRounds(before, after);
-      if (fresh.length) {
-        noteCapIdle(sock);
-        broadcast({ type: 'work', magic, rows: fresh }, sock);
-      }
+      // Unproven peer rows never extend cap idle. A local publishWork still
+      // reaches direct peers; this hop is how a two-hop lattice sees that
+      // round. Only rows the store kept are relayed, and that keep is
+      // rate-limited per peer.
+      const kept = typeof store.noteOpenRound === 'function'
+        ? store.noteOpenRound(msg.rows || [], { source: 'peer', peer: peerRemoteKey(sock) })
+        : [];
+      const fresh = Array.isArray(kept) ? kept : [];
+      if (fresh.length) broadcast({ type: 'work', magic, rows: fresh }, sock);
       return;
     }
     if (msg.type === 'addr') {
@@ -2015,15 +2015,17 @@ export function createP2p({
       if (ahead || peerTipAhead(peers.get(sock))) armTipNudge();
       return;
     }
-    if (msg.type === 'getblocks') {
-      return;
-    }
-    if (msg.type === 'getheaders') {
+    if (msg.type === 'getblocks' || msg.type === 'getheaders') {
       const hdrs = selectHeadersAfterLocator(store.blocks || [], {
         locator: msg.locator,
         stopHash: msg.stopHash || msg.hashStop || '',
         limit: HEADERS_PAGE,
       });
+      if (!hdrs.length) {
+        if (msg.type === 'getheaders') send(sock, { type: 'headers', magic, headers: hdrs });
+        return;
+      }
+      noteCapIdle(sock);
       send(sock, { type: 'headers', magic, headers: hdrs });
       return;
     }
@@ -2051,7 +2053,6 @@ export function createP2p({
           try { sock.destroy(); } catch { /* ignore */ }
           return;
         }
-        if (Number(offered?.accepted) > 0) noteCapIdle(sock);
       }
       // A header offer is accepted against the peer-claimed hash. That is not
       // progress: the ShearHash has not been computed yet. progressAt moves
@@ -2153,7 +2154,7 @@ export function createP2p({
             height: b.height || 0,
           }));
         } catch { /* ignore */ }
-        enqueueGetblockServe(sock, b);
+        if (enqueueGetblockServe(sock, b)) noteCapIdle(sock);
       } else if (want) {
         send(sock, { type: 'getblock_nak', magic, hash: want });
         noteBlockWaiter(want, sock);
@@ -2336,11 +2337,7 @@ export function createP2p({
               } else if (isFinalIngestFail(reason)) rec.failed.add(lastHash);
             }
           }
-          const stageScore = !got?.ok && got?.scorePeer === true;
-          const ban = stageScore
-            ? recordProofFail(rec)
-            : (!got?.ok && recordIngestFail(rec, got?.reason));
-          if (ban) {
+          if (!got?.ok && recordIngestFail(rec, got?.reason)) {
             const until = Date.now() + P2P_BAN_MS;
             if (rec.remote) peerBans.set(rec.remote, until);
             try { sock.destroy(); } catch { /* ignore */ }
@@ -2478,7 +2475,7 @@ export function createP2p({
     const inbound = !extra.dialHost;
     if (inbound) {
       const subnet = ipv4Subnet24(remote);
-      if (inboundCountForSubnet(peers, subnet) >= P2P_INBOUND_PER24) {
+      if (inboundCountForSubnet(peers, subnet) >= per24Cap) {
         try { sock.destroy(); } catch { /* ignore */ }
         return;
       }
