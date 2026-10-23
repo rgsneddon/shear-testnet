@@ -54,6 +54,7 @@ import {
   bindShareProofSlots,
   shareWorkKey,
   stashSharePow,
+  peekSharePow,
   dropSharePowKeys,
   issuedJobDigestSuffix,
   issuedKeysForParents,
@@ -1839,24 +1840,40 @@ async function prepareOffLoopPow(block, prev, { skipSharePow = false, priorHeade
   // A burial append may already have hashed this header on the other
   // worker while the new header above it was proving. Reuse that ShearHash.
   // Share headers still hash here. The target check stays in the verifier.
-  const prepared = peekPreparedHeader(h);
-  const todo = prepared ? shareHeaders : [h, ...shareHeaders];
-  let hashes = [];
-  if (todo.length) {
-    try {
-      hashes = await Promise.all(todo.map((hdr) => hashHeaderOffLoop(hdr)));
-    } catch {
-      return { ok: false, reason: 'pow' };
+  const pending = [];
+  const headerReady = peekPreparedHeader(h);
+  if (!headerReady) pending.push(h);
+  const sharePending = [];
+  for (const sh of shareHeaders) {
+    if (peekSharePow(sh)) sharePending.push(null);
+    else {
+      sharePending.push(sh);
+      pending.push(sh);
     }
   }
-  if (!prepared) {
-    if (!hashes.length) return { ok: false, reason: 'pow' };
-    stashPreparedHeader(h, hashes[0]);
+  let hashes = [];
+  if (pending.length) {
+    try {
+      hashes = await Promise.all(pending.map((hdr) => hashHeaderOffLoop(hdr)));
+    } catch {
+      // The local hash worker failed. Nothing about the block is known yet.
+      return { ok: false, reason: 'pow_worker' };
+    }
+    if (hashes.length !== pending.length) return { ok: false, reason: 'pow_worker' };
+  }
+  let cursor = 0;
+  if (!headerReady) {
+    stashPreparedHeader(h, hashes[cursor]);
+    cursor += 1;
   }
   const shareKeys = [];
-  const shareAt = prepared ? 0 : 1;
   for (let i = 0; i < shareHeaders.length; i += 1) {
-    shareKeys.push(stashSharePow(shareHeaders[i], hashes[i + shareAt]));
+    if (sharePending[i] == null) {
+      shareKeys.push(Buffer.from(shareHeaders[i]).toString('hex'));
+      continue;
+    }
+    shareKeys.push(stashSharePow(shareHeaders[i], hashes[cursor]));
+    cursor += 1;
   }
   return {
     ok: true,
@@ -2130,6 +2147,9 @@ export function assessHeader(block, prev, opts = {}) {
     }
     if (!meetsTarget(hash, decoded.bits)) return finish({ ok: false, reason: 'pow' });
   }
+  // P2P tip-extend stops here. Merkle, ASERT, and the book walk stay on the
+  // full check. A claimed hash that merely matches a stored id is not proof.
+  if (opts.stopAfterPow === true) return finish({ ok: true, hash, decoded });
   const txs = Array.isArray(block.txs) ? block.txs : [];
   if (!txs.length || !txs[0]?.coinbase) return finish({ ok: false, reason: 'coinbase' });
   for (const tx of txs) {
@@ -2214,6 +2234,39 @@ export function assessHeader(block, prev, opts = {}) {
     return finish({ ok: false, reason: 'genesis_ms' });
   }
   return finish({ ok: true, hash, decoded, genesisMs: resolvedGenesisMs });
+}
+
+/**
+ * Header target for one block, before any comparison of its claimed hash
+ * to the book. Share headers are hashed here too so a later full check can
+ * reuse the stash. `release` drops that stash when the caller does not ingest.
+ */
+export async function headerPowReason(block, prev, opts = {}) {
+  const ready = await prepareOffLoopPow(block, prev, {
+    skipSharePow: !!opts.skipSharePow,
+    priorHeader: opts.grandparentHeader || null,
+  });
+  if (!ready.ok) return { reason: ready.reason || 'pow', release: null };
+  let assessed;
+  try {
+    assessed = assessHeader(block, prev, {
+      ...opts,
+      preparedHash: peekPreparedHeader(block.header),
+      consumePrepared: false,
+      stopAfterPow: true,
+      trustedPowHash: null,
+      offLoopPow: false,
+      probeBody: false,
+    });
+  } catch (err) {
+    ready.cleanup?.();
+    throw err;
+  }
+  if (!assessed.ok) {
+    ready.cleanup?.();
+    return { reason: assessed.reason || 'pow', release: null };
+  }
+  return { reason: null, release: () => ready.cleanup?.() };
 }
 
 /**

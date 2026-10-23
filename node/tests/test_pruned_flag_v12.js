@@ -120,7 +120,7 @@ function flagged(block, rows) {
 }
 
 describe('samplesPruned does not forge hash credits', () => {
-  it('trusts a sealed record only when this tip buries the block', () => {
+  it('trusts a sealed record only when this tip buries the block', async () => {
     clearLiveSharePow();
     const dest = minerDest();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pruned-flag-'));
@@ -217,14 +217,15 @@ describe('samplesPruned does not forge hash credits', () => {
     assert.equal(viaWire.ok, false, viaWire.reason);
     assert.equal(viaWire.reason, 'samples_pruned');
     assert.equal(store.tip().height, tipBefore);
-    const viaIpc = applyVerifiedIpcBlock(store, {
+    const viaIpc = await applyVerifiedIpcBlock(store, {
       type: 'ipc_block',
       magic: MAGIC_TESTNET,
       block: encodeWireBlock({ ...forged, hash: easyPow(5) }),
       powHash: easyPow(5).toString('hex'),
     });
+    // IPC strips the stand-in hash, so the header target is checked before burial.
     assert.equal(viaIpc.ok, false, viaIpc.reason);
-    assert.equal(viaIpc.reason, 'samples_pruned');
+    assert.equal(viaIpc.reason, 'pow');
     assert.equal(store.tip().height, tipBefore);
     const after = auditCirculatingSupply(store.blocks);
     assert.equal(after.status, 'verified', after.reason);

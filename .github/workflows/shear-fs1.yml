@@ -59,6 +59,8 @@ jobs:
         run: node --test node/tests/test_fs1_send_gate_v12.js
       - name: Consensus admit set against the FS-1 leaf set
         run: node --test node/tests/test_fs1_admit_divergence.js
+      - name: Sequential IBD and the tip-extend header gate, with the native modules
+        run: node --test --test-concurrency=1 --test-timeout=600000 node/tests/test_ibd_sequential.js node/tests/test_tip_extend_gate_v12.js
       - name: Build the fs1_tree tool
         working-directory: crypto/native/vendor/monero-oxide-77788c3
         run: |

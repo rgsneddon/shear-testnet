@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW, GENESIS_BPS } from '../../crypto/asert.js';
-import { oracleContextFor, reserveApplyFields } from '../../crypto/reserve_oracle.js';
+import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveRejected } from '../../crypto/reserve_oracle.js';
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
@@ -33,6 +33,7 @@ import {
   V12_GENESIS_BLOCK_HASH,
   V12_BOOTSTRAP_CHECKPOINT,
   assessHeader,
+  headerPowReason,
   headerLinkReason,
   rootHeaderReason,
   discardPreparedHeader,
@@ -1190,17 +1191,18 @@ export function createStore(dir, {
   }
 
   function vaultArgs(state, block, prior) {
-    const parent = prior?.length ? prior[prior.length - 1] : null;
-    // The genesis header is this block when the book is still empty.
-    // A later block keeps the height-1 header already in prior.
-    const clockChain = Array.isArray(prior) ? prior.slice() : [];
-    if (block) clockChain.push(block);
+    const rows = Array.isArray(prior) ? prior : [];
+    const parent = rows.length ? rows[rows.length - 1] : null;
+    // The oracle window is a fixed block count. Mapping the whole prefix
+    // on every apply made a side block cost grow with chain height.
+    const cap = windowBlocksFor(bookMagic);
+    const tail = rows.length > cap ? rows.slice(rows.length - cap) : rows;
     const fields = reserveApplyFields({
-      prior,
+      prior: tail,
       block,
       magic: bookMagic,
       parentMs: parent ? blockTimeMs(parent) : 0,
-      genesisMs: genesisHeaderMs(clockChain),
+      genesisMs: genesisHeaderMs(rows) || genesisHeaderMs(block ? [block] : []) || genesisHeaderMs(blocks),
       nowMs: blockTimeMs(block),
     });
     if (oracleActivationHeight !== undefined) fields.activationHeight = oracleActivationHeight;
@@ -2365,8 +2367,10 @@ export function createStore(dir, {
     }
     const trial = best ? cloneVault(best.vault) : cloneVault(bookVault());
     const start = best ? best.at + 1 : 0;
+    const chain = blocks.slice(0, start);
     for (let i = start; i <= at; i += 1) {
-      commitReserveApply(applyReserveBlock(vaultArgs(trial, blocks[i], blocks.slice(0, i))));
+      commitReserveApply(applyReserveBlock(vaultArgs(trial, blocks[i], chain)));
+      chain.push(blocks[i]);
     }
     return trial;
   }
@@ -3311,11 +3315,135 @@ export function createStore(dir, {
     return shouldPruneSamples(Number(block.height) || 0, tipH) ? block : null;
   }
 
+  /**
+   * Header rules and proof-of-work before any book walk. An invalid header
+   * must not scan sealed hashes, decode every gap, or copy the owed series.
+   * A trusted hash, an off-loop hash, or a pruned burial still uses the
+   * full append path. Returns a reason, or null when the header may proceed.
+   */
+  function unprovenAppendReason(block, verifyOpts) {
+    if (verifyOpts?.offLoopPow || verifyOpts?.probeBody === true) return null;
+    if (block?.samplesPruned === true) return null;
+    if (trustedHashFor(block, verifyOpts)) return null;
+    const observed = coinbaseObserveRejected(block?.txs);
+    if (observed) return observed.reason || 'observe_unattested';
+    const stage0 = chainStage0Rejected([block]);
+    if (stage0) return stage0.reason || 'stage0';
+    for (const tx of block?.txs || []) {
+      const unsignedField = unsignedBodyField(tx);
+      if (unsignedField) return unsignedField.reason || 'unsigned';
+    }
+    const prev = tip();
+    const assessed = assessHeader(block, prev ? {
+      hash: prev.hash,
+      header: prev.header,
+      height: prev.height,
+      rootA: prev.rootA,
+      rootB: prev.rootB,
+      txs: prev.txs,
+      bLeaves: prev.bLeaves,
+      weight: prev.weight,
+      shareBatch: prev.shareBatch,
+    } : null, {
+      mtpTimestamps: blocks.slice(-11).map((b) => {
+        try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
+      }),
+      nowMs: Date.now(),
+      genesisMs: (() => {
+        try {
+          const g = blocks[0];
+          if (!g?.header) return 0;
+          return Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
+        } catch { return 0; }
+      })(),
+      magic: bookMagic,
+      consumePrepared: false,
+    });
+    if (assessed?.ok) return null;
+    discardPreparedHeader(block?.header);
+    return assessed?.reason || 'pow';
+  }
+
+  /** Header-target options for a block on this tip. The book's own magic. */
+  function tipExtendPowOpts(nowMs = Date.now()) {
+    const n = blocks.length;
+    return {
+      grandparentHeader: n >= 2 ? blocks[n - 2]?.header || null : null,
+      magic: bookMagic,
+      nowMs,
+    };
+  }
+
+  function tipPowView(t) {
+    return {
+      hash: t.hash,
+      header: t.header,
+      height: t.height,
+      txs: t.txs,
+      bLeaves: t.bLeaves,
+      weight: t.weight,
+      shareBatch: t.shareBatch,
+      rootA: t.rootA,
+      rootB: t.rootB,
+    };
+  }
+
+  function extendsThisTip(block) {
+    const t = tip();
+    if (!t?.hash || !t.header || !block?.header) return false;
+    try {
+      return decodeHeader(Buffer.from(block.header)).prevBlockHash.equals(Buffer.from(t.hash));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Off-loop header target for one block on this tip, before its claimed hash
+   * is compared to the book. `{ applies: false }` for any other block.
+   * `release` drops the stash when the full check does not consume it.
+   */
+  function tipExtendPowReason(block, nowMs = Date.now()) {
+    if (!extendsThisTip(block)) return Promise.resolve({ applies: false });
+    return headerPowReason(block, tipPowView(tip()), tipExtendPowOpts(nowMs)).then((early) => (
+      early.reason
+        ? { applies: true, reason: early.reason }
+        : { applies: true, reason: null, release: early.release }
+    ));
+  }
+
   function append(block, verifyOpts = {}) {
+    const early = unprovenAppendReason(block, verifyOpts);
+    if (early) return { ok: false, reason: early, tip: tip() };
+    // The off-loop path proves the header target here, so every caller of
+    // append is gated, not only p2p. A trusted hash is the caller's own proof.
+    // samplesPruned is wire data and does not skip it: an unburied pruned
+    // header skips only the slot commitment, never the target.
+    const offLoopGate = !!verifyOpts.offLoopPow
+      && verifyOpts.probeBody !== true
+      && !trustedHashFor(block, verifyOpts)
+      && extendsThisTip(block);
+    if (offLoopGate) {
+      return tipExtendPowReason(block).then((gate) => {
+        if (gate.reason) return { ok: false, reason: gate.reason, tip: tip() };
+        return Promise.resolve().then(() => appendProven(block, verifyOpts)).then((out) => {
+          gate.release?.();
+          return out;
+        }, (err) => {
+          gate.release?.();
+          throw err;
+        });
+      });
+    }
+    return appendProven(block, verifyOpts);
+  }
+
+  function appendProven(block, verifyOpts) {
     const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
     if (incoming && incoming.length === 32) {
       for (const b of blocks) {
         if (b.hash && Buffer.from(b.hash).equals(incoming)) {
+          discardPreparedHeader(block?.header);
           return { ok: false, reason: 'not_heavier', tip: tip() };
         }
       }
@@ -4238,7 +4366,7 @@ export function createStore(dir, {
     if (offLoop) {
       return hashHeaderOffLoop(Buffer.from(block.header)).then((hash) => (
         finish(assessHeader(block, prev, { ...opts, preparedHash: hash }))
-      ));
+      ), () => finish({ ok: false, reason: 'pow_worker' }));
     }
     return finish(assessHeader(block, prev, opts));
   }
@@ -4547,6 +4675,28 @@ export function createStore(dir, {
     return go();
   }
 
+  /**
+   * Vault at the end of `rows`. A canonical prefix resumes from the last
+   * owed checkpoint. Only a side tail past that prefix is applied. A losing
+   * side block does not walk the snapped book from genesis.
+   */
+  function vaultThrough(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) return { ok: true, vault: cloneVault(bookVault()) };
+    let prefix = 0;
+    const limit = Math.min(list.length, blocks.length);
+    while (prefix < limit && list[prefix] === blocks[prefix]) prefix += 1;
+    const trial = prefix > 0 ? vaultAfter(prefix - 1) : cloneVault(bookVault());
+    if (prefix === list.length) return { ok: true, vault: trial };
+    const chain = list.slice(0, prefix);
+    for (let i = prefix; i < list.length; i += 1) {
+      const applied = applyReserveBlock(vaultArgs(trial, list[i], chain));
+      if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
+      chain.push(list[i]);
+    }
+    return { ok: true, vault: trial };
+  }
+
   function verifySuffixBody(fork, parent, history, verifyOpts) {
     const out = [];
     let prev = parent;
@@ -4600,6 +4750,8 @@ export function createStore(dir, {
       const historyVault = vaultParent(rows, from);
       if (!historyVault.ok) return { ok: false, reason: 'supply' };
       let vault = historyVault.vault;
+      // One prefix. A slice at every height made the reorg walk cost grow with the chain.
+      const chain = rows.slice(0, from);
       for (let hi = from; hi < rows.length; hi += 1) {
         const viewed = blockForTip(rows[hi], candidateTip);
         if (!viewed.ok) return { ok: false, reason: 'samples_pruned' };
@@ -4614,20 +4766,18 @@ export function createStore(dir, {
         });
         if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
         supply = stepped.state;
-        const advanced = vaultAfterBlock(vault, viewed.block, rows.slice(0, hi));
+        const advanced = vaultAfterBlock(vault, viewed.block, chain);
         if (!advanced.ok) return { ok: false, reason: 'supply' };
         vault = advanced.vault;
+        chain.push(rows[hi]);
         appendFluxBlock(flux, rows[hi]);
         const hh = Number(rows[hi]?.height) || hi + 1;
         anchors[hh] = anchorRecord(flux, false);
       }
     }
-    const trialVault = cloneVault(bookVault());
-    for (let i = 0; i < rows.length; i += 1) {
-      const b = rows[i];
-      const applied = applyReserveBlock(vaultArgs(trialVault, b, rows.slice(0, i)));
-      if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
-    }
+    const resumedVault = vaultThrough(rows);
+    if (!resumedVault.ok) return { ok: false, reason: resumedVault.reason || 'epoch_open' };
+    const trialVault = resumedVault.vault;
     const owedWalk = { owedIn: seeded.rows, hashAcceptedSeries: seeded.series.slice() };
     const suffixSnaps = [];
     const step = (i) => {
@@ -4921,11 +5071,13 @@ export function createStore(dir, {
     const last = ckpt.length ? ckpt[ckpt.length - 1] : null;
     const trial = last ? cloneVault(last.vault) : cloneVault(bookVault());
     const start = last ? last.at + 1 : 0;
+    const chain = accepted.slice(0, start);
     for (let i = start; i <= tipAt; i += 1) {
       const unit = hashBonusUnitNanos(trial.liveHashBonusNanos);
       if (i >= lca || i === units.length) units.push(unit);
       if (Number.isInteger(failAt) && failAt >= 0 && i === lca + failAt) throw new Error('epoch_open');
-      commitReserveApply(applyReserveBlock(vaultArgs(trial, accepted[i], accepted.slice(0, i))));
+      commitReserveApply(applyReserveBlock(vaultArgs(trial, accepted[i], chain)));
+      chain.push(accepted[i]);
       if (keepOwedIndex(i, tipAt)) ckpt.push({ at: i, vault: cloneVault(trial) });
     }
     let seal = vaultSeal;
@@ -5898,6 +6050,8 @@ export function createStore(dir, {
     },
     hashTxLive: HASH_TX_LIVE,
     magic: bookMagic,
+    tipExtendPowOpts,
+    tipExtendPowReason,
     consensusFingerprint,
     pause,
     reorgHaltDepth: haltDepth,
