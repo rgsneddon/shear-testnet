@@ -402,6 +402,58 @@ export const SEED_RETRY_MS = 3_000;
 export const GETBLOCK_WAIT_MS = 250;
 /** How often the hung-getblock watch runs. */
 export const PENDING_WATCH_MS = 50;
+/** A socket that never completes hello is dropped. */
+export const P2P_HELLO_MS = 20_000;
+/**
+ * Census keepalive is broadcastCensus every 2s. Idle sits far above that
+ * so a peer that only exchanges census is not evicted. A syncing peer is
+ * never evicted for quiet time while its catch-up queues are busy.
+ */
+export const P2P_IDLE_MS = 180_000;
+
+function p2pMs(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 50) return fallback;
+  return Math.floor(n);
+}
+
+export function p2pHelloMs(override) {
+  if (override != null) return p2pMs(override, P2P_HELLO_MS);
+  return p2pMs(process.env.SHEAR_P2P_HELLO_MS, P2P_HELLO_MS);
+}
+
+export function p2pIdleMs(override) {
+  if (override != null) return p2pMs(override, P2P_IDLE_MS);
+  return p2pMs(process.env.SHEAR_P2P_IDLE_MS, P2P_IDLE_MS);
+}
+
+/** Catch-up work in flight. Idle eviction must leave this peer alone. */
+export function peerIsBusy(rec) {
+  if (!rec) return false;
+  if (rec.syncing) return true;
+  if (rec.pending instanceof Set && rec.pending.size) return true;
+  if (rec.verifying instanceof Set && rec.verifying.size) return true;
+  if (Array.isArray(rec.want) && rec.want.length) return true;
+  if (Array.isArray(rec.retryPrev) && rec.retryPrev.length) return true;
+  return false;
+}
+
+/**
+ * Silent sockets miss the hello deadline. A completed hello with no
+ * traffic past the idle window is dropped. Busy catch-up is kept.
+ */
+export function peerShouldEvict(rec, now = Date.now(), { helloMs = P2P_HELLO_MS, idleMs = P2P_IDLE_MS } = {}) {
+  if (!rec) return false;
+  const t = Number(now) || Date.now();
+  if (peerIsBusy(rec)) return false;
+  const helloAt = Number(rec.helloAt) || 0;
+  if (!helloAt) {
+    const born = Number(rec.attachedAt) || t;
+    return t - born >= helloMs;
+  }
+  const last = Number(rec.lastRx) || helloAt;
+  return t - last >= idleMs;
+}
 /** Re-push our tip and re-pull a peer that is still ahead. */
 export const TIP_NUDGE_MS = 100;
 
@@ -1027,7 +1079,11 @@ export function createP2p({
   fluffDelayMs: fluffMs = null,
   stemRng = Math.random,
   maxPeers = p2pMaxPeers(),
+  helloMs = undefined,
+  idleMs = undefined,
 } = {}) {
+  const helloLimit = p2pHelloMs(helloMs);
+  const idleLimit = p2pIdleMs(idleMs);
   const sockets = new Set();
   const peers = new Map();
   const linking = new Set();
@@ -1774,6 +1830,8 @@ export function createP2p({
 
   function handle(sock, msg) {
     if (!msg || typeof msg !== 'object') return;
+    const heard = peers.get(sock);
+    if (heard) heard.lastRx = Date.now();
     if (msg.type === 'hello') {
       if (msg.magic !== magic) {
         sock.destroy();
@@ -1791,6 +1849,8 @@ export function createP2p({
       rec.ua = String(msg.ua || rec.ua || '');
       const nid = String(msg.nodeId || '').trim().toLowerCase();
       if (/^[0-9a-f]{8,32}$/.test(nid)) rec.nodeId = nid;
+      rec.helloAt = rec.lastRx || Date.now();
+      if (!rec.attachedAt) rec.attachedAt = rec.helloAt;
       peers.set(sock, rec);
       send(sock, tipMsg());
       send(sock, { type: 'addr', magic, peers: advertisedPeers(sock) });
@@ -2306,6 +2366,9 @@ export function createP2p({
       inbound,
       pinned: !inbound && extra.pinned === true,
       expensiveFails: 0,
+      attachedAt: Date.now(),
+      helloAt: 0,
+      lastRx: 0,
     });
     let buf = '';
     sock.on('data', (chunk) => {
@@ -2347,6 +2410,25 @@ export function createP2p({
     if (typeof censusTimer.unref === 'function') censusTimer.unref();
     pendingWatch = setInterval(() => {
       const now = Date.now();
+      const doomed = [];
+      for (const [sock, rec] of peers) {
+        if (!rec) continue;
+        if (peerIsBusy(rec)) {
+          rec.lastRx = now;
+          continue;
+        }
+        if (peerShouldEvict(rec, now, { helloMs: helloLimit, idleMs: idleLimit })) doomed.push([sock, rec]);
+      }
+      for (const [sock, rec] of doomed) {
+        try {
+          console.error(JSON.stringify({
+            event: 'p2p_evict',
+            reason: rec?.helloAt ? 'idle' : 'hello',
+            remote: rec?.remote || '',
+          }));
+        } catch { /* ignore */ }
+        try { sock.destroy(); } catch { /* ignore */ }
+      }
       for (const [sock, rec] of peers) {
         if (!rec?.syncing || !rec.pending || !rec.pending.size || !rec.pendingAt) continue;
         const peerH = Number(rec.adHeight ?? rec.height ?? rec.gossipHeight ?? 0);

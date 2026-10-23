@@ -1,5 +1,6 @@
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { hashBackendKind } from '../../crypto/shear_hash.js';
+import { nativeLoaded } from '../../crypto/native_admit.js';
 
 function hex32(h) {
   if (!h) return '';
@@ -123,6 +124,7 @@ export function nodeStatus({ store, p2p, extra = {} } = {}) {
     syncEligiblePeers: best.syncEligiblePeers,
     hashBackend: backend,
     ...extra,
+    admitNative: nativeLoaded() ? 'loaded' : 'missing',
   };
 }
 
@@ -140,6 +142,7 @@ export function printNodeStatus(args) {
     `syncPeerHeight=${row.syncPeerHeight == null ? '-' : row.syncPeerHeight}`,
     `peerHash=${row.peerHash ? String(row.peerHash).slice(0, 16) : '-'}`,
     `hashBackend=${row.hashBackend}`,
+    `admitNative=${row.admitNative}`,
   ];
   if (row.stratum != null) line.push(`stratum=${row.stratum}`);
   if (row.miners != null) line.push(`miners=${row.miners}`);

@@ -290,9 +290,13 @@ _Flags _parseFlags(List<String> args) {
       map[a.substring(2, eq)] = a.substring(eq + 1);
       continue;
     }
-    if (a.startsWith('--') && i + 1 < args.length && !args[i + 1].startsWith('-')) {
-      map[a.substring(2)] = args[++i];
-      continue;
+    if (a.startsWith('--') && !a.contains('=') && i + 1 < args.length) {
+      final next = args[i + 1];
+      final name = a.substring(2);
+      if (!next.startsWith('-') || (name == 'amount' && _isAmountToken(next))) {
+        map[name] = args[++i];
+        continue;
+      }
     }
     if (a.startsWith('--')) {
       map[a.substring(2)] = '1';
@@ -301,6 +305,44 @@ _Flags _parseFlags(List<String> args) {
     rest.add(a);
   }
   return _Flags(map, rest, json);
+}
+
+bool _isAmountToken(String s) {
+  final t = s.trim();
+  if (t == 'NaN' || t == 'Infinity' || t == '-Infinity' || t == '+Infinity') return true;
+  return RegExp(r'^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$').hasMatch(t);
+}
+
+/// Null when [raw] is a positive SHE amount with at most 11 decimal places.
+String? sheAmountError(String? raw, {required String missing}) {
+  if (raw == null) return missing;
+  final s = raw.trim();
+  if (s.isEmpty) return 'amount is empty';
+  final lower = s.toLowerCase();
+  if (lower == 'nan' || lower == 'infinity' || lower == '+infinity' || lower == '-infinity') {
+    return 'amount must be a finite number of SHE';
+  }
+  if (s.contains('e') || s.contains('E')) return 'amount must be a decimal number of SHE';
+  if (s.startsWith('-') || s.startsWith('+')) return 'amount must be greater than zero';
+  final parsed = parseSheDecimalToNanos(s);
+  if (parsed == null) {
+    final frac = RegExp(r'^\d+\.(\d+)$').firstMatch(s);
+    if (frac != null && frac.group(1)!.length > 11) {
+      return 'amount has more than 11 decimal places';
+    }
+    return 'amount must be a positive number of SHE';
+  }
+  final n = BigInt.parse(parsed);
+  if (n <= BigInt.zero) return 'amount must be greater than zero';
+  final asDouble = double.parse(s);
+  if (!asDouble.isFinite || asDouble <= 0) return 'amount is too large';
+  return null;
+}
+
+double _sheAmount(String? raw, {required String missing}) {
+  final bad = sheAmountError(raw, missing: missing);
+  if (bad != null) throw FormatException(bad);
+  return double.parse(raw!.trim());
 }
 
 String _commandHelp(String cmd) {
@@ -715,8 +757,7 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
     err.writeln(kErrShortSsa1);
     return 2;
   }
-  if (amtRaw == null) throw const FormatException('send needs --amount');
-  final amount = double.parse(amtRaw);
+  final amount = _sheAmount(amtRaw, missing: 'send needs --amount');
   final session = _session(flags);
   final id = await _needId(session, flags, env);
   final dry = flags['dry-run'] == '1';
@@ -907,6 +948,10 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
     err.writeln('reserve subcommand: ${kCliReserveSubs.join(' | ')}');
     return 2;
   }
+  if (sub == 'lock') {
+    final bad = sheAmountError(flags['amount'], missing: 'reserve lock needs --amount');
+    if (bad != null) throw FormatException(bad);
+  }
   final session = _session(flags);
   final id = await _needId(session, flags, env);
   final ledger = ShearLedger();
@@ -922,9 +967,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       out.writeln(flags.json ? reserve.publicJson(now) : reserve.publicJson(now));
       return 0;
     case 'lock':
-      final amt = flags['amount'];
-      if (amt == null) throw const FormatException('reserve lock needs --amount');
-      final she = double.parse(amt);
+      final she = _sheAmount(flags['amount'], missing: 'reserve lock needs --amount');
       final rpc = _rpc(flags, env);
       final dry = flags['dry-run'] == '1';
       final blocked = _needPublicOk(err, flags, rpc, dry: dry);
@@ -1133,16 +1176,17 @@ Future<int> _sign(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
 }
 
 Future<int> _signPull(IOSink out, IOSink err, _Flags flags, Map<String, String> env) async {
-  final session = _session(flags);
-  final id = await _needId(session, flags, env);
   final dest = flags['dest'];
   final amtRaw = flags['amount'];
   if (dest == null || dest.isEmpty) throw const FormatException('sign pull needs --dest ssa1…');
-  if (amtRaw == null) throw const FormatException('sign pull needs --amount');
-  final amount = double.parse(amtRaw);
+  final amount = _sheAmount(amtRaw, missing: 'sign pull needs --amount');
+  if (!amount.isFinite || amount <= 0) throw const FormatException('amount must be greater than zero');
+  final session = _session(flags);
+  final id = await _needId(session, flags, env);
   final dry = flags['dry-run'] == '1';
   final seed = hexToBytes(id.seedHex);
   final nanos = (amount * kUnitsPerShe).round();
+  if (nanos <= 0) throw const FormatException('amount must be greater than zero');
   final sig = signPoolWithdraw(seed: seed, login: id.paymentCode, dest: dest, nanos: nanos);
   if (dry) {
     out.writeln(flags.json

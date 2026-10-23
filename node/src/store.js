@@ -48,6 +48,7 @@ import {
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
 import { ensureDatadir } from './datadir_acl.js';
+import { acquireDatadirLock } from './datadir_lock.js';
 import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
@@ -301,6 +302,7 @@ export function createStore(dir, {
   oracleActivationHeight = undefined,
   magic: magicIn = null,
   regtestPermit = null,
+  lock = true,
 } = {}, resume = null) {
   // shear-regtest is not a public book. A genesis pin (the v12 hash, or any
   // caller pin) refuses it outright. An unpinned open still needs the permit
@@ -315,6 +317,7 @@ export function createStore(dir, {
     if (!regtestPermitOk(regtestPermit)) throw new Error('regtest_magic');
   }
   ensureDatadir(dir);
+  if (lock !== false) acquireDatadirLock(dir);
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
   const segDir = path.join(dir, 'segments');

@@ -141,7 +141,7 @@ function sectionStatus() {
   return [
     'Status:',
     '  While running, the process prints JSON event=status and a one-line stderr summary:',
-    '    height=  hash=  peers=  want=  ibd=  peerMaxHeight=  syncPeerHeight=  peerHash=  hashBackend=',
+    '    height=  hash=  peers=  want=  ibd=  peerMaxHeight=  syncPeerHeight=  peerHash=  hashBackend=  admitNative=',
     '  --status reads the datadir and prints once (no P2P bind).',
     '  height is this node\'s tip, not a guessed network height.',
     '  want is outstanding getblock hashes. ibd=true while catching up (queues, syncing, or a live peer tip is ahead) — not merely when want is 0.',

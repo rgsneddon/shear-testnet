@@ -8,7 +8,7 @@ import { payeeFs1Ok } from '../../crypto/n1.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { isInitialBlockDownload } from './status.js';
-import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
+import { shearHash, meetsTarget, hashBackendKind } from '../../crypto/shear_hash.js';
 import { setNonce, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
 import { HTTP_BODY_MAX, STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
@@ -56,7 +56,7 @@ function claimedDigest(claimed) {
 }
 
 /** Recompute header hash, then dest-bound share vs block bits. Never appends. */
-export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) {
+export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest, hashKind } = {}) {
   const payEarly = String(dest || '').trim();
   if (payEarly && !payeeFs1Ok(payEarly)) return { ok: false, reason: 'admit_note_point' };
   const rec = store?.jobs?.get(String(jobId || ''));
@@ -67,7 +67,19 @@ export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) 
   } catch {
     return { ok: false, reason: 'bad_nonce' };
   }
-  const hash = shearHash(header);
+  if (hashKind === '' || (hashKind == null && !hashBackendKind())) {
+    return { ok: false, reason: 'native_missing' };
+  }
+  let hash;
+  try {
+    hash = shearHash(header);
+  } catch (err) {
+    const text = String(err?.message || err);
+    if (err?.code === 'native_missing' || /native addon missing|ShearK-Miner not built|native missing/i.test(text)) {
+      return { ok: false, reason: 'native_missing' };
+    }
+    return { ok: false, reason: 'hash_failed' };
+  }
   const hex = hash.toString('hex');
   const want = claimedDigest(claimed);
   if (claimed != null && String(claimed).trim() !== '' && !want) {
@@ -152,6 +164,24 @@ export function soloMaySeal({ height = 0, hash = '', peers, followPublic = false
   return true;
 }
 
+function clipLog(value, head, tail) {
+  const s = String(value ?? '');
+  if (String(process.env.SHEAR_DEBUG || '').trim() === '1') return s;
+  if (s.length <= head + tail + 1) return s;
+  return `${s.slice(0, head)}…${s.slice(-tail)}`;
+}
+
+/** Share log fields. Payout dest and nonce are truncated unless SHEAR_DEBUG=1. */
+export function soloShareLogFields({ dest, jobId, nonce, hash } = {}) {
+  return {
+    event: 'solo_share',
+    dest: clipLog(dest, 8, 4),
+    jobId: clipLog(jobId, 12, 4),
+    nonce: clipLog(nonce, 6, 4),
+    hash: String(hash || ''),
+  };
+}
+
 function tipHex(block) {
   if (!block?.hash) return '';
   try { return Buffer.from(block.hash).toString('hex').toLowerCase(); } catch { return ''; }
@@ -171,13 +201,12 @@ export function applySoloSubmit({ store, jobId, nonce, claimed, dest, peers, fol
   if (!judged.ok) return judged;
   if (!judged.block) {
     try {
-      console.error(JSON.stringify({
-        event: 'solo_share',
-        dest: String(dest || ''),
-        jobId: String(jobId || ''),
-        nonce: String(nonce),
+      console.error(JSON.stringify(soloShareLogFields({
+        dest,
+        jobId,
+        nonce,
         hash: judged.hash,
-      }));
+      })));
     } catch { /* ignore */ }
     return judged;
   }
@@ -284,6 +313,7 @@ export function createSoloStratum({
     let logins = 0;
     let refused = false;
     sock.on('data', (chunk) => {
+      try {
       if (refused) return;
       buf += chunk.toString('utf8');
       if (buf.length > HTTP_BODY_MAX) {
@@ -300,7 +330,14 @@ export function createSoloStratum({
           return;
         }
         let msg;
-        try { msg = parseBoundedJson(raw); } catch { continue; }
+        try { msg = parseBoundedJson(raw); } catch {
+          try { sock.write(line({ id: null, error: 'bad_json' })); } catch { /* ignore */ }
+          continue;
+        }
+        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+          try { sock.write(line({ id: null, error: 'bad_json' })); } catch { /* ignore */ }
+          continue;
+        }
         const method = msg.method || msg.id;
         const params = msg.params || msg;
         const isLogin = method === 'login'
@@ -377,6 +414,16 @@ export function createSoloStratum({
           }
           continue;
         }
+      }
+      } catch (err) {
+        try {
+          console.error(JSON.stringify({
+            event: 'solo_fault',
+            error: String(err?.message || err).slice(0, 200),
+          }));
+        } catch { /* ignore */ }
+        try { sock.write(line({ id: null, error: 'bad_message' })); } catch { /* ignore */ }
+        try { sock.destroy(); } catch { /* ignore */ }
       }
     });
     sock.on('close', () => { sockets.delete(sock); });

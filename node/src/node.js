@@ -18,6 +18,7 @@ import {
   consensusFingerprint,
 } from '../../crypto/asert.js';
 import { CLIENT, ALGO, HEADER_LEN, assertHashBackend, hashBackendKind } from '../../crypto/shear_hash.js';
+import { nativeLoaded } from '../../crypto/native_admit.js';
 import { printHelp, helpTopics } from './help.js';
 import { nodeStatus, printNodeStatus, watchNodeStatus } from './status.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_DAYS, RESERVE_JOIN_CUTOFF_DAYS } from '../../crypto/asert.js';
@@ -25,6 +26,7 @@ import { extraMintAllowed } from '../../crypto/mint.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS } from '../../crypto/reserve_oracle.js';
 import { createStore } from './store.js';
+import { installNodeGuards } from './process_guard.js';
 import { createP2p, P2P_PORT, SEED_RETRY_MS } from './p2p.js';
 import { startHttpFollow } from './http_follow.js';
 import { attachSidecarIpc } from './p2p_ipc.js';
@@ -146,6 +148,7 @@ export async function startNode({
     || String(process.env.SHEAR_SOLO || '').trim() === '1',
   stratumPort = Number(process.env.SHEAR_STRATUM || process.env.SHEAR_STRATUM_PORT || SOLO_STRATUM_PORT) || SOLO_STRATUM_PORT,
   stratumBind = process.env.SHEAR_STRATUM_BIND || SOLO_STRATUM_BIND,
+  soloHashOk = null,
 } = {}) {
   const mainnet = String(network) === MAGIC_MAINNET;
   if (mainnet && !mainnetMayEmit()) {
@@ -160,6 +163,14 @@ export async function startNode({
       phaseBGate: PHASE_B_GATE,
       hashTxLive: HASH_TX_LIVE,
     };
+  }
+  if (solo && !(typeof soloHashOk === 'function' ? !!soloHashOk() : !!hashBackendKind())) {
+    let message = 'ShearHash-v3 native addon missing and ShearK-Miner not built.';
+    try { assertHashBackend(); } catch (e) { message = String(e?.message || e); }
+    console.error(JSON.stringify({ event: 'shearhash', ok: false, solo: true, error: message }));
+    const err = new Error(message);
+    err.code = 'native_missing';
+    throw err;
   }
   // createStore is the one datadir check on this path. applyLatestBootstrap
   // checks before it writes, because that write happens before the store opens.
@@ -384,15 +395,16 @@ async function main() {
     return;
   }
   if (argv.includes('--status')) {
-    const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
+    const dataDir = defaultDataDir();
     const store = createStore(dataDir, {
       fastSync: String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
       network: process.env.SHEAR_NETWORK || MAGIC_TESTNET,
+      lock: false,
     });
     printNodeStatus({ store, extra: { hashBackend: hashBackendKind() || 'missing' } });
     return;
   }
-  const dataDirForBoot = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
+  const dataDirForBoot = defaultDataDir();
   const emptyDatadir = datadirIsEmpty(dataDirForBoot);
   const boot = await resolveGuiBootstrap({
     argv,
@@ -434,6 +446,7 @@ async function main() {
         genesis: started.genesis,
         hashTxLive: HASH_TX_LIVE,
         admit: 'ADMITv3',
+        admitNative: nativeLoaded() ? 'loaded' : 'missing',
         mainnet: true,
         p2p: 0,
         stratum: null,
@@ -468,6 +481,7 @@ async function main() {
       emit: true,
       hashTxLive: HASH_TX_LIVE,
       admit: 'ADMITv3',
+      admitNative: nativeLoaded() ? 'loaded' : 'missing',
       jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
       hashBackend,
     }));
@@ -493,6 +507,7 @@ async function main() {
       genesis: started.genesis,
       hashTxLive: HASH_TX_LIVE,
       admit: 'ADMITv3',
+      admitNative: nativeLoaded() ? 'loaded' : 'missing',
       mainnet: true,
     }));
     return;
@@ -521,6 +536,7 @@ async function main() {
     emit: true,
     hashTxLive: HASH_TX_LIVE,
     admit: 'ADMITv3',
+    admitNative: nativeLoaded() ? 'loaded' : 'missing',
     jroot: live?.jroot ? Buffer.from(live.jroot).toString('hex') : '',
     hashBackend,
   }));
@@ -537,6 +553,7 @@ async function main() {
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 if (isMain) {
+  installNodeGuards();
   main().catch((err) => {
     console.error(err);
     process.exit(1);

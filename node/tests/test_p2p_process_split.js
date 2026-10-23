@@ -33,6 +33,10 @@ function childEnv(extra) {
     'SHEAR_RPC_PORT', 'SHEAR_MODE',
   ]) delete env[key];
   env.SHEAR_NETWORK = MAGIC_TESTNET;
+  // These sockets sit quiet for up to 90s and do not complete hello.
+  // The production hello deadline is 20s; this file only checks ingest.
+  env.SHEAR_P2P_HELLO_MS = '600000';
+  env.SHEAR_P2P_IDLE_MS = '600000';
   return { ...env, ...extra };
 }
 
