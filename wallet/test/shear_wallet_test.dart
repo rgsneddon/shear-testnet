@@ -1611,14 +1611,7 @@ void main() {
       expect(ledger.notes, isEmpty);
       await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
       expect(pool.notesHits, greaterThan(0));
-      if (ledger.notes.isEmpty) {
-        ledger.ingestSealedVouts(
-          [pot],
-          spendSeed: seed,
-          dest: dest,
-          prev: Uint8List(32),
-        );
-      }
+      expect(ledger.notes, isNotEmpty);
       ledger.noteNodeCheckedTip(2 + ShearLedger.spendableConfirmations - 1);
       ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
       expect(ledger.notes, isNotEmpty);

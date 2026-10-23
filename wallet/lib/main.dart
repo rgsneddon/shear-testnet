@@ -2890,6 +2890,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
   /// One spinner. No step list. The bar stays so the shell is still responding.
   Widget _bookLoading() {
     final verify = ledger.headerVerifyLine;
+    final stall = ledger.headerStallLine;
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -2902,6 +2903,14 @@ class ShearWalletAppState extends State<ShearWalletApp>
             Text(
               verify,
               key: const Key('header-verify-progress'),
+              style: const TextStyle(fontSize: 13),
+            ),
+          ],
+          if (stall != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              stall,
+              key: const Key('header-stall'),
               style: const TextStyle(fontSize: 13),
             ),
           ],
@@ -2957,6 +2966,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
         Text(
           ledger.headerVerifyLine!,
           key: const Key('header-verify-progress'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 13),
+        ),
+      if (ledger.headerStallLine != null)
+        Text(
+          ledger.headerStallLine!,
+          key: const Key('header-stall'),
           style: TextStyle(color: shearMutedOf(context), fontSize: 13),
         ),
       if (unconfirmed > 0)
