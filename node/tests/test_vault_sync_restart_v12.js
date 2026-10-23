@@ -289,6 +289,8 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.equal(leaf.commit.equals(funded), false, 'nonzero funding gap');
     const range = proveRange(PI_SHE_NANOS, blind);
     assert.ok(range, 'range');
+    const piProof = proveRange(0n, blind);
+    assert.ok(piProof, 'pi');
     const d20 = hash20FromAddress(person.dest);
     const ph = placeholders(4);
     let fee = LEVY_FLOOR_UNITS;
@@ -319,6 +321,7 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
         portalId: person.portalId,
         ownerPub: person.pub,
         vaultLockNote: leaf.note,
+        piProof,
         vin: ph.vin,
         vout: outs,
         fs1: ph.fs1,
@@ -341,7 +344,6 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     signSpendTx(tx, person.key);
     const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, 0);
     assert.ok(fund, 'fund');
-    tx.piProof = proveRange(0n, blind);
     assert.ok(tx.piProof, 'pi');
     const lockOut = tx.vout.find((row) => String(row?.kind || '') === 'lock');
     assert.ok(lockOut, 'lock out');

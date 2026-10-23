@@ -2541,6 +2541,10 @@ Map<String, Object?>? sealWalletLockTx({
     _lockWireRow(lockRow),
     _lockWireRow(change),
   ];
+  // H(piProof) is in the reserve suffix. The proof is bound before the
+  // FS-1 digest and the fund proof, so stripping it fails verification.
+  final pi = AdmitNative.tryLoad()?.proveRange(BigInt.zero, blind);
+  if (pi == null || pi.length < 2 || pi[0] != 2) return null;
   final digest = fs1BodyDigest(
     magic: magic,
     kind: 'lock',
@@ -2552,6 +2556,7 @@ Map<String, Object?>? sealWalletLockTx({
     programId: 'shear-reserve-v1',
     reserveNanos: 0,
     oneTimePub: ownerHex,
+    piProof: pi,
   );
   final indices = <int>[];
   final spent = <Map<String, dynamic>>[];
@@ -2604,6 +2609,7 @@ Map<String, Object?>? sealWalletLockTx({
       'fs1': proved['fs1'],
       'excess': proved['excess'],
       'admit_proofs': proofs,
+      'piProof': pi,
     };
     final fund = proveLockFundEquality(
       commit: funded,
@@ -2615,11 +2621,6 @@ Map<String, Object?>? sealWalletLockTx({
     );
     if (fund == null) return null;
     posted[0]['fundProof'] = fund;
-    // A π lock qualifies only with a proof that the funding commitment is π.
-    // The digest and the fund proof are already bound. This field is not in them.
-    final pi = AdmitNative.tryLoad()?.proveRange(BigInt.zero, blind);
-    if (pi == null || pi.length < 2 || pi[0] != 2) return null;
-    body['piProof'] = pi;
     return {
       'tx': body,
       'scalar': scalar,

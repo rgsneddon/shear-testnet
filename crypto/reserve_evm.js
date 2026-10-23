@@ -174,6 +174,16 @@ function authBytes(dest, commit, ownerAuth) {
   return new Uint8Array();
 }
 
+/** ABI call for Reserve.piProofWord. The return is the last 32 bytes of a lock suffix. */
+export function encodePiProofWord(piProof = Buffer.alloc(0)) {
+  let raw = Buffer.alloc(0);
+  if (piProof != null && piProof !== '') {
+    try { raw = Buffer.from(asU8(piProof)); } catch { raw = Buffer.alloc(0); }
+  }
+  const body = encodeBytes(raw);
+  return concat(selector('piProofWord(bytes)'), pad32(32), body);
+}
+
 export function encodeDeposit(dest, commit, nowTs, ownerAuth = null, qualifies = false) {
   const word = commitWord(commit);
   const destBody = encodeBytes(dest);

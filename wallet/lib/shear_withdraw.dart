@@ -668,6 +668,7 @@ Uint8List lockTxDigest({
     commit: boundCommit.length == 32 ? Uint8List.fromList(boundCommit) : null,
     vout: postedVout,
     oneTimePub: (tx['ownerPub'] ?? '').toString(),
+    piProof: Uint8List.fromList(_asBytes(tx['piProof'])),
   ));
   return _sha(_cat(parts));
 }
@@ -749,6 +750,8 @@ Map<String, Object?>? buildQueuedLockTx({
   if (admit == null) return null;
   final range = admit.proveRange(BigInt.from(kPiSheNanos), blind);
   if (range == null || range.isEmpty || range[0] != 2) return null;
+  final pi = admit.proveRange(BigInt.zero, blind);
+  if (pi == null || pi.length < 2 || pi[0] != 2) return null;
   final paid = fee ?? kLevyCapNanos;
   final changeN = inputNanos - paid - kPiSheNanos;
   if (paid <= 0 || changeN <= 0) return null;
@@ -785,6 +788,7 @@ Map<String, Object?>? buildQueuedLockTx({
     programId: 'shear-reserve-v1',
     reserveNanos: 0,
     oneTimePub: ownerHex,
+    piProof: pi,
   );
   final indices = <int>[];
   final spent = <Map<String, dynamic>>[];
@@ -839,6 +843,7 @@ Map<String, Object?>? buildQueuedLockTx({
       'fs1': proved['fs1'],
       'excess': proved['excess'],
       'admit_proofs': proofs,
+      'piProof': pi,
     };
     final fund = proveLockFundEquality(
       commit: funded,

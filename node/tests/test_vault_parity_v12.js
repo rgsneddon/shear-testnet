@@ -824,6 +824,8 @@ const store = createStore(dir, {
       const funded = pointBytes(commit(PI_SHE_NANOS, blind));
       const range = proveRange(PI_SHE_NANOS, blind);
       assert.ok(range, 'range');
+      const piProof = proveRange(0n, blind);
+      assert.ok(piProof, 'pi');
       const ph = placeholders(4);
       let fee = LEVY_FLOOR_UNITS;
       let lock = null;
@@ -853,6 +855,7 @@ const store = createStore(dir, {
           portalId,
           ownerPub: Buffer.from(who.id.spendPub).toString('hex'),
           vaultLockNote: leaf.note,
+          piProof,
           vin: ph.vin,
           vout: outs,
           fs1: ph.fs1,
@@ -873,7 +876,6 @@ const store = createStore(dir, {
       signSpendTx(lock, who.key);
       const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, lock, MAGIC_TESTNET, 0);
       assert.ok(fund, 'fund');
-      lock.piProof = proveRange(0n, blind);
       assert.ok(lock.piProof, 'pi');
       const lockRow = lock.vout.find((row) => String(row?.kind || '') === 'lock');
       assert.ok(lockRow, 'lock out');

@@ -596,6 +596,14 @@ contract Reserve {
         _activateBallot(leftEpoch);
     }
 
+    /// Last word of a lock reserve suffix: sha256(piProof). An empty proof
+    /// hashes as sha256 of empty, so stripping the proof changes the word.
+    /// The node appends this word in reserveDigestSuffix before it forwards
+    /// a lock. The rest of the suffix is the existing JS and Dart layout.
+    function piProofWord(bytes calldata piProof) external pure returns (bytes32) {
+        return sha256(piProof);
+    }
+
     /// The amount is the commitment. `nanos` is not an argument.
     /// auth is ownerPub(32) || sig(64) over the portal id and the commitment.
     function lock(bytes calldata dest, bytes32 commit, uint256 nowTs, bytes calldata auth, bool qualifies) external onlyShear {

@@ -591,6 +591,8 @@ async function lifeLock(store, person, coins, spent, id) {
   const funded = pointBytes(commit(PI_SHE_NANOS, blind));
   const range = proveRange(PI_SHE_NANOS, blind);
   assert.ok(range, 'range');
+  const piProof = proveRange(0n, blind);
+  assert.ok(piProof, 'pi');
   const change20 = hash20FromAddress(person.dest);
   const ph = lifePh(4);
   let fee = LEVY_FLOOR_UNITS;
@@ -621,6 +623,7 @@ async function lifeLock(store, person, coins, spent, id) {
       portalId: person.portalId,
       ownerPub: person.pub,
       vaultLockNote: leaf.note,
+      piProof,
       vin: ph.vin,
       vout: outs,
       fs1: ph.fs1,
@@ -648,7 +651,7 @@ async function lifeLock(store, person, coins, spent, id) {
   lockOut.fundProof = fund;
   // The π opening is what lets the portal join and open the chain epoch.
   // A hidden lock with no piProof stays a tranche and never starts the clock.
-  tx.piProof = proveRange(0n, blind);
+  // H(piProof) is already in the FS-1 digest, so this is the same proof.
   assert.ok(tx.piProof, 'pi');
   resetFs1Tree();
   const queued = store.queueTx(tx, { nowMs: lifeStamp(store) });

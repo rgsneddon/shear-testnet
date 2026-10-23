@@ -263,9 +263,11 @@ export const VAULT_ACCRUAL_LAW = 'epoch-total-bps';
  * H(tag, dest20). dest20 is the lockAuth key. One lock output per lock.
  * A lock that carries payoutPortalId is refused. Compact lock and withdraw
  * bodies do not carry `to`. The gap opening is A1 and zGap once; the claim
- * header does not repeat them. A fingerprint change wipes testnet together.
+ * header does not repeat them. A lock suffix also binds sha256(piProof);
+ * an absent proof is sha256 of empty. A fingerprint change wipes testnet
+ * together. Mainnet uses this same stamp.
  */
-export const DIGEST_LOCK_STAMP = 'unlockAtMs+lockEpoch';
+export const DIGEST_LOCK_STAMP = 'unlockAtMs+lockEpoch+H(piProof)';
 export const COMPACT_VAULT_WIRE = 'roots+census+claimNanos';
 export const COINBASE_PUBLIC_TOTAL = 'pot+hash+levy';
 export const UNINDEXED_WITHDRAW = 'stake_reward';

@@ -462,9 +462,10 @@ Uint8List _commit32(Object? raw) {
 }
 
 /// JS `reserveDigestSuffix`. Unlock time and lock epoch are always bound.
-/// A withdraw also binds its id and its 32-byte nonce. Lock and vote do not.
-/// A lock appends the raw 32-byte owner pub. An empty owner is 32 zero bytes.
-/// That is the word JS `rewardOwnerPub` appends.
+/// A withdraw also binds its id and its 32-byte nonce. A vote does not.
+/// A lock appends the raw 32-byte owner pub, then sha256(piProof). An empty
+/// owner is 32 zero bytes. An absent proof hashes as sha256 of empty.
+/// That owner word is the word JS `rewardOwnerPub` appends.
 Uint8List reserveDigestSuffixBytes({
   required String kind,
   required String portalId,
@@ -477,6 +478,7 @@ Uint8List reserveDigestSuffixBytes({
   String id = '',
   Uint8List? withdrawNonce,
   String oneTimePub = '',
+  Uint8List? piProof,
 }) {
   final portal = portalId.toLowerCase();
   final payout = payoutPortalId.toLowerCase();
@@ -512,6 +514,7 @@ Uint8List reserveDigestSuffixBytes({
       }
     }
     chunks.addAll(pub);
+    chunks.addAll(sha256.convert(piProof ?? Uint8List(0)).bytes);
   }
   return Uint8List.fromList(chunks);
 }
@@ -596,6 +599,7 @@ Uint8List reserveSpendMessage({
   Uint8List? withdrawNonce,
   List<Uint8List> proofBlobs = const [],
   String oneTimePub = '',
+  Uint8List? piProof,
 }) {
   final packed = spendPackDigest(from: from, vout: vout, kind: kind, vin: vin);
   final portal = portalId.toLowerCase();
@@ -612,6 +616,7 @@ Uint8List reserveSpendMessage({
     id: id,
     withdrawNonce: withdrawNonce,
     oneTimePub: oneTimePub,
+    piProof: piProof,
   );
   final chunks = <int>[
     ...packed,

@@ -599,6 +599,12 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       draft = null;
     }
     assert.ok(draft, `${id} fee did not settle`);
+    let piProof = null;
+    if (amount === PI_SHE_NANOS) {
+      piProof = proveRange(0n, outs[0].r);
+      assert.ok(piProof, `${id} pi`);
+      draft.piProof = piProof;
+    }
     const proven = fs1ProveSpend({
       live,
       anchor,
@@ -625,6 +631,7 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       fs1: proven.fs1,
       admit_proofs: proven.proofs,
       excess,
+      ...(piProof ? { piProof } : {}),
     });
     assert.ok(txBodyDigestFs1(tx, MAGIC_TESTNET).equals(proven.digest), `${id} compact digest`);
     // The vin is the spent note. The owner signature binds tx.dest20, which
@@ -641,7 +648,6 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       assert.ok(leaf && lockRow && lockBlind != null, `${id} leaf`);
       assert.equal(lockRow.valueProof, undefined);
       tx.vaultLockNote = leaf.note;
-      tx.piProof = proveRange(0n, typeof lockBlind === 'bigint' ? lockBlind : lockBlind);
       const fund = proveLockEquality(lockRow.commit, PI_SHE_NANOS, lockBlind, tx, MAGIC_TESTNET, 0);
       assert.ok(tx.piProof && fund, `${id} fund`);
       lockRow.fundProof = fund;

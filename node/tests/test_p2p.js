@@ -379,6 +379,10 @@ function fs1Lock({ id, coins, anchor, live, magic, dest20, bodyDest20, portalId,
     draft = null;
   }
   if (!draft) return null;
+  const lockBlindEarly = outs[0].r;
+  const piProof = proveRange(0n, lockBlindEarly);
+  if (!piProof) return null;
+  draft.piProof = piProof;
   const proven = fs1ProveSpend({
     live,
     anchor,
@@ -403,6 +407,7 @@ function fs1Lock({ id, coins, anchor, live, magic, dest20, bodyDest20, portalId,
     fs1: proven.fs1,
     admit_proofs: proven.proofs,
     excess,
+    piProof,
   });
   const spend20 = bodyDest20 || dest20;
   tx.dest20 = Buffer.from(spend20);
@@ -413,7 +418,6 @@ function fs1Lock({ id, coins, anchor, live, magic, dest20, bodyDest20, portalId,
   const leaf = vaultLockNote(PI_SHE_NANOS, scalar, lockBlind, unlock);
   if (!leaf || !lockRow || lockBlind == null) return null;
   tx.vaultLockNote = leaf.note;
-  tx.piProof = proveRange(0n, lockBlind);
   const fund = proveLockEquality(lockRow.commit, PI_SHE_NANOS, lockBlind, tx, magic, proveHeight);
   if (!tx.piProof || !fund) return null;
   lockRow.fundProof = fund;

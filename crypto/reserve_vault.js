@@ -4153,9 +4153,24 @@ function stampedLockEpoch(tx) {
   return -1;
 }
 
+/** Canonical piProof bytes. Missing, empty, and unreadable proofs are empty,
+ * so a stripped proof hashes as sha256 of empty and the suffix stays fixed-width. */
+function piProofWire(tx) {
+  const raw = tx?.piProof;
+  if (raw == null || raw === '') return Buffer.alloc(0);
+  try {
+    return Buffer.from(asU8(raw));
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
 /** Merkle, owner, and v3 transcript suffix for a lock, vote, or withdraw.
- * Unlock time and lock epoch are always bound. A withdraw also signs its id
- * and its 32-byte nonce. Lock and vote do not. */
+ * Unlock time and lock epoch are always bound. A lock also binds
+ * sha256(piProof) after the owner pub. Stripping or swapping the proof
+ * changes that word, so the spend signature and the FS-1 digest no longer
+ * match. A withdraw also signs its id and its 32-byte nonce. A vote does not
+ * bind a pi proof. */
 export function reserveDigestSuffix(tx) {
   const fields = canonicalReserveFields(tx);
   if (!fields) return null;
@@ -4173,6 +4188,7 @@ export function reserveDigestSuffix(tx) {
   ];
   if (fields.kind === KIND_LOCK) {
     parts.push(rewardOwnerPub(tx?.ownerPub));
+    parts.push(createHash('sha256').update(piProofWire(tx)).digest());
   }
   if (fields.kind === KIND_WITHDRAW) {
     parts.push(lenPrefUtf8(String(tx?.id || '')));

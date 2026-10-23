@@ -19,6 +19,7 @@ import {
   encodeEnact,
   encodeClaim,
   encodeDeposit as encodeDepositRaw,
+  encodePiProofWord,
   encodeWithdraw as encodeWithdrawRaw,
   encodeCommitRewards,
   encodeSyncEpoch,
@@ -50,6 +51,7 @@ import {
   leafEpochsToBurn,
   leafStubNanos,
   lockUnlockOf,
+  reserveDigestSuffix,
   provePrincipalOpen,
   enact,
   packRewardAuth,
@@ -213,6 +215,31 @@ describe('Reserve bytecode on the Shear EVM', () => {
         return true;
       },
     );
+  });
+
+  it('piProofWord is the last 32 bytes of the JS lock reserve digest', async () => {
+    const portalId = 'ab'.repeat(32);
+    const commit = Buffer.alloc(32, 0x11);
+    const ownerPub = Buffer.alloc(32, 0x22);
+    const cases = [Buffer.from([1, 2, 3]), Buffer.alloc(0)];
+    const session = await bootReserveEvm();
+    for (const piProof of cases) {
+      const tx = {
+        kind: 'lock',
+        portalId,
+        programId: 'shear-reserve-v1',
+        nanos: 0,
+        ownerPub: ownerPub.toString('hex'),
+        vout: [{ kind: 'lock', commit }],
+      };
+      if (piProof.length) tx.piProof = piProof;
+      const js = reserveDigestSuffix(tx);
+      const call = await callReserve(session, encodePiProofWord(piProof), { staticCall: true });
+      assert.equal(call.ok, true, call.reason);
+      const word = Buffer.from(call.returnValue);
+      assert.equal(word.length, 32);
+      assert.equal(word.equals(js.subarray(js.length - 32)), true, piProof.length ? 'proof' : 'empty');
+    }
   });
 
   it('MAGIC_TESTNET, the Reserve.sol allowlist, and Reserve.json move together', () => {

@@ -76,6 +76,7 @@ Uint8List _u64(int v) {
 /// crypto/fs1_spend.js over the posted vout rows (bytes or hex). A send has
 /// no portal, program, payout portal, or reserve suffix. A lock, vote, or
 /// withdraw appends `reserveDigestSuffix`, including unlock time and lock epoch.
+/// A lock also binds sha256([piProof]). Pass the proof that will be posted.
 Uint8List fs1BodyDigest({
   required String magic,
   required String kind,
@@ -91,6 +92,7 @@ Uint8List fs1BodyDigest({
   String id = '',
   Uint8List? withdrawNonce,
   String oneTimePub = '',
+  Uint8List? piProof,
 }) {
   final b = BytesBuilder(copy: false)
     ..add(utf8Bytes(kFs1DigestDst))
@@ -135,6 +137,7 @@ Uint8List fs1BodyDigest({
       id: id,
       withdrawNonce: withdrawNonce,
       oneTimePub: oneTimePub,
+      piProof: piProof,
     ));
   }
   return Uint8List.fromList(sha256.convert(b.takeBytes()).bytes);
