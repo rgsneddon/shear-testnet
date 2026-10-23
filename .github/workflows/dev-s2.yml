@@ -33,4 +33,4 @@ jobs:
           test -f crypto/native/shearadmit.node
           node -e 'const n = require("module").createRequire(process.cwd()+"/")("./crypto/native/shearadmit.node"); if (!n || typeof n.proveRange !== "function" || typeof n.verifyRange !== "function") throw new Error("shearadmit");'
       - name: Chain param pin and shear-dev S2 smoke
-        run: node --test --test-concurrency=1 tests/test_chain_params_pin.js node/tests/test_dev_epoch_s2.js
+        run: node --test --test-concurrency=1 tests/test_chain_params_pin.js node/tests/test_dev_epoch_s2.js node/tests/test_enact_withdraw.js
