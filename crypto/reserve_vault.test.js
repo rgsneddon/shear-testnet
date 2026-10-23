@@ -37,6 +37,8 @@ import {
   portalBlindFromSeed,
   portalDest20FromSeed,
   compactLockLeakRejected,
+  lockQualifies,
+  lockNoteSpendRejected,
   lockTx as lockTxRaw,
   withdrawTx as withdrawTxRaw,
   observeRate,
@@ -65,7 +67,10 @@ import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, GENESIS_BPS, interestNanos } from './reserve_oracle.js';
 import { extraMint } from './mint.js';
+import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { commit, verifySealedNote, pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
+import { outputJoinsAdmitSet, receiptAdmitRejected } from './admit.js';
+import { typedCommitRejected } from './spend.js';
 import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
 import { txDigestV3 } from './admit_v3.js';
 
@@ -804,6 +809,139 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(state.votes.hold, 0);
   });
 
+  it('a sum of sub-π notes does not qualify and one commitment of π does', () => {
+    const half = BigInt(PI_SHE_NANOS) / 2n;
+    const rest = BigInt(PI_SHE_NANOS) - half;
+    const ra = randomScalar();
+    const rb = randomScalar();
+    const a = commit(half, ra);
+    const b = commit(rest, rb);
+    const sumBlind = RistrettoPoint.Fn.add(ra, rb);
+    const sumPoint = pointBytes(a.add(b));
+    const sumProof = proveRange(0n, sumBlind);
+    assert.equal(lockQualifies(sumPoint, sumProof), true);
+    const portal = {
+      tranches: [
+        { commit: pointBytes(a).toString('hex') },
+        { commit: pointBytes(b).toString('hex') },
+      ],
+    };
+    assert.equal(lockQualifies(pointBytes(a), sumProof, portal), false);
+    assert.equal(lockQualifies(pointBytes(b), sumProof, portal), false);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const dest = destOf(newIdentity());
+    const first = depositRaw({ state, dest, nanos: half, blind: ra, nowMs: t0 });
+    assert.equal(first.ok, true, first.reason);
+    assert.equal(first.portal.qualified, false);
+    const second = depositRaw({ state, dest, nanos: rest, blind: rb, nowMs: t0 + 1 });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, 'portal_exists');
+    const whole = emptyVault();
+    whole.genesisMs = t0;
+    const qualified = depositRaw({
+      state: whole,
+      dest: destOf(newIdentity()),
+      nanos: PI_SHE_NANOS,
+      blind: randomScalar(),
+      nowMs: t0,
+    });
+    assert.equal(qualified.ok, true, qualified.reason);
+    assert.equal(qualified.portal.qualified, true);
+  });
+
+  it('hidden locks keep supply identity across π amounts and epochs', () => {
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const rows = [
+      { amount: PI_SHE_NANOS, at: t0, epoch: 0, qualified: true },
+      { amount: PI_SHE_NANOS + 1, at: t0 + RESERVE_EPOCH_MS + 1, epoch: 1, qualified: true },
+      { amount: PI_SHE_NANOS * 2, at: t0 + 3 * RESERVE_EPOCH_MS + 1, epoch: 3, qualified: true },
+      { amount: Math.floor(PI_SHE_NANOS / 2), at: t0 + 3 * RESERVE_EPOCH_MS + 2, epoch: 3, qualified: false },
+    ];
+    const epochs = [];
+    for (const row of rows) {
+      if (!state.bonusEnacted && state.epochStartMs && row.at >= state.epochStartMs + RESERVE_EPOCH_MS) {
+        const rolled = enact({ state, nowMs: row.at });
+        assert.equal(rolled.ok, true, rolled.reason);
+      }
+      const got = depositRaw({
+        state,
+        dest: destOf(newIdentity()),
+        nanos: row.amount,
+        blind: randomScalar(),
+        nowMs: row.at,
+      });
+      assert.equal(got.ok, true, `${row.amount} ${got.reason}`);
+      assert.equal(got.portal.qualified, row.qualified, String(row.amount));
+      const id = supplyIdentity(state);
+      assert.equal(id.ok, true, id.reason);
+      assert.equal(Number(state.totalLockedNanos) || 0, 0);
+      assert.equal(id.principalCommit, String(state.vaultPrincipalSum || ''));
+      assert.equal(id.lockedNanos, 0);
+      assert.ok(id.principalCommit.length > 0);
+      const booked = state.portals[got.portal.id];
+      assert.equal(booked.tranches.length, 1);
+      epochs.push(booked.tranches[0].epoch);
+    }
+    assert.deepEqual(epochs, rows.map((row) => row.epoch));
+  });
+
+  it('an ordinary spend of a Vault lock is refused after unlock, and withdraw still works', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const payout = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const locked = depositIndexed(state, a, t0, { payout });
+    const after = t0 + RESERVE_EPOCH_MS + 1;
+    const leafCommit = locked.planted.leaf.commit;
+    const lockOut = { kind: 'lock', commit: leafCommit };
+    const lockTx = { kind: 'lock', vout: [lockOut] };
+    assert.equal(lockNoteSpendRejected(state, { vin: [{ commit: leafCommit }] }, t0 + 1), null);
+    assert.equal(lockNoteSpendRejected(state, { vin: [{ commit: leafCommit }] }, after), null);
+    assert.equal(outputJoinsAdmitSet(lockTx, lockOut), false);
+    const direct = {
+      kind: 'lock',
+      vin: [{ commit: leafCommit, noteCommit: leafCommit }],
+      vout: [{ kind: 'lock', commit: Buffer.alloc(32, 4) }],
+    };
+    assert.equal(typedCommitRejected(direct)?.reason, 'admit_membership');
+    const ordinary = {
+      kind: 'send',
+      vin: [{ commit: leafCommit }],
+      vout: [{ kind: 'send', commit: Buffer.alloc(32, 5) }],
+    };
+    assert.equal(outputJoinsAdmitSet(ordinary, lockOut), false);
+    assert.equal(typedCommitRejected({
+      ...ordinary,
+      kind: '',
+    })?.reason, 'admit_membership');
+    const ok = indexedHiddenWithdraw(state, a, after, {
+      id: 'after-unlock',
+      payout,
+      planted: locked.planted,
+    });
+    assert.equal(ok.ok, true, ok.reason);
+  });
+
+  it('a lock output that carries admitPub is receipt_admitpub', () => {
+    const commit = Buffer.alloc(32, 3);
+    const tx = {
+      kind: 'lock',
+      vout: [{ kind: 'lock', commit, admitPub: Buffer.alloc(32, 9) }],
+    };
+    assert.equal(outputJoinsAdmitSet(tx, tx.vout[0]), false);
+    assert.equal(receiptAdmitRejected(tx)?.reason, 'receipt_admitpub');
+    assert.equal(receiptAdmitRejected({
+      kind: 'lock',
+      vout: [{ kind: 'lock', commit }],
+    }), null);
+  });
+
   it('Alice lock, Bob withdraw fails', () => {
     const alice = newIdentity();
     const bob = newIdentity();
@@ -959,6 +1097,26 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     }).reason, 'portal_exists');
     assert.equal(compactLockLeakRejected({
       kind: 'lock', portalId: pid, vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+    }), null);
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock',
+      portalId: pid,
+      vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+      spendPub: 'ab'.repeat(32),
+      fs1: Buffer.from([0xf1, 1]),
+    }).reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock',
+      portalId: pid,
+      vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+      sig: 'cd'.repeat(32),
+      fs1: Buffer.from([0xf1]),
+    }).reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock',
+      portalId: pid,
+      vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+      spendPub: 'ab'.repeat(32),
     }), null);
   });
 

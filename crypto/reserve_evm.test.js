@@ -11,7 +11,9 @@ import {
   reserveSolRegions,
 } from '../contracts/compile_reserve.js';
 import {
+  attachLockAuth,
   bootReserveEvm,
+  executeReserveTx,
   reservePinOk,
   callReserve,
   encodePinClock,
@@ -38,7 +40,7 @@ import {
 import { GENESIS_BPS } from './reserve_oracle.js';
 import { txDigestV3 } from './admit_v3.js';
 import { destCommitFromSpendPub, ed25519RawPub, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from './address.js';
-import { pointBytes, pointFrom, proveRange, randomScalar, sealCoinbaseNote } from './note.js';
+import { commit, pointBytes, pointFrom, proveRange, randomScalar, sealCoinbaseNote } from './note.js';
 import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
 import { boundReserveWithdraw, reserveAuth, signSpendTx } from './spend.js';
 import {
@@ -215,6 +217,44 @@ describe('Reserve bytecode on the Shear EVM', () => {
         return true;
       },
     );
+  });
+
+  it('only the tx-level piProof qualifies a lock', async () => {
+    const session = await bootReserveEvm();
+    const now = 1_700_000_000_000;
+    assert.equal((await callReserve(session, encodePinClock(now))).ok, true);
+    const blind = randomScalar();
+    const C = pointBytes(commit(BigInt(PI_SHE_NANOS), blind));
+    const proof = proveRange(0n, blind);
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const destA = destCommitFromSpendPub(alice.spendPub);
+    const destB = destCommitFromSpendPub(bob.spendPub);
+    const outOnlyTx = {
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      nanos: PI_SHE_NANOS,
+      vout: [{ kind: 'lock', commit: C, dest20: destA, piProof: proof }],
+    };
+    attachLockAuth(outOnlyTx, alice.privateKey);
+    const outOnly = await executeReserveTx(session, outOnlyTx, now);
+    assert.equal(outOnly.ok, true, outOnly.reason);
+    const viewA = await callReserve(session, encodePortalOf(destA), { staticCall: true });
+    assert.equal(viewA.ok, true, viewA.reason);
+    assert.equal(decodePortal(viewA.returnValue).joined, false);
+    const txLevelTx = {
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      nanos: PI_SHE_NANOS,
+      piProof: proof,
+      vout: [{ kind: 'lock', commit: C, dest20: destB }],
+    };
+    attachLockAuth(txLevelTx, bob.privateKey);
+    const txLevel = await executeReserveTx(session, txLevelTx, now);
+    assert.equal(txLevel.ok, true, txLevel.reason);
+    const viewB = await callReserve(session, encodePortalOf(destB), { staticCall: true });
+    assert.equal(viewB.ok, true, viewB.reason);
+    assert.equal(decodePortal(viewB.returnValue).joined, true);
   });
 
   it('piProofWord is the last 32 bytes of the JS lock reserve digest', async () => {

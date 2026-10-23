@@ -2767,7 +2767,7 @@ function portalPublic(p) {
  * Build the lock commitment from a witness, or check a commitment the tx
  * already carries. The integer is not written onto the portal.
  */
-/** Wallet witness for openings and the portal-sum range proof. Not chain state. */
+/** Wallet witness for openings. Not chain state. */
 const PORTAL_WITNESS = new WeakMap();
 const EPOCH_WITNESS = new WeakMap();
 
@@ -2777,30 +2777,11 @@ function scalarAdd(a, b) {
   return Fn.add(a, b);
 }
 
-function shiftByPi(point) {
-  return pointBytes(point.subtract(G.multiply(Fn.create(BigInt(PI_SHE_NANOS)))));
-}
-
-function portalCommitPoint(portal, extra) {
-  let acc = null;
-  for (const tranche of portal?.tranches || []) {
-    const raw = commitBytes(tranche?.commit);
-    if (!raw) continue;
-    const p = pointFrom(raw);
-    acc = acc ? acc.add(p) : p;
-  }
-  if (extra) {
-    const p = pointFrom(extra);
-    acc = acc ? acc.add(p) : p;
-  }
-  return acc;
-}
-
 /**
- * True when `piProof` shows this commitment is exactly π.
+ * True when `piProof` shows this commitment is at least π.
  * The integer is not returned. A second tranche never reaches this:
- * deposit refuses portal_exists before it asks, so a portal sum is the
- * same point as the one commitment and is not a second chance.
+ * deposit refuses portal_exists before it asks. A sum of smaller notes
+ * is not a second chance.
  */
 export function lockQualifies(commit, piProof, portal = null) {
   void portal;
@@ -2982,11 +2963,9 @@ export function deposit({
   let qualifies = false;
   if (hidden.witnessed) {
     rememberPortalWitness(p, hidden.nanos, hidden.blind, hidden.commit);
-    const sum = portalCommitPoint(p, hidden.commit);
-    const held = PORTAL_WITNESS.get(p);
-    if (sum && held && held.nanos >= BigInt(PI_SHE_NANOS) && held.blind != null) {
-      const pi = proveRange(held.nanos - BigInt(PI_SHE_NANOS), held.blind);
-      qualifies = !!pi?.length && verifyRange(shiftByPi(sum), pi);
+    if (hidden.nanos >= BigInt(PI_SHE_NANOS) && hidden.blind != null) {
+      const pi = proveRange(hidden.nanos - BigInt(PI_SHE_NANOS), hidden.blind);
+      qualifies = lockQualifies(hidden.commit, pi);
     }
   } else {
     qualifies = lockQualifies(hidden.valueCommit || hidden.commit, piProof, p);
@@ -4486,7 +4465,22 @@ export function compactLockLeakRejected(tx) {
   const lockOuts = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === KIND_LOCK);
   if (lockOuts.length > 1) return { ok: false, reason: 'portal_exists' };
   if (valueHasAddrLeak(tx, new Set())) return { ok: false, reason: 'vote_leak' };
+  if (fs1SpendIdentityLeak(tx)) return { ok: false, reason: 'vote_leak' };
   return null;
+}
+
+/** spendPub or a signature on an FS-1 lock is the wallet identity. */
+function fs1SpendIdentityLeak(tx) {
+  const spend = tx?.spendPub != null && String(tx.spendPub) !== '';
+  const sig = (tx?.sig != null && String(tx.sig) !== '')
+    || (tx?.signature != null && String(tx.signature) !== '');
+  if (!spend && !sig) return false;
+  try {
+    const blob = Buffer.from(asU8(tx?.fs1));
+    return blob.length > 0 && blob[0] === 0xf1;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -4842,7 +4836,7 @@ export function applyReserveBlock({
         : lockOuts.map((out) => ({
           commit: commit32(out),
           rangeProof: out?.rangeProof || null,
-          piProof: out?.piProof || act.piProof,
+          piProof: act.piProof,
         }));
       if (credits.length !== 1) {
         results.push({ action: KIND_LOCK, ok: false, reason: credits.length ? 'portal_exists' : 'stake_reward' });

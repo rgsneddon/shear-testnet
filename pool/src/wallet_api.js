@@ -1711,11 +1711,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && !!postedLockDest20(body)
       && postedFs1(body)
       && Array.isArray(body.vout) && body.vout.some((o) => o && o.commit);
-    // A hidden lock is the wallet's signed tx. Relay it unchanged.
-    if (hiddenLock) return relayPostedTx(body, queueSend);
     if (isLock && body.payoutPortalId != null && String(body.payoutPortalId) !== '') {
       return { status: 400, json: { ok: false, reason: 'vote_leak' } };
     }
+    // A hidden lock is the wallet's signed tx. Relay it unchanged.
+    if (hiddenLock) return relayPostedTx(body, queueSend);
     if (isLock) {
       const lockOuts = (Array.isArray(body.vout) ? body.vout : []).filter((row) => row && String(row.kind || '') === 'lock');
       if (lockOuts.length > 1) return { status: 400, json: { ok: false, reason: 'portal_exists' } };

@@ -70,6 +70,38 @@ void main() {
     expect(lockChangeIndexEnd(spendSeed: seed, portalIds: portals), 78);
   });
 
+  test('scanSealedVouts finds a lock output past the floor', () {
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    const index = 70;
+    final dest20 = reservePortalDest20FromSeed(seed, index);
+    final owner = reservePortalSpendSeed(seed, index);
+    expect(dest20, isNotNull);
+    expect(owner, isNotNull);
+    final sealed = attachAdmitPub(
+      sealCoinbaseNote(1000, dest20: dest20, kind: 'lock'),
+      spendSeed: owner,
+    );
+    final found = scanSealedVouts({
+      'vouts': [sealed],
+      'dest': id.address,
+      'dests': [id.address],
+      'spendSeed': seed,
+      'lockChangeEnd': index,
+    });
+    final notes = (found['notes'] as List).cast<Map>();
+    expect(notes, hasLength(1));
+    expect(notes.single['kind'], 'lock');
+    final missed = scanSealedVouts({
+      'vouts': [sealed],
+      'dest': id.address,
+      'dests': [id.address],
+      'spendSeed': seed,
+      'lockChangeEnd': kLockIndexFloor,
+    });
+    expect((missed['notes'] as List), isEmpty);
+  });
+
   test('a saved output commit recovers a vote change the rescan does not contain', () async {
     expect(Fs1Native.tryLoad(), isNotNull, reason: 'fs1_prover_unavailable');
     final id = createIdentity();

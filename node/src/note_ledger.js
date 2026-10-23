@@ -9,11 +9,19 @@ import { openedCoinbaseNanos } from '../../crypto/coinbase_notes.js';
 import { asU8, noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js';
 import { epochMs } from '../../crypto/pot_sched.js';
 
+/** A Vault lock output. Time never makes it spendable. */
+function vaultLockOutput(out) {
+  if (String(out?.kind || '') !== 'lock') return false;
+  const portal = String(out?.portalId || '').toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(portal)) return true;
+  return Number.isInteger(out?.lockIndex);
+}
+
 /**
- * A lock note is spendable once the tip time has reached its unlock.
- * No unlock on the note stays locked. A vote is not a note.
+ * Time rule for a lock note. Covered principal uses this so an unlocked
+ * output can lift the subtraction without becoming a send input.
  */
-export function lockNoteHeld(out, { tipMs = 0, genesisMs = 0, magic = MAGIC_TESTNET } = {}) {
+function timeLockHeld(out, { tipMs = 0, genesisMs = 0, magic = MAGIC_TESTNET } = {}) {
   if (String(out?.kind || '') !== 'lock') return false;
   const tip = Number(tipMs) || 0;
   const unlock = Number(out?.unlockAtMs) || 0;
@@ -25,6 +33,15 @@ export function lockNoteHeld(out, { tipMs = 0, genesisMs = 0, magic = MAGIC_TEST
     return !(tip >= end);
   }
   return true;
+}
+
+/**
+ * A non-Vault lock note is spendable once the tip time has reached its unlock.
+ * A Vault lock is never spendable. No unlock on a non-Vault note stays locked.
+ */
+export function lockNoteHeld(out, opts = {}) {
+  if (vaultLockOutput(out)) return true;
+  return timeLockHeld(out, opts);
 }
 
 function commitHex(v) {
@@ -281,7 +298,7 @@ export function createNoteLedger({ digestsOf = null } = {}) {
       const kind = String(rec.out?.kind || rec.tx?.kind || '');
       if (kind !== 'lock') continue;
       if (opts.coinbaseOnly && !rec.coinbase) continue;
-      if (lockNoteHeld(rec.out, opts)) continue;
+      if (timeLockHeld(rec.out, opts)) continue;
       const h = Number(rec.height) || 0;
       if (!(h > 0 && (tip - h + 1) >= need)) continue;
       nanos += openedOf(rec);

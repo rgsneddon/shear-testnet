@@ -6,7 +6,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, spendDestOf } from './address.js';
+import { hash20FromAddress, newIdentity, spendDestOf } from './address.js';
 import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM, extraMintAllowed } from './asert.js';
 import { outputJoinsAdmitSet } from './admit.js';
 import { compactTx } from './chronoflux.js';
@@ -56,7 +56,7 @@ import {
   executeBlockEvm,
 } from './reserve_evm.js';
 import { deposit, encodeDeposit, encodeWithdraw, lockTx } from './owned_portal.js';
-import { randomScalar } from './note.js';
+import { randomScalar, sealCoinbaseNote } from './note.js';
 import { vaultLockNote } from './vault_reward_fs1.js';
 import { createNoteLedger } from '../node/src/note_ledger.js';
 
@@ -116,6 +116,31 @@ describe('time-locked lock notes', () => {
     assert.ok(out.rangeProof);
     assert.equal(before, 0);
     assert.equal(after, 0);
+  });
+
+  it('a Vault lock stays unspendable after unlock and a hard lock opens', () => {
+    const dest = who();
+    const d20 = hash20FromAddress(dest);
+    const opened = 1_000_000;
+    const plain = sealCoinbaseNote(opened, { dest20: d20, kind: 'lock', skipRange: true });
+    plain.unlockAtMs = T0 + RESERVE_EPOCH_MS;
+    const vault = sealCoinbaseNote(opened, { dest20: d20, kind: 'lock', skipRange: true });
+    vault.unlockAtMs = T0 + RESERVE_EPOCH_MS;
+    vault.portalId = 'ab'.repeat(32);
+    vault.lockIndex = 3;
+    const clock = { need: 1, genesisMs: T0 };
+    const book = createNoteLedger();
+    book.sync([{ height: 1, hash: Buffer.alloc(32, 9), txs: [{ kind: 'lock', vout: [plain, vault] }] }]);
+    assert.equal(book.spendable(dest, 1, { ...clock, tipMs: T0 + 1 }), 0);
+    assert.equal(book.spendable(dest, 1, { ...clock, tipMs: T0 + RESERVE_EPOCH_MS }), opened);
+    assert.equal(book.unlockedLockNanos(dest, 1, { ...clock, tipMs: T0 + RESERVE_EPOCH_MS }), opened);
+    const onlyVault = createNoteLedger();
+    onlyVault.sync([{ height: 1, hash: Buffer.alloc(32, 10), txs: [{ kind: 'lock', vout: [vault] }] }]);
+    const after = { ...clock, tipMs: T0 + RESERVE_EPOCH_MS };
+    assert.equal(onlyVault.spendable(dest, 1, after), 0);
+    assert.equal(onlyVault.unlockedLockNanos(dest, 1, after), 0);
+    assert.equal(onlyVault.coveredLockNanos(dest, 1, after), opened);
+    assert.equal(onlyVault.coveredLockNanos(dest, 1, { ...clock, tipMs: T0 + 1 }), 0);
   });
 
   it('keeps two top-ups as two notes that unlock together', () => {

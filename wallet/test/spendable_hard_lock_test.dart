@@ -24,6 +24,7 @@ import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_public_confirm.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:shear_wallet/shear_session.dart';
+import 'package:shear_wallet/shear_vault_reward.dart';
 
 /// Saved coin the old login painted before any read. 2.5 SHE, fully sealed.
 const _savedNanos = 250000000000;
@@ -1765,6 +1766,99 @@ void main() {
       MaterialApp(home: Scaffold(body: flowRecipientAmountLine(manyShe))),
     );
     expect(find.text('Recipient $manyShe SHE'), findsOneWidget);
+  });
+
+  test('a Vault lock stays out of Spendable after unlockAtMs', () {
+    final id = createIdentity();
+    final ledger = ShearLedger()..bindIdentity(id);
+    final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    const unlockAt = 1700000000000;
+    const pot = 50 * kUnitsPerShe;
+    const hard = 7 * kUnitsPerShe;
+    ledger.noteLiveHeight(100);
+    ledger.settleTo(100);
+    ledger.rememberNote(_coin(dest, nanos: pot, height: 1, salt: 1));
+    ledger.rememberNote({
+      ..._coin(dest, nanos: hard, height: 1, salt: 2),
+      'kind': 'lock',
+      'unlockAtMs': unlockAt,
+    });
+    final vault = {
+      ..._coin(dest, nanos: kPiSheNanos, height: 1, salt: 3),
+      'kind': 'lock',
+      'unlockAtMs': unlockAt,
+      'portalId': 'ab' * 32,
+      'lockIndex': 4,
+      'lockEpoch': 0,
+      'vaultLock': true,
+    };
+    ledger.rememberNote(vault);
+    expect(ledger.tipTimestampMs, isNull);
+    final before = ledger.displayedSpendableNanos(
+      id.address,
+      paymentCode: id.paymentCode,
+    );
+    expect(before, BigInt.from(pot));
+    final header = _linkedHeader(
+      prev: Uint8List(32),
+      timestampMs: unlockAt + 1000,
+      bits: 0x1d00ffff,
+    );
+    ledger.applyTipHeader(header, sealedHeight: 100);
+    ledger.settleTo(100);
+    expect(ledger.tipTimestampMs, unlockAt + 1000);
+    final shown = ledger.displayedSpendableNanos(
+      id.address,
+      paymentCode: id.paymentCode,
+    );
+    final planned = ledger.plannerSelectableNanos(
+      id.address,
+      paymentCode: id.paymentCode,
+    );
+    final want = BigInt.from(pot + hard);
+    expect(shown, want);
+    expect(planned, shown);
+    final painted = ledger.spendableOwned(
+      id.address,
+      paymentCode: id.paymentCode,
+    );
+    expect(BigInt.from((painted * kUnitsPerShe).round()), planned);
+    final vaultIndex = ledger.notes.indexWhere(
+      (n) => n['portalId'] == vault['portalId'],
+    );
+    expect(vaultIndex, greaterThanOrEqualTo(0));
+    final picked = selectSpendNotesWire({
+      'notes': [
+        for (final n in ledger.notes)
+          {
+            'spent': n['spent'] == true,
+            'verified': n['verified'] == true,
+            'sealed': true,
+            'address': dest,
+            'height': n['height'],
+            'nanos': n['nanos'],
+            'kind': n['kind'],
+            'unlockAtMs': n['unlockAtMs'],
+            if (n['vaultLock'] == true) 'vaultLock': true,
+            if (n['portalId'] != null) 'portalId': n['portalId'],
+            if (n['lockIndex'] is int) 'lockIndex': n['lockIndex'],
+            if (n['lockEpoch'] is int) 'lockEpoch': n['lockEpoch'],
+          },
+      ],
+      'needNanos': (pot + hard + kPiSheNanos).toString(),
+      'tip': ledger.bookTip,
+      'tipMs': ledger.tipTimestampMs,
+      'confs': ShearLedger.spendableConfirmations,
+      'dests': [dest],
+    });
+    expect(picked['spendableNanos'], want.toString());
+    final indexes = <int>[
+      for (final batch in (picked['batches'] as List))
+        for (final note in ((batch as Map)['notes'] as List))
+          ((note as Map)['index'] as num).toInt(),
+    ];
+    expect(indexes, isNotEmpty);
+    expect(indexes.contains(vaultIndex), isFalse);
   });
 
   test('displayed Spendable matches the planner max-send sum', () {

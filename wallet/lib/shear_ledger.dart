@@ -692,9 +692,25 @@ String? spendTagHexOf(Uint8List spendSeed, Map<String, dynamic> note) {
   }
 }
 
-/// A lock note stays locked until the tip time reaches its unlock.
+/// A Vault lock is withdraw-only. Time does not open it.
+/// A portal id, a lock index, a lock epoch, or an explicit vault flag is enough.
+bool isVaultLockNote(Object? raw) {
+  if (raw is! Map) return false;
+  final note = raw;
+  if ((note['kind'] ?? '').toString() != 'lock') return false;
+  if (note['vaultLock'] == true) return true;
+  final portal = (note['portalId'] ?? '').toString().toLowerCase();
+  if (RegExp(r'^[0-9a-f]{64}$').hasMatch(portal)) return true;
+  if (note['lockIndex'] is int) return true;
+  final epoch = note['lockEpoch'];
+  return epoch is int && epoch >= 0;
+}
+
+/// A Vault lock stays locked. Withdraw is the only exit.
+/// Any other lock note stays locked until the tip time reaches its unlock.
 /// No unlock on the note stays locked. Any other kind keeps its own flag.
 bool lockNoteIsLocked(Map<String, dynamic> note, int? tipMs) {
+  if (isVaultLockNote(note)) return true;
   final kind = (note['kind'] ?? '').toString();
   if (kind != 'lock') return note['locked'] == true;
   final raw = note['unlockAtMs'];
@@ -813,6 +829,9 @@ SpendablePool poolSpendableNotes(Map<String, dynamic> input) {
     if (dests.isNotEmpty && !dests.contains(addr)) continue;
     final nanos = noteNanosExact(n);
     if (nanos == null || nanos <= BigInt.zero) continue;
+    // A Vault lock is withdraw-only. It never joins the send pool, including
+    // the opened-lock list, and the note index of every other row stays put.
+    if (isVaultLockNote(n)) continue;
     final row = {'i': i, 'nanos': nanos, 'addr': addr};
     if ((n['kind'] ?? '').toString() == 'lock') {
       final raw = n['unlockAtMs'];
@@ -1941,7 +1960,10 @@ int lockChangeIndexEnd({
     }
   }
   if ((o['kind'] ?? '').toString() == 'lock') {
-    for (var i = 0; i < 64; i++) {
+    // Indices 0 through the floor are always tried. A known portal past
+    // that floor extends the walk through lockChangeEnd.
+    final last = lockChangeEnd < kLockIndexFloor ? kLockIndexFloor : lockChangeEnd;
+    for (var i = 0; i <= last; i++) {
       final seed = reservePortalSpendSeed(spendSeed, i);
       if (seed != null && hits(seed)) return (seed, 'lock');
     }
@@ -4677,7 +4699,8 @@ class ShearLedger implements ReadProofSink {
     if (bare - 1 > max) max = bare - 1;
     final seed = spendSeed;
     if (seed != null && seed.length == 32) {
-      for (var i = 0; i < 64; i++) {
+      final last = _lockChangeScanEnd();
+      for (var i = 0; i <= last; i++) {
         final id = reservePortalIdFromSeed('', seed, i);
         if (id != null && _chainPortalIds.contains(id.toLowerCase()) && i > max) max = i;
       }
@@ -4705,7 +4728,11 @@ class ShearLedger implements ReadProofSink {
       if (commit != null && commit.length == 32) (commitOf[id] ??= <Uint8List>[]).add(commit);
     }
     noteChainPortals(epochsOf.keys);
-    for (var i = 0; i < 64; i++) {
+    final end = lockChangeIndexEnd(
+      spendSeed: seed,
+      portalIds: epochsOf.keys.toSet(),
+    );
+    for (var i = 0; i <= end; i++) {
       final id = reservePortalIdFromSeed('', seed, i);
       if (id == null) continue;
       final key = id.toLowerCase();
@@ -9180,6 +9207,7 @@ class ShearLedger implements ReadProofSink {
     var total = BigInt.zero;
     for (final n in _notes) {
       if (!_noteOnDest(n, dest)) continue;
+      if (isVaultLockNote(n)) continue;
       if (!_noteIsSpendable(n)) continue;
       final nanos = noteNanosExact(n);
       if (nanos == null) continue;
@@ -11824,6 +11852,11 @@ class ShearLedger implements ReadProofSink {
           'verifiedNanos': n['verifiedNanos'],
           'kind': (n['kind'] ?? '').toString(),
           'unlockAtMs': n['unlockAtMs'],
+          if (n['vaultLock'] == true) 'vaultLock': true,
+          if ((n['portalId']?.toString() ?? '').isNotEmpty)
+            'portalId': n['portalId'].toString(),
+          if (n['lockIndex'] is int) 'lockIndex': n['lockIndex'],
+          if (n['lockEpoch'] is int) 'lockEpoch': n['lockEpoch'],
           if ((n['spendTag']?.toString() ?? '').isNotEmpty)
             'spendTag': n['spendTag'].toString(),
         },

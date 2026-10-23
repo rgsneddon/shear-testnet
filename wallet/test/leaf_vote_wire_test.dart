@@ -39,6 +39,9 @@ void main() {
       spendSeed: seed,
     );
     fee['nanos'] = voteL;
+    fee['address'] = dest;
+    fee['dest'] = dest;
+    fee['verified'] = true;
     final feeHex = _hex(fee['commit'] as Uint8List);
     const height = 200;
     expect(height, greaterThan(open));
@@ -55,6 +58,10 @@ void main() {
     });
     addTearDown(pool.close);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final home = ledger.homeDest(dest, paymentCode: id.paymentCode);
+    fee['address'] = home;
+    fee['dest'] = home;
+    fee['verified'] = true;
     ledger.replaceFromBackup(
       address: dest,
       spendable: 1,
@@ -164,6 +171,9 @@ void main() {
       spendSeed: seed,
     );
     fee['nanos'] = feeNanos;
+    fee['address'] = dest;
+    fee['dest'] = dest;
+    fee['verified'] = true;
     final feeHex = _hex(fee['commit'] as Uint8List);
     const height = 200;
     final posts = <Map<String, dynamic>>[];
@@ -177,6 +187,10 @@ void main() {
     });
     addTearDown(pool.close);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final home = ledger.homeDest(dest, paymentCode: id.paymentCode);
+    fee['address'] = home;
+    fee['dest'] = home;
+    fee['verified'] = true;
     ledger.replaceFromBackup(
       address: dest,
       spendable: 1,

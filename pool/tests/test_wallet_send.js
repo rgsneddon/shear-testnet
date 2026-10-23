@@ -702,6 +702,36 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(posted[0].portalId, 'ab'.repeat(32));
   });
 
+  it('a hidden lock that carries payoutPortalId is vote_leak and is not queued', () => {
+    const store = storeWith({});
+    const dest20 = Buffer.alloc(20, 7);
+    const commit = Buffer.alloc(32, 3);
+    const posted = [];
+    const leaked = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      portalId: 'ab'.repeat(32),
+      dest20: dest20.toString('hex'),
+      nanos: 0,
+      fee: 12345,
+      fs1: Buffer.from([0xf1, 0x11]),
+      vin: [{ commit }],
+      vout: [{ kind: 'lock', dest20, commit, portalId: 'ab'.repeat(32) }],
+      admit_proofs: [{ blob: Buffer.from([1]), cTilde: commit, spendTag: Buffer.alloc(32, 2) }],
+      payoutPortalId: 'cd'.repeat(32),
+    }, {
+      store,
+      miners: new Map(),
+      queueSend: (t) => {
+        posted.push(t);
+        return { id: 'should-not-queue', ...t };
+      },
+    });
+    assert.equal(leaked.status, 400);
+    assert.equal(leaked.json.reason, 'vote_leak');
+    assert.equal(posted.length, 0);
+  });
+
   it('a hidden lock relayed by the pool is the tx posted to it', () => {
     const store = storeWith({});
     const dest20 = Buffer.alloc(20, 7);

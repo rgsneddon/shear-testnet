@@ -265,9 +265,12 @@ export const VAULT_ACCRUAL_LAW = 'epoch-total-bps';
  * bodies do not carry `to`. The gap opening is A1 and zGap once; the claim
  * header does not repeat them. A lock suffix also binds sha256(piProof);
  * an absent proof is sha256 of empty. A fingerprint change wipes testnet
- * together. Mainnet uses this same stamp.
+ * together. Mainnet uses this same stamp. Qualification is one commitment
+ * of at least π. Mainnet shares that token too.
  */
 export const DIGEST_LOCK_STAMP = 'unlockAtMs+lockEpoch+H(piProof)';
+/** One commitment that opens to at least π. A sum of smaller notes does not qualify. */
+export const VAULT_QUALIFY_LAW = 'single-commitment';
 export const COMPACT_VAULT_WIRE = 'roots+census+claimNanos';
 export const COINBASE_PUBLIC_TOTAL = 'pot+hash+levy';
 export const UNINDEXED_WITHDRAW = 'stake_reward';
@@ -541,6 +544,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `VAULT_REWARD=${VAULT_REWARD_LAW}`,
     `VAULT_CLAIM_CAP=${MAX_BLOCK_VAULT_CLAIMS}`,
     `VAULT_HIDDEN=${VAULT_HIDDEN_LAW}`,
+    `VAULT_QUALIFY=${VAULT_QUALIFY_LAW}`,
     `VAULT_ACCRUAL=${VAULT_ACCRUAL_LAW}`,
     `VAULT_PROOF=0x${VAULT_PROOF_VER.toString(16)}`,
     `PI_LEAF=${PI_SHE_NANOS}`,

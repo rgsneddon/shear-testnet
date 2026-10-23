@@ -1039,7 +1039,7 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
     if (note && note.length === 64) {
       const leafCommit = note.subarray(32, 64);
       const funded = tx?.vout?.find((row) => String(row?.kind || '') === 'lock');
-      const proof = tx?.piProof || funded?.piProof;
+      const proof = tx?.piProof || null;
       // The deposit checks the consensus unlock itself. A leaf that is not
       // the funding output plus that unlock is not credited.
       const height = Math.floor(Number(ctx?.blockHeight ?? ctx?.height) || 0);
@@ -1069,7 +1069,7 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
       let commit = out?.commit || act?.commit;
       try { commit = Buffer.from(commit); } catch { commit = null; }
       if (!commit || commit.length !== 32) return { ok: false, reason: 'stake_reward' };
-      const proof = out?.piProof || act?.piProof;
+      const proof = tx?.piProof || null;
       locked = await callReserve(session, encodeDeposit(dest, commit, nowMs, owner, lockQualifies(commit, proof)));
       if (!locked.ok) return locked;
     }
