@@ -4123,7 +4123,6 @@ export function createStore(dir, {
     // spend digest; the verifier's MAGIC_TESTNET default is wrong off testnet.
     const admitOpts = {
       baseFee: base,
-      magic: bookMagic,
       fluxset: live,
       spendTags: live.spendTags,
       commits: live.commits,
@@ -6225,7 +6224,6 @@ export function createStore(dir, {
       const live = liveFlux;
       const admitOpts = {
         baseFee: baseFeeNow,
-        magic: bookMagic,
         fluxset: live,
         spendTags: spendSeen,
         commits: live.commits,
