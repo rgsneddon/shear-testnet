@@ -79,6 +79,11 @@ import { DEFAULT_SEEDS } from '../src/node.js';
 import { closeMineWorkers, lastMineAttempt, mineHeaderParallel } from './mine_worker.mjs';
 import { printConfig, startNode, createStore } from '../src/node.js';
 import { bookSealKeyPath } from '../src/book_seal_key.js';
+import { createRpc } from '../src/rpc.js';
+import { loadOracleSnapshot } from '../src/oracle_feed.js';
+import { emptyVault } from '../../crypto/reserve_vault.js';
+import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
+import { createRegtestStore } from './regtest_store.js';
 import { countSyncedOnline, countLiveOnline, isFinalIngestFail, recordIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
 
 function destMiner() {
@@ -152,15 +157,53 @@ async function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
   });
 }
 
-// A peer that syncs these funding blocks checks the header hash the sender
-// stored. The gossip assert is the tx, not a second genesis search.
-function trustIngest(node) {
-  const orig = node.store.ingest.bind(node.store);
-  node.store.ingest = (blocks, opts = {}) => {
-    const h = blocks?.[0]?.hash;
-    const trusted = h ? Buffer.from(h) : null;
-    return orig(blocks, { ...opts, trustedPowHash: trusted, skipSharePow: true });
-  };
+// Four-bit regtest work is about 16 hashes. A block mined here is stored
+// under its own ShearHash, so a peer's hash_claim check passes on real data.
+const REGTEST_TRIES = 8_192;
+
+/** startNode on a regtest book. Same wiring, with no seeds and no stratum. */
+async function startRegtestNode({ dataDir, p2pBind = '127.0.0.1', fluffDelayMs = null } = {}) {
+  const store = createRegtestStore(dataDir, { bits: 4, yieldForeign: true });
+  store.reserveVault = store.reserveVault || emptyVault();
+  store.oracleSnapshot = loadOracleSnapshot({ dataDir });
+  const p2p = createP2p({ store, port: 0, host: p2pBind, magic: store.magic, fluffDelayMs });
+  const bound = await p2p.listen();
+  const rpc = createRpc({ store, p2p, port: 0, host: '127.0.0.1' });
+  const rpcBound = await rpc.listen();
+  return { store, p2p, rpc, bound, rpcBound, magic: store.magic };
+}
+
+/** One regtest block with real proof of work, stored under its ShearHash. */
+async function appendMined(store, dest, nowMs = null) {
+  const parent = store.tip();
+  const now = nowMs != null
+    ? nowMs
+    : (parent
+      ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
+      : 1_700_000_000_000);
+  const want = regtestBitsOverride(MAGIC_REGTEST);
+  const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now });
+  assert.equal(tpl.bits, want, 'template seals the regtest bits');
+  const pot = (tpl.txs[0].vout || []).find((o) => o.kind === 'pot');
+  const opening = pot && pot.r && pot.commit
+    ? { r: Buffer.from(asU8(pot.r)), commit: Buffer.from(asU8(pot.commit)), v: openedCoinbaseNanos(pot) }
+    : null;
+  const found = await mineHeaderParallel(tpl.header, tpl.bits, REGTEST_TRIES, 1);
+  assert.ok(found && found.block, 'regtest pow');
+  const got = await Promise.resolve(store.append({
+    header: found.header,
+    txs: tpl.txs,
+    samples: tpl.samples,
+    miner: dest,
+    shareBatch: tpl.shareBatch || [],
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
+  }));
+  assert.equal(got.ok, true, got.reason);
+  return { tpl, opening, pot };
 }
 
 async function appendTrusted(store, dest, seq, nowMs = null) {
@@ -193,18 +236,19 @@ async function appendTrusted(store, dest, seq, nowMs = null) {
   return { tpl, opening, pot };
 }
 
-async function fundAnchor(store, id) {
+async function fundAnchor(store, id, { mined = false } = {}) {
   const box = spendBox(id);
   const minerDest = encodeDest(hash20FromAddress(box.dest), id.admitBase);
   const openings = [];
-  const first = await appendTrusted(store, minerDest, 1);
+  const seal = (seq) => (mined ? appendMined(store, minerDest) : appendTrusted(store, minerDest, seq));
+  const first = await seal(1);
   const born = first.opening;
   assert.ok(born && born.r && born.commit, 'pot opening');
   openings.push(born);
   const includeAt = readyHeight(1);
   let seq = 2;
   while (store.tip().height < includeAt - 1) {
-    const next = await appendTrusted(store, minerDest, seq);
+    const next = await seal(seq);
     if (next.opening) openings.push(next.opening);
     seq += 1;
   }
@@ -725,15 +769,16 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     const dest = destMiner();
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-mem-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-mem-b-'));
-    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 0 });
-    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 0 });
+    // Regtest funding blocks are stored under their own ShearHash, so B
+    // syncs them through the real claim and work checks.
+    const a = await startRegtestNode({ dataDir: dirA, fluffDelayMs: 0 });
+    const b = await startRegtestNode({ dataDir: dirB, fluffDelayMs: 0 });
     try {
-      trustIngest(b);
       await a.p2p.connect('127.0.0.1', b.bound.port);
       const linked = await waitFor(() => a.p2p.syncedOnline() === 2 && b.p2p.syncedOnline() === 2);
       assert.equal(linked, true);
       const payer = newIdentity();
-      const funded = await fundAnchor(a.store, payer);
+      const funded = await fundAnchor(a.store, payer, { mined: true });
       const synced = await waitFor(() => Number(b.store.tip()?.height || 0) >= a.store.tip().height, 20000);
       assert.equal(synced, true, 'peer did not sync mined block');
       const tx = fs1GossipSend({ id: 'net-send-1', store: a.store, funded, payee: newIdentity() });
@@ -878,18 +923,16 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stem-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stem-b-'));
     const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stem-c-'));
-    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
-    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
-    const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [], fluffDelayMs: 40 });
+    const a = await startRegtestNode({ dataDir: dirA, fluffDelayMs: 40 });
+    const b = await startRegtestNode({ dataDir: dirB, fluffDelayMs: 40 });
+    const c = await startRegtestNode({ dataDir: dirC, fluffDelayMs: 40 });
     try {
-      trustIngest(b);
-      trustIngest(c);
       await a.p2p.connect('127.0.0.1', b.bound.port);
       await a.p2p.connect('127.0.0.1', c.bound.port);
       const linked = await waitFor(() => a.p2p.syncedOnline() >= 2);
       assert.equal(linked, true);
       const payer = newIdentity();
-      const funded = await fundAnchor(a.store, payer);
+      const funded = await fundAnchor(a.store, payer, { mined: true });
       const synced = await waitFor(() => (
         Number(b.store.tip()?.height || 0) >= a.store.tip().height
         && Number(c.store.tip()?.height || 0) >= a.store.tip().height
@@ -1422,40 +1465,14 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
     const dest = destMiner();
     const want = 3;
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hdrq-a-'));
-    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
+    // Regtest blocks are stored under their own ShearHash. B checks each
+    // claim and each header's work for real; nothing is trusted.
+    const a = await startRegtestNode({ dataDir: dirA });
     try {
-      for (let i = 0; i < want; i += 1) {
-        const parent = a.store.tip();
-        const now = parent
-          ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 5_000
-          : Date.now();
-        const { tpl } = a.store.template({ miner: dest, shareBits: 4, now });
-        const pow = Buffer.alloc(32);
-        // Genesis work is 15 bits: the first byte must be 0 and hash[1] must be under 2.
-        pow[31] = i + 1;
-        const mined = a.store.append({
-          header: tpl.header,
-          txs: tpl.txs,
-          samples: tpl.samples,
-          miner: dest,
-          shareBatch: tpl.shareBatch || [],
-          aLeaves: tpl.aLeaves,
-          bLeaves: tpl.bLeaves,
-          rootA: tpl.rootA,
-          rootB: tpl.rootB,
-          weight: tpl.weight,
-        }, { trustedPowHash: pow, skipSharePow: true });
-        assert.equal(mined.ok, true, mined.reason);
-      }
+      for (let i = 0; i < want; i += 1) await appendMined(a.store, dest);
       assert.equal(a.store.tip().height, want);
       const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hdrq-b-'));
-      const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
-      const origIngest = b.store.ingest.bind(b.store);
-      b.store.ingest = (blocks, opts = {}) => {
-        const h = blocks?.[0]?.hash;
-        const trusted = h ? Buffer.from(h) : null;
-        return origIngest(blocks, { ...opts, trustedPowHash: trusted, skipSharePow: true });
-      };
+      const b = await startRegtestNode({ dataDir: dirB });
       const pages = [];
       const orig = console.error;
       console.error = (...args) => {
@@ -1633,31 +1650,14 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
 
   it('a one-block tip reaches a two-hop line in milliseconds', async () => {
     const dest = destMiner();
-    let powTag = 1;
-    const easyPow = () => {
-      const h = Buffer.alloc(32);
-      // Same 15-bit genesis rule: only the tail bytes may be non-zero.
-      h[30] = (powTag >> 8) & 0xff;
-      h[31] = powTag & 0xff;
-      powTag += 1;
-      return h;
-    };
-    const trustIngest = (node) => {
-      const orig = node.store.ingest.bind(node.store);
-      node.store.ingest = (blocks, opts = {}) => {
-        const hash = blocks?.[0]?.hash;
-        const trusted = hash ? Buffer.from(hash) : opts.trustedPowHash;
-        return orig(blocks, { ...opts, trustedPowHash: trusted, skipSharePow: true });
-      };
-    };
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-tipms-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-tipms-b-'));
     const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-tipms-c-'));
-    const a = await startNode({ dataDir: dirA, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
-    const b = await startNode({ dataDir: dirB, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
-    const c = await startNode({ dataDir: dirC, p2pPort: 0, rpcPort: 0, p2pBind: '127.0.0.1', seeds: [] });
-    trustIngest(b);
-    trustIngest(c);
+    // Regtest work. The relayed block is stored under its own ShearHash, and
+    // B and C check its claim and work for real.
+    const a = await startRegtestNode({ dataDir: dirA });
+    const b = await startRegtestNode({ dataDir: dirB });
+    const c = await startRegtestNode({ dataDir: dirC });
     try {
       await a.p2p.connect('127.0.0.1', b.bound.port);
       await c.p2p.connect('127.0.0.1', b.bound.port);
@@ -1669,24 +1669,7 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
         true,
         `line A-B-C did not finish the handshakes a=${a.p2p.syncedOnline()} b=${b.p2p.syncedOnline()} c=${c.p2p.syncedOnline()}`,
       );
-      const parent = a.store.tip();
-      const now = parent
-        ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
-        : Date.now();
-      const { tpl } = a.store.template({ miner: dest, shareBits: 4, now });
-      const mined = a.store.append({
-        header: tpl.header,
-        txs: tpl.txs,
-        samples: tpl.samples,
-        miner: dest,
-        shareBatch: tpl.shareBatch || [],
-        aLeaves: tpl.aLeaves,
-        bLeaves: tpl.bLeaves,
-        rootA: tpl.rootA,
-        rootB: tpl.rootB,
-        weight: tpl.weight,
-      }, { trustedPowHash: easyPow(), skipSharePow: true });
-      assert.equal(mined.ok, true, mined.reason);
+      await appendMined(a.store, dest);
       const t0 = Date.now();
       const caught = await waitFor(() => tipsEqual(a, c), 2000);
       const elapsed = Date.now() - t0;
