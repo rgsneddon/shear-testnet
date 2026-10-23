@@ -5,7 +5,9 @@ import 'shear_book_dev.dart';
 
 /// Dev wallet entry. Refuses release and profile builds. No dart-define.
 void main() {
-  assert(!kReleaseMode && !kProfileMode, 'shear-dev wallet refuses release mode');
+  if (kReleaseMode || kProfileMode) {
+    throw StateError('shear-dev wallet refuses release mode');
+  }
   runApp(const ShearDevApp());
 }
 

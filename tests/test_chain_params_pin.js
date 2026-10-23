@@ -50,6 +50,9 @@ import { verifyWalletPoolWithdraw, handleWalletApi } from '../pool/src/wallet_ap
 import { auditCirculatingSupply } from '../node/src/supply.js';
 import { packShewall, sealShewallBin, openShewallBin, unpackShewall } from '../crypto/shewall_bin.js';
 import {
+  portalIdFromDest,
+  vote,
+  VOTE_HOLD,
   withdraw,
   withdrawChainId,
   withdrawOwnerMessage,
@@ -58,6 +61,7 @@ import {
   verifyRewardAuth,
   WITHDRAW_CHAIN_ID,
 } from '../crypto/reserve_vault.js';
+import { PI_SHE_NANOS } from '../crypto/asert.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -556,6 +560,46 @@ describe('chain param table', () => {
     assert.notEqual(v12wd.reason, 'withdraw_closed');
   });
 
+  it('dev vote uses the chain epoch when the vault still stores the one that ended', () => {
+    const row = chainParams('shear-dev');
+    const start = 1_700_000_000_000;
+    const dest = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
+    const pid = portalIdFromDest(dest);
+    const voter = (magic) => ({
+      magic,
+      genesisMs: start,
+      epochStartMs: start,
+      currentEpoch: 0,
+      bonusEnacted: false,
+      blankFork: false,
+      votes: { increase: 0, decrease: 0, hold: 0 },
+      liveHashBonusNanos: 1n,
+      portals: {
+        [pid]: {
+          id: pid,
+          staked: BigInt(PI_SHE_NANOS),
+          idle: 0n,
+          vote: null,
+          joined: true,
+          voteEpoch: 0,
+        },
+      },
+    });
+    const openedAt = start + row.epochMs + row.stubBlocks * row.targetBlockMs;
+    const opened = vote({ state: voter('shear-dev'), dest, choice: VOTE_HOLD, nowMs: openedAt });
+    assert.equal(opened.ok, true, opened.reason);
+    const early = vote({ state: voter('shear-dev'), dest, choice: VOTE_HOLD, nowMs: openedAt - 1 });
+    assert.equal(early.reason, 'vote_closed');
+    const v12 = vote({
+      state: voter('shear-testnet-v12'),
+      dest,
+      choice: VOTE_HOLD,
+      nowMs: start + epochMs('shear-testnet-v12') + 1,
+    });
+    assert.equal(v12.ok, true, v12.reason);
+    assert.notEqual(v12.reason, 'vote_closed');
+  });
+
   it('a dev signature does not verify on v12', () => {
     assert.equal(WITHDRAW_CHAIN_ID, 2701n);
     assert.equal(withdrawChainId('shear-dev'), 2799n);
@@ -571,15 +615,22 @@ describe('chain param table', () => {
     const seed = Buffer.alloc(32, 7);
     const nanos = 5_000_000_000;
     const fields = { seed, login: id.paymentCode, dest, nanos };
-    const devSig = signPoolWithdraw({ ...fields, chainId: 'shear-dev' });
-    const v12Sig = signPoolWithdraw({ ...fields, chainId: 'shear-testnet-v12' });
-    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: devSig, chainId: 'shear-dev' }), true);
-    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: devSig, chainId: 'shear-testnet-v12' }), false);
-    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: devSig }), false);
-    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: v12Sig, chainId: 'shear-dev' }), false);
-    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: v12Sig, chainId: 'shear-testnet-v12' }), true);
-    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: v12Sig }), false);
+    const books = ['shear-dev', 'shear-testnet-v12', 'shear-v1'];
+    const sigs = Object.fromEntries(books.map((magic) => [magic, signPoolWithdraw({ ...fields, chainId: magic })]));
+    for (const signed of books) {
+      for (const checked of books) {
+        assert.equal(
+          verifyPoolWithdrawSig({ ...fields, sig: sigs[signed], chainId: checked }),
+          signed === checked,
+          `${signed} on ${checked}`,
+        );
+      }
+    }
+    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: sigs['shear-dev'] }), false);
     assert.throws(() => poolWithdrawDigest({ login: id.paymentCode, dest, nanos }), /unknown_magic/);
+    const devSig = sigs['shear-dev'];
+    const v12Sig = sigs['shear-testnet-v12'];
+    const mainSig = sigs['shear-v1'];
     const devOff = verifyPoolWithdrawOffchain({
       login: id.paymentCode, dest, nanos, sig: devSig, magic: 'shear-dev',
     });
@@ -598,6 +649,15 @@ describe('chain param table', () => {
     assert.equal(verifyPoolWithdrawOffchain({
       login: id.paymentCode, dest, nanos, sig: v12Sig, magic: 'shear-dev',
     }).ok, false);
+    assert.equal(verifyPoolWithdrawOffchain({
+      login: id.paymentCode, dest, nanos, sig: v12Sig, magic: 'shear-v1',
+    }).ok, false);
+    assert.equal(verifyPoolWithdrawOffchain({
+      login: id.paymentCode, dest, nanos, sig: mainSig, magic: 'shear-testnet-v12',
+    }).ok, false);
+    assert.equal(verifyPoolWithdrawOffchain({
+      login: id.paymentCode, dest, nanos, sig: mainSig, magic: 'shear-v1',
+    }).ok, true);
     const seed32 = Buffer.alloc(32, 9);
     const packed = packShewall({ seed32, dest20: hash20FromAddress(dest) });
     const sealed = sealShewallBin(packed, 'v12-import');
@@ -621,6 +681,9 @@ describe('chain param table', () => {
     assert.equal(eip.includes("magic = 'shear-testnet-v12'"), false);
     assert.equal(eip.includes('shear-testnet-v12'), false);
     assert.match(eip, /required String magic/);
+    assert.match(eip, /EIP712Domain\(string name,string version,string chainId,address verifyingContract\)/);
+    assert.match(eip, /_hashString\(magic\)/);
+    assert.equal(eip.includes("magic == 'shear-dev'"), false);
     const cli = fs.readFileSync(path.join(root, 'wallet/lib/shear_cli.dart'), 'utf8');
     assert.equal(cli.includes('signPoolWithdraw(seed: seed, login: id.paymentCode, dest: dest, nanos: nanos, magic: _cliBookMagic)'), true);
     assert.equal(cli.includes('magic: _cliBookMagic'), true);
@@ -641,15 +704,18 @@ describe('chain param table', () => {
       epoch: 1n,
       trancheSet: Buffer.from(tranche, 'hex'),
     });
-    const devMsg = messageFor('shear-dev');
-    const v12Msg = messageFor('shear-testnet-v12');
-    assert.notEqual(devMsg.toString('hex'), v12Msg.toString('hex'));
-    const ownerSig = signRewardAuth(devMsg, key);
-    assert.equal(verifyRewardAuth(devMsg, pub, ownerSig), true);
-    assert.equal(verifyRewardAuth(v12Msg, pub, ownerSig), false);
-    const v12Owner = signRewardAuth(v12Msg, key);
-    assert.equal(verifyRewardAuth(v12Msg, pub, v12Owner), true);
-    assert.equal(verifyRewardAuth(devMsg, pub, v12Owner), false);
+    const ownerBooks = ['shear-dev', 'shear-testnet-v12', 'shear-v1'];
+    const ownerMsgs = Object.fromEntries(ownerBooks.map((magic) => [magic, messageFor(magic)]));
+    for (const signed of ownerBooks) {
+      const sig = signRewardAuth(ownerMsgs[signed], key);
+      for (const checked of ownerBooks) {
+        assert.equal(verifyRewardAuth(ownerMsgs[checked], pub, sig), signed === checked, `${signed} owner on ${checked}`);
+      }
+    }
+    const reserveSol = fs.readFileSync(path.join(root, 'contracts/Reserve.sol'), 'utf8');
+    const authFn = reserveSol.slice(reserveSol.indexOf('function _withdrawAuthOk'), reserveSol.indexOf('function _authOk'));
+    assert.match(authFn, /magic/);
+    assert.match(authFn, /block\.chainid/);
   });
 
   it('a missing supply magic throws, and pullPending uses the store magic', () => {

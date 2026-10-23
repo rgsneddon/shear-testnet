@@ -88,7 +88,9 @@ const kExplains = [
 final List<String> debugPopulationOrder = <String>[];
 
 Future<void> main(List<String> args) async {
-  assert(releaseBook.kBookMagic == 'shear-testnet-v12');
+  if (releaseBook.kBookMagic != 'shear-testnet-v12') {
+    throw StateError('release wallet book must be shear-testnet-v12');
+  }
   if (releaseCheckpointMissing()) {
     runApp(const CheckpointMissingApp());
     return;
