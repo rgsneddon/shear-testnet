@@ -16,6 +16,7 @@ import {
   SAMPLE_PRUNE_CONFIRMATIONS,
   SHARE_FLOOR_BITS,
   TARGET_BLOCK_INTERVAL_MS,
+  MAGIC_TESTNET,
 } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -262,6 +263,7 @@ describe('v12 burial tip', () => {
     const shortFold = foldSupply(store.blocks.slice(0, creditHeight), {
       tipHeight: creditHeight + PRUNE - 1,
       genesisMs,
+      magic: MAGIC_TESTNET,
     });
     assert.equal(shortFold.ok, false);
     assert.equal(shortFold.reason, 'hash_owed', shortFold.reason);
@@ -317,7 +319,7 @@ describe('v12 burial tip', () => {
     assert.equal(shouldPruneSamples(creditHeight, disk.tip().height), false);
     assert.notEqual(lifted.samplesPruned, true);
     assert.equal(lifted.shareBatch.length, shareCount);
-    const folded = foldSupply(disk.blocks, { tipHeight: disk.tip().height, genesisMs });
+    const folded = foldSupply(disk.blocks, { tipHeight: disk.tip().height, genesisMs, magic: MAGIC_TESTNET });
     assert.equal(folded.ok, true, folded.reason || 'fold');
 
     const reloaded = createStore(dir);
@@ -327,6 +329,7 @@ describe('v12 burial tip', () => {
     const refolded = foldSupply(reloaded.blocks, {
       tipHeight: reloaded.tip().height,
       genesisMs: headerTime(reloaded.blocks[0]),
+      magic: MAGIC_TESTNET,
     });
     assert.equal(refolded.ok, true, refolded.reason || 'reload fold');
   });

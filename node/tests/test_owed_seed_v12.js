@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { newIdentity } from '../../crypto/address.js';
-import { MAX_SHARES_PER_BLOCK, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, MAX_SHARES_PER_BLOCK, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { meetsTarget } from '../../crypto/shear_hash.js';
@@ -143,7 +143,7 @@ function canon(view) {
 }
 
 function supplyStatus(store) {
-  const got = auditCirculatingSupply(store.blocks);
+  const got = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
   assert.equal(got.status, 'verified', got.reason || 'supply');
   return String(got.circulatingNanos);
 }

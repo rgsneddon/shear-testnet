@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { newIdentity, hash20FromAddress, poolFeeDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { encodeHeader, setNonce } from '../../crypto/header.js';
-import {
+import { MAGIC_TESTNET,
   BLOCK_SUBSIDY_NANOS,
   GENESIS_BITS_PACKED,
   HASH_BONUS_NANOS,
@@ -658,7 +658,7 @@ describe('v12 PROP pays share work', () => {
         txs: [tx],
         shareBatch: batch,
       },
-    ]);
+    ], { magic: MAGIC_TESTNET });
     assert.equal(supply.status, 'verified', supply.reason || supply.status);
     assert.equal(supply.measuredHashNanos, hashNanos);
   });

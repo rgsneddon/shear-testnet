@@ -154,7 +154,7 @@ function expectSupplyReject(chain, label) {
   const folded = foldSupply(chain, foldOpts());
   assert.equal(folded.ok, false, `${label} fold ${folded.reason}`);
   assert.ok(folded.reason === 'supply' || folded.reason === 'epoch_open', `${label} fold ${folded.reason}`);
-  const audit = auditCirculatingSupply(chain);
+  const audit = auditCirculatingSupply(chain, { magic: MAGIC_TESTNET });
   assert.equal(audit.status, 'mismatch', label);
   assert.ok(audit.reason === 'supply' || audit.reason === 'epoch_open', `${label} ${audit.reason}`);
 }
@@ -166,7 +166,7 @@ function expectVerified(chain, interest, label) {
   assert.equal(folded.ok, true, `${label} fold ${folded.reason}`);
   assert.equal(folded.state.mintedInterest, BigInt(interest), label);
   assert.equal(folded.state.permittedInterest, BigInt(interest), label);
-  const audit = auditCirculatingSupply(chain);
+  const audit = auditCirculatingSupply(chain, { magic: MAGIC_TESTNET });
   assert.equal(audit.status, 'verified', `${label} ${audit.reason}`);
   assert.equal(audit.extraMintNanos, interest, label);
 }

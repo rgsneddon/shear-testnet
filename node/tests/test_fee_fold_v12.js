@@ -298,7 +298,7 @@ function reload(blocks) {
   try {
     const stamped = sealBook(dir, blocks);
     const store = createStore(dir);
-    const supply = auditCirculatingSupply(store.blocks);
+    const supply = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
     return {
       ok: true,
       reason: '',

@@ -111,7 +111,7 @@ describe('VS-1 snap interest', () => {
         withdrawTx({ from: portal, to: miner, nanos: stake, id: 'draw-snap' }),
       ]),
     ];
-    const folded = foldSupply(chain, { genesisMs: GENESIS });
+    const folded = foldSupply(chain, { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(folded.ok, true, folded.reason);
     assert.equal(folded.state.mintedInterest, 0n);
     assert.equal(folded.state.permittedInterest, 0n);
@@ -120,10 +120,10 @@ describe('VS-1 snap interest', () => {
     assert.equal(kept.mintedInterest, 0n);
     assert.equal(kept.permittedInterest, 0n);
 
-    let walked = foldSupply([chain[0]], { genesisMs: GENESIS });
+    let walked = foldSupply([chain[0]], { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(walked.ok, true, walked.reason);
     const rows = [snapOf(walked.state)];
-    walked = foldSupply(chain, { genesisMs: GENESIS });
+    walked = foldSupply(chain, { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     rows.push(snapOf(walked.state));
     assert.equal(rows[0].mintedInterest, 0n);
     assert.equal(rows[1].mintedInterest, 0n);

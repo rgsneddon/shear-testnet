@@ -6,6 +6,7 @@
  * Nothing is credited to the Reserve vault.
  */
 import { createHash } from 'node:crypto';
+import { clockFor } from './chain_params.js';
 import { createPublicKey, verify } from 'node:crypto';
 import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX, aliasDestOfSilentId, poolFeeDest } from './address.js';
 import {
@@ -28,6 +29,10 @@ import {
 export { poolFeeDest };
 
 export const FEE_TAU_MS = 90_000;
+
+export function feeTauMs(magic = MAGIC_TESTNET) {
+  return clockFor(magic).feeTauMs;
+}
 export const FEE_TARGET_WEIGHT = 8;
 export const LEVY_FLOOR_UNITS = 100;
 export const LEVY_BPS = 0;
@@ -307,6 +312,7 @@ export function verifyPoolWithdrawOffchain({
   open = '',
   spendSig = '',
   requireOwner = false,
+  magic,
 } = {}) {
   const she = String(minerShe1 || login || '').trim().split('.')[0];
   if (!she.startsWith('she1')) return { ok: false, reason: 'need_she1' };
@@ -326,6 +332,7 @@ export function verifyPoolWithdrawOffchain({
     if (dl < now || dl > now + POOL_WITHDRAW_DEADLINE_MS) return { ok: false, reason: 'deadline' };
   }
   if (!sig) return { ok: false, reason: 'unsigned' };
+  if (magic == null || magic === '') return { ok: false, reason: 'unknown_magic' };
   const fields = {
     login: she,
     dest: payout,
@@ -337,7 +344,7 @@ export function verifyPoolWithdrawOffchain({
     deadline: dl,
     sig,
     verifyingContract,
-    chainId: MAGIC_TESTNET,
+    chainId: magic,
   };
   if (!verifyPoolWithdrawSig(fields)) return { ok: false, reason: 'unsigned' };
   const recovered = recoverPoolWithdrawPub(sig);

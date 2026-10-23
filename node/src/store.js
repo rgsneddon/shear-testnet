@@ -135,7 +135,8 @@ import { flowNeedsDummy, publicReserveReceiptRejected } from '../../crypto/dummy
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
-import { blockWork, HEADER_AHEAD_MS } from '../../crypto/asert.js';
+import { blockWork } from '../../crypto/asert.js';
+import { chainParams, clockFor, isHistoricalMagic, isTableMagic } from '../../crypto/chain_params.js';
 import {
   emptyPolicyState,
   recordReorg,
@@ -313,6 +314,10 @@ export function createStore(dir, {
     const genesisPin = String(genesisHash || '');
     if (genesisPin) throw new Error('regtest_genesis_pin');
     if (!regtestPermitOk(regtestPermit)) throw new Error('regtest_magic');
+  } else if (!isTableMagic(configuredMagic) && !isHistoricalMagic(configuredMagic)) {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
   }
   ensureDatadir(dir);
   const file = path.join(dir, 'chain.jsonl');
@@ -426,6 +431,14 @@ export function createStore(dir, {
   // One network for this book. The datadir check, the fingerprint, the
   // book.magic writes, and every block stamp below all use bookMagic.
   const bookMagic = book || configuredMagic;
+  if (isTableMagic(bookMagic)) {
+    const pinned = chainParams(bookMagic);
+    if (!Object.isFrozen(pinned) || pinned.magic !== bookMagic) {
+      const err = new Error('unknown_magic');
+      err.code = 'unknown_magic';
+      throw err;
+    }
+  }
   // book.seal skips the header ShearHash when it matches this install's key.
   // book.snap skips the body prefix only when that same key verifies it and
   // the snap binds this chain. A miss replays. A foreign book never uses it.
@@ -563,7 +576,7 @@ export function createStore(dir, {
     }
   } else if (resumed) {
     writeLoadSeal(blocks);
-    const folded = foldSupply(blocks, { burialOf: provenTipOf });
+    const folded = foldSupply(blocks, { burialOf: provenTipOf, magic: bookMagic });
     if (!folded.ok) throw new Error(folded.reason || 'supply');
     supplyTip = folded.state;
   }
@@ -1061,8 +1074,7 @@ export function createStore(dir, {
     liveFlux = fluxsetFromBlocks(blocks);
   }
 
-  const reserveVault = emptyVault();
-  reserveVault.magic = bookMagic;
+  const reserveVault = emptyVault(bookMagic);
 
   function saveReserve() {
     const raw = JSON.parse(JSON.stringify(reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
@@ -1149,7 +1161,7 @@ export function createStore(dir, {
     try {
       const parent = decodeHeader(Buffer.from(t.header));
       const mtp = medianTimePast(blocks.slice(-MTP_WINDOW).map((b) => blockTimeMs(b)));
-      return templateStampMs(parent.timestamp, wall, null, mtp);
+      return templateStampMs(parent.timestamp, wall, null, mtp, bookMagic);
     } catch {
       return wall;
     }
@@ -1176,8 +1188,7 @@ export function createStore(dir, {
   }
 
   function bookVault() {
-    const vault = emptyVault();
-    vault.magic = bookMagic;
+    const vault = emptyVault(bookMagic);
     if (oracleActivationHeight !== undefined) vault.oracleActivationHeight = oracleActivationHeight;
     return vault;
   }
@@ -1610,7 +1621,7 @@ export function createStore(dir, {
       });
     }
     if (!rows.length) return rows;
-    const walked = fillSnapInterest(rows, blocks.slice(0, rows.length));
+    const walked = fillSnapInterest(rows, blocks.slice(0, rows.length), bookMagic);
     if (!walked.ok) return null;
     return rows;
   }
@@ -3059,7 +3070,7 @@ export function createStore(dir, {
       }
       let decoded;
       try { decoded = decodeHeader(header); } catch { out.dropped = true; break; }
-      if (Number(decoded.timestamp) > nowMs + HEADER_AHEAD_MS) { offerStats.orphaned += 1; continue; }
+      if (Number(decoded.timestamp) > nowMs + clockFor(bookMagic).headerAheadMs) { offerStats.orphaned += 1; continue; }
       const prevHex = decoded.prevBlockHash.toString('hex');
       let parent = null;
       let rootMs = localGenesisMs();
@@ -4634,7 +4645,7 @@ export function createStore(dir, {
     const base = supplyAt[from];
     if (!base || base.owedKnown !== true || !supplyLinks(base, blocks[from])) return null;
     const burial = Number.isInteger(tipH) && tipH >= 0 ? tipH : (Number(blocks[endIdx]?.height) || endIdx + 1);
-    const carriedVault = vaultParent(blocks, from + 1);
+    const carriedVault = vaultParent(blocks, from + 1, bookMagic);
     if (!carriedVault.ok) return null;
     let vault = carriedVault.vault;
     let state = base;
@@ -4653,7 +4664,7 @@ export function createStore(dir, {
       });
       if (!stepped.ok) return null;
       state = stepped.state;
-      const advanced = vaultAfterBlock(vault, block);
+      const advanced = vaultAfterBlock(vault, block, [], bookMagic);
       if (!advanced.ok) return null;
       vault = advanced.vault;
     }
@@ -4747,7 +4758,7 @@ export function createStore(dir, {
           from = prefix;
         }
       }
-      const historyVault = vaultParent(rows, from);
+      const historyVault = vaultParent(rows, from, bookMagic);
       if (!historyVault.ok) return { ok: false, reason: 'supply' };
       let vault = historyVault.vault;
       // One prefix. A slice at every height made the reorg walk cost grow with the chain.
@@ -4766,7 +4777,7 @@ export function createStore(dir, {
         });
         if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
         supply = stepped.state;
-        const advanced = vaultAfterBlock(vault, viewed.block, chain);
+        const advanced = vaultAfterBlock(vault, viewed.block, chain, bookMagic);
         if (!advanced.ok) return { ok: false, reason: 'supply' };
         vault = advanced.vault;
         chain.push(rows[hi]);
@@ -5177,7 +5188,7 @@ export function createStore(dir, {
         }
         adoptedSupply = supplyAt.slice(0, lca);
         let carriedSupply = prefixSupply;
-        const openedVault = vaultParent(accepted, lca);
+        const openedVault = vaultParent(accepted, lca, bookMagic);
         if (!openedVault.ok) {
           clearReorgMarkers();
           return { ok: false, reason: 'supply', tip: tip() };
@@ -5206,7 +5217,7 @@ export function createStore(dir, {
             return { ok: false, reason: stepped.ok ? 'supply' : (stepped.reason || 'supply'), tip: tip() };
           }
           carriedSupply = stepped.state;
-          const advanced = vaultAfterBlock(carriedVault, block);
+          const advanced = vaultAfterBlock(carriedVault, block, [], bookMagic);
           if (!advanced.ok) {
             clearReorgMarkers();
             return { ok: false, reason: 'supply', tip: tip() };
@@ -5625,7 +5636,7 @@ export function createStore(dir, {
       try {
         const parent = decodeHeader(Buffer.from(t.header));
         const mtp = medianTimePast(blocks.slice(-MTP_WINDOW).map((b) => blockTimeMs(b)));
-        now = templateStampMs(parent.timestamp, wall, wallIntervalMs, mtp);
+        now = templateStampMs(parent.timestamp, wall, wallIntervalMs, mtp, bookMagic);
       } catch { /* keep wall */ }
     }
     // Sealed parent interval only. Caller bits (share target, boot override,
@@ -5844,6 +5855,7 @@ export function createStore(dir, {
       hashOwedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
+      magic: bookMagic,
       prepareCoinbase: (cb) => {
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
@@ -6052,7 +6064,7 @@ export function createStore(dir, {
     magic: bookMagic,
     tipExtendPowOpts,
     tipExtendPowReason,
-    consensusFingerprint,
+    consensusFingerprint: () => consensusFingerprint(bookMagic),
     pause,
     reorgHaltDepth: haltDepth,
     headers,

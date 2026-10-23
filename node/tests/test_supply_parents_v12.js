@@ -117,7 +117,7 @@ describe('v12 supply parents fail closed', () => {
         }
         assert.equal(store.tip().height, n);
         const blocks = store.blocks;
-        const live = auditCirculatingSupply(blocks);
+        const live = auditCirculatingSupply(blocks, { magic: MAGIC_TESTNET });
         assert.equal(live.status, 'verified', `live ${n} ${live.reason}`);
 
         const forked = await Promise.resolve(store.verifyFork(blocks, {
@@ -307,8 +307,8 @@ describe('v12 supply parents fail closed', () => {
         }
 
         if (n === LENGTHS[LENGTHS.length - 1]) {
-          const shortFold = foldSupply(blocks.slice(0, 1));
-          const tallFold = foldSupply(blocks.slice(0, n - 1));
+          const shortFold = foldSupply(blocks.slice(0, 1), { magic: MAGIC_TESTNET });
+          const tallFold = foldSupply(blocks.slice(0, n - 1), { magic: MAGIC_TESTNET });
           assert.equal(shortFold.ok, true, shortFold.reason);
           assert.equal(tallFold.ok, true, tallFold.reason);
           const rounds = 40;
@@ -321,6 +321,7 @@ describe('v12 supply parents fail closed', () => {
                 tipHeight: height,
                 blockHash: block.hash,
                 genesisMs: T0,
+                magic: MAGIC_TESTNET,
               });
             }
             return { ms: performance.now() - t0, last };
@@ -364,7 +365,7 @@ describe('v12 supply parents fail closed', () => {
         assert.equal(loaded.loadMode, 'full', `load ${n} ${loaded.loadMode}`);
         assert.equal(loaded.tip().height, n);
         assert.ok(Buffer.from(loaded.tip().hash).equals(Buffer.from(store.tip().hash)));
-        const replayed = auditCirculatingSupply(loaded.blocks);
+        const replayed = auditCirculatingSupply(loaded.blocks, { magic: MAGIC_TESTNET });
         assert.equal(replayed.status, 'verified', `replay ${n} ${replayed.reason}`);
       }
     } finally {

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity } from '../../crypto/address.js';
-import {
+import { MAGIC_TESTNET,
   HASH_BONUS_NANOS,
   MAX_HASH_UNITS_PER_BLOCK,
   SHARE_FLOOR_BITS,
@@ -236,7 +236,7 @@ describe('one retained-units result for any unbound occupancy', () => {
       shareBatch: under,
       aLeaves: leavesFrom(want),
     };
-    const report = auditCirculatingSupply([block]);
+    const report = auditCirculatingSupply([block], { magic: MAGIC_TESTNET });
     assert.equal(report.status, 'verified', report.reason);
     assert.equal(report.measuredPotNanos, pot);
     assert.equal(report.measuredHashNanos, units * unit);
@@ -261,7 +261,7 @@ describe('one retained-units result for any unbound occupancy', () => {
       txs: [crowdTx],
       shareBatch: crowded,
       aLeaves: leavesFrom(wide),
-    }]);
+    }], { magic: MAGIC_TESTNET });
     assert.equal(inflated.status, 'mismatch');
     assert.equal(inflated.reason, 'hash_bonus');
   });

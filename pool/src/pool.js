@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { STRATUM_LINE_MAX, parseBoundedJson, HTTP_TX_BODY_MAX } from '../../crypto/json_bounds.js';
+import { chainParams, clockFor, MAGIC_DEV } from '../../crypto/chain_params.js';
 import { Worker } from 'node:worker_threads';
 import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
@@ -36,6 +37,7 @@ import {
   SPENDABLE_CONFIRMATIONS,
   GENESIS_BITS,
   GENESIS_BITS_PACKED,
+  genesisSeedPacked,
   LIVE_MIN_BITS,
   MAX_BITS,
   SHARE_FLOOR_BITS,
@@ -194,6 +196,13 @@ export const PAYOUT_SWEEP_MS = Math.max(
   60 * 60 * 1000,
   Number(process.env.SHEAR_PAYOUT_SWEEP_MS) || (60 * 60 * 1000),
 );
+
+/** v12 keeps the one-hour floor. The dev book uses the table and nothing else. */
+export function payoutSweepFor(magic, env = process.env) {
+  void env;
+  if (String(magic) !== MAGIC_DEV) return PAYOUT_SWEEP_MS;
+  return chainParams(MAGIC_DEV).payoutSweepMs;
+}
 /** One due miner per tick so a slow queueTx cannot monopolize the loop. */
 export const PAYOUT_SWEEP_MAX_ROWS = 1;
 /** Wall-clock budget for one sweep pass. Remaining due rows reschedule. */
@@ -718,10 +727,11 @@ export function transientHeaderFault(reason) {
   return /timeout/i.test(why);
 }
 
-export function headerHoldExpired(hold, now = Date.now()) {
+export function headerHoldExpired(hold, now = Date.now(), deadlineMs = HEADER_HOLD_DEADLINE_MS) {
   if (!hold) return false;
   const at = Number(hold.at) || 0;
-  if (at > 0 && Number(now) - at >= HEADER_HOLD_DEADLINE_MS) return true;
+  const deadline = Number(deadlineMs) > 0 ? Number(deadlineMs) : HEADER_HOLD_DEADLINE_MS;
+  if (at > 0 && Number(now) - at >= deadline) return true;
   if (!hold.rebuilt) return false;
   const faults = Number(hold.faults) || 0;
   if (faults >= HEADER_HOLD_MAX_FAULTS) return true;
@@ -1335,11 +1345,12 @@ export function isStaleReject(reason) {
   return r === 'stale_job' || r === 'stale';
 }
 
-export function jobWithinGrace(job, prevJob, prevJobAt, now = Date.now()) {
+export function jobWithinGrace(job, prevJob, prevJobAt, now = Date.now(), graceMs = PREV_JOB_GRACE_MS) {
   if (!job || !prevJob) return false;
   if (String(job.jobId) !== String(prevJob.jobId)) return false;
   const at = Number(prevJobAt) || 0;
-  return at > 0 && (Number(now) - at) < PREV_JOB_GRACE_MS;
+  const grace = Number(graceMs) > 0 ? Number(graceMs) : PREV_JOB_GRACE_MS;
+  return at > 0 && (Number(now) - at) < grace;
 }
 
 function nonceHiFromShareHeader(header) {
@@ -1908,22 +1919,49 @@ export function createPool({
   onRestartHasher = null,
   noValidShareMs = NO_VALID_SHARE_MS,
   shareCap = null,
+  network = process.env.SHEAR_NETWORK || MAGIC_TESTNET,
 } = {}) {
-  const store = createStore(dataDir);
+  const row = chainParams(network);
+  if (String(network) === MAGIC_DEV) {
+    const feeGate = configuredFeeIdentity({ refuseLiveDest: true });
+    if (!feeGate.ok) {
+      const err = new Error(feeGate.reason || 'live_fee_dest');
+      err.code = feeGate.reason || 'live_fee_dest';
+      throw err;
+    }
+  }
+  if (String(network) === MAGIC_DEV) bits = genesisSeedPacked(MAGIC_DEV);
+  const store = createStore(dataDir, { network });
+  if (store.magic !== row.magic) {
+    const err = new Error('pool_magic');
+    err.code = 'pool_magic';
+    throw err;
+  }
+  const restampMs = row.jobRestampMs;
+  const graceMs = row.prevJobGraceMs;
+  const holdMs = row.headerHoldMs;
+  const stallMs = row.tipStallMs;
+  const sweepMs = payoutSweepFor(store.magic);
+  const varTargetMs = row.vardiffTargetMs;
+  const varShares = row.vardiffRetargetShares;
+  const varWindowMs = row.vardiffRetargetMs;
+  const varClearMs = row.vardiffClearEaseMs;
+  const varDeadMs = row.vardiffDeadbandMs;
+  const spendableConfs = row.spendableConfirmations;
   const pullBook = createPullBook(dataDir);
   const miners = new Map();
   const destShareBits = loadDestShareBitsMap(dataDir);
   const destVarWindows = new Map();
   console.log(JSON.stringify({
     event: 'vardiff_arm',
-    targetMs: SHARE_VARDIFF_TARGET_MS,
+    targetMs: varTargetMs,
     minShares: SHARE_VARDIFF_RETARGET_SHARES,
     minWindowMs: SHARE_VARDIFF_RETARGET_MS,
     stepBits: SHARE_VARDIFF_CLIMB_MAX,
     easeBits: SHARE_VARDIFF_EASE_MAX,
     clearEaseMs: SHARE_VARDIFF_CLEAR_EASE_MS,
     deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
-    easeAboveMs: SHARE_VARDIFF_TARGET_MS,
+    easeAboveMs: varTargetMs,
     floorBits: SHARE_FLOOR_BITS,
   }));
   function pushDestShareBits(destKey, next) {
@@ -2347,7 +2385,7 @@ export function createPool({
           const mtp = medianTimePast((rows).slice(-MTP_WINDOW).map((b) => {
             try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
           }));
-          stamp = templateStampMs(parent.timestamp, Date.now(), null, mtp);
+          stamp = templateStampMs(parent.timestamp, Date.now(), null, mtp, store.magic);
         }
       }
       return retarget(rows, Number.isFinite(stamp) ? stamp : undefined);
@@ -2445,12 +2483,12 @@ export function createPool({
     catch { return 'header'; }
     const ts = Number(decoded.timestamp);
     if (!tip?.header) {
-      if (Number(decoded.bits) !== Number(GENESIS_BITS_PACKED)) return 'bits';
+      if (Number(decoded.bits) !== Number(genesisSeedPacked(store.magic))) return 'bits';
     } else {
-      const quote = retargetQuote(store.blocks || [], ts);
+      const quote = retargetQuote(store.blocks || [], ts, store.magic);
       if (!quote?.ok || !bitsAcceptAsert(Number(decoded.bits), quote)) return 'bits';
     }
-    if (!(ts > 0) || ts > Number(now) + HEADER_AHEAD_MS) return 'timestamp';
+    if (!(ts > 0) || ts > Number(now) + clockFor(store.magic).headerAheadMs) return 'timestamp';
     if (tip?.header) {
       let parent;
       try { parent = decodeHeader(Buffer.from(tip.header)); }
@@ -2523,7 +2561,7 @@ export function createPool({
     let reissued = false;
     if (!liveJobCanSeal(now)) {
       const why = sealReject(now);
-      const due = (Number(now) - stallReissueAt) >= TIP_STALL_MS || why !== stallReissueSeal;
+      const due = (Number(now) - stallReissueAt) >= stallMs || why !== stallReissueSeal;
       if (due) {
         stallReissueAt = Number(now);
         stallReissueSeal = why;
@@ -3554,7 +3592,7 @@ export function createPool({
         headerHold.faults = (Number(headerHold.faults) || 0) + 1;
         headerHold.reason = why;
       }
-      if (headerHoldExpired(headerHold)) {
+      if (headerHoldExpired(headerHold, Date.now(), holdMs)) {
         releaseHeldBatch(why);
         released = true;
       } else if (!transient && headerHold.rebuilt && (Number(headerHold.faults) || 0) > 0) {
@@ -3783,7 +3821,7 @@ export function createPool({
       return lastJob;
     }
     jobHoldLogged = false;
-    if (!probe && headerHold && headerHoldExpired(headerHold)) {
+    if (!probe && headerHold && headerHoldExpired(headerHold, Date.now(), holdMs)) {
       releaseHeldBatch(headerHold.reason);
     }
     if (!probe && headerHold) {
@@ -4227,7 +4265,7 @@ export function createPool({
         const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
           try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
         }));
-        stamp = templateStampMs(parent.timestamp, wall, null, mtp);
+        stamp = templateStampMs(parent.timestamp, wall, null, mtp, store.magic);
         overMtp = Number(decoded.timestamp) > Number(mtp) + MTP_FUTURE_MS;
       } catch { /* keep live stamp */ }
     }
@@ -4266,7 +4304,7 @@ export function createPool({
     if (paused) return lastJob;
     if (!lastJob) return lastJob;
     const wall = Number(now);
-    if ((wall - lastEaseAt) < JOB_RESTAMP_MS) return lastJob;
+    if ((wall - lastEaseAt) < restampMs) return lastJob;
     lastEaseAt = wall;
     const tip = store.tip();
     if (tip?.header) {
@@ -4276,8 +4314,8 @@ export function createPool({
         const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
           try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
         }));
-        const stamp = templateStampMs(parent.timestamp, wall, null, mtp);
-        const quote = retargetQuote(store.blocks || [], stamp);
+        const stamp = templateStampMs(parent.timestamp, wall, null, mtp, store.magic);
+        const quote = retargetQuote(store.blocks || [], stamp, store.magic);
         // Past 8·T the same job eases to the verify floor. Before that window
         // a sealable header stays up so a short tick does not restart the search.
         const easing = !!(quote?.ok && quote.easeBits > 0);
@@ -4346,10 +4384,10 @@ export function createPool({
        * Credit accepted, but do not add to this round's hash-bonus. */
       return { job: byId, closedRound: true, stale: false };
     }
-    if (byId && jobWithinGrace(byId, prevJob, prevJobAt)) {
+    if (byId && jobWithinGrace(byId, prevJob, prevJobAt, Date.now(), graceMs)) {
       return { job: byId, closedRound: true, stale: false };
     }
-    if (prevJob && id && id === String(prevJob.jobId) && jobWithinGrace(prevJob, prevJob, prevJobAt)) {
+    if (prevJob && id && id === String(prevJob.jobId) && jobWithinGrace(prevJob, prevJob, prevJobAt, Date.now(), graceMs)) {
       return { job: prevJob, closedRound: true, stale: false };
     }
     if (id && liveId && id !== liveId) {
@@ -4621,6 +4659,11 @@ export function createPool({
           now,
           blockBits: blockBitsNow(),
           minBits: liveShareMin(),
+          targetMs: varTargetMs,
+          retargetShares: varShares,
+          retargetMs: varWindowMs,
+          clearEaseMs: varClearMs,
+          deadbandLowMs: varDeadMs,
         });
         destVarWindows.set(destKey, {
           shares: step.shares,
@@ -4640,9 +4683,9 @@ export function createPool({
             shares: step.sampleShares,
             elapsedMs: Math.round(Number(step.elapsedMs) || 0),
             intervalMs: Math.round(Number(step.intervalMs) || 0),
-            targetMs: SHARE_VARDIFF_TARGET_MS,
-            deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
-            easeAboveMs: SHARE_VARDIFF_TARGET_MS,
+            targetMs: varTargetMs,
+            deadbandLowMs: varDeadMs,
+            easeAboveMs: varTargetMs,
             findTouched: false,
             window: true,
           }));
@@ -4658,9 +4701,9 @@ export function createPool({
             shares: step.sampleShares,
             elapsedMs: Math.round(Number(step.elapsedMs) || 0),
             intervalMs: Math.round(Number(step.intervalMs) || 0),
-            targetMs: SHARE_VARDIFF_TARGET_MS,
-            deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
-            easeAboveMs: SHARE_VARDIFF_TARGET_MS,
+            targetMs: varTargetMs,
+            deadbandLowMs: varDeadMs,
+            easeAboveMs: varTargetMs,
             findTouched: false,
             window: true,
           }));
@@ -4679,9 +4722,9 @@ export function createPool({
             shares: step.sampleShares,
             elapsedMs: Math.round(Number(step.elapsedMs) || 0),
             intervalMs: Math.round(Number(step.intervalMs) || 0),
-            targetMs: SHARE_VARDIFF_TARGET_MS,
-            deadbandLowMs: SHARE_VARDIFF_DEADBAND_LOW_MS,
-            easeAboveMs: SHARE_VARDIFF_TARGET_MS,
+            targetMs: varTargetMs,
+            deadbandLowMs: varDeadMs,
+            easeAboveMs: varTargetMs,
             findTouched: false,
             window: true,
           }));
@@ -5007,7 +5050,7 @@ export function createPool({
       const g = store.blocks?.[0];
       if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || genesisMs;
     } catch { /* wall */ }
-    const ev = epochView({ nowMs: Date.now(), genesisMs, magic: MAGIC_TESTNET });
+    const ev = epochView({ nowMs: Date.now(), genesisMs, magic: store.magic });
     const feeIdent = configuredFeeIdentity();
     const feePublish = feeIdent.ok && isDestAddress(feeIdent.feeDest)
       ? feeIdent.feeDest
@@ -5018,9 +5061,9 @@ export function createPool({
       algo: ALGO,
       personalisation: PERSONAL,
       rxMode: 'light',
-      magic: MAGIC_TESTNET,
-      network: MAGIC_TESTNET,
-      targetBlockIntervalMs: TARGET_BLOCK_INTERVAL_MS,
+      magic: store.magic,
+      network: store.magic,
+      targetBlockIntervalMs: row.targetBlockMs,
       blockSubsidyNanos: ev.potNanos,
       epoch: ev.epoch,
       epochDays: ev.epochDays,
@@ -5031,8 +5074,8 @@ export function createPool({
       hashBonusNanos: hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos),
       hashTxLive: HASH_TX_LIVE,
       admit: 'ADMITv3',
-      bookLawFingerprint: consensusFingerprint(),
-      ...consensusLaw(),
+      bookLawFingerprint: consensusFingerprint(store.magic),
+      ...consensusLaw(store.magic),
       policy: typeof store.getpolicy === 'function' ? store.getpolicy() : undefined,
       frozen: typeof store.getpolicy === 'function' ? !!store.getpolicy().frozen : false,
       confirmedNeed: (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30),
@@ -5227,7 +5270,7 @@ export function createPool({
       earned += rowTotal;
       const h = Number(r?.height) || 0;
       const confs = tip >= h && h >= 1 ? tip - h + 1 : 0;
-      if (confs >= SPENDABLE_CONFIRMATIONS) confirmed += pot;
+      if (confs >= spendableConfs) confirmed += pot;
       else pending += pot;
     }
     return { pending, confirmed, block, fee, earned };
@@ -5701,7 +5744,7 @@ export function createPool({
       res.setHeader('Cache-Control', 'no-store');
       const fp = typeof store.consensusFingerprint === 'function'
         ? store.consensusFingerprint()
-        : consensusFingerprint();
+        : consensusFingerprint(store.magic);
       res.end(JSON.stringify({
         ok: true,
         fingerprint: fp,
@@ -5893,7 +5936,7 @@ export function createPool({
       paintStatsSnap();
       if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
       if (!payoutTimer) {
-        payoutTimer = setInterval(runAutoPayoutSweep, PAYOUT_SWEEP_MS);
+        payoutTimer = setInterval(runAutoPayoutSweep, sweepMs);
         payoutTimer.unref?.();
       }
     });
@@ -5924,7 +5967,7 @@ export function createPool({
     return new Promise((resolve, reject) => {
       const serveHttp = () => {
         httpServer.listen(httpPort, '127.0.0.1', () => {
-          if (!restampTimer) restampTimer = setInterval(maybeRestampJob, JOB_RESTAMP_MS);
+          if (!restampTimer) restampTimer = setInterval(maybeRestampJob, restampMs);
           console.error(JSON.stringify({
             event: 'pool_fee_dest',
             advisory: 'Fee publish and admin spend share one pin.',
@@ -5943,7 +5986,7 @@ export function createPool({
             paintStatsSnap();
             if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
             if (!payoutTimer) {
-              payoutTimer = setInterval(runAutoPayoutSweep, PAYOUT_SWEEP_MS);
+              payoutTimer = setInterval(runAutoPayoutSweep, sweepMs);
               payoutTimer.unref?.();
             }
           });

@@ -1,6 +1,7 @@
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { MAGIC_TESTNET, PRODUCT_VERSION, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { clockFor } from '../../crypto/chain_params.js';
 import { freshMinerRounds, safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
 import {
@@ -1028,6 +1029,7 @@ export function createP2p({
   stemRng = Math.random,
   maxPeers = p2pMaxPeers(),
 } = {}) {
+  const banMs = clockFor(magic).p2pBanMs;
   const sockets = new Set();
   const peers = new Map();
   const linking = new Set();
@@ -1256,7 +1258,7 @@ export function createP2p({
       if (got?.proofChecked) {
         const rec = peers.get(fromSock);
         if (recordProofFail(rec)) {
-          const until = Date.now() + P2P_BAN_MS;
+          const until = Date.now() + banMs;
           if (rec?.remote) peerBans.set(rec.remote, until);
           try { fromSock.destroy(); } catch { /* ignore */ }
         }
@@ -2192,7 +2194,7 @@ export function createP2p({
             }
           }
           if (!got?.ok && recordIngestFail(rec, got?.reason)) {
-            const until = Date.now() + P2P_BAN_MS;
+            const until = Date.now() + banMs;
             if (rec.remote) peerBans.set(rec.remote, until);
             try { sock.destroy(); } catch { /* ignore */ }
           } else if (got?.ok) {
@@ -2326,7 +2328,7 @@ export function createP2p({
         } catch {
           const rec = peers.get(sock);
           if (recordProofFail(rec)) {
-            const until = Date.now() + P2P_BAN_MS;
+            const until = Date.now() + banMs;
             if (rec?.remote) peerBans.set(rec.remote, until);
             try { sock.destroy(); } catch { /* ignore */ }
           }

@@ -12,7 +12,6 @@ import {
   MIN_CONFIRMS_POLICY,
   RESERVE_PROGRAM,
   extraMintAllowed,
-  MAGIC_TESTNET,
 } from '../../crypto/asert.js';
 import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
@@ -40,6 +39,7 @@ import { noteCommitOfDest20, asU8, hiddenAmountRangeReady } from '../../crypto/n
 import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
+import { clockFor } from '../../crypto/chain_params.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
@@ -946,7 +946,7 @@ function runSupplyAudit(store, key) {
     const waiter = supplyWaiters.get(id);
     if (!waiter || waiter.key !== key) return;
     try {
-      if (index === 0) worker.postMessage({ id, type: 'start', length: blocks.length });
+      if (index === 0) worker.postMessage({ id, type: 'start', length: blocks.length, magic: store?.magic });
       if (index >= blocks.length) {
         worker.postMessage({ id, type: 'end' });
         return;
@@ -1464,6 +1464,38 @@ export function parseSendNanos(body) {
   return { ok: true, nanos: null };
 }
 
+/** Same verifier the retired pool-withdraw route calls. Magic is the store book. */
+export function verifyWalletPoolWithdraw(store, body, extras = {}) {
+  const login = body?.login || body?.she1;
+  const rawDest = String(body?.dest || body?.to || '').trim();
+  const nanos = body?.nanos != null ? body.nanos : Math.round(Number(body?.amount || 0) * NANOS_PER_SHE);
+  const sig = body?.sig || body?.signature;
+  const dests = [...new Set([rawDest, payoutDest(rawDest) || ''].filter(Boolean))];
+  let off = { ok: false, reason: 'unsigned' };
+  for (const dest of dests) {
+    off = verifyPoolWithdrawOffchain({
+      login,
+      dest,
+      nanos,
+      sig,
+      minerShe1: login,
+      payoutSsa1: dest,
+      height: body?.height,
+      nonce: body?.nonce,
+      deadline: body?.deadline,
+      nonceStore: extras.nonceStore,
+      seenDigests: extras.seenDigests,
+      open: body?.open,
+      spendSig: body?.spendSig,
+      ownerPub: ownerPubFromOpening(body?.open),
+      requireOwner: extras.requireOwner === true,
+      magic: store?.magic,
+    });
+    if (off.ok) break;
+  }
+  return off;
+}
+
 export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -1865,13 +1897,22 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!rec && !login.startsWith('she1') && !/^m[0-9a-f]{8}$/.test(tag)) {
       return { status: 400, json: { ok: false, reason: 'need_she1', public: false } };
     }
+    let chainId;
+    try {
+      chainId = Number(clockFor(store?.magic).evmChainId);
+    } catch (err) {
+      if (err?.code === 'unknown_magic' || String(err?.message || '') === 'unknown_magic') {
+        return { status: 400, json: { ok: false, reason: 'unknown_magic', public: false } };
+      }
+      throw err;
+    }
     return {
       status: 200,
       json: {
         ok: true,
         public: false,
         pending: rec || null,
-        chainId: 2701,
+        chainId,
       },
     };
   }
@@ -1888,32 +1929,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     };
   }
   if (false && path === '/api/pool/withdraw' && verb === 'POST') {
-    const login = body.login || body.she1;
-    const rawDest = String(body.dest || body.to || '').trim();
-    const nanos = body.nanos != null ? body.nanos : Math.round(Number(body.amount || 0) * NANOS_PER_SHE);
-    const sig = body.sig || body.signature;
-    const dests = [...new Set([rawDest, payoutDest(rawDest) || ''].filter(Boolean))];
-    let off = { ok: false, reason: 'unsigned' };
-    for (const dest of dests) {
-      off = verifyPoolWithdrawOffchain({
-        login,
-        dest,
-        nanos,
-        sig,
-        minerShe1: login,
-        payoutSsa1: dest,
-        height: body.height,
-        nonce: body.nonce,
-        deadline: body.deadline,
-        nonceStore: withdrawNonces,
-        seenDigests: withdrawDigests,
-        open: body.open,
-        spendSig: body.spendSig,
-        ownerPub: ownerPubFromOpening(body.open),
-        requireOwner: true,
-      });
-      if (off.ok) break;
-    }
+    const off = verifyWalletPoolWithdraw(store, body, {
+      nonceStore: withdrawNonces,
+      seenDigests: withdrawDigests,
+      requireOwner: true,
+    });
     if (!off.ok) return { status: 400, json: { ...off, public: false } };
     const from = payoutDest(String(poolDest || '')) || poolPayoutDest();
     if (!isDestAddress(from)) return { status: 503, json: { ok: false, reason: 'no_pool_dest' } };

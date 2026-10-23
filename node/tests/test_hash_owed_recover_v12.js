@@ -12,7 +12,7 @@ import path from 'node:path';
 import { encodeDest, newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
-import {
+import { MAGIC_TESTNET,
   GENESIS_BITS_PACKED,
   HASH_BONUS_NANOS,
   HASH_OWED_MAX_ENTRIES,
@@ -183,7 +183,7 @@ describe('HASH_OWED_RECOVER_V1', () => {
     assert.ok((bounced.blocks[1].shareBatch || []).length > 0);
     assert.ok(Array.isArray(bounced.blocks[1].hashCredits));
     assert.ok(bounced.template({ miner: dest, now: t0 + 180_000 }).tpl);
-    const buriedSupply = auditCirculatingSupply(store.blocks);
+    const buriedSupply = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
     assert.equal(buriedSupply.status, 'verified', buriedSupply.reason);
     const fork = [];
     let prev = store.blocks[0];
@@ -231,7 +231,7 @@ describe('HASH_OWED_RECOVER_V1', () => {
     const adopted = store.ingest(fork, { trustBlockHash: true, skipSharePow: true });
     assert.equal(adopted.ok, true, adopted.reason);
     assert.equal(store.tip().height, candidate.length);
-    const supply = auditCirculatingSupply(store.blocks);
+    const supply = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
     assert.equal(supply.status, 'verified', supply.reason);
   });
 

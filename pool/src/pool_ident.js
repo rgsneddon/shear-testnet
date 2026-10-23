@@ -77,10 +77,24 @@ export function writeOperatorSpendSeed(file, seed) {
   return op;
 }
 
-export function loadOperatorSpendKey({ dataDir, env = process.env } = {}) {
+export function seedFileInsideDatadir(dataDir, file) {
+  if (!file) return true;
+  const root = path.resolve(String(dataDir || ''));
+  const abs = path.resolve(String(file));
+  const rel = path.relative(root, abs);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+export function loadOperatorSpendKey({ dataDir, env = process.env, requireInsideDatadir = false } = {}) {
   const fromEnv = String(env.SHEAR_POOL_SPEND_SEED || env.SHEAR_POOL_SPEND_KEY || '').replace(/^0x/i, '').trim();
   let hex = fromEnv.split(/\s+/)[0] || '';
-  const file = dataDir ? path.join(dataDir, POOL_SPEND_SEED_FILE) : '';
+  const named = String(env.SHEAR_POOL_SPEND_SEED_FILE || '').trim();
+  const file = named || (dataDir ? path.join(dataDir, POOL_SPEND_SEED_FILE) : '');
+  if (requireInsideDatadir && file && !seedFileInsideDatadir(dataDir, file)) {
+    const err = new Error('spend_seed_outside_datadir');
+    err.code = 'spend_seed_outside_datadir';
+    throw err;
+  }
   if (!/^[0-9a-f]{64}$/i.test(hex) && file && fs.existsSync(file)) {
     hex = fs.readFileSync(file, 'utf8').replace(/^0x/i, '').trim().split(/\s+/)[0];
   }
@@ -96,7 +110,7 @@ function dest20Equal(a, b) {
 }
 
 /** Shipped boot path: ident dest20 + operator spend key that matches it. */
-export function bootPoolOperator({ dataDir, minerEnv, env = process.env } = {}) {
+export function bootPoolOperator({ dataDir, minerEnv, env = process.env, requireInsideDatadir = false } = {}) {
   fs.mkdirSync(dataDir, { recursive: true });
   const identPath = path.join(dataDir, 'pool-miner.json');
   let miner = String(minerEnv != null ? minerEnv : (env.SHEAR_POOL_MINER || '')).trim();
@@ -104,7 +118,7 @@ export function bootPoolOperator({ dataDir, minerEnv, env = process.env } = {}) 
     const ident = loadOrCreatePoolIdent(identPath);
     miner = ident.miner;
   }
-  const op = loadOperatorSpendKey({ dataDir, env });
+  const op = loadOperatorSpendKey({ dataDir, env, requireInsideDatadir });
   const matched = !!(op && miner && dest20Equal(op.dest, miner));
   return {
     miner,

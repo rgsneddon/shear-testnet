@@ -307,7 +307,7 @@ async function timed(fn) {
 
 function canonOf(store) {
   const view = store.owedView();
-  const supply = auditCirculatingSupply(store.blocks);
+  const supply = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
   assert.equal(supply.status, 'verified', supply.reason || 'supply');
   return JSON.stringify({
     rows: view.rows.map((r) => ({

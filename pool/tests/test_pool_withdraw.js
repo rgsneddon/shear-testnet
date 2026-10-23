@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { newIdentity, payoutDest, encodeDest, hash20FromAddress, destOpeningFromView, aliasDestOfSilentId, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin, hasherPayoutDest, destAtIndex } from '../../crypto/flow_sheet.js';
-import { NANOS_PER_SHE } from '../../crypto/asert.js';
+import { NANOS_PER_SHE, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
 import { signPoolWithdraw, ownerSecpPubFromSeed, ownerPubFromOpening, evmPrivFromSeed } from '../../crypto/eip712.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
@@ -38,6 +38,7 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
       height: 3,
       nonce: 1,
       deadline: now + 60_000,
+      chainId: MAGIC_TESTNET,
     };
     const sig = signPoolWithdraw(fields);
     const ownerPub = ownerSecpPubFromSeed(ownerSeed);
@@ -48,6 +49,7 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
       nowMs: now,
       nonceStore: withdrawNonces,
       seenDigests: withdrawDigests,
+      magic: MAGIC_TESTNET,
     });
     assert.equal(ok.ok, true, ok.reason);
 
@@ -59,6 +61,7 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
       ownerPub,
       nowMs: now,
       nonce: 2,
+      magic: MAGIC_TESTNET,
     });
     assert.equal(foreign.ok, false);
     assert.equal(foreign.reason, 'not_owner');
@@ -82,6 +85,7 @@ describe('PoolWithdraw is spend-bound EIP-712', () => {
       nowMs: now,
       nonceStore: withdrawNonces,
       seenDigests: withdrawDigests,
+      magic: MAGIC_TESTNET,
     });
     assert.equal(replay.ok, false);
     assert.equal(replay.reason, 'replay');

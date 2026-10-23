@@ -5,7 +5,7 @@ import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { potSubsidyNanos, MS_PER_DAY, EPOCH_DAYS_TESTNET } from '../../crypto/pot_sched.js';
-import {
+import { MAGIC_TESTNET,
   HASH_BONUS_NANOS,
   SHARE_FLOOR_BITS,
   hashBonusUnitNanos,
@@ -176,7 +176,7 @@ describe('v12 circulating supply is the public mint', () => {
       const prefixPot = epoch === 0 ? 0 : potSubsidyNanos(0);
       const paid = auditCirculatingSupply(prefix.concat([
         potBlock(ts, miner, parts.map((nanos) => ({ nanos, kind: 'pot' }))),
-      ]));
+      ]), { magic: MAGIC_TESTNET });
       assert.equal(paid.status, 'verified', `epoch ${epoch}`);
       assert.equal(paid.circulatingNanos, prefixPot + permitted);
       assert.equal(paid.schedulePotNanos, prefixPot + permitted);
@@ -186,7 +186,7 @@ describe('v12 circulating supply is the public mint', () => {
 
       const held = auditCirculatingSupply(prefix.concat([
         potBlock(ts, miner, [{ nanos: 1, kind: 'pot' }], permitted - 1),
-      ]));
+      ]), { magic: MAGIC_TESTNET });
       assert.equal(held.status, 'verified', `carry epoch ${epoch}`);
       assert.equal(held.circulatingNanos, prefixPot + 1);
       assert.equal(held.carryNanos, permitted - 1);
@@ -203,7 +203,7 @@ describe('v12 circulating supply is the public mint', () => {
           { nanos: levyParts[1], kind: 'reserve-fee' },
           { nanos: levyParts[2], kind: 'finder-fee' },
         ], 0, { fee: levySum }),
-      ]));
+      ]), { magic: MAGIC_TESTNET });
       assert.equal(recycled.status, 'verified', `levy epoch ${epoch}`);
       assert.equal(recycled.circulatingNanos, prefixPot + permitted);
       assert.equal(recycled.measuredLevyNanos, levySum);
@@ -214,7 +214,7 @@ describe('v12 circulating supply is the public mint', () => {
           { nanos: permitted, kind: 'pot' },
           { nanos: levySum, kind: 'finder-fee' },
         ]),
-      ]));
+      ]), { magic: MAGIC_TESTNET });
       assert.equal(unpaidLevy.status, 'mismatch', `unfunded levy epoch ${epoch}`);
       assert.equal(unpaidLevy.circulatingNanos, prefixPot);
       assert.notEqual(unpaidLevy.circulatingNanos, prefixPot + permitted + levySum);
@@ -223,7 +223,7 @@ describe('v12 circulating supply is the public mint', () => {
         if (wrong === permitted) continue;
         const miss = auditCirculatingSupply(prefix.concat([
           potBlock(ts, miner, [{ nanos: wrong, kind: 'pot' }]),
-        ]));
+        ]), { magic: MAGIC_TESTNET });
         assert.equal(miss.status, 'mismatch', `amount ${wrong} epoch ${epoch}`);
         assert.equal(miss.circulatingNanos, prefixPot);
         assert.equal(miss.measuredPotNanos, prefixPot);
@@ -240,7 +240,7 @@ describe('v12 circulating supply is the public mint', () => {
       [{ nanos: potSubsidyNanos(epoch), kind: 'pot' }],
     ));
     const sum = epochs.reduce((a, epoch) => a + potSubsidyNanos(epoch), 0);
-    const all = auditCirculatingSupply(chain);
+    const all = auditCirculatingSupply(chain, { magic: MAGIC_TESTNET });
     assert.equal(all.status, 'verified');
     assert.equal(all.circulatingNanos, sum);
     assert.equal(all.schedulePotNanos, sum);
@@ -274,7 +274,7 @@ describe('v12 circulating supply is the public mint', () => {
 
     const stripped = potBlock(GENESIS, miner, [{ nanos: potSubsidyNanos(0), kind: 'pot' }]);
     stripped.txs[0].vout[0] = { ...stripped.txs[0].vout[0], rangeProof: Buffer.alloc(0) };
-    const unbound = auditCirculatingSupply([stripped]);
+    const unbound = auditCirculatingSupply([stripped], { magic: MAGIC_TESTNET });
     assert.equal(unbound.status, 'mismatch');
     assert.equal(unbound.circulatingNanos, 0);
     assert.equal(unbound.schedulePotNanos, potSubsidyNanos(0));
@@ -310,8 +310,8 @@ describe('v12 circulating supply is the public mint', () => {
       });
       const forward = potBlock(GENESIS, miners[0], notes, 0, { shareBatch });
       const reversed = potBlock(GENESIS, miners[0], notes.slice().reverse(), 0, { shareBatch });
-      const paid = auditCirculatingSupply([forward]);
-      const flipped = auditCirculatingSupply([reversed]);
+      const paid = auditCirculatingSupply([forward], { magic: MAGIC_TESTNET });
+      const flipped = auditCirculatingSupply([reversed], { magic: MAGIC_TESTNET });
       assert.equal(paid.status, 'verified', `shares ${count}`);
       assert.equal(paid.measuredHashNanos, count * unit);
       assert.equal(paid.measuredPotNanos, subsidy);
@@ -330,7 +330,7 @@ describe('v12 circulating supply is the public mint', () => {
         inflatedNotes[hashAt] = { ...inflatedNotes[hashAt], nanos: inflatedNotes[hashAt].nanos + delta };
         const bad = auditCirculatingSupply([
           potBlock(GENESIS, miners[0], inflatedNotes, 0, { shareBatch }),
-        ]);
+        ], { magic: MAGIC_TESTNET });
         assert.equal(bad.status, 'mismatch', `shares ${count} delta ${delta}`);
         assert.equal(bad.measuredHashNanos, 0);
         assert.notEqual(bad.measuredHashNanos, count * unit + delta);
@@ -346,7 +346,7 @@ describe('v12 circulating supply is the public mint', () => {
       { nanos: subsidy, kind: 'pot' },
       { nanos: unit, kind: 'hash' },
     ]);
-    const floored = auditCirculatingSupply([floor]);
+    const floored = auditCirculatingSupply([floor], { magic: MAGIC_TESTNET });
     assert.equal(floored.status, 'verified');
     assert.equal(floored.measuredHashNanos, unit);
     assert.equal(floored.circulatingNanos, subsidy + unit);
@@ -355,7 +355,7 @@ describe('v12 circulating supply is the public mint', () => {
       const over = auditCirculatingSupply([potBlock(GENESIS, miner, [
         { nanos: subsidy, kind: 'pot' },
         { nanos: unit + delta, kind: 'hash' },
-      ])]);
+      ])], { magic: MAGIC_TESTNET });
       assert.equal(over.status, 'mismatch', `finder floor + ${delta}`);
       assert.equal(over.measuredHashNanos, 0);
       assert.notEqual(over.circulatingNanos, subsidy + unit + delta);
@@ -365,7 +365,7 @@ describe('v12 circulating supply is the public mint', () => {
       { nanos: subsidy, kind: 'pot' },
       { nanos: unit - 1, kind: 'hash' },
       { nanos: 1, kind: 'hash' },
-    ])]);
+    ])], { magic: MAGIC_TESTNET });
     assert.equal(splitFloor.status, 'mismatch');
     assert.equal(splitFloor.measuredHashNanos, 0);
 
@@ -374,7 +374,7 @@ describe('v12 circulating supply is the public mint', () => {
     const duplicated = auditCirculatingSupply([potBlock(GENESIS, miner, [
       { nanos: subsidy, kind: 'pot' },
       { nanos: unit * 2, kind: 'hash' },
-    ], 0, { shareBatch: dup })]);
+    ], 0, { shareBatch: dup })], { magic: MAGIC_TESTNET });
     assert.equal(duplicated.status, 'mismatch');
     assert.equal(duplicated.measuredHashNanos, 0);
 
@@ -389,7 +389,7 @@ describe('v12 circulating supply is the public mint', () => {
       [{ nanos: subsidy, kind: 'pot' }],
       0,
       { shareBatch: overCap },
-    )]);
+    )], { magic: MAGIC_TESTNET });
     assert.equal(capped.status, 'mismatch');
     assert.equal(capped.measuredHashNanos, 0);
     assert.notEqual(capped.circulatingNanos, subsidy + overCap.length * unit);
@@ -408,7 +408,7 @@ describe('v12 circulating supply is the public mint', () => {
       const paidBits = auditCirculatingSupply([potBlock(GENESIS, hasher, [
         { nanos: subsidy, kind: 'pot' },
         { nanos: work, kind: 'hash' },
-      ], 0, { shareBatch })]);
+      ], 0, { shareBatch })], { magic: MAGIC_TESTNET });
       assert.equal(paidBits.status, 'verified', `bits ${bits}`);
       assert.equal(paidBits.measuredHashNanos, work);
       assert.equal(paidBits.circulatingNanos, subsidy + work);
@@ -416,7 +416,7 @@ describe('v12 circulating supply is the public mint', () => {
       const short = auditCirculatingSupply([potBlock(GENESIS, hasher, [
         { nanos: subsidy, kind: 'pot' },
         { nanos: unit, kind: 'hash' },
-      ], 0, { shareBatch })]);
+      ], 0, { shareBatch })], { magic: MAGIC_TESTNET });
       assert.equal(short.status, 'mismatch', `floor hash at bits ${bits}`);
       assert.equal(short.measuredHashNanos, 0);
       assert.notEqual(short.circulatingNanos, subsidy + work);
@@ -440,7 +440,7 @@ describe('v12 circulating supply is the public mint', () => {
           blocks.push(potBlock(ts, miner, notes, carryOut));
           carry = carryOut;
         }
-        const open = auditCirculatingSupply(blocks);
+        const open = auditCirculatingSupply(blocks, { magic: MAGIC_TESTNET });
         assert.equal(open.status, 'verified', `open streak ${streak} fee ${fee}`);
         assert.equal(open.measuredHashNanos, 0);
         assert.equal(open.carryNanos, carry);
@@ -458,10 +458,10 @@ describe('v12 circulating supply is the public mint', () => {
         const paidBlocks = blocks.concat([
           potBlock(GENESIS + streak * 90_000, payers[0], payoutNotes, 0),
         ]);
-        const paid = auditCirculatingSupply(paidBlocks);
+        const paid = auditCirculatingSupply(paidBlocks, { magic: MAGIC_TESTNET });
         const shuffled = auditCirculatingSupply(blocks.concat([
           potBlock(GENESIS + streak * 90_000, payers[0], payoutNotes.slice().reverse(), 0),
-        ]));
+        ]), { magic: MAGIC_TESTNET });
         assert.equal(paid.status, 'verified', `paid streak ${streak} fee ${fee}`);
         assert.equal(paid.carryNanos, 0);
         assert.equal(paid.measuredHashNanos, 0);
@@ -477,7 +477,7 @@ describe('v12 circulating supply is the public mint', () => {
           potBlock(GENESIS + streak * 90_000, payers[0], [
             { nanos: payable + 1 + fee, kind: 'pot' },
           ], 0),
-        ]));
+        ]), { magic: MAGIC_TESTNET });
         assert.equal(skim.status, 'mismatch', `skim streak ${streak} fee ${fee}`);
         assert.notEqual(skim.circulatingNanos, (streak + 1) * subsidy + 1 + fee);
         assert.equal(skim.schedulePotNanos, (streak + 1) * subsidy);

@@ -39,6 +39,7 @@ jobs:
           dart run tool/checkpoint_guard.dart
           python3 pack/test_check_shear_v3_bundled.py
           flutter test \
+            test/book_magic_test.dart \
             test/spendable_hard_lock_test.dart \
             test/t18_frame_test.dart \
             test/reserve_hold_spendable_test.dart \

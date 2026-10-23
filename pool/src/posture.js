@@ -59,6 +59,7 @@ export function configuredFeeIdentity({
   feeDest,
   adminSpendDest,
   labOverride,
+  refuseLiveDest = false,
 } = {}) {
   const e = env || {};
   // The live unit still names the pin SHEAR_POOL_FEE_PAYOUT_DEST. Read that
@@ -73,6 +74,9 @@ export function configuredFeeIdentity({
   }
   if (fee === V11_POOL_FEE_DEST || admin === V11_POOL_FEE_DEST) {
     return { ok: false, lab: false, reason: 'v11_fee_dest', feeDest: fee, adminSpendDest: admin };
+  }
+  if (refuseLiveDest && (fee === THIS_POOL_DIRECT_FEE_DEST || admin === THIS_POOL_DIRECT_FEE_DEST)) {
+    return { ok: false, lab: false, reason: 'live_fee_dest', feeDest: fee, adminSpendDest: admin };
   }
   return feeIdentityCheck({
     feeDest: fee,

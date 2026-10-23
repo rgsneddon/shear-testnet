@@ -240,9 +240,19 @@ function tipView(store) {
   };
 }
 
+function bookMagicOf(store) {
+  const m = String(store?.magic || '').trim();
+  if (!m) {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
+  return m;
+}
+
 function helloMsg(role, store) {
   const tip = tipView(store);
-  return { type: 'ipc_hello', role, magic: MAGIC_TESTNET, ...tip };
+  return { type: 'ipc_hello', role, magic: bookMagicOf(store), ...tip };
 }
 
 function writeJson(sock, obj) {
@@ -273,7 +283,7 @@ export function applyVerifiedIpcBlock(store, msg) {
   if (!msg || msg.type !== 'ipc_block' || !msg.block || typeof msg.block !== 'object') {
     return { ok: false, reason: 'ipc_block' };
   }
-  if (msg.magic !== MAGIC_TESTNET) return { ok: false, reason: 'magic' };
+  if (msg.magic !== bookMagicOf(store)) return { ok: false, reason: 'magic' };
   const powHex = String(msg.powHash || '').trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(powHex)) return { ok: false, reason: 'pow' };
   void powHex;
@@ -321,7 +331,7 @@ export function applyVerifiedIpcBlock(store, msg) {
   return store.append(block, verifyOpts);
 }
 
-function blockFrame(block) {
+function blockFrame(block, magic = MAGIC_TESTNET) {
   const powHash = powHexOf(block);
   if (!/^[0-9a-f]{64}$/.test(powHash)) return null;
   let wire;
@@ -330,7 +340,7 @@ function blockFrame(block) {
   } catch {
     return null;
   }
-  return { type: 'ipc_block', magic: MAGIC_TESTNET, block: wire, powHash };
+  return { type: 'ipc_block', magic, block: wire, powHash };
 }
 
 /**
@@ -341,6 +351,7 @@ function blockFrame(block) {
  */
 export function ipcBlockFrames(store, rows) {
   const list = Array.isArray(store?.blocks) ? store.blocks : [];
+  const magic = bookMagicOf(store);
   const frames = [];
   let headersTo = 0;
   for (const raw of Array.isArray(rows) ? rows : []) {
@@ -357,17 +368,17 @@ export function ipcBlockFrames(store, rows) {
         hash: powHexOf(b),
         height: b.height,
       }));
-      if (headers.length) frames.push({ type: 'ipc_headers', magic: MAGIC_TESTNET, headers });
+      if (headers.length) frames.push({ type: 'ipc_headers', magic, headers });
       headersTo = to;
     }
-    const frame = blockFrame(block);
+    const frame = blockFrame(block, magic);
     if (frame) frames.push(frame);
   }
   return frames;
 }
 
-function forwardBlock(send, block) {
-  const frame = blockFrame(block);
+function forwardBlock(send, block, magic = MAGIC_TESTNET) {
+  const frame = blockFrame(block, magic);
   return frame ? send(frame) : false;
 }
 
@@ -376,14 +387,14 @@ function forwardRows(store, send, rows) {
 }
 
 function acceptIpcHeaders(store, msg) {
-  if (msg.magic !== MAGIC_TESTNET) return { accepted: 0, dropped: false };
+  if (msg.magic !== bookMagicOf(store)) return { accepted: 0, dropped: false };
   if (typeof store?.offerHeaders !== 'function') return { accepted: 0, dropped: false };
   return store.offerHeaders(msg.headers || [], { peer: 'ipc' }) || { accepted: 0, dropped: false };
 }
 
 /** Headers from `from` through `to`, capped at one burial run. No tip height is consulted. */
 function serveIpcHeaders(store, send, msg) {
-  if (msg?.magic !== MAGIC_TESTNET) return;
+  if (msg?.magic !== bookMagicOf(store)) return;
   const from = Math.max(1, Math.floor(Number(msg?.from) || 1));
   const askedTo = Math.floor(Number(msg?.to) || (from + SAMPLE_PRUNE_CONFIRMATIONS));
   const to = Math.min(Math.max(from, askedTo), from + SAMPLE_PRUNE_CONFIRMATIONS);
@@ -400,7 +411,7 @@ function serveIpcHeaders(store, send, msg) {
     if (headers.length > SAMPLE_PRUNE_CONFIRMATIONS) break;
   }
   if (!headers.length) return;
-  send({ type: 'ipc_headers', magic: MAGIC_TESTNET, headers });
+  send({ type: 'ipc_headers', magic: bookMagicOf(store), headers });
 }
 
 function paceBackfill(store, send, afterHeight) {
@@ -511,7 +522,7 @@ function makeParentRepair(store, send) {
     if (parentFix?.ask && !parentKnown(store, parentFix.parent) && limited(`p:${parentFix.parent}`)) {
       send({
         type: 'ipc_getblock',
-        magic: MAGIC_TESTNET,
+        magic: bookMagicOf(store),
         hash: parentFix.parent,
         child: parentFix.child,
         height,
@@ -525,7 +536,7 @@ function makeParentRepair(store, send) {
       if (limited(`h:${burial.child}`)) {
         send({
           type: 'ipc_getheaders',
-          magic: MAGIC_TESTNET,
+          magic: bookMagicOf(store),
           from: burial.from,
           to: burial.to,
           child: burial.child,
@@ -558,7 +569,7 @@ function sendMempool(store, send) {
     if (!id) continue;
     let wire;
     try { wire = admitWireTx(m); } catch { continue; }
-    send({ type: 'ipc_tx', magic: MAGIC_TESTNET, tx: wire });
+    send({ type: 'ipc_tx', magic: bookMagicOf(store), tx: wire });
   }
 }
 
@@ -570,13 +581,13 @@ function bindTxForward(store, send) {
     if (!id) return;
     let wire;
     try { wire = admitWireTx(tx); } catch { return; }
-    send({ type: 'ipc_tx', magic: MAGIC_TESTNET, tx: wire });
+    send({ type: 'ipc_tx', magic: bookMagicOf(store), tx: wire });
   });
 }
 
 function acceptIpcTx(store, msg) {
   if (!msg || msg.type !== 'ipc_tx' || !msg.tx || typeof msg.tx !== 'object') return;
-  if (msg.magic !== MAGIC_TESTNET) return;
+  if (msg.magic !== bookMagicOf(store)) return;
   if (typeof store?.queueTx !== 'function') return;
   try { store.queueTx(reviveIpcTx(msg.tx)); } catch { /* admit_fail stays on the store */ }
 }
@@ -591,7 +602,7 @@ function bindTipForward(store, send, skip) {
     }
     const blocks = store.blocks || [];
     const tip = blocks[blocks.length - 1];
-    if (tip) forwardBlock(send, tip);
+    if (tip) forwardBlock(send, tip, bookMagicOf(store));
   });
 }
 
@@ -671,6 +682,7 @@ export function attachPoolIpc({
   onPeers = null,
   onApplied = null,
   onSidecarTip = null,
+  onUp = null,
 } = {}) {
   if (!loopbackHost(P2P_IPC_HOST)) throw new Error('ipc_bind');
   const skip = new Set();
@@ -706,9 +718,12 @@ export function attachPoolIpc({
       console.error(JSON.stringify({ event: 'ipc_up', role: 'pool' }));
     } catch { /* ignore */ }
     writeJson(sock, helloMsg('pool', store));
+    if (typeof onUp === 'function') {
+      try { onUp(); } catch { /* ignore */ }
+    }
     attachLines(sock, (msg) => {
       if (!msg || typeof msg !== 'object') return;
-      if (msg.magic !== MAGIC_TESTNET) return;
+      if (msg.magic !== bookMagicOf(store)) return;
       if (msg.type === 'ipc_hello') {
         noteRemoteTip(msg);
         paceBackfill(store, send, msg.height);
@@ -765,7 +780,7 @@ export function attachPoolIpc({
 }
 
 /** Sidecar side. Dials the pool and pushes blocks this process has fully verified. */
-export function attachSidecarIpc({ store, p2p, addr } = {}) {
+export function attachSidecarIpc({ store, p2p, addr, onUp = null } = {}) {
   const parsed = parseIpcAddr(addr);
   if (!loopbackHost(parsed.host)) {
     throw new Error('ipc_not_loopback');
@@ -787,7 +802,7 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
     const tip = tipView(store);
     send({
       type: 'ipc_peers',
-      magic: MAGIC_TESTNET,
+      magic: bookMagicOf(store),
       peers: view.peers,
       synced: view.synced,
       txs: view.txs,
@@ -817,7 +832,7 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
     if (typeof peerTimer.unref === 'function') peerTimer.unref();
     attachLines(sock, (msg) => {
       if (!msg || typeof msg !== 'object') return;
-      if (msg.magic !== MAGIC_TESTNET) return;
+      if (msg.magic !== bookMagicOf(store)) return;
       if (msg.type === 'ipc_hello') {
         paceBackfill(store, send, msg.height);
         sendMempool(store, send);
@@ -864,6 +879,9 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
       if (closed) {
         try { next.destroy(); } catch { /* ignore */ }
         return;
+      }
+      if (typeof onUp === 'function') {
+        try { onUp(); } catch { /* ignore */ }
       }
       bind(next);
     });

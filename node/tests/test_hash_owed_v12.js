@@ -7,7 +7,7 @@ import { merkleRoot } from '../../crypto/merkle.js';
 import { noteCommitOfDest20, excessOf } from '../../crypto/note.js';
 import { compactTx, } from '../../crypto/chronoflux.js';
 import { reviveTx } from '../../crypto/note.js';
-import {
+import { MAGIC_TESTNET,
   GENESIS_BITS_PACKED,
   HASH_BONUS_NANOS,
   HASH_OWED_MAX_ENTRIES,
@@ -764,17 +764,17 @@ describe('v12 hash-bonus owed ledger', () => {
 
     const chain = [genesisBlock, parent2, parent3, { ...soloBlock.block, hash: soloBlock.verdict.hash }];
     for (let n = 1; n <= chain.length; n += 1) {
-      const supply = auditCirculatingSupply(chain.slice(0, n));
+      const supply = auditCirculatingSupply(chain.slice(0, n), { magic: MAGIC_TESTNET });
       assert.equal(supply.status, 'verified', `${supply.reason} at ${n}`);
     }
-    const mid = auditCirculatingSupply(chain.slice(0, 2));
+    const mid = auditCirculatingSupply(chain.slice(0, 2), { magic: MAGIC_TESTNET });
     assert.equal(mid.status, 'verified', mid.reason);
     assert.equal(mid.hashOwedNanos, MAX_HASH_UNITS_PER_BLOCK);
     assert.equal(mid.hashDustNanos, 0);
     assert.equal(mid.hashOwedOverflowNanos, 0);
     assert.equal(mid.circulatingNanos, mid.measuredPotNanos + mid.measuredHashNanos);
     assert.ok(mid.hashOwedNanos > 0);
-    const tipSupply = auditCirculatingSupply(chain);
+    const tipSupply = auditCirculatingSupply(chain, { magic: MAGIC_TESTNET });
     assert.equal(tipSupply.hashOwedNanos, 0);
     assert.equal(tipSupply.hashDustNanos, 0);
     assert.equal(tipSupply.hashOwedOverflowNanos, 0);

@@ -132,21 +132,21 @@ describe('v12 supply counts reserve interest from the chain', () => {
   it('pays principal only for any stake, portal count, and epoch lead', () => {
     const minerOnly = minerDest();
     const potOnly = [blockAt(GENESIS, minerOnly, [{ nanos: potAt(GENESIS), kind: 'pot' }])];
-    const potAudit = auditCirculatingSupply(potOnly);
+    const potAudit = auditCirculatingSupply(potOnly, { magic: MAGIC_TESTNET });
     assert.equal(potAudit.status, 'verified');
     assert.equal(potAudit.extraMintNanos, 0);
     assert.equal(potAudit.circulatingNanos, potAt(GENESIS));
     assert.equal(potAudit.measuredLevyNanos, 0);
 
-    const emptyOmitted = auditCirculatingSupply([]);
+    const emptyOmitted = auditCirculatingSupply([], { magic: MAGIC_TESTNET });
     assert.equal(emptyOmitted.status, 'verified');
     assert.equal(emptyOmitted.extraMintNanos, 0);
     assert.equal(emptyOmitted.circulatingNanos, 0);
-    const emptyZero = auditCirculatingSupply([], { extraMintNanos: 0 });
+    const emptyZero = auditCirculatingSupply([], { magic: MAGIC_TESTNET, extraMintNanos: 0 });
     assert.equal(emptyZero.status, 'verified');
     assert.equal(emptyZero.extraMintNanos, 0);
     for (const claim of [1, PI_SHE_NANOS]) {
-      const emptyClaim = auditCirculatingSupply([], { extraMintNanos: claim });
+      const emptyClaim = auditCirculatingSupply([], { magic: MAGIC_TESTNET, extraMintNanos: claim });
       assert.equal(emptyClaim.status, 'mismatch', `empty claim ${claim}`);
       assert.equal(emptyClaim.reason, 'supply');
     }
@@ -169,19 +169,19 @@ describe('v12 supply counts reserve interest from the chain', () => {
             drawBlock(drawTs, miner, portals, stake),
           ];
           const label = `stake ${stake} portals ${count} lead ${lead}`;
-          const paid = auditCirculatingSupply(chain);
+          const paid = auditCirculatingSupply(chain, { magic: MAGIC_TESTNET });
           assert.equal(paid.status, 'verified', `${label} ${paid.reason}`);
           assert.equal(paid.extraMintNanos, 0, label);
           assert.equal(paid.circulatingNanos, potSum, label);
           assert.equal(paid.measuredPotNanos, potSum, label);
           assert.equal(paid.measuredLevyNanos, 0, label);
           assert.equal(paid.differenceNanos, 0, label);
-          const echoed = auditCirculatingSupply(chain, { extraMintNanos: 0 });
+          const echoed = auditCirculatingSupply(chain, { magic: MAGIC_TESTNET, extraMintNanos: 0 });
           assert.equal(echoed.status, 'verified', `${label} echo`);
           assert.equal(echoed.extraMintNanos, 0, label);
           assert.equal(echoed.differenceNanos, 0, label);
           for (const claim of [1, interestSum, interestSum + 1 + stake]) {
-            const miss = auditCirculatingSupply(chain, { extraMintNanos: claim });
+            const miss = auditCirculatingSupply(chain, { magic: MAGIC_TESTNET, extraMintNanos: claim });
             assert.equal(miss.status, 'mismatch', `${label} claim ${claim}`);
             assert.equal(miss.reason, 'supply', `${label} claim ${claim}`);
             assert.equal(miss.extraMintNanos, 0, `${label} claim ${claim}`);
@@ -191,9 +191,9 @@ describe('v12 supply counts reserve interest from the chain', () => {
             lockBlock(GENESIS, miner, portals, stake),
             drawBlock(drawTs, miner, portals, stake + one),
           ];
-          const rewarded = auditCirculatingSupply(withReward);
+          const rewarded = auditCirculatingSupply(withReward, { magic: MAGIC_TESTNET });
           assert.equal(rewarded.status, 'mismatch', `${label} reward receipt`);
-          const folded = foldSupply(chain, { genesisMs: GENESIS });
+          const folded = foldSupply(chain, { genesisMs: GENESIS, magic: MAGIC_TESTNET });
           assert.equal(folded.ok, true, `${label} fold ${folded.reason}`);
           assert.equal(folded.state.mintedInterest, 0n, label);
         }
@@ -206,14 +206,14 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const miner = minerDest();
     const portal = portalDest();
     const lock = lockBlock(GENESIS, miner, [portal], stake);
-    const folded = foldSupply([lock], { genesisMs: GENESIS });
+    const folded = foldSupply([lock], { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(folded.ok, true, folded.reason);
     assert.equal(folded.state.vaultPrincipal, BigInt(stake));
     const report = supplyReport(folded.state);
     assert.equal(report.status, 'verified', report.reason);
     assert.equal(report.vaultPrincipalNanos, stake);
     assert.equal(report.totalNanos, report.circulatingNanos + stake);
-    const lockedAudit = auditCirculatingSupply([lock]);
+    const lockedAudit = auditCirculatingSupply([lock], { magic: MAGIC_TESTNET });
     assert.equal(lockedAudit.status, 'verified', lockedAudit.reason);
     assert.equal(lockedAudit.vaultPrincipalNanos, stake);
     const sticker = lockTx({ from: miner, to: portal, nanos: stake, id: 'sticker-lock' });
@@ -222,7 +222,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     sticker.vin = [stickerVin];
     const stickerFold = foldSupply([
       blockAt(GENESIS, miner, [{ nanos: potAt(GENESIS), kind: 'pot' }], [sticker]),
-    ], { genesisMs: GENESIS });
+    ], { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(stickerFold.ok, false, stickerFold.reason);
     assert.equal(stickerFold.reason, 'supply');
     const shortNote = sealCoinbaseNote(1, { dest20: Buffer.alloc(20, 3), kind: 'pot' });
@@ -234,19 +234,19 @@ describe('v12 supply counts reserve interest from the chain', () => {
     }];
     const shortFold = foldSupply([
       blockAt(GENESIS, miner, [{ nanos: potAt(GENESIS), kind: 'pot' }], [short]),
-    ], { genesisMs: GENESIS });
+    ], { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(shortFold.ok, false, shortFold.reason);
     assert.equal(shortFold.reason, 'supply');
     assert.equal(lockedAudit.totalNanos, lockedAudit.circulatingNanos + stake);
     const drawTs = GENESIS + EPOCH_MS + 1;
-    const paid = auditCirculatingSupply([lock, drawBlock(drawTs, miner, [portal], stake)]);
+    const paid = auditCirculatingSupply([lock, drawBlock(drawTs, miner, [portal], stake)], { magic: MAGIC_TESTNET });
     assert.equal(paid.status, 'verified', paid.reason);
     assert.equal(paid.vaultPrincipalNanos, 0);
     assert.equal(paid.totalNanos, paid.circulatingNanos);
     const edge = Number.MAX_SAFE_INTEGER;
     const edgeChain = [lockBlock(GENESIS, minerDest(), [portalDest()], edge)];
-    const edgeFold = foldSupply(edgeChain, { genesisMs: GENESIS });
-    const edgeAudit = auditCirculatingSupply(edgeChain);
+    const edgeFold = foldSupply(edgeChain, { genesisMs: GENESIS, magic: MAGIC_TESTNET });
+    const edgeAudit = auditCirculatingSupply(edgeChain, { magic: MAGIC_TESTNET });
     assert.equal(edgeFold.ok, false, edgeFold.reason);
     assert.equal(edgeFold.reason, 'supply');
     assert.equal(edgeAudit.status, 'mismatch');
@@ -264,7 +264,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
       lockBlock(GENESIS, miner, [portal], stake),
       drawBlock(drawTs, miner, [portal], stake),
     ];
-    const paid = auditCirculatingSupply(honest);
+    const paid = auditCirculatingSupply(honest, { magic: MAGIC_TESTNET });
     assert.equal(paid.status, 'verified', paid.reason);
     assert.equal(paid.extraMintNanos, 0);
 
@@ -272,7 +272,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
       honest[0],
       drawBlock(drawTs, miner, [portal], stake + one, stake),
     ];
-    const bad = auditCirculatingSupply(inflated);
+    const bad = auditCirculatingSupply(inflated, { magic: MAGIC_TESTNET });
     assert.equal(bad.status, 'mismatch');
     assert.equal(bad.reason, 'supply');
     assert.notEqual(bad.extraMintNanos, one);
@@ -282,7 +282,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const twice = honest.concat([
       drawBlock(againTs, miner, [portal], stake),
     ]);
-    const second = auditCirculatingSupply(twice);
+    const second = auditCirculatingSupply(twice, { magic: MAGIC_TESTNET });
     assert.notEqual(second.status, 'verified', second.reason);
     assert.notEqual(second.extraMintNanos, one);
 
@@ -290,6 +290,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const locked = supplyStep(state, honest[0], {
       height: 1,
       genesisMs: GENESIS,
+      magic: MAGIC_TESTNET,
       tipHeight: 2,
     });
     assert.equal(locked.ok, true, locked.reason);
@@ -297,6 +298,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const bare = supplyStep(state, honest[1], {
       height: 2,
       genesisMs: GENESIS,
+      magic: MAGIC_TESTNET,
       tipHeight: 2,
     });
     assert.equal(bare.ok, false);
@@ -328,10 +330,10 @@ describe('v12 supply counts reserve interest from the chain', () => {
     assert.equal(act.opened, false);
     assert.equal(verifySealedNote(wd.vout[0], honestPay + 1), true);
     assert.equal(verifySealedNote(wd.vout[0], act.nanos), false);
-    const high = auditCirculatingSupply([lock, openedHigh]);
+    const high = auditCirculatingSupply([lock, openedHigh], { magic: MAGIC_TESTNET });
     assert.equal(high.status, 'mismatch', high.reason);
     assert.equal(high.reason, 'supply');
-    const highFold = foldSupply([lock, openedHigh], { genesisMs: GENESIS });
+    const highFold = foldSupply([lock, openedHigh], { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(highFold.ok, false);
     assert.equal(highFold.reason, 'supply');
 
@@ -340,11 +342,11 @@ describe('v12 supply counts reserve interest from the chain', () => {
     assert.equal(fatAct.opened, true, 'the inflated receipt does open to its public amount');
     assert.equal(fatAct.nanos, honestPay + 1);
     const inflated = [lock, inflatedBlock];
-    const refused = foldSupply(inflated, { genesisMs: GENESIS });
+    const refused = foldSupply(inflated, { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'supply');
     assert.equal(refused.state, null);
-    const audited = auditCirculatingSupply(inflated);
+    const audited = auditCirculatingSupply(inflated, { magic: MAGIC_TESTNET });
     assert.equal(audited.status, 'mismatch');
     assert.equal(audited.reason, 'supply');
     assert.notEqual(audited.extraMintNanos, 1);

@@ -6,6 +6,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -123,7 +124,7 @@ function cloneDir(src) {
 }
 
 function viewOf(store) {
-  const supply = auditCirculatingSupply(store.blocks);
+  const supply = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
   assert.equal(supply.status, 'verified', supply.reason || 'supply');
   const owed = store.owedView();
   return {

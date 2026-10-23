@@ -7,7 +7,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
-import { SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { excessOf, openedCoinbaseNanos, verifyMintSum } from '../../crypto/note.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { hash20FromAddress } from '../../crypto/address.js';
@@ -108,7 +108,7 @@ describe('v12 B leaves are debited', () => {
       assert.equal(plain.got.ok, false, `${plain.got.reason || ''} ${plain.got.error || ''}`);
       assert.equal(plain.got.reason, 'admit_version', plain.got.reason);
       assert.equal(book.store.tip().height, heightBefore);
-      const afterPlain = auditCirculatingSupply(book.store.blocks);
+      const afterPlain = auditCirculatingSupply(book.store.blocks, { magic: MAGIC_TESTNET });
       assert.equal(afterPlain.status, 'verified', afterPlain.reason);
       assert.equal(afterPlain.bLockedNanos, 0);
     } finally {
@@ -159,7 +159,7 @@ describe('v12 B leaves are debited', () => {
       const genesis = await sealEmpty(book.store, payer.dest);
       assert.equal(genesis.ok, true, `${genesis.reason || ''} ${genesis.error || ''}`);
       const child = asBlock(templateOn(book.store, { miner: payer.dest }));
-      const clean = auditCirculatingSupply(book.store.blocks.concat([child]));
+      const clean = auditCirculatingSupply(book.store.blocks.concat([child]), { magic: MAGIC_TESTNET });
       assert.equal(clean.status, 'verified', clean.reason);
       for (const unit of FREE_UNITS) {
         const outs = [sealMintOut(unit, payer.dest, 'b-spend')];
@@ -185,7 +185,7 @@ describe('v12 B leaves are debited', () => {
           vout: outs,
         };
         const block = { ...child, txs: [child.txs[0], tx] };
-        const audit = auditCirculatingSupply(book.store.blocks.concat([block]));
+        const audit = auditCirculatingSupply(book.store.blocks.concat([block]), { magic: MAGIC_TESTNET });
         assert.equal(audit.status, 'mismatch', `${unit} ${audit.status} ${audit.reason}`);
         assert.equal(audit.reason, 'supply', `${unit} ${audit.reason}`);
       }
@@ -234,7 +234,7 @@ describe('v12 B leaves are debited', () => {
           rootA: sealed.tip.rootA,
           rootB: sealed.tip.rootB,
         });
-        const audit = auditCirculatingSupply(book.store.blocks);
+        const audit = auditCirculatingSupply(book.store.blocks, { magic: MAGIC_TESTNET });
         assert.equal(audit.status, 'verified', `${unit} ${audit.reason}`);
         assert.equal(audit.bLockedNanos, locked, unit);
       }
@@ -287,7 +287,7 @@ describe('v12 B leaves are debited', () => {
       const got = await appendTpl(book.store, tpl);
       assert.equal(got.ok, true, `${got.reason || ''} ${got.error || ''}`);
       assert.equal(book.store.tip().height, spendTip);
-      const released = auditCirculatingSupply(book.store.blocks);
+      const released = auditCirculatingSupply(book.store.blocks, { magic: MAGIC_TESTNET });
       assert.equal(released.status, 'verified', released.reason);
       assert.equal(released.bLockedNanos, 0);
       const again = await Promise.resolve(book.store.probeBlock(

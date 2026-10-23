@@ -4,8 +4,10 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:pointycastle/export.dart';
 
+import 'shear_chain_params.dart';
+
 const kEip712ChainId = 2701;
-const kEip712Name = 'Shear';
+const kEip712Name = 'ShearPool';
 const kEip712Version = '1';
 
 Uint8List keccak256(Uint8List data) => KeccakDigest(256).process(data);
@@ -24,25 +26,55 @@ Uint8List _encodeUint(int n) {
 
 Uint8List _hashString(String s) => keccak256(_u8(utf8.encode(s)));
 
+Uint8List _leftPad32(Uint8List src) {
+  final out = Uint8List(32);
+  final n = src.length > 32 ? 32 : src.length;
+  out.setRange(32 - n, 32, src.sublist(src.length - n));
+  return out;
+}
+
+/// Same domain the pool verifies. The book magic is the domain chain id.
+/// The numeric evmChainId is not this field: two books can share it.
 Uint8List poolWithdrawDigest({
   required String login,
   required String dest,
   required int nanos,
+  required String magic,
+  int height = 0,
+  int nonce = 0,
+  int deadline = 0,
 }) {
-  final domainType = _hashString('EIP712Domain(string name,string version,uint256 chainId)');
+  final row = kChainParams[magic];
+  if (row == null) {
+    throw StateError('unknown_magic');
+  }
+  // Touch the row so a book without a chain id cannot sign. The digest
+  // binds the magic itself. The shared 2701 id does not separate the books.
+  if (row.evmChainId <= 0) {
+    throw StateError('unknown_magic');
+  }
+  final domainType = _hashString(
+    'EIP712Domain(string name,string version,string chainId,address verifyingContract)',
+  );
   final domainSep = keccak256(Uint8List.fromList([
     ...domainType,
     ..._hashString(kEip712Name),
     ..._hashString(kEip712Version),
-    ..._encodeUint(kEip712ChainId),
+    ..._hashString(magic),
+    ..._leftPad32(Uint8List(20)),
   ]));
-  final msgType = _hashString('PoolWithdraw(string login,string dest,uint256 nanos)');
+  final msgType = _hashString(
+    'PoolWithdraw(string minerShe1,string payoutSsa1,uint256 nanos,uint256 height,uint256 nonce,uint256 deadline)',
+  );
   final n = nanos < 0 ? 0 : nanos;
   final structHash = keccak256(Uint8List.fromList([
     ...msgType,
     ..._hashString(login),
     ..._hashString(dest),
     ..._encodeUint(n),
+    ..._encodeUint(height < 0 ? 0 : height),
+    ..._encodeUint(nonce < 0 ? 0 : nonce),
+    ..._encodeUint(deadline < 0 ? 0 : deadline),
   ]));
   return keccak256(Uint8List.fromList([0x19, 0x01, ...domainSep, ...structHash]));
 }
@@ -82,8 +114,9 @@ String signPoolWithdraw({
   required String login,
   required String dest,
   required int nanos,
+  required String magic,
 }) {
-  final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos);
+  final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos, magic: magic);
   final privRaw = evmPrivFromSeed(seed);
   final key = _privKey(privRaw);
   final pub = key.parameters!.G * key.d;
@@ -109,6 +142,7 @@ bool verifyPoolWithdrawSig({
   required String dest,
   required int nanos,
   required String sig,
+  required String magic,
 }) {
   final raw = sig.trim();
   final hex = raw.startsWith('0x') ? raw.substring(2) : raw;
@@ -121,7 +155,7 @@ bool verifyPoolWithdrawSig({
   final v = buf[97];
   if (v != 27 && v != 28) return false;
   try {
-    final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos);
+    final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos, magic: magic);
     final curve = ECCurve_secp256k1();
     final point = curve.curve.decodePoint(pubBytes);
     if (point == null) return false;

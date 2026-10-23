@@ -141,7 +141,7 @@ function expectOk(blocks) {
   const dir = tmp('shear-load-share-ok-');
   sealBook(dir, blocks);
   const store = createStore(dir);
-  const supply = auditCirculatingSupply(store.blocks);
+  const supply = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
   assert.equal(supply.status, 'verified', supply.reason);
   assert.equal(store.tip().height, blocks.length);
   return store;
