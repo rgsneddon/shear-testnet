@@ -116,8 +116,8 @@ describe('v12 P2P burial gate', () => {
     const wired = decodeWireBlock(encodeWireBlock({ ...body, height: 1, hash: easyPow(7) }));
     assert.equal(wired.samplesPruned, true);
     assert.equal(wired.height, 1);
-    // No ipc_headers run: the store finds no proven burial. Pruned IPC
-    // blocks verify off the loop, so this answer is a Promise.
+    // No ipc_headers run. The claimed hash is not the header hash, so append
+    // rejects it before burial. Pruned IPC blocks verify off the loop.
     const viaIpcPruned = await applyVerifiedIpcBlock(store, {
       type: 'ipc_block',
       magic: MAGIC_TESTNET,
@@ -125,7 +125,7 @@ describe('v12 P2P burial gate', () => {
       powHash: easyPow(7).toString('hex'),
     });
     assert.equal(viaIpcPruned.ok, false, viaIpcPruned.reason);
-    assert.equal(viaIpcPruned.reason, 'samples_pruned');
+    assert.equal(viaIpcPruned.reason, 'hash_claim');
     assert.equal(store.tip(), null);
   });
 

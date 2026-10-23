@@ -4150,13 +4150,51 @@ export function createStore(dir, {
   }
 
   // A header run buries only the pruned block it stands above. The fork's
-  // own length stays the tip for every other block.
+  // own length stays the tip for every other block. The height also keeps
+  // the hash that run was proved against.
+  function burialAt(at, height) {
+    if (!at) return null;
+    const row = at[height];
+    if (row == null) return null;
+    if (typeof row === 'number') return Number.isInteger(row) ? { top: row, claimed: null } : null;
+    const top = Number(row.top);
+    if (!Number.isInteger(top)) return null;
+    let claimed = null;
+    try {
+      if (row.claimed != null) {
+        const raw = Buffer.from(row.claimed);
+        if (raw.length === 32) claimed = raw;
+      }
+    } catch { claimed = null; }
+    return { top, claimed };
+  }
+
   function headerRunTip(block, structuralH, chainTip, at) {
     if (block?.samplesPruned !== true || !at) return chainTip;
-    const own = Number(at[structuralH]);
+    const rec = burialAt(at, structuralH);
+    if (!rec) return chainTip;
+    const own = rec.top;
     if (!Number.isInteger(own) || !(own > chainTip)) return chainTip;
     if (!shouldPruneSamples(structuralH, own)) return chainTip;
     return own;
+  }
+
+  // The run was proved for the hash the block claimed. Verify's hash is the
+  // one the header produced. A borrowed burial is pow, on every entry.
+  // A failed verify that never produced a hash keeps its own reason.
+  function burialClaimPow(structuralH, computed, at, verifiedOk = true) {
+    const rec = burialAt(at, structuralH);
+    if (!rec?.claimed) return null;
+    let got = null;
+    try {
+      if (computed != null) {
+        const raw = Buffer.from(computed);
+        if (raw.length === 32) got = raw;
+      }
+    } catch { got = null; }
+    if (!got) return verifiedOk ? { ok: false, reason: 'pow' } : null;
+    if (!got.equals(rec.claimed)) return { ok: false, reason: 'pow' };
+    return null;
   }
 
   function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null, verifyOpts = {}) {
@@ -4224,6 +4262,11 @@ export function createStore(dir, {
       magic: bookMagic,
     });
     const stamp = (c) => {
+      const lie = burialClaimPow(parentH + 1, c?.hash, verifyOpts.provenBurialAt, c?.ok === true);
+      if (lie) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return lie;
+      }
       if (!c?.ok) {
         rollbackSpent(trialSpent, beforeSpent);
         return c;
@@ -4585,6 +4628,9 @@ export function createStore(dir, {
       const got = gateOneHeader(fork[i], prev, history, verifyOpts);
       const take = (assessed) => {
         if (!assessed?.ok) return { ok: false, reason: assessed?.reason || 'pow', at: i };
+        const structuralH = (prev ? Number(prev.height || 0) : 0) + 1;
+        const lie = burialClaimPow(structuralH, assessed.hash, verifyOpts.provenBurialAt);
+        if (lie) return { ...lie, at: i };
         return step(i + 1, gatePrevFrom(fork[i], assessed.hash, prev));
       };
       if (got && typeof got.then === 'function') return got.then(take);
@@ -5028,6 +5074,11 @@ export function createStore(dir, {
         magic: bookMagic,
       });
       const take = (c) => {
+        const lie = burialClaimPow(structuralH, c?.hash, verifyOpts.provenBurialAt, c?.ok === true);
+        if (lie) {
+          rollbackSpent(trialSpent, beforeSpent);
+          return lie;
+        }
         if (!c?.ok) {
           rollbackSpent(trialSpent, beforeSpent);
           return c;
@@ -5530,9 +5581,18 @@ export function createStore(dir, {
     let noted = false;
     for (const b of list || []) {
       const h = Number(b?.height) || 0;
-      const own = Number(at[h]);
-      if (b?.samplesPruned !== true) continue;
+      const rec = burialAt(at, h);
+      if (!rec || b?.samplesPruned !== true) continue;
+      const own = rec.top;
       if (!Number.isInteger(own) || !(own > floor) || !shouldPruneSamples(h, own)) continue;
+      if (rec.claimed) {
+        let got = null;
+        try {
+          const raw = Buffer.from(b.hash);
+          if (raw.length === 32) got = raw;
+        } catch { got = null; }
+        if (!got || !got.equals(rec.claimed)) continue;
+      }
       if (provenTipOf(b) != null) continue;
       burialProof.note(blockHex(b), h, own);
       noted = true;
@@ -5608,7 +5668,16 @@ export function createStore(dir, {
       const history = prefix.concat(fork.slice(0, item.index));
       const proved = proveBurial(item.block, verifyOpts, burialAnchor(item.block, item.structuralH, history));
       const take = (p) => {
-        const next = p?.ok ? { ...at, [item.structuralH]: p.top } : at;
+        let claimed = null;
+        try {
+          if (p?.ok && p.claimed != null) {
+            const raw = Buffer.from(p.claimed);
+            if (raw.length === 32) claimed = raw;
+          }
+        } catch { claimed = null; }
+        const next = claimed
+          ? { ...at, [item.structuralH]: { top: p.top, claimed } }
+          : at;
         return proveAt(n + 1, next);
       };
       if (proved && typeof proved.then === 'function') return proved.then(take);

@@ -15,9 +15,14 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import {
+  GENESIS_BITS_PACKED,
+  MAGIC_TESTNET,
+  SAMPLE_PRUNE_CONFIRMATIONS,
+  asertNextBits,
+} from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { decodeHeader } from '../../crypto/header.js';
+import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
 import { pullNextHttpBlock, startHttpFollow } from '../src/http_follow.js';
@@ -662,6 +667,127 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       assert.equal(dup.ok, false);
       assert.equal(dup.reason, 'not_heavier');
       assert.equal(store.blocks.length, 1);
+    });
+
+    it('a pruned fork cannot borrow a burial under a different hash', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fork-burial-'));
+      const dest = minerDest();
+      const store = createStore(dir, { pruneAfter: 1_000_000 });
+      assert.equal(sealNext(store, dest, 1).ok, true);
+      assert.equal(sealNext(store, dest, 2).ok, true);
+      const parent = store.blocks[0];
+      const genesisMs = headerTime(parent);
+      const now = genesisMs + STEP;
+      const quote = asertNextBits({
+        anchorBits: GENESIS_BITS_PACKED,
+        anchorTimeMs: genesisMs,
+        anchorHeight: 1,
+        blockTimeMs: now,
+        blockHeight: 2,
+        parentTimeMs: genesisMs,
+      });
+      assert.equal(quote.ok, true, quote.reason);
+      const tpl = buildTemplate({
+        prev: parent.hash,
+        prevHeader: parent.header,
+        prevBlock: parent,
+        height: 2,
+        miner: dest,
+        now,
+        bits: quote.packed,
+        parentBlocks: [parent],
+        parentFluxset: store.fluxThrough(0),
+      });
+      const claimed = easyPow(50);
+      let prev = {
+        header: Buffer.from(tpl.header),
+        hash: claimed,
+        height: 2,
+        time: now,
+        genesisParent: true,
+      };
+      const rows = [{
+        header: Buffer.from(tpl.header).toString('hex'),
+        hash: claimed.toString('hex'),
+        height: 2,
+      }];
+      const trusted = new Set();
+      for (let i = 0; i < SAMPLE_PRUNE_CONFIRMATIONS; i += 1) {
+        const ts = prev.time + STEP;
+        const next = asertNextBits({
+          anchorBits: prev.genesisParent ? quote.packed : GENESIS_BITS_PACKED,
+          anchorTimeMs: prev.genesisParent ? prev.time : genesisMs,
+          anchorHeight: prev.genesisParent ? prev.height : 1,
+          blockTimeMs: ts,
+          blockHeight: prev.height + 1,
+          parentTimeMs: prev.time,
+        });
+        assert.equal(next.ok, true, next.reason);
+        const hash = easyPow(51 + i);
+        const header = encodeHeader({
+          prevBlockHash: prev.hash,
+          merkleRoot: Buffer.alloc(32, 1),
+          continuityRoot: Buffer.alloc(32, 2),
+          timestamp: BigInt(ts),
+          bits: next.packed,
+          nonce: BigInt(i + 1),
+          baseFee: 1n,
+        });
+        const row = { header: header.toString('hex'), hash: hash.toString('hex'), height: prev.height + 1 };
+        rows.push(row);
+        trusted.add(row.hash);
+        prev = { header, hash, height: prev.height + 1, time: ts, genesisParent: false };
+      }
+      const offered = store.offerHeaders(rows, { peer: 'local', tier: 'local', nowMs: prev.time + STEP });
+      assert.equal(offered.accepted, SAMPLE_PRUNE_CONFIRMATIONS + 1);
+      const block = {
+        header: tpl.header,
+        txs: tpl.txs,
+        samples: tpl.samples,
+        shareBatch: tpl.shareBatch || [],
+        miner: dest,
+        aLeaves: tpl.aLeaves,
+        bLeaves: tpl.bLeaves,
+        rootA: tpl.rootA,
+        rootB: tpl.rootB,
+        weight: tpl.weight,
+        hash: claimed,
+        height: 2,
+        samplesPruned: true,
+      };
+      const lied = await Promise.resolve(store.ingest([block], {
+        offLoopPow: true,
+        skipSharePow: true,
+        trustedPowHash: easyPow(9),
+        trustedHeaderHashes: trusted,
+        nowMs: prev.time + STEP,
+      }));
+      assert.equal(lied.ok, false);
+      assert.equal(lied.reason, 'pow');
+      assert.equal(store.tip().height, 2);
+      assert.equal(store.burialView().proven, 0);
+      const matched = await Promise.resolve(store.ingest([block], {
+        offLoopPow: true,
+        skipSharePow: true,
+        trustedPowHash: claimed,
+        trustedHeaderHashes: trusted,
+        nowMs: prev.time + STEP,
+      }));
+      assert.equal(matched.ok, false);
+      assert.notEqual(matched.reason, 'pow');
+      assert.equal(store.tip().height, 2);
+      assert.equal(store.burialView().proven, 0);
+      assert.equal(store.burialView().provenHeaders, SAMPLE_PRUNE_CONFIRMATIONS);
+      const ipc = await Promise.resolve(applyVerifiedIpcBlock(store, {
+        type: 'ipc_block',
+        magic: MAGIC_TESTNET,
+        powHash: claimed.toString('hex'),
+        block,
+      }));
+      assert.equal(ipc.ok, false);
+      assert.equal(ipc.reason, 'pow');
+      assert.equal(store.tip().height, 2);
+      assert.equal(store.burialView().proven, 0);
     });
 
     it('a reorg restore fault exits 70 and the restarted book matches disk', async () => {
