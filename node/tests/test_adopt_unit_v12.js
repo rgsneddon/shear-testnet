@@ -517,7 +517,9 @@ describe('v12 adopt keeps the walked hash-bonus unit', { timeout: fileCapMs(impo
     let locked = null;
     try {
       resetFs1Tree();
-      const heavy = createStore(heavyDir, FAST_BOOK);
+      // The reopen child below takes the datadir lock, as a restarted node
+      // does. This test process writes the heavy book and does not hold it.
+      const heavy = createStore(heavyDir, { ...FAST_BOOK, lock: false });
       for (let n = 0; n < 4; n += 1) {
         const { tpl } = await mineOk(heavy, who.dest);
         coins.push(potCoin(tpl, who));

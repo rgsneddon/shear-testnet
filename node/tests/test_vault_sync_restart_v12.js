@@ -254,7 +254,9 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
   before(async () => {
     resetFs1Tree();
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-vault-sync-'));
-    store = createStore(dir);
+    // The restart child takes the datadir lock, as a restarted node does.
+    // This test process writes the book and does not hold it.
+    store = createStore(dir, { lock: false });
     for (let n = 0; n < 4; n += 1) {
       const { tpl } = await mine(store, who.dest);
       coins.push(potOf(tpl, who));
