@@ -15,7 +15,9 @@ import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronof
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
-import { headerPowReason } from './chain.js';
+import { HEADER_LEN } from '../../crypto/shear_hash.js';
+import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
+import { headerPowReason, holdPreparedHeader } from './chain.js';
 import { classifyByPhase, deliverProcessFault, guardPeerWork, staysUpOnFault } from './process_guard.js';
 
 function reviveDeep(v) {
@@ -147,6 +149,17 @@ export function getblockWaitMs({ localHeight = 0, peerHeight = 0 } = {}) {
   const gap = Number(peerHeight) - Number(localHeight);
   if (Number.isFinite(gap) && gap > 1) return GETBLOCK_WAIT_IBD_MS;
   return GETBLOCK_WAIT_MS;
+}
+
+/** True when this peer may send one more getblock inside the ask window. */
+export function takeBlockAsk(rec, now = Date.now(), limit = P2P_ASK_BLOCKS, windowMs = P2P_ASK_WINDOW_MS) {
+  if (!rec) return false;
+  const cap = Math.max(1, Number(limit) || P2P_ASK_BLOCKS);
+  const span = Math.max(1, Number(windowMs) || P2P_ASK_WINDOW_MS);
+  if (!rec.askWin || now - Number(rec.askWin.start) >= span) rec.askWin = { start: now, used: 0 };
+  if (rec.askWin.used >= cap) return false;
+  rec.askWin.used += 1;
+  return true;
 }
 
 export function tipIsRelay(msg) {
@@ -410,11 +423,13 @@ export const P2P_HELLO_MS = 20_000;
  * the idle sweep reads, so a peer that only exchanges census is not idle-evicted.
  * Cap and reserve eviction use capIdleAt. That clock starts at the first hello
  * and moves when a block from this peer verifies, a tx from this peer is
- * accepted, or a getheaders, getblocks, or getblock we serve moves past the
- * height already served to that peer. A repeated locator or the same block
- * does not move it. Work rows, header offers, empty replies, and not-found
- * replies do not either. Cheap requests, advertisements, census, junk, and
- * unknown types do not either. Only a peer idle at least idleLimit is dropped.
+ * accepted, or a serve is real catch-up: one header page of new height, or
+ * about 64 new blocks, inside the idle window. A peer already at our tip
+ * gets no further credit. One block every few minutes does not either.
+ * A repeated locator or the same block does not move it. Work rows, header
+ * offers, empty replies, and not-found replies do not either. Cheap requests,
+ * advertisements, census, junk, and unknown types do not either. Only a peer
+ * idle at least idleLimit is dropped.
  * Busy means this peer recently delivered a block that validated, and that
  * credit expires with the idle window.
  */
@@ -429,10 +444,18 @@ export const P2P_OUTBOUND_RESERVE = 8;
  * must not walk the idle inbound set. Our own dials are not limited by this.
  */
 export const P2P_EVICT_COOLDOWN_MS = 10_000;
-/** Header and block serves counted toward cap idle, per peer. */
+/** Header and block serves, per peer. Over the cap we answer busy. */
 export const P2P_SERVE_WINDOW_MS = 10_000;
 export const P2P_SERVE_HEADERS_PER_WINDOW = 8;
 export const P2P_SERVE_BLOCK_PER_WINDOW = 256;
+/**
+ * Our own getblock asks. 16 per 4s is 40 per 10s, under the serve cap,
+ * so a fast IBD does not trip an honest peer's limit.
+ */
+export const P2P_ASK_BLOCKS = 16;
+export const P2P_ASK_WINDOW_MS = 4_000;
+/** Blocks of new height that count as catch-up inside one idle window. */
+export const P2P_SERVE_CREDIT_BLOCKS = 64;
 /**
  * A block that verified and then threw while staging. Further copies skip
  * ShearHash until the backoff ends. 60s, doubling, capped near 15 minutes.
@@ -1618,6 +1641,12 @@ export function createP2p({
       return false;
     }
     if (rec.pending.has(hash) || rec.verifying?.has(hash) || inflightBlocks.has(hash)) return true;
+    if (!takeBlockAsk(rec)) {
+      rec.askPaused = true;
+      if (!Array.isArray(rec.want)) rec.want = [];
+      if (!rec.want.includes(hash)) rec.want.unshift(hash);
+      return true;
+    }
     rec.pending.add(hash);
     inflightBlocks.add(hash);
     rec.pendingAt = Date.now();
@@ -1782,6 +1811,10 @@ export function createP2p({
         continue;
       }
       if (rec.verifying?.has(hash) || inflightBlocks.has(hash)) break;
+      if (!takeBlockAsk(rec)) {
+        rec.askPaused = true;
+        break;
+      }
       rec.want.shift();
       rec.pending.add(hash);
       inflightBlocks.add(hash);
@@ -1944,12 +1977,24 @@ export function createP2p({
     return true;
   }
 
-  function noteServedHeight(sock, height) {
+  function noteCatchupServe(sock, { page = false, blocks = 0, height = 0 } = {}) {
     const rec = peers.get(sock);
+    if (!rec || !(Number(rec.helloAt) > 0)) return false;
+    const tipH = Number(store.tip()?.height || 0);
+    const before = Number(rec.servedHeight || 0);
+    if (tipH > 0 && before >= tipH) return false;
     const h = Number(height) || 0;
-    if (!rec || !(h > Number(rec.servedHeight || 0))) return false;
+    if (!(h > before)) return false;
     rec.servedHeight = h;
+    const now = Date.now();
+    if (!rec.catchup || now - Number(rec.catchup.start) >= idleLimit) {
+      rec.catchup = { start: now, blocks: 0, page: false };
+    }
+    if (page) rec.catchup.page = true;
+    if (blocks > 0) rec.catchup.blocks += blocks;
+    if (!rec.catchup.page && rec.catchup.blocks < P2P_SERVE_CREDIT_BLOCKS) return false;
     noteCapIdle(sock);
+    rec.catchup = { start: now, blocks: 0, page: false };
     return true;
   }
 
@@ -2095,7 +2140,10 @@ export function createP2p({
     }
     if (msg.type === 'getblocks' || msg.type === 'getheaders') {
       const asker = peers.get(sock);
-      if (!allowServe(asker, 'headers')) return;
+      if (!allowServe(asker, 'headers')) {
+        send(sock, { type: 'serve_busy', magic, what: msg.type });
+        return;
+      }
       const hdrs = selectHeadersAfterLocator(store.blocks || [], {
         locator: msg.locator,
         stopHash: msg.stopHash || msg.hashStop || '',
@@ -2105,7 +2153,8 @@ export function createP2p({
         if (msg.type === 'getheaders') send(sock, { type: 'headers', magic, headers: hdrs });
         return;
       }
-      noteServedHeight(sock, pageTop(hdrs));
+      const top = pageTop(hdrs);
+      noteCatchupServe(sock, { page: top > Number(asker?.servedHeight || 0), height: top });
       send(sock, { type: 'headers', magic, headers: hdrs });
       return;
     }
@@ -2225,7 +2274,10 @@ export function createP2p({
     if (msg.type === 'getblock') {
       const want = wireHash(msg.hash);
       const asker = peers.get(sock);
-      if (!allowServe(asker, 'block')) return;
+      if (!allowServe(asker, 'block')) {
+        send(sock, { type: 'serve_busy', magic, what: 'getblock', hash: want });
+        return;
+      }
       const idx = want ? headerIndexByHash(store.blocks, want) : -1;
       const b = idx >= 0 ? store.blocks[idx] : null;
       if (b) {
@@ -2236,10 +2288,25 @@ export function createP2p({
             height: b.height || 0,
           }));
         } catch { /* ignore */ }
-        if (enqueueGetblockServe(sock, b)) noteServedHeight(sock, Number(b.height) || 0);
+        if (enqueueGetblockServe(sock, b)) {
+          noteCatchupServe(sock, { blocks: 1, height: Number(b.height) || 0 });
+        }
       } else if (want) {
         send(sock, { type: 'getblock_nak', magic, hash: want });
         noteBlockWaiter(want, sock);
+      }
+      return;
+    }
+    if (msg.type === 'serve_busy') {
+      const recBusy = peers.get(sock);
+      const busyHash = wireHash(msg.hash);
+      if (recBusy && busyHash) {
+        inflightBlocks.delete(busyHash);
+        recBusy.pending?.delete(busyHash);
+        if (!recBusy.pending || recBusy.pending.size === 0) recBusy.pendingAt = 0;
+        if (!Array.isArray(recBusy.want)) recBusy.want = [];
+        if (!recBusy.want.includes(busyHash)) recBusy.want.unshift(busyHash);
+        recBusy.askPaused = true;
       }
       return;
     }
@@ -2314,6 +2381,95 @@ export function createP2p({
       }
       const recNow = peers.get(sock);
       const lastHash = last ? wireHash(last.hash) : '';
+      checkBlockClaims(sock, fork, () => ingestDecodedFork(sock, fork, last, lastHash, recNow));
+      return;
+    }
+  }
+
+  function blockHeaderHex(block) {
+    try {
+      const raw = block?.header;
+      if (!raw) return '';
+      return Buffer.from(raw).toString('hex').toLowerCase();
+    } catch {
+      return '';
+    }
+  }
+
+  function thrownHeaderHex(fork, got) {
+    const fromGot = got?.header ? blockHeaderHex({ header: got.header }) : '';
+    if (fromGot) return fromGot;
+    const at = Number(got?.at);
+    if (Number.isInteger(at) && fork[at]) return blockHeaderHex(fork[at]);
+    return blockHeaderHex(fork[0]);
+  }
+
+  function scoreHashClaim(sock) {
+    const rec = peers.get(sock);
+    if (!rec) return;
+    try {
+      console.error(JSON.stringify({ event: 'p2p_ingest', ok: false, reason: 'hash_claim' }));
+    } catch { /* ignore */ }
+    if (recordIngestFail(rec, 'hash_claim')) {
+      const until = Date.now() + P2P_BAN_MS;
+      if (rec.remote) peerBans.set(rec.remote, until);
+      try { sock.destroy(); } catch { /* ignore */ }
+    }
+  }
+
+  const headerClaims = new Map();
+
+  function rememberHeaderClaim(headerHex, hashHex) {
+    headerClaims.delete(headerHex);
+    headerClaims.set(headerHex, hashHex);
+    while (headerClaims.size > STAGE_HOLD_CAP) {
+      const oldest = headerClaims.keys().next().value;
+      if (oldest == null) break;
+      headerClaims.delete(oldest);
+    }
+  }
+
+  function claimVerdict(block) {
+    let header = null;
+    try {
+      if (block?.header) header = Buffer.from(block.header);
+    } catch { header = null; }
+    const claimed = wireHash(block?.hash);
+    const headerHex = header ? header.toString('hex').toLowerCase() : '';
+    if (!header || header.length !== HEADER_LEN || claimed.length !== 64) {
+      return Promise.resolve({ ok: false });
+    }
+    const known = headerClaims.get(headerHex);
+    const finish = (computed) => ({ ok: computed === claimed, computed });
+    if (typeof known === 'string') return Promise.resolve(finish(known));
+    if (known && typeof known.then === 'function') return known.then(finish);
+    const job = hashHeaderOffLoop(header).then((buf) => {
+      const computed = Buffer.from(buf).toString('hex');
+      rememberHeaderClaim(headerHex, computed);
+      try { holdPreparedHeader(header, buf); } catch { /* verify hashes again */ }
+      return computed;
+    }, (err) => {
+      if (headerClaims.get(headerHex) === job) headerClaims.delete(headerHex);
+      throw err;
+    });
+    headerClaims.set(headerHex, job);
+    return job.then(finish);
+  }
+
+  function checkBlockClaims(sock, fork, next) {
+    Promise.all(fork.map((block) => claimVerdict(block))).then((rows) => {
+      if (rows.some((row) => !row.ok)) {
+        scoreHashClaim(sock);
+        return;
+      }
+      next();
+    }, (err) => {
+      const fault = classifyByPhase(err, 'verify');
+      deliverProcessFault('p2p', fault);
+    });
+  }
+
+  function ingestDecodedFork(sock, fork, last, lastHash, recNow) {
       if (process.env.SHEAR_P2P_FOLLOW_IPC === '1') {
         const tip = store.tip();
         const tipHash = tip?.hash ? Buffer.from(tip.hash).toString('hex') : '';
@@ -2330,40 +2486,42 @@ export function createP2p({
           return;
         }
       }
-      if (lastHash) inflightBlocks.delete(lastHash);
+      const headerKeys = fork.map((block) => blockHeaderHex(block)).filter(Boolean);
+      for (const block of fork) {
+        const id = wireHash(block?.hash);
+        if (id) inflightBlocks.delete(id);
+      }
+      if (headerKeys.some((key) => stageHoldActive(stageHolds.get(key)))) {
+        if (recNow) {
+          recNow.pending?.delete(lastHash);
+          for (const key of headerKeys) recNow.verifying?.delete(key);
+          recNow.syncing = false;
+        }
+        return;
+      }
       // A tip extension is proved before its claimed hash is compared to the
       // book. A duplicate id with a bad header is `pow`, not "already have".
+      // The claim was already checked against the header hash.
       const extendsTip = fork.length === 1 && blockExtendsTip(store, fork[0]);
       if (!extendsTip) {
         const haveNow = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
         if (lastHash && haveNow.has(lastHash)) {
           if (recNow) {
             recNow.pending?.delete(lastHash);
-            recNow.verifying?.delete(lastHash);
+            for (const key of headerKeys) recNow.verifying?.delete(key);
             pumpGetblocks(sock);
           }
           return;
         }
       }
-      if (lastHash && stageHoldActive(stageHolds.get(lastHash))) {
-        if (recNow) {
-          recNow.pending?.delete(lastHash);
-          recNow.verifying?.delete(lastHash);
-          recNow.syncing = false;
-        }
-        return;
-      }
-      const verifyKey = fork?.[0]?.header ? Buffer.from(fork[0].header).toString('hex') : lastHash;
-      if (verifyKey && recNow?.verifying?.has(verifyKey)) return;
+      if (headerKeys.some((key) => recNow?.verifying?.has(key))) return;
       if (recNow) {
         if (!recNow.pending) recNow.pending = new Set();
         if (!recNow.failed) recNow.failed = new Set();
         if (!recNow.verifying) recNow.verifying = new Set();
         if (lastHash) recNow.pending.delete(lastHash);
-        if (verifyKey) {
-          recNow.verifying.add(verifyKey);
-          recNow.syncing = true;
-        }
+        for (const key of headerKeys) recNow.verifying.add(key);
+        if (headerKeys.length) recNow.syncing = true;
       }
       const job = scheduleP2pVerify(() => {
         const before = store.tip();
@@ -2376,8 +2534,11 @@ export function createP2p({
         return go();
       });
       job.then(({ got, before }) => {
-        if (lastHash && got?.reason === 'apply_stage') noteStageHold(lastHash);
-        else if (got?.ok && lastHash) stageHolds.delete(lastHash);
+        const holdHex = thrownHeaderHex(fork, got);
+        if (got?.reason === 'apply_stage' && holdHex) noteStageHold(holdHex);
+        else if (got?.ok) {
+          for (const key of headerKeys) stageHolds.delete(key);
+        }
         const rec = peers.get(sock);
         if (!got?.ok) {
           try {
@@ -2390,7 +2551,7 @@ export function createP2p({
           } catch { /* ignore */ }
         }
         if (rec) {
-          rec.verifying?.delete(verifyKey);
+          for (const key of headerKeys) rec.verifying?.delete(key);
           if (!rec.failed) rec.failed = new Set();
           if (!got?.ok && lastHash) {
             const reason = got?.reason;
@@ -2487,7 +2648,7 @@ export function createP2p({
         if (!staysUpOnFault(fault)) return;
         const rec = peers.get(sock);
         if (rec) {
-          rec.verifying?.delete(verifyKey);
+          for (const key of headerKeys) rec.verifying?.delete(key);
           rec.syncing = false;
           rec.pending = null;
           if (recordProofFail(rec)) {
@@ -2507,7 +2668,6 @@ export function createP2p({
           }));
         } catch { /* ignore */ }
       });
-    }
   }
 
   function drop(sock) {
@@ -2665,6 +2825,13 @@ export function createP2p({
           }));
         } catch { /* ignore */ }
         try { sock.destroy(); } catch { /* ignore */ }
+      }
+      for (const [sock, rec] of peers) {
+        if (!rec?.askPaused) continue;
+        const start = Number(rec.askWin?.start) || 0;
+        if (now - start < P2P_ASK_WINDOW_MS) continue;
+        rec.askPaused = false;
+        if (!peerDemoted(rec)) pumpGetblocks(sock);
       }
       for (const [sock, rec] of peers) {
         if (!rec?.syncing || !rec.pending || !rec.pending.size || !rec.pendingAt) continue;

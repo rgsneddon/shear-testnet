@@ -5,6 +5,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { headerHash } from '../src/chain.js';
 import { createP2p } from '../src/p2p.js';
 import { createRpc } from '../src/rpc.js';
 import {
@@ -20,6 +21,16 @@ import {
 
 const self = fileURLToPath(import.meta.url);
 const guardProbe = process.argv.includes('--guard-probe');
+
+function guardBlock() {
+  const header = Buffer.alloc(128, 0x11);
+  return {
+    header: header.toString('hex'),
+    hash: headerHash(header).toString('hex'),
+    height: 1,
+    txs: [],
+  };
+}
 const spread = process.argv.includes('--fault-spread');
 const phaseInject = process.argv.includes('--phase-inject');
 const BOOK = { tip: 7, supply: 11, spent: 3, jroot: 'cd'.repeat(32) };
@@ -147,12 +158,7 @@ async function runSpreadChild() {
       : `${JSON.stringify({
         type: 'block',
         magic: MAGIC_TESTNET,
-        block: {
-          header: '11'.repeat(128),
-          hash: '22'.repeat(32),
-          height: 1,
-          txs: [],
-        },
+        block: guardBlock(),
       })}\n`;
     sock.write(hello + faultLine);
     return;
@@ -235,12 +241,7 @@ async function runPhaseChild() {
     : `${JSON.stringify({
       type: 'block',
       magic: MAGIC_TESTNET,
-      block: {
-        header: '11'.repeat(128),
-        hash: '22'.repeat(32),
-        height: 1,
-        txs: [],
-      },
+      block: guardBlock(),
     })}\n`;
   sock.write(hello + line);
 }
