@@ -1548,9 +1548,9 @@ export function createP2p({
     return Math.max(50, wait);
   }
 
-  function armSoftRetry(sock, rec) {
+  function armSoftRetry(sock, rec, waitMs = 0) {
     if (!rec) return;
-    const wait = softWaitMs(rec);
+    const wait = waitMs > 0 ? waitMs : softWaitMs(rec);
     rec.softHoldUntil = Date.now() + wait;
     if (rec.softTimer) return;
     rec.softTimer = setTimeout(() => {
@@ -2312,11 +2312,11 @@ export function createP2p({
     if (msg.type === 'serve_busy') {
       const recBusy = peers.get(sock);
       const busyHash = wireHash(msg.hash);
-      // A busy header or block page has no hash. Retry it after the soft
-      // hold, so syncing is not left set on this peer.
+      // A busy header or block page has no hash. Retry it once the serve
+      // window has passed, so syncing is not left set on this peer.
       if (recBusy && !busyHash && (msg.what === 'getheaders' || msg.what === 'getblocks')
         && recBusy.syncing && !(recBusy.pending instanceof Set && recBusy.pending.size)) {
-        armSoftRetry(sock, recBusy);
+        armSoftRetry(sock, recBusy, P2P_SERVE_WINDOW_MS);
         return;
       }
       // Only the peer we asked may answer. An unsolicited busy must not
