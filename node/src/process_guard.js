@@ -151,6 +151,21 @@ export function deliverProcessFault(kind, err) {
   setTimeout(() => { throw err; }, 0);
 }
 
+/** A timer or feed callback. Request-scoped faults are logged. Commit faults exit. */
+export function guardPeerWork(kind, fn, phase = 'pre-commit') {
+  const fail = (err) => {
+    deliverProcessFault(kind, classifyByPhase(err, phase));
+  };
+  try {
+    const out = fn();
+    if (out && typeof out.then === 'function') return out.catch(fail);
+    return out;
+  } catch (err) {
+    fail(err);
+    return undefined;
+  }
+}
+
 /** Install once. Safe to call from the node entry only. */
 export function installNodeGuards() {
   if (installed) return;

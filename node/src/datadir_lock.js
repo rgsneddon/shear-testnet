@@ -9,6 +9,8 @@
  * fail closed. A claim whose pid was reused, or whose host is not this one,
  * is removed. A live claim on this host is left in place. The same process
  * may open the book again.
+ * A datadir on a network filesystem is unsupported. The lock is local to
+ * this host and cannot see a Shear process on another machine.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -80,9 +82,11 @@ function readLock(lockPath) {
 }
 
 function inUse(lockPath, pid, host) {
-  const who = Number.isInteger(Number(pid)) && Number(pid) > 0 ? `pid ${pid}` : 'pid unknown';
+  const pidText = Number.isInteger(Number(pid)) && Number(pid) > 0 ? String(pid) : 'unknown';
   const where = host ? String(host) : 'unknown';
-  const err = new Error(`datadir in use by ${who} on host ${where}: delete ${lockPath}`);
+  const err = new Error(
+    `datadir in use: stop pid ${pidText} on host ${where}, and delete ${lockPath} only if no Shear process is running`,
+  );
   err.code = 'datadir_in_use';
   return err;
 }

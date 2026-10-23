@@ -23,6 +23,7 @@ jobs:
           node/tests/test_process_guard.js
           node/tests/test_mine_worker_fault.js
           node/tests/test_p2p_idle.js
+          node/tests/test_feed_fault.js
           pool/tests/test_pool_datadir.js
   cli:
     runs-on: ubuntu-latest

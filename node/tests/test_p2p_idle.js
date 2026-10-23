@@ -47,6 +47,13 @@ function helloLine() {
   return `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`;
 }
 
+function ageInbound(p2p, ms = 120_000) {
+  const at = Date.now() - ms;
+  for (const rec of p2p.peers.values()) {
+    if (rec?.inbound && rec.helloAt) rec.capIdleAt = at;
+  }
+}
+
 function listenSink() {
   const sockets = new Set();
   return new Promise((resolve, reject) => {
@@ -291,6 +298,7 @@ describe('p2p hello deadline and idle eviction', () => {
       first.write(helloLine());
       second.write(helloLine());
       await delay(60);
+      ageInbound(p2p);
       const third = await connect(bound.port);
       await delay(50);
       assert.equal(third.destroyed, false);
@@ -381,6 +389,7 @@ describe('p2p hello deadline and idle eviction', () => {
       second.write(helloLine());
       await delay(80);
       assert.equal([...p2p.peers.values()].filter((rec) => rec.inbound && rec.helloAt).length, 2);
+      ageInbound(p2p);
       const third = await connect(bound.port);
       third.write(helloLine());
       await delay(80);
@@ -415,6 +424,7 @@ describe('p2p hello deadline and idle eviction', () => {
       first.write(helloLine());
       second.write(helloLine());
       await delay(80);
+      ageInbound(p2p);
       const third = await connect(bound.port);
       third.write(helloLine());
       await delay(80);
@@ -426,6 +436,52 @@ describe('p2p hello deadline and idle eviction', () => {
       const live = [first, second, third].filter((sock) => !sock.destroyed);
       assert.equal(live.length, 2);
       assert.equal([...p2p.peers.values()].filter((rec) => rec.inbound).length, 2);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('cap eviction waits out the idle timeout and ignores a census refresh', async () => {
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      maxPeers: 1,
+      outboundReserve: 0,
+      helloMs: 5000,
+      idleMs: 5000,
+      evictCooldownMs: 0,
+    });
+    const bound = await p2p.listen();
+    try {
+      const first = await connect(bound.port);
+      first.write(helloLine());
+      await delay(60);
+      const live = [...p2p.peers.values()].find((rec) => rec.inbound && rec.helloAt);
+      assert.ok(live);
+      live.lastRx = Date.now() - 1000;
+      const refused = await connect(bound.port);
+      await delay(40);
+      assert.equal(refused.destroyed, true);
+      assert.equal(first.destroyed, false);
+
+      ageInbound(p2p);
+      first.write(`${JSON.stringify({ type: 'census', magic: MAGIC_TESTNET, hop: 0, nodes: [] })}\n`);
+      await delay(40);
+      const aged = [...p2p.peers.values()].find((rec) => rec.inbound && rec.helloAt);
+      assert.ok(aged);
+      assert.ok(Date.now() - Number(aged.capIdleAt) >= 5000);
+      assert.ok(Date.now() - Number(aged.lastRx) < 500);
+      const next = await connect(bound.port);
+      await delay(40);
+      assert.equal(next.destroyed, false);
+      assert.equal(first.destroyed, true);
     } finally {
       p2p.close();
     }

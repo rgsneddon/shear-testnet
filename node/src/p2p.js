@@ -16,7 +16,7 @@ import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
 import { headerPowReason } from './chain.js';
-import { classifyByPhase, deliverProcessFault, staysUpOnFault } from './process_guard.js';
+import { classifyByPhase, deliverProcessFault, guardPeerWork, staysUpOnFault } from './process_guard.js';
 
 function reviveDeep(v) {
   if (v == null) return v;
@@ -406,9 +406,11 @@ export const PENDING_WATCH_MS = 50;
 /** A socket that never completes hello is dropped. */
 export const P2P_HELLO_MS = 20_000;
 /**
- * Census keepalive is broadcastCensus every 2s. Idle sits far above that
- * so a peer that only exchanges census is not evicted. Busy means this
- * peer recently delivered a block or header that validated, and that
+ * Census keepalive is broadcastCensus every 2s. It refreshes lastRx, which
+ * the idle sweep reads, so a peer that only exchanges census is not idle-evicted.
+ * Cap and reserve eviction use capIdleAt, which census does not refresh, and
+ * only drop an inbound peer that has been idle at least idleLimit.
+ * Busy means this peer recently delivered a block that validated, and that
  * credit expires with the idle window.
  */
 export const P2P_IDLE_MS = 180_000;
@@ -1339,8 +1341,10 @@ export function createP2p({
     const key = String(id || '');
     if (!key || fluffTimers.has(key)) return;
     const t = setTimeout(() => {
-      fluffTimers.delete(key);
-      broadcast({ type: 'tx', magic, tx: wireTx(tx), stem: false }, except);
+      guardPeerWork('p2p', () => {
+        fluffTimers.delete(key);
+        broadcast({ type: 'tx', magic, tx: wireTx(tx), stem: false }, except);
+      });
     }, delayFluff());
     fluffTimers.set(key, t);
   }
@@ -1487,12 +1491,14 @@ export function createP2p({
     rec.softHoldUntil = Date.now() + wait;
     if (rec.softTimer) return;
     rec.softTimer = setTimeout(() => {
-      rec.softTimer = null;
-      const live = peers.get(sock);
-      if (!live) return;
-      live.softHoldUntil = 0;
-      live.syncing = false;
-      requestHeaders(sock);
+      guardPeerWork('p2p', () => {
+        rec.softTimer = null;
+        const live = peers.get(sock);
+        if (!live) return;
+        live.softHoldUntil = 0;
+        live.syncing = false;
+        requestHeaders(sock);
+      });
     }, wait);
     if (typeof rec.softTimer.unref === 'function') rec.softTimer.unref();
   }
@@ -1614,6 +1620,7 @@ export function createP2p({
   function armTipNudge() {
     if (tipNudgeTimer) return;
     tipNudgeTimer = setTimeout(() => {
+      guardPeerWork('p2p', () => {
       tipNudgeTimer = null;
       const nowHash = localTipHash();
       if (nowHash && nowHash !== nudgedHash) {
@@ -1631,6 +1638,7 @@ export function createP2p({
         if (!pulled && (!rec.syncing || !(rec.pending && rec.pending.size))) requestHeaders(sock);
       }
       if (stillAhead) armTipNudge();
+      });
     }, TIP_NUDGE_MS);
     if (typeof tipNudgeTimer.unref === 'function') tipNudgeTimer.unref();
   }
@@ -1759,6 +1767,7 @@ export function createP2p({
   }
 
   function flushGetblockServe() {
+    guardPeerWork('p2p', () => {
     getblockServeTimer = null;
     let n = 0;
     const localH = Number(store.tip()?.height || 0);
@@ -1799,6 +1808,7 @@ export function createP2p({
       } catch { /* ignore */ }
     }
     if (getblockServeQ.length) scheduleGetblockServe();
+    });
   }
 
   function scheduleGetblockServe() {
@@ -1892,6 +1902,7 @@ export function createP2p({
       sock.destroy();
       return;
     }
+    if (welcomed && msg.type !== 'census') heard.capIdleAt = Date.now();
     if (msg.type === 'hello') {
       const rec = heard || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
       rec.remote = peerRemoteKey(sock) || rec.remote;
@@ -1902,6 +1913,7 @@ export function createP2p({
       if (/^[0-9a-f]{8,32}$/.test(nid)) rec.nodeId = nid;
       const arrived = Number(rec.bufAt) || Date.now();
       rec.helloAt = arrived;
+      rec.capIdleAt = arrived;
       if (!rec.attachedAt) rec.attachedAt = arrived;
       if (!Number(rec.lastRx)) rec.lastRx = arrived;
       peers.set(sock, rec);
@@ -2410,10 +2422,11 @@ export function createP2p({
     for (const [sock, rec] of peers) {
       if (!rec?.inbound || !Number(rec.helloAt)) continue;
       if (peerHasRecentProgress(rec, now, idleLimit)) continue;
-      const last = Number(rec.lastRx) || Number(rec.helloAt) || 0;
-      if (last < bestAt) {
+      const idleAt = Number(rec.capIdleAt) || Number(rec.helloAt) || 0;
+      if (now - idleAt < idleLimit) continue;
+      if (idleAt < bestAt) {
         best = sock;
-        bestAt = last;
+        bestAt = idleAt;
       }
     }
     if (!best) return false;
@@ -2469,12 +2482,14 @@ export function createP2p({
       attachedAt: Date.now(),
       helloAt: 0,
       lastRx: 0,
+      capIdleAt: 0,
     });
     let buf = '';
     sock.on('data', (chunk) => {
       const recIn = peers.get(sock);
       const arrived = Date.now();
       if (recIn && !buf) recIn.bufAt = arrived;
+      // Census included. The idle sweep reads lastRx. Cap eviction reads capIdleAt.
       if (recIn && Number(recIn.helloAt) > 0) recIn.lastRx = arrived;
       buf += chunk.toString('utf8');
       if (buf.length > P2P_MAX_FRAME) {
@@ -2521,6 +2536,7 @@ export function createP2p({
     censusTimer = setInterval(() => broadcastCensus(), 2000);
     if (typeof censusTimer.unref === 'function') censusTimer.unref();
     pendingWatch = setInterval(() => {
+      guardPeerWork('p2p', () => {
       const now = Date.now();
       const doomed = [];
       for (const [sock, rec] of peers) {
@@ -2570,6 +2586,7 @@ export function createP2p({
         if (pendingN + wantN === 0 && !burialQuiet(live)) beginHeaders(ahead);
       }
       releaseIdleCatchup();
+      });
     }, PENDING_WATCH_MS);
     if (typeof pendingWatch.unref === 'function') pendingWatch.unref();
     return new Promise((resolve, reject) => {

@@ -125,9 +125,10 @@ describe('datadir lock', () => {
     });
     assert.equal(child.status, 2, `${child.stdout}\n${child.stderr}`);
     assert.match(`${child.stderr}`, /datadir in use/);
-    assert.match(`${child.stderr}`, new RegExp(`pid ${process.pid}`));
+    assert.match(`${child.stderr}`, new RegExp(`stop pid ${process.pid} on host`));
     assert.match(`${child.stderr}`, new RegExp(os.hostname().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.match(`${child.stderr}`, /delete /);
+    assert.match(`${child.stderr}`, /only if no Shear process is running/);
     assert.match(`${child.stderr}`, /datadir\.lock/);
 
     const reused = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-reused-'));

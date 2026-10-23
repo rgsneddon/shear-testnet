@@ -1,6 +1,7 @@
 import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { decodeWireBlock } from './p2p.js';
+import { classifyByPhase, deliverProcessFault, staysUpOnFault } from './process_guard.js';
 
 /** Public HTTPS hosts. The desktop wallet does not follow them unless SHEAR_HTTP_FOLLOW is 1. */
 export const HTTP_FOLLOW_SEEDS = [
@@ -137,7 +138,9 @@ export async function pullNextHttpBlock({
     }
     try {
       store.offerHeaders(headers, { peer: 'http', tier: 'pinned' });
-    } catch {
+    } catch (err) {
+      const fault = classifyByPhase(err, 'decode');
+      if (!staysUpOnFault(fault)) throw fault;
       logHttpFail(nextH, 'samples_pruned');
       noteHttpSync(store, tip, Number(store.tip()?.height || local));
       return false;
@@ -185,14 +188,22 @@ export function startHttpFollow(opts = {}) {
       let advanced = false;
       try {
         advanced = await pullNextHttpBlock({ ...opts, signal: ac.signal });
-      } catch {
+      } catch (err) {
+        const fault = classifyByPhase(err, 'verify');
+        deliverProcessFault('http', fault);
+        if (!staysUpOnFault(fault)) {
+          stopped = true;
+          break;
+        }
         advanced = false;
       }
       if (stopped) break;
       await wait(advanced ? 20 : 3000);
     }
   })();
-  run.catch(() => {});
+  run.catch((err) => {
+    deliverProcessFault('http', classifyByPhase(err, 'verify'));
+  });
   return {
     stop() {
       stopped = true;

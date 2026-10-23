@@ -317,6 +317,7 @@ export function createStore(dir, {
   magic: magicIn = null,
   regtestPermit = null,
   lock = true,
+  bookFault = null,
 } = {}, resume = null) {
   // shear-regtest is not a public book. A genesis pin (the v12 hash, or any
   // caller pin) refuses it outright. An unpinned open still needs the permit
@@ -3547,14 +3548,23 @@ export function createStore(dir, {
   }
 
   function completeAppend(check, block, burial = null) {
+    let staged;
     try {
-      return applyAppend(check, block, burial);
+      staged = stageAppend(check, block, burial);
+    } catch (err) {
+      // Still before owedRows is replaced. Score the block; do not exit.
+      return { ok: false, reason: String(err?.message || 'apply').slice(0, 80), tip: tip() };
+    }
+    if (!staged || staged.ready !== true) return staged;
+    try {
+      return commitStagedAppend(staged);
     } catch (err) {
       throw asCommitFault(err, 'mid-commit');
     }
   }
 
-  function applyAppend(check, block, burial = null) {
+  // Everything through the hash-owed check. Nothing here writes the book.
+  function stageAppend(check, block, burial = null) {
     if (!check.ok) return check;
     if (!check.supplyState) return { ok: false, reason: 'supply_state' };
     const prev = tip();
@@ -3576,7 +3586,13 @@ export function createStore(dir, {
       // Verify buried a pruned block under the proven header run. Commit uses that same tip.
       tipHeight: burial ? burial.top : full.height,
     });
-    if (!owedNext.ok) throw new Error(owedNext.reason || 'hash_owed');
+    if (!owedNext.ok) return { ok: false, reason: owedNext.reason || 'hash_owed', tip: tip() };
+    if (bookFault === 'hash-owed') return { ok: false, reason: 'hash_owed', tip: tip() };
+    return { ok: true, ready: true, stored, owedNext, unitNow, burial, check };
+  }
+
+  function commitStagedAppend({ stored, owedNext, unitNow, burial, check }) {
+    if (bookFault === 'append') throw new Error('append_fault');
     owedRows = owedNext.rows;
     acceptedSeries = owedNext.acceptedSeries;
     owedSeriesAll = acceptedSeries;
@@ -3688,7 +3704,29 @@ export function createStore(dir, {
     return mempoolVault;
   }
 
+  function insertMempool(run) {
+    const snapTxs = mempool.slice();
+    const snapTags = new Map(mempoolTags);
+    const snapVault = mempoolVault;
+    try {
+      return run();
+    } catch (err) {
+      mempool.length = 0;
+      mempool.push(...snapTxs);
+      mempoolTags.clear();
+      for (const [key, val] of snapTags) mempoolTags.set(key, val);
+      mempoolVault = snapVault;
+      return { ok: false, reason: String(err?.message || 'mempool').slice(0, 80) };
+    }
+  }
+
   function queueTx(tx, opts = {}) {
+    if (bookFault === 'mempool') {
+      return insertMempool(() => {
+        mempool.push({ id: 'partial' });
+        throw new Error('mempool_partial');
+      });
+    }
     const capped = txIoCap(tx);
     if (!capped.ok) return capped;
     const budget = txBudget(tx);
@@ -3913,33 +3951,35 @@ export function createStore(dir, {
       admitOpts.reserveCarried = mempoolVault;
       admitOpts.verifiedFund = fundVerdictFor(tx);
     }
-    const got = admitMempool(book, tx, admitOpts);
-    if (got && got.ok && got.vaultState) mempoolVault = got.vaultState;
-    if (got.ok && got.tx && !got.duplicate && txIsReserveAction(got.tx) && noteFund?.ok && noteFund.anchor != null) {
-      const rec = noteFromAnchor(liveFlux, anchorAt, noteFund.anchor);
-      const root = rootHex(rec?.jroot);
-      const own = txSpendTags(got.tx).tags.map((tag) => tag.toString('hex'));
-      if (root && own.length) rememberFundVerdict(got.tx, tip(), noteFund.anchor, root, own);
-    }
-    if (got.ok && got.tx && !got.duplicate) {
-      emit('tx', got.tx);
-      try {
-        console.error(JSON.stringify({
-          event: 'queue_ok',
-          id: String(got.tx.id || ''),
-          kind: String(got.tx.kind || ''),
-        }));
-      } catch { /* ignore */ }
-    } else if (got && got.ok === false) {
-      try {
-        console.error(JSON.stringify({
-          event: 'admit_fail',
-          id: String(tx?.id || ''),
-          reason: String(got.reason || 'admit'),
-        }));
-      } catch { /* ignore */ }
-    }
-    return got;
+    return insertMempool(() => {
+      const got = admitMempool(book, tx, admitOpts);
+      if (got && got.ok && got.vaultState) mempoolVault = got.vaultState;
+      if (got.ok && got.tx && !got.duplicate && txIsReserveAction(got.tx) && noteFund?.ok && noteFund.anchor != null) {
+        const rec = noteFromAnchor(liveFlux, anchorAt, noteFund.anchor);
+        const root = rootHex(rec?.jroot);
+        const own = txSpendTags(got.tx).tags.map((tag) => tag.toString('hex'));
+        if (root && own.length) rememberFundVerdict(got.tx, tip(), noteFund.anchor, root, own);
+      }
+      if (got.ok && got.tx && !got.duplicate) {
+        emit('tx', got.tx);
+        try {
+          console.error(JSON.stringify({
+            event: 'queue_ok',
+            id: String(got.tx.id || ''),
+            kind: String(got.tx.kind || ''),
+          }));
+        } catch { /* ignore */ }
+      } else if (got && got.ok === false) {
+        try {
+          console.error(JSON.stringify({
+            event: 'admit_fail',
+            id: String(tx?.id || ''),
+            reason: String(got.reason || 'admit'),
+          }));
+        } catch { /* ignore */ }
+      }
+      return got;
+    });
   }
 
   function trialVaultAtForkRoot() {
@@ -5258,6 +5298,7 @@ export function createStore(dir, {
         if (verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
       };
       try {
+        if (bookFault === 'reorg' || bookFault === 'reorg-restore') throw new Error('reorg_fault');
         for (const id of spentB) if (!nextSpent.has(id)) spentB.delete(id);
         for (const id of nextSpent) spentB.add(id);
         fault('spent');
@@ -5320,7 +5361,14 @@ export function createStore(dir, {
         clearReorgMarkers();
         return { ok: true, reorg: true, tip: tip(), event };
       } catch (err) {
-        try { restoreAdoptImage(image); } catch { clearReorgMarkers(); }
+        try {
+          if (verifyOpts.failRestore === true || bookFault === 'reorg-restore') {
+            throw new Error('restore failed');
+          }
+          restoreAdoptImage(image);
+        } catch (restoreErr) {
+          throw asCommitFault(restoreErr, 'post-commit');
+        }
         return { ok: false, reason: err?.message || 'adopt_aborted', tip: tip() };
       }
     };
