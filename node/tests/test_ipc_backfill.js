@@ -5,7 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { LIVE_MIN_BITS, MAGIC_TESTNET, packBits } from '../../crypto/asert.js';
 import { VERSION, decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
 import { createStore } from '../src/store.js';
@@ -241,15 +241,15 @@ describe('IPC backfill window and parent repair', () => {
         merkleRoot: Buffer.alloc(32, 1),
         continuityRoot: Buffer.alloc(32, 2),
         timestamp: 1_700_000_000_000n,
-        bits: 4,
+        bits: packBits(LIVE_MIN_BITS),
         nonce,
         baseFee: 1n,
       });
       hash = shearHash(header);
-      if (meetsTarget(hash, 4)) break;
+      if (meetsTarget(hash, packBits(LIVE_MIN_BITS))) break;
       nonce += 1n;
     }
-    assert.ok(meetsTarget(hash, 4));
+    assert.ok(meetsTarget(hash, packBits(LIVE_MIN_BITS)));
     const wire = encodeWireBlock({ header, hash, height: 4, txs: [] });
     const parent = headerPrevHash(wire.header);
     assert.equal(parent, parentHash.toString('hex'));

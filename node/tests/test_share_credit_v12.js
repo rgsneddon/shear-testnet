@@ -290,30 +290,34 @@ describe('v12 share credit is the nonce high byte', () => {
     const childNow = genesisMs + 180_000;
     const child = sealEmpty(mid.block, mid.hash, 3, childNow, 3, [g.block, mid.block]);
     child.block.samplesPruned = true;
-    const buriedPrev = viewOf(mid.block, mid.hash, child.block.height + SAMPLE_PRUNE_CONFIRMATIONS);
+    const parentView = viewOf(mid.block, mid.hash, mid.block.height);
+    const burialTip = child.block.height + SAMPLE_PRUNE_CONFIRMATIONS;
     const swapped = [shareAt(dest, 1n, 0)];
     child.block.shareBatch = swapped;
-    const unbound = verifyBlock(child.block, buriedPrev, {
+    const unbound = verifyBlock(child.block, parentView, {
       trustedPowHash: child.pow,
       skipSharePow: true,
       genesisMs,
+      burialTip,
     });
     assert.equal(unbound.ok, false);
     assert.equal(unbound.reason, 'share_slot');
     restamp(child.block, swapped);
-    const buried = verifyBlock(child.block, buriedPrev, {
+    const buried = verifyBlock(child.block, parentView, {
       trustedPowHash: child.pow,
       skipSharePow: true,
       genesisMs,
+      burialTip,
     });
     assert.equal(buried.ok, false);
     assert.equal(buried.reason, 'share_target');
     restamp(child.block, [shareAt(dest, 4n, SHARE_FLOOR_BITS)]);
     clearLiveSharePow();
-    const unproven = verifyBlock(child.block, buriedPrev, {
+    const unproven = verifyBlock(child.block, parentView, {
       trustedPowHash: child.pow,
       skipSharePow: true,
       genesisMs,
+      burialTip,
     });
     assert.equal(unproven.reason, 'share_pow');
   });

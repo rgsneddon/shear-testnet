@@ -423,12 +423,12 @@ describe('HASH_OWED_RECOVER_V1', () => {
     // lock from the same portal does not open the next epoch.
     const extras = [
       [
-        lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'lock-pi' }),
+        lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'lock-pi', ownerPub: '11'.repeat(32) }),
         voteTx({ from: who, dest: who, choice: VOTE_INCREASE, id: 'vote-up' }),
       ],
       [],
       [
-        lockTx({ from: other, to: other, nanos: PI_SHE_NANOS, id: 'lock-roll' }),
+        lockTx({ from: other, to: other, nanos: PI_SHE_NANOS, id: 'lock-roll', ownerPub: '22'.repeat(32) }),
         voteTx({ from: other, dest: other, choice: VOTE_DECREASE, id: 'vote-down' }),
       ],
       [],
