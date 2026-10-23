@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MAGIC_TESTNET } from './asert.js';
+import { MAGIC_TESTNET, PI_SHE_NANOS } from './asert.js';
 import { admitPub, admitScalarFromSeed, attachAdmitPub } from './admit.js';
-import { pointBytes, sealCoinbaseNote } from './note.js';
+import { commit, pointBytes, proveRange, randomScalar, sealCoinbaseNote } from './note.js';
+import { lockQualifies, reserveDigestSuffix } from './reserve_vault.js';
+import { spendPackDigest } from './spend.js';
 import { proofIsV3Bucket } from './fs1_send_gate.js';
 import { fs1NativeLoaded, fs1Verify } from './native_admit.js';
 import { verifyFlowAdmitFs1 } from './admit_v3.js';
@@ -162,5 +164,144 @@ describe('FS-1 prove and verify through the addon', { skip: !fs1NativeLoaded() &
     bent[200] ^= 1;
     assert.equal(fs1Verify({ fs1: proven.fs1, records: bent, root, digest, anchor: 8 }), false);
     assert.equal(fs1ProveSpend({ live, anchor: 8, indices: [3], xs: [mine[1].x], tx }), null, 'a key that does not own the leaf');
+  });
+
+  it('a lock with piProof stripped or replaced is refused, and a bound lock qualifies', () => {
+    resetFs1Tree();
+    const seed = Buffer.alloc(32, 9);
+    const pubs = [];
+    const commits = [];
+    let spent = null;
+    for (let i = 0; i < 12; i += 1) {
+      const note = attachAdmitPub(sealCoinbaseNote(5000 + i, { dest20: Buffer.alloc(20, i + 1), kind: 'pot' }), { spendSeed: seed });
+      pubs.push(Buffer.from(note.admitPub));
+      commits.push(Buffer.from(note.commit));
+      if (i === 4) spent = { index: i, x: admitScalarFromSeed(seed, note) };
+    }
+    const blind = randomScalar();
+    const funded = pointBytes(commit(BigInt(PI_SHE_NANOS), blind));
+    const range = proveRange(BigInt(PI_SHE_NANOS), blind);
+    const piProof = proveRange(0n, blind);
+    assert.ok(range && piProof, 'proofs');
+    assert.equal(lockQualifies(funded, piProof), true);
+    const small = pointBytes(commit(1000n, blind));
+    assert.equal(lockQualifies(small, null), false);
+    assert.equal(lockQualifies(small, piProof), false);
+    const portalId = 'ab'.repeat(32);
+    const tx = {
+      kind: 'lock',
+      anchor: 8,
+      fee: 1,
+      nanos: 0,
+      programId: 'shear-reserve-v1',
+      portalId,
+      ownerPub: Buffer.alloc(32, 0x22).toString('hex'),
+      piProof,
+      vin: [{ commit: Buffer.alloc(32, 7) }],
+      vout: [{
+        kind: 'lock',
+        commit: funded,
+        rangeProof: range,
+        dest20: Buffer.alloc(20, 3),
+      }],
+    };
+    const live = { n: 12, jroot: Buffer.alloc(32, 0xab), pubs, commits };
+    const proven = fs1ProveSpend({
+      live,
+      anchor: 8,
+      indices: [spent.index],
+      xs: [spent.x],
+      tx,
+    });
+    assert.ok(proven, 'prove');
+    const posted = {
+      ...tx,
+      vin: [{ commit: Buffer.from(proven.proofs[0].cTilde) }],
+      fs1: proven.fs1,
+      admit_proofs: proven.proofs,
+    };
+    const boundDigest = txBodyDigestFs1(posted, MAGIC_TESTNET);
+    assert.ok(boundDigest.equals(proven.digest), 'bound digest');
+    const root = fs1RootAt(live);
+    const records = Buffer.concat(proven.proofs.map((p) => p.blob));
+    assert.equal(fs1Verify({ fs1: proven.fs1, records, root, digest: boundDigest, anchor: 8 }), true);
+    const admit = verifyFlowAdmitFs1(posted, { height: 80, noteAtAnchor: () => live });
+    assert.equal(admit.ok, true, admit.reason);
+
+    const stripped = { ...posted };
+    delete stripped.piProof;
+    const strippedDigest = txBodyDigestFs1(stripped, MAGIC_TESTNET);
+    assert.equal(strippedDigest.equals(boundDigest), false);
+    assert.equal(fs1Verify({ fs1: proven.fs1, records, root, digest: strippedDigest, anchor: 8 }), false);
+    const strippedAdmit = verifyFlowAdmitFs1(stripped, { height: 80, noteAtAnchor: () => live });
+    assert.equal(strippedAdmit.ok, false);
+    assert.equal(strippedAdmit.reason, 'admit_membership');
+    assert.equal(spendPackDigest(stripped).equals(spendPackDigest(posted)), false);
+
+    const other = randomScalar();
+    const replaced = { ...posted, piProof: proveRange(0n, other) };
+    const replacedDigest = txBodyDigestFs1(replaced, MAGIC_TESTNET);
+    assert.equal(replacedDigest.equals(boundDigest), false);
+    assert.equal(fs1Verify({ fs1: proven.fs1, records, root, digest: replacedDigest, anchor: 8 }), false);
+    const replacedAdmit = verifyFlowAdmitFs1(replaced, { height: 80, noteAtAnchor: () => live });
+    assert.equal(replacedAdmit.ok, false);
+    assert.equal(replacedAdmit.reason, 'admit_membership');
+    assert.equal(lockQualifies(funded, replaced.piProof), false);
+  });
+});
+
+describe('lock reserve suffix binds H(piProof)', () => {
+  it('matches the shared vector (wallet/test/reserve_suffix_parity_test.dart)', () => {
+    const vec = JSON.parse(fs.readFileSync(path.join(here, 'vectors', 'reserve_suffix_pi.json'), 'utf8'));
+    const tx = {
+      kind: 'lock',
+      portalId: vec.portalId,
+      programId: vec.programId,
+      nanos: 0,
+      ownerPub: vec.ownerPub,
+      piProof: Buffer.from(vec.piProof, 'hex'),
+      vout: [{ kind: 'lock', commit: Buffer.from(vec.commit, 'hex') }],
+    };
+    assert.equal(reserveDigestSuffix(tx).toString('hex'), vec.suffix);
+    const empty = { ...tx };
+    delete empty.piProof;
+    assert.equal(reserveDigestSuffix(empty).toString('hex'), vec.emptySuffix);
+  });
+
+  it('a vote or withdraw suffix is unchanged by a pi proof', () => {
+    const portalId = 'cd'.repeat(32);
+    const commitWord = Buffer.alloc(32, 4);
+    const vote = {
+      kind: 'vote',
+      portalId,
+      programId: 'shear-reserve-v1',
+      choice: 'hold',
+      nanos: 0,
+      vout: [{ kind: 'vote', commit: commitWord }],
+    };
+    assert.ok(reserveDigestSuffix(vote).equals(reserveDigestSuffix({ ...vote, piProof: Buffer.from([1, 2, 3]) })));
+    const withdraw = {
+      kind: 'withdraw',
+      id: 'wd-1',
+      portalId,
+      programId: 'shear-reserve-v1',
+      nanos: 1,
+      withdrawNonce: Buffer.alloc(32, 9),
+      vout: [{ kind: 'withdraw', commit: commitWord }],
+    };
+    assert.ok(reserveDigestSuffix(withdraw).equals(reserveDigestSuffix({ ...withdraw, piProof: Buffer.from([1, 2, 3]) })));
+    const lock = {
+      kind: 'lock',
+      portalId,
+      programId: 'shear-reserve-v1',
+      nanos: 0,
+      ownerPub: '11'.repeat(32),
+      vout: [{ kind: 'lock', commit: commitWord }],
+    };
+    const bare = reserveDigestSuffix(lock);
+    const withProof = reserveDigestSuffix({ ...lock, piProof: Buffer.from([1, 2, 3]) });
+    assert.equal(withProof.length, bare.length);
+    assert.equal(withProof.subarray(0, withProof.length - 32).equals(bare.subarray(0, bare.length - 32)), true);
+    assert.equal(withProof.subarray(withProof.length - 32).equals(bare.subarray(bare.length - 32)), false);
   });
 });

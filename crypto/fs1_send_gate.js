@@ -8,7 +8,9 @@
  * circuit pad are not consensus rules. The prover stays in the tree until
  * Stage 7. The reason text does not call the bucket proof ADMIT.
  *
- * Named states: sends disabled, vaults disabled.
+ * Named states: sends disabled, vaults disabled for a byte-3 bucket proof.
+ * An FS-1 lock, top-up, or withdraw is a different wire. It is verified
+ * after VAULT_FS1_ACTIVATION_HEIGHT. A vote is an owner signature.
  */
 import { flowNeedsDummy } from './dummy.js';
 import { asU8 } from './note.js';

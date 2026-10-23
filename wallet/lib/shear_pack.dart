@@ -3,6 +3,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import 'shear_ed25519.dart';
+import 'shear_eip712.dart' show keccak256;
 import 'shear_identity.dart';
 import 'shear_note.dart';
 
@@ -246,9 +248,111 @@ Uint8List spendMessage({
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
 }
 
-/// Same portal id `crypto/reserve_vault.js` puts on a lock, vote, or withdraw.
+/// Address hash. A seeded compact lock does not use this.
 String reservePortalId(String dest) {
   return sha256.convert([...utf8.encode('shear-portal-v1'), ...utf8.encode(dest)]).toString();
+}
+
+Uint8List _portalIndexBytes(int lockIndex) {
+  final b = Uint8List(4);
+  final n = lockIndex < 0 ? 0 : lockIndex;
+  b[0] = n & 0xff;
+  b[1] = (n >> 8) & 0xff;
+  b[2] = (n >> 16) & 0xff;
+  b[3] = (n >> 24) & 0xff;
+  return b;
+}
+
+/// One-time spend seed for this lock. The lockAuth key is this seed, never the identity seed.
+Uint8List? reservePortalSpendSeed(List<int> spendSeed, [int lockIndex = 0]) {
+  if (spendSeed.length != 32) return null;
+  final seed = Uint8List.fromList(spendSeed);
+  final idx = _portalIndexBytes(lockIndex);
+  return Uint8List.fromList(
+    sha256.convert(<int>[...utf8.encode('shear-portal-spend-v1'), ...seed, ...idx]).bytes,
+  );
+}
+
+/// One-time subaddress for this lock. The address is not an input.
+Uint8List? reservePortalDest20FromSeed(List<int> spendSeed, [int lockIndex = 0]) {
+  final one = reservePortalSpendSeed(spendSeed, lockIndex);
+  if (one == null) return null;
+  return destCommitFromSpendPub(ed25519PublicFromSeed(one));
+}
+
+/// portalId = H(tag, dest20). r is not an input. A peer recomputes this.
+String? reservePortalIdFromDest20(List<int> dest20) {
+  if (dest20.length < 20) return null;
+  final d20 = dest20.length == 20 ? dest20 : dest20.sublist(0, 20);
+  return sha256.convert(<int>[...utf8.encode('shear-portal-id-v1'), ...d20]).toString();
+}
+
+Uint8List _domainSeed(String domain, List<List<int>> parts) {
+  final acc = <int>[...utf8.encode(domain)];
+  for (final part in parts) {
+    acc.addAll(part);
+  }
+  return Uint8List.fromList(sha256.convert(acc).bytes);
+}
+
+Uint8List? _portalIdBytes(String portalId) {
+  final hex = portalId.startsWith('0x') || portalId.startsWith('0X') ? portalId.substring(2) : portalId;
+  if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(hex)) return null;
+  final out = Uint8List(32);
+  for (var i = 0; i < 32; i++) {
+    final byte = int.tryParse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    if (byte == null) return null;
+    out[i] = byte;
+  }
+  return out;
+}
+
+/// One-time payout key. The identity spend key is not the payout.
+Uint8List? withdrawPayoutSeedOf(List<int> spendSeed, String portalId, List<int> nonce) {
+  if (spendSeed.length != 32 || nonce.length != 32) return null;
+  final id = _portalIdBytes(portalId);
+  if (id == null) return null;
+  return _domainSeed('shear-withdraw-payout-v1', [spendSeed, id, nonce]);
+}
+
+/// One-time change key for a withdraw. Wrapped to the wallet base, not the identity key.
+Uint8List? withdrawChangeSeedOf(List<int> spendSeed, String portalId, List<int> nonce) {
+  if (spendSeed.length != 32 || nonce.length != 32) return null;
+  final id = _portalIdBytes(portalId);
+  if (id == null) return null;
+  return _domainSeed('shear-withdraw-change-v1', [spendSeed, id, nonce]);
+}
+
+/// One-time seed for a vote-fee change. The dest20 is this key's commit.
+Uint8List? voteChangeSeedOf(List<int> spendSeed, List<int> feeCommit) {
+  if (spendSeed.length != 32 || feeCommit.length < 32) return null;
+  final commit = feeCommit.length == 32 ? feeCommit : feeCommit.sublist(0, 32);
+  return _domainSeed('shear-vote-change-v1', [spendSeed, commit]);
+}
+
+/// One-time change key for a lock. The identity address is not the change dest.
+Uint8List? lockChangeSeedOf(List<int> spendSeed, int lockIndex) {
+  if (spendSeed.length != 32 || lockIndex < 0 || lockIndex > 0xffffffff) return null;
+  final idx = Uint8List(4);
+  ByteData.sublistView(idx).setUint32(0, lockIndex, Endian.little);
+  return _domainSeed('shear-lock-change-v1', [spendSeed, idx]);
+}
+
+/// portalId = H(tag, one-time dest20). [dest] is not hashed. Null when the seed is missing.
+String? reservePortalIdFromSeed(String dest, List<int> spendSeed, [int lockIndex = 0]) {
+  dest;
+  if (spendSeed.length != 32) return null;
+  final d20 = reservePortalDest20FromSeed(spendSeed, lockIndex);
+  if (d20 == null) return null;
+  return reservePortalIdFromDest20(d20);
+}
+
+/// Payout portal. dest20 is the address hash. A lock portal is [reservePortalIdFromSeed].
+String? reserveAddressPortalId(String dest, List<int> spendSeed) {
+  if (spendSeed.length != 32) return null;
+  final d20 = hash20FromAddress(dest);
+  if (d20 == null) return null;
+  return reservePortalIdFromDest20(d20);
 }
 
 Uint8List _dest20Bytes(dynamic v) {
@@ -317,9 +421,168 @@ int jsSafeInt(Object? raw) {
   return 0;
 }
 
+/// Unlock bound into the reserve suffix. Absent, or not a positive integer, is 0.
+int stampedUnlockAtMs(List<Map<String, dynamic>> vout) {
+  for (final o in vout) {
+    if (o['kind']?.toString() != 'lock') continue;
+    final unlock = o['unlockAtMs'];
+    if (unlock is int && unlock > 0) return unlock;
+    return 0;
+  }
+  return 0;
+}
+
+/// Lock epoch bound into the reserve suffix. Absent is -1.
+int stampedLockEpoch(List<Map<String, dynamic>> vout) {
+  for (final o in vout) {
+    if (o['kind']?.toString() != 'lock') continue;
+    final epoch = o['lockEpoch'];
+    if (epoch is int && epoch >= 0) return epoch;
+    return -1;
+  }
+  return -1;
+}
+
+Uint8List _commit32(Object? raw) {
+  if (raw is Uint8List && raw.length == 32) return raw;
+  if (raw is List<int> && raw.length == 32) return Uint8List.fromList(raw);
+  if (raw is String) {
+    final hex = raw.startsWith('0x') || raw.startsWith('0X') ? raw.substring(2) : raw;
+    if (hex.length == 64) {
+      final out = Uint8List(32);
+      for (var i = 0; i < 32; i++) {
+        final byte = int.tryParse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+        if (byte == null) return Uint8List(0);
+        out[i] = byte;
+      }
+      return out;
+    }
+  }
+  return Uint8List(0);
+}
+
+/// JS `reserveDigestSuffix`. Unlock time and lock epoch are always bound.
+/// A withdraw also binds its id and its 32-byte nonce. A vote does not.
+/// A lock appends the raw 32-byte owner pub, then sha256(piProof). An empty
+/// owner is 32 zero bytes. An absent proof hashes as sha256 of empty.
+/// That owner word is the word JS `rewardOwnerPub` appends.
+Uint8List reserveDigestSuffixBytes({
+  required String kind,
+  required String portalId,
+  required String payoutPortalId,
+  required String programId,
+  required String choice,
+  required int suffixNanos,
+  Uint8List? commit,
+  required List<Map<String, dynamic>> vout,
+  String id = '',
+  Uint8List? withdrawNonce,
+  String oneTimePub = '',
+  Uint8List? piProof,
+}) {
+  final portal = portalId.toLowerCase();
+  final payout = payoutPortalId.toLowerCase();
+  final commitBytes = (commit != null && commit.length == 32) ? commit : Uint8List(0);
+  final choiceBytes = kind == 'vote' ? choice : '';
+  final chunks = <int>[
+    ...utf8.encode('reserveact1'),
+    ..._lenPrefUtf8(kind),
+    ..._lenPrefUtf8(portal),
+    ..._lenPrefUtf8(payout),
+    ..._lenPrefUtf8(programId),
+    ..._lenPrefUtf8(choiceBytes),
+    ..._i64le(suffixNanos),
+    ...commitBytes,
+    ..._i64le(stampedUnlockAtMs(vout)),
+    ..._i64le(stampedLockEpoch(vout)),
+  ];
+  if (kind == 'withdraw') {
+    final nonce = (withdrawNonce != null && withdrawNonce.length == 32)
+        ? withdrawNonce
+        : Uint8List(32);
+    chunks.addAll(_lenPrefUtf8(id));
+    chunks.addAll(nonce);
+  }
+  final ownerHex = oneTimePub.startsWith('0x') || oneTimePub.startsWith('0X')
+      ? oneTimePub.substring(2)
+      : oneTimePub;
+  if (kind == 'lock') {
+    final pub = Uint8List(32);
+    if (RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(ownerHex)) {
+      for (var i = 0; i < 32; i++) {
+        pub[i] = int.parse(ownerHex.substring(i * 2, i * 2 + 2), radix: 16);
+      }
+    }
+    chunks.addAll(pub);
+    chunks.addAll(sha256.convert(piProof ?? Uint8List(0)).bytes);
+  }
+  return Uint8List.fromList(chunks);
+}
+
+/// ownerPub || sig over shear-lock-owner-v1 || portalId || commit || magic || chain.
+/// The key is the per-lock spend seed. [commit] is the leaf commitment.
+Uint8List? reserveLockAuth(Uint8List ownerSeed, String portalId, Uint8List commit) {
+  if (ownerSeed.length != 32 || commit.length != 32) return null;
+  final hex = portalId.startsWith('0x') ? portalId.substring(2) : portalId;
+  if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(hex)) return null;
+  final id = Uint8List(32);
+  for (var i = 0; i < 32; i++) {
+    id[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+  }
+  final chain = Uint8List(8);
+  const chainId = 2701;
+  for (var i = 0; i < 8; i++) {
+    chain[i] = (chainId >> (8 * i)) & 0xff;
+  }
+  final message = Uint8List.fromList([
+    ...utf8.encode('shear-lock-owner-v1'),
+    ...id,
+    ...commit,
+    ...keccak256(Uint8List.fromList(utf8.encode(kBookMagic))),
+    ...chain,
+  ]);
+  final pub = ed25519PublicFromSeed(ownerSeed);
+  final sig = ed25519Sign(ownerSeed, message);
+  return Uint8List.fromList([...pub, ...sig]);
+}
+
+/// Commit of the output whose kind matches, else the first output. Empty when it is not 32 bytes.
+Uint8List reserveCommitOf(List<Map<String, dynamic>> vout, String kind) {
+  Map<String, dynamic>? hit;
+  for (final o in vout) {
+    if (o['kind']?.toString() == kind) {
+      hit = o;
+      break;
+    }
+  }
+  hit ??= vout.isEmpty ? null : vout.first;
+  if (hit == null) return Uint8List(0);
+  final vp = hit['commit'];
+  final raw = _commit32(vp);
+  return raw.length == 32 && hit['commit'] != null ? raw : Uint8List(0);
+}
+
+/// Opened nanos JS `canonicalReserveFields` reads from the kind output.
+int reserveOpenedNanos(List<Map<String, dynamic>> vout, String kind) {
+  Map<String, dynamic>? hit;
+  for (final o in vout) {
+    if (o['kind']?.toString() == kind) {
+      hit = o;
+      break;
+    }
+  }
+  hit ??= vout.isEmpty ? null : vout.first;
+  if (hit == null) return 0;
+  final vp = hit['valueProof'];
+  if (vp is Map && vp['v'] != null) return jsSafeInt(vp['v']);
+  if (hit['nanos'] != null) return jsSafeInt(hit['nanos']);
+  return 0;
+}
+
 /// Spend message the pool's `verifySpendSig` checks for a lock, vote, or withdraw.
 /// Flow sends stay on [spendMessage]. This adds the portal, fee, and reserve suffix.
 /// A withdraw also signs [id] and the 32-byte [withdrawNonce] directly.
+/// [proofBlobs] are the admit proof blobs, in order. An empty list signs a count of 0.
 Uint8List reserveSpendMessage({
   required String from,
   required List<Map<String, dynamic>> vout,
@@ -334,34 +597,42 @@ Uint8List reserveSpendMessage({
   Uint8List? commit,
   String id = '',
   Uint8List? withdrawNonce,
+  List<Uint8List> proofBlobs = const [],
+  String oneTimePub = '',
+  Uint8List? piProof,
 }) {
   final packed = spendPackDigest(from: from, vout: vout, kind: kind, vin: vin);
   final portal = portalId.toLowerCase();
   final payout = payoutPortalId.toLowerCase();
-  final commitBytes = (commit != null && commit.length == 32) ? commit : Uint8List(0);
-  final choiceBytes = kind == 'vote' ? choice : '';
+  final suffix = reserveDigestSuffixBytes(
+    kind: kind,
+    portalId: portal,
+    payoutPortalId: payout,
+    programId: programId,
+    choice: choice,
+    suffixNanos: suffixNanos,
+    commit: commit,
+    vout: vout,
+    id: id,
+    withdrawNonce: withdrawNonce,
+    oneTimePub: oneTimePub,
+    piProof: piProof,
+  );
   final chunks = <int>[
     ...packed,
     ...utf8.encode(portal),
     ...utf8.encode(payout),
     ..._canonicalFee(fee),
-    ..._u32le(0),
-    ...utf8.encode('reserveact1'),
-    ..._lenPrefUtf8(kind),
-    ..._lenPrefUtf8(portal),
-    ..._lenPrefUtf8(payout),
-    ..._lenPrefUtf8(programId),
-    ..._lenPrefUtf8(choiceBytes),
-    ..._i64le(suffixNanos),
-    ...commitBytes,
+    ..._u32le(proofBlobs.length),
   ];
-  if (kind == 'withdraw') {
-    final nonce = (withdrawNonce != null && withdrawNonce.length == 32)
-        ? withdrawNonce
-        : Uint8List(32);
-    chunks.addAll(_lenPrefUtf8(id));
-    chunks.addAll(nonce);
+  for (final blob in proofBlobs) {
+    chunks.addAll(_lenPrefUtf8Bytes(blob));
   }
+  chunks.addAll(suffix);
   final digest = Uint8List.fromList(sha256.convert(chunks).bytes);
   return Uint8List.fromList(sha256.convert([...utf8.encode('shear-spend-v1'), ...digest]).bytes);
+}
+
+Uint8List _lenPrefUtf8Bytes(List<int> body) {
+  return Uint8List.fromList([..._u32le(body.length), ...body]);
 }

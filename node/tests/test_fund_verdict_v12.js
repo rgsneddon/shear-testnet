@@ -20,9 +20,10 @@ import {
   RESERVE_PROGRAM,
   SHARE_FLOOR_BITS,
   SPENDABLE_CONFIRMATIONS,
+  PI_SHE_NANOS,
 } from '../../crypto/asert.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
-import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
+import { newIdentity, encodeDest, hash20FromAddress, ed25519PrivateFromSeed, ed25519RawPub } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   outputJoinsAdmitSet,
@@ -30,6 +31,7 @@ import {
   admitPub,
   admitScalarFromSeed,
   fluxsetFromBlocks,
+  attachAdmitPub,
 } from '../../crypto/admit.js';
 import {
   asU8,
@@ -38,25 +40,48 @@ import {
   kernelExcess,
   openedCoinbaseNanos,
   sealCoinbaseNote,
+  sealHiddenNote,
   randomScalar,
   hideVin,
   reviveTx,
   txSpendTags,
+  commit,
+  proveRange,
 } from '../../crypto/note.js';
-import { lockTx, portalIdFromDest } from '../../crypto/reserve_vault.js';
+import {
+  lockTx,
+  portalIdFromDest,
+  portalsFromSeed,
+  proveLockEquality,
+  consensusUnlockPeriod,
+} from '../../crypto/reserve_vault.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { levyNeed, LEVY_WEIGHT_RATE_DEN } from '../../crypto/levy.js';
+import { levyNeed, LEVY_WEIGHT_RATE_DEN, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
 import {
   walletAnchor,
   readyHeight,
   txDigestV3,
   admitV3Context,
   fundingJroot,
-  typedProofVerifyCount,
-  resetTypedProofVerifies,
+  flowProofVerifyCount,
+  resetFlowProofVerifies,
   anchorRejectReason,
   ANCHOR_WINDOW,
 } from '../../crypto/admit_v3.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+import { viewTagOf } from '../../crypto/dummy.js';
+import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import {
+  FS1_RECORD_BYTES,
+  FS1_WIRE,
+  fs1BlobLen,
+  fs1ProveSpend,
+  resetFs1Tree,
+  resetFs1VerifyCache,
+  txBodyDigestFs1,
+} from '../../crypto/fs1_spend.js';
+import { fs1NativeLoaded } from '../../crypto/native_admit.js';
+import { destCommitFromSpendPub } from '../../crypto/stealth_ed25519.js';
 import { rememberFundVerdict } from '../../crypto/fund_verdict.js';
 import { nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { createPool, SEAL_ESCAPE_AFTER, SEAL_ESCAPE_PROBE_CAP, sealFailureClass } from '../../pool/src/pool.js';
@@ -83,7 +108,7 @@ function easyPow() {
 function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey };
+  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey, base: id.admitBase };
 }
 
 function headerTime(block) {
@@ -522,69 +547,230 @@ async function plant(pool, rows) {
   return pool.lag1Shares.slice();
 }
 
+function rangeSlack(outs) {
+  let bytes = 0;
+  for (const o of outs) if (o?.rangeProof) bytes += Buffer.from(asU8(o.rangeProof)).length;
+  return Math.ceil((bytes * 2) / 2048) + 8;
+}
+
+function fs1Placeholders(k) {
+  const fs1 = Buffer.alloc(fs1BlobLen(k), 255);
+  fs1[0] = FS1_WIRE;
+  const proofs = [];
+  for (let i = 0; i < k; i += 1) {
+    const blob = Buffer.alloc(FS1_RECORD_BYTES, 255);
+    blob[0] = FS1_WIRE;
+    proofs.push({
+      blob,
+      cTilde: Buffer.alloc(32, 255),
+      spendTag: Buffer.alloc(32, 255),
+    });
+  }
+  return { fs1, proofs, vin: proofs.map(() => ({ commit: Buffer.alloc(32, 255) })) };
+}
+
+function hiddenChange(nanos, dest20, admitBase) {
+  let note = attachAdmitPub(sealHiddenNote(nanos, { dest20, kind: 'send', admitBase }), { admitBase });
+  note = { ...note, kind: 'send', dest20: Buffer.from(dest20), viewTag: viewTagOf(note.noteCommit) };
+  delete note.valueProof;
+  return note;
+}
+
+function proveFs1(tx, use, anchor, live, outs) {
+  const proven = fs1ProveSpend({
+    live,
+    anchor,
+    indices: use.map((c) => c.index),
+    xs: use.map((c) => c.x),
+    tx,
+    magic: MAGIC_TESTNET,
+  });
+  assert.ok(proven, 'fs1 prove');
+  const excess = kernelExcess(outs, use.map((c, i) => ({ r: c.r, t: proven.t[i] })));
+  assert.ok(excess, 'excess');
+  const settled = compactTx({
+    ...tx,
+    vin: proven.proofs.map((p) => ({ commit: Buffer.from(p.cTilde) })),
+    vout: outs,
+    fs1: proven.fs1,
+    admit_proofs: proven.proofs,
+    excess,
+  });
+  assert.ok(txBodyDigestFs1(settled, MAGIC_TESTNET).equals(proven.digest), 'digest');
+  return settled;
+}
+
+/**
+ * One FS-1 π lock of the coinbase pots inside the wallet anchor.
+ * The body has no from/to. The owner is the one-time portal key.
+ */
+function fs1LockOf(store, who, saved) {
+  const height = store.tip().height + 1;
+  const anchor = walletAnchor(height);
+  assert.equal(typeof anchor, 'number', `anchor at ${height}`);
+  const live = store.anchorNote(anchor);
+  assert.ok(live && live.n >= 1, `anchor notes ${anchor}`);
+  const at = new Map();
+  for (let i = 0; i < live.n; i += 1) {
+    at.set(Buffer.from(asU8(live.commits[i])).toString('hex'), i);
+  }
+  const coins = [];
+  let total = 0;
+  for (const row of saved) {
+    const key = Buffer.from(asU8(row.commit)).toString('hex');
+    if (!at.has(key)) continue;
+    const coin = {
+      r: row.r,
+      v: row.v,
+      commit: row.commit,
+      index: at.get(key),
+      x: admitScalarFromSeed(who.spendSeed, row.pot),
+    };
+    coins.push(coin);
+    total += coin.v;
+    if (coins.length >= 4 && total > PI_SHE_NANOS + LEVY_CAP_NANOS) break;
+  }
+  assert.ok(total > PI_SHE_NANOS + LEVY_FLOOR_UNITS, `pots ${total}`);
+  const portal = portalsFromSeed(who.spendSeed, 1)[0];
+  // dest20 is this key, and the portal id is H(dest20). portalOwnerKey is a different key.
+  const ownerKey = ed25519PrivateFromSeed(portal.spendSeed);
+  const ownerPub = ed25519RawPub(ownerKey).toString('hex');
+  const blind = randomScalar();
+  const scalar = randomScalar();
+  const unlock = consensusUnlockPeriod(0);
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+  assert.ok(leaf, 'leaf');
+  const funded = pointBytes(commit(PI_SHE_NANOS, blind));
+  const range = proveRange(PI_SHE_NANOS, blind);
+  assert.ok(range, 'range');
+  const d20 = Buffer.from(portal.dest20);
+  const ph = fs1Placeholders(coins.length);
+  let fee = LEVY_FLOOR_UNITS;
+  let tx = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const changeN = total - fee - PI_SHE_NANOS;
+    assert.ok(changeN > 0, `lock change ${changeN}`);
+    const outs = [
+      {
+        kind: 'lock',
+        commit: funded,
+        rangeProof: range,
+        r: scalarBytes(blind),
+        dest20: d20,
+        portalId: portal.portalId,
+        viewTag: Buffer.from([1]),
+      },
+      hiddenChange(changeN, Buffer.from(hash20FromAddress(who.dest)), who.base),
+    ];
+    const draft = compactTx({
+      id: 'lock-live',
+      kind: 'lock',
+      anchor,
+      fee,
+      nanos: 0,
+      programId: RESERVE_PROGRAM,
+      portalId: portal.portalId,
+      ownerPub,
+      vaultLockNote: leaf.note,
+      vin: ph.vin,
+      vout: outs,
+      fs1: ph.fs1,
+      admit_proofs: ph.proofs,
+    });
+    const need = levyNeed(draft);
+    if (fee >= need && fee <= LEVY_CAP_NANOS) {
+      tx = proveFs1(draft, coins, anchor, live, outs);
+      break;
+    }
+    const next = need + rangeSlack(outs);
+    assert.ok(next > fee && next <= LEVY_CAP_NANOS, `lock levy ${need}`);
+    fee = next;
+  }
+  assert.ok(tx, 'lock fee');
+  tx.dest20 = destCommitFromSpendPub(ed25519RawPub(ownerKey));
+  tx.ownerPub = ownerPub;
+  signSpendTx(tx, ownerKey);
+  delete tx.spendPub;
+  delete tx.sig;
+  delete tx.signature;
+  assert.equal(tx.spendPub, undefined, 'lock spendPub');
+  assert.equal(tx.sig, undefined, 'lock sig');
+  assert.equal(tx.signature, undefined, 'lock signature');
+  const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, 0);
+  assert.ok(fund, 'fund');
+  const lockOut = tx.vout.find((row) => String(row?.kind || '') === 'lock');
+  lockOut.fundProof = fund;
+  assert.equal(tx.from, undefined);
+  assert.equal(tx.to, undefined);
+  return tx;
+}
+
+/** A new spend tag on the first proof. The merkle suffix does not bind that tag. */
+function retagProof(tx, nanos = null) {
+  const copy = reviveTx(tx);
+  const tag = randomBytes(32);
+  const proofs = (copy.admit_proofs || []).map((proof, i) => {
+    if (i !== 0) return proof;
+    const blob = Buffer.from(asU8(proof.blob));
+    assert.equal(blob[0], FS1_WIRE);
+    tag.copy(blob, 1);
+    return {
+      blob,
+      cTilde: Buffer.from(asU8(proof.cTilde)),
+      spendTag: Buffer.from(tag),
+    };
+  });
+  copy.admit_proofs = proofs;
+  copy.id = `clone-${tag.toString('hex').slice(0, 12)}`;
+  if (nanos != null) copy.nanos = nanos;
+  return copy;
+}
+
 describe('v12 fund verdict is the funding witness', { timeout: fileCapMs(import.meta.url) }, () => {
   it('a rejected or retagged body cannot satisfy another tx, at any amount', { timeout: 300_000 }, async () => {
+    // Stage 3b. The gate is open at height 17, so this is an FS-1 lock.
+    // Byte-3 typedProofVerifyCount stays 0: no path verifies a bucket proof.
+    // The FS-1 counter is the verify the verdict is allowed to skip.
+    assert.equal(fs1NativeLoaded(), true, 'shear_admit FS-1 addon is not loaded');
     const who = payer();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fund-verdict-'));
     const store = createStore(dir);
-    const includeAt = readyHeight(1);
-    assert.equal(Number.isInteger(includeAt), true);
-    let pool = null;
     try {
-      let opening = null;
+      const includeAt = readyHeight(1);
+      const saved = [];
       while ((store.tip()?.height || 0) + 1 < includeAt) {
         const tip = store.tip();
         const now = tip ? headerTime(tip) + STEP : T0;
-        const { tpl } = store.template({ miner: who.dest, now });
-        const minted = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+        const { tpl } = store.template({ miner: who.dest, shareBits: 4, now });
+        const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
         const pow = easyPow();
         const got = await store.append(blockFrom(tpl, pow), { trustedPowHash: pow, skipSharePow: true });
         assert.equal(got.ok, true, `${got.reason || 'seal'} at ${(tip?.height || 0) + 1}`);
-        if (!opening && minted?.r && minted.commit) {
-          opening = { r: minted.r, v: openedCoinbaseNanos(minted) };
+        if (pot?.r && pot.commit) {
+          saved.push({
+            r: Buffer.from(asU8(pot.r)),
+            v: openedCoinbaseNanos(pot),
+            commit: Buffer.from(asU8(pot.commit)),
+            pot,
+          });
         }
       }
       assert.equal(store.tip().height + 1, includeAt);
-      const pot = store.blocks[0].txs[0].vout.find((o) => o.kind === 'pot');
-      assert.ok(opening && pot?.commit, 'pot');
-      assert.ok(opening.v > 1, String(opening.v));
-      const anchor = walletAnchor(includeAt);
-      assert.equal(anchor, includeAt - SPENDABLE_CONFIRMATIONS);
-      const found = indexOfCommit(store.blocks, anchor, pot.commit);
-      assert.ok(found.index >= 0, 'note is inside the anchor');
-      const x = admitScalarFromSeed(who.spendSeed, pot);
-      assert.ok(Buffer.from(pointBytes(admitPub(x))).equals(Buffer.from(asU8(pot.admitPub))), 'pot key');
-      const real = stripPayer(lockTx({
-        from: who.dest,
-        to: who.dest,
-        nanos: opening.v,
-        id: 'lock-live',
-      }));
-      const flux = anchorFlux(store.blocks, anchor);
-      proveLock(real, {
-        x,
-        index: found.index,
-        flux,
-        note: pot,
-        anchor,
-        noteR: opening.r,
-        noteV: opening.v,
-      });
-      signSpendTx(real, who.key);
-      assert.equal(real.nanos + real.fee, opening.v);
-      assert.ok(real.nanos > 1);
+      resetFs1Tree();
+      const real = fs1LockOf(store, who, saved);
       const liveTag = tagHexOf(real);
       const liveDigest = digestTx(real).toString('hex');
       const stamp = headerTime(store.tip()) + STEP;
-
+      // Memo is outside the FS-1 digest, so this copy still verifies. Its fee
+      // is under the weight levy. Queue it before the proved lock: the same
+      // spend tag would otherwise be admit_link_tag and hide the levy.
       const padded = reviveTx(real);
+      padded.id = 'lock-levy';
       const settled = Math.floor(Number(padded.fee || 0));
-      // The weight levy stays on its floor until the JSON crosses fee * DEN.
-      // Grow an unsigned field until the levy is strictly above the settled fee.
       let extra = 1;
       let raised = false;
       for (let attempt = 0; attempt < 8; attempt += 1) {
-        padded.junk = 'z'.repeat(extra);
+        padded.memo = 'z'.repeat(extra);
         if (levyNeed(padded) > settled) {
           raised = true;
           break;
@@ -593,231 +779,82 @@ describe('v12 fund verdict is the funding witness', { timeout: fileCapMs(import.
         try { weight = Buffer.byteLength(JSON.stringify(padded)); } catch { weight = 0; }
         extra += Math.max(1, (settled * LEVY_WEIGHT_RATE_DEN) + 1 - weight);
       }
-      assert.equal(raised, true, 'junk never raised the weight levy');
+      assert.equal(raised, true, 'memo never raised the weight levy');
       const rejected = store.queueTx(padded, { nowMs: stamp });
       assert.equal(rejected.ok, false, rejected.reason || 'pad');
       assert.equal(rejected.reason, 'levy', rejected.reason || 'pad');
       assert.equal(store.mempool.some((tx) => tx.id === padded.id), false);
-      resetTypedProofVerifies();
-      store.mempool.push(padded);
-      const poisoned = store.template({ miner: who.dest, now: stamp });
-      assert.ok(typedProofVerifyCount() >= 1, 'a levy reject left a verdict row');
-      assert.equal(userTxs(poisoned.tpl).some((tx) => tx.junk), false);
-      dropId(store, padded.id);
-      assert.equal(store.mempool.some((tx) => tx.id === padded.id), false);
-
-      resetTypedProofVerifies();
+      resetFs1VerifyCache();
       const queued = store.queueTx(real, { nowMs: stamp });
       assert.equal(queued.ok, true, queued.reason || 'queue');
-      assert.ok(typedProofVerifyCount() >= 1, 'accepted lock did not verify');
-      resetTypedProofVerifies();
-      const hit = store.template({ miner: who.dest, now: stamp });
-      assert.equal(typedProofVerifyCount(), 0, 'accepted lock verified again');
+      assert.ok(flowProofVerifyCount() >= 1, 'accepted lock did not verify');
+      resetFs1VerifyCache();
+      const hit = store.template({ miner: who.dest, shareBits: 4, now: stamp });
+      assert.equal(flowProofVerifyCount(), 0, 'accepted lock verified again');
       assert.ok(userTxs(hit.tpl).some((tx) => tx.id === real.id));
-      const hitProbe = await Promise.resolve(store.probeBlock(blockFrom(hit.tpl, easyPow())));
-      assert.equal(hitProbe.ok, true, hitProbe.reason || 'hit probe');
+      store.mempool.push(padded);
+      resetFs1VerifyCache();
+      const poisoned = store.template({ miner: who.dest, shareBits: 4, now: stamp });
+      assert.equal(userTxs(poisoned.tpl).some((tx) => tx.id === padded.id), false);
+      assert.ok(userTxs(poisoned.tpl).some((tx) => tx.id === real.id));
+      dropId(store, padded.id);
 
       const seenNanos = new Set();
-      for (const k of KS) {
+      // 32 is the reserve-tx template cap. A larger spread would drop clones
+      // before the funding check, so the spread stays inside that cap.
+      for (const k of [1, 2, 8]) {
         const clones = [];
         for (let i = 0; i < k; i += 1) {
-          const clone = retag(real, (k * 1000) + i + 1);
+          const clone = retagProof(real);
+          // Current law: the reserve suffix binds nanos, not the spend tag.
+          // A tag change keeps the merkle leaf and still misses the verdict.
           assert.equal(digestTx(clone).toString('hex'), liveDigest, 'retag changed the merkle leaf');
-          assert.ok(Buffer.from(asU8(clone.vout[0].commit)).equals(Buffer.from(asU8(real.vout[0].commit))));
           assert.notEqual(tagHexOf(clone), liveTag);
           clones.push(clone);
-          seenNanos.add(clone.nanos);
         }
-        if (k > 1) {
-          const local = new Set(clones.map((tx) => tx.nanos));
-          assert.ok(local.size > 1, `k=${k} nanos collapsed`);
-        }
+        const priced = retagProof(real, (k * 1000) + 1);
+        assert.notEqual(digestTx(priced).toString('hex'), liveDigest, 'nanos left the merkle leaf');
+        seenNanos.add(priced.nanos);
+        clones.push(priced);
+        // The retag still spends the proved lock's note. Queue names that
+        // before the sum, so both the tag copy and the nanos edit are
+        // admit_link_tag and neither is funded again. The template names the
+        // sum first, so the nanos edit is commit_sum there.
+        const tagRefused = store.queueTx(clones[0], { nowMs: stamp });
+        assert.equal(tagRefused.ok, false, tagRefused.reason || 'retag');
+        assert.equal(tagRefused.reason, 'admit_link_tag', tagRefused.reason);
+        const pricedRefused = store.queueTx(priced, { nowMs: stamp });
+        assert.equal(pricedRefused.ok, false, pricedRefused.reason || 'nanos');
+        assert.equal(pricedRefused.reason, 'admit_link_tag', pricedRefused.reason);
         store.mempool.push(...clones);
-        resetTypedProofVerifies();
-        const built = store.template({ miner: who.dest, now: stamp });
+        resetFs1VerifyCache();
+        const skips = [];
+        const logErr = console.error;
+        console.error = (...args) => {
+          skips.push(args.map((part) => String(part)).join(' '));
+          logErr.apply(console, args);
+        };
+        let built;
+        try {
+          built = store.template({ miner: who.dest, shareBits: 4, now: stamp });
+        } finally {
+          console.error = logErr;
+        }
         const ids = new Set(userTxs(built.tpl).map((tx) => tx.id));
         assert.equal(ids.has(real.id), true, `k=${k} dropped the proved lock`);
         for (const clone of clones) assert.equal(ids.has(clone.id), false, clone.id);
-        assert.ok(typedProofVerifyCount() >= k, `k=${k} verifies ${typedProofVerifyCount()}`);
+        assert.match(skips.find((line) => line.includes(clones[0].id)) || '', /admit_link_tag/);
+        assert.match(skips.find((line) => line.includes(priced.id)) || '', /commit_sum/);
+        assert.equal(flowProofVerifyCount(), 0, `k=${k} funded a refused body`);
         for (const clone of clones) dropId(store, clone.id);
-        resetTypedProofVerifies();
-        const again = store.template({ miner: who.dest, now: stamp });
-        assert.equal(typedProofVerifyCount(), 0, `k=${k} poisoned the proved lock`);
+        resetFs1VerifyCache();
+        const again = store.template({ miner: who.dest, shareBits: 4, now: stamp });
+        assert.equal(flowProofVerifyCount(), 0, `k=${k} poisoned the proved lock`);
         assert.ok(userTxs(again.tpl).some((tx) => tx.id === real.id));
       }
       assert.ok(seenNanos.size > 1, 'clone amounts collapsed');
-
-      const newest = includeAt - SPENDABLE_CONFIRMATIONS;
-      for (const off of ANCHOR_OFFSETS) {
-        const presented = newest - off;
-        const why = anchorRejectReason(presented, includeAt);
-        if (off === 0) {
-          assert.equal(why, null, 'wallet anchor rejected');
-          assert.equal(presented, real.anchor);
-          continue;
-        }
-        assert.ok(why, `offset ${off} was legal`);
-        const bad = reviveTx(real);
-        bad.id = `anchor-${off}`;
-        bad.anchor = presented;
-        const q = store.queueTx(bad, { nowMs: stamp });
-        assert.equal(q.ok, false, q.reason || `offset ${off}`);
-        assert.equal(store.mempool.some((tx) => tx.id === bad.id), false, bad.id);
-      }
-      resetTypedProofVerifies();
-      const afterAnchor = store.template({ miner: who.dest, now: stamp });
-      assert.equal(typedProofVerifyCount(), 0, 'a rejected anchor poisoned the lock');
-      assert.ok(userTxs(afterAnchor.tpl).some((tx) => tx.id === real.id));
-
-      for (const depth of DEPTHS) {
-        if (!store.mempool.some((tx) => tx.id === real.id)) {
-          const again = store.queueTx(reviveTx(real), { nowMs: headerTime(store.tip()) + STEP });
-          assert.equal(again.ok, true, again.reason || `requeue ${depth}`);
-        }
-        await spendByOtherId(store, who.dest, `spent-d${depth}-${powTag}`);
-        assert.equal(store.fluxset().spendTags.has(liveTag), true, `depth ${depth} did not spend`);
-        for (let extra = 1; extra < depth; extra += 1) await sealEmpty(store, who.dest);
-        assertNoSpentRow(store);
-        const cleared = await probeTip(store, who.dest);
-        assert.equal(userTxs(cleared).length, 0, `depth ${depth} still templates a user tx`);
-        resetTypedProofVerifies();
-        await reorgAway(store, who.dest, depth);
-        assert.equal(store.fluxset().spendTags.has(liveTag), false, `depth ${depth} kept the spent tag`);
-        assertNoSpentRow(store);
-        const back = (store.mempool || []).some((tx) => txSpendTags(tx).tags.some((tag) => tag.toString('hex') === liveTag));
-        if (back) assert.ok(typedProofVerifyCount() >= 1, `bounce skipped verify at depth ${depth}`);
-        await probeTip(store, who.dest);
-        clearUser(store);
-      }
-      const restored = store.queueTx(reviveTx(real), { nowMs: headerTime(store.tip()) + STEP });
-      assert.equal(restored.ok, true, restored.reason || 'restored');
-      clearUser(store);
-
-      const poolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fund-pool-'));
-      pool = createPool({ dataDir: poolDir, stratumPort: 0, httpPort: 0, miner: FEE });
-      // Pot shares are sized from the wall clock. The template sizes the payable
-      // pot from the header stamp, and that stamp cannot sit more than the MTP
-      // future limit ahead of the chain. A chain left in an older pot epoch
-      // therefore carries the subsidy gap. An empty round may carry. A share
-      // batch may not, and consensus rejects it as pot_carry. This chain starts
-      // inside the epoch that contains the wall clock.
-      const poolStart = Date.now() - (includeAt * STEP);
-      await mineUntil(pool.store, FEE, includeAt, poolStart);
-      const stubNanos = new Set();
-      for (const k of KS) {
-        clearUser(pool.store);
-        const ids = [];
-        for (let i = 0; i < k; i += 1) {
-          const nanos = (k * 1000) + i + 1;
-          const built = seedStub(pool.store, { nanos, id: `stub-${k}-${i}` });
-          ids.push(built.tx.id);
-          stubNanos.add(nanos);
-        }
-        if (k > 1) assert.ok(new Set(ids.map((_, i) => (k * 1000) + i + 1)).size > 1);
-        let job = pool.issueJob(undefined, { force: true });
-        if (!job) {
-          await pool.whenShareProofs();
-          job = pool.issueJob(undefined, { force: true });
-        }
-        assert.ok(job?.jobId, `k=${k} job`);
-        const block = jobBlock(pool, job);
-        const gotIds = new Set(userTxs(block).map((tx) => tx.id));
-        for (const id of ids) assert.equal(gotIds.has(id), true, id);
-        const looked = await Promise.resolve(pool.store.probeBlock(block));
-        assert.equal(looked.ok, false, `k=${k} stub sealed`);
-        assert.equal(sealFailureClass(looked.reason), 'body', looked.reason || `k=${k}`);
-        const beforeBans = pool.adminOps.health().bans;
-        const beforeProbes = Number(pool.stats.sealEscapeProbes) || 0;
-        const lines = await captureErrors(async () => {
-          for (let n = 0; n < SEAL_ESCAPE_AFTER; n += 1) {
-            const failed = await pool.sealFoundShare({
-              jobId: pool.lastJob.jobId,
-              nonce: 0n,
-              miner: FEE,
-              powHash: easyPow().toString('hex'),
-            });
-            assert.equal(failed.ok, false, `k=${k} seal ${n} ${failed.reason || ''}`);
-          }
-        });
-        const alerts = parseEvents(lines).filter((ev) => ev && ev.event === 'seal_body_tx_fault');
-        assert.ok(alerts.some((ev) => ids.includes(String(ev.id || ''))), `k=${k} alert`);
-        assert.equal(pool.adminOps.health().bans, beforeBans, `k=${k} ban`);
-        const delta = (Number(pool.stats.sealEscapeProbes) || 0) - beforeProbes;
-        assert.ok(delta <= SEAL_ESCAPE_PROBE_CAP, `k=${k} probes ${delta}`);
-        const paid = await pool.sealFoundShare({
-          jobId: pool.lastJob.jobId,
-          nonce: 0n,
-          miner: FEE,
-          powHash: easyPow().toString('hex'),
-        });
-        assert.equal(paid.ok, true, paid.reason || `k=${k} follow`);
-        const sealedIds = new Set((pool.store.tip().txs || []).map((tx) => tx.id));
-        for (const id of ids) assert.equal(sealedIds.has(id), false, `sealed ${id}`);
-        clearUser(pool.store);
-      }
-      assert.ok(stubNanos.size > 1, 'stub amounts collapsed');
-
-      const shareDest = minerDest();
-      for (const n of SHARE_BATCHES) {
-        clearUser(pool.store);
-        pool.rollOpenRound();
-        const rows = [];
-        for (let i = 0; i < n; i += 1) {
-          rows.push({
-            dest: shareDest,
-            low: (n * 100000) + i + 1,
-            bits: SHARE_FLOOR_BITS + (i % 3),
-          });
-        }
-        const planted = await plant(pool, rows);
-        const built = seedStub(pool.store, { nanos: n, id: `share-stub-${n}` });
-        let job = pool.issueJob(undefined, { force: true });
-        if (!job) {
-          await pool.whenShareProofs();
-          job = pool.issueJob(undefined, { force: true });
-        }
-        assert.ok(job?.jobId, `batch ${n} job`);
-        const block = jobBlock(pool, job);
-        assert.equal(userTxs(block).some((tx) => tx.id === built.tx.id), true, `batch ${n} stub`);
-        assert.equal((block.shareBatch || []).length, planted.length, `batch ${n} shares`);
-        const looked = await Promise.resolve(pool.store.probeBlock(block));
-        assert.equal(looked.ok, false, `batch ${n} sealed the stub`);
-        assert.equal(sealFailureClass(looked.reason), 'body', looked.reason || `batch ${n}`);
-        const beforeBans = pool.adminOps.health().bans;
-        const beforeProbes = Number(pool.stats.sealEscapeProbes) || 0;
-        const beforeShares = pool.lag1Shares.length + pool.deferredShares.length;
-        const lines = await captureErrors(async () => {
-          for (let s = 0; s < SEAL_ESCAPE_AFTER; s += 1) {
-            const failed = await pool.sealFoundShare({
-              jobId: pool.lastJob.jobId,
-              nonce: 0n,
-              miner: FEE,
-              powHash: easyPow().toString('hex'),
-            });
-            assert.equal(failed.ok, false, `batch ${n} seal ${s} ${failed.reason || ''}`);
-          }
-        });
-        const alerts = parseEvents(lines).filter((ev) => ev && ev.event === 'seal_body_tx_fault');
-        assert.ok(alerts.some((ev) => String(ev.id || '') === built.tx.id), `batch ${n} alert`);
-        assert.equal(pool.adminOps.health().bans, beforeBans, `batch ${n} ban`);
-        const delta = (Number(pool.stats.sealEscapeProbes) || 0) - beforeProbes;
-        assert.ok(delta <= SEAL_ESCAPE_PROBE_CAP, `batch ${n} probes ${delta}`);
-        assert.equal(pool.lag1Shares.length + pool.deferredShares.length, beforeShares, `batch ${n} lost shares`);
-        assert.equal(beforeShares, planted.length, `batch ${n} hold`);
-        const paid = await pool.sealFoundShare({
-          jobId: pool.lastJob.jobId,
-          nonce: 0n,
-          miner: FEE,
-          powHash: easyPow().toString('hex'),
-        });
-        assert.equal(paid.ok, true, paid.reason || `batch ${n} follow`);
-        const sealedIds = new Set((pool.store.tip().txs || []).map((tx) => tx.id));
-        assert.equal(sealedIds.has(built.tx.id), false, `batch ${n} sealed the stub`);
-        clearUser(pool.store);
-        pool.rollOpenRound();
-      }
     } finally {
-      if (pool) pool.close();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

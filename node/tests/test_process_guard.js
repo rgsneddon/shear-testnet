@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { headerHash } from '../src/chain.js';
-import { createP2p } from '../src/p2p.js';
+import { createP2p, fingerprintHelloHash } from '../src/p2p.js';
 import { createRpc } from '../src/rpc.js';
 import {
   FAULT_EXIT,
@@ -148,7 +148,7 @@ async function runSpreadChild() {
       sock.once('connect', resolve);
       sock.once('error', reject);
     });
-    const hello = `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`;
+    const hello = `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`;
     const faultLine = timing === 'sync'
       ? `${JSON.stringify({
         type: 'headers',
@@ -229,7 +229,7 @@ async function runPhaseChild() {
     sock.once('connect', resolve);
     sock.once('error', reject);
   });
-  const hello = `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`;
+  const hello = `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`;
   const line = source === 'message'
     ? `${JSON.stringify({
       type: 'headers',

@@ -17,7 +17,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
-import { PI_SHE_NANOS, RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { PI_SHE_NANOS, RESERVE_PROGRAM, hashBonusUnitNanos } from '../../crypto/asert.js';
 import { publicReserveReceipt, publicReserveReceiptRejected, moneyNeedsRange } from '../../crypto/dummy.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
@@ -35,7 +35,7 @@ import {
 } from '../../crypto/spend.js';
 import { typedKindNeedsAdmitV3 } from '../../crypto/admit_v3.js';
 import { jsonWire } from '../src/p2p.js';
-import { createP2p } from '../src/p2p.js';
+import { createP2p, fingerprintHelloHash } from '../src/p2p.js';
 import { createRpc } from '../src/rpc.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -198,7 +198,7 @@ function p2pTx(port, magic, tx) {
   const line = `${JSON.stringify({ type: 'tx', magic, tx })}\n`;
   return new Promise((resolve, reject) => {
     const sock = net.connect({ host: '127.0.0.1', port }, () => {
-      sock.write(`${JSON.stringify({ type: 'hello', magic })}\n${line}`);
+      sock.write(`${JSON.stringify({ type: 'hello', magic, fingerprint: fingerprintHelloHash(magic) })}\n${line}`);
       setTimeout(() => {
         sock.destroy();
         resolve();
@@ -222,7 +222,7 @@ async function mineAppend(store, miner, txs, now) {
     txs,
     parentBlocks: store.blocks,
     parentFluxset: store.fluxset().pubs,
-    hashBonusNanos: Number(store.reserveVault.liveHashBonusNanos || 1),
+    hashBonusNanos: hashBonusUnitNanos(store.reserveVault.liveHashBonusNanos),
   });
   assert.equal(built.bits, bits, 'regtest template bits');
   assert.equal(decodeHeader(built.header).bits, bits);
@@ -439,7 +439,7 @@ describe('P0 public reserve receipt', () => {
         parentFluxset: parentFlux,
         parentSpendTags: parentFlux.spendTags,
         evmHistory: store.blocks.slice(),
-        hashBonusNanos: Number(parentVault.liveHashBonusNanos || 1),
+        hashBonusNanos: hashBonusUnitNanos(parentVault.liveHashBonusNanos),
         nowMs: Date.now(),
       };
       const liveBlock = {
@@ -498,7 +498,8 @@ describe('P0 public reserve receipt', () => {
       assert.equal(report.rpcLevy.reason, 'public_receipt');
       assert.equal(report.p2pByteArray.ok, false);
       assert.equal(report.p2pByteArray.reason, 'public_receipt');
-      assert.equal(report.p2pHexWire.reason, 'admit_version');
+      // Hex wire decodes and hits the receipt gate. It is still not queued.
+      assert.equal(report.p2pHexWire.reason, 'public_receipt');
       assert.equal(report.p2pHexWire.queuedBySocket, false);
       assert.equal(report.vaultAfterMempool.principal, '0');
       assert.equal(report.block.ok, false);

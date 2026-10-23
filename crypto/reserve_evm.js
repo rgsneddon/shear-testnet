@@ -6,13 +6,21 @@ import { createCustomCommon, Mainnet, Hardfork } from '@ethereumjs/common';
 import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '@ethereumjs/util';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
-import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
+import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET, MAX_LOCK_LEAVES } from './asert.js';
 import { EMPTY_ROOT } from './merkle.js';
-import { reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth } from './reserve_vault.js';
+import {
+  reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth,
+  lockQualifies, lockFundingRejected, lockUnlockOf, consensusUnlockPeriod,
+  portalIdFromDest, portalIdFromDest20, withdrawSignedDest, signRewardAuth, verifyRewardAuth,
+} from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
-import { ED25519_SPKI_PREFIX } from './address.js';
+import { ED25519_SPKI_PREFIX, ed25519RawPub } from './address.js';
 import { parseCoinbaseObserve } from './reserve_oracle.js';
 import { asU8 } from './note.js';
+import {
+  packVaultOutput, verifyLeafRetire, verifyLeafVote, verifyVaultReward, vaultPublicReward,
+  retireDleqCount, MAX_RETIRE_ROWS,
+} from './vault_reward_fs1.js';
 
 function keccak256(data) {
   const u8 = data instanceof Uint8Array ? data : Buffer.from(data);
@@ -20,6 +28,9 @@ function keccak256(data) {
 }
 
 export const SHEAR_EVM_CHAIN_ID = 2701n;
+// The precompile checks the retire bind and the owner signature. It does
+// not recompute the FS-1 tx digest. That binding is the node's JS check:
+// a withdraw is forwarded only when txDigestV3 equals the signed bind.
 export const GENESIS_HASH_BONUS_NANOS = 1n;
 const PIN = JSON.parse(fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), '../contracts/Reserve.json'),
@@ -82,39 +93,132 @@ export function encodeBytes(data) {
   return concat(len, padded);
 }
 
-function ownerWord(ownerCommit) {
-  const word = new Uint8Array(32);
-  if (ownerCommit == null || ownerCommit === '') return word;
-  const raw = Buffer.isBuffer(ownerCommit)
-    ? ownerCommit
-    : Buffer.from(String(ownerCommit).replace(/^0x/i, ''), 'hex');
-  if (raw.length === 32) word.set(raw);
+function u64le(n) {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(BigInt(n));
+  return b;
+}
+
+/** Storage id lock() will use. A 20-byte dest20 is H(tag, dest20). A raw 32-byte id is unbound. */
+export function evmPortalId(dest) {
+  let raw;
+  if (typeof dest === 'string') raw = Buffer.from(dest, 'utf8');
+  else {
+    try { raw = Buffer.from(asU8(dest)); } catch { return null; }
+  }
+  if (raw.length === 0 || raw.length === 32) return null;
+  if (raw.length === 20) {
+    const hex = portalIdFromDest20(raw);
+    return hex ? Buffer.from(hex, 'hex') : null;
+  }
+  return Buffer.from(keccak256(Buffer.concat([Buffer.from('shear-portal-v1'), raw])));
+}
+
+/** shear-lock-owner-v1 || portalId || commit || magic || chainId le64. */
+export function lockOwnerMessage(portalId, commit, magic = null, chainId = SHEAR_EVM_CHAIN_ID) {
+  let id;
+  let word;
+  try {
+    id = Buffer.from(asU8(portalId));
+    word = Buffer.from(asU8(commit));
+  } catch {
+    return null;
+  }
+  if (id.length !== 32 || word.length !== 32) return null;
+  const mag = Buffer.from(magic ? asU8(magic) : shearMagicBytes());
+  if (mag.length !== 32) return null;
+  return Buffer.concat([
+    Buffer.from('shear-lock-owner-v1'),
+    id,
+    word,
+    mag,
+    u64le(chainId),
+  ]);
+}
+
+/** ownerPub(32) || sig(64). A 32-byte owner hash is not this blob. */
+export function signLockAuth(dest, commit, privateKey, magic = null, chainId = SHEAR_EVM_CHAIN_ID) {
+  if (!privateKey) return null;
+  const id = evmPortalId(dest);
+  let word;
+  try { word = Buffer.from(asU8(commit)); } catch { return null; }
+  if (!id || word.length !== 32) return null;
+  const message = lockOwnerMessage(id, word, magic, chainId);
+  const sigHex = signRewardAuth(message, privateKey);
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) return null;
+  let pub;
+  try { pub = Buffer.from(ed25519RawPub(privateKey)); } catch { return null; }
+  if (pub.length !== 32) return null;
+  return Buffer.concat([pub, Buffer.from(sigHex, 'hex')]);
+}
+
+function commitWord(commit) {
+  const word = Buffer.alloc(32);
+  try {
+    const raw = Buffer.isBuffer(commit) ? commit : Buffer.from(asU8(commit));
+    if (raw.length === 32) word.set(raw);
+  } catch { /* the contract rejects a zero commitment */ }
   return word;
 }
 
-export function encodeDeposit(dest, nanos, nowTs, ownerCommit = null) {
-  const body = encodeBytes(dest);
+function authBytes(dest, commit, ownerAuth) {
+  if (ownerAuth && typeof ownerAuth === 'object' && !Buffer.isBuffer(ownerAuth) && !(ownerAuth instanceof Uint8Array)) {
+    if (ownerAuth.key) return signLockAuth(dest, commit, ownerAuth.key, ownerAuth.magic, ownerAuth.chainId) || new Uint8Array();
+    return new Uint8Array();
+  }
+  if (ownerAuth == null || ownerAuth === '') return new Uint8Array();
+  try {
+    const raw = Buffer.from(asU8(ownerAuth));
+    if (raw.length === 96) return raw;
+  } catch { /* not an auth blob */ }
+  return new Uint8Array();
+}
+
+/** ABI call for Reserve.piProofWord. The return is the last 32 bytes of a lock suffix. */
+export function encodePiProofWord(piProof = Buffer.alloc(0)) {
+  let raw = Buffer.alloc(0);
+  if (piProof != null && piProof !== '') {
+    try { raw = Buffer.from(asU8(piProof)); } catch { raw = Buffer.alloc(0); }
+  }
+  const body = encodeBytes(raw);
+  return concat(selector('piProofWord(bytes)'), pad32(32), body);
+}
+
+export function encodeDeposit(dest, commit, nowTs, ownerAuth = null, qualifies = false) {
+  const word = commitWord(commit);
+  const destBody = encodeBytes(dest);
+  const authBody = encodeBytes(authBytes(dest, word, ownerAuth));
+  const destOff = 160;
+  const authOff = destOff + destBody.length;
   return concat(
-    selector('lock(bytes,uint256,uint256,bytes32)'),
-    pad32(128),
-    pad32(nanos),
+    selector('lock(bytes,bytes32,uint256,bytes,bool)'),
+    pad32(destOff),
+    word,
     pad32(nowTs),
-    ownerWord(ownerCommit),
-    body,
+    pad32(authOff),
+    pad32(qualifies ? 1 : 0),
+    destBody,
+    authBody,
   );
 }
 
 /** Time-locked note. The bool is the tranche flag withdraw() will not pay. */
-export function encodeLockNote(dest, nanos, nowTs, notePrincipal = true, ownerCommit = null) {
-  const body = encodeBytes(dest);
+export function encodeLockNote(dest, commit, nowTs, notePrincipal = true, ownerAuth = null, qualifies = false) {
+  const word = commitWord(commit);
+  const destBody = encodeBytes(dest);
+  const authBody = encodeBytes(authBytes(dest, word, ownerAuth));
+  const destOff = 192;
+  const authOff = destOff + destBody.length;
   return concat(
-    selector('lockNote(bytes,uint256,uint256,bool,bytes32)'),
-    pad32(160),
-    pad32(nanos),
+    selector('lockNote(bytes,bytes32,uint256,bool,bytes,bool)'),
+    pad32(destOff),
+    word,
     pad32(nowTs),
     pad32(notePrincipal ? 1 : 0),
-    ownerWord(ownerCommit),
-    body,
+    pad32(authOff),
+    pad32(qualifies ? 1 : 0),
+    destBody,
+    authBody,
   );
 }
 
@@ -126,6 +230,81 @@ export function encodeHoldWithdraw(dest) {
 
 export function encodeClearWithdrawHolds() {
   return selector('clearWithdrawHolds()');
+}
+
+/** Start this block's retire-cap bucket. The key is the block height. */
+export function encodeNoteBlockHeight(height) {
+  return concat(selector('noteBlockHeight(uint256)'), pad32(Math.max(0, Math.floor(Number(height) || 0))));
+}
+
+export function encodeCommitEpochCensus(epoch, leafCount, openHeight) {
+  return concat(
+    selector('commitEpochCensus(uint256,uint256,uint256)'),
+    pad32(epoch),
+    pad32(leafCount),
+    pad32(openHeight),
+  );
+}
+
+export function encodeCastVote({ proof, output, paramId = 0, choice = 0, seq = 1, height = 0, epoch = 0 }) {
+  const proofBody = encodeBytes(Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []));
+  const outputBody = encodeBytes(Buffer.isBuffer(output) ? output : Buffer.from(output || []));
+  const head = 32 * 7;
+  return concat(
+    selector('castVote(bytes,bytes,uint8,int8,uint32,uint256,uint256)'),
+    pad32(head),
+    pad32(head + proofBody.length),
+    pad32(paramId),
+    pad32(choice),
+    pad32(seq),
+    pad32(height),
+    pad32(epoch),
+    proofBody,
+    outputBody,
+  );
+}
+
+export function encodeStepBonus(current, dir) {
+  return concat(
+    selector('stepBonus(uint256,int256)'),
+    pad32(current),
+    pad32(dir),
+  );
+}
+
+export function encodeArrivalStub(amount, lockHeight) {
+  return concat(
+    selector('arrivalStubOf(uint256,uint256)'),
+    pad32(amount),
+    pad32(lockHeight),
+  );
+}
+
+export function encodeTallyBallot(paramId, epoch, height) {
+  return concat(
+    selector('tallyBallot(uint8,uint256,uint256)'),
+    pad32(paramId),
+    pad32(epoch),
+    pad32(height),
+  );
+}
+
+export function decodeCastVote(ret) {
+  const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
+  return {
+    up: Number(readU256(b, 0)),
+    down: Number(readU256(b, 32)),
+    hold: Number(readU256(b, 64)),
+    turnout: Number(readU256(b, 96)),
+  };
+}
+
+export function decodeTallyStep(ret) {
+  const b = ret instanceof Uint8Array ? ret : hexToBytes(ret);
+  let x = 0n;
+  for (let i = 0; i < 32 && i < b.length; i += 1) x = (x << 8n) + BigInt(b[i] || 0);
+  if (x >= 1n << 255n) x -= 1n << 256n;
+  return Number(x);
 }
 
 export function encodeVote(dest, choice, nowTs) {
@@ -172,6 +351,76 @@ export function decodeBytes32(ret) {
   return Buffer.from(b.subarray(0, 32)).toString('hex');
 }
 
+export function encodeCommitVaultRoot(earn, rootHex) {
+  const word = new Uint8Array(32);
+  const raw = String(rootHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
+  return concat(selector('commitVaultRoot(uint256,bytes32)'), pad32(earn), word);
+}
+
+export function encodeCommitEpochStartRoot(earn, rootHex) {
+  const word = new Uint8Array(32);
+  const raw = String(rootHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
+  return concat(selector('commitEpochStartRoot(uint256,bytes32)'), pad32(earn), word);
+}
+
+export function encodeNoteVaultLock(lockHex) {
+  const word = new Uint8Array(32);
+  const raw = String(lockHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
+  return concat(selector('noteVaultLock(bytes32)'), word);
+}
+
+export function encodeNoteVaultLeaf(lockHex, remainHex) {
+  const lock = new Uint8Array(32);
+  const remain = new Uint8Array(32);
+  const lockRaw = String(lockHex || '').replace(/^0x/i, '');
+  const remainRaw = String(remainHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(lockRaw)) lock.set(Buffer.from(lockRaw, 'hex'));
+  if (/^[0-9a-fA-F]{64}$/.test(remainRaw)) remain.set(Buffer.from(remainRaw, 'hex'));
+  return concat(selector('noteVaultLeaf(bytes32,bytes32)'), lock, remain);
+}
+
+export function encodeNoteVaultRemain(earn, remainHex) {
+  const word = new Uint8Array(32);
+  const raw = String(remainHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
+  return concat(selector('noteVaultRemain(uint256,bytes32)'), pad32(earn), word);
+}
+
+export function encodeSetEpochDue(epoch, due) {
+  return concat(selector('setEpochDue(uint256,uint256)'), pad32(epoch), pad32(due));
+}
+
+export function encodeRetire(nullifierHex, proof) {
+  const id = Buffer.from(String(nullifierHex || '').replace(/^0x/i, ''), 'hex');
+  const word = new Uint8Array(32);
+  if (id.length === 32) word.set(id);
+  const raw = Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []);
+  const body = encodeBytes(raw);
+  return concat(selector('retire(bytes32,bytes)'), word, pad32(64), body);
+}
+
+export function encodeChargeEpoch(epoch, nanos) {
+  return concat(selector('chargeEpoch(uint256,uint256)'), pad32(epoch), pad32(nanos));
+}
+
+export function encodeRoll(dest, nowTs, epoch, auth = new Uint8Array()) {
+  const body = encodeBytes(dest);
+  const authBody = encodeBytes(auth || new Uint8Array());
+  const head = 128;
+  return concat(
+    selector('roll(bytes,uint256,uint256,bytes)'),
+    pad32(head),
+    pad32(nowTs),
+    pad32(epoch),
+    pad32(head + body.length),
+    body,
+    authBody,
+  );
+}
+
 export function encodeWithdraw(dest, nowTs, auth = new Uint8Array()) {
   const body = encodeBytes(dest);
   const authRaw = Buffer.isBuffer(auth) ? auth : Buffer.from(auth || []);
@@ -184,6 +433,68 @@ export function encodeWithdraw(dest, nowTs, auth = new Uint8Array()) {
     pad32(head + body.length),
     body,
     authBody,
+  );
+}
+
+function u32le(n) {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(Number(n) >>> 0);
+  return b;
+}
+
+/**
+ * One proof per leaf. Nullifiers are indexed beside that proof, not a copy
+ * of it. A leaf wider than the claim window, or more than 16 leaves, is
+ * not a blob the EVM will accept.
+ */
+export function packRetireBlob(proofs, magic = MAGIC_TESTNET) {
+  const list = Array.isArray(proofs) ? proofs : [];
+  if (!list.length || list.length > MAX_LOCK_LEAVES) return null;
+  let dleqs = 0;
+  const parts = [u32le(list.length)];
+  for (const proof of list) {
+    const raw = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
+    const rows = retireDleqCount(raw);
+    if (rows == null || rows > MAX_RETIRE_ROWS) return null;
+    dleqs += rows;
+    if (dleqs > 64) return null;
+    const burned = verifyLeafRetire(raw, null, magic);
+    if (!burned) return null;
+    const ids = [];
+    const seen = new Set();
+    for (const epoch of burned.epochs) {
+      for (const id of [epoch.nullifier, epoch.retireNullifier]) {
+        const hex = id.toString('hex');
+        if (seen.has(hex)) continue;
+        seen.add(hex);
+        ids.push(id);
+      }
+    }
+    if (!ids.length) return null;
+    parts.push(u32le(ids.length), ...ids, u32le(raw.length), raw);
+  }
+  return Buffer.concat(parts);
+}
+
+/** Withdraw that burns the leaf nullifiers in the same call. */
+export function encodeWithdrawRetire(dest, nowTs, auth = new Uint8Array(), retireBlob = new Uint8Array()) {
+  const body = encodeBytes(dest);
+  const authRaw = Buffer.isBuffer(auth) ? auth : Buffer.from(auth || []);
+  const authBody = encodeBytes(authRaw);
+  const retireRaw = Buffer.isBuffer(retireBlob) ? retireBlob : Buffer.from(asU8(retireBlob || []));
+  const retireBody = encodeBytes(retireRaw);
+  const destOff = 128;
+  const authOff = destOff + body.length;
+  const retireOff = authOff + authBody.length;
+  return concat(
+    selector('withdrawRetire(bytes,uint256,bytes,bytes)'),
+    pad32(destOff),
+    pad32(nowTs),
+    pad32(authOff),
+    pad32(retireOff),
+    body,
+    authBody,
+    retireBody,
   );
 }
 
@@ -304,7 +615,15 @@ function evmRevertReason(res) {
     const sel = Buffer.from(ret.subarray(0, 4));
     if (sel.equals(Buffer.from(selector('ClaimUnavailable()')))) return 'claim_unavailable';
     if (sel.equals(Buffer.from(selector('OwnerMissing()')))) return 'owner_missing';
+    if (sel.equals(Buffer.from(selector('PortalExists()')))) return 'portal_exists';
     if (sel.equals(Buffer.from(selector('Unsigned()')))) return 'unsigned';
+    if (sel.equals(Buffer.from(selector('AlreadyMinted()')))) return 'already_minted';
+    if (sel.equals(Buffer.from(selector('NotVoter()')))) return 'not_voter';
+    if (sel.equals(Buffer.from(selector('VoteLocked()')))) return 'vote_locked';
+    if (sel.equals(Buffer.from(selector('EpochClosed()')))) return 'epoch_closed';
+    if (sel.equals(Buffer.from(selector('EpochNotEnded()')))) return 'epoch_open';
+    if (sel.equals(Buffer.from(selector('BadAmount()')))) return 'bad_amount';
+    if (sel.equals(Buffer.from(selector('RetireCap()')))) return 'retire_cap';
   }
   return String(res?.execResult?.exceptionError?.error || 'revert');
 }
@@ -319,6 +638,7 @@ function shearCommon() {
 
 const SYSTEM = createAddressFromString('0x0000000000000000000000000000000000002701');
 const ED25519_PRECOMPILE = '0x0000000000000000000000000000000000000101';
+const VAULT_ZK_PRECOMPILE = '0x0000000000000000000000000000000000000102';
 
 /** Precompile 0x101. pubkey(32) || sig(64) || message → uint256 1 when the signature holds. */
 function ed25519Precompile(opts) {
@@ -348,11 +668,110 @@ function ed25519Precompile(opts) {
   return { executionGasUsed: gasUsed, returnValue: out };
 }
 
+const RETIRE_MAGIC = Buffer.from('shear-retire-v1');
+const VOTE_V2 = Buffer.from('shear-vote-v2');
+
+/** shear-vote-v2 || root || u64 epoch || choice || u32 seq || pid || u32 magicLen || magic || proof */
+function votePrecompile(data) {
+  const base = VOTE_V2.length;
+  if (data.length < base + 32 + 8 + 1 + 4 + 32 + 4) return 0;
+  let off = base;
+  const root = data.subarray(off, off + 32); off += 32;
+  const epoch = data.readBigUInt64LE(off); off += 8;
+  const choiceByte = data[off]; off += 1;
+  const choice = choiceByte === 0xff ? -1 : choiceByte;
+  const seq = data.readUInt32LE(off); off += 4;
+  const proposalId = data.subarray(off, off + 32); off += 32;
+  if (off + 4 > data.length) return 0;
+  const magicLen = data.readUInt32LE(off); off += 4;
+  if (magicLen < 1 || off + magicLen > data.length) return 0;
+  const magic = data.subarray(off, off + magicLen).toString('utf8'); off += magicLen;
+  const proof = data.subarray(off);
+  if (proof.length < 2 || proof[0] !== 0x56) return 0;
+  const got = verifyLeafVote({
+    blob: proof,
+    root,
+    epoch: Number(epoch),
+    choice,
+    seq,
+    proposalId,
+    magic,
+  });
+  return got.ok ? 1 : 0;
+}
+
+/**
+ * Precompile 0x102.
+ * Claim: root || nullifier || u64 epoch || u32 bps || u64 span || u64 reward || u32 magicLen || magic || u32 outputLen || output || proof.
+ * Retire: nullifier || "shear-retire-v1" || u32 magicLen || magic || proof. A non-empty output is required for a claim.
+ */
+function vaultZkPrecompile(opts) {
+  const data = Buffer.from(opts.data || new Uint8Array());
+  const gasUsed = 20000n;
+  const zero = new Uint8Array(32);
+  if (opts.gasLimit < gasUsed) return { executionGasUsed: opts.gasLimit, returnValue: zero };
+  let code = 0;
+  try {
+    if (data.length >= VOTE_V2.length && data.subarray(0, VOTE_V2.length).equals(VOTE_V2)) {
+      code = votePrecompile(data);
+    } else if (data.length >= 32 + RETIRE_MAGIC.length + 4 && data.subarray(32, 32 + RETIRE_MAGIC.length).equals(RETIRE_MAGIC)) {
+      let off = 32 + RETIRE_MAGIC.length;
+      const magicLen = data.readUInt32LE(off); off += 4;
+      if (magicLen >= 1 && magicLen <= 64 && off + magicLen <= data.length) {
+        const magic = data.subarray(off, off + magicLen).toString('utf8');
+        off += magicLen;
+        const burned = verifyLeafRetire(data.subarray(off), data.subarray(0, 32), magic);
+        code = burned ? 1 : 0;
+      }
+    } else {
+      const fixed = 92;
+      if (data.length >= fixed + 8) {
+        const epoch = data.readBigUInt64LE(64);
+        const bps = data.readUInt32LE(72);
+        const span = data.readBigUInt64LE(76);
+        const reward = data.readBigUInt64LE(84);
+        const magicLen = data.readUInt32LE(fixed);
+        const magicAt = fixed + 4;
+        if (magicLen >= 1 && magicLen <= 64 && magicAt + magicLen + 4 <= data.length) {
+          const magic = data.subarray(magicAt, magicAt + magicLen).toString('utf8');
+          const outputLen = data.readUInt32LE(magicAt + magicLen);
+          const outputAt = magicAt + magicLen + 4;
+          const outputEnd = outputAt + outputLen;
+          if (outputLen > 0 && outputEnd <= data.length) {
+            const got = verifyVaultReward({
+              root: data.subarray(0, 32),
+              nullifier: data.subarray(32, 64),
+              rootEpoch: epoch,
+              terms: { bps, span, covered: span / 16n, earnEpoch: epoch, reward },
+              magic,
+              output: data.subarray(outputAt, outputEnd),
+              blob: data.subarray(outputEnd),
+            });
+            code = got.ok ? 1 : (got.code === 2 ? 2 : 0);
+          } else if (outputLen === 0) {
+            code = 2;
+          }
+        }
+      }
+    }
+  } catch {
+    code = 0;
+  }
+  const out = new Uint8Array(32);
+  out[31] = code;
+  return { executionGasUsed: gasUsed, returnValue: out };
+}
+
 export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null } = {}) {
+  const { resetLockWitnesses } = await import('./owned_portal.js');
+  resetLockWitnesses();
   const common = shearCommon();
   const evm = await createEVM({
     common,
-    customPrecompiles: [{ address: ED25519_PRECOMPILE, function: ed25519Precompile }],
+    customPrecompiles: [
+      { address: ED25519_PRECOMPILE, function: ed25519Precompile },
+      { address: VAULT_ZK_PRECOMPILE, function: vaultZkPrecompile },
+    ],
   });
   const magic = shearMagicBytes(network);
   const code = bytecode == null
@@ -469,7 +888,7 @@ export function isReserveCall(tx) {
   if (!tx || tx.coinbase) return false;
   if (String(tx.programId || '') !== RESERVE_PROGRAM) return false;
   const k = txKindOf(tx);
-  return k === 'lock' || k === 'vote' || k === 'withdraw' || k === 'reward-claim';
+  return k === 'lock' || k === 'vote' || k === 'leaf-vote' || k === 'withdraw' || k === 'reward-claim';
 }
 
 export function isEvmValueTx(tx) {
@@ -509,8 +928,85 @@ const VOTE_NUM = {
   'leave bonus as-is': 3,
 };
 
+function carriedPortalBytes(tx) {
+  const pid = String(tx?.portalId || tx?.vout?.[0]?.portalId || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(pid)) return Buffer.from(pid, 'hex');
+  return null;
+}
+
+function lockCommitForEvm(tx) {
+  try {
+    const note = tx?.vaultLockNote ? Buffer.from(asU8(tx.vaultLockNote)) : null;
+    if (note && note.length >= 64) return Buffer.from(note.subarray(32, 64));
+  } catch { /* a note that is not bytes falls through to the lock output */ }
+  const outs = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === 'lock');
+  const raw = outs[0]?.commit;
+  if (!raw) return null;
+  try {
+    const word = Buffer.from(asU8(raw));
+    return word.length === 32 ? word : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pub hex when lockAuth is the owner signature over this lock's portal and
+ * leaf commit. A copied ownerPub with no matching signature is not an owner.
+ */
+export function verifyLockAuth(tx, magic = null) {
+  let raw;
+  try { raw = Buffer.from(asU8(tx?.lockAuth)); } catch { return null; }
+  if (raw.length !== 96) return null;
+  const commit = lockCommitForEvm(tx);
+  const dest = destBytesForEvm(tx, null);
+  if (!commit || !dest) return null;
+  const id = evmPortalId(dest);
+  if (!id) return null;
+  const pub = raw.subarray(0, 32).toString('hex');
+  const sig = raw.subarray(32).toString('hex');
+  const message = lockOwnerMessage(id, commit, magic);
+  if (!verifyRewardAuth(message, pub, sig)) return null;
+  return pub;
+}
+
+/** Stamp the owner signature a block replay will check. The spend sig is separate. */
+export function attachLockAuth(tx, privateKey) {
+  if (!tx || String(tx.kind || tx.vout?.[0]?.kind || '') !== 'lock') return tx;
+  if (tx.lockAuth) return tx;
+  const commit = lockCommitForEvm(tx);
+  if (!commit || !privateKey) return tx;
+  const auth = signLockAuth(destBytesForEvm(tx, null), commit, privateKey);
+  if (auth) tx.lockAuth = auth;
+  return tx;
+}
+
+function lockDest20Bytes(tx) {
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const lock = outs.find((row) => String(row?.kind || 'lock') === 'lock') || null;
+  const raw = lock?.dest20 || tx?.dest20;
+  if (!raw) return null;
+  try {
+    const b = Buffer.from(asU8(raw));
+    if (b.length >= 20) return Buffer.from(b.subarray(0, 20));
+  } catch { /* not bytes */ }
+  return null;
+}
+
 function destBytesForEvm(tx, act) {
-  const s = txDestOf(tx) || txFromOf(tx) || act?.dest || act?.payout || '';
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || act?.kind || '');
+  // A lock's EVM key is the vout dest20. The payout dest20 on a withdraw is not a portal.
+  if (kind === 'lock') {
+    const d20 = lockDest20Bytes(tx);
+    if (d20) return d20;
+  }
+  const carried = carriedPortalBytes(tx);
+  const address = txDestOf(tx) || txFromOf(tx) || '';
+  if (carried && kind !== 'lock') {
+    const legacy = address ? portalIdFromDest(address).toLowerCase() : '';
+    if (!legacy || carried.toString('hex') !== legacy) return carried;
+  }
+  const s = address || act?.dest || act?.payout || '';
   if (s) return s;
   const d20 = tx?.vout?.[0]?.dest20 || tx?.vin?.[0]?.dest20;
   if (d20) {
@@ -519,7 +1015,7 @@ function destBytesForEvm(tx, act) {
   return '';
 }
 
-export async function executeReserveTx(session, tx, nowMs) {
+export async function executeReserveTx(session, tx, nowMs, ctx = null) {
   const kind = txKindOf(tx);
   const act = reserveAction(tx);
   const dest = destBytesForEvm(tx, act);
@@ -529,21 +1025,101 @@ export async function executeReserveTx(session, tx, nowMs) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
-    const pub = String(tx?.ownerPub || tx?.spendPub || '').replace(/^0x/i, '');
-    const commit = /^[0-9a-fA-F]{64}$/.test(pub) ? rewardOwnerCommit(pub) : null;
-    return callReserve(session, encodeDeposit(dest, nanos, nowMs, commit));
+    if (tx?.payoutPortalId != null && String(tx.payoutPortalId) !== '') {
+      return { ok: false, reason: 'vote_leak' };
+    }
+    const lockOuts = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === 'lock');
+    if (lockOuts.length > 1) return { ok: false, reason: 'portal_exists' };
+    // The owner is the signature, not a copied hash of ownerPub.
+    const owner = tx?.lockAuth || null;
+    // The retire proof opens the leaf commitment, the same one the JS vault
+    // stores. The funding output is that commitment minus the unlock point.
+    let note = null;
+    try { note = tx?.vaultLockNote ? Buffer.from(asU8(tx.vaultLockNote)) : null; } catch { note = null; }
+    if (note && note.length === 64) {
+      const leafCommit = note.subarray(32, 64);
+      const funded = tx?.vout?.find((row) => String(row?.kind || '') === 'lock');
+      const proof = tx?.piProof || null;
+      // The deposit checks the consensus unlock itself. A leaf that is not
+      // the funding output plus that unlock is not credited.
+      const height = Math.floor(Number(ctx?.blockHeight ?? ctx?.height) || 0);
+      const magic = ctx?.magic || MAGIC_TESTNET;
+      const clock = lockUnlockOf({
+        genesisMs: Number(ctx?.genesisMs) || 0,
+        magic,
+      }, nowMs);
+      const opened = lockFundingRejected(tx, {
+        height,
+        magic,
+        unlock: consensusUnlockPeriod(clock.epoch),
+      });
+      if (opened) return { ok: false, reason: opened.reason || 'stake_reward' };
+      // The π proof opens the funding output. The leaf adds the unlock point.
+      let valueCommit = leafCommit;
+      try {
+        if (funded?.commit) valueCommit = Buffer.from(asU8(funded.commit));
+      } catch { valueCommit = leafCommit; }
+      if (!valueCommit || valueCommit.length !== 32) valueCommit = leafCommit;
+      return callReserve(session, encodeDeposit(dest, leafCommit, nowMs, owner, lockQualifies(valueCommit, proof)));
+    }
+    const credits = lockOuts.length ? lockOuts : (act?.commit ? [{ commit: act.commit, piProof: act?.piProof }] : []);
+    if (!credits.length) return { ok: false, reason: 'stake_reward' };
+    let locked = { ok: true };
+    for (const out of credits) {
+      let commit = out?.commit || act?.commit;
+      try { commit = Buffer.from(commit); } catch { commit = null; }
+      if (!commit || commit.length !== 32) return { ok: false, reason: 'stake_reward' };
+      const proof = tx?.piProof || null;
+      locked = await callReserve(session, encodeDeposit(dest, commit, nowMs, owner, lockQualifies(commit, proof)));
+      if (!locked.ok) return locked;
+    }
+    return locked;
   }
   if (kind === 'vote') {
     const choice = VOTE_NUM[String(tx.choice || act?.choice || '').toLowerCase()] || Number(tx.choice) || 1;
     if (!dest) return { ok: true };
     return callReserve(session, encodeVote(dest, choice, nowMs));
   }
+  if (kind === 'leaf-vote') {
+    const output = packVaultOutput(tx.voteOutput || tx.vout?.[0]);
+    if (!output || !tx.voteProof) return { ok: false, reason: 'unsigned' };
+    const paramId = String(tx.voteParam || '') === 'rr' ? 1 : 0;
+    const blockH = Math.floor(Number(ctx?.blockHeight));
+    const namedH = Math.floor(Number(tx.height));
+    const height = Number.isInteger(blockH) && blockH > 0
+      ? blockH
+      : (Number.isInteger(namedH) && namedH > 0 ? namedH : 0);
+    return callReserve(session, encodeCastVote({
+      proof: tx.voteProof,
+      output,
+      paramId,
+      choice: Math.floor(Number(tx.choice) || 0),
+      seq: Math.floor(Number(tx.voteSeq) || 1),
+      height,
+      epoch: Math.floor(Number(tx.earnEpoch) || 0),
+    }));
+  }
   if (kind === 'reward-claim') {
+    if (tx?.vaultProof) {
+      const output = packVaultOutput(tx.vout?.[0]);
+      if (!output) return { ok: false, reason: 'stake_reward' };
+      const epoch = Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0);
+      const reward = vaultPublicReward(tx.vaultProof);
+      const named = reward == null ? 0 : (reward <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(reward) : reward);
+      return callReserve(session, encodeClaim(tx?.nullifier || '', named, tx.vaultProof, epoch, output));
+    }
     const proof = tx?.evmProof || tx?.proof;
     const packed = Buffer.isBuffer(proof) ? proof : packRewardProof(proof);
     const auth = packRewardAuth({ ownerPub: tx.spendPub, sig: tx.sig, dest: tx.to || dest }) || new Uint8Array();
     const rootIndex = Math.floor(Number(tx.rootIndex) || 0);
     return callReserve(session, encodeClaim(tx?.nullifier || '', nanos || 0, packed || Buffer.alloc(0), rootIndex, auth));
+  }
+  if (kind === 'roll') {
+    const from = txFromOf(tx) || dest;
+    const auth = tx?.rewardSig
+      ? packRewardAuth({ ownerPub: tx.ownerPub || tx.spendPub, sig: tx.rewardSig, dest: from })
+      : new Uint8Array();
+    return callReserve(session, encodeRoll(from, nowMs, Math.floor(Number(tx?.earnEpoch) || 0), auth || new Uint8Array()));
   }
   if (kind === 'withdraw') {
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
@@ -555,11 +1131,27 @@ export async function executeReserveTx(session, tx, nowMs) {
         if (!en.ok) return en;
       }
     }
-    const from = txFromOf(tx) || dest;
+    // The lock credited the carried portal id. An address is a different key,
+    // so a withdraw that prefers `from` never sees that owner.
+    // The owner signs the payout: the address when `to` is set, otherwise
+    // the one-time dest20 hex. The portal id is not that payout.
+    const from = dest || txFromOf(tx);
     if (!from) return { ok: true };
     const auth = tx?.rewardSig
-      ? packRewardAuth({ ownerPub: tx.ownerPub || tx.spendPub, sig: tx.rewardSig, dest: tx.to || dest })
+      ? packRewardAuth({
+        ownerPub: tx.ownerPub || tx.spendPub,
+        sig: tx.rewardSig,
+        dest: withdrawSignedDest(tx, act),
+      })
       : new Uint8Array();
+    const retireList = Array.isArray(tx?.retireProofs) && tx.retireProofs.length
+      ? tx.retireProofs
+      : (tx?.retireProof ? [tx.retireProof] : []);
+    if (retireList.length) {
+      const blob = packRetireBlob(retireList);
+      if (!blob) return { ok: false, reason: 'stake_reward' };
+      return callReserve(session, encodeWithdrawRetire(from, nowMs, auth || new Uint8Array(), blob));
+    }
     return callReserve(session, encodeWithdraw(from, nowMs, auth || new Uint8Array()));
   }
   return { ok: false, reason: 'evm_kind' };
@@ -580,7 +1172,42 @@ function evmSettlementIndex(view, nowMs, genesisMs) {
 const EMPTY_REWARD_ROOT = Buffer.from(EMPTY_ROOT).toString('hex');
 
 /** Run pinned Reserve bytecode + EVM SHE value for a block body. Fail closed. */
-export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRoot = undefined) {
+function hex32Of(value) {
+  if (value == null || value === '') return '';
+  const raw = Buffer.isBuffer(value)
+    ? value.toString('hex')
+    : String(value).replace(/^0x/i, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(raw) ? raw : '';
+}
+
+function epochStartRows(cb) {
+  if (!Array.isArray(cb?.epochStartCommits)) return [];
+  const out = [];
+  for (const item of cb.epochStartCommits) {
+    const epoch = Math.floor(Number(item?.epoch));
+    const hex = hex32Of(item?.root);
+    if (!Number.isInteger(epoch) || epoch < 0 || !hex) continue;
+    out.push({ epoch, hex });
+  }
+  return out;
+}
+
+function epochCensusRows(cb) {
+  if (!Array.isArray(cb?.epochCensusCommit)) return [];
+  const out = [];
+  for (const item of cb.epochCensusCommit) {
+    const epoch = Math.floor(Number(item?.epoch));
+    const leafCount = Math.floor(Number(item?.leafCount));
+    const openHeight = Math.floor(Number(item?.openHeight));
+    if (!Number.isInteger(epoch) || epoch < 0) continue;
+    if (!Number.isInteger(leafCount) || leafCount < 1) continue;
+    if (!Number.isInteger(openHeight) || openHeight < 0) continue;
+    out.push({ epoch, leafCount, openHeight });
+  }
+  return out;
+}
+
+export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRoot = undefined, vaultBind = undefined, evmCtx = null) {
   const evm = { totalLocked: 0, valueMoved: 0, calls: 0 };
   const list = Array.isArray(txs) ? txs : [];
   const cb = list[0] || null;
@@ -646,6 +1273,53 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     // A withdraw after the epoch, with no root on the coinbase, and no
     // explicit empty expectation from JS, is not an empty earning set.
     if (oweRoot && !rootHex && owedRoot !== '') return fail('stake_reward');
+    const vaultHex = hex32Of(cb?.vaultLockRoot);
+    const startHex = hex32Of(cb?.epochStartRoot);
+    const settleIdx = evmSettlementIndex(view0, nowMs, genesisMs);
+    // A listed commit is the claim's earn epoch. The settlement index is
+    // only the fallback for a coinbase that names one root and no list.
+    const listed = epochStartRows(cb);
+    const censusListed = epochCensusRows(cb);
+    if (vaultBind) {
+      const wantRoots = vaultBind.roots || {};
+      for (const row of listed) {
+        if (wantRoots[String(row.epoch)] !== row.hex) return fail('stake_reward');
+      }
+      for (const [epoch, want] of Object.entries(wantRoots)) {
+        if (!listed.some((row) => String(row.epoch) === epoch && row.hex === want)) return fail('stake_reward');
+      }
+      const wantCensus = vaultBind.census || {};
+      for (const row of censusListed) {
+        const want = wantCensus[String(row.epoch)];
+        if (!want || want.leafCount !== row.leafCount || want.openHeight !== row.openHeight) {
+          return fail('stake_reward');
+        }
+      }
+      for (const [epoch, want] of Object.entries(wantCensus)) {
+        const got = censusListed.find((row) => String(row.epoch) === epoch);
+        if (!got || got.leafCount !== want.leafCount || got.openHeight !== want.openHeight) {
+          return fail('stake_reward');
+        }
+      }
+    }
+    const startRows = listed.length
+      ? listed
+      : (startHex ? [{ epoch: settleIdx, hex: startHex }] : []);
+    for (const row of startRows) {
+      const started = await callReserve(session, encodeCommitEpochStartRoot(row.epoch, row.hex));
+      if (!started.ok) return fail(started.reason || 'stake_reward');
+      evm.calls += 1;
+    }
+    for (const row of censusListed) {
+      const noted = await callReserve(session, encodeCommitEpochCensus(row.epoch, row.leafCount, row.openHeight));
+      if (!noted.ok) return fail(noted.reason || 'stake_reward');
+      evm.calls += 1;
+    }
+    if (/^[0-9a-f]{64}$/.test(vaultHex) && settleIdx > 0) {
+      const rooted = await callReserve(session, encodeCommitVaultRoot(settleIdx - 1, vaultHex));
+      if (!rooted.ok) return fail(rooted.reason || 'stake_reward');
+      evm.calls += 1;
+    }
     if (rootHex || oweRoot) {
       const pass = rootHex || EMPTY_REWARD_ROOT;
       const sm = session.evm.stateManager;
@@ -664,9 +1338,16 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
       if (!on.ok) return fail(on.reason || 'epoch');
       held = true;
     }
+    const noted = await callReserve(session, encodeNoteBlockHeight(Math.floor(Number(cb?.height) || 0)));
+    if (!noted.ok) return fail(noted.reason || 'retire_cap');
+    evm.calls += 1;
     for (const tx of list.slice(1)) {
       if (!isReserveCall(tx) && !isEvmValueTx(tx)) continue;
-      const got = await executeReserveTx(session, tx, nowMs);
+      const got = await executeReserveTx(session, tx, nowMs, {
+        blockHeight: Math.floor(Number(evmCtx?.height) || Number(cb?.height) || 0),
+        genesisMs: Number(genesisMs) || 0,
+        magic: evmCtx?.magic || MAGIC_TESTNET,
+      });
       if (!got.ok) {
         if (isEvmValueTx(tx)) {
           evm.calls += 1;

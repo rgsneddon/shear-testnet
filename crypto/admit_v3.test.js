@@ -1,17 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAGIC_TESTNET, SPENDABLE_CONFIRMATIONS } from './asert.js';
-import { admitProveV3, admitPub, jroot, jrootPoint } from './admit.js';
+import { SPENDABLE_CONFIRMATIONS } from './asert.js';
+import { admitPub, jroot, jrootPoint } from './admit.js';
 import { commit, pointBytes, randomScalar } from './note.js';
 import {
   ANCHOR_QUANTUM,
   ANCHOR_WINDOW,
-  admitV3Context,
   anchorRejectReason,
   checkAdmitAnchor,
   fundingJroot,
   readyHeight,
-  txDigestV3,
   verifyTypedAdmitFunding,
   walletAnchor,
 } from './admit_v3.js';
@@ -96,7 +94,7 @@ describe('ADMITv3 anchor window', () => {
 });
 
 describe('ADMITv3 funding uses the point-leaf root', () => {
-  it('verifies a point-leaf proof for every sampled set size, and rejects the v2 root', () => {
+  it('keeps the point-leaf book distinct, and a byte-3 lock never reads it', () => {
     const counts = [1, 8, 40];
     const height = K + Q + W;
     const anchor = walletAnchor(height);
@@ -105,72 +103,29 @@ describe('ADMITv3 funding uses the point-leaf root', () => {
       const xs = Array.from({ length: n }, () => randomScalar());
       const pubs = xs.map(admitPub);
       const commits = xs.map((_, i) => pointBytes(commit(i + 1, randomScalar())));
-      const index = n === 1 ? 0 : Math.min(n - 1, 3 + (n % 7));
       const v2 = Buffer.from(jroot({ pubs, commits }));
       const live = { pubs, commits, n, jroot: v2 };
       const point = fundingJroot(live);
       assert.ok(point, `point root n=${n}`);
       assert.equal(Buffer.from(point).equals(v2), false, `books differ n=${n}`);
       assert.equal(Buffer.from(point).equals(Buffer.from(jrootPoint({ pubs, commits }))), true);
-      const t = randomScalar();
-      const probe = admitProveV3({
-        x: xs[index], index, pubs, commits, c: commits[index], t, ctx: Buffer.alloc(64, 9),
-      });
-      assert.ok(probe, `probe n=${n}`);
-      const tx = {
+      const commitBytes = Buffer.alloc(32, n & 0xff);
+      const blob = Buffer.alloc(129, 0);
+      blob[0] = 3;
+      let reads = 0;
+      const got = verifyTypedAdmitFunding({
         kind: 'lock',
         anchor,
         fee: 0,
-        vin: [{ commit: probe.cTilde, anchor }],
-        admit_proofs: [probe],
-      };
-      const digest = txDigestV3(tx, MAGIC_TESTNET);
-      const ctx = admitV3Context({
-        magic: MAGIC_TESTNET, anchor, root: point, n, digest,
-      });
-      const proof = admitProveV3({
-        x: xs[index], index, pubs, commits, c: commits[index], t, ctx,
-      });
-      assert.ok(proof, `prove n=${n}`);
-      tx.admit_proofs = [proof];
-      tx.vin = [{ commit: proof.cTilde, anchor }];
-      const got = verifyTypedAdmitFunding(tx, {
+        vin: [{ commit: commitBytes, anchor }],
+        admit_proofs: [{ blob, cTilde: commitBytes }],
+      }, {
         height,
-        noteAtAnchor: () => live,
+        noteAtAnchor: () => { reads += 1; return live; },
       });
-      assert.equal(got.ok, true, `n=${n} ${got.reason}`);
-      const v2ctx = admitV3Context({
-        magic: MAGIC_TESTNET, anchor, root: v2, n, digest,
-      });
-      const stale = admitProveV3({
-        x: xs[index], index, pubs, commits, c: commits[index], t, ctx: v2ctx,
-      });
-      assert.ok(stale, `v2-root prove n=${n}`);
-      const staleTx = {
-        ...tx,
-        vin: [{ commit: stale.cTilde, anchor }],
-        admit_proofs: [stale],
-      };
-      const rejected = verifyTypedAdmitFunding(staleTx, {
-        height,
-        noteAtAnchor: () => live,
-      });
-      assert.equal(rejected.ok, false, `v2 root must not fund n=${n}`);
-      assert.equal(rejected.reason, 'admit_membership');
-      const short = {
-        pubs: pubs.slice(0, Math.max(1, n - 1)),
-        commits: commits.slice(0, Math.max(1, n - 1)),
-        n: Math.max(1, n - 1),
-        jroot: v2,
-      };
-      if (n > 1) {
-        const subset = verifyTypedAdmitFunding(tx, {
-          height,
-          noteAtAnchor: () => short,
-        });
-        assert.equal(subset.ok, false, `shorter set n=${n}`);
-        assert.equal(subset.reason, 'admit_anchor_root');
-      }
+      assert.equal(got.ok, false, `n=${n}`);
+      assert.equal(got.reason, 'vault_unavailable', `n=${n} ${got.reason}`);
+      assert.equal(reads, 0, `n=${n} read the book`);
     }
   });
 });

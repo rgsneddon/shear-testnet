@@ -173,7 +173,7 @@ bool levyTaxed(String kind, {bool coinbase = false}) {
     'transfer',
     'user-spend',
     'lock',
-    'vote',
+    'roll',
     'reward-claim',
   };
   return taxed.contains(kind);

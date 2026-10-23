@@ -7,9 +7,9 @@ import assert from 'node:assert/strict';
 import { admitBaseFromAddress, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
 import { admitBaseScalar } from '../../crypto/admit.js';
 import { NANOS_PER_SHE, RESERVE_PROGRAM } from '../../crypto/asert.js';
-import { bindWeightFee, levyNeed, levyNanos } from '../../crypto/levy.js';
+import { bindWeightFee, levyNeed, levyNanos, LEVY_CAP_NANOS } from '../../crypto/levy.js';
 import { noteU64, openNoteAmount, sealHiddenNote, sealNote } from '../../crypto/note.js';
-import { emptyVault, portalIdFromDest, voteTx, vortexSums, withdrawTx } from '../../crypto/reserve_vault.js';
+import { buildFundedWithdraw, emptyVault, portalIdFromDest, voteTx, vortexSums, withdrawTx } from '../../crypto/reserve_vault.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { vaultDest } from '../../crypto/flow_sheet.js';
 import { handleWalletApi } from '../src/wallet_api.js';
@@ -37,6 +37,48 @@ function store() {
     reserveVault: emptyVault(),
     vortice: { issued: Object.create(null) },
   };
+}
+
+function fundedWithdraw(alice, to, nanos, id, nonce) {
+  const blob = Buffer.alloc(321, 7);
+  blob[0] = 0xf1;
+  const fs1 = Buffer.alloc(41, 1);
+  fs1[0] = 0xf1;
+  const commit = Buffer.alloc(32, 3);
+  const payer = spendDestOf(alice.spendPub);
+  const shown = nanos <= 9007199254740991n ? Number(nanos) : nanos.toString();
+  let fee = levyNanos(0);
+  let built = null;
+  for (let i = 0; i < 4; i += 1) {
+    built = buildFundedWithdraw({
+      to,
+      nanos: nanos.toString(),
+      id,
+      withdrawNonce: nonce,
+      portalId: portalIdFromDest(to),
+      anchor: 16,
+      excess: Buffer.alloc(32, 4),
+      fs1,
+      fee,
+      vin: [{ commit }],
+      admit_proofs: [{ blob, cTilde: commit, spendTag: Buffer.alloc(32, 5) }],
+      retireProof: Buffer.alloc(12, 1),
+      principalProof: { R: Buffer.alloc(32, 2), z: Buffer.alloc(32, 3) },
+      ownerPub: Buffer.from(alice.spendPub).toString('hex'),
+      dest20: Buffer.from(hash20FromAddress(payer)),
+      vout: [{
+        kind: 'withdraw',
+        commit,
+        valueProof: { v: shown, R: Buffer.alloc(32, 6), z: Buffer.alloc(32, 7) },
+      }],
+    });
+    assert.ok(built, `${id} build`);
+    const need = levyNeed(built);
+    if (fee >= need && fee <= LEVY_CAP_NANOS) break;
+    fee = need;
+  }
+  signSpendTx(built, alice.privateKey);
+  return built;
 }
 
 function queue() {
@@ -123,7 +165,7 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     }
   });
 
-  it('posts a withdraw of any nanos as kind withdraw', () => {
+  it('refuses a plaintext withdraw and posts one funded by an FS-1 spend', () => {
     const alice = newIdentity();
     const from = spendDestOf(alice.spendPub);
     const to = spendDestOf(newIdentity().spendPub);
@@ -146,43 +188,83 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
         vout: draft.vout,
         vin: draft.vin,
       }, { store: store(), miners: new Map(), queueSend });
-      assert.equal(got.status, 200, `${n} ${got.json && got.json.reason}`);
-      assert.equal(got.json.tx.kind, 'withdraw');
-      assert.equal(posted[0].kind, 'withdraw');
-      assert.equal(posted[0].programId, RESERVE_PROGRAM);
-      assert.equal(String(posted[0].nanos), n.toString());
-      assert.equal(String(posted[0].vout[0].valueProof.v), n.toString());
-      assert.notEqual(posted[0].kind, 'send');
+      assert.equal(got.status, 400, `${n} ${got.json && got.json.reason}`);
+      assert.equal(got.json.reason, 'withdraw_funding');
+      assert.equal(posted.length, 0);
     }
+    const big = (1n << 58n) + 9n;
+    const built = fundedWithdraw(alice, to, big, 'funded-wd');
+    const { posted, queueSend } = queue();
+    const got = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      to,
+      kind: 'withdraw',
+      programId: RESERVE_PROGRAM,
+      amount: sheString(big),
+      nanos: big.toString(),
+      id: built.id,
+      portalId: built.portalId,
+      payoutPortalId: built.payoutPortalId,
+      anchor: built.anchor,
+      excess: built.excess,
+      fs1: built.fs1,
+      fee: built.fee,
+      vin: built.vin,
+      admit_proofs: built.admit_proofs,
+      retireProof: built.retireProof,
+      principalProof: built.principalProof,
+      ownerPub: built.ownerPub,
+      dest20: built.dest20,
+      sig: built.sig,
+      spendPub: built.spendPub,
+      vout: built.vout,
+    }, { store: store(), miners: new Map(), queueSend });
+    assert.equal(got.status, 200, got.json && got.json.reason);
+    assert.equal(got.json.tx.kind, 'withdraw');
+    assert.equal(posted[0].kind, 'withdraw');
+    assert.equal(posted[0].from, undefined);
+    assert.equal(posted[0].programId, RESERVE_PROGRAM);
+    assert.equal(String(posted[0].nanos), big.toString());
+    assert.ok(posted[0].retireProof);
+    assert.ok(posted[0].principalProof);
+    assert.equal(posted[0].fs1[0], 0xf1);
   });
 
   it('keeps a posted withdraw id and nonce on the queued tx', () => {
     const alice = newIdentity();
-    const from = spendDestOf(alice.spendPub);
     const to = spendDestOf(newIdentity().spendPub);
-    const nonce = Buffer.alloc(32, 9);
+    const nonce = Buffer.alloc(32, 9).toString('hex');
     const ident = 'wd-posted-nonce';
-    const draft = withdrawTx({ from, to, nanos: '1000', id: ident, nonce });
-    signSpendTx(draft, alice.privateKey);
+    const built = fundedWithdraw(alice, to, 1000n, ident, nonce);
     const { posted, queueSend } = queue();
     const got = handleWalletApi(url('/api/wallet/send'), 'POST', {
-      from,
       to,
       kind: 'withdraw',
       programId: RESERVE_PROGRAM,
       amount: sheString(1000n),
       nanos: '1000',
       id: ident,
-      withdrawNonce: nonce.toString('hex'),
-      sig: draft.sig,
-      spendPub: draft.spendPub,
-      vout: draft.vout,
-      vin: draft.vin,
+      portalId: built.portalId,
+      payoutPortalId: built.payoutPortalId,
+      withdrawNonce: nonce,
+      anchor: built.anchor,
+      excess: built.excess,
+      fs1: built.fs1,
+      fee: built.fee,
+      vin: built.vin,
+      admit_proofs: built.admit_proofs,
+      retireProof: built.retireProof,
+      principalProof: built.principalProof,
+      ownerPub: built.ownerPub,
+      dest20: built.dest20,
+      sig: built.sig,
+      spendPub: built.spendPub,
+      vout: built.vout,
     }, { store: store(), miners: new Map(), queueSend });
     assert.equal(got.status, 200, got.json && got.json.reason);
     assert.equal(posted[0].id, ident);
-    assert.equal(posted[0].withdrawNonce, nonce.toString('hex'));
-    assert.equal(posted[0].vout[0].commit.toString('hex'), draft.vout[0].commit.toString('hex'));
+    assert.equal(posted[0].withdrawNonce, nonce);
+    assert.equal(posted[0].from, undefined);
+    assert.equal(Buffer.from(posted[0].vout[0].commit).toString('hex'), Buffer.from(built.vout[0].commit).toString('hex'));
   });
 
   it('binds a vote fee to the sealed weight and does not rename other errors', () => {
@@ -236,8 +318,8 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
       spendPub: vote.spendPub,
       vout: vote.vout,
     }, { store: funded, miners: new Map(), queueSend: () => ({ id: 'no' }) });
-    assert.equal(under.status, 400);
-    assert.equal(under.json.reason, 'levy');
+    assert.equal(under.status, 403);
+    assert.equal(under.json.reason, 'unsigned');
     assert.equal(JSON.stringify(under.json).includes('spendable'), false);
 
     const other = handleWalletApi(url('/api/wallet/send'), 'POST', {

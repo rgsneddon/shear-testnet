@@ -337,10 +337,11 @@ describe('SHEAR 11-decimal protocol unit', () => {
     assert.equal(BLOCK_SUBSIDY_NANOS / NANOS_PER_SHE, 1);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
-    assert.equal(hashBonusUnitNanos(0), 1);
+    // A voted 0 is bonus off. Missing and negative units still clamp to 1.
+    assert.equal(hashBonusUnitNanos(0), 0);
+    assert.equal(hashBonusUnitNanos(0n), 0);
     assert.equal(hashBonusUnitNanos(-1), 1);
     assert.equal(hashBonusUnitNanos(null), 1);
-    assert.equal(hashBonusUnitNanos(0n), 1);
     assert.equal(hashBonusUnitNanos(3), 3);
     assert.equal(HASH_BONUS_NANOS / NANOS_PER_SHE, 1e-11);
     assert.equal(HASH_BONUS_VOTE_DELTA_NANOS, 1);
@@ -396,12 +397,15 @@ describe('SHEAR 11-decimal protocol unit', () => {
   });
 });
 
-describe('hash bonus never zero (law)', () => {
-  it('HASH_UNIT_FLOOR=1 is fingerprinted and hashBonusUnitNanos never returns 0', () => {
+describe('hash bonus step (law)', () => {
+  it('a voted 0 is bonus off and garbage still clamps to HASH_UNIT_FLOOR', () => {
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.ok(HASH_BONUS_NANOS_FLOOR >= 1);
-    for (const bad of [0, -1, -99, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, '', '0', 0n, -1n]) {
+    // Russell 21:34 17 Oct. 0 and 0n are the voted-off rate, not garbage.
+    assert.equal(hashBonusUnitNanos(0), 0);
+    assert.equal(hashBonusUnitNanos(0n), 0);
+    for (const bad of [-1, -99, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, '', '0', -1n]) {
       const got = hashBonusUnitNanos(bad);
       assert.equal(got, HASH_BONUS_NANOS_FLOOR, `hashBonusUnitNanos(${String(bad)}) → ${got}`);
       assert.ok(got >= 1);
@@ -410,7 +414,48 @@ describe('hash bonus never zero (law)', () => {
     assert.equal(hashBonusUnitNanos(7n), 7);
     const fp = consensusFingerprint();
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
+    assert.match(fp, /HASH_BONUS_STEP=1rho/);
+    assert.match(fp, /HASH_BONUS_OFF=0/);
+    assert.match(fp, /HASH_BONUS_MINE=0/);
+    assert.match(fp, /VAULT_TESTNET_DAY=24/);
+    assert.match(fp, /DIGEST_STAMP=unlockAtMs\+lockEpoch\+H\(piProof\)/);
+    assert.match(fp, /VAULT_QUALIFY=single-commitment/);
+    assert.match(mainnetFingerprint(), /VAULT_QUALIFY=single-commitment/);
+    assert.match(fp, /COMPACT_VAULT=roots\+census\+claimNanos/);
+    assert.match(fp, /COINBASE_TOTAL=pot\+hash\+levy/);
+    assert.match(fp, /UNINDEXED_WITHDRAW=stake_reward/);
+    assert.match(fp, /PORTAL_ID=H\(tag,dest20\)/);
+    assert.match(fp, /LOCK_OUTPUTS=1/);
+    assert.match(fp, /LOCK_PAYOUT=refuse/);
+    assert.match(fp, /FS1_SPEND_IDENTITY=refuse/);
+    assert.match(mainnetFingerprint(), /FS1_SPEND_IDENTITY=refuse/);
+    assert.match(fp, /PORTAL_PER_LOCK=1/);
+    assert.match(fp, /PORTAL_DUP=refuse/);
+    assert.match(fp, /WITHDRAW_LEAK=refuse/);
+    assert.match(fp, /WITHDRAW_SPENDPUB=refuse/);
+    assert.match(fp, /ADMIT_KEYS=strict3/);
+    assert.match(fp, /LOCK_OWNER=signer/);
+    assert.match(fp, /HASH_BONUS_CEIL=none/);
+    assert.match(fp, /P2P_HELLO=fingerprint/);
+    assert.match(fp, /COMPACT_TO=dropped/);
+    assert.match(fp, /VAULT_GAP=A1-once/);
     assert.match(mainnetFingerprint(), /HASH_UNIT_FLOOR=1/);
+    assert.match(mainnetFingerprint(), /PORTAL_PER_LOCK=1/);
+    assert.match(mainnetFingerprint(), /PORTAL_DUP=refuse/);
+    assert.match(mainnetFingerprint(), /WITHDRAW_LEAK=refuse/);
+    assert.match(mainnetFingerprint(), /WITHDRAW_SPENDPUB=refuse/);
+    assert.match(mainnetFingerprint(), /ADMIT_KEYS=strict3/);
+    assert.match(mainnetFingerprint(), /LOCK_OWNER=signer/);
+    assert.match(mainnetFingerprint(), /LOCK_OUTPUTS=1/);
+    assert.match(mainnetFingerprint(), /LOCK_PAYOUT=refuse/);
+    assert.match(mainnetFingerprint(), /FS1_SPEND_IDENTITY=refuse/);
+    assert.match(mainnetFingerprint(), /HASH_BONUS_CEIL=none/);
+    assert.match(mainnetFingerprint(), /P2P_HELLO=fingerprint/);
+    assert.match(mainnetFingerprint(), /PORTAL_ID=H\(tag,dest20\)/);
+    assert.match(mainnetFingerprint(), /HASH_BONUS_STEP=1rho/);
+    assert.match(mainnetFingerprint(), /HASH_BONUS_OFF=0/);
+    assert.match(mainnetFingerprint(), /HASH_BONUS_MINE=0/);
+    assert.match(mainnetFingerprint(), /COINBASE_TOTAL=pot\+hash\+levy/);
   });
 });
 
@@ -461,10 +506,48 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /POT_SCHED=lin-epoch/);
     assert.match(fp, /ORACLE=basket-mean-14/);
     assert.match(fp, /HASH_UNIT_FLOOR=1/);
+    assert.match(fp, /HASH_BONUS_STEP=1rho/);
+    assert.match(fp, /HASH_BONUS_OFF=0/);
+    assert.match(fp, /HASH_BONUS_MINE=0/);
+    assert.match(fp, /VAULT_TESTNET_DAY=24/);
+    assert.match(fp, /DIGEST_STAMP=unlockAtMs\+lockEpoch\+H\(piProof\)/);
+    assert.match(fp, /VAULT_QUALIFY=single-commitment/);
+    assert.match(mainnetFingerprint(), /VAULT_QUALIFY=single-commitment/);
+    assert.match(fp, /COMPACT_VAULT=roots\+census\+claimNanos/);
+    assert.match(fp, /COINBASE_TOTAL=pot\+hash\+levy/);
+    assert.match(fp, /UNINDEXED_WITHDRAW=stake_reward/);
+    assert.match(fp, /PORTAL_ID=H\(tag,dest20\)/);
+    assert.match(fp, /LOCK_OUTPUTS=1/);
+    assert.match(fp, /LOCK_PAYOUT=refuse/);
+    assert.match(fp, /FS1_SPEND_IDENTITY=refuse/);
+    assert.match(fp, /PORTAL_PER_LOCK=1/);
+    assert.match(fp, /PORTAL_DUP=refuse/);
+    assert.match(fp, /WITHDRAW_LEAK=refuse/);
+    assert.match(fp, /WITHDRAW_SPENDPUB=refuse/);
+    assert.match(fp, /ADMIT_KEYS=strict3/);
+    assert.match(fp, /LOCK_OWNER=signer/);
+    assert.match(fp, /HASH_BONUS_CEIL=none/);
+    assert.match(fp, /P2P_HELLO=fingerprint/);
+    assert.match(fp, /NETWORK=shear-testnet-v12/);
+    assert.match(fp, /COMPACT_TO=dropped/);
+    assert.match(fp, /VAULT_GAP=A1-once/);
     assert.match(fp, /POT_PROP=shareBatch/);
     assert.match(fp, /POOL_WITHDRAW=eip712-spend-bound/);
     assert.match(fp, /NETWORK=shear-testnet-v12/);
     assert.match(fp, /RESERVE_NOTE=withdraw-levy-pull/);
+    assert.match(fp, /RESERVE_REWARD_CLAIM=root-claim-principal-kept/);
+    assert.match(fp, /RESERVE_ROLL=full-sum-next-epoch/);
+    assert.match(fp, /VAULT_LOCK=fs1-tranche/);
+    assert.match(fp, /VAULT_REWARD=fs1-lock-root-v1/);
+    assert.match(fp, /VAULT_CLAIM_CAP=455/);
+    assert.match(fp, /VAULT_HIDDEN=pi-leaf-unlock-v2/);
+    assert.match(fp, /VAULT_QUALIFY=single-commitment/);
+    assert.match(mainnetFingerprint(), /VAULT_QUALIFY=single-commitment/);
+    assert.match(fp, /VAULT_ACCRUAL=epoch-total-bps/);
+    assert.match(fp, /VAULT_PROOF=0xab/);
+    assert.match(fp, /RETIRE_ROW=window-3/);
+    assert.match(fp, /VAULT_PERIODS=16/);
+    assert.match(fp, /VAULT_CLAIM_WINDOW=2/);
     assert.doesNotMatch(fp, /HISTORICAL_TIP=/);
     assert.match(fp, /RESERVE_RATE=epoch-fixed:quorum=10:genesis=281:floor=0:trim=0:root=/);
     assert.match(fp, /RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2\/3:windowMain=6720:windowTest=67:windowMs=604800000:floorBps=0:sourceTenths=-1000\.\.100000:activation=fixed/);
@@ -537,6 +620,9 @@ describe('hash-tx consensus law', () => {
     assert.equal(/2026-\d{2}-\d{2}T/.test(fp), false);
     const mfp = mainnetFingerprint();
     assert.match(mfp, /NETWORK=shear-v1/);
+    assert.match(mfp, /VAULT_QUALIFY=single-commitment/);
+    assert.match(mfp, /FS1_SPEND_IDENTITY=refuse/);
+    assert.match(mfp, /DIGEST_STAMP=unlockAtMs\+lockEpoch\+H\(piProof\)/);
     assert.match(mfp, /ASERT_EASE=1/);
     assert.match(mfp, /ASERT_HARDEN=6/);
     assert.match(mfp, /GENESIS=2026-09-18T21:00:00\+01:00/);

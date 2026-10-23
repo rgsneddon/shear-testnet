@@ -11,6 +11,7 @@ import 'shear_levy.dart';
 import 'shear_read_sync.dart';
 import 'shear_reserve.dart';
 import 'shear_session.dart';
+import 'shear_vote_plan.dart';
 import 'shear_shewall.dart';
 import 'shear_tip_tick.dart';
 import 'shear_vortex.dart';
@@ -69,7 +70,7 @@ const kCliRootCommands = [
   'vortex',
 ];
 
-const kCliReserveSubs = ['status', 'lock', 'vote', 'withdraw', 'rewards', 'claim'];
+const kCliReserveSubs = ['status', 'lock', 'vote', 'withdraw', 'roll', 'rewards', 'claim'];
 const kCliVortexSubs = ['list', 'show', 'create', 'register', 'call', 'remove'];
 const kCliSignSubs = ['flow', 'pull', 'vote', 'lock'];
 
@@ -445,9 +446,10 @@ One vote per portal per epoch. GUI: Vortex → The Reserve → Cast vote.
 shear rewards — staked + accrued Reserve rewards
 
   shear rewards                 print staked, idle, accrued, projected, claimable
-  shear rewards --claim         settle principal and the Reserve reward onto Copy dest
-  shear reserve claim           same as --claim
-  shear reserve withdraw        same settlement (GUI unlock)
+  shear rewards --claim         claim a matured reward
+  shear reserve claim           reward claim, not a principal withdraw
+  shear reserve withdraw        principal and the arrival stub (GUI unlock)
+  shear reserve roll            lock the vault sum for the next epoch
 
 Lock issuance rate, frozen for the epoch. Extra mint is the Reserve reward only.
 Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins.
@@ -1021,35 +1023,36 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       final choiceRaw = flags['choice'];
       if (choiceRaw == null) throw const FormatException('reserve vote needs --choice increase|decrease|hold');
       final choice = _voteChoice(choiceRaw);
-      final errVote = reserve.vote(dest: dest, choice: choice, nowMs: now);
-      if (errVote != null) {
-        err.writeln(errVote);
-        return 1;
-      }
       final rpc = _rpc(flags, env);
       final dry = flags['dry-run'] == '1';
       final blocked = _needPublicOk(err, flags, rpc, dry: dry);
       if (blocked != null) return blocked;
       if (!dry) _warnPublicIp(err, rpc);
-      await ledger.sendSpendableSum(
-        from: dest,
-        to: dest,
-        amount: 0,
-        kind: 'vote',
-        programId: 'shear-reserve-v1',
+      final voted = await castPlannedLeafVotes(
+        ledger: ledger,
+        reserve: reserve,
+        planDir: votePlanFolder(session.store.parent.path),
+        dest: dest,
         choice: choice,
-        local: dry,
-        publicConsent: _cliConsent(flags, rpc, dry: dry),
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
+        local: dry || ledger.pool == null,
+        publicIpConsent: _cliConsent(flags, rpc, dry: dry),
       );
+      if (!voted.enacted) {
+        err.writeln(voted.remark);
+        return 1;
+      }
       session.rememberedReserve = _portalSnap(reserve, dest, now);
       await session.persist();
       out.writeln(flags.json ? jsonEncode({'ok': true, 'vote': choice}) : 'vote  $choice');
       return 0;
-    case 'withdraw':
     case 'claim':
+      return _claimRewardOnly(out, err, session, id, ledger, reserve, dest, now, flags, env);
+    case 'roll':
+      return _rollReserve(out, err, session, id, ledger, reserve, dest, now, flags, env);
+    case 'withdraw':
       return _claimRewards(out, err, session, id, ledger, reserve, dest, now, flags, env);
     case 'rewards':
       return _printRewards(out, reserve, dest, now, flags);
@@ -1104,7 +1107,7 @@ int _printRewards(IOSink out, ShearReserve reserve, String dest, int now, _Flags
     out.writeln('staked     ${body['staked']} SHE');
     out.writeln('idle       ${body['idle']} SHE');
     out.writeln('accrued    ${body['accrued']} SHE  (in-epoch)');
-    out.writeln('projected  ${body['projected']} SHE  (full 400-day epoch)');
+    out.writeln('projected  ${body['projected']} SHE  (${reserveEpochLengthCopy()})');
     out.writeln('claimable  ${body['claimable']} SHE');
     out.writeln('bps        ${body['bps']}');
   }
@@ -1128,19 +1131,22 @@ Future<int> _claimRewards(
   final blocked = _needPublicOk(err, flags, rpc, dry: false);
   if (blocked != null) return blocked;
   _warnPublicIp(err, rpc);
-  final posted = await postReserveWithdraw(
+  final postedAll = await postMaturedWithdraws(
     ledger,
     reserve: reserve,
     dest: dest,
     payout: payout,
     nowMs: now,
+    spendSeed: hexToBytes(id.seedHex),
+    leaves: reserveLockLeaves(ledger.notes),
     local: ledger.pool == null,
     publicIpConsent: cliAllowsPublicPost(rpc: rpc, publicOk: flags['public-ok'] == '1'),
   );
-  if (posted == null) {
-    err.writeln('nothing to claim — no staked principal or accrued rewards');
+  if (postedAll.isEmpty) {
+    err.writeln(reservePostWaitCopy(remark: ledger.reserveRemark, waitMs: ledger.reserveWaitMs));
     return 1;
   }
+  final posted = postedAll.last;
   final got = posted.settled;
   session.rememberedReserve = _portalSnap(reserve, dest, now);
   await session.persist();
@@ -1150,6 +1156,85 @@ Future<int> _claimRewards(
   out.writeln(flags.json
       ? jsonEncode({'ok': true, 'payoutDest': payout, 'txid': posted.tx.id, 'kind': posted.tx.kind, ...shown, 'payoutShe': formatShe(she)})
       : 'claimed  principal=${shown['principal']}  reserveReward=${shown['reserveReward']}  onto $payout');
+  return 0;
+}
+
+Future<int> _claimRewardOnly(
+  IOSink out,
+  IOSink err,
+  ShearSession session,
+  ShearIdentity id,
+  ShearLedger ledger,
+  ShearReserve reserve,
+  String dest,
+  int now,
+  _Flags flags,
+  Map<String, String> env,
+) async {
+  final payout = flags['payout'] ?? dest;
+  final rpc = _rpc(flags, env);
+  final blocked = _needPublicOk(err, flags, rpc, dry: false);
+  if (blocked != null) return blocked;
+  _warnPublicIp(err, rpc);
+  final seed = hexToBytes(id.seedHex);
+  final posted = await postReserveVaultClaim(
+    ledger,
+    reserve: reserve,
+    dest: dest,
+    payout: payout,
+    nowMs: now,
+    spendSeed: seed,
+    local: ledger.pool == null,
+    publicIpConsent: cliAllowsPublicPost(rpc: rpc, publicOk: flags['public-ok'] == '1'),
+  );
+  if (posted == null) {
+    err.writeln(reservePostWaitCopy(remark: ledger.reserveRemark, waitMs: ledger.reserveWaitMs));
+    return 1;
+  }
+  session.rememberedReserve = _portalSnap(reserve, dest, now);
+  await session.persist();
+  out.writeln(flags.json
+      ? jsonEncode({'ok': true, 'txid': posted.tx.id, 'kind': 'reward-claim'})
+      : 'claimed  reward  tx ${posted.tx.id}');
+  return 0;
+}
+
+Future<int> _rollReserve(
+  IOSink out,
+  IOSink err,
+  ShearSession session,
+  ShearIdentity id,
+  ShearLedger ledger,
+  ShearReserve reserve,
+  String dest,
+  int now,
+  _Flags flags,
+  Map<String, String> env,
+) async {
+  final rpc = _rpc(flags, env);
+  final blocked = _needPublicOk(err, flags, rpc, dry: false);
+  if (blocked != null) return blocked;
+  _warnPublicIp(err, rpc);
+  final posted = await postReserveRoll(
+    ledger,
+    reserve: reserve,
+    dest: dest,
+    nowMs: now,
+    spendSeed: hexToBytes(id.seedHex),
+    local: ledger.pool == null,
+    restFrame: id.address,
+    paymentCode: id.paymentCode,
+    publicIpConsent: cliAllowsPublicPost(rpc: rpc, publicOk: flags['public-ok'] == '1'),
+  );
+  if (posted == null) {
+    err.writeln(reservePostWaitCopy(remark: ledger.reserveRemark, waitMs: ledger.reserveWaitMs));
+    return 1;
+  }
+  session.rememberedReserve = _portalSnap(reserve, dest, now);
+  await session.persist();
+  out.writeln(flags.json
+      ? jsonEncode({'ok': true, 'txid': posted.tx.id, 'kind': 'roll'})
+      : 'rolled  tx ${posted.tx.id}');
   return 0;
 }
 

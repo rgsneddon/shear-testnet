@@ -18,6 +18,7 @@ export {
   joinCutoffMs,
 } from './pot_sched.js';
 import { epochDays, potSchedPin, EPOCH_DAYS_TESTNET, EPOCH_DAYS_MAINNET, POT_FLOOR_NANOS } from './pot_sched.js';
+import { VAULT_PERIODS_PER_EPOCH, VAULT_TESTNET_DAY_BLOCKS } from './vault_accrual.js';
 import {
   bundleObservationRoot,
   GENESIS_BPS,
@@ -143,13 +144,14 @@ export const HASH_BONUS_NANOS = 1;
 /** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The pot does not move. */
 export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
 /**
- * Per-hash unit is never 0. Fingerprint pin HASH_UNIT_FLOOR=1.
- * Votes, vault load, coinbase, and verify all clamp through hashBonusUnitNanos.
+ * 1 clamps a malformed unit only. A governance-set 0 stays 0 (bonus off).
+ * The unit moves only by passed votes, 1 rho per vote, floor 0, no ceiling.
  */
 export const HASH_BONUS_NANOS_FLOOR = 1;
 
-/** Consensus clamp: the live hash-bonus unit is always ≥ HASH_BONUS_NANOS_FLOOR. Never 0. */
+/** Clamp a missing or negative unit to the floor. A voted 0 stays 0 (bonus off). */
 export function hashBonusUnitNanos(n) {
+  if (n === 0 || n === 0n) return 0;
   const v = typeof n === 'bigint' ? Number(n) : Math.floor(Number(n));
   if (!Number.isFinite(v) || v < HASH_BONUS_NANOS_FLOOR) return HASH_BONUS_NANOS_FLOOR;
   return v;
@@ -224,9 +226,96 @@ export const REWARD_LAW = 'epoch-bps-floor';
 export const INTEREST_LAW = REWARD_LAW;
 /**
  * Principal leaves only through the user's own levy-paying withdraw.
- * Epoch end does not release it.
+ * Epoch end does not release it. A reward claim does not pull it.
  */
 export const RESERVE_NOTE_LAW = 'withdraw-levy-pull';
+/** A claim mints one leaf of the committed root and leaves principal in the vault. */
+export const RESERVE_REWARD_CLAIM_LAW = 'root-claim-principal-kept';
+/** A finished tranche rolls its principal and unclaimed reward into the next lock epoch, once. */
+export const RESERVE_ROLL_LAW = 'full-sum-next-epoch';
+/**
+ * FS-1 funds a lock, a top-up, and a withdraw. A vote is an owner signature.
+ * A lock is a plain tranche. It is not a spendable note.
+ */
+export const VAULT_FUND_LAW = 'fs1-typed';
+export const VAULT_LOCK_LAW = 'fs1-tranche';
+/**
+ * Vault-lock reward rules after the FS-1 claim: consensus builds the lock
+ * root, consensus sets the rate terms, and one nullifier spends the epoch.
+ */
+export const VAULT_REWARD_LAW = 'fs1-lock-root-v1';
+/**
+ * One lock leaf is exactly π nanos. rate_e is the total for the whole epoch.
+ * A claim publishes floor(π × rate_e × period_blocks / (epoch_blocks × 10000))
+ * and binds the payout note to that constant. A full epoch is
+ * floor(π × rate_e / 10000), which is the sum of the period floors up to
+ * the per-interval remainder. N leaves earn N floors, at most one floor of
+ * an N×π lock. A day earns 1/epoch_days of the epoch total, not rate_e itself.
+ */
+export const VAULT_HIDDEN_LAW = 'pi-leaf-unlock-v2';
+export const VAULT_ACCRUAL_LAW = 'epoch-total-bps';
+/**
+ * Spend digest always binds unlockAtMs and lockEpoch. Absent unlock is 0.
+ * Absent epoch is -1. Compact coinbase keeps the frozen roots, the census,
+ * and a claim's public nanos. The coinbase commitment sum is pot + hash +
+ * levy; reward.minted is a claim output and is not part of that sum. An
+ * unindexed hidden withdraw fails closed as stake_reward. portalId is
+ * H(tag, dest20). dest20 is the lockAuth key. One lock output per lock.
+ * A lock that carries payoutPortalId is refused. Compact lock and withdraw
+ * bodies do not carry `to`. The gap opening is A1 and zGap once; the claim
+ * header does not repeat them. A lock suffix also binds sha256(piProof);
+ * an absent proof is sha256 of empty. A fingerprint change wipes testnet
+ * together. Mainnet uses this same stamp. Qualification is one commitment
+ * of at least π. Mainnet shares that token too.
+ */
+export const DIGEST_LOCK_STAMP = 'unlockAtMs+lockEpoch+H(piProof)';
+/** One commitment that opens to at least π. A sum of smaller notes does not qualify. */
+export const VAULT_QUALIFY_LAW = 'single-commitment';
+/**
+ * Russell 18:23 BST. spendPub, sig, or signature on an FS-1 lock is vote_leak.
+ * Mainnet shares this token. Folded into the wipe.
+ */
+export const FS1_SPEND_IDENTITY_LAW = 'refuse';
+export const COMPACT_VAULT_WIRE = 'roots+census+claimNanos';
+export const COINBASE_PUBLIC_TOTAL = 'pot+hash+levy';
+export const UNINDEXED_WITHDRAW = 'stake_reward';
+export const PORTAL_ID_LAW = 'H(tag,dest20)';
+export const COMPACT_TO = 'dropped';
+export const VAULT_GAP_LAW = 'A1-once';
+/**
+ * Claim proof version. The gap is a blinded commitment, and the leaf binds
+ * the consensus unlock. Peers on an older byte do not share this book.
+ */
+export const VAULT_PROOF_VER = 0xab;
+/** Leaves one lock transaction may append. A larger lock is not a leaf. */
+export const MAX_LOCK_LEAVES = 16;
+/**
+ * Live vault leaves the claim budget is sized to cover. Epoch-e claims stay
+ * valid for this many epochs after e, not for close+4.
+ */
+export const MAX_LIVE_VAULT_LEAVES = 4096;
+/**
+ * How many periods after the withdraw period a claim may still burn.
+ * Counted in periods, the same unit as the claim nullifier, not in epochs.
+ * The burn set is the withdraw period through this many later periods.
+ * Unclaimed rewards after that window are never minted.
+ */
+export const VAULT_CLAIM_WINDOW_EPOCHS = 2;
+/**
+ * One claim's verify weight: W_TX + one FS-1 input + one output + one leaf.
+ * The block admits as many claims as that weight fits, and that count covers
+ * the live-leaf cap inside the claim window.
+ */
+export const VAULT_CLAIM_UNIT = 79;
+export const MAX_BLOCK_VAULT_CLAIMS = Math.floor(36_000 / VAULT_CLAIM_UNIT);
+/**
+ * First height at which an FS-1 anchor is inside the window. Confirmations
+ * are 9 and the anchor quantum is 8, so height 17 is the first H whose
+ * wallet anchor is 8. Below this height lock, top-up, vote, and withdraw
+ * are vault_unavailable. Byte-3 bucket proofs stay vault_unavailable at
+ * every height.
+ */
+export const VAULT_FS1_ACTIVATION_HEIGHT = 17;
 /** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
@@ -377,7 +466,30 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `MEMO_NOT_DEST_KEYED=1`,
     `RESERVE_REWARD=${REWARD_LAW}`,
     `ORACLE=${ORACLE_LAW}`,
+    // 1 is only the malformed-unit clamp. A governance-set 0 stays 0.
     `HASH_UNIT_FLOOR=${HASH_BONUS_NANOS_FLOOR}`,
+    'HASH_BONUS_STEP=1rho',
+    'HASH_BONUS_OFF=0',
+    'HASH_BONUS_MINE=0',
+    `VAULT_TESTNET_DAY=${VAULT_TESTNET_DAY_BLOCKS}`,
+    `DIGEST_STAMP=${DIGEST_LOCK_STAMP}`,
+    `COMPACT_VAULT=${COMPACT_VAULT_WIRE}`,
+    `COINBASE_TOTAL=${COINBASE_PUBLIC_TOTAL}`,
+    `UNINDEXED_WITHDRAW=${UNINDEXED_WITHDRAW}`,
+    `PORTAL_ID=${PORTAL_ID_LAW}`,
+    'PORTAL_PER_LOCK=1',
+    'PORTAL_DUP=refuse',
+    'WITHDRAW_LEAK=refuse',
+    'WITHDRAW_SPENDPUB=refuse',
+    'ADMIT_KEYS=strict3',
+    'LOCK_OWNER=signer',
+    'LOCK_OUTPUTS=1',
+    'LOCK_PAYOUT=refuse',
+    `FS1_SPEND_IDENTITY=${FS1_SPEND_IDENTITY_LAW}`,
+    'HASH_BONUS_CEIL=none',
+    'P2P_HELLO=fingerprint',
+    `COMPACT_TO=${COMPACT_TO}`,
+    `VAULT_GAP=${VAULT_GAP_LAW}`,
     `POT_PROP=${POT_PROP}`,
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,
@@ -416,6 +528,8 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `RESERVE=${RESERVE_PROGRAM}`,
     'RESERVE_EVM=1',
     `RESERVE_NOTE=${RESERVE_NOTE_LAW}`,
+    `RESERVE_REWARD_CLAIM=${RESERVE_REWARD_CLAIM_LAW}`,
+    `RESERVE_ROLL=${RESERVE_ROLL_LAW}`,
     `RESERVE_REWARD=${days}d-bps-floor`,
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',
@@ -430,6 +544,25 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ADMIT_K=1',
     `ADMIT_LEAF=${ADMIT_LEAF_ID}`,
     'ADMIT_SPEND=fs1-f1-agg-sal-v1',
+    `VAULT_FUND=${VAULT_FUND_LAW}`,
+    `VAULT_LOCK=${VAULT_LOCK_LAW}`,
+    `VAULT_FS1=${VAULT_FS1_ACTIVATION_HEIGHT}`,
+    `VAULT_REWARD=${VAULT_REWARD_LAW}`,
+    `VAULT_CLAIM_CAP=${MAX_BLOCK_VAULT_CLAIMS}`,
+    `VAULT_HIDDEN=${VAULT_HIDDEN_LAW}`,
+    `VAULT_QUALIFY=${VAULT_QUALIFY_LAW}`,
+    `VAULT_ACCRUAL=${VAULT_ACCRUAL_LAW}`,
+    `VAULT_PROOF=0x${VAULT_PROOF_VER.toString(16)}`,
+    `PI_LEAF=${PI_SHE_NANOS}`,
+    `VAULT_LOCK_CAP=${MAX_LOCK_LEAVES}`,
+    `VAULT_LIVE_CAP=${MAX_LIVE_VAULT_LEAVES}`,
+    `VAULT_PERIODS=${VAULT_PERIODS_PER_EPOCH}`,
+    `VAULT_CLAIM_WINDOW=${VAULT_CLAIM_WINDOW_EPOCHS}`,
+    'RETIRE_ROW=window-3',
+    'VOTE_BALLOT=leaf-v2',
+    'VOTE_FEE=owned-note',
+    'VOTE_VETO=none',
+    'VOTE_CAP=64',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,

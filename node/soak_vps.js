@@ -265,9 +265,10 @@ async function reserveLockVote() {
   vt.payer = dest;
   signSpendTx(vt, box.key);
   const qv = store.queueTx(vt);
-  assert.equal(qv.ok, true, `${qv.reason || 'vote_queue'}:${qv.error || ''}`);
+  assert.equal(qv.ok, false, `${qv.reason || 'vote_queue'}:${qv.error || ''}`);
+  assert.equal(qv.reason, 'vote_retired');
   await mineOne(store, dest, undefined, t0 + (fund + 1 + SPENDABLE_CONFIRMATIONS) * 90_000);
-  assert.equal(store.reserveVault.votes.increase, 1);
+  assert.equal(store.reserveVault.votes.increase, 0);
   console.log(JSON.stringify({
     step: 'reserve',
     locked: String(store.reserveVault.totalLockedNanos),
