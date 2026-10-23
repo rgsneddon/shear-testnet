@@ -289,6 +289,13 @@ function grandparentHeader(chain) {
 }
 
 const loadResumeToken = Symbol('shear-load-resume');
+
+/** Fault injection is for node:test and regtest books. A production store ignores it. */
+function faultHooksOpen(magic) {
+  if (String(magic || '') === MAGIC_REGTEST) return true;
+  const ctx = String(process.env.NODE_TEST_CONTEXT || '');
+  return ctx === 'child' || ctx === 'child-v8';
+}
 /** Two headers pages per peer. A pruned block needs SAMPLE_PRUNE_CONFIRMATIONS of them. */
 export const OFFER_PEER_CAP = 4000;
 export const OFFER_PEER_SLOTS = 8;
@@ -317,6 +324,7 @@ export function createStore(dir, {
   magic: magicIn = null,
   regtestPermit = null,
   lock = true,
+  // Ignored unless this process is node:test or the book is regtest.
   bookFault = null,
 } = {}, resume = null) {
   // shear-regtest is not a public book. A genesis pin (the v12 hash, or any
@@ -326,6 +334,8 @@ export function createStore(dir, {
   // The check runs before the datadir is created or locked down, so a refused
   // regtest open does not touch the directory.
   const configuredMagic = String(magicIn || network || MAGIC_TESTNET);
+  const faultHooks = faultHooksOpen(configuredMagic);
+  const injectedFault = faultHooks ? (bookFault || null) : null;
   if (configuredMagic === MAGIC_REGTEST) {
     const genesisPin = String(genesisHash || '');
     if (genesisPin) throw new Error('regtest_genesis_pin');
@@ -3552,8 +3562,13 @@ export function createStore(dir, {
     try {
       staged = stageAppend(check, block, burial);
     } catch (err) {
-      // Still before owedRows is replaced. Score the block; do not exit.
-      return { ok: false, reason: String(err?.message || 'apply').slice(0, 80), tip: tip() };
+      // A throw here is local state, still before owedRows is replaced.
+      // Score the block and stay up. The log is its own event, not a peer ban line.
+      const reason = String(err?.message || 'apply').slice(0, 80);
+      try {
+        console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason }));
+      } catch { /* ignore */ }
+      return { ok: false, reason, tip: tip() };
     }
     if (!staged || staged.ready !== true) return staged;
     try {
@@ -3587,12 +3602,13 @@ export function createStore(dir, {
       tipHeight: burial ? burial.top : full.height,
     });
     if (!owedNext.ok) return { ok: false, reason: owedNext.reason || 'hash_owed', tip: tip() };
-    if (bookFault === 'hash-owed') return { ok: false, reason: 'hash_owed', tip: tip() };
+    if (injectedFault === 'hash-owed') return { ok: false, reason: 'hash_owed', tip: tip() };
+    if (injectedFault === 'stage') throw new Error('stage_local');
     return { ok: true, ready: true, stored, owedNext, unitNow, burial, check };
   }
 
   function commitStagedAppend({ stored, owedNext, unitNow, burial, check }) {
-    if (bookFault === 'append') throw new Error('append_fault');
+    if (injectedFault === 'append') throw new Error('append_fault');
     owedRows = owedNext.rows;
     acceptedSeries = owedNext.acceptedSeries;
     owedSeriesAll = acceptedSeries;
@@ -3716,12 +3732,16 @@ export function createStore(dir, {
       mempoolTags.clear();
       for (const [key, val] of snapTags) mempoolTags.set(key, val);
       mempoolVault = snapVault;
-      return { ok: false, reason: String(err?.message || 'mempool').slice(0, 80) };
+      return {
+        ok: false,
+        reason: String(err?.message || 'mempool').slice(0, 80),
+        scorePeer: true,
+      };
     }
   }
 
   function queueTx(tx, opts = {}) {
-    if (bookFault === 'mempool') {
+    if (injectedFault === 'mempool') {
       return insertMempool(() => {
         mempool.push({ id: 'partial' });
         throw new Error('mempool_partial');
@@ -5298,7 +5318,7 @@ export function createStore(dir, {
         if (verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
       };
       try {
-        if (bookFault === 'reorg' || bookFault === 'reorg-restore') throw new Error('reorg_fault');
+        if (injectedFault === 'reorg' || injectedFault === 'reorg-restore') throw new Error('reorg_fault');
         for (const id of spentB) if (!nextSpent.has(id)) spentB.delete(id);
         for (const id of nextSpent) spentB.add(id);
         fault('spent');
@@ -5362,7 +5382,7 @@ export function createStore(dir, {
         return { ok: true, reorg: true, tip: tip(), event };
       } catch (err) {
         try {
-          if (verifyOpts.failRestore === true || bookFault === 'reorg-restore') {
+          if (injectedFault === 'reorg-restore' || (faultHooks && verifyOpts.failRestore === true)) {
             throw new Error('restore failed');
           }
           restoreAdoptImage(image);

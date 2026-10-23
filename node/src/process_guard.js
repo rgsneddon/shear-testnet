@@ -125,9 +125,24 @@ export function faultExitCode(err) {
   return FAULT_EXIT;
 }
 
+/** Identical stay-up faults inside this window share one log line. */
+const FAULT_LOG_MS = 1_000;
+const faultLogAt = new Map();
+
 function logFault(kind, err) {
-  const stack = err?.stack || err?.message || err;
-  console.error(`SHEAR ${kind} ${faultLabel(err)}\n${stack}`);
+  const label = faultLabel(err);
+  const message = String(err?.message || err);
+  const key = `${kind}\0${label}\0${message}`;
+  const now = Date.now();
+  const prev = faultLogAt.get(key) || 0;
+  if (now - prev < FAULT_LOG_MS) return;
+  faultLogAt.set(key, now);
+  if (faultLogAt.size > 64) {
+    const oldest = faultLogAt.keys().next().value;
+    faultLogAt.delete(oldest);
+  }
+  const stack = err?.stack || message;
+  console.error(`SHEAR ${kind} ${label}\n${stack}`);
 }
 
 function onProcessFault(kind, err) {

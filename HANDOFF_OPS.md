@@ -39,6 +39,7 @@ Private inventory (optional): `gh repo clone rgsneddon/handoff %USERPROFILE%\han
 | Stratum | public `stratum+ssl://pool.shear.digital:443`; localhost solo `stratum+tcp://127.0.0.1:1111` |
 | SHARE_BIND | `rx+noteCommit` |
 | Mainnet | **blocked**. Do **not** set `SHEAR_MAINNET_EMIT=1`. Do not rotate the live fee-payout ssa1 from this file. |
+| Datadir disk | Local disk only. A network filesystem (NFS, SMB, and the like) is unsupported. The lock is local to this host and cannot see a Shear process on another machine. |
 
 Wallet pin in this tree is **0.72** (`0.72.0+97`). Tag **0.71** stays at https://github.com/rgsneddon/shear-testnet/releases/tag/0.71. Node tag `v18` stays. Tag **0.68** stays. Do not pass `--clobber`. Git tag `v17` stays. Do not claim a 0.72 or v19 release asset until it is uploaded.  
 Sections 2, 3, and the coordinated v4 wipe note are the 2026-09-17 record. They are not the live book and they are not a wipe order.

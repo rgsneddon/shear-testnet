@@ -11,6 +11,7 @@ import {
   FAULT_EXIT,
   STORE_CORRUPT_EXIT,
   classifyByPhase,
+  deliverProcessFault,
   faultExitCode,
   installNodeGuards,
   isChainStateError,
@@ -452,6 +453,28 @@ if (!guardProbe && !spread && !phaseInject) describe('process guards', () => {
           assert.equal(got.httpResult?.status, 500, `${label} did not answer 500\n${JSON.stringify(got.httpResult)}`);
         }
       }
+    }
+  });
+
+  it('logs one line for identical faults inside the window', () => {
+    const lines = [];
+    const orig = console.error;
+    console.error = (line) => { lines.push(String(line)); };
+    try {
+      const err = new Error('watch boom');
+      err.shearScope = 'request';
+      err.shearPhase = 'pre-commit';
+      deliverProcessFault('p2p', err);
+      deliverProcessFault('p2p', err);
+      deliverProcessFault('p2p', err);
+      assert.equal(lines.filter((line) => line.includes('watch boom')).length, 1);
+      const other = new Error('other boom');
+      other.shearScope = 'request';
+      other.shearPhase = 'pre-commit';
+      deliverProcessFault('p2p', other);
+      assert.equal(lines.filter((line) => line.includes('other boom')).length, 1);
+    } finally {
+      console.error = orig;
     }
   });
 });

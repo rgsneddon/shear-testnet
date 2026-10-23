@@ -487,6 +487,88 @@ describe('p2p hello deadline and idle eviction', () => {
     }
   });
 
+  it('junk does not refresh cap idle and real traffic is kept', async () => {
+    const store = {
+      blocks: [],
+      mempool: [],
+      tip: () => null,
+      on() { return () => {}; },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      maxPeers: 2,
+      outboundReserve: 0,
+      helloMs: 5000,
+      idleMs: 5000,
+      evictCooldownMs: 0,
+    });
+    const bound = await p2p.listen();
+    try {
+      const junk = await connect(bound.port);
+      const real = await connect(bound.port);
+      junk.write(helloLine());
+      real.write(helloLine());
+      await delay(80);
+      ageInbound(p2p);
+      junk.write(`${JSON.stringify({ type: 'not-a-message', magic: MAGIC_TESTNET })}\n`);
+      real.write(`${JSON.stringify({ type: 'getmempool', magic: MAGIC_TESTNET })}\n`);
+      await delay(40);
+      const recFor = (sock) => [...p2p.peers.entries()].find(([live]) => live.remotePort === sock.localPort)?.[1];
+      const junkRec = recFor(junk);
+      const realRec = recFor(real);
+      assert.ok(junkRec && realRec);
+      assert.ok(Date.now() - Number(junkRec.capIdleAt) >= 5000);
+      assert.ok(Date.now() - Number(realRec.capIdleAt) < 5000);
+      const next = await connect(bound.port);
+      await delay(40);
+      assert.equal(junk.destroyed, true);
+      assert.equal(real.destroyed, false);
+      assert.equal(next.destroyed, false);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('a rolled-back mempool insert scores the peer', async () => {
+    const store = {
+      blocks: [],
+      mempool: [],
+      tip: () => null,
+      on() { return () => {}; },
+      queueTx() {
+        return { ok: false, reason: 'mempool_partial', scorePeer: true };
+      },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      sock.write(`${JSON.stringify({ type: 'tx', magic: MAGIC_TESTNET, tx: { id: 'rolled' } })}\n`);
+      sock.write(`${JSON.stringify({ type: 'tx', magic: MAGIC_TESTNET, tx: { id: 'rolled' } })}\n`);
+      let rec = null;
+      for (let i = 0; i < 20 && !(rec && rec.expensiveFails >= 2); i += 1) {
+        await delay(20);
+        rec = [...p2p.peers.values()].find((row) => row.helloAt) || null;
+      }
+      assert.equal(rec?.expensiveFails, 2);
+      assert.equal(sock.destroyed, false);
+    } finally {
+      p2p.close();
+    }
+  });
+
   it('a malformed message penalises that peer and leaves the node up', async () => {
     const tip = { height: 4, hash: Buffer.alloc(32, 7) };
     let offers = 0;

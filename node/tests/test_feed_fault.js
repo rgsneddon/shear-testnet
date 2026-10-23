@@ -262,6 +262,17 @@ async function runFeed(via, phase) {
 
 async function runBook(mode, dir) {
   installNodeGuards();
+  if (mode === 'prod-ignore') {
+    delete process.env.NODE_TEST_CONTEXT;
+    const store = createStore(dir, { bookFault: 'hash-owed', pruneAfter: 1_000_000 });
+    const got = sealNext(store, minerDest(), 3);
+    console.log(JSON.stringify({
+      ok: got?.ok === true,
+      reason: got?.reason || '',
+      height: store.tip()?.height || 0,
+    }));
+    process.exit(got?.ok === true ? 0 : 2);
+  }
   if (mode === 'append') {
     const store = createStore(dir, { bookFault: 'append', pruneAfter: 1_000_000 });
     writeBefore(dir);
@@ -293,9 +304,9 @@ async function runBook(mode, dir) {
   process.exit(0);
 }
 
-function runChild(args, timeout) {
+function runChild(args, timeout, env = process.env) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [self, ...args], { timeout });
+    const child = spawn(process.execPath, [self, ...args], { timeout, env });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (buf) => { stdout += buf; });
@@ -361,12 +372,34 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       assert.equal(bookDigest(dir), before);
     });
 
+    it('a staging throw is logged and does not write the book', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-stage-fault-'));
+      const store = createStore(dir, { bookFault: 'stage', pruneAfter: 1_000_000 });
+      const notes = [];
+      const orig = console.error;
+      console.error = (...args) => {
+        notes.push(args.map(String).join(' '));
+        orig(...args);
+      };
+      try {
+        const got = sealNext(store, minerDest(), 8);
+        assert.equal(got.ok, false);
+        assert.equal(got.reason, 'stage_local');
+        assert.equal(store.tip(), null);
+        assert.equal(store.blocks.length, 0);
+        assert.ok(notes.some((line) => line.includes('"event":"apply_stage"') && line.includes('stage_local')));
+      } finally {
+        console.error = orig;
+      }
+    });
+
     it('a partial mempool insert rolls back', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-mempool-rollback-'));
       const store = createStore(dir, { bookFault: 'mempool' });
       const got = store.queueTx({ id: 'not-a-tx' });
       assert.equal(got.ok, false);
       assert.equal(got.reason, 'mempool_partial');
+      assert.equal(got.scorePeer, true);
       assert.equal(store.mempool.length, 0);
       assert.equal(store.mempool.some((row) => row && row.id === 'partial'), false);
     });
@@ -387,6 +420,18 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       assert.match(res.stdout, /"height":2/);
       assert.match(res.stdout, /alive/);
       openedBook(dir, 2);
+    });
+
+    it('a production store ignores bookFault', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-prod-fault-'));
+      const env = { ...process.env };
+      delete env.NODE_TEST_CONTEXT;
+      const res = await runChild(['--book', 'prod-ignore', '--dir', dir], 120_000, env);
+      assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+      const row = JSON.parse(res.stdout.trim().split('\n').filter(Boolean).pop());
+      assert.equal(row.ok, true);
+      assert.equal(row.height, 1);
+      assert.notEqual(row.reason, 'hash_owed');
     });
 
     it('a reorg restore fault exits 70 and the restarted book matches disk', async () => {

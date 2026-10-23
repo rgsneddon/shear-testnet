@@ -408,8 +408,8 @@ export const P2P_HELLO_MS = 20_000;
 /**
  * Census keepalive is broadcastCensus every 2s. It refreshes lastRx, which
  * the idle sweep reads, so a peer that only exchanges census is not idle-evicted.
- * Cap and reserve eviction use capIdleAt, which census does not refresh, and
- * only drop an inbound peer that has been idle at least idleLimit.
+ * Cap and reserve eviction use capIdleAt. Census, junk, and unknown message
+ * types do not refresh it. Only a peer idle at least idleLimit is dropped.
  * Busy means this peer recently delivered a block that validated, and that
  * credit expires with the idle window.
  */
@@ -424,6 +424,25 @@ export const P2P_OUTBOUND_RESERVE = 8;
  * must not walk the idle inbound set. Our own dials are not limited by this.
  */
 export const P2P_EVICT_COOLDOWN_MS = 10_000;
+/** Post-hello traffic that refreshes cap-eviction idle. Census and unknown types do not. */
+const CAP_IDLE_TYPES = new Set([
+  'hello',
+  'addr',
+  'getmempool',
+  'mempool',
+  'tx',
+  'work',
+  'tip',
+  'inv',
+  'getblocks',
+  'getheaders',
+  'headers',
+  'getblock',
+  'getblock_nak',
+  'block_not_found',
+  'block',
+  'blocks',
+]);
 
 export function p2pOutboundReserve(maxPeers, override) {
   const max = Math.max(1, Number(maxPeers) || 1);
@@ -1363,7 +1382,7 @@ export function createP2p({
     const got = store.queueTx(tx);
     if (!got?.ok) {
       seenTx.delete(id);
-      if (got?.proofChecked) {
+      if (got?.proofChecked || got?.scorePeer) {
         const rec = peers.get(fromSock);
         if (recordProofFail(rec)) {
           const until = Date.now() + P2P_BAN_MS;
@@ -1902,7 +1921,7 @@ export function createP2p({
       sock.destroy();
       return;
     }
-    if (welcomed && msg.type !== 'census') heard.capIdleAt = Date.now();
+    if (welcomed && CAP_IDLE_TYPES.has(msg.type)) heard.capIdleAt = Date.now();
     if (msg.type === 'hello') {
       const rec = heard || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
       rec.remote = peerRemoteKey(sock) || rec.remote;
