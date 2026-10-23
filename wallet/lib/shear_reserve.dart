@@ -437,7 +437,7 @@ String? _leafCommitHex(Map<String, Object?> leaf) {
   return _commitHex(leaf['commit']);
 }
 
-/// Rows from GET /api/vault/reserve?portal= or from the portal object itself.
+/// Rows from GET /api/vault/reserve?view=tranches, or from a portal object.
 List<Map<String, Object?>> tranchesFromNode(Object? raw) {
   Object? source = raw;
   if (raw is Map) {
