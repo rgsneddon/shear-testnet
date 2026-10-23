@@ -113,8 +113,9 @@ describe('foreign chain load names a reason before the vault boots', () => {
     const empty = createStore(tmp('shear-loadv-empty-'));
     assert.equal(empty.tip(), null);
     assert.equal(verifyLoadedChain([]).ok, true);
-    assert.equal(verifyLoadedChain([{}]).reason, 'no_header');
-    assert.equal(verifyLoadedChain([{ header: Buffer.alloc(10) }]).reason, 'bad_header');
+    assert.throws(() => verifyLoadedChain([{}]), (err) => err?.code === 'unknown_magic');
+    assert.equal(verifyLoadedChain([{}], { magic: MAGIC_TESTNET }).reason, 'no_header');
+    assert.equal(verifyLoadedChain([{ header: Buffer.alloc(10) }], { magic: MAGIC_TESTNET }).reason, 'bad_header');
 
     const dir = tmp('shear-loadv-fake-');
     writeChainBin(path.join(dir, 'chain.bin'), [{

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GENESIS_BITS_PACKED } from './asert.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from './asert.js';
 import { encodeHeader } from './header.js';
 import { merkleRoot } from './merkle.js';
 import { emptyMempool, admitMempool } from './mempool.js';
@@ -187,6 +187,7 @@ describe('FS-1 member key acceptance', () => {
         trustStoredHash: true,
         nowMs: WHEN,
         genesisHash: '',
+        magic: MAGIC_TESTNET,
       }).reason, 'unsigned');
     }
 

@@ -394,6 +394,7 @@ describe('v12 load applies the share rules', () => {
           trustStoredHash: true,
           trustShareWork: false,
           nowMs: Date.now(),
+          magic: MAGIC_TESTNET,
         });
         assert.equal(checked.ok, false, `${bits}:${spread.dests}x${spread.count}`);
         assert.equal(checked.reason, 'share_pow');
@@ -431,6 +432,7 @@ describe('v12 load applies the share rules', () => {
       trustStoredHash: true,
       trustShareWork: false,
       nowMs: Date.now(),
+      magic: MAGIC_TESTNET,
     });
     const ms = Date.now() - t1;
     const hashed = sharePowCounters().sync;

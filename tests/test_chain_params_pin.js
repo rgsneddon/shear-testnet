@@ -42,7 +42,8 @@ import {
   packBits,
 } from '../crypto/asert.js';
 import { potSubsidyAt } from '../crypto/pot_sched.js';
-import { buildTemplate } from '../node/src/chain.js';
+import { buildTemplate, verifyLoadedChain } from '../node/src/chain.js';
+import { latestPaths, readLatestBootstrap } from '../node/src/bootstrap.js';
 import { encodeDest, newIdentity, ed25519PrivateFromSeed, ed25519RawPub, hash20FromAddress } from '../crypto/address.js';
 import { destForLogin } from '../crypto/flow_sheet.js';
 import { signPoolWithdraw, verifyPoolWithdrawSig, poolWithdrawMagic, poolWithdrawDigest } from '../crypto/eip712.js';
@@ -782,6 +783,31 @@ describe('chain param table', () => {
     );
     assert.equal(bare.status, 400);
     assert.equal(bare.json.reason, 'unknown_magic');
+  });
+
+  it('a load with no magic throws, and a bootstrap manifest must name its book', () => {
+    const block = { txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }] };
+    assert.throws(() => verifyLoadedChain([block]), (err) => err?.code === 'unknown_magic');
+    assert.throws(() => verifyLoadedChain([block], { magic: '' }), (err) => err?.code === 'unknown_magic');
+    const named = verifyLoadedChain([block], { magic: 'shear-testnet-v12' });
+    assert.equal(named.ok, false);
+    assert.equal(typeof named.reason, 'string');
+    const chainSrc = fs.readFileSync(path.join(root, 'node/src/chain.js'), 'utf8');
+    const begin = chainSrc.slice(chainSrc.indexOf('function beginLoaded'), chainSrc.indexOf('export function noteFromAnchor'));
+    assert.equal(/magic = MAGIC_TESTNET/.test(begin), false);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-magic-'));
+    const paths = latestPaths(dir);
+    fs.mkdirSync(paths.dir, { recursive: true });
+    fs.writeFileSync(paths.bin, Buffer.alloc(0));
+    fs.writeFileSync(paths.json, `${JSON.stringify({ latest: true })}\n`);
+    assert.throws(() => readLatestBootstrap(dir), (err) => err?.code === 'unknown_magic');
+    fs.writeFileSync(paths.json, `${JSON.stringify({ latest: true, magic: '' })}\n`);
+    assert.throws(() => readLatestBootstrap(dir), (err) => err?.code === 'unknown_magic');
+    fs.writeFileSync(paths.json, `${JSON.stringify({ latest: true, magic: 'shear-dev' })}\n`);
+    assert.throws(() => readLatestBootstrap(dir), /bootstrap_magic/);
+    const bootSrc = fs.readFileSync(path.join(root, 'node/src/bootstrap.js'), 'utf8');
+    assert.match(bootSrc, /magic: manifest\.magic/);
+    assert.equal(/manifest\.magic && manifest\.magic !== MAGIC_TESTNET/.test(bootSrc), false);
   });
 
   it('the dev node and the dev pool connect on the table sidecar port', async () => {

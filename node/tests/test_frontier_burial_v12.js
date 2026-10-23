@@ -655,6 +655,7 @@ describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import
       trustStoredHash: true,
       nowMs: Date.now(),
       genesisMs,
+      magic: MAGIC_TESTNET,
     });
     assert.equal(loaded.ok, true, loaded.reason || 'reload');
     assert.equal(loaded.supplyAt.length, chain.length);

@@ -149,7 +149,12 @@ export function readLatestBootstrap(fromDir) {
   }
   const manifest = JSON.parse(fs.readFileSync(paths.json, 'utf8'));
   if (manifest.latest !== true) throw new Error('bootstrap_not_latest');
-  if (manifest.magic && manifest.magic !== MAGIC_TESTNET) throw new Error('bootstrap_magic');
+  if (manifest.magic == null || manifest.magic === '') {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
+  if (manifest.magic !== MAGIC_TESTNET) throw new Error('bootstrap_magic');
   const blocks = readChainBin(paths.bin);
   if (!blocks.length) throw new Error('bootstrap_empty');
   if (Number(blocks[0].height) !== 1) throw new Error('bootstrap_not_genesis');
@@ -163,7 +168,7 @@ export function readLatestBootstrap(fromDir) {
     }
   }
   // Header and proof-of-work before N-1. A bad header does not derive a leaf.
-  const checked = verifyLoadedChain(blocks, { nowMs: Date.now() });
+  const checked = verifyLoadedChain(blocks, { nowMs: Date.now(), magic: manifest.magic });
   if (!checked.ok) throw new Error(checked.reason || 'pow');
   const notes = chainNoteRuleRejected(blocks);
   if (notes) throw new Error(notes.reason);

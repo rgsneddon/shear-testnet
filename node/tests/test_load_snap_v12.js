@@ -456,6 +456,7 @@ describe('v12 own-install snapshot', () => {
     try {
       const got = await verifyLoadedChainAsync(blocks, {
         trustStoredHash: true,
+        magic: MAGIC_TESTNET,
         onProgress: (p) => heights.push(p.height),
       });
       assert.equal(got.ok, true, got.reason || 'replay');

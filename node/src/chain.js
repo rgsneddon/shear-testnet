@@ -3374,13 +3374,19 @@ function beginLoaded(blocks, {
   prior = null,
   reorgHaltDepth = 0,
   burialOf = null,
-  magic = MAGIC_TESTNET,
+  magic = null,
   oracleActivationHeight = undefined,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   if (!list.length) return { ok: true, empty: true };
   const gated = chainStage0Rejected(list);
   if (gated) return gated;
+  // A missing book is not the v12 clock. Stage 0 already answered above.
+  if (magic == null || magic === '') {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
   // N-1 runs inside each block, after the header and the budget. A load
   // does not walk leaves before proof-of-work.
   const givenClock = Number(nowMs);

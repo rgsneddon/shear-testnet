@@ -18,7 +18,7 @@ import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
 import { createP2p } from '../src/p2p.js';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { consensusFingerprint } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, consensusFingerprint } from '../../crypto/asert.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import {
   flowProofVerifyCount,
@@ -190,7 +190,7 @@ describe('FS-1 stage 0 send gate', () => {
     const v2 = flowTx('v2');
     v2.admit_proof.v = 2;
     v2.admit_proof.blob[0] = 2;
-    const loaded = verifyLoadedChain([{ txs: [v2], header: Buffer.alloc(80), hash: Buffer.alloc(32) }]);
+    const loaded = verifyLoadedChain([{ txs: [v2], header: Buffer.alloc(80), hash: Buffer.alloc(32) }], { magic: MAGIC_TESTNET });
     assert.notEqual(loaded.reason, 'send_unavailable');
     assert.equal(chainStage0Rejected([{ txs: [v2] }]), null);
   });

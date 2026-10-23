@@ -140,7 +140,7 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
         resetFs1LeafDerives();
         assert.equal(verifyBlock(block, null).reason, 'height', `${kind} verify`);
         assert.equal(fs1LeafDeriveCount(), 0, `${kind} verify derives`);
-        assert.equal(verifyLoadedChain([block]).reason, 'height', `${kind} load`);
+        assert.equal(verifyLoadedChain([block], { magic: MAGIC_TESTNET }).reason, 'height', `${kind} load`);
         assert.equal(fs1LeafDeriveCount(), 0, `${kind} load derives`);
         assert.equal(chainNoteRuleRejected([block]).reason, 'admit_note_point', `${kind} height`);
         resetFs1LeafDerives();
