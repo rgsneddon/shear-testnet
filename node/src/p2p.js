@@ -410,10 +410,11 @@ export const P2P_HELLO_MS = 20_000;
  * the idle sweep reads, so a peer that only exchanges census is not idle-evicted.
  * Cap and reserve eviction use capIdleAt. That clock starts at the first hello
  * and moves when a block from this peer verifies, a tx from this peer is
- * accepted, or this node serves that peer a non-empty getheaders, getblocks,
- * or getblock. Work rows, header offers, empty replies, and not-found replies
- * do not move it. Cheap requests, advertisements, census, junk, and unknown
- * types do not either. Only a peer idle at least idleLimit is dropped.
+ * accepted, or a getheaders, getblocks, or getblock we serve moves past the
+ * height already served to that peer. A repeated locator or the same block
+ * does not move it. Work rows, header offers, empty replies, and not-found
+ * replies do not either. Cheap requests, advertisements, census, junk, and
+ * unknown types do not either. Only a peer idle at least idleLimit is dropped.
  * Busy means this peer recently delivered a block that validated, and that
  * credit expires with the idle window.
  */
@@ -428,6 +429,27 @@ export const P2P_OUTBOUND_RESERVE = 8;
  * must not walk the idle inbound set. Our own dials are not limited by this.
  */
 export const P2P_EVICT_COOLDOWN_MS = 10_000;
+/** Header and block serves counted toward cap idle, per peer. */
+export const P2P_SERVE_WINDOW_MS = 10_000;
+export const P2P_SERVE_HEADERS_PER_WINDOW = 8;
+export const P2P_SERVE_BLOCK_PER_WINDOW = 256;
+/**
+ * A block that verified and then threw while staging. Further copies skip
+ * ShearHash until the backoff ends. 60s, doubling, capped near 15 minutes.
+ */
+export const STAGE_HOLD_BASE_MS = 60_000;
+export const STAGE_HOLD_MAX_MS = 15 * 60_000;
+export const STAGE_HOLD_CAP = 1024;
+
+export function nextStageHold(prev, now = Date.now(), base = STAGE_HOLD_BASE_MS, max = STAGE_HOLD_MAX_MS) {
+  const prior = Number(prev?.delay) || 0;
+  const delay = prior > 0 ? Math.min(max, prior * 2) : base;
+  return { delay, until: now + delay };
+}
+
+export function stageHoldActive(row, now = Date.now()) {
+  return Number(row?.until) > Number(now);
+}
 
 export function p2pOutboundReserve(maxPeers, override) {
   const max = Math.max(1, Number(maxPeers) || 1);
@@ -1135,6 +1157,7 @@ export function createP2p({
   outboundReserve = undefined,
   evictCooldownMs = undefined,
   inboundPer24 = P2P_INBOUND_PER24,
+  stageHoldBaseMs = STAGE_HOLD_BASE_MS,
 } = {}) {
   const reserveSlots = p2pOutboundReserve(maxPeers, outboundReserve);
   const inboundCap = p2pInboundCap(maxPeers, outboundReserve);
@@ -1144,6 +1167,8 @@ export function createP2p({
     ? P2P_EVICT_COOLDOWN_MS
     : Math.max(0, Number(evictCooldownMs) || 0);
   const per24Cap = Math.max(1, Math.floor(Number(inboundPer24) || P2P_INBOUND_PER24));
+  const stageHoldBase = Math.max(1, Math.floor(Number(stageHoldBaseMs) || STAGE_HOLD_BASE_MS));
+  const stageHolds = new Map();
   let lastCapEvictAt = 0;
   const sockets = new Set();
   const peers = new Map();
@@ -1904,6 +1929,59 @@ export function createP2p({
     rec.capIdleAt = Date.now();
   }
 
+  function allowServe(rec, kind, now = Date.now()) {
+    if (!rec) return false;
+    const cap = kind === 'block' ? P2P_SERVE_BLOCK_PER_WINDOW : P2P_SERVE_HEADERS_PER_WINDOW;
+    if (!rec.serveWin) rec.serveWin = {};
+    let win = rec.serveWin[kind];
+    if (!win || now - win.start >= P2P_SERVE_WINDOW_MS) win = { start: now, used: 0 };
+    if (win.used >= cap) {
+      rec.serveWin[kind] = win;
+      return false;
+    }
+    win.used += 1;
+    rec.serveWin[kind] = win;
+    return true;
+  }
+
+  function noteServedHeight(sock, height) {
+    const rec = peers.get(sock);
+    const h = Number(height) || 0;
+    if (!rec || !(h > Number(rec.servedHeight || 0))) return false;
+    rec.servedHeight = h;
+    noteCapIdle(sock);
+    return true;
+  }
+
+  function pageTop(hdrs) {
+    let top = 0;
+    for (const row of hdrs || []) {
+      const n = Number(row?.height) || 0;
+      if (n > top) top = n;
+    }
+    return top;
+  }
+
+  function noteStageHold(hash, now = Date.now()) {
+    const key = String(hash || '').toLowerCase();
+    if (!key) return;
+    const next = nextStageHold(stageHolds.get(key), now, stageHoldBase, STAGE_HOLD_MAX_MS);
+    stageHolds.set(key, next);
+    while (stageHolds.size > STAGE_HOLD_CAP) {
+      let drop = '';
+      let soon = Infinity;
+      for (const [held, row] of stageHolds) {
+        if (held === key) continue;
+        if (Number(row?.until) < soon) {
+          soon = Number(row.until);
+          drop = held;
+        }
+      }
+      if (!drop) break;
+      stageHolds.delete(drop);
+    }
+  }
+
   function handle(sock, msg) {
     if (!msg || typeof msg !== 'object') return;
     const heard = peers.get(sock);
@@ -2016,6 +2094,8 @@ export function createP2p({
       return;
     }
     if (msg.type === 'getblocks' || msg.type === 'getheaders') {
+      const asker = peers.get(sock);
+      if (!allowServe(asker, 'headers')) return;
       const hdrs = selectHeadersAfterLocator(store.blocks || [], {
         locator: msg.locator,
         stopHash: msg.stopHash || msg.hashStop || '',
@@ -2025,7 +2105,7 @@ export function createP2p({
         if (msg.type === 'getheaders') send(sock, { type: 'headers', magic, headers: hdrs });
         return;
       }
-      noteCapIdle(sock);
+      noteServedHeight(sock, pageTop(hdrs));
       send(sock, { type: 'headers', magic, headers: hdrs });
       return;
     }
@@ -2144,6 +2224,8 @@ export function createP2p({
     }
     if (msg.type === 'getblock') {
       const want = wireHash(msg.hash);
+      const asker = peers.get(sock);
+      if (!allowServe(asker, 'block')) return;
       const idx = want ? headerIndexByHash(store.blocks, want) : -1;
       const b = idx >= 0 ? store.blocks[idx] : null;
       if (b) {
@@ -2154,7 +2236,7 @@ export function createP2p({
             height: b.height || 0,
           }));
         } catch { /* ignore */ }
-        if (enqueueGetblockServe(sock, b)) noteCapIdle(sock);
+        if (enqueueGetblockServe(sock, b)) noteServedHeight(sock, Number(b.height) || 0);
       } else if (want) {
         send(sock, { type: 'getblock_nak', magic, hash: want });
         noteBlockWaiter(want, sock);
@@ -2263,6 +2345,14 @@ export function createP2p({
           return;
         }
       }
+      if (lastHash && stageHoldActive(stageHolds.get(lastHash))) {
+        if (recNow) {
+          recNow.pending?.delete(lastHash);
+          recNow.verifying?.delete(lastHash);
+          recNow.syncing = false;
+        }
+        return;
+      }
       const verifyKey = fork?.[0]?.header ? Buffer.from(fork[0].header).toString('hex') : lastHash;
       if (verifyKey && recNow?.verifying?.has(verifyKey)) return;
       if (recNow) {
@@ -2286,6 +2376,8 @@ export function createP2p({
         return go();
       });
       job.then(({ got, before }) => {
+        if (lastHash && got?.reason === 'apply_stage') noteStageHold(lastHash);
+        else if (got?.ok && lastHash) stageHolds.delete(lastHash);
         const rec = peers.get(sock);
         if (!got?.ok) {
           try {

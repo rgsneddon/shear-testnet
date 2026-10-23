@@ -28,6 +28,7 @@ import {
   OPEN_ROUND_CAP,
   OPEN_ROUND_PEER_RATE,
   OPEN_ROUND_PEER_TAGS,
+  OPEN_ROUND_PEER_WINDOW_MS,
   createStore,
 } from '../src/store.js';
 
@@ -461,6 +462,35 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       assert.equal(local.length, 1);
       assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
       assert.equal(store.openRoundRows().some((row) => row.tag === tag(900001) && row.count === 9), true);
+    });
+
+    it('an address can take new miner tags after its work window', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-open-round-window-'));
+      const store = createStore(dir, { pruneAfter: 1_000_000 });
+      const tag = (n) => `m${n.toString(16).padStart(8, '0')}`;
+      const peer = '203.0.113.50';
+      const t0 = Date.now();
+      const first = [];
+      const second = [];
+      for (let i = 0; i < OPEN_ROUND_PEER_TAGS; i += 1) first.push({ tag: tag(i), count: 1 });
+      for (let i = 0; i < OPEN_ROUND_PEER_TAGS; i += 1) second.push({ tag: tag(1000 + i), count: 2 });
+      const opened = store.noteOpenRound(first, { source: 'peer', peer, now: t0 });
+      assert.equal(opened.length, OPEN_ROUND_PEER_TAGS);
+      const blocked = store.noteOpenRound(second, { source: 'peer', peer, now: t0 + 1_000 });
+      assert.equal(blocked.length, 0);
+      const rotated = store.noteOpenRound(second, {
+        source: 'peer',
+        peer,
+        now: t0 + OPEN_ROUND_PEER_WINDOW_MS,
+      });
+      assert.equal(rotated.length, OPEN_ROUND_PEER_TAGS);
+      assert.equal(rotated[0].tag, tag(1000));
+      assert.equal(store.openRoundRows().some((row) => row.tag === tag(1000) && row.count === 2), true);
+      const bumped = store.noteOpenRound(
+        [{ tag: tag(1000), count: 3 }],
+        { source: 'peer', peer, now: t0 + OPEN_ROUND_PEER_WINDOW_MS + OPEN_ROUND_PEER_WINDOW_MS },
+      );
+      assert.deepEqual(bumped, [{ tag: tag(1000), count: 3 }]);
     });
 
     it('a partial mempool insert rolls back', () => {

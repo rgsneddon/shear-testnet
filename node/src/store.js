@@ -5701,20 +5701,24 @@ export function createStore(dir, {
     } else if (now - row.windowStart >= OPEN_ROUND_PEER_WINDOW_MS) {
       row.windowStart = now;
       row.used = 0;
+      row.tags.clear();
     }
     peerRoundBudget.set(key, row);
     return row;
   }
 
-  function noteOpenRound(rows = [], { source = 'local', peer = '' } = {}) {
-    const now = Date.now();
+  function noteOpenRound(rows = [], { source = 'local', peer = '', now = Date.now() } = {}) {
     const local = source === 'local';
     const inspect = local ? OPEN_ROUND_CAP : OPEN_ROUND_PEER_TAGS * 4;
     const list = Array.isArray(rows) ? rows.slice(0, inspect) : [];
     const budget = local ? null : peerBudget(peer, now);
     const accepted = [];
     for (const [key, row] of openRound) {
-      if (now - row.at > OPEN_ROUND_TTL_MS) openRound.delete(key);
+      if (now - row.at > OPEN_ROUND_TTL_MS) {
+        openRound.delete(key);
+        const owner = peerRoundBudget.get(row.peer);
+        if (owner) owner.tags.delete(key);
+      }
     }
     for (const r of list) {
       const tag = String(r?.tag || '').trim().toLowerCase();
