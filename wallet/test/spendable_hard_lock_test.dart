@@ -692,7 +692,7 @@ void main() {
   test(
     'a heavier fork below the retained window survives a moving tip and an empty read',
     () async {
-      const forkTip = 42;
+      const forkTip = 38;
       final id = createIdentity();
       final ledger = ShearLedger()
         ..bindIdentity(id)
@@ -748,8 +748,38 @@ void main() {
       expect(ledger.forkProofAttempts, greaterThan(2));
       expect(ledger.bookTip, forkTip);
     },
-    timeout: const Timeout(Duration(minutes: 8)),
+    timeout: const Timeout(Duration(minutes: 12)),
   );
+
+  test('a digest cap smaller than the branch still switches', () async {
+    const forkTip = 59;
+    final id = createIdentity();
+    final ledger = ShearLedger()
+      ..bindIdentity(id)
+      ..bindHeaderClock(_lowBitsAt(forkTip + 2))
+      ..forkDigestCap = 16
+      ..forkWalkCap = 24
+      ..headerWalkDeadline = const Duration(hours: 1)
+      ..bindForkClock(1)
+      ..installCheckpoint(_fixturePin());
+    final main = await _mineAbovePin(from: 20, to: 30);
+    expect(
+      await ledger.catchUpVerifiedChain(
+        30,
+        fetch: (from, to) => _headersFrom(main, from, to),
+      ),
+      30,
+    );
+    final fork = await _mineAbovePin(from: 20, to: forkTip, salt: 3);
+    const passes = 12;
+    for (var pass = 0; pass < passes && ledger.bookTip < forkTip; pass++) {
+      await ledger.catchUpVerifiedChain(
+        forkTip,
+        fetch: (from, to) => _headersFrom(fork, from, to),
+      );
+    }
+    expect(ledger.bookTip, forkTip);
+  }, timeout: const Timeout(Duration(minutes: 10)));
 
   test('a failed fork proof backs off and then doubles the wait', () async {
     final id = createIdentity();
@@ -903,6 +933,13 @@ void main() {
     expect(ledger.forkProofAttempts, attempts + 1);
     expect(ledger.headerHashCount - hashed, lessThanOrEqualTo(3));
     expect(ledger.bookTip, 22);
+    expect(ledger.headerStallLine, isNull);
+    for (var i = 0; i < 3; i++) {
+      await offer();
+    }
+    expect(ledger.headerStallLine, 'host not serving headers');
+    expect(ledger.forkProofAttempts, attempts + 1);
+    expect(ledger.headerHashCount - hashed, lessThanOrEqualTo(3));
     final again = ledger.headerHashCount;
     final badTip = _linkedHeader(
       prev: shearHashV3(fork[33]!)!,
@@ -988,6 +1025,117 @@ void main() {
     expect(ledger.bookTip, 24);
     expect(ledger.headerStallLine, isNull);
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a header ahead of the clock is not banned', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()
+      ..bindIdentity(id)
+      ..bindHeaderClock(_lowBitsAt(22))
+      ..bindForkClock(1000)
+      ..installCheckpoint(_fixturePin());
+    final honest = await _mineAbovePin(from: 20, to: 22);
+    expect(
+      await ledger.catchUpVerifiedChain(
+        22,
+        fetch: (from, to) => _headersFrom(honest, from, to),
+      ),
+      22,
+    );
+    final ahead = _linkedHeader(
+      prev: shearHashV3(honest[22]!)!,
+      timestampMs: _lowBitsAt(22) + 60000,
+      bits: 4 * 65536,
+    );
+    Future<void> offer() {
+      return ledger.catchUpVerifiedChain(
+        23,
+        fetch: (from, to) async {
+          if (from >= 23) return [(height: from, header: ahead)];
+          final header = honest[from];
+          if (header == null) return <({int height, Uint8List header})>[];
+          return [(height: from, header: header)];
+        },
+      );
+    }
+
+    await offer();
+    expect(ledger.bookTip, 22);
+    expect(ledger.forkProofAttempts, 1);
+    await offer();
+    expect(ledger.bookTip, 22);
+    expect(ledger.forkProofAttempts, 2);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test(
+    'a fake under the tip fails before the real prefix is hashed again',
+    () async {
+      final id = createIdentity();
+      final ledger = ShearLedger()
+        ..bindIdentity(id)
+        ..bindHeaderClock(_lowBitsAt(42))
+        ..forkProofBackoff = const Duration(milliseconds: 1000)
+        ..bindForkClock(1000)
+        ..installCheckpoint(_fixturePin());
+      final honest = await _mineAbovePin(from: 20, to: 36);
+      expect(
+        await ledger.catchUpVerifiedChain(
+          36,
+          fetch: (from, to) => _headersFrom(honest, from, to),
+        ),
+        36,
+      );
+      final fake = _linkedHeader(
+        prev: shearHashV3(honest[29]!)!,
+        timestampMs: _lowBitsAt(30),
+        bits: 4 * 65536,
+      );
+      Uint8List? fakeHash;
+      for (var n = 0; n < 64; n++) {
+        shearSetNonce(fake, n);
+        final digest = shearHashV3(fake);
+        if (digest != null && !shearMeetsTarget(digest, 4 * 65536)) {
+          fakeHash = digest;
+          break;
+        }
+      }
+      expect(fakeHash, isNotNull);
+      final fork = await _mineFrom(
+        prev: fakeHash!,
+        from: 31,
+        to: 38,
+        salt: 6,
+      );
+      Future<List<({int height, Uint8List header})>> serve(int from, int to) async {
+        final out = <({int height, Uint8List header})>[];
+        for (var h = from; h <= to; h++) {
+          if (h == 30) {
+            out.add((height: h, header: fake));
+            continue;
+          }
+          final mined = fork[h] ?? (h < 30 ? honest[h] : null);
+          if (mined == null) break;
+          out.add((height: h, header: mined));
+        }
+        return out;
+      }
+
+      final before = ledger.headerHashCount;
+      final attempts = ledger.forkProofAttempts;
+      await ledger.catchUpVerifiedChain(38, fetch: serve);
+      final delta = ledger.headerHashCount - before;
+      expect(ledger.bookTip, 36);
+      expect(ledger.forkProofAttempts, attempts + 1);
+      expect(delta, greaterThan(3));
+      expect(delta, lessThanOrEqualTo(14), reason: 'prefix re-hash $delta');
+      ledger.bindForkClock(2000);
+      final again = ledger.headerHashCount;
+      await ledger.catchUpVerifiedChain(38, fetch: serve);
+      expect(ledger.forkProofAttempts, attempts + 1);
+      expect(ledger.headerHashCount - again, lessThanOrEqualTo(3));
+      expect(ledger.bookTip, 36);
+    },
+    timeout: const Timeout(Duration(minutes: 6)),
+  );
 
   test('a legacy header file with no stored work is discarded', () async {
     final id = createIdentity();

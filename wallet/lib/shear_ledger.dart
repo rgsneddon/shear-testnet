@@ -3887,7 +3887,7 @@ bool shearviewMatches(ShearTx t, String query) {
 
 /// Spendable at block-found only. Per-hash credit sits in [pending] until confirm.
 /// Cheap header verdict. [wait] means MTP samples are still below the walk.
-enum _WalkCheap { ok, reject, wait }
+enum _WalkCheap { ok, reject, wait, later }
 
 /// Result of proving a competing branch. A lighter honest fork is not a failure.
 /// [partial] keeps the branch for a later pass. Nothing is written yet.
@@ -5049,10 +5049,19 @@ class ShearLedger implements ReadProofSink {
   /// Branch ids this host already failed. The same header bytes are not walked again.
   final Map<String, List<String>> _forkBanned = {};
 
+  /// Host tip at which those ids were banned. A higher tip clears them.
+  final Map<String, int> _forkBannedAtTip = {};
+
+  /// Header hashes on the branch being proved. Eviction skips these.
+  final Set<String> _forkPinnedDigests = {};
+
   int _forkStallPasses = 0;
   int? _forkStallBottom;
+  int? _forkStallTop;
   int _forkStallProved = 0;
-  int _forkStallDigests = 0;
+  int _forkStallLen = 0;
+  int _forkStallHashes = 0;
+  int _forkHostTipSeen = 0;
 
   /// Test clock for fork backoff and the walk deadline. Header time is separate.
   void bindForkClock(int nowMs) {
@@ -5075,7 +5084,9 @@ class ShearLedger implements ReadProofSink {
   /// Resume anchor: the pin plus at least an 11-header MTP window.
   static const int _kHeaderKeep = 16;
 
-  /// Proved header digests kept across a reject. A week of headers fits.
+  /// Digests kept for headers that are not on the open branch.
+  /// The branch being proved is exempt, so a fork longer than this still
+  /// finishes. The pin is the only floor.
   static const int _kForkDigestCap = 8192;
 
   /// Rejected branch ids remembered per host.
@@ -5083,6 +5094,9 @@ class ShearLedger implements ReadProofSink {
 
   /// Empty passes with the same bottom before the shell says the host stalled.
   static const int _kForkStallPasses = 4;
+
+  /// Tests shrink this. The open branch is not limited by it.
+  int forkDigestCap = _kForkDigestCap;
 
   int get _chainTip {
     var tip = 0;
@@ -5440,8 +5454,9 @@ class ShearLedger implements ReadProofSink {
       return _WalkCheap.reject;
     }
     final now = _headerNowMs ?? DateTime.now().millisecondsSinceEpoch;
+    // Clock bounds are not a bad header. A step backward must not ban it.
     if (ts > now + _kHeaderAheadMs || ts > now + _kMtpFutureMs) {
-      return _WalkCheap.reject;
+      return _WalkCheap.later;
     }
     if (pin.anchorHeight != kConsensusAnchorHeight) return _WalkCheap.reject;
     if (pin.anchorBits != kConsensusAnchorBits) return _WalkCheap.reject;
@@ -5463,7 +5478,7 @@ class ShearLedger implements ReadProofSink {
       if (t == null) return _WalkCheap.wait;
       window.add(t);
     }
-    if (ts > _medianTimes(window) + _kMtpFutureMs) return _WalkCheap.reject;
+    if (ts > _medianTimes(window) + _kMtpFutureMs) return _WalkCheap.later;
     return _WalkCheap.ok;
   }
 
@@ -5565,32 +5580,55 @@ class ShearLedger implements ReadProofSink {
 
   void _clearForkBackoff(String host) => _forkBackoff.remove(host);
 
-  void _clearForkResume() {
+  void _clearForkResume({bool resetStall = true}) {
     _forkResumeHost = null;
     _forkResumeBottom = null;
     _forkResumeBranch = null;
     _forkResumeProved = 0;
+    _forkPinnedDigests.clear();
+    if (!resetStall) return;
     _forkStallPasses = 0;
     _forkStallBottom = null;
+    _forkStallTop = null;
     _forkStallProved = 0;
-    _forkStallDigests = 0;
+    _forkStallLen = 0;
+    _forkStallHashes = headerHashCount;
+  }
+
+  /// The open branch keeps every digest it still needs. Other entries
+  /// leave first. Past the cap, the branch itself is the bound.
+  void _protectForkDigests(List<({int height, Uint8List header})> branch) {
+    _forkPinnedDigests
+      ..clear()
+      ..addAll([for (final row in branch) _bytesHex(row.header)]);
+  }
+
+  void _evictUnpinnedForkDigest() {
+    String? drop;
+    for (final key in _forkDigests.keys) {
+      if (_forkPinnedDigests.contains(key)) continue;
+      drop = key;
+      break;
+    }
+    if (drop != null) _forkDigests.remove(drop);
   }
 
   void _keepForkDigest(Uint8List header, Uint8List digest) {
     final hex = _bytesHex(header);
-    if (_forkDigests.length >= _kForkDigestCap &&
-        !_forkDigests.containsKey(hex)) {
-      _forkDigests.remove(_forkDigests.keys.first);
+    final cap = forkDigestCap < 1 ? 1 : forkDigestCap;
+    if (_forkDigests.length >= cap && !_forkDigests.containsKey(hex)) {
+      _evictUnpinnedForkDigest();
     }
     _forkDigests[hex] = Uint8List.fromList(digest);
     _rememberDigest(hex, digest);
   }
 
+  /// [tip] is set only when that header's link down to [failed] checked out.
   void _banFork(
     String host,
-    List<({int height, Uint8List header})> branch,
-    Uint8List failed,
-  ) {
+    Uint8List failed, {
+    Uint8List? tip,
+  }) {
     final ids = _forkBanned.putIfAbsent(host, () => <String>[]);
     void add(String hex) {
       ids.remove(hex);
@@ -5598,10 +5636,39 @@ class ShearLedger implements ReadProofSink {
     }
 
     add(_bytesHex(failed));
-    if (branch.isNotEmpty) add(_bytesHex(branch.last.header));
+    if (tip != null) add(_bytesHex(tip));
     while (ids.length > _kBannedForks) {
       ids.removeAt(0);
     }
+    final seen = _forkBannedAtTip[host];
+    if (seen == null || _forkHostTipSeen > seen) {
+      _forkBannedAtTip[host] = _forkHostTipSeen;
+    }
+  }
+
+  void _expireForkBans(String host, int hostTip) {
+    final at = _forkBannedAtTip[host];
+    if (at == null || hostTip <= at) return;
+    _forkBanned.remove(host);
+    _forkBannedAtTip.remove(host);
+  }
+
+  /// True when every link from the branch tip down to [target] is cached.
+  bool _forkLinksTo(
+    List<({int height, Uint8List header})> branch,
+    Uint8List target,
+  ) {
+    if (branch.isEmpty) return false;
+    final targetHex = _bytesHex(target);
+    if (_bytesHex(branch.last.header) == targetHex) return true;
+    for (var i = branch.length - 1; i > 0; i--) {
+      final parent = _cachedForkDigest(branch[i - 1].header);
+      if (parent == null || !_prevEquals(branch[i].header, parent)) {
+        return false;
+      }
+      if (_bytesHex(branch[i - 1].header) == targetHex) return true;
+    }
+    return false;
   }
 
   bool _forkIsBanned(
@@ -5696,6 +5763,7 @@ class ShearLedger implements ReadProofSink {
     String host,
     List<({int height, Uint8List header})> branch, {
     int? proved,
+    bool countStall = true,
   }) {
     if (branch.isEmpty) {
       _clearForkResume();
@@ -5707,29 +5775,41 @@ class ShearLedger implements ReadProofSink {
       for (final row in branch)
         (height: row.height, header: Uint8List.fromList(row.header)),
     ];
+    _protectForkDigests(_forkResumeBranch!);
     if (proved != null) _forkResumeProved = proved;
-    _noteForkStall();
+    _noteForkStall(count: countStall);
   }
 
-  void _noteForkStall() {
+  /// Progress is a new header, a new proof, or a real hash. A full digest
+  /// map is not progress. Wallet-side waits pass [count] false.
+  void _noteForkStall({bool count = true}) {
     final branch = _forkResumeBranch;
     final bottom = (branch == null || branch.isEmpty)
         ? null
         : branch.first.height;
+    final top = (branch == null || branch.isEmpty)
+        ? null
+        : branch.last.height;
+    final len = branch?.length ?? 0;
     final proved = _forkResumeProved;
-    final lower =
-        bottom != null &&
-        (_forkStallBottom == null || bottom < _forkStallBottom!);
+    final hashes = headerHashCount;
+    final grew =
+        (bottom != null &&
+            (_forkStallBottom == null || bottom < _forkStallBottom!)) ||
+        (top != null && (_forkStallTop == null || top > _forkStallTop!)) ||
+        (branch != null && len > _forkStallLen);
     final moreProof = proved > _forkStallProved;
-    final moreDigests = _forkDigests.length > _forkStallDigests;
-    if (lower || moreProof || moreDigests) {
+    final moreHashes = hashes > _forkStallHashes;
+    if (grew || moreProof || moreHashes) {
       _forkStallPasses = 0;
-    } else {
+    } else if (count) {
       _forkStallPasses += 1;
     }
     if (bottom != null) _forkStallBottom = bottom;
+    if (top != null) _forkStallTop = top;
+    if (branch != null) _forkStallLen = len;
     _forkStallProved = proved;
-    _forkStallDigests = _forkDigests.length;
+    _forkStallHashes = hashes;
   }
 
   /// Claimed ASERT work, plus the heaviest remaining quote down to the pin,
@@ -5774,11 +5854,24 @@ class ShearLedger implements ReadProofSink {
       expired: expired,
     );
     if (result.kind == _ForkProof.partial) {
-      _saveForkResume(host, branch, proved: result.proved);
+      _saveForkResume(
+        host,
+        branch,
+        proved: result.proved,
+        countStall: result.countStall,
+      );
       return false;
     }
     if (result.kind == _ForkProof.invalid) {
-      if (result.failed != null) _banFork(host, branch, result.failed!);
+      if (result.failed != null) {
+        _banFork(
+          host,
+          result.failed!,
+          tip: result.banTip && branch.isNotEmpty
+              ? branch.last.header
+              : null,
+        );
+      }
       _rejectFork(host);
       return false;
     }
@@ -5812,8 +5905,13 @@ class ShearLedger implements ReadProofSink {
     if (_forkBackedOff(host)) return false;
     final ordered = List<({int height, Uint8List header})>.from(have)
       ..sort((a, b) => a.height.compareTo(b.height));
+    _forkHostTipSeen = hostTip;
+    _expireForkBans(host, hostTip);
     _dropForkResumeIfBehind();
-    if (_forkIsBanned(host, ordered)) return false;
+    if (_forkIsBanned(host, ordered)) {
+      _noteForkStall();
+      return false;
+    }
     forkProofAttempts += 1;
     final pinHash = _hexToBytes(pin.hashHex);
     if (pinHash == null) return false;
@@ -5821,6 +5919,7 @@ class ShearLedger implements ReadProofSink {
     bool expired() =>
         _forkNowMs() - started >= headerWalkDeadline.inMilliseconds;
     final branch = _takeForkBranch(host, ordered);
+    _protectForkDigests(branch);
     final cap = forkWalkCap < 1 ? 1 : forkWalkCap;
     var steps = 0;
     Future<bool> atAncestor(
@@ -5898,7 +5997,8 @@ class ShearLedger implements ReadProofSink {
       }
       final lower = rows.first;
       if (_forkIsBanned(host, [(height: lower.height, header: lower.header)])) {
-        _clearForkResume();
+        _clearForkResume(resetStall: false);
+        _noteForkStall();
         return false;
       }
       final parentTs = headerTimestampMs(lower.header);
@@ -5918,6 +6018,10 @@ class ShearLedger implements ReadProofSink {
         parentTimeMs: parentTs,
         timeAt: timeAt,
       );
+      if (cheap == _WalkCheap.later) {
+        _saveForkResume(host, branch, countStall: false);
+        return false;
+      }
       if (cheap == _WalkCheap.reject) {
         _rejectFork(host);
         return false;
@@ -5926,6 +6030,7 @@ class ShearLedger implements ReadProofSink {
         0,
         (height: lower.height, header: Uint8List.fromList(lower.header)),
       );
+      _protectForkDigests(branch);
       if (cheap == _WalkCheap.wait) continue;
       final lowerDigest = await _hashHeader(lower.header);
       final bottomDigest = await _hashHeader(bottom.header);
@@ -5934,11 +6039,9 @@ class ShearLedger implements ReadProofSink {
         return false;
       }
       if (lowerDigest == null || bottomDigest == null) {
-        _saveForkResume(host, branch);
+        _saveForkResume(host, branch, countStall: false);
         return false;
       }
-      _keepForkDigest(lower.header, lowerDigest);
-      _keepForkDigest(bottom.header, bottomDigest);
       final lowerOk = shearMeetsTarget(lowerDigest, _headerBits(lower.header));
       final bottomOk = shearMeetsTarget(
         bottomDigest,
@@ -5946,11 +6049,23 @@ class ShearLedger implements ReadProofSink {
       );
       final linkedOk = _prevEquals(bottom.header, lowerDigest);
       if (!lowerOk || !bottomOk || !linkedOk) {
-        final failed = !lowerOk ? lower.header : bottom.header;
-        _banFork(host, branch, failed);
+        final Uint8List failed;
+        var banTip = false;
+        if (!lowerOk) {
+          failed = lower.header;
+          banTip = linkedOk && _forkLinksTo(branch, bottom.header);
+        } else if (!bottomOk) {
+          failed = bottom.header;
+          banTip = _forkLinksTo(branch, bottom.header);
+        } else {
+          failed = bottom.header;
+        }
+        _banFork(host, failed, tip: banTip ? branch.last.header : null);
         _rejectFork(host);
         return false;
       }
+      _keepForkDigest(lower.header, lowerDigest);
+      _keepForkDigest(bottom.header, bottomDigest);
     }
     _saveForkResume(host, branch);
     return false;
@@ -5965,6 +6080,7 @@ class ShearLedger implements ReadProofSink {
     required bool Function() expired,
   }) async {
     if (budget < 1 || branch.isEmpty || expired()) return 0;
+    _protectForkDigests(branch);
     var used = 0;
     final extra = List<({int height, Uint8List header})>.from(have)
       ..sort((a, b) => a.height.compareTo(b.height));
@@ -5998,13 +6114,37 @@ class ShearLedger implements ReadProofSink {
           !shearMeetsTarget(digest, _headerBits(row.header))) {
         break;
       }
-      _keepForkDigest(row.header, digest);
       branch.add((
         height: row.height,
         header: Uint8List.fromList(row.header),
       ));
+      _protectForkDigests(branch);
+      _keepForkDigest(row.header, digest);
     }
     return used;
+  }
+
+  ({
+    _ForkProof kind,
+    int proved,
+    Uint8List? failed,
+    bool banTip,
+    bool countStall,
+  })
+  _forkResult(
+    _ForkProof kind,
+    int proved, {
+    Uint8List? failed,
+    bool banTip = false,
+    bool countStall = true,
+  }) {
+    return (
+      kind: kind,
+      proved: proved,
+      failed: failed,
+      banTip: banTip,
+      countStall: countStall,
+    );
   }
 
   /// [ancestor] is already checked. [branch] is the competing headers above
@@ -6013,8 +6153,18 @@ class ShearLedger implements ReadProofSink {
   /// Screening walks from the tip down, so a bad header fails before the
   /// prefix under it is hashed. One pass hashes at most [budget] new headers.
   /// A cached digest is free. The chain is not rolled back until the whole
-  /// branch proves. [failed] is the header that did not prove.
-  Future<({_ForkProof kind, int proved, Uint8List? failed})> _switchIfHeavier(
+  /// branch proves. [failed] is the header that did not prove. [banTip] is
+  /// set only when the tip's link down to that header checked out.
+  Future<
+    ({
+      _ForkProof kind,
+      int proved,
+      Uint8List? failed,
+      bool banTip,
+      bool countStall,
+    })
+  >
+  _switchIfHeavier(
     ({int height, Uint8List hash, int timeMs, String headerHex}) ancestor,
     List<({int height, Uint8List header})> branch, {
     required int alreadyProved,
@@ -6022,13 +6172,14 @@ class ShearLedger implements ReadProofSink {
     required bool Function() expired,
   }) async {
     if (branch.isEmpty) {
-      return (kind: _ForkProof.invalid, proved: 0, failed: null);
+      return _forkResult(_ForkProof.invalid, 0);
     }
+    _protectForkDigests(branch);
     for (var i = 0; i < branch.length; i++) {
       if (branch[i].height != ancestor.height + i + 1) {
-        return (
-          kind: _ForkProof.invalid,
-          proved: 0,
+        return _forkResult(
+          _ForkProof.invalid,
+          0,
           failed: branch[i].header,
         );
       }
@@ -6046,7 +6197,7 @@ class ShearLedger implements ReadProofSink {
           ? ancestor.timeMs
           : headerTimestampMs(branch[i - 1].header);
       if (parentTime == null) {
-        return (kind: _ForkProof.invalid, proved: 0, failed: row.header);
+        return _forkResult(_ForkProof.invalid, 0, failed: row.header);
       }
       final cached = _cachedForkDigest(row.header);
       if (cached == null && (fresh >= budget || expired())) break;
@@ -6056,11 +6207,11 @@ class ShearLedger implements ReadProofSink {
         parentTimeMs: parentTime,
         timeAt: timeAt,
       );
-      if (cheap == _WalkCheap.wait) {
-        return (kind: _ForkProof.partial, proved: 0, failed: null);
+      if (cheap == _WalkCheap.wait || cheap == _WalkCheap.later) {
+        return _forkResult(_ForkProof.partial, 0, countStall: false);
       }
       if (cheap != _WalkCheap.ok) {
-        return (kind: _ForkProof.invalid, proved: 0, failed: row.header);
+        return _forkResult(_ForkProof.invalid, 0, failed: row.header);
       }
       var digest = cached;
       if (digest == null) {
@@ -6068,22 +6219,30 @@ class ShearLedger implements ReadProofSink {
         digest = await _hashHeader(row.header);
       }
       if (digest == null) {
-        return (kind: _ForkProof.partial, proved: 0, failed: null);
+        return _forkResult(_ForkProof.partial, 0, countStall: false);
       }
       if (!shearMeetsTarget(digest, _headerBits(row.header))) {
-        return (kind: _ForkProof.invalid, proved: 0, failed: row.header);
+        final above = i + 1 < branch.length;
+        final childLinks =
+            above && _prevEquals(branch[i + 1].header, digest);
+        return _forkResult(
+          _ForkProof.invalid,
+          0,
+          failed: row.header,
+          banTip: !above || childLinks,
+        );
       }
       _keepForkDigest(row.header, digest);
       if (i + 1 < branch.length &&
           !_prevEquals(branch[i + 1].header, digest)) {
-        return (
-          kind: _ForkProof.invalid,
-          proved: 0,
+        return _forkResult(
+          _ForkProof.invalid,
+          0,
           failed: branch[i + 1].header,
         );
       }
       if (i == 0 && !_prevEquals(row.header, ancestor.hash)) {
-        return (kind: _ForkProof.invalid, proved: 0, failed: row.header);
+        return _forkResult(_ForkProof.invalid, 0, failed: row.header);
       }
     }
     var parentHash = ancestor.hash;
@@ -6092,16 +6251,16 @@ class ShearLedger implements ReadProofSink {
     final proved = <({int height, Uint8List header})>[];
     for (final row in branch) {
       if (row.height != ancestor.height + proved.length + 1) {
-        return (
-          kind: _ForkProof.invalid,
-          proved: proved.length,
+        return _forkResult(
+          _ForkProof.invalid,
+          proved.length,
           failed: row.header,
         );
       }
       final cached = _cachedForkDigest(row.header);
       final counting = proved.length >= alreadyProved;
       if (cached == null && counting && (fresh >= budget || expired())) {
-        return (kind: _ForkProof.partial, proved: proved.length, failed: null);
+        return _forkResult(_ForkProof.partial, proved.length);
       }
       final cheap = _headerLinkCheap(
         row.header,
@@ -6110,22 +6269,29 @@ class ShearLedger implements ReadProofSink {
         timeAt: timeAt,
         parentHash: parentHash,
       );
-      if (cheap == _WalkCheap.wait) {
-        return (kind: _ForkProof.partial, proved: proved.length, failed: null);
+      if (cheap == _WalkCheap.wait || cheap == _WalkCheap.later) {
+        return _forkResult(
+          _ForkProof.partial,
+          proved.length,
+          countStall: false,
+        );
       }
       if (cheap != _WalkCheap.ok) {
-        return (
-          kind: _ForkProof.invalid,
-          proved: proved.length,
+        return _forkResult(
+          _ForkProof.invalid,
+          proved.length,
           failed: row.header,
         );
       }
       if (cached == null && counting) fresh += 1;
       final digest = cached ?? await _hashHeader(row.header);
       if (digest == null) {
-        return (kind: _ForkProof.partial, proved: proved.length, failed: null);
+        return _forkResult(
+          _ForkProof.partial,
+          proved.length,
+          countStall: false,
+        );
       }
-      _keepForkDigest(row.header, digest);
       final provedDigest = _proveHeader(
         row.header,
         height: row.height,
@@ -6134,17 +6300,18 @@ class ShearLedger implements ReadProofSink {
         timeAt: timeAt,
       );
       if (provedDigest == null) {
-        return (
-          kind: _ForkProof.invalid,
-          proved: proved.length,
+        return _forkResult(
+          _ForkProof.invalid,
+          proved.length,
           failed: row.header,
         );
       }
+      _keepForkDigest(row.header, provedDigest);
       final ts = headerTimestampMs(row.header);
       if (ts == null) {
-        return (
-          kind: _ForkProof.invalid,
-          proved: proved.length,
+        return _forkResult(
+          _ForkProof.invalid,
+          proved.length,
           failed: row.header,
         );
       }
@@ -6155,7 +6322,7 @@ class ShearLedger implements ReadProofSink {
       proved.add((height: row.height, header: row.header));
     }
     if (work <= _droppedWork(ancestor.height)) {
-      return (kind: _ForkProof.lighter, proved: proved.length, failed: null);
+      return _forkResult(_ForkProof.lighter, proved.length);
     }
     final saved =
         List<({int height, Uint8List hash, int timeMs, String headerHex})>.from(
@@ -6173,7 +6340,7 @@ class ShearLedger implements ReadProofSink {
     }
     if (applied) {
       _saveVerifiedChain();
-      return (kind: _ForkProof.switched, proved: proved.length, failed: null);
+      return _forkResult(_ForkProof.switched, proved.length);
     }
     _checkedHeaders
       ..clear()
@@ -6183,7 +6350,7 @@ class ShearLedger implements ReadProofSink {
     // The branch proved, but the retained window cannot take the fork.
     // Rebuild from the pin on the next pass. The proof already happened.
     if (ancestor.height <= (_pin?.height ?? 0)) _rebackfillFromPin();
-    return (kind: _ForkProof.lighter, proved: proved.length, failed: null);
+    return _forkResult(_ForkProof.lighter, proved.length);
   }
 
   /// Headers from the checkpoint toward [hostTip]. At most 32 per call.
