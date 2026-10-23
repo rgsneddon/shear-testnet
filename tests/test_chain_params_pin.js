@@ -63,6 +63,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const V12_FINGERPRINT_SHA = '2bdb41abb54d1f1b805aaafe1e9fbdf2ce02605af9ecdbc0d8588502e2c19a86';
 const MAINNET_FINGERPRINT_SHA = 'c7caeb8252e45213e0cac036a9c48de89d12bb68b976e32113830285d6d415c8';
+const DEV_FINGERPRINT_SHA = '6d7e52a1dd260cdb3453c4b25cc9d4f6732926a453a662eda374b286aed2e54c';
 const RESERVE_JSON_SHA = 'f0f4a4397510319bfe5fe7d292e1c914c516b45848d4e79b8b6b0eea108ef3e1';
 
 function sha256(text) {
@@ -127,7 +128,12 @@ describe('chain param table', () => {
     assert.equal(dev.epochMs, 288000);
     assert.equal(dev.epochBlocks, 32);
     assert.equal(dev.joinCutoffMs, 72000);
-    assert.equal(dev.withdrawSlots, 64);
+    assert.equal(dev.withdrawSlots, 31);
+    assert.equal(dev.withdrawPeriodSlots, 15);
+    assert.equal(32 * dev.withdrawSlotMs, dev.epochMs);
+    assert.equal(16 * dev.periodMs, dev.epochMs);
+    assert.equal(Object.hasOwn(chainParams('shear-testnet-v12'), 'withdrawPeriodSlots'), false);
+    assert.equal(Object.hasOwn(chainParams('shear-v1'), 'withdrawPeriodSlots'), false);
     assert.equal(dev.voteCloseBlock, 24);
     assert.equal(dev.p2pBanMs, 60000);
     assert.equal(dev.evmChainId, 2799);
@@ -214,6 +220,8 @@ describe('chain param table', () => {
     const reserve = fs.readFileSync(path.join(root, 'contracts/Reserve.json'));
     assert.equal(sha256(reserve), RESERVE_JSON_SHA);
     const dev = consensusFingerprint('shear-dev');
+    assert.equal(dev.length, 2479);
+    assert.equal(sha256(dev), DEV_FINGERPRINT_SHA);
     assert.notEqual(dev, v12);
     assert.equal(dev.includes('NETWORK=shear-dev'), true);
     assert.match(dev, /PARAMS=[0-9a-f]{64}$/);
@@ -242,6 +250,10 @@ describe('chain param table', () => {
     }
     assert.match(dart, new RegExp(V12_FINGERPRINT_SHA));
     assert.match(dart, new RegExp(MAINNET_FINGERPRINT_SHA));
+    assert.match(dart, new RegExp(DEV_FINGERPRINT_SHA));
+    assert.match(dart, /final int\? withdrawPeriodSlots;/);
+    assert.match(dart, /withdrawPeriodSlots: 15/);
+    assert.match(dart, /withdrawPeriodSlots: null/);
     assert.equal(/nextBits|ASERT_|bitsForBlock|asertHarden|asertEase|SHEAR_BITS/.test(dart), false);
     assert.match(dart, /final int\? ipcPort;/);
     assert.match(dart, /final int\? poolIpcPort;/);
@@ -455,6 +467,7 @@ describe('chain param table', () => {
     assert.equal(devClockFromRow(target, { ...row, stubBlocks: 2 }).voteOpen, false);
     assert.equal(devClockFromRow(target, { ...row, voteEdge: 5 }).voteOpen, false);
     assert.equal(devClockFromRow(2 * target, row).voteOpen, true);
+    assert.equal(devClockFromRow(2 * target, { ...row, withdrawPeriodSlots: 1 }).voteOpen, false);
     assert.equal(devClockFromRow(2 * target + 1, row).voteOpen, true);
     assert.equal(devClockFromRow(2 * target, { ...row, voteSep: 3 }).voteOpen, false);
     assert.equal(devClockFromRow(2 * target + 1, { ...row, voteSep: 3 }).voteOpen, false);
@@ -464,53 +477,50 @@ describe('chain param table', () => {
     assert.equal(devClockFromRow(3 * target + 100, { ...row, voteGap: 3 }).voteOpen, true);
     assert.equal(devClockFromRow(25 * target, row).voteOpen, false);
     assert.equal(devClockFromRow(25 * target, { ...row, voteCloseBlock: 30 }).voteOpen, true);
-    const lateVote = { ...row, voteCloseBlock: 40 };
+    const lateVote = { ...row, voteCloseBlock: 40, withdrawPeriodSlots: 40 };
+    assert.equal(devClockFromRow(30 * target, { ...row, voteCloseBlock: 40 }).voteOpen, false);
     assert.equal(devClockFromRow(30 * target, lateVote).voteOpen, true);
     assert.equal(devClockFromRow(30 * target, { ...lateVote, voteFinality: 3 }).voteOpen, false);
     const closedMs = 128 * target;
     assert.equal(devClockFromRow(closedMs, row).withdrawOpen, false);
     assert.equal(devClockFromRow(closedMs, { ...row, periodBlocks: 4 }).withdrawOpen, false);
-    const periodFit = Math.floor((row.epochMs - 1) / row.periodMs);
-    assert.equal(periodFit, 15);
-    assert.ok(periodFit * row.periodMs < row.epochMs);
-    assert.equal(devClockFromRow(periodFit * row.periodMs, row).withdrawOpen, false);
-    assert.equal(devClockFromRow((periodFit - 1) * row.periodMs, row).withdrawOpen, true);
+    assert.equal(row.withdrawPeriodSlots, 15);
+    assert.equal(row.withdrawSlots, 31);
+    assert.ok(row.withdrawPeriodSlots * row.periodMs < row.epochMs);
+    assert.ok(row.withdrawSlots * row.withdrawSlotMs < row.epochMs);
+    assert.equal(devClockFromRow(row.withdrawPeriodSlots * row.periodMs, row).withdrawOpen, false);
+    assert.equal(devClockFromRow((row.withdrawPeriodSlots - 1) * row.periodMs, row).withdrawOpen, true);
     assert.equal(devClockFromRow(row.epochMs - 1, row).withdrawOpen, false);
-    assert.equal(devClockFromRow((periodFit - 1) * row.periodMs, { ...row, withdrawSlots: periodFit - 1 }).withdrawOpen, false);
-    assert.equal(devClockFromRow(periodFit * row.periodMs, { ...row, periodBlocks: 4 }).withdrawOpen, false);
-    const wide = { ...row, periodMs: row.periodMs * 2 };
-    const wideFit = Math.floor((wide.epochMs - 1) / wide.periodMs);
-    assert.equal(devClockFromRow(wideFit * wide.periodMs, wide).withdrawOpen, false);
-    assert.equal(devClockFromRow((wideFit - 1) * wide.periodMs, wide).withdrawOpen, true);
-    const slotFit = Math.floor((row.epochMs - 1) / row.withdrawSlotMs);
-    assert.equal(slotFit, 31);
-    assert.ok(slotFit * row.withdrawSlotMs < row.epochMs);
-    assert.equal(withdrawSlotOpen(slotFit * row.withdrawSlotMs, row), false);
-    assert.equal(withdrawSlotOpen((slotFit - 1) * row.withdrawSlotMs, row), true);
-    assert.equal(withdrawSlotOpen(64 * row.withdrawSlotMs, row), false);
-    assert.equal(withdrawSlotOpen((slotFit - 1) * row.withdrawSlotMs, { ...row, withdrawSlots: slotFit - 1 }), false);
+    assert.equal(devClockFromRow((row.withdrawPeriodSlots - 1) * row.periodMs, { ...row, withdrawPeriodSlots: row.withdrawPeriodSlots - 1 }).withdrawOpen, false);
+    assert.equal(devClockFromRow(row.withdrawPeriodSlots * row.periodMs, { ...row, periodBlocks: 4 }).withdrawOpen, false);
+    assert.equal(devClockFromRow((row.withdrawPeriodSlots - 1) * row.periodMs, { ...row, periodMs: row.periodMs * 2 }).withdrawOpen, true);
+    assert.equal(withdrawSlotOpen(row.withdrawSlots * row.withdrawSlotMs, row), false);
+    assert.equal(withdrawSlotOpen((row.withdrawSlots - 1) * row.withdrawSlotMs, row), true);
+    assert.equal(withdrawSlotOpen((row.withdrawSlots - 1) * row.withdrawSlotMs, { ...row, withdrawSlots: row.withdrawSlots - 1 }), false);
     assert.equal(withdrawSlotOpen(row.epochMs - 1, row), false);
     const v12row = chainParams('shear-testnet-v12');
     assert.equal(withdrawSlotOpen(63 * v12row.withdrawSlotMs, v12row), true);
     assert.equal(withdrawSlotOpen(v12row.withdrawSlots * v12row.withdrawSlotMs, v12row), false);
     assert.equal(v12row.withdrawSlots, 7680);
     assert.equal(v12row.withdrawSlotMs, 90000);
+    const clockSrc = fs.readFileSync(path.join(root, 'crypto/chain_params.js'), 'utf8');
+    assert.equal(clockSrc.includes('slotsInsideEpoch'), false);
     assert.equal(devClockFromRow(0, row).genesisBits, 12);
     assert.equal(devClockFromRow(0, { ...row, genesisBits: 10 }).genesisBits, 10);
     assert.notEqual(packBits(10), seed);
     const start = 1_700_000_000_000;
     const closed = withdraw({
       state: { magic: 'shear-dev', epochStartMs: start, blankFork: false },
-      nowMs: start + periodFit * row.periodMs,
+      nowMs: start + row.withdrawPeriodSlots * row.periodMs,
     });
     assert.equal(closed.reason, 'withdraw_closed');
     const inside = withdraw({
       state: { magic: 'shear-dev', epochStartMs: start, blankFork: false },
-      nowMs: start + (periodFit - 1) * row.periodMs,
+      nowMs: start + (row.withdrawPeriodSlots - 1) * row.periodMs,
     });
     assert.notEqual(inside.reason, 'withdraw_closed');
     const epochEdge = withdraw({
-      state: { magic: 'shear-dev', epochStartMs: start, blankFork: false },
+      state: { magic: 'shear-dev', genesisMs: start, epochStartMs: start, blankFork: false },
       nowMs: start + row.epochMs - 1,
     });
     assert.equal(epochEdge.reason, 'withdraw_closed');
@@ -519,6 +529,26 @@ describe('chain param table', () => {
       nowMs: start,
     });
     assert.notEqual(open.reason, 'withdraw_closed');
+    const noStart = withdraw({
+      state: { magic: 'shear-dev', blankFork: false },
+      nowMs: start + row.epochMs,
+    });
+    assert.notEqual(noStart.reason, 'withdraw_closed');
+    const noStartV12 = withdraw({
+      state: { magic: 'shear-testnet-v12', blankFork: false },
+      nowMs: start + epochMs('shear-testnet-v12'),
+    });
+    assert.notEqual(noStartV12.reason, 'withdraw_closed');
+    const devEnact = withdraw({
+      state: { magic: 'shear-dev', genesisMs: start, epochStartMs: start, blankFork: false },
+      nowMs: start + row.epochMs,
+    });
+    assert.notEqual(devEnact.reason, 'withdraw_closed');
+    const v12Enact = withdraw({
+      state: { magic: 'shear-testnet-v12', genesisMs: start, epochStartMs: start, blankFork: false },
+      nowMs: start + epochMs('shear-testnet-v12'),
+    });
+    assert.notEqual(v12Enact.reason, 'withdraw_closed');
     const v12wd = withdraw({
       state: { magic: 'shear-testnet-v12', epochStartMs: start, blankFork: false },
       nowMs: start + row.epochMs - 1,

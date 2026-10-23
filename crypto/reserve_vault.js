@@ -3055,7 +3055,22 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (state.blankFork) return { ok: false, reason: 'blank_vault' };
   if (String(state.magic) === MAGIC_DEV) {
     const row = chainParams(MAGIC_DEV);
-    const elapsedMs = Math.max(0, Number(nowMs) - Number(state.epochStartMs || nowMs || 0));
+    const now = Number(nowMs) || 0;
+    const genesis = Number(state?.genesisMs) || 0;
+    let elapsedMs;
+    if (genesis > 0) {
+      // The enactment block still stores the epoch that just ended.
+      // v12 settles that block from the chain epoch, which has already
+      // opened. Measure from that same start so the block is allowed.
+      const idx = chainEpochIndex(state, now);
+      const start = genesis + idx * epochMs(state.magic);
+      elapsedMs = Math.max(0, now - start);
+    } else {
+      // No chain clock. A missing vault start stays open, which is what
+      // v12 does: it has no slot gate, and the later checks return epoch_open.
+      const stored = Number(state?.epochStartMs) || 0;
+      elapsedMs = stored > 0 ? Math.max(0, now - stored) : 0;
+    }
     if (!withdrawSlotOpen(elapsedMs, row) || !devClockFromRow(elapsedMs, row).withdrawOpen) {
       return { ok: false, reason: 'withdraw_closed' };
     }
