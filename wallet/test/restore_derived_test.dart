@@ -8,7 +8,10 @@ import 'package:shear_wallet/shear_ed25519.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_native_prove.dart';
+import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_pack.dart';
+import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_vault_reward.dart';
 
 void main() {
@@ -33,24 +36,80 @@ void main() {
     expect(ledger.notesStamped(home), isFalse);
   });
 
-  test('a withdraw change is found and spent after restore', () async {
+  test('an open epoch lock is not withdrawable and a finished one is', () {
+    final open = {
+      'kind': 'lock',
+      'scalar': Uint8List(32),
+      'blind': Uint8List(32),
+      'note': Uint8List(64),
+      'epochs': [1],
+    };
+    expect(reserveLeafEpochEnded([open], 1), isFalse);
+    expect(reserveLeafEpochEnded([
+      {...open, 'epochs': [0]},
+    ], 1), isTrue);
+  });
+
+  test('a wait is local time and a later remark clears it', () {
+    final ledger = ShearLedger();
+    ledger.noteReserveWait(DateTime.utc(2026, 1, 2, 3, 4).millisecondsSinceEpoch);
+    ledger.noteReserveRemark('epoch still open');
+    expect(ledger.reserveWaitMs, isNull);
+    expect(ledger.reserveRemark, 'epoch still open');
+    ledger.noteReserveWait(1_700_000_000_000);
+    expect(ledger.reserveRemark, isEmpty);
+    final copy = reservePostWaitCopy(waitMs: ledger.reserveWaitMs);
+    expect(copy, startsWith('Scheduled for '));
+    expect(copy, matches(RegExp(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}')));
+    expect(copy, isNot(contains('Z')));
+    ledger.clearReserveNotice();
+    expect(ledger.reserveRemark, isEmpty);
+    expect(ledger.reserveWaitMs, isNull);
+    expect(reservePostWaitCopy(), reserveEpochStillOpenCopy());
+  });
+
+  test('tx fields recover the receipt, the withdraw change, and the vote change', () async {
     expect(Fs1Native.tryLoad(), isNotNull, reason: 'fs1_prover_unavailable');
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final portal = reservePortalIdFromSeed('', seed, 0)!;
     final nonce = Uint8List(32)..[0] = 9;
     final changeSeed = withdrawChangeSeedOf(seed, portal, nonce);
-    if (changeSeed == null) fail('change seed');
+    final payoutSeed = withdrawPayoutSeedOf(seed, portal, nonce);
+    if (changeSeed == null || payoutSeed == null) fail('seeds');
     const changeNanos = 100000;
-    final built = hiddenChangeNote(
+    const receiptNanos = 50000;
+    final change = hiddenChangeNote(
       changeNanos,
       destCommitOf(changeSeed),
       spendSeed: changeSeed,
       admitBase: admitPub(admitBaseScalar(seed)),
     );
-    expect(built, isNotNull);
-    built!['portalId'] = portal;
-    built['withdrawNonce'] = nonce;
+    final receipt = attachAdmitPub(
+      nativeSealNote(receiptNanos, dest20: destCommitOf(payoutSeed), kind: 'withdraw'),
+      spendSeed: payoutSeed,
+      admitBase: admitPub(admitBaseScalar(seed)),
+      v: BigInt.from(receiptNanos),
+    );
+    expect(change, isNotNull);
+    expect(receipt['rEph'], isA<Uint8List>());
+    final fee = attachAdmitPub(
+      nativeSealNote(200000, dest20: Uint8List(20)..[0] = 3, kind: 'pot'),
+      spendSeed: seed,
+    );
+    final voteSeed = voteChangeSeedOf(seed, fee['commit'] as Uint8List);
+    if (voteSeed == null) fail('vote seed');
+    final voteChange = hiddenChangeNote(
+      changeNanos,
+      destCommitOf(voteSeed),
+      spendSeed: voteSeed,
+      admitBase: admitPub(admitBaseScalar(seed)),
+    );
+    expect(voteChange, isNotNull);
+    final compactChange = compactSealedVout(change!);
+    expect(compactChange.containsKey('portalId'), isFalse);
+    expect(compactChange.containsKey('withdrawNonce'), isFalse);
+    expect(compactChange.containsKey('r'), isFalse);
     final flux = <String, dynamic>{
       'pubs': <Object>[],
       'commits': <Object>[],
@@ -63,11 +122,43 @@ void main() {
     addTearDown(pool.close);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.restoreSealedTip(12);
-    ledger.ingestSealedVouts([built], spendSeed: seed, dest: ledger.homeDest(id.address, paymentCode: id.paymentCode));
-    final found = ledger.notes.where((n) => n['changeSeed'] is Uint8List);
-    expect(found, isNotEmpty);
-    final row = Map<String, dynamic>.from(found.first);
-    expect(row['spendSeed'], isA<Uint8List>());
+    ledger.ingestChainTxs([
+      {
+        'kind': 'lock',
+        'portalId': portal,
+        'vout': [
+          {'kind': 'lock', 'portalId': portal},
+        ],
+      },
+      {
+        'kind': 'pot',
+        'coinbase': true,
+        'vout': [compactSealedVout(fee)],
+      },
+      {
+        'kind': 'leaf-vote',
+        'vout': [compactSealedVout(voteChange!)],
+      },
+      {
+        'kind': 'withdraw',
+        'portalId': portal,
+        'withdrawNonce': nonce,
+        'vout': [
+          compactSealedVout(receipt),
+          compactChange,
+        ],
+      },
+    ]);
+    expect(ledger.nextLockIndex, 1);
+    final foundReceipt = ledger.notes.where((n) => n['payoutSeed'] is Uint8List).toList();
+    final foundChange = ledger.notes.where((n) => n['changeSeed'] is Uint8List && n['withdrawNonce'] != null).toList();
+    final foundVote = ledger.notes.where((n) => n['changeSeed'] is Uint8List && n['withdrawNonce'] == null && n['portalId'] == null).toList();
+    expect(foundReceipt, hasLength(1));
+    expect(foundChange, hasLength(1));
+    expect(foundVote, hasLength(1));
+    expect(foundReceipt.single['r'], isA<Uint8List>());
+    expect(foundVote.single['r'], isA<Uint8List>());
+    final row = Map<String, dynamic>.from(foundChange.single);
     expect(row['r'], isA<Uint8List>());
     (flux['pubs'] as List).add(row['admitPub']);
     (flux['commits'] as List).add(row['commit']);

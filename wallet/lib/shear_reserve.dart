@@ -67,14 +67,29 @@ int reserveDayOfEpoch({
 String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
     'The epoch is still open. Withdraw after $days days.';
 
-/// Why a withdraw or claim did not post. A future slot names its time.
+/// Why a withdraw or claim did not post. A future slot names local time.
 String reservePostWaitCopy({String remark = '', int? waitMs}) {
   if (waitMs != null && waitMs > 0) {
-    final at = DateTime.fromMillisecondsSinceEpoch(waitMs, isUtc: true).toIso8601String();
-    return 'Scheduled for $at.';
+    return 'Scheduled for ${reserveLocalDateTime(waitMs)}.';
   }
   if (remark.isNotEmpty) return remark;
   return reserveEpochStillOpenCopy();
+}
+
+/// A lock leaf whose own epoch is already over. An open-epoch lock is not one.
+bool reserveLeafEpochEnded(List<Map<String, dynamic>> notes, int currentEpoch) {
+  if (currentEpoch <= 0) return false;
+  final leaves = reserveLockLeaves(notes);
+  if (leaves == null) return false;
+  for (final leaf in leaves) {
+    final epochs = leaf['epochs'];
+    if (epochs is! List) continue;
+    for (final raw in epochs) {
+      final epoch = raw is int ? raw : (raw is num ? raw.toInt() : null);
+      if (epoch != null && currentEpoch > epoch) return true;
+    }
+  }
+  return false;
 }
 
 /// Period length the screen may say. Testnet is about 6 hours, not 25 days.
@@ -314,9 +329,15 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
     throw StateError(kPublicIpWaitCopy);
   }
   final due = reserve.portal(dest).claimableRewards;
-  if (due <= 0) return null;
+  if (due <= 0) {
+    ledger.clearReserveNotice();
+    return null;
+  }
   final slot = vaultClaimSlotMs(reserve, reserve.portal(dest).lockEpoch, dest: dest);
-  if (slot > 0 && nowMs < slot) return null;
+  if (slot > 0 && nowMs < slot) {
+    ledger.noteReserveWait(slot);
+    return null;
+  }
   var proof = vaultProof;
   if (proof == null) {
     final input = vaultRewardProveInput(
@@ -335,8 +356,12 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
   );
   if (!local && ledger.pool != null) {
     final ack = await ledger.pool!.postRaw(body);
-    if (!_votePostOk(ack)) return null;
+    if (!_votePostOk(ack)) {
+      _notePostRefusal(ledger, ack);
+      return null;
+    }
   }
+  ledger.clearReserveNotice();
   final settled = reserve.withdraw(dest: dest, nowMs: nowMs, payout: payout);
   if (settled == null) return null;
   return (
@@ -564,6 +589,7 @@ Future<List<({ShearTx tx, Map<String, int> settled})>> postMaturedWithdraws(
   ledger.noteChainPortals(byPortal.keys);
   ledger.spendSeed ??= spendSeed;
   ledger.rememberDerivedLockLeaves(book);
+  ledger.clearReserveNotice();
   final out = <({ShearTx tx, Map<String, int> settled})>[];
   var n = 0;
   for (final entry in groups.entries) {
@@ -592,7 +618,10 @@ Future<List<({ShearTx tx, Map<String, int> settled})>> postMaturedWithdraws(
       withdrawNonce: n == 0 ? withdrawNonce : null,
     );
     n += 1;
-    if (one != null) out.add(one);
+    if (one != null) {
+      out.add(one);
+      ledger.clearReserveNotice();
+    }
     // One matured portal per run. A later portal waits for the next run.
     break;
   }
@@ -691,6 +720,8 @@ Future<({ShearTx tx, Map<String, int> settled})?> _postPortalWithdraw(
   final sealedReceipt = attachAdmitPub(
     nativeSealNote(nanos, dest20: payout20, kind: 'withdraw'),
     spendSeed: payoutSeed,
+    admitBase: admitPub(admitBaseScalar(spendSeed)),
+    v: BigInt.from(nanos),
   );
   sealedReceipt['kind'] = 'withdraw';
   sealedReceipt['dest20'] = payout20;
@@ -768,7 +799,10 @@ Future<({ShearTx tx, Map<String, int> settled})?> _postPortalWithdraw(
   }
   if (built['rewardSig'] is! List<int> || (built['rewardSig'] as List).length != 64) return null;
   final ack = await ledger.pool!.postRaw(_hexPost(built));
-  if (!_votePostOk(ack)) return null;
+  if (!_votePostOk(ack)) {
+    _notePostRefusal(ledger, ack);
+    return null;
+  }
   host['spent'] = true;
   ledger.rememberNote(<String, dynamic>{
     'kind': 'withdraw',
@@ -777,6 +811,9 @@ Future<({ShearTx tx, Map<String, int> settled})?> _postPortalWithdraw(
     'noteCommit': sealedReceipt['noteCommit'],
     'r': sealedReceipt['r'],
     'admitPub': sealedReceipt['admitPub'],
+    if (sealedReceipt['rEph'] != null) 'rEph': sealedReceipt['rEph'],
+    if (sealedReceipt['rCt'] != null) 'rCt': sealedReceipt['rCt'],
+    if (sealedReceipt['amtCt'] != null) 'amtCt': sealedReceipt['amtCt'],
     'portalId': portalId,
     'withdrawNonce': nonce,
     'payoutSeed': payoutSeed,
@@ -1783,6 +1820,13 @@ bool _votePostOk(Map<String, dynamic> ack) {
   final reason = ack['reason'];
   if (reason != null && reason.toString().isNotEmpty) return false;
   return ack['ok'] == true || ack['id'] != null || ack['txid'] != null;
+}
+
+void _notePostRefusal(ShearLedger ledger, Map<String, dynamic> ack) {
+  final reason = (ack['reason'] ?? '').toString().trim();
+  ledger.noteReserveRemark(
+    reason.isEmpty ? 'The node refused that post.' : reserveReasonCopy(reason),
+  );
 }
 
 /// One leaf vote per planned height. The open and close come from the census

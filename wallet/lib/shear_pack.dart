@@ -330,6 +330,14 @@ Uint8List? voteChangeSeedOf(List<int> spendSeed, List<int> feeCommit) {
   return _domainSeed('shear-vote-change-v1', [spendSeed, commit]);
 }
 
+/// One-time change key for a lock. The identity address is not the change dest.
+Uint8List? lockChangeSeedOf(List<int> spendSeed, int lockIndex) {
+  if (spendSeed.length != 32 || lockIndex < 0 || lockIndex > 0xffffffff) return null;
+  final idx = Uint8List(4);
+  ByteData.sublistView(idx).setUint32(0, lockIndex, Endian.little);
+  return _domainSeed('shear-lock-change-v1', [spendSeed, idx]);
+}
+
 /// portalId = H(tag, one-time dest20). [dest] is not hashed. Null when the seed is missing.
 String? reservePortalIdFromSeed(String dest, List<int> spendSeed, [int lockIndex = 0]) {
   dest;

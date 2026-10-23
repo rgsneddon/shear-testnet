@@ -30,7 +30,7 @@ jobs:
         working-directory: wallet
         run: |
           flutter pub get
-          flutter test test/shear_vote_plan_test.dart test/shear_portal_id_test.dart test/wallet_send_body_al_test.dart test/emit_wallet_lock_test.dart
+          flutter test test/shear_vote_plan_test.dart test/shear_portal_id_test.dart test/wallet_send_body_al_test.dart test/emit_wallet_lock_test.dart test/restore_derived_test.dart
       - name: UI leaf vote posts a real proof
         working-directory: wallet
         run: flutter test test/leaf_vote_wire_test.dart test/vault_fix_v12_test.dart

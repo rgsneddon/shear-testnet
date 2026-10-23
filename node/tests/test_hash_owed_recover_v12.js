@@ -440,8 +440,9 @@ describe('HASH_OWED_RECOVER_V1', () => {
       [],
       [],
     ];
-    // A portal vote is retired and the hash-bonus unit is held at 1, so a
-    // chain that carries one does not yield a unit series.
+    // FLOOR 1 is the clamp for a malformed unit only; a governance-set 0
+    // (bonus off) stays 0; the unit moves only by passed votes, 1 rho per
+    // vote, floor 0, no ceiling. A retired portal vote does not move it.
     const voted = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,

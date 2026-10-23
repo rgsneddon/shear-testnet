@@ -4489,7 +4489,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 onPressed: _reserveSendReady ? () => _reserveSend(context, ident) : null,
                 child: const Text('Deposit sum'),
               ),
-              if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0 || (reserveLockLeaves(ledger.notes)?.isNotEmpty ?? false)) ...[
+              if ((p.nanos > 0 && reserve.epochIsOver(now)) ||
+                  p.claimableRewards > 0 ||
+                  reserveLeafEpochEnded(ledger.notes, reserve.currentEpoch)) ...[
                 Text(
                   kReserveWithdrawAction,
                   key: const Key('reserve-withdraw-copy'),

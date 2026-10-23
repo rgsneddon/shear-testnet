@@ -96,6 +96,7 @@ Future<void> main() async {
     'portalId': built['portalId'],
     'fee': built['fee'],
     'changeNanos': built['changeNanos'],
+    'changeSeed': built['changeSeed'],
     'change': {
       'r': change['r'],
       'commit': change['commit'],

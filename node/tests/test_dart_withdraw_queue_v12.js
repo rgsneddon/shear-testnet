@@ -36,6 +36,8 @@ import {
 } from '../../crypto/reserve_vault.js';
 import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+import { censusOf, voteCloseHeight } from '../../crypto/leaf_vote.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const wallet = path.join(root, 'wallet');
@@ -47,6 +49,7 @@ const BYTE_KEYS = new Set([
   'commit', 'blob', 'cTilde', 'spendTag', 'R', 'z', 'note',
   'r', 'noteCommit', 'admitPub', 'rangeProof', 'rEph', 'rCt', 'amtCt', 'viewTag',
   'lockAuth', 'vaultLockNote', 'retireProof', 'vaultProof',
+  'voteProof', 'voteOutput', 'changeSeed', 'piProof',
 ]);
 
 function payer() {
@@ -77,6 +80,52 @@ function nextPow() {
   return hash;
 }
 
+const scanned = [];
+
+function hexOf(v) {
+  if (v == null || v === '') return undefined;
+  if (typeof v === 'string') {
+    const hex = v.replace(/^0x/i, '');
+    return /^[0-9a-f]+$/i.test(hex) && hex.length % 2 === 0 ? hex : undefined;
+  }
+  try {
+    const b = Buffer.from(asU8(v));
+    return b.length ? b.toString('hex') : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function scanRow(tx) {
+  const vout = [];
+  for (const o of tx?.vout || []) {
+    if (!o || !o.commit) continue;
+    const row = { kind: o.kind || '' };
+    for (const key of ['commit', 'noteCommit', 'dest20', 'admitPub', 'rEph', 'rCt', 'amtCt', 'portalId']) {
+      const hex = hexOf(o[key]);
+      if (hex) row[key] = hex;
+    }
+    if (row.commit && row.noteCommit) vout.push(row);
+  }
+  const row = { kind: tx?.kind || '', vout };
+  if (tx?.coinbase) row.coinbase = true;
+  const portal = hexOf(tx?.portalId);
+  if (portal && portal.length === 64) row.portalId = portal;
+  const nonce = hexOf(tx?.withdrawNonce);
+  if (nonce && nonce.length === 64) row.withdrawNonce = nonce;
+  return row;
+}
+
+function rememberScanned(tpl) {
+  for (const tx of tpl?.txs || []) {
+    try {
+      scanned.push(scanRow(compactTx(tx)));
+    } catch {
+      scanned.push(scanRow(tx));
+    }
+  }
+}
+
 async function mine(store, dest, now) {
   const at = now == null ? Math.max(T0, lastStamp(store) + 90_000) : now;
   const { tpl } = store.template({ miner: dest, shareBits: 4, now: at });
@@ -94,6 +143,7 @@ async function mine(store, dest, now) {
     weight: tpl.weight,
   }, { trustedPowHash: nextPow(), skipSharePow: true }));
   assert.equal(got.ok, true, `append ${got.reason || ''} ${got.error || ''} h=${tpl.height}`);
+  rememberScanned(tpl);
   return { tpl, got };
 }
 
@@ -254,7 +304,13 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
       const { tpl } = await mine(store, who.dest);
       coins.push(potOf(tpl, who));
     }
-    while (store.tip().height < 24) await mine(store, who.dest);
+    let voteFee = null;
+    while (store.tip().height < 24) {
+      const { tpl } = await mine(store, who.dest);
+      if (!voteFee) voteFee = potOf(tpl, who);
+    }
+    assert.ok(voteFee, 'vote fee pot');
+    coins.push(voteFee);
 
     const view = liveCoins(store, coins, spent);
     const use = view.coins.filter((c) => c.who === who).slice(0, 4);
@@ -350,7 +406,72 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
 
     const genesis = Number(store.reserveVault.genesisMs);
     assert.ok(genesis > 0, 'genesis');
+    assert.ok(Number(store.reserveVault.epochStartMs) > 0, 'epoch opened');
     const portalId = String(built.portalId);
+    await advanceClock(store, who.dest, genesis + RESERVE_EPOCH_MS);
+    await mine(store, who.dest, lastStamp(store) + 90_000);
+    assert.equal(store.reserveVault.currentEpoch, 1, 'epoch 1');
+    const census = censusOf(store.reserveVault, 1);
+    assert.ok(census && census.known && census.leafCount >= 1, 'census');
+    const voteClose = voteCloseHeight(census.openHeight, MAGIC_TESTNET);
+    assert.ok(voteClose != null && store.tip().height + 1 <= voteClose, 'vote window');
+    const backupPath = path.join(dir, 'before.shewall.bin');
+    const backupFixture = path.join(dir, 'backup.json');
+    fs.writeFileSync(backupFixture, JSON.stringify({
+      seed: Buffer.from(who.spendSeed).toString('hex'),
+      password: 'shear-restore-test',
+      out: backupPath,
+    }));
+    const backed = runFlutter('test/emit_shewall_backup_test.dart', { SHEAR_BACKUP_FIXTURE: backupFixture });
+    assert.equal(backed.ok, true, 'shewall backup');
+    assert.ok(fs.statSync(backupPath).size > 32, 'shewall bytes');
+    const voteView = liveCoins(store, coins, spent);
+    const feeCoin = voteView.coins.find((c) => c.commit.equals(voteFee.commit));
+    assert.ok(feeCoin, 'fee pot still live');
+    const feePub = Buffer.from(asU8(voteView.live.pubs[feeCoin.index]));
+    const voteFixture = {
+      seed: Buffer.from(who.spendSeed).toString('hex'),
+      dest: who.dest,
+      epoch: 1,
+      openHeight: census.openHeight,
+      leafCount: census.leafCount,
+      anchor: voteView.anchor,
+      notes: notesHex(voteView.live),
+      fee: {
+        commit: feeCoin.commit.toString('hex'),
+        noteCommit: feeCoin.noteCommit.toString('hex'),
+        r: feeCoin.r.toString('hex'),
+        admitPub: feePub.toString('hex'),
+        nanos: feeCoin.v,
+      },
+      leaf: {
+        scalar: Buffer.from(asU8(built.scalar)).toString('hex'),
+        blind: Buffer.from(asU8(built.blind)).toString('hex'),
+        note: expectLeaf.note.toString('hex'),
+        unlock: built.unlock,
+        amount: PI_SHE_NANOS,
+        epochs: [0],
+        portalId,
+        lockIndex: 0,
+      },
+    };
+    const votePath = path.join(dir, 'vote.json');
+    fs.writeFileSync(votePath, JSON.stringify(voteFixture));
+    resetFs1Tree();
+    const voted = runFlutter('test/emit_leaf_vote_test.dart', { SHEAR_VOTE_FIXTURE: votePath });
+    const voteBody = voted.posted || voted;
+    assert.equal(voteBody.kind, 'leaf-vote');
+    assert.equal(voteBody.portalId, undefined);
+    assert.equal(voteBody.feeInput, undefined);
+    assert.ok(voteBody.voteProof, 'vote proof');
+    assert.ok(voted.change && voted.change.changeSeed, 'vote change');
+    resetFs1Tree();
+    const voteQueued = store.queueTx(voteBody, { nowMs: lastStamp(store) });
+    assert.equal(voteQueued.ok, true, `vote queue ${voteQueued.reason || ''} ${voteQueued.error || ''}`);
+    const voteBlock = await mine(store, who.dest);
+    assert.ok(voteBlock.tpl.txs.some((row) => row.kind === 'leaf-vote'), 'vote mined');
+    console.log(`e2e vote height=${voteBlock.tpl.height}`);
+    spent.add(feeCoin.commit.toString('hex'));
     const slot = withdrawSlotMs(genesis, 0, portalId);
     await advanceClock(store, who.dest, Math.max(genesis + RESERVE_EPOCH_MS, slot));
     let wall = lastStamp(store);
@@ -394,6 +515,7 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
         r: input.r.toString('hex'),
         admitPub: chainPub.toString('hex'),
         nanos: input.v,
+        spendSeed: Buffer.from(asU8(built.changeSeed)).toString('hex'),
       },
       leaves: [{
         scalar: Buffer.from(asU8(built.scalar)).toString('hex'),
@@ -430,6 +552,7 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     assert.ok(Buffer.from(body.dest20).equals(want), 'payout dest20');
     const receipt = (body.vout || []).find((row) => row && row.kind === 'withdraw');
     assert.ok(receipt, 'receipt');
+    assert.ok(receipt.rEph, 'receipt wrapped to the wallet');
     assert.ok(Buffer.from(receipt.dest20).equals(want), 'wallet payout');
     resetFs1Tree();
     const got = store.queueTx(body, { nowMs: wall });
@@ -448,6 +571,20 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
       if (Buffer.from(asU8(after.live.commits[i])).equals(receiptCommit)) receiptAt = i;
     }
     assert.ok(receiptAt >= 0, 'receipt in the anchor');
+    const restorePath = path.join(dir, 'restore.json');
+    fs.writeFileSync(restorePath, JSON.stringify({
+      shewall: backupPath,
+      password: 'shear-restore-test',
+      anchor: after.anchor,
+      notes: notesHex(after.live),
+      txs: scanned,
+    }));
+    resetFs1Tree();
+    const restored = runFlutter('test/emit_restore_scan_test.dart', { SHEAR_RESTORE_FIXTURE: restorePath });
+    assert.equal(restored.ok, true, 'restored scan');
+    assert.ok(restored.nextLockIndex >= 1, 'spent lock index is not reused');
+    assert.equal(restored.receipt, receiptCommit.toString('hex'));
+    console.log(`e2e restore index=${restored.nextLockIndex} receipt=${String(restored.receipt).slice(0, 12)}`);
     const spendTo = payer();
     const payNanos = 100000000000;
     const spendFixture = {

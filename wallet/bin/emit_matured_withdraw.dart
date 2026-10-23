@@ -42,6 +42,7 @@ Future<void> main() async {
     'r': _unhex(hostRaw['r'].toString()),
     'admitPub': _unhex(hostRaw['admitPub'].toString()),
     'nanos': hostRaw['nanos'],
+    if (hostRaw['spendSeed'] != null) 'spendSeed': _unhex(hostRaw['spendSeed'].toString()),
   };
   final leafRaw = raw['leaves'];
   if (leafRaw is! List || leafRaw.isEmpty) throw StateError('leaves');

@@ -1360,11 +1360,68 @@ Future<Map<String, dynamic>> scanSealedWireOffUi(Map<String, dynamic> raw) {
 
 /// Pure CPU scan of compacted vouts. Full-sync calls this via [Isolate.run].
 /// Returns `{notes, hashFolds}` maps — no ledger mutation.
+/// Copy tx-level portalId and withdrawNonce onto each output. A mined
+/// withdraw keeps those on the tx. A leaf-vote is marked so the scan can
+/// try fee-note commits. Nothing here is written back to the chain.
+List<Map<String, dynamic>> stampChainScanVouts(List<dynamic> txs) {
+  final out = <Map<String, dynamic>>[];
+  for (final raw in txs) {
+    if (raw is! Map) continue;
+    final kind = (raw['kind'] ?? '').toString();
+    final portal = raw['portalId'];
+    final nonce = raw['withdrawNonce'];
+    for (final key in const ['vout', 'vouts', 'notes']) {
+      final list = raw[key];
+      if (list is! List) continue;
+      for (final item in list) {
+        if (item is! Map) continue;
+        final row = Map<String, dynamic>.from(item);
+        final havePortal = (row['portalId'] ?? '').toString();
+        if (havePortal.isEmpty && portal != null && portal.toString().isNotEmpty) {
+          row['portalId'] = portal;
+        }
+        if (_noteBytes(row['withdrawNonce']) == null && nonce != null) {
+          row['withdrawNonce'] = nonce;
+        }
+        if (kind.isNotEmpty) row['scanTxKind'] = kind;
+        out.add(row);
+      }
+    }
+  }
+  return out;
+}
+
+List<Uint8List> _feeCandidates(Map<String, dynamic> input, List<dynamic> vouts) {
+  final out = <Uint8List>[];
+  final seen = <String>{};
+  void add(dynamic raw) {
+    final b = _noteBytes(raw);
+    if (b == null || b.length < 32) return;
+    final one = Uint8List.fromList(b.sublist(0, 32));
+    if (!seen.add(_bytesHex(one))) return;
+    out.add(one);
+  }
+  final extra = input['feeCommits'];
+  if (extra is List) {
+    for (final row in extra) {
+      add(row);
+    }
+  }
+  for (final raw in vouts) {
+    if (raw is Map) add(raw['commit']);
+  }
+  return out;
+}
+
 /// One-time key for a vout the wallet did not address to a known dest.
-/// Payout and withdraw-change need the public portal id and the withdraw
-/// nonce. A vote-change note carries the fee commitment. Lock portal ids
-/// are tried only for a lock output.
-(Uint8List, String)? _oneTimeSeedFor(Map<String, dynamic> o, Uint8List spendSeed) {
+/// Payout and withdraw-change need the portal id and the withdraw nonce,
+/// which the scan copies off the parent tx. A vote-change is tried against
+/// output commits from the same scan. A lock change uses a fresh index key.
+(Uint8List, String)? _oneTimeSeedFor(
+  Map<String, dynamic> o,
+  Uint8List spendSeed, {
+  List<Uint8List> feeCommits = const [],
+}) {
   if (spendSeed.length != 32) return null;
   final row20 = _noteBytes(o['dest20']);
   if (row20 == null || row20.length < 20) return null;
@@ -1381,10 +1438,24 @@ Future<Map<String, dynamic>> scanSealedWireOffUi(Map<String, dynamic> raw) {
     final change = withdrawChangeSeedOf(spendSeed, portal, nonce);
     if (change != null && hits(change)) return (change, 'change');
   }
-  final fee = _noteBytes(o['feeCommit']);
-  if (fee != null && fee.length >= 32) {
-    final vote = voteChangeSeedOf(spendSeed, Uint8List.sublistView(fee, 0, 32));
+  final ownFee = _noteBytes(o['feeCommit']);
+  if (ownFee != null && ownFee.length >= 32) {
+    final vote = voteChangeSeedOf(spendSeed, Uint8List.sublistView(ownFee, 0, 32));
     if (vote != null && hits(vote)) return (vote, 'vote');
+  }
+  final txKind = (o['scanTxKind'] ?? '').toString();
+  if (txKind == 'leaf-vote' || txKind == 'vote') {
+    for (final fee in feeCommits) {
+      if (fee.length < 32) continue;
+      final vote = voteChangeSeedOf(spendSeed, Uint8List.sublistView(fee, 0, 32));
+      if (vote != null && hits(vote)) return (vote, 'vote');
+    }
+  }
+  if (txKind == 'lock' && (o['kind'] ?? '').toString() != 'lock') {
+    for (var i = 0; i < 64; i++) {
+      final seed = lockChangeSeedOf(spendSeed, i);
+      if (seed != null && hits(seed)) return (seed, 'change');
+    }
   }
   if ((o['kind'] ?? '').toString() == 'lock') {
     for (var i = 0; i < 64; i++) {
@@ -1416,6 +1487,16 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
           ? prevIn
           : Uint8List.fromList(List<int>.from(prevIn as List)));
   final startIndex = (input['startIndex'] as num?)?.toInt() ?? 0;
+  var voteHere = false;
+  for (final raw in vouts) {
+    if (raw is! Map) continue;
+    final tagged = (raw['scanTxKind'] ?? '').toString();
+    if (tagged == 'leaf-vote' || tagged == 'vote') {
+      voteHere = true;
+      break;
+    }
+  }
+  final feeCommits = voteHere ? _feeCandidates(input, vouts) : const <Uint8List>[];
   final xBase = admitBaseScalar(spendSeed);
   final proofCache = proofCacheMap(input['openedProofs']);
   final notes = <Map<String, dynamic>>[];
@@ -1458,7 +1539,7 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     Uint8List? trialSeed;
     String? trialRole;
     if (matched == null) {
-      final trial = _oneTimeSeedFor(o, spendSeed);
+      final trial = _oneTimeSeedFor(o, spendSeed, feeCommits: feeCommits);
       if (trial != null) {
         trialSeed = trial.$1;
         trialRole = trial.$2;
@@ -2322,6 +2403,7 @@ Map<String, Object?>? sealWalletLockTx({
   required int inputNanos,
   required Uint8List changeDest20,
   required String id,
+  Uint8List? changeSpendSeed,
   String magic = kBookMagic,
   int? fee,
 }) {
@@ -2381,10 +2463,13 @@ Map<String, Object?>? sealWalletLockTx({
     }
     if (same) return null;
   }
+  final changeKey = changeSpendSeed != null && changeSpendSeed.length == 32
+      ? changeSpendSeed
+      : spendSeed;
   final change = hiddenChangeNote(
     changeN,
     changeDest20,
-    spendSeed: spendSeed,
+    spendSeed: changeKey,
     admitBase: admitPub(admitBaseScalar(spendSeed)),
   );
   if (change == null) return null;
@@ -2475,6 +2560,11 @@ Map<String, Object?>? sealWalletLockTx({
     );
     if (fund == null) return null;
     posted[0]['fundProof'] = fund;
+    // A π lock qualifies only with a proof that the funding commitment is π.
+    // The digest and the fund proof are already bound. This field is not in them.
+    final pi = AdmitNative.tryLoad()?.proveRange(BigInt.zero, blind);
+    if (pi == null || pi.length < 2 || pi[0] != 2) return null;
+    body['piProof'] = pi;
     return {
       'tx': body,
       'scalar': scalar,
@@ -2487,6 +2577,7 @@ Map<String, Object?>? sealWalletLockTx({
       'fee': paid,
       'changeNanos': changeN,
       'change': change,
+      'changeSeed': changeKey,
       'dest20': lockRow['dest20'],
       'lockIndex': lockIndex,
     };
@@ -3926,6 +4017,11 @@ class ShearLedger implements ReadProofSink {
     ]);
     if (open.liveTip >= 1) noteLiveHeight(open.liveTip);
     creditKnownNodeLands();
+    ingestChainTxs([
+      for (final block in blocks)
+        if (block is Map && block['txs'] is List)
+          for (final tx in block['txs'] as List) tx,
+    ], dest: dest);
     final frame = (dest != null && dest.isNotEmpty) ? dest : (_restFrame ?? '');
     if (frame.isEmpty && open.opened.every((n) => n.dest.isEmpty)) return;
     final fallback = frame.isEmpty ? '' : (isDestAddress(frame) ? frame : homeDest(frame));
@@ -4217,14 +4313,69 @@ class ShearLedger implements ReadProofSink {
     String? dest,
     Uint8List? prev,
     int startIndex = 0,
+    List<Uint8List>? feeCommits,
   }) {
-    _applySealedScan(scanSealedVouts(_sealedScanInput(
-      vouts,
-      spendSeed: spendSeed,
-      dest: dest,
-      prev: prev,
-      startIndex: startIndex,
-    )));
+    _applySealedScan(scanSealedVouts({
+      ..._sealedScanInput(
+        vouts,
+        spendSeed: spendSeed,
+        dest: dest,
+        prev: prev,
+        startIndex: startIndex,
+      ),
+      if (feeCommits != null) 'feeCommits': feeCommits,
+    }));
+  }
+
+  final List<Uint8List> _chainOutputCommits = [];
+  final Set<String> _chainOutputCommitHex = {};
+
+  void _rememberOutputCommit(dynamic raw) {
+    final b = _noteBytes(raw);
+    if (b == null || b.length < 32) return;
+    final one = Uint8List.fromList(b.sublist(0, 32));
+    if (!_chainOutputCommitHex.add(_bytesHex(one))) return;
+    _chainOutputCommits.add(one);
+  }
+
+  /// Scan chain txs. portalId and withdrawNonce come from the tx. A vote
+  /// change is recovered from output commits already seen, not from a new
+  /// wire field. Lock portal ids stay noted after the tranche book drops them.
+  void ingestChainTxs(List<dynamic> txs, {String? dest}) {
+    final seed = spendSeed;
+    if (seed == null || seed.length != 32 || txs.isEmpty) return;
+    final portals = <String>[];
+    var vote = false;
+    final interesting = <Map<String, dynamic>>[];
+    for (final raw in txs) {
+      if (raw is! Map) continue;
+      final kind = (raw['kind'] ?? '').toString();
+      if (kind == 'leaf-vote' || kind == 'vote') vote = true;
+      final pid = (raw['portalId'] ?? '').toString().toLowerCase();
+      if (RegExp(r'^[0-9a-f]{64}$').hasMatch(pid)) portals.add(pid);
+      for (final key in const ['vout', 'vouts', 'notes']) {
+        final list = raw[key];
+        if (list is! List) continue;
+        for (final item in list) {
+          if (item is! Map) continue;
+          _rememberOutputCommit(item['commit']);
+          final outPid = (item['portalId'] ?? '').toString().toLowerCase();
+          if (RegExp(r'^[0-9a-f]{64}$').hasMatch(outPid)) portals.add(outPid);
+        }
+      }
+      if (kind == 'lock' || kind == 'leaf-vote' || kind == 'vote' || kind == 'withdraw' || pid.isNotEmpty) {
+        interesting.add(Map<String, dynamic>.from(raw));
+      }
+    }
+    if (portals.isNotEmpty) noteChainPortals(portals);
+    if (interesting.isEmpty) return;
+    final home = (dest != null && dest.isNotEmpty) ? dest : _restFrame;
+    ingestSealedVouts(
+      stampChainScanVouts(interesting),
+      spendSeed: seed,
+      dest: home,
+      feeCommits: vote ? List<Uint8List>.from(_chainOutputCommits) : null,
+    );
   }
 
   final Map<String, double> _pending = {};
@@ -7356,12 +7507,22 @@ class ShearLedger implements ReadProofSink {
   int? reserveWaitMs;
 
   void noteReserveWait(int slotMs) {
-    if (slotMs <= 0) return;
+    if (slotMs <= 0) {
+      reserveWaitMs = null;
+      return;
+    }
     if (reserveWaitMs == null || slotMs < reserveWaitMs!) reserveWaitMs = slotMs;
+    reserveRemark = '';
   }
 
   void noteReserveRemark(String text) {
     reserveRemark = text;
+    if (text.isNotEmpty) reserveWaitMs = null;
+  }
+
+  void clearReserveNotice() {
+    reserveRemark = '';
+    reserveWaitMs = null;
   }
 
   Uint8List? _spendPubOf(String? paymentCode) {
@@ -8815,8 +8976,13 @@ class ShearLedger implements ReadProofSink {
     final top = picked.map((row) => row['index'] as int).reduce((a, b) => a > b ? a : b);
     final anchor = pickFs1Anchor(_fs1Anchors, top);
     if (anchor == null) throw StateError(kErrFs1Anchor);
-    final changeDest = hash20FromAddress(from);
-    if (changeDest == null || changeDest.length != 20) throw StateError('bad_send');
+    final changeSeed = lockChangeSeedOf(spendSeed, lockIndex);
+    final changeDest = changeSeed == null
+        ? null
+        : destCommitFromSpendPub(ed25519PublicFromSeed(changeSeed));
+    if (changeSeed == null || changeDest == null || changeDest.length != 20) {
+      throw StateError('bad_send');
+    }
     final id = 'lock-${_bytesHex(randomBytes(16))}';
     final built = sealWalletLockTx(
       spendSeed: spendSeed,
@@ -8829,6 +8995,7 @@ class ShearLedger implements ReadProofSink {
       inputs: picked,
       inputNanos: have,
       changeDest20: changeDest,
+      changeSpendSeed: changeSeed,
       id: id,
     );
     if (built == null) throw StateError('stake_reward');
@@ -8887,8 +9054,8 @@ class ShearLedger implements ReadProofSink {
         if (change['rCt'] != null) 'rCt': change['rCt'],
         if (change['amtCt'] != null) 'amtCt': change['amtCt'],
         'nanos': changeN,
-        'spendSeed': spendSeed,
-        'changeSeed': spendSeed,
+        'spendSeed': changeSeed,
+        'changeSeed': changeSeed,
         'verified': true,
         if (changeN is int && _sheOfExactNanos(changeN.toString()) != null)
           'amount': _sheOfExactNanos(changeN.toString()),
