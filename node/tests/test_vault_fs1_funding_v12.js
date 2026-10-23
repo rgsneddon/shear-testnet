@@ -639,6 +639,12 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
     tx.dest20 = Buffer.from(d20);
     // A compact lock carries dest20. The address is vote_leak.
     signSpendTx(tx, who.id.privateKey);
+    delete tx.spendPub;
+    delete tx.sig;
+    delete tx.signature;
+    assert.equal(tx.spendPub, undefined, `${id} spendPub`);
+    assert.equal(tx.sig, undefined, `${id} sig`);
+    assert.equal(tx.signature, undefined, `${id} signature`);
     if (amount === PI_SHE_NANOS) {
       const lockBlind = outs[0].r;
       const lockRow = tx.vout.find((row) => String(row?.kind || '') === 'lock');

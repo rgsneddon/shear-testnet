@@ -874,6 +874,12 @@ const store = createStore(dir, {
       assert.ok(lock, 'lock fee');
       lock.dest20 = Buffer.from(d20);
       signSpendTx(lock, who.key);
+      delete lock.spendPub;
+      delete lock.sig;
+      delete lock.signature;
+      assert.equal(lock.spendPub, undefined, 'lock spendPub');
+      assert.equal(lock.sig, undefined, 'lock sig');
+      assert.equal(lock.signature, undefined, 'lock signature');
       const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, lock, MAGIC_TESTNET, 0);
       assert.ok(fund, 'fund');
       assert.ok(lock.piProof, 'pi');

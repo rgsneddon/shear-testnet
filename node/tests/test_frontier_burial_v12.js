@@ -522,6 +522,12 @@ function sideLock(store, who, saved, anchor, proveHeight, nowMs) {
   tx.dest20 = destCommitFromSpendPub(ed25519RawPub(ownerKey));
   tx.ownerPub = ownerPub;
   signSpendTx(tx, ownerKey);
+  delete tx.spendPub;
+  delete tx.sig;
+  delete tx.signature;
+  assert.equal(tx.spendPub, undefined, 'side spendPub');
+  assert.equal(tx.sig, undefined, 'side sig');
+  assert.equal(tx.signature, undefined, 'side signature');
   const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, proveHeight);
   assert.ok(fund, 'side fund');
   tx.vout.find((row) => String(row?.kind || '') === 'lock').fundProof = fund;

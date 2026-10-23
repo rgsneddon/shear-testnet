@@ -948,6 +948,12 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     });
     assert.ok(mined, 'fs1 lock');
     signSpendTx(mined.tx, ownerKey);
+    delete mined.tx.spendPub;
+    delete mined.tx.sig;
+    delete mined.tx.signature;
+    assert.equal(mined.tx.spendPub, undefined, 'seed spendPub');
+    assert.equal(mined.tx.sig, undefined, 'seed sig');
+    assert.equal(mined.tx.signature, undefined, 'seed signature');
     resetFs1Tree();
     const qSeed = seeded.queueTx(mined.tx);
     assert.equal(qSeed.ok, true, `seed lock ${qSeed.reason}`);
@@ -1026,6 +1032,12 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     });
     assert.ok(pending, 'pending lock');
     signSpendTx(pending.tx, pendingKey);
+    delete pending.tx.spendPub;
+    delete pending.tx.sig;
+    delete pending.tx.signature;
+    assert.equal(pending.tx.spendPub, undefined, 'pending spendPub');
+    assert.equal(pending.tx.sig, undefined, 'pending sig');
+    assert.equal(pending.tx.signature, undefined, 'pending signature');
     resetFs1Tree();
     const vote = fs1LeafVote({
       id: 'vote-fluff',

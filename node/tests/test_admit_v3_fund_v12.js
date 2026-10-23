@@ -644,6 +644,12 @@ async function lifeLock(store, person, coins, spent, id) {
   // which is what the spend signature binds. The proof names this inclusion.
   tx.dest20 = Buffer.from(person.spend20);
   signSpendTx(tx, person.key);
+  delete tx.spendPub;
+  delete tx.sig;
+  delete tx.signature;
+  assert.equal(tx.spendPub, undefined, 'lock spendPub');
+  assert.equal(tx.sig, undefined, 'lock sig');
+  assert.equal(tx.signature, undefined, 'lock signature');
   const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, store.tip().height + 1);
   assert.ok(fund, 'fund');
   const lockOut = tx.vout.find((row) => String(row?.kind || '') === 'lock');
@@ -1031,6 +1037,12 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
       });
       tx.dest20 = Buffer.from(d20);
       signSpendTx(tx, who.key);
+      delete tx.spendPub;
+      delete tx.sig;
+      delete tx.signature;
+      assert.equal(tx.spendPub, undefined, 'mismatch spendPub');
+      assert.equal(tx.sig, undefined, 'mismatch sig');
+      assert.equal(tx.signature, undefined, 'mismatch signature');
       assert.equal(tx.to, undefined);
       const queued = store.queueTx(tx);
       assert.equal(queued.ok, false, queued.reason);

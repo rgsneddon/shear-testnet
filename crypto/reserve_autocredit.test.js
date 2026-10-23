@@ -6,8 +6,12 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { hash20FromAddress, newIdentity, spendDestOf } from './address.js';
-import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM, extraMintAllowed } from './asert.js';
+import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM, SPENDABLE_CONFIRMATIONS, extraMintAllowed } from './asert.js';
+import { encodeHeader } from './header.js';
 import { outputJoinsAdmitSet } from './admit.js';
 import { compactTx } from './chronoflux.js';
 import { fs1LeafFor } from './fs1_leaf.js';
@@ -59,6 +63,7 @@ import { deposit, encodeDeposit, encodeWithdraw, lockTx } from './owned_portal.j
 import { randomScalar, sealCoinbaseNote } from './note.js';
 import { vaultLockNote } from './vault_reward_fs1.js';
 import { createNoteLedger } from '../node/src/note_ledger.js';
+import { createStore } from '../node/src/store.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -141,10 +146,47 @@ describe('time-locked lock notes', () => {
     assert.equal(onlyVault.unlockedLockNanos(dest, 1, after), 0);
     assert.equal(onlyVault.coveredLockNanos(dest, 1, after), 0);
     assert.equal(onlyVault.coveredLockNanos(dest, 1, { ...clock, tipMs: T0 + 1 }), 0);
-    const principal = opened;
-    const covered = onlyVault.coveredLockNanos(dest, 1, after);
-    const noteNanos = onlyVault.spendable(dest, 1, after);
-    assert.equal(Math.max(0, noteNanos - Math.max(0, principal - covered)), 0);
+    const tipMs = T0 + RESERVE_EPOCH_MS;
+    const pot = sealCoinbaseNote(opened, { dest20: d20, kind: 'pot', skipRange: true });
+    const z = Buffer.alloc(32);
+    const header = encodeHeader({
+      prevBlockHash: z,
+      merkleRoot: z,
+      continuityRoot: z,
+      timestamp: tipMs,
+      bits: 1,
+    });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-autocredit-'));
+    try {
+      const store = createStore(dir, { diskJournal: false });
+      store.reserveVault.genesisMs = T0;
+      const pid = portalIdFromDest(dest);
+      store.reserveVault.portals[pid] = {
+        id: pid,
+        staked: 0n,
+        idle: 0n,
+        redeemedNanos: 0n,
+      };
+      store.blocks.push({
+        height: 1,
+        hash: Buffer.alloc(32, 11),
+        header,
+        txs: [{ kind: 'send', vout: [pot, vault] }],
+      });
+      for (let h = 2; h <= SPENDABLE_CONFIRMATIONS; h += 1) {
+        store.blocks.push({
+          height: h,
+          hash: Buffer.alloc(32, h),
+          header,
+          txs: [],
+        });
+      }
+      assert.equal(store.spendableNanos(dest), opened);
+      store.reserveVault.portals[pid].staked = BigInt(opened);
+      assert.equal(store.spendableNanos(dest), 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
     assert.equal(book.coveredLockNanos(dest, 1, { ...clock, tipMs: T0 + RESERVE_EPOCH_MS }), opened);
   });
 

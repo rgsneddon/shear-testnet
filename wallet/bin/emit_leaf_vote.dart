@@ -64,6 +64,7 @@ Future<void> main() async {
     'spendTags': <Object>[],
   });
   final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+  final home = ledger.homeDest(dest, paymentCode: id.paymentCode);
   ledger.replaceFromBackup(address: dest, spendable: 10, pending: 0, txs: const []);
   ledger.rememberNodeChain(bodies: [
     {
@@ -85,6 +86,8 @@ Future<void> main() async {
     'r': _unhex(feeRaw['r'].toString()),
     'admitPub': _unhex(feeRaw['admitPub'].toString()),
     'nanos': feeRaw['nanos'],
+    'address': home,
+    'dest': home,
     'verified': true,
   });
   ledger.rememberNote({

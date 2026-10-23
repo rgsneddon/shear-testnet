@@ -40,6 +40,12 @@ describe('compact FS-1 lock replay', { timeout: 20000 }, () => {
       }],
     };
     signSpendTx(tx, who.privateKey);
+    delete tx.spendPub;
+    delete tx.sig;
+    delete tx.signature;
+    assert.equal(tx.spendPub, undefined, 'replay spendPub');
+    assert.equal(tx.sig, undefined, 'replay sig');
+    assert.equal(tx.signature, undefined, 'replay signature');
     const sealed = compactTx(tx);
     assert.equal(sealed.spendPub, undefined);
     assert.ok(sealed.lockAuth);

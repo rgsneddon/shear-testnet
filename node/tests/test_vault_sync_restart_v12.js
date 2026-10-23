@@ -342,6 +342,12 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     assert.equal(tx.to, undefined);
     tx.dest20 = Buffer.from(hash20FromAddress(person.dest));
     signSpendTx(tx, person.key);
+    delete tx.spendPub;
+    delete tx.sig;
+    delete tx.signature;
+    assert.equal(tx.spendPub, undefined, 'lock spendPub');
+    assert.equal(tx.sig, undefined, 'lock sig');
+    assert.equal(tx.signature, undefined, 'lock signature');
     const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, 0);
     assert.ok(fund, 'fund');
     assert.ok(tx.piProof, 'pi');

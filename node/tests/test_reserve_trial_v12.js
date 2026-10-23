@@ -339,7 +339,7 @@ function clearUser(store) {
  */
 function seededLock(store, { id, height, anchor, nowMs }) {
   const portalId = randomBytes(32).toString('hex');
-  const spendPub = randomBytes(32).toString('hex');
+  const ownerPub = randomBytes(32).toString('hex');
   const dest20 = randomBytes(20);
   const stamp = lockUnlockOf(store.reserveVault, nowMs);
   const blind = randomScalar();
@@ -388,8 +388,7 @@ function seededLock(store, { id, height, anchor, nowMs }) {
       nanos: 0,
       programId: RESERVE_PROGRAM,
       portalId,
-      ownerPub: spendPub,
-      spendPub,
+      ownerPub,
       vaultLockNote: leaf.note,
       vin: [{ commit: vinCommit }],
       vout: outs,
@@ -526,6 +525,12 @@ function realFs1Lock(store, who, saved) {
   tx.dest20 = destCommitFromSpendPub(ed25519RawPub(ownerKey));
   tx.ownerPub = ownerPub;
   signSpendTx(tx, ownerKey);
+  delete tx.spendPub;
+  delete tx.sig;
+  delete tx.signature;
+  assert.equal(tx.spendPub, undefined, 'live spendPub');
+  assert.equal(tx.sig, undefined, 'live sig');
+  assert.equal(tx.signature, undefined, 'live signature');
   const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, 0);
   assert.ok(fund, 'live fund');
   tx.vout.find((row) => String(row?.kind || '') === 'lock').fundProof = fund;
