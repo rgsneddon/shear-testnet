@@ -4129,6 +4129,7 @@ export function createStore(dir, {
       nowMs: stamp,
       height: Number(t?.height || 0) + 1,
       blocks,
+      magic: bookMagic,
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     };
     if (txIsReserveAction(tx)) {
@@ -6228,6 +6229,7 @@ export function createStore(dir, {
         nowMs: now,
         height,
         blocks,
+        magic: bookMagic,
         noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       };
       if (txIsReserveAction(tx)) {
