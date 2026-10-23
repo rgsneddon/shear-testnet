@@ -292,7 +292,9 @@ describe('p2p hello deadline and idle eviction', () => {
       second.write(helloLine());
       await delay(60);
       const third = await connect(bound.port);
-      assert.equal(await closedWithin(third, 500), true);
+      await delay(50);
+      assert.equal(third.destroyed, false);
+      assert.equal(first.destroyed || second.destroyed, true);
       assert.equal([...p2p.peers.values()].filter((rec) => rec.inbound).length, 2);
 
       const out1 = await p2p.connect('127.0.0.1', sink.port);
@@ -309,6 +311,84 @@ describe('p2p hello deadline and idle eviction', () => {
     } finally {
       p2p.close();
       sink.close();
+    }
+  });
+
+  it('does not credit a header offer before the hash is verified', async () => {
+    let offers = 0;
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      offerHeaders() {
+        offers += 1;
+        return { accepted: 1 };
+      },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      sock.write(`${JSON.stringify({
+        type: 'headers',
+        magic: MAGIC_TESTNET,
+        headers: [{ hash: 'ab'.repeat(32), header: '11'.repeat(128), height: 1 }],
+      })}\n`);
+      let rec = null;
+      for (let i = 0; i < 20 && offers < 1; i += 1) {
+        await delay(20);
+        rec = [...p2p.peers.values()].find((row) => row.helloAt) || null;
+      }
+      assert.equal(offers, 1);
+      assert.ok(rec);
+      assert.equal(rec.progressAt || 0, 0);
+      assert.equal(peerIsBusy(rec), false);
+      sock.destroy();
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('an inbound arrival at the cap evicts an idle inbound', async () => {
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      maxPeers: 2,
+      outboundReserve: 0,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const first = await connect(bound.port);
+      const second = await connect(bound.port);
+      first.write(helloLine());
+      second.write(helloLine());
+      await delay(80);
+      assert.equal([...p2p.peers.values()].filter((rec) => rec.inbound && rec.helloAt).length, 2);
+      const third = await connect(bound.port);
+      third.write(helloLine());
+      await delay(80);
+      assert.equal(third.destroyed, false);
+      assert.equal(first.destroyed || second.destroyed, true);
+      assert.equal([...p2p.peers.values()].filter((rec) => rec.inbound).length, 2);
+    } finally {
+      p2p.close();
     }
   });
 });

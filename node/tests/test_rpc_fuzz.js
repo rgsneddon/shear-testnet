@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../src/store.js';
-import { STORE_CORRUPT_EXIT, installNodeGuards } from '../src/process_guard.js';
+import { FAULT_EXIT, STORE_CORRUPT_EXIT, installNodeGuards } from '../src/process_guard.js';
 import { createRpc, nonceToU64 } from '../src/rpc.js';
 
 const self = fileURLToPath(import.meta.url);
@@ -68,9 +68,15 @@ if (chainProbe) {
         err.code = 'store_corrupt';
         throw err;
       }
-      const err = new Error('chain_state:book');
-      err.chainState = true;
-      err.code = 'chain_state';
+      if (mode === 'chain') {
+        const err = new Error('chain_state:book');
+        err.chainState = true;
+        err.code = 'chain_state';
+        throw err;
+      }
+      if (mode === 'untagged') throw new Error('untagged boom');
+      const err = new Error('request boom');
+      err.shearScope = 'request';
       throw err;
     },
   };
@@ -80,7 +86,7 @@ if (chainProbe) {
   setTimeout(() => {
     console.log('alive');
     process.exit(0);
-  }, mode === 'corrupt' ? 4000 : 1000);
+  }, mode === 'request' ? 1000 : 4000);
 }
 
 if (!chainProbe) describe('RPC bad input stays up', () => {
@@ -193,7 +199,7 @@ if (!chainProbe) describe('RPC bad input stays up', () => {
     return { got, code, stdout, stderr };
   }
 
-  it('a request fault returns 500 and the process stays up', async () => {
+  it('a request-tagged fault returns 500 and the process stays up', async () => {
     const request = await faultChild('request');
     assert.equal(request.got.status, 500);
     assert.equal(request.got.json.ok, false);
@@ -201,8 +207,26 @@ if (!chainProbe) describe('RPC bad input stays up', () => {
     assert.equal(request.code, 0, request.stderr);
     assert.match(request.stdout, /alive/);
     assert.match(request.stderr, /SHEAR rpc request fault/);
-    assert.match(request.stderr, /chain_state:book/);
-    assert.doesNotMatch(request.stderr, /SHEAR uncaughtException/);
+    assert.match(request.stderr, /request boom/);
+    assert.doesNotMatch(request.stderr, /SHEAR exit/);
+  });
+
+  it('a chain-state fault returns 500 and the process exits', async () => {
+    const chain = await faultChild('chain');
+    assert.equal(chain.got.status, 500);
+    assert.equal(chain.got.json.reason, 'internal');
+    assert.equal(chain.code, FAULT_EXIT, chain.stderr);
+    assert.match(chain.stderr, /SHEAR rpc chain-state fault/);
+    assert.match(chain.stderr, /SHEAR exit chain-state/);
+    assert.doesNotMatch(chain.stdout, /alive/);
+  });
+
+  it('an untagged fault returns 500 and the process exits', async () => {
+    const plain = await faultChild('untagged');
+    assert.equal(plain.got.status, 500);
+    assert.equal(plain.code, FAULT_EXIT, plain.stderr);
+    assert.match(plain.stderr, /SHEAR exit untagged/);
+    assert.doesNotMatch(plain.stdout, /alive/);
   });
 
   it('store corruption returns 500 and exits with its own code', async () => {

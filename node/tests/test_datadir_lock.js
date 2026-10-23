@@ -45,8 +45,8 @@ if (process.argv.includes('--lock-race')) {
   }
 }
 
-function raceStarters(dir) {
-  const kids = [0, 1].map(() => spawn(process.execPath, [self, '--lock-race', dir], {
+function raceStarters(dir, count = 2) {
+  const kids = Array.from({ length: count }, () => spawn(process.execPath, [self, '--lock-race', dir], {
     stdio: ['ignore', 'pipe', 'pipe'],
   }));
   setTimeout(() => {
@@ -87,8 +87,25 @@ describe('datadir lock', () => {
     const again = createStore(dir);
     assert.equal(typeof again.tip, 'function');
     const junk = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-junk-'));
-    fs.writeFileSync(path.join(junk, DATADIR_LOCK_NAME), 'not-json');
-    assert.equal(typeof createStore(junk).tip, 'function');
+    const junkPath = path.join(junk, DATADIR_LOCK_NAME);
+    fs.writeFileSync(junkPath, 'not-json');
+    assert.throws(() => acquireDatadirLock(junk), (err) => {
+      assert.equal(err.code, 'datadir_lock_corrupt');
+      assert.match(err.message, /datadir\.lock/);
+      return true;
+    });
+    assert.equal(fs.readFileSync(junkPath, 'utf8'), 'not-json');
+
+    const foreign = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-foreign-'));
+    const foreignPath = path.join(foreign, DATADIR_LOCK_NAME);
+    fs.writeFileSync(foreignPath, `${JSON.stringify({ pid: stalePid, host: 'other-host', start: '9' })}\n`);
+    assert.throws(() => acquireDatadirLock(foreign), (err) => {
+      assert.equal(err.code, 'datadir_lock_foreign');
+      assert.match(err.message, /other-host/);
+      assert.match(err.message, /datadir\.lock/);
+      return true;
+    });
+    assert.equal(JSON.parse(fs.readFileSync(foreignPath, 'utf8')).host, 'other-host');
 
     const blocked = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-unreadable-'));
     fs.mkdirSync(path.join(blocked, DATADIR_LOCK_NAME));
@@ -117,6 +134,19 @@ describe('datadir lock', () => {
     assert.throws(() => acquireDatadirLock(reused), /datadir\.lock/);
   });
 
+  it('three starters cannot all hold one stale lock', async () => {
+    const stalePid = 2_100_000_000;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-race3-'));
+    fs.writeFileSync(path.join(dir, DATADIR_LOCK_NAME), `${JSON.stringify({ pid: stalePid, host: os.hostname() })}\n`);
+    const results = await raceStarters(dir, 3);
+    const wins = results.filter((r) => r.code === 0 && /acquired/.test(r.stdout));
+    const loses = results.filter((r) => r.code === 2);
+    assert.equal(wins.length, 1, JSON.stringify(results));
+    assert.equal(loses.length, 2, JSON.stringify(results));
+    assert.match(loses[0].stderr, /datadir\.lock/);
+    assert.match(loses[1].stderr, /datadir\.lock/);
+  });
+
   it('two starters cannot both take a stale lock', async () => {
     const stalePid = 2_100_000_000;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-race-'));
@@ -135,7 +165,7 @@ describe('datadir lock', () => {
     const nodeDir = defaultDataDir({ env: {}, homedir, platform: 'linux' });
     const poolDir = defaultPoolDataDir({ env: {}, homedir, platform: 'linux' });
     assert.notEqual(nodeDir, poolDir);
-    assert.match(poolDir, /testnet-v11-pool$/);
+    assert.match(poolDir, /testnet-v12-pool$/);
     assert.match(nodeDir, /testnet-v11$/);
     const win = {
       env: { APPDATA: path.join('C:\\Users\\x\\AppData\\Roaming') },

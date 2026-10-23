@@ -16,6 +16,7 @@ import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
 import { headerPowReason } from './chain.js';
+import { deliverProcessFault, staysUpOnFault } from './process_guard.js';
 
 function reviveDeep(v) {
   if (v == null) return v;
@@ -2011,9 +2012,9 @@ export function createP2p({
           return;
         }
       }
-      // A new header extends the run. The parked body can be fetched again.
-      // The same page does not: retrying it would spin on samples_pruned.
-      if (offered?.accepted > 0) rec.progressAt = Date.now();
+      // A header offer is accepted against the peer-claimed hash. That is not
+      // progress: the ShearHash has not been computed yet. Credit only a
+      // verified block (ingest ok) below.
       if (rec.burialWait instanceof Set && rec.burialWait.size && offered?.accepted > 0) {
         rec.burialWait.clear();
         rec.burialAskHeight = 0;
@@ -2346,6 +2347,8 @@ export function createP2p({
           scheduleCatchup();
         }
       }).catch((err) => {
+        deliverProcessFault('p2p', err);
+        if (!staysUpOnFault(err)) return;
         const rec = peers.get(sock);
         if (rec) {
           rec.verifying?.delete(verifyKey);
@@ -2423,7 +2426,7 @@ export function createP2p({
       }
       let inboundNow = 0;
       for (const rec of peers.values()) if (rec?.inbound) inboundNow += 1;
-      if (inboundNow >= inboundCap) {
+      if (inboundNow >= inboundCap && !evictIdleInbound()) {
         try { sock.destroy(); } catch { /* ignore */ }
         return;
       }
@@ -2466,7 +2469,9 @@ export function createP2p({
         try { msg = parseBoundedJson(raw); } catch { continue; }
         try {
           handle(sock, msg);
-        } catch {
+        } catch (err) {
+          deliverProcessFault('p2p', err);
+          if (!staysUpOnFault(err)) return;
           const rec = peers.get(sock);
           if (recordProofFail(rec)) {
             const until = Date.now() + P2P_BAN_MS;

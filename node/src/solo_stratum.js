@@ -24,6 +24,10 @@ export const SOLO_LINE_MAX = STRATUM_LINE_MAX;
 export const SOLO_LOGIN_MS = 15_000;
 /** Connections accepted from one remote address. */
 export const SOLO_MAX_CONN_PER_IP = 8;
+/** Connections accepted in total, across every address. */
+export const SOLO_MAX_CONN = Math.max(1, Number(process.env.SHEAR_SOLO_MAX_CONN || 64) || 64);
+/** Close a logged-in socket that sends nothing for this long. */
+export const SOLO_IDLE_MS = 120_000;
 
 function line(obj) {
   return `${JSON.stringify(obj)}\n`;
@@ -268,11 +272,16 @@ export function createSoloStratum({
   followPublic = false,
   loginMs = SOLO_LOGIN_MS,
   maxPerIp = SOLO_MAX_CONN_PER_IP,
+  maxConn = SOLO_MAX_CONN,
+  idleMs = SOLO_IDLE_MS,
 } = {}) {
   const sockets = new Set();
   const authed = new Set();
+  const lastActive = new Map();
   const loginLimit = Number(loginMs);
   const perIp = Math.max(1, Number(maxPerIp) || SOLO_MAX_CONN_PER_IP);
+  const connCap = Math.max(1, Number(maxConn) || SOLO_MAX_CONN);
+  const idleLimit = idleMs == null ? SOLO_IDLE_MS : Number(idleMs);
 
   function ipOf(sock) {
     let ip = String(sock.remoteAddress || '');
@@ -288,6 +297,7 @@ export function createSoloStratum({
   let lastJob = null;
   let lastMiner = '';
   let restamp = null;
+  let idleSweep = null;
   let unsubTip = null;
 
   function pushFreshJob() {
@@ -331,11 +341,12 @@ export function createSoloStratum({
 
   const server = net.createServer((sock) => {
     try { sock.setNoDelay(true); } catch { /* ignore */ }
-    if (countIp(ipOf(sock)) >= perIp) {
+    if (sockets.size >= connCap || countIp(ipOf(sock)) >= perIp) {
       try { sock.destroy(); } catch { /* ignore */ }
       return;
     }
     sockets.add(sock);
+    lastActive.set(sock, Date.now());
     let buf = '';
     let session = null;
     let logins = 0;
@@ -353,6 +364,7 @@ export function createSoloStratum({
       loginTimer = null;
     }
     sock.on('data', (chunk) => {
+      lastActive.set(sock, Date.now());
       try {
       if (refused) return;
       buf += chunk.toString('utf8');
@@ -468,8 +480,8 @@ export function createSoloStratum({
         try { sock.destroy(); } catch { /* ignore */ }
       }
     });
-    sock.on('close', () => { clearLoginTimer(); authed.delete(sock); sockets.delete(sock); });
-    sock.on('error', () => { clearLoginTimer(); authed.delete(sock); sockets.delete(sock); });
+    sock.on('close', () => { clearLoginTimer(); authed.delete(sock); lastActive.delete(sock); sockets.delete(sock); });
+    sock.on('error', () => { clearLoginTimer(); authed.delete(sock); lastActive.delete(sock); sockets.delete(sock); });
   });
 
   function listen() {
@@ -486,6 +498,19 @@ export function createSoloStratum({
         if (Number.isFinite(interval) && interval > 0) {
           restamp = setInterval(pushFreshJob, interval);
           if (typeof restamp.unref === 'function') restamp.unref();
+        }
+        if (Number.isFinite(idleLimit) && idleLimit > 0) {
+          const sweepMs = Math.min(1000, Math.max(50, Math.floor(idleLimit / 2)));
+          idleSweep = setInterval(() => {
+            const now = Date.now();
+            for (const sock of sockets) {
+              if (!authed.has(sock)) continue;
+              const at = lastActive.get(sock) || 0;
+              if (now - at < idleLimit) continue;
+              try { sock.destroy(); } catch { /* ignore */ }
+            }
+          }, sweepMs);
+          if (typeof idleSweep.unref === 'function') idleSweep.unref();
         }
         resolve({
           port: typeof addr === 'object' && addr ? addr.port : port,
@@ -504,10 +529,15 @@ export function createSoloStratum({
       clearInterval(restamp);
       restamp = null;
     }
+    if (idleSweep) {
+      clearInterval(idleSweep);
+      idleSweep = null;
+    }
     for (const sock of sockets) {
       try { sock.destroy(); } catch { /* ignore */ }
     }
     authed.clear();
+    lastActive.clear();
     sockets.clear();
     try { server.close(); } catch { /* ignore */ }
   }

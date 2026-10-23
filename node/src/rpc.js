@@ -12,7 +12,7 @@ import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { HTTP_BODY_MAX, HTTP_TX_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { keyedFetchRejected, syncVerdict, witnessRouteBanned } from './fs1_sync.js';
-import { isStoreCorruptError } from './process_guard.js';
+import { faultLabel, staysUpOnFault } from './process_guard.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -187,28 +187,28 @@ export function nonceToU64(value) {
   return b;
 }
 
-function raiseStoreCorrupt(err) {
+function raiseForGuard(err) {
   // The 500 is already queued. A short turn lets that write land, then the
-  // process guard sees the store-corruption flag and exits with its own code.
+  // process guard logs the fault and exits. Request-tagged faults do not get here.
   setTimeout(() => { throw err; }, 25);
 }
 
 function finishRpcFault(res, err) {
-  const corrupt = isStoreCorruptError(err);
-  console.error(`SHEAR rpc ${corrupt ? 'store-corrupt' : 'request'} fault\n${err?.stack || err}`);
+  const stay = staysUpOnFault(err);
+  console.error(`SHEAR rpc ${faultLabel(err)} fault\n${err?.stack || err}`);
   if (res && !res.headersSent && !res.writableEnded) {
     try { json(res, 500, { ok: false, reason: 'internal' }); } catch { /* ignore */ }
   }
-  if (!corrupt) return;
+  if (stay) return;
   if (!res || typeof res.once !== 'function' || res.writableFinished || res.destroyed) {
-    raiseStoreCorrupt(err);
+    raiseForGuard(err);
     return;
   }
   let armed = false;
   const once = () => {
     if (armed) return;
     armed = true;
-    raiseStoreCorrupt(err);
+    raiseForGuard(err);
   };
   res.once('finish', once);
   res.once('close', once);

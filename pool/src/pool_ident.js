@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { abandonedPoolIdent } from './pool_datadir.js';
 import {
   hash20FromAddress,
   isShearAddress,
@@ -96,7 +97,13 @@ function dest20Equal(a, b) {
 }
 
 /** Shipped boot path: ident dest20 + operator spend key that matches it. */
-export function bootPoolOperator({ dataDir, minerEnv, env = process.env } = {}) {
+export function bootPoolOperator({ dataDir, minerEnv, env = process.env, homedir, platform, exists } = {}) {
+  const abandoned = abandonedPoolIdent({ dataDir, minerEnv, env, homedir, platform, exists });
+  if (abandoned) {
+    const err = new Error(`pool-miner.json is at ${abandoned.legacyIdent}; refusing to start ${abandoned.fresh} with a new payout address`);
+    err.code = 'pool_ident_legacy';
+    throw err;
+  }
   fs.mkdirSync(dataDir, { recursive: true });
   const identPath = path.join(dataDir, 'pool-miner.json');
   let miner = String(minerEnv != null ? minerEnv : (env.SHEAR_POOL_MINER || '')).trim();

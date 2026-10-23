@@ -10,7 +10,9 @@ import { startNode } from '../src/node.js';
 import {
   createSoloStratum,
   evaluateSoloSubmit,
+  SOLO_IDLE_MS,
   SOLO_LINE_MAX,
+  SOLO_MAX_CONN,
   soloShareLogFields,
 } from '../src/solo_stratum.js';
 
@@ -234,6 +236,53 @@ describe('solo stratum bad input', () => {
       const closed = extra.filter((sock) => sock.destroyed).length;
       assert.equal(closed >= 1, true);
       for (const sock of extra) sock.destroy();
+    } finally {
+      stratum.close();
+    }
+  });
+
+  it('caps total connections and drops a logged-in socket that goes idle', async () => {
+    assert.ok(SOLO_MAX_CONN >= 8);
+    assert.ok(SOLO_IDLE_MS >= 60_000);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-total-'));
+    const store = createStore(dir);
+    const stratum = createSoloStratum({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      restampMs: 0,
+      loginMs: 5000,
+      maxPerIp: 8,
+      maxConn: 2,
+      idleMs: 200,
+    });
+    const bound = await stratum.listen();
+    const dest = encodeDest(Buffer.alloc(20, 6));
+    const open = () => new Promise((resolve, reject) => {
+      const sock = net.connect(bound.port, '127.0.0.1');
+      sock.on('data', () => {});
+      sock.on('error', () => {});
+      sock.once('connect', () => resolve(sock));
+      sock.once('error', reject);
+    });
+    try {
+      const a = await open();
+      const b = await open();
+      const c = await open();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(c.destroyed, true);
+      assert.equal(a.destroyed, false);
+      assert.equal(b.destroyed, false);
+      a.destroy();
+      b.destroy();
+
+      const quiet = await open();
+      quiet.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: `${dest}.solo` } })}\n`);
+      const closed = await new Promise((resolve) => {
+        quiet.once('close', () => resolve(true));
+        setTimeout(() => resolve(false), 1000);
+      });
+      assert.equal(closed, true);
     } finally {
       stratum.close();
     }

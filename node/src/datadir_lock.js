@@ -1,16 +1,19 @@
 /**
  * One writer for a book directory.
- * The lock file records the holder pid, host, and start time. A live pid
- * refuses the second process. A pid that is gone (crash, kill) is stale:
- * the next open renames that file aside, creates a new one exclusively, and
- * keeps it only when a re-read shows this pid. An unreadable lock is never
- * stale. The same process may open the book again.
+ * The lock file records the holder pid, host, and start time. A live pid on
+ * this host refuses the second process. A dead pid on this host is stale:
+ * one process at a time renames that file aside, creates a new one
+ * exclusively, and keeps it only when a re-read shows this pid. Restore uses
+ * a hard link so it cannot overwrite a lock someone else already created.
+ * An unreadable lock, a lock that is not JSON, and a lock from another host
+ * fail closed. The same process may open the book again.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 export const DATADIR_LOCK_NAME = 'datadir.lock';
+const CLAIM_NAME = 'datadir.lock.claim';
 
 const held = new Map();
 let exitArmed = false;
@@ -52,21 +55,25 @@ function readLock(lockPath) {
     if (age < 2000) return { pending: true };
     return { stale: true };
   }
+  let info;
   try {
-    const info = JSON.parse(text);
-    const pid = Number(info?.pid);
-    if (!Number.isInteger(pid) || pid <= 0) return { stale: true };
-    if (pid === process.pid) return { ours: true, pid };
-    if (pidAlive(pid)) {
-      const recorded = String(info?.start || '');
-      const live = procStartId(pid);
-      if (recorded && live && recorded !== live) return { reused: true, pid };
-      return { busy: true, pid };
-    }
-    return { stale: true, pid };
+    info = JSON.parse(text);
   } catch {
-    return { stale: true };
+    return { corrupt: true };
   }
+  if (!info || typeof info !== 'object') return { corrupt: true };
+  const pid = Number(info.pid);
+  const host = typeof info.host === 'string' ? info.host : '';
+  if (host && host !== os.hostname()) return { foreign: true, host, pid };
+  if (!Number.isInteger(pid) || pid <= 0) return { corrupt: true };
+  if (pid === process.pid) return { ours: true, pid, host };
+  if (pidAlive(pid)) {
+    const recorded = String(info.start || '');
+    const live = procStartId(pid);
+    if (recorded && live && recorded !== live) return { reused: true, pid };
+    return { busy: true, pid };
+  }
+  return { stale: true, pid };
 }
 
 function inUse(lockPath, pid) {
@@ -85,6 +92,18 @@ function reusedPid(pid, lockPath) {
 function unreadableLock(lockPath) {
   const err = new Error(`datadir lock unreadable: ${lockPath}`);
   err.code = 'datadir_lock_unreadable';
+  return err;
+}
+
+function corruptLock(lockPath) {
+  const err = new Error(`datadir lock is not json: ${lockPath}`);
+  err.code = 'datadir_lock_corrupt';
+  return err;
+}
+
+function foreignHost(host, lockPath) {
+  const err = new Error(`datadir lock from host ${host}: ${lockPath}`);
+  err.code = 'datadir_lock_foreign';
   return err;
 }
 
@@ -111,7 +130,7 @@ function confirmOurs(lockPath) {
   }
   try {
     const info = JSON.parse(text);
-    return Number(info?.pid) === process.pid;
+    return Number(info?.pid) === process.pid && String(info?.host || '') === os.hostname();
   } catch {
     return false;
   }
@@ -151,10 +170,22 @@ function claimFresh(lockPath) {
   return { fd, path: lockPath };
 }
 
+/** Put a moved lock back without replacing a file that is already at the path. */
+function restoreAside(aside, lockPath) {
+  try {
+    fs.linkSync(aside, lockPath);
+  } catch (err) {
+    if (err?.code === 'EEXIST') return false;
+    return false;
+  }
+  try { fs.unlinkSync(aside); } catch { /* ignore */ }
+  return true;
+}
+
 /**
  * Rename a stale lock aside, create the lock exclusively, then keep it only
  * when the new file still names this pid. A live file observed after the
- * rename is put back. An unreadable file is never removed.
+ * rename is linked back. An unreadable or non-JSON file is never removed.
  */
 function takeStale(lockPath, attempt) {
   const aside = `${lockPath}.${process.pid}.${attempt}.aside`;
@@ -166,19 +197,27 @@ function takeStale(lockPath, attempt) {
   }
   const moved = readLock(aside);
   if (moved.unreadable) {
-    try { fs.renameSync(aside, lockPath); } catch { /* ignore */ }
+    restoreAside(aside, lockPath);
     throw unreadableLock(lockPath);
   }
+  if (moved.corrupt) {
+    restoreAside(aside, lockPath);
+    throw corruptLock(lockPath);
+  }
+  if (moved.foreign) {
+    restoreAside(aside, lockPath);
+    throw foreignHost(moved.host, lockPath);
+  }
   if (moved.reused) {
-    try { fs.renameSync(aside, lockPath); } catch { /* ignore */ }
+    restoreAside(aside, lockPath);
     throw reusedPid(moved.pid, lockPath);
   }
   if (moved.busy) {
-    try { fs.renameSync(aside, lockPath); } catch { /* ignore */ }
+    restoreAside(aside, lockPath);
     throw inUse(lockPath, moved.pid);
   }
   if (moved.ours || moved.pending) {
-    try { fs.renameSync(aside, lockPath); } catch { /* ignore */ }
+    restoreAside(aside, lockPath);
     return null;
   }
   const rec = claimFresh(lockPath);
@@ -186,6 +225,42 @@ function takeStale(lockPath, attempt) {
     try { fs.unlinkSync(aside); } catch { /* ignore */ }
   }
   return rec;
+}
+
+function releaseClaim(rec) {
+  if (!rec) return;
+  try { if (rec.fd != null) fs.closeSync(rec.fd); } catch { /* ignore */ }
+  try { fs.unlinkSync(rec.path); } catch { /* ignore */ }
+}
+
+/** One takeover at a time. A dead holder's claim is cleared. A live claim waits. */
+function acquireClaim(dir) {
+  const claimPath = path.join(dir, CLAIM_NAME);
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    try {
+      const fd = fs.openSync(claimPath, 'wx', 0o600);
+      fs.writeFileSync(fd, `${JSON.stringify(lockRecord())}\n`);
+      return { fd, path: claimPath };
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      const state = readLock(claimPath);
+      if (state.missing) continue;
+      if (state.stale || state.corrupt) {
+        const aside = `${claimPath}.${process.pid}.aside`;
+        try {
+          fs.renameSync(claimPath, aside);
+          fs.unlinkSync(aside);
+        } catch { /* the other starter took it */ }
+        continue;
+      }
+      if (state.ours) {
+        try { fs.unlinkSync(claimPath); } catch { /* ignore */ }
+        continue;
+      }
+      pause(10);
+    }
+  }
+  throw inUse(claimPath);
 }
 
 function armExit() {
@@ -200,10 +275,19 @@ function armExit() {
   });
 }
 
-function adopt(key, lockPath, rec) {
+function adopt(key, rec) {
   held.set(key, rec);
   armExit();
   return rec;
+}
+
+function refuse(state, lockPath) {
+  if (state.reused) throw reusedPid(state.pid, lockPath);
+  if (state.foreign) throw foreignHost(state.host, lockPath);
+  if (state.corrupt) throw corruptLock(lockPath);
+  if (state.unreadable) throw unreadableLock(lockPath);
+  if (state.busy) throw inUse(lockPath, state.pid);
+  return false;
 }
 
 /** Refuse a second process. A dead holder's lock is replaced only by an exclusive create. */
@@ -211,22 +295,25 @@ export function acquireDatadirLock(dir) {
   const key = path.resolve(String(dir || ''));
   if (held.has(key)) return held.get(key);
   const lockPath = path.join(key, DATADIR_LOCK_NAME);
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const state = readLock(lockPath);
-    if (state.ours) return adopt(key, lockPath, held.get(key) || { path: lockPath, fd: null });
-    if (state.reused) throw reusedPid(state.pid, lockPath);
-    if (state.busy) throw inUse(lockPath, state.pid);
-    if (state.unreadable) throw unreadableLock(lockPath);
-    if (state.pending) {
-      pause(20);
-      continue;
+  const claim = acquireClaim(key);
+  try {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const state = readLock(lockPath);
+      if (state.ours) return adopt(key, held.get(key) || { path: lockPath, fd: null });
+      if (refuse(state, lockPath)) return null;
+      if (state.pending) {
+        pause(20);
+        continue;
+      }
+      const rec = state.stale ? takeStale(lockPath, attempt) : claimFresh(lockPath);
+      if (!rec) {
+        pause(20);
+        continue;
+      }
+      return adopt(key, rec);
     }
-    const rec = state.stale ? takeStale(lockPath, attempt) : claimFresh(lockPath);
-    if (!rec) {
-      pause(20);
-      continue;
-    }
-    return adopt(key, lockPath, rec);
+    throw inUse(lockPath);
+  } finally {
+    releaseClaim(claim);
   }
-  throw inUse(lockPath);
 }

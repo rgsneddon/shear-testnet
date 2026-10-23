@@ -1,14 +1,16 @@
 /**
- * Last-resort logger for faults that escape a request handler.
- * A request fault is logged and the process stays up.
- * The process exits only for an explicit store-corruption flag or code.
- * Message text is not a signal.
+ * Last-resort logger for faults that escape a handler.
+ * A fault explicitly tagged request-scoped is logged and the process stays up.
+ * Chain-state faults and anything untagged are logged and the process exits.
+ * Message text is not a signal. There is no silent recovery.
  */
 
 let installed = false;
 
-/** sysexits EX_SOFTWARE. Distinct from a request-fault exit. */
+/** sysexits EX_SOFTWARE. Store corruption, distinct from a plain fault exit. */
 export const STORE_CORRUPT_EXIT = 70;
+/** Untagged faults and chain-state faults. */
+export const FAULT_EXIT = 1;
 
 const CHAIN_STATE_CODES = new Set([
   'chain_state',
@@ -46,12 +48,52 @@ export function storeCorruptError(message, code = 'store_corrupt') {
   return err;
 }
 
-function onProcessFault(kind, err) {
-  const corrupt = isStoreCorruptError(err);
+export function isRequestScoped(err) {
+  return !!(err && typeof err === 'object' && err.shearScope === 'request');
+}
+
+/** Stay up only for an explicit request tag that is not chain-state or store corruption. */
+export function staysUpOnFault(err) {
+  if (isChainStateError(err) || isStoreCorruptError(err)) return false;
+  return isRequestScoped(err);
+}
+
+export function faultLabel(err) {
+  if (isStoreCorruptError(err)) return 'store-corrupt';
+  if (isChainStateError(err)) return 'chain-state';
+  if (isRequestScoped(err)) return 'request';
+  return 'untagged';
+}
+
+export function faultExitCode(err) {
+  if (isStoreCorruptError(err)) return STORE_CORRUPT_EXIT;
+  return FAULT_EXIT;
+}
+
+function logFault(kind, err) {
   const stack = err?.stack || err?.message || err;
-  console.error(`SHEAR ${kind}${corrupt ? ' store-corrupt' : ''}\n${stack}`);
-  if (!corrupt) return;
-  process.exit(STORE_CORRUPT_EXIT);
+  console.error(`SHEAR ${kind} ${faultLabel(err)}\n${stack}`);
+}
+
+function onProcessFault(kind, err) {
+  logFault(kind, err);
+  if (staysUpOnFault(err)) return;
+  const label = faultLabel(err);
+  console.error(`SHEAR exit ${label}`);
+  process.exit(faultExitCode(err));
+}
+
+/**
+ * A caught fault from p2p or a timer. Request-scoped faults are logged and
+ * the caller continues. Anything else is thrown on a later turn so the
+ * process guard exits loudly.
+ */
+export function deliverProcessFault(kind, err) {
+  if (staysUpOnFault(err)) {
+    logFault(kind, err);
+    return;
+  }
+  setTimeout(() => { throw err; }, 0);
 }
 
 /** Install once. Safe to call from the node entry only. */
