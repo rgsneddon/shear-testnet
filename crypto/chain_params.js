@@ -302,10 +302,27 @@ export function statedMagic(magic) {
 }
 
 /**
+ * How many slots of `slotMs` finish strictly inside `epochSpan` when the
+ * raw count would run past the epoch. A count that already fits is unchanged.
+ * v12 and mainnet do not use this. Their row numbers stay as written.
+ */
+function slotsInsideEpoch(slots, slotMs, epochSpan) {
+  const width = Math.floor(Number(slotMs));
+  const span = Math.floor(Number(epochSpan));
+  if (!(span > 0) || !(width > 0)) return slots;
+  if (slots * width < span) return slots;
+  return Math.floor((span - 1) / width);
+}
+
+/**
  * Dev vote and withdraw windows on the vortex clock. elapsedMs is chain
  * time since the epoch opened. Epoch, day, and period read epochMs, dayMs,
  * and periodMs. Block-count fields scale by targetBlockMs. epochBlocks,
  * dayBlocks, and periodBlocks are not a second clock.
+ * Vote separation and gap are block buckets: a timestamp a few milliseconds
+ * off the target stays in the same bucket. The shear-dev withdraw gate uses
+ * the largest slot count that finishes inside the epoch when the table count
+ * would not. Other magics keep the raw count.
  */
 export function devClockFromRow(elapsedMs, row) {
   const elapsed = Math.max(0, Math.floor(Number(elapsedMs) || 0));
@@ -318,25 +335,27 @@ export function devClockFromRow(elapsedMs, row) {
   const voteEdgeMs = Math.floor(Number(row.voteEdge)) * target;
   const voteSep = Math.max(1, Math.floor(Number(row.voteSep)));
   const voteGap = Math.max(1, Math.floor(Number(row.voteGap)));
-  const voteSepMs = voteSep * target;
-  const voteGapMs = voteGap * target;
   const voteFinalityMs = Math.max(0, Math.floor(Number(row.voteFinality))) * target;
   const withdrawSlots = Math.floor(Number(row.withdrawSlots));
+  const withdrawLimit = String(row?.magic) === MAGIC_DEV
+    ? Math.max(0, slotsInsideEpoch(withdrawSlots, periodSpan, epochSpan))
+    : Math.max(0, withdrawSlots);
   const epoch = Math.floor(elapsed / epochSpan);
   const day = Math.floor(elapsed / daySpan);
   const period = Math.floor(elapsed / periodSpan);
   const into = elapsed - epoch * epochSpan;
+  const intoBlocks = Math.floor(into / target);
   const onDayBoundary = elapsed !== 0 && (elapsed % daySpan) === 0;
   const periodSlot = Math.floor(elapsed / periodSpan);
   const voteOpen = into >= stubMs
     && into >= voteEdgeMs
     && into < voteCloseMs
-    && (voteSep <= 1 || (into % voteSepMs) === 0)
-    && (voteGap <= 1 || (into % voteGapMs) === 0)
+    && (voteSep <= 1 || (intoBlocks % voteSep) === 0)
+    && (voteGap <= 1 || (intoBlocks % voteGap) === 0)
     && into + voteFinalityMs <= epochSpan
     && !onDayBoundary
     && periodSlot < Math.max(0, withdrawSlots);
-  const withdrawOpen = periodSlot < Math.max(0, withdrawSlots);
+  const withdrawOpen = periodSlot < withdrawLimit;
   return {
     epoch,
     day,
@@ -351,7 +370,10 @@ export function devClockFromRow(elapsedMs, row) {
 /** True while the elapsed time is still inside the row's withdraw slots. */
 export function withdrawSlotOpen(elapsedMs, row) {
   const slotMs = Math.max(1, Math.floor(Number(row.withdrawSlotMs) || 1));
-  const slots = Math.floor(Number(row.withdrawSlots));
+  const raw = Math.floor(Number(row.withdrawSlots));
+  const slots = String(row?.magic) === MAGIC_DEV
+    ? slotsInsideEpoch(raw, slotMs, Math.floor(Number(row.epochMs)))
+    : raw;
   const slot = Math.floor(Math.max(0, Number(elapsedMs) || 0) / slotMs);
   return slot < slots;
 }

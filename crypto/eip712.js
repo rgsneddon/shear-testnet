@@ -6,14 +6,11 @@
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { MAGIC_TESTNET } from './asert.js';
 import { clockFor } from './chain_params.js';
 
-export const EIP712_CHAIN_ID = 2701;
 export const EIP712_NAME = 'ShearPool';
 export const EIP712_VERSION = '1';
 export const EIP712_PRIMARY = 'PoolWithdraw';
-export const EIP712_CHAIN_MAGIC = MAGIC_TESTNET;
 
 /** Domain chain id is the book magic. A dev signature does not verify on v12. */
 export function poolWithdrawMagic(magic) {

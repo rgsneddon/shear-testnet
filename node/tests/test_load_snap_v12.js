@@ -97,7 +97,7 @@ function potCount(block) {
 }
 
 function supplyOf(blocks) {
-  const got = auditCirculatingSupply(blocks);
+  const got = auditCirculatingSupply(blocks, { magic: MAGIC_TESTNET });
   assert.equal(got.status, 'verified', got.reason || 'supply');
   return got.circulatingNanos;
 }

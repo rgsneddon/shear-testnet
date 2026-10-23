@@ -1117,8 +1117,8 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
       assert.equal(typedCommitSum(sealedDraw).ok, true);
       assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
 
-      assert.equal(auditCirculatingSupply([]).status, 'verified');
-      const liveSupply = auditCirculatingSupply(store.blocks);
+      assert.equal(auditCirculatingSupply([], { magic: MAGIC_TESTNET }).status, 'verified');
+      const liveSupply = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
       assert.equal(liveSupply.status, 'verified', liveSupply.reason || 'supply');
       const supplyTip = store.tip();
       const { tpl } = store.template({

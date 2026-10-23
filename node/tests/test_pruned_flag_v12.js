@@ -132,7 +132,7 @@ describe('samplesPruned does not forge hash credits', () => {
     const honest = appendTpl(store, dest, 2, t0 + 90_000, shares);
     assert.equal(honest.got.ok, true, honest.got.reason);
     const tipBefore = store.tip().height;
-    const owedBefore = auditCirculatingSupply(store.blocks);
+    const owedBefore = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
     assert.equal(owedBefore.status, 'verified', owedBefore.reason);
     const nextShares = [4, 5, 6].map((i) => shareAt(destAt(i), BigInt(i), SHARE_FLOOR_BITS));
     pinShares(store.tip().header, nextShares);
@@ -227,7 +227,7 @@ describe('samplesPruned does not forge hash credits', () => {
     assert.equal(viaIpc.ok, false, viaIpc.reason);
     assert.equal(viaIpc.reason, 'pow');
     assert.equal(store.tip().height, tipBefore);
-    const after = auditCirculatingSupply(store.blocks);
+    const after = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
     assert.equal(after.status, 'verified', after.reason);
     assert.equal(after.measuredHashNanos, owedBefore.measuredHashNanos);
 
@@ -251,6 +251,6 @@ describe('samplesPruned does not forge hash credits', () => {
     assert.equal(bounced.blocks.length, fast.blocks.length);
     assert.equal(bounced.blocks[1].samplesPruned, false);
     assert.ok((bounced.blocks[1].shareBatch || []).length > 0);
-    assert.equal(auditCirculatingSupply(bounced.blocks).status, 'verified');
+    assert.equal(auditCirculatingSupply(bounced.blocks, { magic: MAGIC_TESTNET }).status, 'verified');
   });
 });

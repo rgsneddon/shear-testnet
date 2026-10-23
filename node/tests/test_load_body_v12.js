@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import {
+import { MAGIC_TESTNET,
   GENESIS_BITS_PACKED,
   MTP_FUTURE_MS,
   SAMPLE_PRUNE_CONFIRMATIONS,
@@ -224,12 +224,12 @@ describe('foreign load checks the block body before the vault boots', () => {
     sealNext(store, dest, t0 + TARGET_BLOCK_INTERVAL_MS);
     sealNext(store, dest, t0 + 2 * TARGET_BLOCK_INTERVAL_MS);
     const honestTip = tipHex(store);
-    const supplyBefore = auditCirculatingSupply(store.blocks);
+    const supplyBefore = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
     assert.equal(supplyBefore.status, 'verified', supplyBefore.reason);
 
     const again = createStore(dir);
     assert.equal(tipHex(again), honestTip);
-    const supplyAgain = auditCirculatingSupply(again.blocks);
+    const supplyAgain = auditCirculatingSupply(again.blocks, { magic: MAGIC_TESTNET });
     assert.equal(supplyAgain.status, 'verified', supplyAgain.reason);
     assert.equal(supplyAgain.circulatingNanos, supplyBefore.circulatingNanos);
 
@@ -237,7 +237,7 @@ describe('foreign load checks the block body before the vault boots', () => {
     for (const n of [1, 2, 3]) {
       const prefix = loadSealed(snap.slice(0, n));
       assert.equal(prefix.store.tip().height, n);
-      const got = auditCirculatingSupply(prefix.store.blocks);
+      const got = auditCirculatingSupply(prefix.store.blocks, { magic: MAGIC_TESTNET });
       assert.equal(got.status, 'verified', got.reason);
     }
 
@@ -284,7 +284,7 @@ describe('foreign load checks the block body before the vault boots', () => {
     }, ...head.txs.slice(1)]);
     expectLoad([forgedRoot], /hash_owed/);
 
-    const supplyAfter = auditCirculatingSupply(store.blocks);
+    const supplyAfter = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
     assert.equal(supplyAfter.status, 'verified', supplyAfter.reason);
     assert.equal(supplyAfter.circulatingNanos, supplyBefore.circulatingNanos);
     assert.equal(fs.existsSync(path.join(dir, 'reserve.json')), true);
@@ -402,7 +402,7 @@ describe('foreign load checks the block body before the vault boots', () => {
     assert.equal(pruned[pruned.length - 1].samplesPruned === true, false);
     const loadStarted = Date.now();
     const loaded = loadSealed(pruned);
-    const supply = auditCirculatingSupply(loaded.store.blocks);
+    const supply = auditCirculatingSupply(loaded.store.blocks, { magic: MAGIC_TESTNET });
     console.log(JSON.stringify({
       event: 'load_body',
       blocks: want,
@@ -441,7 +441,7 @@ describe('foreign load checks the block body before the vault boots', () => {
         ms: Date.now() - prefixStarted,
       }));
       assert.equal(prefix.store.tip().height, n);
-      const prefixSupply = auditCirculatingSupply(prefix.store.blocks);
+      const prefixSupply = auditCirculatingSupply(prefix.store.blocks, { magic: MAGIC_TESTNET });
       assert.equal(prefixSupply.status, 'verified', prefixSupply.reason);
     }
   });

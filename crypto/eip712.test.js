@@ -6,7 +6,6 @@ import { NANOS_PER_SHE, MAGIC_TESTNET } from './asert.js';
 import { levyNanos, LEVY_FLOOR_UNITS } from './levy.js';
 import { verifyPoolWithdrawOffchain } from './levy.js';
 import {
-  EIP712_CHAIN_ID,
   EIP712_NAME,
   poolWithdrawDigest,
   signPoolWithdraw,
@@ -15,7 +14,6 @@ import {
 
 describe('EIP-712 PoolWithdraw', () => {
   it('chainId 2701; valid seed sig verifies; empty/wrong/unsigned fail; empty L is the weight floor', () => {
-    assert.equal(EIP712_CHAIN_ID, 2701);
     assert.equal(EIP712_NAME, 'ShearPool');
     // LEVY=weight ignores the amount; an empty quote is the floor.
     assert.equal(levyNanos(NANOS_PER_SHE), LEVY_FLOOR_UNITS);

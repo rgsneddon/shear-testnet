@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { potSubsidyNanos } from '../../crypto/pot_sched.js';
-import { TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { excessOf } from '../../crypto/note.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { coinbaseTx } from '../src/chain.js';
@@ -190,7 +190,7 @@ describe('v12 pool supply publish', () => {
       });
       const outputs = blocks.reduce((n, block) => n + coinbaseOutputs(block), 0);
       assert.equal(outputs, OUTPUT_COUNTS.reduce((a, n) => a + n, 0));
-      const audited = auditCirculatingSupply(blocks);
+      const audited = auditCirculatingSupply(blocks, { magic: MAGIC_TESTNET });
       assert.equal(audited.status, 'verified', audited.reason);
       const inserts = rangeVerifiedInserts();
       const before = coinbaseRangeVerifies();
@@ -221,7 +221,7 @@ describe('v12 pool supply publish', () => {
         miner,
         bumped.map((nanos) => ({ nanos, kind: 'pot' })),
       );
-      const driftAudit = auditCirculatingSupply(inflated);
+      const driftAudit = auditCirculatingSupply(inflated, { magic: MAGIC_TESTNET });
       assert.equal(driftAudit.status, 'mismatch');
       const driftBefore = coinbaseRangeVerifies();
       const driftInserts = rangeVerifiedInserts();

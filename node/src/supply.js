@@ -1022,7 +1022,12 @@ function auditUnits(blocks) {
  * }}
  */
 export function auditCirculatingSupply(blocks, opts = {}) {
-  const magic = opts.magic == null ? MAGIC_TESTNET : opts.magic;
+  if (opts.magic == null || opts.magic === '') {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
+  const magic = opts.magic;
   const burnedIn = Object.prototype.hasOwnProperty.call(opts, 'burnedNanos') ? opts.burnedNanos : 0;
   const claimPresent = Object.prototype.hasOwnProperty.call(opts, 'extraMintNanos');
   const burned = asNonNeg(burnedIn);

@@ -45,8 +45,9 @@ import { potSubsidyAt } from '../crypto/pot_sched.js';
 import { buildTemplate } from '../node/src/chain.js';
 import { encodeDest, newIdentity, ed25519PrivateFromSeed, ed25519RawPub, hash20FromAddress } from '../crypto/address.js';
 import { destForLogin } from '../crypto/flow_sheet.js';
-import { signPoolWithdraw, verifyPoolWithdrawSig, poolWithdrawMagic, poolWithdrawDigest, EIP712_CHAIN_ID } from '../crypto/eip712.js';
-import { verifyWalletPoolWithdraw } from '../pool/src/wallet_api.js';
+import { signPoolWithdraw, verifyPoolWithdrawSig, poolWithdrawMagic, poolWithdrawDigest } from '../crypto/eip712.js';
+import { verifyWalletPoolWithdraw, handleWalletApi } from '../pool/src/wallet_api.js';
+import { auditCirculatingSupply } from '../node/src/supply.js';
 import { packShewall, sealShewallBin, openShewallBin, unpackShewall } from '../crypto/shewall_bin.js';
 import {
   withdraw,
@@ -454,8 +455,13 @@ describe('chain param table', () => {
     assert.equal(devClockFromRow(target, { ...row, stubBlocks: 2 }).voteOpen, false);
     assert.equal(devClockFromRow(target, { ...row, voteEdge: 5 }).voteOpen, false);
     assert.equal(devClockFromRow(2 * target, row).voteOpen, true);
+    assert.equal(devClockFromRow(2 * target + 1, row).voteOpen, true);
     assert.equal(devClockFromRow(2 * target, { ...row, voteSep: 3 }).voteOpen, false);
+    assert.equal(devClockFromRow(2 * target + 1, { ...row, voteSep: 3 }).voteOpen, false);
+    assert.equal(devClockFromRow(3 * target + 100, { ...row, voteSep: 3 }).voteOpen, true);
     assert.equal(devClockFromRow(2 * target, { ...row, voteGap: 3 }).voteOpen, false);
+    assert.equal(devClockFromRow(2 * target + 1, { ...row, voteGap: 3 }).voteOpen, false);
+    assert.equal(devClockFromRow(3 * target + 100, { ...row, voteGap: 3 }).voteOpen, true);
     assert.equal(devClockFromRow(25 * target, row).voteOpen, false);
     assert.equal(devClockFromRow(25 * target, { ...row, voteCloseBlock: 30 }).voteOpen, true);
     const lateVote = { ...row, voteCloseBlock: 40 };
@@ -463,21 +469,51 @@ describe('chain param table', () => {
     assert.equal(devClockFromRow(30 * target, { ...lateVote, voteFinality: 3 }).voteOpen, false);
     const closedMs = 128 * target;
     assert.equal(devClockFromRow(closedMs, row).withdrawOpen, false);
-    assert.equal(devClockFromRow(closedMs, { ...row, periodMs: row.periodMs * 2 }).withdrawOpen, true);
     assert.equal(devClockFromRow(closedMs, { ...row, periodBlocks: 4 }).withdrawOpen, false);
-    assert.equal(devClockFromRow(closedMs, { ...row, withdrawSlots: 65 }).withdrawOpen, true);
+    const periodFit = Math.floor((row.epochMs - 1) / row.periodMs);
+    assert.equal(periodFit, 15);
+    assert.ok(periodFit * row.periodMs < row.epochMs);
+    assert.equal(devClockFromRow(periodFit * row.periodMs, row).withdrawOpen, false);
+    assert.equal(devClockFromRow((periodFit - 1) * row.periodMs, row).withdrawOpen, true);
+    assert.equal(devClockFromRow(row.epochMs - 1, row).withdrawOpen, false);
+    assert.equal(devClockFromRow((periodFit - 1) * row.periodMs, { ...row, withdrawSlots: periodFit - 1 }).withdrawOpen, false);
+    assert.equal(devClockFromRow(periodFit * row.periodMs, { ...row, periodBlocks: 4 }).withdrawOpen, false);
+    const wide = { ...row, periodMs: row.periodMs * 2 };
+    const wideFit = Math.floor((wide.epochMs - 1) / wide.periodMs);
+    assert.equal(devClockFromRow(wideFit * wide.periodMs, wide).withdrawOpen, false);
+    assert.equal(devClockFromRow((wideFit - 1) * wide.periodMs, wide).withdrawOpen, true);
+    const slotFit = Math.floor((row.epochMs - 1) / row.withdrawSlotMs);
+    assert.equal(slotFit, 31);
+    assert.ok(slotFit * row.withdrawSlotMs < row.epochMs);
+    assert.equal(withdrawSlotOpen(slotFit * row.withdrawSlotMs, row), false);
+    assert.equal(withdrawSlotOpen((slotFit - 1) * row.withdrawSlotMs, row), true);
     assert.equal(withdrawSlotOpen(64 * row.withdrawSlotMs, row), false);
-    assert.equal(withdrawSlotOpen(63 * row.withdrawSlotMs, row), true);
-    assert.equal(withdrawSlotOpen(64 * row.withdrawSlotMs, { ...row, withdrawSlots: 65 }), true);
+    assert.equal(withdrawSlotOpen((slotFit - 1) * row.withdrawSlotMs, { ...row, withdrawSlots: slotFit - 1 }), false);
+    assert.equal(withdrawSlotOpen(row.epochMs - 1, row), false);
+    const v12row = chainParams('shear-testnet-v12');
+    assert.equal(withdrawSlotOpen(63 * v12row.withdrawSlotMs, v12row), true);
+    assert.equal(withdrawSlotOpen(v12row.withdrawSlots * v12row.withdrawSlotMs, v12row), false);
+    assert.equal(v12row.withdrawSlots, 7680);
+    assert.equal(v12row.withdrawSlotMs, 90000);
     assert.equal(devClockFromRow(0, row).genesisBits, 12);
     assert.equal(devClockFromRow(0, { ...row, genesisBits: 10 }).genesisBits, 10);
     assert.notEqual(packBits(10), seed);
     const start = 1_700_000_000_000;
     const closed = withdraw({
       state: { magic: 'shear-dev', epochStartMs: start, blankFork: false },
-      nowMs: start + 64 * row.withdrawSlotMs,
+      nowMs: start + periodFit * row.periodMs,
     });
     assert.equal(closed.reason, 'withdraw_closed');
+    const inside = withdraw({
+      state: { magic: 'shear-dev', epochStartMs: start, blankFork: false },
+      nowMs: start + (periodFit - 1) * row.periodMs,
+    });
+    assert.notEqual(inside.reason, 'withdraw_closed');
+    const epochEdge = withdraw({
+      state: { magic: 'shear-dev', epochStartMs: start, blankFork: false },
+      nowMs: start + row.epochMs - 1,
+    });
+    assert.equal(epochEdge.reason, 'withdraw_closed');
     const open = withdraw({
       state: { magic: 'shear-dev', epochStartMs: start, blankFork: false },
       nowMs: start,
@@ -485,13 +521,12 @@ describe('chain param table', () => {
     assert.notEqual(open.reason, 'withdraw_closed');
     const v12wd = withdraw({
       state: { magic: 'shear-testnet-v12', epochStartMs: start, blankFork: false },
-      nowMs: start + 64 * row.withdrawSlotMs,
+      nowMs: start + row.epochMs - 1,
     });
     assert.notEqual(v12wd.reason, 'withdraw_closed');
   });
 
   it('a dev signature does not verify on v12', () => {
-    assert.equal(EIP712_CHAIN_ID, 2701);
     assert.equal(WITHDRAW_CHAIN_ID, 2701n);
     assert.equal(withdrawChainId('shear-dev'), 2799n);
     assert.equal(withdrawChainId('shear-testnet-v12'), 2701n);
@@ -585,6 +620,46 @@ describe('chain param table', () => {
     const v12Owner = signRewardAuth(v12Msg, key);
     assert.equal(verifyRewardAuth(v12Msg, pub, v12Owner), true);
     assert.equal(verifyRewardAuth(devMsg, pub, v12Owner), false);
+  });
+
+  it('a missing supply magic throws, and pullPending uses the store magic', () => {
+    assert.throws(() => auditCirculatingSupply([]), (err) => err?.code === 'unknown_magic');
+    assert.throws(() => auditCirculatingSupply([], { magic: '' }), (err) => err?.code === 'unknown_magic');
+    const empty = auditCirculatingSupply([], { magic: 'shear-testnet-v12' });
+    assert.equal(empty.status, 'verified');
+    assert.equal(empty.circulatingNanos, 0);
+    const supplySrc = fs.readFileSync(path.join(root, 'node/src/supply.js'), 'utf8');
+    const auditFn = supplySrc.slice(supplySrc.indexOf('export function auditCirculatingSupply'));
+    assert.equal(/opts\.magic == null \? MAGIC_TESTNET/.test(auditFn), false);
+    const workerSrc = fs.readFileSync(path.join(root, 'node/src/supply_audit_worker.js'), 'utf8');
+    assert.equal(workerSrc.includes('MAGIC_TESTNET'), false);
+    assert.match(workerSrc, /magic: job\?\.magic/);
+    const walletApi = fs.readFileSync(path.join(root, 'pool/src/wallet_api.js'), 'utf8');
+    assert.match(walletApi, /type: 'start', length: blocks\.length, magic: store\?\.magic/);
+    const devPull = handleWalletApi(
+      new URL('http://127.0.0.1/api/pool/pullPending?login=she1abc'),
+      'GET',
+      null,
+      { store: { magic: 'shear-dev' } },
+    );
+    assert.equal(devPull.status, 200);
+    assert.equal(devPull.json.chainId, 2799);
+    const v12Pull = handleWalletApi(
+      new URL('http://127.0.0.1/api/pool/pullPending?login=she1abc'),
+      'GET',
+      null,
+      { store: { magic: 'shear-testnet-v12' } },
+    );
+    assert.equal(v12Pull.status, 200);
+    assert.equal(v12Pull.json.chainId, 2701);
+    const bare = handleWalletApi(
+      new URL('http://127.0.0.1/api/pool/pullPending?login=she1abc'),
+      'GET',
+      null,
+      { store: {} },
+    );
+    assert.equal(bare.status, 400);
+    assert.equal(bare.json.reason, 'unknown_magic');
   });
 
   it('the dev node and the dev pool connect on the table sidecar port', async () => {

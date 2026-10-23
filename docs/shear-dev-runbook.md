@@ -6,7 +6,7 @@ The dev pool process is backend only: stratum, share accounting, payouts, and IP
 
 ## Clock
 
-Profile S2. Target block time is 9 seconds. ASERT half-life is 720,000 ms. A header may sit at most 5,000 ms ahead of the verifier. One epoch is 288,000 ms of chain time, read from the block timestamp on the same vortex clock v12 uses. It is not 32 blocks. Vote close is 24 target intervals (24 × 9,000 ms) into the epoch. The withdraw window is 64 slots of 9 seconds, measured in time. The dev P2P ban is 60 seconds.
+Profile S2. Target block time is 9 seconds. ASERT half-life is 720,000 ms. A header may sit at most 5,000 ms ahead of the verifier. One epoch is 288,000 ms of chain time, read from the block timestamp on the same vortex clock v12 uses. It is not 32 blocks. Vote close is 24 target intervals (24 × 9,000 ms) into the epoch. The table records 64 withdraw slots of 9 seconds. That span is longer than the 288,000 ms epoch, so the shear-dev gate uses the largest whole count that finishes strictly inside the epoch: 15 period slots (15 × 18,000 ms) and 31 slots of 9,000 ms. v12 and mainnet slot counts are unchanged. The dev P2P ban is 60 seconds.
 
 Genesis difficulty for this book is bits 12. A RandomX-light bench on one 4-vCPU host (huge pages unavailable, JIT) measured 45.65 H/s at 1 thread, 94.53 H/s at 2 threads, and 246.53 H/s at 4 threads. Three cache rebuilds averaged 0.108 s. Steal was 0 during each window. Two hosts at the 4-thread rate are 246.53 × 2 ≈ 493 H/s, and 2^12 / 493 ≈ 8.3 s. The floor is 10. The chosen seed is 12. ASERT moves the target after genesis. v12 and mainnet stay at bits 17. The dev fingerprint's positional GENESIS_BITS slot is 12. The v12 slot stays 17.
 

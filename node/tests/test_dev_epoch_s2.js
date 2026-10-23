@@ -10,6 +10,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import { openedCoinbaseNanos } from '../../crypto/note.js';
 import { POT_START_NANOS, POT_STEP_NANOS, potSubsidyAt } from '../../crypto/pot_sched.js';
 import { createStore } from '../src/node.js';
+import { networkSupplySettled } from '../../pool/src/wallet_api.js';
 import { auditCirculatingSupply, foldSupply } from '../src/supply.js';
 
 function easyPowHash(tag) {
@@ -82,7 +83,7 @@ describe('shear-dev S2 epoch', () => {
     assert.ok(lateBits > seed - 2 * 65536, `late bits ${lateBits}`);
   });
 
-  function mineGap(label, gapMs, count, flipAt, resume) {
+  async function mineGap(label, gapMs, count, flipAt, resume) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), `shear-dev-${label}-`));
     const store = createStore(dir, { network: 'shear-dev' });
     const dest = encodeDest(Buffer.alloc(20, 5));
@@ -133,12 +134,55 @@ describe('shear-dev S2 epoch', () => {
       assert.equal(reloaded.ok, true, `${label} resume ${reloaded.reason}`);
       const reaudit = auditCirculatingSupply(again.blocks, { magic: 'shear-dev' });
       assert.equal(reaudit.status, 'verified', `${label} resume audit ${reaudit.reason}`);
+      const snap = path.join(dir, 'book.snap');
+      if (fs.existsSync(snap)) fs.unlinkSync(snap);
+      const pending = createStore(dir, { network: 'shear-dev', yieldForeign: true });
+      assert.equal(pending instanceof Promise, true, `${label} resume token`);
+      const tokened = await pending;
+      assert.equal(tokened.magic, 'shear-dev');
+      assert.equal(tokened.tip().height, count);
+      const tokenFold = foldSupply(tokened.blocks, { magic: 'shear-dev' });
+      assert.equal(tokenFold.ok, true, `${label} token fold ${tokenFold.reason}`);
+      const wrongClock = foldSupply(tokened.blocks, { magic: 'shear-testnet-v12' });
+      assert.equal(wrongClock.ok, false, `${label} token path must not accept the v12 clock`);
+      assert.throws(() => foldSupply(tokened.blocks, {}), /unknown_magic/);
+      assert.throws(
+        () => createStore(dir, { network: 'shear-testnet-v12', yieldForeign: true }),
+        /datadir_magic/,
+      );
+      const epochs = tokened.blocks.map((block) => {
+        const stamp = Number(decodeHeader(Buffer.from(block.header)).timestamp);
+        return Math.floor((stamp - genesis) / epochMs);
+      });
+      const schedule = epochs.reduce(
+        (sum, epoch) => sum + (POT_START_NANOS - epoch * POT_STEP_NANOS),
+        0,
+      );
+      const view = {
+        blocks: tokened.blocks,
+        magic: 'shear-dev',
+        reserveVault: { magic: 'shear-dev' },
+        tip() { return this.blocks.at(-1); },
+      };
+      const settled = await networkSupplySettled(view);
+      assert.equal(settled.supplyStatus, 'verified', settled.supplyReason);
+      assert.equal(settled.schedulePotNanos, schedule);
+      const v12Audit = auditCirculatingSupply(tokened.blocks, { magic: 'shear-testnet-v12' });
+      assert.notEqual(v12Audit.status, 'verified');
+      const bare = {
+        blocks: tokened.blocks,
+        reserveVault: { magic: 'shear-dev' },
+        tip() { return this.blocks.at(-1); },
+      };
+      const missed = await networkSupplySettled(bare);
+      assert.notEqual(missed.supplyStatus, 'verified');
+      assert.equal(missed.supplyReason, 'audit_worker');
     }
   }
 
-  it('validates off a 9s cadence, including gaps that cross an epoch', () => {
-    mineGap('12s', 12_000, 28, 25, true);
-    mineGap('30s', 30_000, 14, 11, false);
-    mineGap('5s', 5_000, 62, 59, false);
+  it('validates off a 9s cadence, including gaps that cross an epoch', async () => {
+    await mineGap('12s', 12_000, 28, 25, true);
+    await mineGap('30s', 30_000, 14, 11, false);
+    await mineGap('5s', 5_000, 62, 59, false);
   });
 });

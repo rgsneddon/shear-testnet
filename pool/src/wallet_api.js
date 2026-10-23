@@ -12,7 +12,6 @@ import {
   MIN_CONFIRMS_POLICY,
   RESERVE_PROGRAM,
   extraMintAllowed,
-  MAGIC_TESTNET,
 } from '../../crypto/asert.js';
 import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
@@ -947,7 +946,7 @@ function runSupplyAudit(store, key) {
     const waiter = supplyWaiters.get(id);
     if (!waiter || waiter.key !== key) return;
     try {
-      if (index === 0) worker.postMessage({ id, type: 'start', length: blocks.length });
+      if (index === 0) worker.postMessage({ id, type: 'start', length: blocks.length, magic: store?.magic });
       if (index >= blocks.length) {
         worker.postMessage({ id, type: 'end' });
         return;
@@ -1898,13 +1897,22 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!rec && !login.startsWith('she1') && !/^m[0-9a-f]{8}$/.test(tag)) {
       return { status: 400, json: { ok: false, reason: 'need_she1', public: false } };
     }
+    let chainId;
+    try {
+      chainId = Number(clockFor(store?.magic).evmChainId);
+    } catch (err) {
+      if (err?.code === 'unknown_magic' || String(err?.message || '') === 'unknown_magic') {
+        return { status: 400, json: { ok: false, reason: 'unknown_magic', public: false } };
+      }
+      throw err;
+    }
     return {
       status: 200,
       json: {
         ok: true,
         public: false,
         pending: rec || null,
-        chainId: Number(clockFor(store?.magic ? store.magic : MAGIC_TESTNET).evmChainId),
+        chainId,
       },
     };
   }

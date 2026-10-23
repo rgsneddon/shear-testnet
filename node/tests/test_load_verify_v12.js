@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader, setNonce } from '../../crypto/header.js';
-import { GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { setHashBackend, shearHash, meetsTarget } from '../../crypto/shear_hash.js';
 import { createStore } from '../src/store.js';
@@ -189,8 +189,8 @@ describe('a real ShearHash chain is the only foreign book that loads', () => {
 
     const foreign = loadForeign(mined);
     assert.equal(tipHex(foreign.store), honestTip);
-    const supplyMine = auditCirculatingSupply(store.blocks);
-    const supplyForeign = auditCirculatingSupply(foreign.store.blocks);
+    const supplyMine = auditCirculatingSupply(store.blocks, { magic: MAGIC_TESTNET });
+    const supplyForeign = auditCirculatingSupply(foreign.store.blocks, { magic: MAGIC_TESTNET });
     assert.equal(supplyMine.status, 'verified', supplyMine.reason);
     assert.equal(supplyForeign.status, 'verified', supplyForeign.reason);
     assert.equal(supplyForeign.circulatingNanos, supplyMine.circulatingNanos);

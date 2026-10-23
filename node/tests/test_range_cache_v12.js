@@ -120,7 +120,7 @@ describe('v12 range-proof cache stays under the engine limit', () => {
     const inserts = rangeVerifiedInserts();
     const size = rangeVerifiedSize();
     const beforeAudit = coinbaseRangeVerifies();
-    const audited = auditCirculatingSupply(blocks);
+    const audited = auditCirculatingSupply(blocks, { magic: MAGIC_TESTNET });
     assert.equal(audited.status, 'verified', audited.reason);
     assert.equal(rangeVerifiedInserts(), inserts);
     assert.equal(rangeVerifiedSize(), size);
@@ -202,7 +202,7 @@ describe('v12 range-proof cache stays under the engine limit', () => {
       assert.ok(rangeVerifiedSize() <= RANGE_VERIFIED_CAP);
       const loadInserts = rangeVerifiedInserts();
       const loadSize = rangeVerifiedSize();
-      const live = auditCirculatingSupply(loaded.blocks);
+      const live = auditCirculatingSupply(loaded.blocks, { magic: MAGIC_TESTNET });
       assert.equal(live.status, 'verified', live.reason);
       const published = networkSupply(loaded);
       assert.equal(published.supplyStatus, 'verified', published.supplyReason);
