@@ -326,8 +326,20 @@ export const ADMIT_CYCLE_ID = `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`;
 export const ADMIT_ARITY_ID = `fs1-selene${FS1_LAYER_ONE_LEN}-helios${FS1_LAYER_TWO_LEN}-d${FS1_DEPTH}`;
 export const ADMIT_LEAF_ID = `fs1-ed25519-OIC${FS1_LEAF_LEN}-Hp-${FS1_LEAF_HP_DST}`;
 
+/**
+ * Day-0 packed seed. The dev row reads genesisBits from its row.
+ * Every other book stays on GENESIS_BITS_PACKED, including the positional
+ * fingerprint slot, which is the constant GENESIS_BITS and not the row.
+ */
+export function genesisSeedPacked(magic = MAGIC_TESTNET) {
+  clockFor(magic);
+  if (String(magic) === MAGIC_DEV) return packBits(clockFor(MAGIC_DEV).genesisBits);
+  return GENESIS_BITS_PACKED;
+}
+
 /** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
 export function consensusFingerprint(magic = MAGIC_TESTNET) {
+  clockFor(magic);
   const days = epochDays(magic);
   const dev = String(magic) === MAGIC_DEV;
   const network = String(magic) === MAGIC_MAINNET ? MAGIC_MAINNET : (dev ? MAGIC_DEV : MAGIC_TESTNET);

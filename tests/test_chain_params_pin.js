@@ -24,13 +24,38 @@ import { RESERVE_BOOKS } from '../crypto/reserve_books.js';
 import { epochMs, epochDays, joinCutoffMs, POT_START_NANOS, POT_STEP_NANOS } from '../crypto/pot_sched.js';
 import { windowBlocksFor } from '../crypto/reserve_oracle.js';
 import { PAYOUT_SWEEP_MS, payoutSweepFor, createPool } from '../pool/src/pool.js';
-import { applyVerifiedIpcBlock } from '../node/src/p2p_ipc.js';
-import { resolveListenPorts } from '../node/src/node.js';
+import { applyVerifiedIpcBlock, attachPoolIpc, attachSidecarIpc } from '../node/src/p2p_ipc.js';
+import { resolveListenPorts, defaultSidecarIpc, DEV_P2P_PORT, DEV_STRATUM_PORT } from '../node/src/node.js';
 import { P2P_PORT } from '../node/src/p2p.js';
 import { SOLO_STRATUM_PORT } from '../node/src/solo_stratum.js';
-import { feeTauMs } from '../crypto/levy.js';
+import { feeTauMs, verifyPoolWithdrawOffchain } from '../crypto/levy.js';
 import { confirmPolicy } from '../crypto/confirm_policy.js';
 import { bootReserveEvm, callReserve, selector } from '../crypto/reserve_evm.js';
+import {
+  devSchedule,
+  devScheduleFromRow,
+  withdrawSlotOpen,
+  statedMagic,
+} from '../crypto/chain_params.js';
+import {
+  genesisSeedPacked,
+  GENESIS_BITS_PACKED,
+  packBits,
+} from '../crypto/asert.js';
+import { potSubsidyAt } from '../crypto/pot_sched.js';
+import { buildTemplate } from '../node/src/chain.js';
+import { encodeDest, newIdentity, ed25519PrivateFromSeed, ed25519RawPub } from '../crypto/address.js';
+import { destForLogin } from '../crypto/flow_sheet.js';
+import { signPoolWithdraw, verifyPoolWithdrawSig, poolWithdrawMagic, EIP712_CHAIN_ID } from '../crypto/eip712.js';
+import {
+  withdraw,
+  withdrawChainId,
+  withdrawOwnerMessage,
+  reserveMagicBytes,
+  signRewardAuth,
+  verifyRewardAuth,
+  WITHDRAW_CHAIN_ID,
+} from '../crypto/reserve_vault.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -122,7 +147,10 @@ describe('chain param table', () => {
     assert.equal(dev.payoutSweepMs, 120000);
     assert.equal(dev.payoutSweepFloorMs, 0);
     assert.equal(dev.oracleWindowBlocks, 1);
-    assert.equal(dev.genesisBits, 17);
+    assert.equal(dev.genesisBits, 12);
+    assert.equal(dev.poolIpcPort, 31314);
+    assert.equal(Object.hasOwn(chainParams('shear-testnet-v12'), 'poolIpcPort'), false);
+    assert.equal(Object.hasOwn(chainParams('shear-v1'), 'poolIpcPort'), false);
     assert.equal(epochMs('shear-dev'), 288000);
     assert.equal(windowBlocksFor('shear-dev'), 1);
     assert.equal(windowBlocksFor('shear-testnet-v12'), 67);
@@ -135,11 +163,25 @@ describe('chain param table', () => {
 
   it('clockFor sends regtest and closed books to the v12 row', () => {
     const v12 = chainParams('shear-testnet-v12');
-    assert.equal(clockFor(''), v12);
+    assert.throws(() => clockFor(''), /unknown_magic/);
+    assert.throws(() => clockFor(null), /unknown_magic/);
+    assert.equal(statedMagic(null), 'shear-testnet-v12');
+    assert.equal(statedMagic(undefined), 'shear-testnet-v12');
+    assert.throws(() => statedMagic(''), /unknown_magic/);
     assert.equal(clockFor('shear-regtest'), v12);
     assert.equal(clockFor('shear-testnet-v11'), v12);
     assert.equal(clockFor('shear-dev').targetBlockMs, 9000);
     assert.throws(() => clockFor('shear-testnet-v13'), /unknown_magic/);
+    assert.throws(() => consensusFingerprint(''), /unknown_magic/);
+    assert.throws(() => consensusFingerprint('nope'), /unknown_magic/);
+    assert.throws(() => epochMs(''), /unknown_magic/);
+    assert.throws(() => epochMs('nope'), /unknown_magic/);
+    assert.throws(() => epochDays(''), /unknown_magic/);
+    assert.throws(() => epochDays('no-such-book'), /unknown_magic/);
+    assert.equal(epochMs('shear-regtest'), 4 * 86400000);
+    assert.equal(epochMs('shear-testnet-v11'), 4 * 86400000);
+    assert.throws(() => genesisSeedPacked(''), /unknown_magic/);
+    assert.throws(() => genesisSeedPacked('nope'), /unknown_magic/);
   });
 
   it('ignores env and has no process.env in the table module', () => {
@@ -204,6 +246,8 @@ describe('chain param table', () => {
       'wallet/lib/main_dev.dart',
       'wallet/lib/shear_session.dart',
       'pool/src/main_dev.js',
+      'node/src/node.js',
+      'wallet/lib/shear_eip712.dart',
     ]);
     const roots = ['crypto', 'node/src', 'pool/src', 'wallet/lib'];
     const tokens = ['shear-dev', '288000', '2799', '31303'];
@@ -278,7 +322,8 @@ describe('chain param table', () => {
     process.env.SHEAR_PAYOUT_SWEEP_MS = '1000';
     assert.equal(payoutSweepFor('shear-dev'), 120000);
     process.env.SHEAR_PAYOUT_SWEEP_MS = '200000';
-    assert.equal(payoutSweepFor('shear-dev'), 200000);
+    assert.equal(payoutSweepFor('shear-dev'), 120000);
+    assert.equal(payoutSweepFor('shear-dev', { SHEAR_PAYOUT_SWEEP_MS: '200000' }), 120000);
     if (prev == null) delete process.env.SHEAR_PAYOUT_SWEEP_MS;
     else process.env.SHEAR_PAYOUT_SWEEP_MS = prev;
     assert.throws(() => createPool({ dataDir: os.tmpdir(), network: 'not-a-book' }), /unknown_magic/);
@@ -309,13 +354,15 @@ describe('chain param table', () => {
     assert.equal(word(v12Cut.returnValue), 86_400_000);
   });
 
-  it('dev P2P and stratum use the v12 env flags and the open ports', () => {
+  it('dev P2P and stratum stay off the v12 ports unless the unit sets them', () => {
     const dev = resolveListenPorts('shear-dev', {});
     const v12 = resolveListenPorts('shear-testnet-v12', {});
-    assert.equal(dev.p2pPort, P2P_PORT);
-    assert.equal(dev.stratumPort, SOLO_STRATUM_PORT);
-    assert.equal(dev.p2pPort, 30303);
-    assert.equal(dev.stratumPort, 1111);
+    assert.equal(dev.p2pPort, DEV_P2P_PORT);
+    assert.equal(dev.stratumPort, DEV_STRATUM_PORT);
+    assert.equal(dev.p2pPort, 31303);
+    assert.equal(dev.stratumPort, 11211);
+    assert.equal(v12.p2pPort, P2P_PORT);
+    assert.equal(v12.stratumPort, SOLO_STRATUM_PORT);
     assert.equal(v12.p2pPort, 30303);
     assert.equal(v12.stratumPort, 1111);
     assert.equal(dev.rpcPort, 18432);
@@ -334,8 +381,193 @@ describe('chain param table', () => {
     const book = fs.readFileSync(path.join(root, 'wallet/lib/shear_book_dev.dart'), 'utf8');
     assert.equal(book.includes("'SHEAR_P2P_PORT'"), false);
     assert.equal(book.includes("'SHEAR_STRATUM'"), false);
+    assert.match(book, /127\.0\.0\.1:31314/);
     const poolDev = fs.readFileSync(path.join(root, 'pool/src/main_dev.js'), 'utf8');
-    assert.match(poolDev, /SHEAR_STRATUM \|\| 1111/);
-    assert.equal(poolDev.includes('11211'), false);
+    assert.match(poolDev, /SHEAR_STRATUM \|\| process\.env\.SHEAR_STRATUM_PORT \|\| DEV_STRATUM_PORT/);
+    assert.match(poolDev, /defaultSidecarIpc\(MAGIC_DEV\)/);
+    assert.equal(poolDev.includes('|| 1111'), false);
+    assert.equal(poolDev.includes('30303'), false);
+  });
+
+  it('reads the dev row into consensus, and a different row value changes the schedule', () => {
+    const row = chainParams('shear-dev');
+    const seed = packBits(row.genesisBits);
+    assert.equal(row.genesisBits, 12);
+    assert.equal(seed, 12 * 65536);
+    assert.equal(genesisSeedPacked('shear-dev'), seed);
+    assert.equal(genesisSeedPacked('shear-testnet-v12'), GENESIS_BITS_PACKED);
+    assert.equal(genesisSeedPacked('shear-v1'), GENESIS_BITS_PACKED);
+    assert.equal(genesisSeedPacked('shear-regtest'), GENESIS_BITS_PACKED);
+    assert.equal(genesisSeedPacked(), GENESIS_BITS_PACKED);
+    assert.notEqual(seed, GENESIS_BITS_PACKED);
+    const miner = encodeDest(Buffer.alloc(20, 5));
+    const devTpl = buildTemplate({
+      height: 1,
+      miner,
+      magic: 'shear-dev',
+      now: 1_700_000_000_000,
+    });
+    const v12Tpl = buildTemplate({
+      height: 1,
+      miner,
+      magic: 'shear-testnet-v12',
+      now: 1_700_000_000_000,
+    });
+    assert.equal(devTpl.bits, seed);
+    assert.equal(v12Tpl.bits, GENESIS_BITS_PACKED);
+    const genesis = 1_700_000_000_000;
+    assert.equal(
+      potSubsidyAt({ nowMs: genesis, genesisMs: genesis, magic: 'shear-dev', height: 33 }),
+      POT_START_NANOS - POT_STEP_NANOS,
+    );
+    assert.equal(
+      potSubsidyAt({ nowMs: genesis, genesisMs: genesis, magic: 'shear-dev', height: 32 }),
+      POT_START_NANOS,
+    );
+    assert.equal(
+      potSubsidyAt({ nowMs: genesis, genesisMs: genesis, magic: 'shear-testnet-v12', height: 33 }),
+      POT_START_NANOS,
+    );
+    assert.equal(devSchedule(33).epoch, 1);
+    assert.equal(devSchedule(32).epoch, 0);
+    assert.equal(devScheduleFromRow(17, row).epoch, 0);
+    assert.equal(devScheduleFromRow(17, { ...row, epochBlocks: 16 }).epoch, 1);
+    assert.equal(devScheduleFromRow(9, row).day, 1);
+    assert.equal(devScheduleFromRow(9, { ...row, dayBlocks: 16 }).day, 0);
+    assert.equal(devScheduleFromRow(9, row).voteOpen, false);
+    assert.equal(devScheduleFromRow(9, { ...row, dayBlocks: 16 }).voteOpen, true);
+    assert.equal(devScheduleFromRow(2, row).voteOpen, true);
+    assert.equal(devScheduleFromRow(2, { ...row, stubBlocks: 2 }).voteOpen, false);
+    assert.equal(devScheduleFromRow(2, { ...row, voteEdge: 5 }).voteOpen, false);
+    assert.equal(devScheduleFromRow(3, row).voteOpen, true);
+    assert.equal(devScheduleFromRow(3, { ...row, voteSep: 3 }).voteOpen, false);
+    assert.equal(devScheduleFromRow(3, { ...row, voteGap: 3 }).voteOpen, false);
+    assert.equal(devScheduleFromRow(26, row).voteOpen, false);
+    assert.equal(devScheduleFromRow(26, { ...row, voteCloseBlock: 30 }).voteOpen, true);
+    const lateVote = { ...row, voteCloseBlock: 40 };
+    assert.equal(devScheduleFromRow(31, lateVote).voteOpen, true);
+    assert.equal(devScheduleFromRow(31, { ...lateVote, voteFinality: 3 }).voteOpen, false);
+    assert.equal(devScheduleFromRow(129, row).withdrawOpen, false);
+    assert.equal(devScheduleFromRow(129, { ...row, periodBlocks: 4 }).withdrawOpen, true);
+    assert.equal(devScheduleFromRow(129, { ...row, withdrawSlots: 65 }).withdrawOpen, true);
+    assert.equal(withdrawSlotOpen(64 * row.withdrawSlotMs, row), false);
+    assert.equal(withdrawSlotOpen(63 * row.withdrawSlotMs, row), true);
+    assert.equal(withdrawSlotOpen(64 * row.withdrawSlotMs, { ...row, withdrawSlots: 65 }), true);
+    assert.equal(devScheduleFromRow(1, row).genesisBits, 12);
+    assert.equal(devScheduleFromRow(1, { ...row, genesisBits: 10 }).genesisBits, 10);
+    assert.notEqual(packBits(10), seed);
+    const start = 1_700_000_000_000;
+    const closed = withdraw({
+      state: { magic: 'shear-dev', epochStartMs: start, blankFork: false },
+      nowMs: start + 64 * row.withdrawSlotMs,
+    });
+    assert.equal(closed.reason, 'withdraw_closed');
+    const open = withdraw({
+      state: { magic: 'shear-dev', epochStartMs: start, blankFork: false },
+      nowMs: start,
+    });
+    assert.notEqual(open.reason, 'withdraw_closed');
+    const v12wd = withdraw({
+      state: { magic: 'shear-testnet-v12', epochStartMs: start, blankFork: false },
+      nowMs: start + 64 * row.withdrawSlotMs,
+    });
+    assert.notEqual(v12wd.reason, 'withdraw_closed');
+  });
+
+  it('a dev signature does not verify on v12', () => {
+    assert.equal(EIP712_CHAIN_ID, 2701);
+    assert.equal(WITHDRAW_CHAIN_ID, 2701n);
+    assert.equal(withdrawChainId('shear-dev'), 2799n);
+    assert.equal(withdrawChainId('shear-testnet-v12'), 2701n);
+    assert.equal(withdrawChainId(), 2701n);
+    assert.throws(() => withdrawChainId(''), /unknown_magic/);
+    assert.throws(() => withdrawChainId('nope'), /unknown_magic/);
+    assert.throws(() => reserveMagicBytes(''), /unknown_magic/);
+    assert.throws(() => poolWithdrawMagic(''), /unknown_magic/);
+    assert.throws(() => poolWithdrawMagic('nope'), /unknown_magic/);
+    const id = newIdentity();
+    const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+    const seed = Buffer.alloc(32, 7);
+    const nanos = 5_000_000_000;
+    const fields = { seed, login: id.paymentCode, dest, nanos };
+    const devSig = signPoolWithdraw({ ...fields, chainId: 'shear-dev' });
+    const v12Sig = signPoolWithdraw({ ...fields, chainId: 'shear-testnet-v12' });
+    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: devSig, chainId: 'shear-dev' }), true);
+    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: devSig, chainId: 'shear-testnet-v12' }), false);
+    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: devSig }), false);
+    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: v12Sig, chainId: 'shear-dev' }), false);
+    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: v12Sig }), true);
+    const devOff = verifyPoolWithdrawOffchain({
+      login: id.paymentCode, dest, nanos, sig: devSig, magic: 'shear-dev',
+    });
+    assert.equal(devOff.ok, true, devOff.reason);
+    assert.equal(verifyPoolWithdrawOffchain({
+      login: id.paymentCode, dest, nanos, sig: devSig,
+    }).ok, false);
+    assert.equal(verifyPoolWithdrawOffchain({
+      login: id.paymentCode, dest, nanos, sig: devSig, magic: 'shear-testnet-v12',
+    }).ok, false);
+    assert.equal(verifyPoolWithdrawOffchain({
+      login: id.paymentCode, dest, nanos, sig: v12Sig, magic: 'shear-dev',
+    }).ok, false);
+    const nullifier = 'ab'.repeat(32);
+    const tranche = 'cd'.repeat(32);
+    const key = ed25519PrivateFromSeed(seed);
+    const pub = ed25519RawPub(key).toString('hex');
+    const messageFor = (magic) => withdrawOwnerMessage({
+      nullifier,
+      nanos: 1000n,
+      dest: 'payout-dest',
+      magic: reserveMagicBytes(magic),
+      chainId: withdrawChainId(magic),
+      epoch: 1n,
+      trancheSet: Buffer.from(tranche, 'hex'),
+    });
+    const devMsg = messageFor('shear-dev');
+    const v12Msg = messageFor('shear-testnet-v12');
+    assert.notEqual(devMsg.toString('hex'), v12Msg.toString('hex'));
+    const ownerSig = signRewardAuth(devMsg, key);
+    assert.equal(verifyRewardAuth(devMsg, pub, ownerSig), true);
+    assert.equal(verifyRewardAuth(v12Msg, pub, ownerSig), false);
+    const v12Owner = signRewardAuth(v12Msg, key);
+    assert.equal(verifyRewardAuth(v12Msg, pub, v12Owner), true);
+    assert.equal(verifyRewardAuth(devMsg, pub, v12Owner), false);
+  });
+
+  it('the dev node and the dev pool connect on the table sidecar port', async () => {
+    const row = chainParams('shear-dev');
+    assert.equal(defaultSidecarIpc('shear-dev', {}), `127.0.0.1:${row.poolIpcPort}`);
+    assert.equal(defaultSidecarIpc('shear-testnet-v12', {}), '');
+    assert.equal(defaultSidecarIpc('shear-dev', { SHEAR_P2P_IPC: '127.0.0.1:9' }), '127.0.0.1:9');
+    const store = {
+      magic: 'shear-dev',
+      blocks: [],
+      tip() { return { height: 0 }; },
+    };
+    let poolUp = 0;
+    let sideUp = 0;
+    const pool = await attachPoolIpc({
+      store,
+      port: row.poolIpcPort,
+      onUp() { poolUp += 1; },
+    });
+    const side = attachSidecarIpc({
+      store,
+      p2p: {},
+      addr: defaultSidecarIpc('shear-dev', {}),
+      onUp() { sideUp += 1; },
+    });
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline && (poolUp < 1 || sideUp < 1)) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    try {
+      assert.equal(poolUp > 0, true);
+      assert.equal(sideUp > 0, true);
+      assert.equal(pool.port, row.poolIpcPort);
+    } finally {
+      side.close();
+      pool.close();
+    }
   });
 });

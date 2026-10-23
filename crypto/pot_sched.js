@@ -2,7 +2,7 @@
  * Epoch-indexed block pot. Testnet 4-day / mainnet 400-day clocks.
  * Votes and the Reserve oracle cannot move this schedule.
  */
-import { MAGIC_DEV, chainParams } from './chain_params.js';
+import { MAGIC_DEV, chainParams, clockFor, devSchedule } from './chain_params.js';
 export const MS_PER_DAY = 86_400_000;
 export const EPOCH_DAYS_TESTNET = 4;
 export const EPOCH_DAYS_MAINNET = 400;
@@ -18,12 +18,15 @@ export function epochDaysForMagic(magic) {
 
 /** Mainnet cannot shorten epochs. Magic is the only switch. */
 export function epochDays(magic) {
+  clockFor(magic);
   if (String(magic) === MAGIC_MAINNET) return EPOCH_DAYS_MAINNET;
+  if (String(magic) === MAGIC_DEV) return chainParams(MAGIC_DEV).epochDays;
   return epochDaysForMagic(magic);
 }
 
 export function epochMs(magic) {
-  if (String(magic) === MAGIC_DEV) return chainParams(MAGIC_DEV).epochMs;
+  const row = clockFor(magic);
+  if (String(magic) === MAGIC_DEV) return row.epochMs;
   return epochDays(magic) * MS_PER_DAY;
 }
 
@@ -68,8 +71,11 @@ export function nextPotNanos(epoch) {
   return potSubsidyNanos(Math.floor(Number(epoch) || 0) + 1);
 }
 
-export function potSubsidyAt({ nowMs, genesisMs, magic } = {}) {
+export function potSubsidyAt({ nowMs, genesisMs, magic, height } = {}) {
   const days = epochDays(magic);
+  if (String(magic) === MAGIC_DEV && Number.isFinite(Number(height))) {
+    return potSubsidyNanos(devSchedule(height).epoch);
+  }
   return potSubsidyNanos(vortexEpochIndex({
     nowMs,
     genesisMs,

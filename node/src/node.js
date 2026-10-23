@@ -6,7 +6,6 @@ import { pathToFileURL } from 'node:url';
 import {
   MAGIC_TESTNET,
   MAGIC_MAINNET,
-  GENESIS_BITS,
   PRODUCT_VERSION,
   HASH_BONUS_NANOS,
   INTEREST_DENOM_DAYS,
@@ -31,7 +30,7 @@ import { attachSidecarIpc } from './p2p_ipc.js';
 import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
 import { createSoloStratum, SOLO_STRATUM_PORT, SOLO_STRATUM_BIND } from './solo_stratum.js';
-import { clockFor, MAGIC_DEV } from '../../crypto/chain_params.js';
+import { chainParams, clockFor, MAGIC_DEV } from '../../crypto/chain_params.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
 import { NODE_DISPLAY, NODE_NAME } from './product.js';
 import { loadOracleSnapshot } from './oracle_feed.js';
@@ -52,7 +51,7 @@ export function printConfig() {
     client: CLIENT,
     algorithm: ALGO,
     headerBytes: HEADER_LEN,
-    genesisBits: GENESIS_BITS,
+    genesisBits: clockFor(process.env.SHEAR_NETWORK || MAGIC_TESTNET).genesisBits,
     p2p: P2P_PORT,
     rpc: RPC_PORT,
     phaseBGate: PHASE_B_GATE,
@@ -221,30 +220,42 @@ export async function startNode({
   };
 }
 
-/** P2P and stratum follow the same env and flags on every book.
- *  Defaults are :30303 and :1111. RPC and IPC stay on the row (loopback). */
+/** Dev listen defaults stay off the v12 ports. Deployment sets 30303 and 1111
+ *  in the unit. An unset env must not bind those. RPC stays on the row. */
+export const DEV_P2P_PORT = 31303;
+export const DEV_STRATUM_PORT = 11211;
+
 export function resolveListenPorts(network = MAGIC_TESTNET, env = process.env, overrides = {}) {
   const clock = clockFor(network);
+  const dev = String(network) === MAGIC_DEV;
+  const p2pDefault = dev ? DEV_P2P_PORT : P2P_PORT;
+  const stratumDefault = dev ? DEV_STRATUM_PORT : SOLO_STRATUM_PORT;
   const p2pPort = overrides.p2pPort != null
     ? Number(overrides.p2pPort)
-    : Number(env.SHEAR_P2P_PORT || P2P_PORT);
+    : Number(env.SHEAR_P2P_PORT || p2pDefault);
   const rpcPort = overrides.rpcPort != null
     ? Number(overrides.rpcPort)
     : Number(env.SHEAR_RPC_PORT || clock.rpcPort);
   const stratumPort = overrides.stratumPort != null
     ? Number(overrides.stratumPort)
-    : (Number(env.SHEAR_STRATUM || env.SHEAR_STRATUM_PORT || SOLO_STRATUM_PORT) || SOLO_STRATUM_PORT);
+    : (Number(env.SHEAR_STRATUM || env.SHEAR_STRATUM_PORT || stratumDefault) || stratumDefault);
   return { p2pPort, rpcPort, stratumPort };
+}
+
+/** Address the dev node dials for the pool sidecar. v12 stays unset until env. */
+export function defaultSidecarIpc(magic, env = {}) {
+  const set = String(env.SHEAR_P2P_IPC || '').trim();
+  if (set) return set;
+  if (String(magic) !== MAGIC_DEV) return '';
+  return `127.0.0.1:${chainParams(MAGIC_DEV).poolIpcPort}`;
 }
 
 /** P2P sync sidecar. Owns :30303 unless SHEAR_P2P_PORT says otherwise. No pool HTTP and no stratum. */
 export async function startP2pSync(opts = {}) {
   const started = await startNode({ ...opts, solo: false });
   if (!started?.p2p || started.emit === false) return { ...started, mode: 'p2p-sync', ipc: null };
-  let ipcSpec = String(opts.ipc || process.env.SHEAR_P2P_IPC || '').trim();
-  if (!ipcSpec && started.magic === MAGIC_DEV) {
-    ipcSpec = `127.0.0.1:${clockFor(MAGIC_DEV).ipcPort}`;
-  }
+  let ipcSpec = String(opts.ipc || '').trim();
+  if (!ipcSpec) ipcSpec = defaultSidecarIpc(started.magic, process.env);
   if (!ipcSpec) return { ...started, mode: 'p2p-sync', ipc: null };
   const ipc = attachSidecarIpc({ store: started.store, p2p: started.p2p, addr: ipcSpec });
   const origClose = started.p2p.close.bind(started.p2p);

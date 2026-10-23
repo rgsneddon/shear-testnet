@@ -33,6 +33,7 @@ import {
   bundleObservationRoot,
 } from './reserve_oracle.js';
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
+import { clockFor, statedMagic, chainParams, MAGIC_DEV, devScheduleFromRow, withdrawSlotOpen } from './chain_params.js';
 import { extraMint } from './mint.js';
 import { reserveFeeDest, levyNanos } from './levy.js';
 import { decodeHeader } from './header.js';
@@ -348,12 +349,27 @@ export function rewardAuthMessage({ kind = 'claim', nullifier, nanos, proof, des
 export const WITHDRAW_OWNER_TAG = 'shear-withdraw-owner-v1';
 export const TRANCHE_SET_TAG = 'shear-tranche-set-v1';
 export const PORTAL_OWNER_TAG = 'shear-portal-owner-v1';
-/** Shear EVM chain id. The withdraw signature binds this, not a caller nonce. */
+/** Shear EVM chain id for v12 and mainnet. Dev withdraws bind the row's id. */
 export const WITHDRAW_CHAIN_ID = 2701n;
+
+/** Chain id hashed into a withdraw. Each book uses its own row. */
+export function withdrawChainId(magic = MAGIC_TESTNET) {
+  if (magic === '') {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
+  return BigInt(clockFor(magic).evmChainId);
+}
 
 /** keccak256(magic string). The same word the Reserve stores as `magic`. */
 export function reserveMagicBytes(magic = MAGIC_TESTNET) {
-  return Buffer.from(keccak_256(Buffer.from(String(magic || MAGIC_TESTNET), 'utf8')));
+  if (magic === '') {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
+  return Buffer.from(keccak_256(Buffer.from(String(magic), 'utf8')));
 }
 
 function u256be(value) {
@@ -423,8 +439,8 @@ export function withdrawBinding(state, portal, nowMs) {
   return {
     epoch,
     trancheSet: trancheSetHash(portal?.tranches || [], epoch),
-    magic: reserveMagicBytes(state?.magic || MAGIC_TESTNET),
-    chainId: WITHDRAW_CHAIN_ID,
+    magic: reserveMagicBytes(state?.magic),
+    chainId: withdrawChainId(state?.magic),
   };
 }
 
@@ -1340,7 +1356,7 @@ function portalOf(state, destOrId) {
 }
 
 function applyEpochOpen(state, nowMs, idx) {
-  const magic = state.magic || MAGIC_TESTNET;
+  const magic = statedMagic(state.magic);
   const activationHeight = state.oracleActivationHeight === undefined
     ? ORACLE_ACTIVATION_HEIGHT
     : state.oracleActivationHeight;
@@ -1589,6 +1605,12 @@ export function vote({ state, dest, portalId, choice, nowMs }) {
   if (!p.joined || !canVote(p.staked, p.idle)) return { ok: false, reason: 'not_voter' };
   if (!state.epochStartMs) return { ok: false, reason: 'not_voter' };
   if (state.bonusEnacted) return { ok: false, reason: 'epoch_closed' };
+  if (String(state.magic) === MAGIC_DEV && state.epochStartMs) {
+    const row = chainParams(MAGIC_DEV);
+    const elapsedMs = Math.max(0, Number(nowMs) - Number(state.epochStartMs));
+    const heightInEpoch = Math.floor(elapsedMs / Math.max(1, row.targetBlockMs)) + 1;
+    if (!devScheduleFromRow(heightInEpoch, row).voteOpen) return { ok: false, reason: 'vote_closed' };
+  }
   const allowed = [VOTE_INCREASE, VOTE_DECREASE, VOTE_HOLD];
   if (!allowed.includes(choice)) return { ok: false, reason: 'bad_vote' };
   if (choice === VOTE_DECREASE && hashBonusUnitNanos(state.liveHashBonusNanos) <= HASH_BONUS_NANOS_FLOOR) {
@@ -1666,8 +1688,8 @@ function derivedCommitIndex(nowMs, genesisMs, magic) {
   return vortexEpochIndex({
     nowMs: now,
     genesisMs: genesis,
-    epochDays: epochDays(magic || MAGIC_TESTNET),
-    epochMs: epochMs(magic || MAGIC_TESTNET),
+    epochDays: epochDays(statedMagic(magic)),
+    epochMs: epochMs(statedMagic(magic)),
   });
 }
 
@@ -2577,7 +2599,7 @@ export function unitsAlongChain({
     units.push(hashBonusUnitNanos(recorded));
   }
   const trial = vault || emptyVault();
-  const bookMagic = magic || trial.magic || MAGIC_TESTNET;
+  const bookMagic = statedMagic(magic || trial.magic || null);
   if (magic) trial.magic = String(magic);
   const blocks = Array.isArray(fork) ? fork : [];
   const priorChain = rows.slice();
@@ -2724,14 +2746,14 @@ export function applyReserveBlock({
     headerMs: nowMs,
     parentMs,
     genesisMs: clockGenesis,
-    magic: state.magic || MAGIC_TESTNET,
+    magic: statedMagic(state.magic),
   });
   const coinbase = txs.find((t) => t?.coinbase);
   // The commit's epochIndex is the vortex index of this header. 999, a
   // negative, the previous index, or the next index are not that epoch.
   // Before genesis the derived index is 0, so a pre-open epoch is refused.
   if (rule === 'median3b' && coinbase?.rateCommit && typeof coinbase.rateCommit === 'object') {
-    const derived = derivedCommitIndex(nowMs, clockGenesis, state.magic || MAGIC_TESTNET);
+    const derived = derivedCommitIndex(nowMs, clockGenesis, statedMagic(state.magic));
     const stated = statedEpochIndex(coinbase.rateCommit.epochIndex);
     if (stated == null || stated !== derived) {
       return finishReserveApply([{ ok: false, reason: 'rate_commit', action: 'rate' }]);
@@ -2748,7 +2770,7 @@ export function applyReserveBlock({
     }
     // Queue by chain epoch. A later boundary must not erase an earlier commit:
     // the stake sat through that epoch and a withdraw pays it at that rate.
-    const epochIdx = derivedCommitIndex(nowMs, clockGenesis, state.magic || MAGIC_TESTNET);
+    const epochIdx = derivedCommitIndex(nowMs, clockGenesis, statedMagic(state.magic));
     if (!state.pendingRates) state.pendingRates = Object.create(null);
     const queued = state.pendingRates[epochIdx];
     if (queued != null && Math.floor(Number(queued)) !== expected) {
@@ -3032,6 +3054,14 @@ export function enact({ state, nowMs } = {}) {
 export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId } = {}) {
   if (!state) return { ok: false, reason: 'no_vault' };
   if (state.blankFork) return { ok: false, reason: 'blank_vault' };
+  if (String(state.magic) === MAGIC_DEV) {
+    const row = chainParams(MAGIC_DEV);
+    const elapsedMs = Math.max(0, Number(nowMs) - Number(state.epochStartMs || nowMs || 0));
+    const heightInEpoch = Math.floor(elapsedMs / Math.max(1, row.targetBlockMs)) + 1;
+    if (!withdrawSlotOpen(elapsedMs, row) || !devScheduleFromRow(heightInEpoch, row).withdrawOpen) {
+      return { ok: false, reason: 'withdraw_closed' };
+    }
+  }
   const id = portalKey(portalId || dest);
   if (!id) return { ok: false, reason: 'bad_dest' };
   if (dest && !isPortalId(dest) && (!isDestAddress(dest) || isShearAddress(dest))) {

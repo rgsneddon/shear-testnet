@@ -242,7 +242,12 @@ function tipView(store) {
 
 function bookMagicOf(store) {
   const m = String(store?.magic || '').trim();
-  return m || MAGIC_TESTNET;
+  if (!m) {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
+  return m;
 }
 
 function helloMsg(role, store) {
@@ -677,6 +682,7 @@ export function attachPoolIpc({
   onPeers = null,
   onApplied = null,
   onSidecarTip = null,
+  onUp = null,
 } = {}) {
   if (!loopbackHost(P2P_IPC_HOST)) throw new Error('ipc_bind');
   const skip = new Set();
@@ -712,6 +718,9 @@ export function attachPoolIpc({
       console.error(JSON.stringify({ event: 'ipc_up', role: 'pool' }));
     } catch { /* ignore */ }
     writeJson(sock, helloMsg('pool', store));
+    if (typeof onUp === 'function') {
+      try { onUp(); } catch { /* ignore */ }
+    }
     attachLines(sock, (msg) => {
       if (!msg || typeof msg !== 'object') return;
       if (msg.magic !== bookMagicOf(store)) return;
@@ -771,7 +780,7 @@ export function attachPoolIpc({
 }
 
 /** Sidecar side. Dials the pool and pushes blocks this process has fully verified. */
-export function attachSidecarIpc({ store, p2p, addr } = {}) {
+export function attachSidecarIpc({ store, p2p, addr, onUp = null } = {}) {
   const parsed = parseIpcAddr(addr);
   if (!loopbackHost(parsed.host)) {
     throw new Error('ipc_not_loopback');
@@ -870,6 +879,9 @@ export function attachSidecarIpc({ store, p2p, addr } = {}) {
       if (closed) {
         try { next.destroy(); } catch { /* ignore */ }
         return;
+      }
+      if (typeof onUp === 'function') {
+        try { onUp(); } catch { /* ignore */ }
       }
       bind(next);
     });

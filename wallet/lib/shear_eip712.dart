@@ -28,13 +28,15 @@ Uint8List poolWithdrawDigest({
   required String login,
   required String dest,
   required int nanos,
+  String magic = 'shear-testnet-v12',
 }) {
+  final chainId = magic == 'shear-dev' ? 2799 : kEip712ChainId;
   final domainType = _hashString('EIP712Domain(string name,string version,uint256 chainId)');
   final domainSep = keccak256(Uint8List.fromList([
     ...domainType,
     ..._hashString(kEip712Name),
     ..._hashString(kEip712Version),
-    ..._encodeUint(kEip712ChainId),
+    ..._encodeUint(chainId),
   ]));
   final msgType = _hashString('PoolWithdraw(string login,string dest,uint256 nanos)');
   final n = nanos < 0 ? 0 : nanos;
@@ -82,8 +84,9 @@ String signPoolWithdraw({
   required String login,
   required String dest,
   required int nanos,
+  String magic = 'shear-testnet-v12',
 }) {
-  final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos);
+  final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos, magic: magic);
   final privRaw = evmPrivFromSeed(seed);
   final key = _privKey(privRaw);
   final pub = key.parameters!.G * key.d;
@@ -109,6 +112,7 @@ bool verifyPoolWithdrawSig({
   required String dest,
   required int nanos,
   required String sig,
+  String magic = 'shear-testnet-v12',
 }) {
   final raw = sig.trim();
   final hex = raw.startsWith('0x') ? raw.substring(2) : raw;
@@ -121,7 +125,7 @@ bool verifyPoolWithdrawSig({
   final v = buf[97];
   if (v != 27 && v != 28) return false;
   try {
-    final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos);
+    final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos, magic: magic);
     final curve = ECCurve_secp256k1();
     final point = curve.curve.decodePoint(pubBytes);
     if (point == null) return false;

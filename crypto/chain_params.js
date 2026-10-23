@@ -5,6 +5,7 @@
  * This module reads no environment and no CLI. There is no override.
  * P2P and stratum listen ports are process config (SHEAR_P2P_PORT, SHEAR_STRATUM).
  * They are not row fields and they are not in the dev PARAMS digest.
+ * The dev pool sidecar port is poolIpcPort. It is not the node ipcPort.
  */
 import { createHash } from 'node:crypto';
 import { RESERVE_BOOKS, MAGIC_TESTNET_V12, MAGIC_MAINNET } from './reserve_books.js';
@@ -41,7 +42,7 @@ const DEV = row({
   emergencyEaseMax: 2,
   emergencyGapFactor: 8,
   asertFastGapMs: 200,
-  genesisBits: 17,
+  genesisBits: 12,
   headerAheadMs: 5000,
   mtpWindow: 11,
   mtpFutureMs: 720000,
@@ -75,6 +76,7 @@ const DEV = row({
   p2pBanMs: 60000,
   rpcPort: 18432,
   ipcPort: 31313,
+  poolIpcPort: 31314,
   reserveArtifact: 'ReserveDev.json',
   jobRestampMs: 2000,
   prevJobGraceMs: 1200,
@@ -270,18 +272,89 @@ export function chainParams(magic) {
   return rowFor;
 }
 
+function unknownMagic() {
+  const err = new Error('unknown_magic');
+  err.code = 'unknown_magic';
+  return err;
+}
+
 /**
- * Clock for consensus callers that still see historical books and regtest.
- * The three table keys use their own row. Empty, shear-regtest, and closed
- * v1–v11 books use the v12 row explicitly. Anything else throws.
+ * Clock for a named book. The three table keys use their own row.
+ * shear-regtest and closed v1–v11 books use the v12 row. A missing or
+ * unknown magic throws. It does not become the v12 row.
  */
 export function clockFor(magic) {
   const key = magic == null ? '' : String(magic);
+  if (key === '') throw unknownMagic();
   if (isTableMagic(key)) return CHAIN_PARAMS[key];
-  if (key === '' || key === 'shear-regtest' || isHistoricalMagic(key)) return CHAIN_PARAMS[MAGIC_V12];
-  const err = new Error('unknown_magic');
-  err.code = 'unknown_magic';
-  throw err;
+  if (key === 'shear-regtest' || isHistoricalMagic(key)) return CHAIN_PARAMS[MAGIC_V12];
+  throw unknownMagic();
+}
+
+/**
+ * Null is the public v12 entry, where a caller omitted the argument.
+ * An empty string or any unknown magic throws via clockFor.
+ */
+export function statedMagic(magic) {
+  if (magic == null) return MAGIC_V12;
+  const key = String(magic);
+  clockFor(key);
+  return key;
+}
+
+/**
+ * Dev schedule read from a row object. Consensus calls this with the
+ * shear-dev row. A different row value is a different epoch, vote window,
+ * or withdraw window.
+ */
+export function devScheduleFromRow(height, row) {
+  const elapsed = Math.max(0, Math.floor(Number(height) || 1) - 1);
+  const epochBlocks = Math.max(1, Math.floor(Number(row.epochBlocks)));
+  const dayBlocks = Math.max(1, Math.floor(Number(row.dayBlocks)));
+  const periodBlocks = Math.max(1, Math.floor(Number(row.periodBlocks)));
+  const stubBlocks = Math.max(0, Math.floor(Number(row.stubBlocks)));
+  const voteCloseBlock = Math.floor(Number(row.voteCloseBlock));
+  const voteEdge = Math.floor(Number(row.voteEdge));
+  const voteSep = Math.max(1, Math.floor(Number(row.voteSep)));
+  const voteGap = Math.max(1, Math.floor(Number(row.voteGap)));
+  const voteFinality = Math.max(0, Math.floor(Number(row.voteFinality)));
+  const withdrawSlots = Math.floor(Number(row.withdrawSlots));
+  const epoch = Math.floor(elapsed / epochBlocks);
+  const day = Math.floor(elapsed / dayBlocks);
+  const period = Math.floor(elapsed / periodBlocks);
+  const into = elapsed - epoch * epochBlocks;
+  const onDayBoundary = elapsed !== 0 && (elapsed % dayBlocks) === 0;
+  const periodSlot = Math.floor(elapsed / periodBlocks);
+  const voteOpen = into >= stubBlocks
+    && into >= voteEdge
+    && into < voteCloseBlock
+    && (voteSep <= 1 || (into % voteSep) === 0)
+    && (voteGap <= 1 || (into % voteGap) === 0)
+    && into + voteFinality <= epochBlocks
+    && !onDayBoundary
+    && periodSlot < Math.max(0, withdrawSlots);
+  const withdrawOpen = periodSlot < Math.max(0, withdrawSlots);
+  return {
+    epoch,
+    day,
+    period,
+    into,
+    voteOpen,
+    withdrawOpen,
+    genesisBits: Math.floor(Number(row.genesisBits)),
+  };
+}
+
+export function devSchedule(height) {
+  return devScheduleFromRow(height, chainParams(MAGIC_DEV));
+}
+
+/** True while the elapsed time is still inside the row's withdraw slots. */
+export function withdrawSlotOpen(elapsedMs, row) {
+  const slotMs = Math.max(1, Math.floor(Number(row.withdrawSlotMs) || 1));
+  const slots = Math.floor(Number(row.withdrawSlots));
+  const slot = Math.floor(Math.max(0, Number(elapsedMs) || 0) / slotMs);
+  return slot < slots;
 }
 
 export function canonicalParamsJson(magic) {

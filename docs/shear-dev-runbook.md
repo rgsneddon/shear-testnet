@@ -8,7 +8,7 @@ The dev pool process is backend only: stratum, share accounting, payouts, and IP
 
 Profile S2. Target block time is 9 seconds. ASERT half-life is 720,000 ms. A header may sit at most 5,000 ms ahead of the verifier. One epoch is 32 blocks, 288,000 ms. The withdraw window is 64 slots of 9 seconds. Vote close is block 24. The dev P2P ban is 60 seconds.
 
-Genesis difficulty stays at bits 17 until a host bench says otherwise. That bench has not been run.
+Genesis difficulty for this book is bits 12. A RandomX-light bench on one 4-vCPU host (huge pages unavailable, JIT) measured 45.65 H/s at 1 thread, 94.53 H/s at 2 threads, and 246.53 H/s at 4 threads. Three cache rebuilds averaged 0.108 s. Steal was 0 during each window. Two hosts at the 4-thread rate are about 494 H/s, and 2^12 / 494 is about 8.3 s. That is the closest integer at or above 10 to a 9 s block. ASERT moves the target after genesis. v12 and mainnet stay at bits 17.
 
 NTP is required. Keep clocks within 500 ms. The header-ahead cap is 5 seconds, so a node that is minutes off will orphan every header it sees.
 
@@ -27,20 +27,21 @@ Do not delete a datadir to “reset” a peer. A new epoch gets a new directory.
 
 ## Ports
 
-The hosting firewall already allows 22, 80, 443, 1111, 8080, and 30303. Dev P2P and stratum use those open ports. They are process settings, the same env and flags as v12 (`SHEAR_P2P_PORT`, `SHEAR_STRATUM` / `SHEAR_STRATUM_PORT`). They are not chain parameters and they are not in the fingerprint.
+The hosting firewall already allows 22, 80, 443, 1111, 8080, and 30303. Deployment units set `SHEAR_P2P_PORT=30303` and `SHEAR_STRATUM=1111` (or `SHEAR_STRATUM_PORT=1111`) so the process binds those open ports. An unset env does not. The code defaults are P2P 31303 and stratum 11211, so a dev process does not silently take the v12 ports. Those ports are process settings. They are not chain parameters and they are not in the fingerprint.
 
-| service | default | bind | override |
+| service | code default | deployment | override |
 | --- | --- | --- | --- |
-| P2P | 30303 | peer-facing | `SHEAR_P2P_PORT` |
-| stratum | 1111 | the miner listener | `SHEAR_STRATUM` |
-| RPC | 18432 | loopback | `SHEAR_RPC_PORT` |
-| node IPC | 31313 | loopback | `SHEAR_P2P_IPC` |
+| P2P | 31303 | 30303 | `SHEAR_P2P_PORT` |
+| stratum | 11211 | 1111 | `SHEAR_STRATUM` |
+| RPC | 18432 | 18432 | `SHEAR_RPC_PORT` |
+| node IPC | 31313 | loopback only | not the pool dial |
+| pool IPC | 31314 | loopback only | `SHEAR_P2P_IPC` |
 
-The deployment runs dev P2P on 30303 and stratum on 1111. A dev process and a v12 process both want those ports, so they do not share a host. The book magic and the IPC handshake are what refuse the other network.
+Each book has its own host. Deployment binds P2P 30303 and stratum 1111. The book magic and the IPC handshake refuse a peer from the other network.
 
-Loopback stays off the public firewall. RPC is 18432. The node IPC default is `127.0.0.1:31313`. The dev pool IPC default is `127.0.0.1:31314`, which is not the node IPC port and not the v12 pool IPC port `30313`. Pool HTTP stays on loopback `18188`. The pool stratum default is 1111, the same `SHEAR_STRATUM` flag as the v12 pool entry.
+Loopback stays off the public firewall. RPC is 18432. The node `ipcPort` stays 31313. The sidecar default is `127.0.0.1:31314`, the dev row's `poolIpcPort`, and that is the port the dev pool listens on when `SHEAR_P2P_IPC` is unset. v12 pool IPC stays `30313` and attaches only when `SHEAR_P2P_IPC` is set. Pool HTTP stays on loopback `18188`. The pool stratum code default is 11211. The unit sets 1111.
 
-Do not open 18432, 31313, or 31314. Continuum’s datadir, session file, and magic stay untouched. Continuum’s public ports are the same numbers; run this book on its own machine.
+Do not open 18432, 31313, or 31314. Continuum’s datadir, session file, and magic stay untouched. Continuum’s public ports are 30303 and 1111; the unit sets those explicitly, and this book still runs on its own machine.
 
 ## Seeds
 

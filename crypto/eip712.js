@@ -7,12 +7,24 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { MAGIC_TESTNET } from './asert.js';
+import { clockFor } from './chain_params.js';
 
 export const EIP712_CHAIN_ID = 2701;
 export const EIP712_NAME = 'ShearPool';
 export const EIP712_VERSION = '1';
 export const EIP712_PRIMARY = 'PoolWithdraw';
 export const EIP712_CHAIN_MAGIC = MAGIC_TESTNET;
+
+/** Domain chain id is the book magic. A dev signature does not verify on v12. */
+export function poolWithdrawMagic(magic = MAGIC_TESTNET) {
+  if (magic == null || magic === '') {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
+  clockFor(magic);
+  return String(magic);
+}
 export const POOL_WITHDRAW_DEADLINE_MS = 2 * 3600_000;
 
 function keccak(data) {
@@ -52,13 +64,14 @@ export function poolWithdrawDigest({
 } = {}) {
   const she = String(minerShe1 || login || '');
   const payout = String(payoutSsa1 || dest || '');
+  const domainMagic = poolWithdrawMagic(chainId);
   const domainType = typeHash('EIP712Domain(string name,string version,string chainId,address verifyingContract)');
   const contract = Buffer.from(verifyingContract || Buffer.alloc(20));
   const domainSep = keccak(Buffer.concat([
     domainType,
     hashString(EIP712_NAME),
     hashString(EIP712_VERSION),
-    hashString(chainId || EIP712_CHAIN_MAGIC),
+    hashString(domainMagic),
     pad32(contract.length === 20 ? contract : Buffer.alloc(20)),
   ]));
   const msgType = typeHash('PoolWithdraw(string minerShe1,string payoutSsa1,uint256 nanos,uint256 height,uint256 nonce,uint256 deadline)');

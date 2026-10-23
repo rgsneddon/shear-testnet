@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { STRATUM_LINE_MAX, parseBoundedJson, HTTP_TX_BODY_MAX } from '../../crypto/json_bounds.js';
-import { chainParams, MAGIC_DEV } from '../../crypto/chain_params.js';
+import { chainParams, clockFor, MAGIC_DEV } from '../../crypto/chain_params.js';
 import { Worker } from 'node:worker_threads';
 import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
@@ -37,6 +37,7 @@ import {
   SPENDABLE_CONFIRMATIONS,
   GENESIS_BITS,
   GENESIS_BITS_PACKED,
+  genesisSeedPacked,
   LIVE_MIN_BITS,
   MAX_BITS,
   SHARE_FLOOR_BITS,
@@ -196,13 +197,11 @@ export const PAYOUT_SWEEP_MS = Math.max(
   Number(process.env.SHEAR_PAYOUT_SWEEP_MS) || (60 * 60 * 1000),
 );
 
-/** v12 keeps the one-hour floor. The short-epoch book uses the table and may only clamp upward. */
+/** v12 keeps the one-hour floor. The dev book uses the table and nothing else. */
 export function payoutSweepFor(magic, env = process.env) {
+  void env;
   if (String(magic) !== MAGIC_DEV) return PAYOUT_SWEEP_MS;
-  const base = chainParams(MAGIC_DEV).payoutSweepMs;
-  const raw = Number(env.SHEAR_PAYOUT_SWEEP_MS);
-  if (Number.isFinite(raw) && raw > base) return raw;
-  return base;
+  return chainParams(MAGIC_DEV).payoutSweepMs;
 }
 /** One due miner per tick so a slow queueTx cannot monopolize the loop. */
 export const PAYOUT_SWEEP_MAX_ROWS = 1;
@@ -1931,6 +1930,7 @@ export function createPool({
       throw err;
     }
   }
+  if (String(network) === MAGIC_DEV) bits = genesisSeedPacked(MAGIC_DEV);
   const store = createStore(dataDir, { network });
   if (store.magic !== row.magic) {
     const err = new Error('pool_magic');
@@ -2483,12 +2483,12 @@ export function createPool({
     catch { return 'header'; }
     const ts = Number(decoded.timestamp);
     if (!tip?.header) {
-      if (Number(decoded.bits) !== Number(GENESIS_BITS_PACKED)) return 'bits';
+      if (Number(decoded.bits) !== Number(genesisSeedPacked(store.magic))) return 'bits';
     } else {
-      const quote = retargetQuote(store.blocks || [], ts);
+      const quote = retargetQuote(store.blocks || [], ts, store.magic);
       if (!quote?.ok || !bitsAcceptAsert(Number(decoded.bits), quote)) return 'bits';
     }
-    if (!(ts > 0) || ts > Number(now) + HEADER_AHEAD_MS) return 'timestamp';
+    if (!(ts > 0) || ts > Number(now) + clockFor(store.magic).headerAheadMs) return 'timestamp';
     if (tip?.header) {
       let parent;
       try { parent = decodeHeader(Buffer.from(tip.header)); }
@@ -4315,7 +4315,7 @@ export function createPool({
           try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
         }));
         const stamp = templateStampMs(parent.timestamp, wall, null, mtp, store.magic);
-        const quote = retargetQuote(store.blocks || [], stamp);
+        const quote = retargetQuote(store.blocks || [], stamp, store.magic);
         // Past 8·T the same job eases to the verify floor. Before that window
         // a sealable header stays up so a short tick does not restart the search.
         const easing = !!(quote?.ok && quote.easeBits > 0);

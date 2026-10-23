@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeDest } from '../../crypto/address.js';
-import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { packBits } from '../../crypto/asert.js';
+import { chainParams } from '../../crypto/chain_params.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { openedCoinbaseNanos } from '../../crypto/note.js';
 import { POT_START_NANOS, POT_STEP_NANOS, potSubsidyAt } from '../../crypto/pot_sched.js';
@@ -36,6 +37,8 @@ describe('shear-dev S2 epoch', () => {
     assert.equal(store.magic, 'shear-dev');
     const dest = encodeDest(Buffer.alloc(20, 5));
     const genesis = 1_700_000_000_000;
+    const seed = packBits(chainParams('shear-dev').genesisBits);
+    assert.equal(seed, 12 * 65536);
     let prevPot = null;
     for (let h = 1; h <= 40; h += 1) {
       const stamp = genesis + (h - 1) * 9000;
@@ -56,16 +59,25 @@ describe('shear-dev S2 epoch', () => {
       const tip = store.tip();
       const header = decodeHeader(Buffer.from(tip.header));
       assert.equal(Number(header.timestamp), stamp);
-      assert.equal(header.bits, GENESIS_BITS_PACKED);
-      const want = potSubsidyAt({ nowMs: stamp, genesisMs: genesis, magic: 'shear-dev' });
+      assert.equal(header.bits, seed);
+      const want = potSubsidyAt({ nowMs: stamp, genesisMs: genesis, magic: 'shear-dev', height: h });
       const expect = h <= 32 ? POT_START_NANOS : POT_START_NANOS - POT_STEP_NANOS;
       assert.equal(want, expect, `schedule ${h}`);
       const gotPot = potOf(tip);
-      if (gotPot > 0) assert.equal(gotPot, expect, `coinbase ${h}`);
+      assert.ok(gotPot > 0, `missing pot ${h}`);
+      assert.equal(gotPot, expect, `coinbase ${h}`);
       prevPot = expect;
     }
     assert.equal(store.tip().height, 40);
     assert.equal(prevPot, POT_START_NANOS - POT_STEP_NANOS);
     assert.equal(POT_STEP_NANOS, 1_000_000_000);
+    const onTime = genesis + 40 * 9000;
+    const { tpl: onTpl } = store.template({ miner: dest, shareBits: 4, now: onTime });
+    assert.equal(decodeHeader(Buffer.from(onTpl.header)).bits, seed);
+    const late = genesis + 40 * 9000 + chainParams('shear-dev').asertTauMs;
+    const { tpl: lateTpl } = store.template({ miner: dest, shareBits: 4, now: late });
+    const lateBits = decodeHeader(Buffer.from(lateTpl.header)).bits;
+    assert.ok(lateBits < seed, `late bits ${lateBits}`);
+    assert.ok(lateBits > seed - 2 * 65536, `late bits ${lateBits}`);
   });
 });

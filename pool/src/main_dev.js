@@ -11,14 +11,14 @@ import { createPool, stratumDriftShouldRefuse, configuredFeeIdentity, stratumLis
 import { isShearAddress } from '../../crypto/address.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { attachPoolIpc, parseIpcAddr } from '../../node/src/p2p_ipc.js';
-import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { genesisSeedPacked } from '../../crypto/asert.js';
 import { SHARE_BITS_V2_START } from './share_vardiff.js';
 import { assertHashBackend, hashBackendKind } from '../../crypto/shear_hash.js';
-import { MAGIC_DEV } from '../../crypto/chain_params.js';
+import { chainParams, MAGIC_DEV } from '../../crypto/chain_params.js';
+import { defaultSidecarIpc, DEV_STRATUM_PORT } from '../../node/src/node.js';
 
 export const POOL_EXPECT_MAGIC = MAGIC_DEV;
 const DEV_HTTP_PORT = 18188;
-const DEV_IPC_PORT = 31314;
 
 function ranAsEntry() {
   const arg = process.argv[1];
@@ -88,21 +88,21 @@ export async function bootDevPool() {
   const pool = createPool({
     dataDir,
     network: POOL_EXPECT_MAGIC,
-    stratumPort: Number(process.env.SHEAR_STRATUM || 1111),
+    stratumPort: Number(process.env.SHEAR_STRATUM || process.env.SHEAR_STRATUM_PORT || DEV_STRATUM_PORT),
     httpPort: Number(process.env.SHEAR_HTTP || DEV_HTTP_PORT),
     stratumBind,
     requireLoginAuth,
     miner,
     operatorSpendKey: boot.operatorSpendKey,
     shareBits: Number(process.env.SHEAR_SHARE_BITS || SHARE_BITS_V2_START),
-    bits: GENESIS_BITS_PACKED,
+    bits: genesisSeedPacked(MAGIC_DEV),
   });
   if (pool.store.magic !== POOL_EXPECT_MAGIC) {
     console.error(JSON.stringify({ ok: false, event: 'pool_magic', magic: pool.store.magic, expect: POOL_EXPECT_MAGIC }));
     process.exit(1);
   }
   await pool.listen();
-  const ipcAddr = parseIpcAddr(process.env.SHEAR_P2P_IPC || `127.0.0.1:${DEV_IPC_PORT}`);
+  const ipcAddr = parseIpcAddr(process.env.SHEAR_P2P_IPC || defaultSidecarIpc(MAGIC_DEV));
   const ipc = await attachPoolIpc({ store: pool.store, port: ipcAddr.port });
   pool.setP2p({
     liveOnline: () => 0,

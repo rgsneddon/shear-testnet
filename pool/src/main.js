@@ -7,12 +7,12 @@ import { createPool, stratumDriftShouldRefuse, configuredFeeIdentity, stratumLis
 import { isShearAddress } from '../../crypto/address.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { attachPoolIpc, parseIpcAddr, P2P_IPC_PORT } from '../../node/src/p2p_ipc.js';
-import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { SHARE_BITS_V2_START } from './share_vardiff.js';
 import { assertHashBackend, hashBackendKind } from '../../crypto/shear_hash.js';
 import { watchNodeStatus } from '../../node/src/status.js';
 
-export const POOL_EXPECT_MAGIC = 'shear-testnet-v12';
+export const POOL_EXPECT_MAGIC = MAGIC_TESTNET;
 
 function ranAsEntry() {
   const arg = process.argv[1];

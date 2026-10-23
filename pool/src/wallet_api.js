@@ -40,6 +40,7 @@ import { noteCommitOfDest20, asU8, hiddenAmountRangeReady } from '../../crypto/n
 import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
+import { clockFor } from '../../crypto/chain_params.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
@@ -1871,7 +1872,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         ok: true,
         public: false,
         pending: rec || null,
-        chainId: 2701,
+        chainId: Number(clockFor(store?.magic ? store.magic : MAGIC_TESTNET).evmChainId),
       },
     };
   }

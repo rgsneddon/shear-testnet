@@ -312,6 +312,7 @@ export function verifyPoolWithdrawOffchain({
   open = '',
   spendSig = '',
   requireOwner = false,
+  magic = MAGIC_TESTNET,
 } = {}) {
   const she = String(minerShe1 || login || '').trim().split('.')[0];
   if (!she.startsWith('she1')) return { ok: false, reason: 'need_she1' };
@@ -342,7 +343,7 @@ export function verifyPoolWithdrawOffchain({
     deadline: dl,
     sig,
     verifyingContract,
-    chainId: MAGIC_TESTNET,
+    chainId: magic,
   };
   if (!verifyPoolWithdrawSig(fields)) return { ok: false, reason: 'unsigned' };
   const recovered = recoverPoolWithdrawPub(sig);
