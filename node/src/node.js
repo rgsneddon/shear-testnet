@@ -31,6 +31,7 @@ import { attachSidecarIpc } from './p2p_ipc.js';
 import { PHASE_B_GATE } from './chain.js';
 import { createRpc, RPC_PORT } from './rpc.js';
 import { createSoloStratum, SOLO_STRATUM_PORT, SOLO_STRATUM_BIND } from './solo_stratum.js';
+import { clockFor, MAGIC_DEV } from '../../crypto/chain_params.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
 import { NODE_DISPLAY, NODE_NAME } from './product.js';
 import { loadOracleSnapshot } from './oracle_feed.js';
@@ -98,10 +99,12 @@ export function defaultDataDir({
 } = {}) {
   const forced = String(env.SHEAR_DATA || '').trim();
   if (forced) return forced;
-  const posix = path.join(homedir, '.shear', BOOK_LEAF);
+  const net = String(env.SHEAR_NETWORK || '').trim();
+  const leaf = net === MAGIC_DEV ? clockFor(MAGIC_DEV).datadirLeaf : BOOK_LEAF;
+  const posix = path.join(homedir, '.shear', leaf);
   if (platform !== 'win32') return posix;
   const app = String(env.APPDATA || '').trim() || path.join(homedir, 'AppData', 'Roaming');
-  const roaming = path.join(app, 'Shear', BOOK_LEAF);
+  const roaming = path.join(app, 'Shear', leaf);
   if (!bookPresent(roaming, exists) && bookPresent(posix, exists)) return posix;
   return roaming;
 }
@@ -113,11 +116,12 @@ export const DEFAULT_SEEDS = [
   'b2b.shear.digital:30303',
 ];
 
-/** Unset SHEAR_SEEDS keeps the hostname defaults. An empty value dials nobody. */
-export function resolveSeedList(seeds) {
+/** Unset SHEAR_SEEDS keeps the hostname defaults. An empty value dials nobody.
+ *  A book whose row lists no seeds dials nobody when the variable is unset. */
+export function resolveSeedList(seeds, magic = MAGIC_TESTNET) {
   if (Array.isArray(seeds)) return seeds.map((s) => String(s).trim()).filter(Boolean);
   if (seeds == null) {
-    if (process.env.SHEAR_SEEDS == null) return DEFAULT_SEEDS.slice();
+    if (process.env.SHEAR_SEEDS == null) return clockFor(magic).defaultSeeds.slice();
     return String(process.env.SHEAR_SEEDS).split(',').map((s) => s.trim()).filter(Boolean);
   }
   return String(seeds).split(',').map((s) => s.trim()).filter(Boolean);
@@ -131,10 +135,10 @@ export function isP2pSyncArg(argv = process.argv) {
 }
 
 export async function startNode({
-  dataDir = defaultDataDir(),
-  p2pPort = Number(process.env.SHEAR_P2P_PORT || P2P_PORT),
+  dataDir,
+  p2pPort,
   p2pBind = process.env.SHEAR_P2P_BIND || '0.0.0.0',
-  rpcPort = Number(process.env.SHEAR_RPC_PORT || RPC_PORT),
+  rpcPort,
   rpcBind = process.env.SHEAR_RPC_BIND || '127.0.0.1',
   seeds = undefined,
   fluffDelayMs = null,
@@ -144,9 +148,16 @@ export async function startNode({
     || String(process.env.SHEAR_FAST_SYNC || '').trim() === '1',
   solo = process.argv.includes('--solo')
     || String(process.env.SHEAR_SOLO || '').trim() === '1',
-  stratumPort = Number(process.env.SHEAR_STRATUM || process.env.SHEAR_STRATUM_PORT || SOLO_STRATUM_PORT) || SOLO_STRATUM_PORT,
+  stratumPort,
   stratumBind = process.env.SHEAR_STRATUM_BIND || SOLO_STRATUM_BIND,
 } = {}) {
+  if (dataDir == null) {
+    dataDir = defaultDataDir({ env: { ...process.env, SHEAR_NETWORK: network } });
+  }
+  const ports = resolveListenPorts(network, process.env, { p2pPort, rpcPort, stratumPort });
+  p2pPort = ports.p2pPort;
+  rpcPort = ports.rpcPort;
+  stratumPort = ports.stratumPort;
   const mainnet = String(network) === MAGIC_MAINNET;
   if (mainnet && !mainnetMayEmit()) {
     return {
@@ -170,7 +181,7 @@ export async function startNode({
   const bound = await p2p.listen();
   const rpc = createRpc({ store, p2p, port: rpcPort, host: rpcBind });
   const rpcBound = await rpc.listen();
-  const seedList = resolveSeedList(seeds);
+  const seedList = resolveSeedList(seeds, network);
   // `--solo` is already on argv. Arm the local stratum before the first seed dial.
   let stratum = null;
   let stratumBound = null;
@@ -210,11 +221,30 @@ export async function startNode({
   };
 }
 
-/** P2P sync sidecar. Owns :30303. No pool HTTP and no stratum. */
+/** P2P and stratum follow the same env and flags on every book.
+ *  Defaults are :30303 and :1111. RPC and IPC stay on the row (loopback). */
+export function resolveListenPorts(network = MAGIC_TESTNET, env = process.env, overrides = {}) {
+  const clock = clockFor(network);
+  const p2pPort = overrides.p2pPort != null
+    ? Number(overrides.p2pPort)
+    : Number(env.SHEAR_P2P_PORT || P2P_PORT);
+  const rpcPort = overrides.rpcPort != null
+    ? Number(overrides.rpcPort)
+    : Number(env.SHEAR_RPC_PORT || clock.rpcPort);
+  const stratumPort = overrides.stratumPort != null
+    ? Number(overrides.stratumPort)
+    : (Number(env.SHEAR_STRATUM || env.SHEAR_STRATUM_PORT || SOLO_STRATUM_PORT) || SOLO_STRATUM_PORT);
+  return { p2pPort, rpcPort, stratumPort };
+}
+
+/** P2P sync sidecar. Owns :30303 unless SHEAR_P2P_PORT says otherwise. No pool HTTP and no stratum. */
 export async function startP2pSync(opts = {}) {
   const started = await startNode({ ...opts, solo: false });
   if (!started?.p2p || started.emit === false) return { ...started, mode: 'p2p-sync', ipc: null };
-  const ipcSpec = String(opts.ipc || process.env.SHEAR_P2P_IPC || '').trim();
+  let ipcSpec = String(opts.ipc || process.env.SHEAR_P2P_IPC || '').trim();
+  if (!ipcSpec && started.magic === MAGIC_DEV) {
+    ipcSpec = `127.0.0.1:${clockFor(MAGIC_DEV).ipcPort}`;
+  }
   if (!ipcSpec) return { ...started, mode: 'p2p-sync', ipc: null };
   const ipc = attachSidecarIpc({ store: started.store, p2p: started.p2p, addr: ipcSpec });
   const origClose = started.p2p.close.bind(started.p2p);

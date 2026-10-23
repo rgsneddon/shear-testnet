@@ -8,6 +8,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { clockFor } from '../../crypto/chain_params.js';
 import { HTTP_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const WATCH_FILE = 'watch.jsonl';
@@ -60,7 +61,7 @@ export async function sampleRpc(base) {
   return { policy, tips: tips.tips || [], reorgs: reorgs.reorgs || [] };
 }
 
-export function tickWatch({ policy, tips, reorgs, nowMs = Date.now() }) {
+export function tickWatch({ policy, tips, reorgs, nowMs = Date.now(), magic } = {}) {
   const last = (reorgs || []).at(-1) || null;
   const depth = Number(last?.depth || policy?.d_max || 0);
   const sideLeadHeld = Number(policy?.side_lead || 0) > 0;
@@ -70,7 +71,7 @@ export function tickWatch({ policy, tips, reorgs, nowMs = Date.now() }) {
   const side = (tips || []).filter((t) => t.status !== 'active');
   return {
     at: nowMs,
-    intervalMs: TARGET_BLOCK_INTERVAL_MS,
+    intervalMs: magic ? clockFor(magic).targetBlockMs : TARGET_BLOCK_INTERVAL_MS,
     tip: active?.hash || '',
     height: active?.height || 0,
     side_tips: side.length,

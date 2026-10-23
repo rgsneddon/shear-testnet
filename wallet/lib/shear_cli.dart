@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
+
 import 'shear_admit.dart';
 import 'shear_ctf.dart';
 import 'shear_eip712.dart';
@@ -17,6 +19,17 @@ import 'shear_vortex.dart';
 
 /// Public wallet pin. Keep in lock-step with [kWalletVersion] in main.dart.
 const kCliVersion = '0.72';
+
+String _cliBookMagic = kBookMagic;
+String? _cliFingerprintSha;
+File? _cliSessionFile;
+
+String fingerprintSha256(String text) => sha256.convert(utf8.encode(text)).toString();
+
+bool fingerprintShaMismatch(String? fingerprint, String expectedSha) {
+  if (fingerprint == null || fingerprint.isEmpty) return true;
+  return fingerprintSha256(fingerprint) != expectedSha.toLowerCase();
+}
 
 /// GUI surface each command covers. Tests assert this map stays complete.
 const kCliGuiCoverage = <String, String>{
@@ -152,7 +165,13 @@ Future<int> runShearCli(
   StringBuffer? stdout,
   StringBuffer? stderr,
   Map<String, String>? env,
+  String? bookMagic,
+  String? expectedFingerprintSha,
+  File? sessionFile,
 }) async {
+  _cliBookMagic = bookMagic ?? kBookMagic;
+  _cliFingerprintSha = expectedFingerprintSha;
+  _cliSessionFile = sessionFile;
   armWalletConnect();
   final gotEnv = env ?? Platform.environment;
   armLocalRpcFromEnv(gotEnv);
@@ -199,7 +218,7 @@ Future<int> _run(List<String> argv, IOSink out, IOSink err, Map<String, String> 
     out.writeln(_commandHelp(cmd));
     return 0;
   }
-  final network = flags['network'] ?? env['SHEAR_NETWORK'] ?? kBookMagic;
+  final network = flags['network'] ?? env['SHEAR_NETWORK'] ?? _cliBookMagic;
   if (network == 'shear-v1') {
     err.writeln(jsonEncode({
       'ok': false,
@@ -210,8 +229,8 @@ Future<int> _run(List<String> argv, IOSink out, IOSink err, Map<String, String> 
     }));
     return 3;
   }
-  if (network != kBookMagic) {
-    err.writeln('unsupported network $network (this pin is $kBookMagic)');
+  if (network != _cliBookMagic) {
+    err.writeln('unsupported network $network (this pin is $_cliBookMagic)');
     return 2;
   }
 
@@ -472,6 +491,7 @@ String _readPassword(_Flags flags, Map<String, String> env) {
 ShearSession _session(_Flags flags) {
   final path = flags['store'];
   if (path != null && path.isNotEmpty) return ShearSession(store: File(path));
+  if (_cliSessionFile != null) return ShearSession(store: _cliSessionFile);
   return ShearSession();
 }
 
@@ -561,6 +581,22 @@ Future<ShearPoolClient?> _rpcClient(IOSink err, String rpc, {required bool conse
     return null;
   }
   client.useOwnNode(accepted);
+  final expect = _cliFingerprintSha;
+  if (expect != null && expect.isNotEmpty) {
+    try {
+      final fp = await client.bookFingerprint();
+      final text = fp['fingerprint']?.toString() ?? '';
+      if (fingerprintShaMismatch(text, expect)) {
+        client.close();
+        err.writeln('This wallet is for $_cliBookMagic; the node is on a different network');
+        return null;
+      }
+    } catch (_) {
+      client.close();
+      err.writeln('This wallet is for $_cliBookMagic; the node is on a different network');
+      return null;
+    }
+  }
   return client;
 }
 

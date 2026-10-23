@@ -9431,6 +9431,8 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> pullPending(String login) =>
       _get('/api/pool/pullPending?login=${Uri.encodeQueryComponent(login)}');
 
+  Future<Map<String, dynamic>> bookFingerprint() => _get('/fingerprint');
+
   Future<Map<String, dynamic>> stats() async {
     final got = await _getRawFirst(const ['/stats', '/api/stats']);
     if (got != null) return got;

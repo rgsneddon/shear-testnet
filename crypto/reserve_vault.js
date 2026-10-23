@@ -1667,6 +1667,7 @@ function derivedCommitIndex(nowMs, genesisMs, magic) {
     nowMs: now,
     genesisMs: genesis,
     epochDays: epochDays(magic || MAGIC_TESTNET),
+    epochMs: epochMs(magic || MAGIC_TESTNET),
   });
 }
 

@@ -4,7 +4,9 @@
  * the portal id. The wallet spend key is not the owner key.
  */
 import { ed25519RawPub, newIdentity } from './address.js';
-import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
+import { MAGIC_TESTNET, PI_SHE_NANOS } from './asert.js';
+import { epochMs } from './pot_sched.js';
+import { clockFor } from './chain_params.js';
 import {
   deposit as depositRaw,
   lockTx as lockTxRaw,
@@ -41,17 +43,17 @@ export function ownerFor(dest) {
 
 export const portalOwnerCommit = ownerFor('portal-owner').commit;
 
-function chainAt(nowMs, genesisMs) {
+function chainAt(nowMs, genesisMs, magic = MAGIC_TESTNET) {
   const g = Number(genesisMs) || 0;
   const now = Number(nowMs) || 0;
   if (!(g > 0) || now < g) return 0;
-  return Math.floor((now - g) / RESERVE_EPOCH_MS);
+  return Math.floor((now - g) / epochMs(magic));
 }
 
-function trancheAt(nanos, at, genesisMs) {
+function trancheAt(nanos, at, genesisMs, magic = MAGIC_TESTNET) {
   const g = Number(genesisMs) || 0;
   const when = Number(at);
-  const span = RESERVE_EPOCH_MS;
+  const span = epochMs(magic);
   const epoch = g > 0 && when >= g ? Math.floor((when - g) / span) : 0;
   const end = g > 0 ? g + (epoch + 1) * span : 0;
   let remainMs = end > when ? end - when : 0;
@@ -62,15 +64,16 @@ function trancheAt(nanos, at, genesisMs) {
 /** Release epoch and tranche set for a withdraw the EVM will check. */
 export function withdrawAuthBind(nowMs, principal, bind = null) {
   const genesisMs = bind?.genesisMs ?? BIND_GENESIS_MS;
+  const magic = bind?.magic || MAGIC_TESTNET;
   const locks = bind?.locks || [{ nanos: principal, at: bind?.lockAt ?? genesisMs }];
-  const tranches = bind?.tranches || locks.map((lock) => trancheAt(lock.nanos, lock.at, genesisMs));
-  const epoch = bind?.epoch != null ? bind.epoch : chainAt(bind?.nowMs ?? nowMs, genesisMs);
+  const tranches = bind?.tranches || locks.map((lock) => trancheAt(lock.nanos, lock.at, genesisMs, magic));
+  const epoch = bind?.epoch != null ? bind.epoch : chainAt(bind?.nowMs ?? nowMs, genesisMs, magic);
   return {
     epoch,
     tranches,
     trancheSet: trancheSetHash(tranches, epoch),
-    magic: reserveMagicBytes(bind?.magic || MAGIC_TESTNET),
-    chainId: 2701n,
+    magic: reserveMagicBytes(magic),
+    chainId: BigInt(clockFor(magic).evmChainId),
     genesisMs,
   };
 }

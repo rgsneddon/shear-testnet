@@ -36,6 +36,7 @@ import 'shear_public_confirm.dart';
 import 'shear_closure.dart';
 import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
+import 'shear_book_v12.dart' as releaseBook;
 import 'rp_mail.dart';
 
 const kWalletVersion = '0.72';
@@ -69,6 +70,7 @@ const kExplains = [
 final List<String> debugPopulationOrder = <String>[];
 
 Future<void> main(List<String> args) async {
+  assert(releaseBook.kBookMagic == 'shear-testnet-v12');
   armWalletConnect();
   final tipFlag = args.indexOf('--print-tip');
   if (tipFlag >= 0) {

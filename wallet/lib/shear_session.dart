@@ -280,6 +280,23 @@ class ShearSession {
     return File(p.join(home, '.shear', 'session.json'));
   }
 
+  /// Dev book session. Release [defaultStore] stays the Continuum path.
+  static File storeForMagic(String magic) {
+    if (magic != 'shear-dev') return defaultStore();
+    if (Platform.isWindows) {
+      final root = Platform.environment['APPDATA'] ?? '.';
+      return File(p.join(root, 'Shear', 'shear-dev', 'session.json'));
+    }
+    if (Platform.isAndroid) {
+      return File('/data/user/0/com.shear.shear_wallet/files/Shear/shear-dev/session.json');
+    }
+    final home = Platform.environment['HOME'] ?? '.';
+    if (Platform.isMacOS || Platform.isIOS) {
+      return File('$home/Library/Application Support/Shear/shear-dev/session.json');
+    }
+    return File(p.join(home, '.shear', 'shear-dev', 'session.json'));
+  }
+
   Future<ShearIdentity?> loadOrCreate() async {
     if (identity != null && sealed && _password != null) return identity;
     if (!store.existsSync()) {

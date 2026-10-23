@@ -6,6 +6,7 @@
  * Nothing is credited to the Reserve vault.
  */
 import { createHash } from 'node:crypto';
+import { clockFor } from './chain_params.js';
 import { createPublicKey, verify } from 'node:crypto';
 import { encodeDest, payoutDest, isDestAddress, hash20FromAddress, paymentIdHash, ED25519_SPKI_PREFIX, aliasDestOfSilentId, poolFeeDest } from './address.js';
 import {
@@ -28,6 +29,10 @@ import {
 export { poolFeeDest };
 
 export const FEE_TAU_MS = 90_000;
+
+export function feeTauMs(magic = MAGIC_TESTNET) {
+  return clockFor(magic).feeTauMs;
+}
 export const FEE_TARGET_WEIGHT = 8;
 export const LEVY_FLOOR_UNITS = 100;
 export const LEVY_BPS = 0;

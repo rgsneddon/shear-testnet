@@ -7,6 +7,7 @@ import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET } from './asert.js';
+import { MAGIC_DEV, chainParams } from './chain_params.js';
 import { EMPTY_ROOT } from './merkle.js';
 import { reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth } from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
@@ -29,6 +30,22 @@ const PIN = JSON.parse(fs.readFileSync(
 export const RESERVE_ABI = PIN.abi;
 export const RESERVE_BYTECODE = PIN.bytecode.startsWith('0x') ? PIN.bytecode : `0x${PIN.bytecode}`;
 
+let devPinCache = null;
+function devBytecode() {
+  if (!devPinCache) {
+    const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '../contracts/dev/ReserveDev.json');
+    devPinCache = JSON.parse(fs.readFileSync(file, 'utf8'));
+  }
+  const raw = String(devPinCache.bytecode || '');
+  return raw.startsWith('0x') ? raw : `0x${raw}`;
+}
+
+function sessionEpochMs(session) {
+  const n = Number(session?.epochMs);
+  if (Number.isFinite(n) && n > 0) return n;
+  return RESERVE_EPOCH_MS;
+}
+
 export function shearMagicBytes(network = MAGIC_TESTNET) {
   return keccak256(Buffer.from(String(network), 'utf8'));
 }
@@ -37,7 +54,8 @@ export function shearMagicBytes(network = MAGIC_TESTNET) {
  *  A miss is the constructor revert `reserve_deploy`. */
 export function reservePinOk(network = MAGIC_TESTNET) {
   const hash = Buffer.from(shearMagicBytes(network)).toString('hex');
-  const code = String(RESERVE_BYTECODE || '').replace(/^0x/i, '').toLowerCase();
+  const pinned = String(network) === MAGIC_DEV ? devBytecode() : RESERVE_BYTECODE;
+  const code = String(pinned || '').replace(/^0x/i, '').toLowerCase();
   return hash.length === 64 && code.includes(hash);
 }
 
@@ -309,9 +327,10 @@ function evmRevertReason(res) {
   return String(res?.execResult?.exceptionError?.error || 'revert');
 }
 
-function shearCommon() {
+function shearCommon(chainId = Number(SHEAR_EVM_CHAIN_ID)) {
+  const id = Number(chainId);
   return createCustomCommon(
-    { chainId: Number(SHEAR_EVM_CHAIN_ID), networkId: Number(SHEAR_EVM_CHAIN_ID) },
+    { chainId: id, networkId: id },
     Mainnet,
     { hardfork: Hardfork.Shanghai },
   );
@@ -349,14 +368,16 @@ function ed25519Precompile(opts) {
 }
 
 export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null } = {}) {
-  const common = shearCommon();
+  const dev = String(network) === MAGIC_DEV;
+  const common = shearCommon(dev ? chainParams(MAGIC_DEV).evmChainId : Number(SHEAR_EVM_CHAIN_ID));
   const evm = await createEVM({
     common,
     customPrecompiles: [{ address: ED25519_PRECOMPILE, function: ed25519Precompile }],
   });
   const magic = shearMagicBytes(network);
+  const pinned = dev ? devBytecode() : RESERVE_BYTECODE;
   const code = bytecode == null
-    ? RESERVE_BYTECODE
+    ? pinned
     : (String(bytecode).startsWith('0x') ? String(bytecode) : `0x${bytecode}`);
   const ctor = concat(hexToBytes(code), magic);
   const created = await evm.runCall({
@@ -371,7 +392,13 @@ export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null 
   }
   const to = created.createdAddress;
   if (!to) throw new Error('reserve_deploy: no address');
-  return { evm, address: to, common };
+  return {
+    evm,
+    address: to,
+    common,
+    network: String(network),
+    epochMs: dev ? chainParams(MAGIC_DEV).epochMs : RESERVE_EPOCH_MS,
+  };
 }
 
 export async function callReserve(session, data, { staticCall = false, value = 0n, caller } = {}) {
@@ -549,7 +576,7 @@ export async function executeReserveTx(session, tx, nowMs) {
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
     if (viewGot.ok) {
       const view = decodePublicView(viewGot.returnValue);
-      const ended = view.epochStartMs && nowMs >= view.epochStartMs + RESERVE_EPOCH_MS;
+      const ended = view.epochStartMs && nowMs >= view.epochStartMs + sessionEpochMs(session);
       if (ended && !view.bonusEnacted) {
         const en = await callReserve(session, encodeEnact(nowMs));
         if (!en.ok) return en;
@@ -566,8 +593,7 @@ export async function executeReserveTx(session, tx, nowMs) {
 }
 
 /** Chain settlement index from the public view. Epoch 0 before it ends is 0. */
-function evmSettlementIndex(view, nowMs, genesisMs) {
-  const span = RESERVE_EPOCH_MS;
+function evmSettlementIndex(view, nowMs, genesisMs, span = RESERVE_EPOCH_MS) {
   const g = Number(genesisMs) || 0;
   const now = Number(nowMs) || 0;
   const chain = g > 0 && now > g ? Math.floor((now - g) / span) : 0;
@@ -612,7 +638,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
         const again = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
         if (again.ok) view0 = decodePublicView(again.returnValue);
       }
-      const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + RESERVE_EPOCH_MS;
+      const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + sessionEpochMs(session);
       if (ended && !view0.bonusEnacted) {
         const en = await callReserve(session, encodeEnact(nowMs));
         if (!en.ok) return fail(en.reason || 'enact');
@@ -634,7 +660,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     // root it is given. It does not build the tree. A non-empty owed root
     // with nothing on the coinbase is stake_reward. An empty earning set
     // still commits the empty root and does not store it.
-    const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs) > 0;
+    const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs, sessionEpochMs(session)) > 0;
     const owedGiven = owedRoot != null;
     // No JS expectation is not permission to store whatever root arrived.
     if (oweRoot && !owedGiven) return fail('stake_reward');

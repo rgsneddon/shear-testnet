@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { epochMs, epochDays, vortexEpochIndex } from './pot_sched.js';
+import { chainParams, MAGIC_DEV } from './chain_params.js';
 
 /**
  * The Reserve oracle. The epoch rate is the attested 14-bank bundle below.
@@ -205,6 +206,7 @@ export function oracleRuleAt(height, { activationHeight = ORACLE_ACTIVATION_HEIG
  */
 export function windowBlocksFor(magic) {
   if (String(magic) === 'shear-v1') return ORACLE_WINDOW_MAINNET;
+  if (String(magic) === MAGIC_DEV) return chainParams(MAGIC_DEV).oracleWindowBlocks;
   const mainMs = epochMs('shear-v1');
   const hereMs = epochMs(magic);
   if (!mainMs || !hereMs) return ORACLE_WINDOW_MAINNET;

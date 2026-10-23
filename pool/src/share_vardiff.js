@@ -93,17 +93,21 @@ export function nextShareBits({
   targetMs = SHARE_VARDIFF_TARGET_MS,
   blockBits,
   minBits = 1,
+  clearEaseMs = SHARE_VARDIFF_CLEAR_EASE_MS,
+  deadbandLowMs = SHARE_VARDIFF_DEADBAND_LOW_MS,
 } = {}) {
   const cur = clampShareBits(current, { blockBits, minBits });
   const target = Math.max(1, Number(targetMs) || SHARE_VARDIFF_TARGET_MS);
   const actual = Math.max(1, Number(actualIntervalMs) || target);
+  const clearEase = Math.max(1, Number(clearEaseMs) || SHARE_VARDIFF_CLEAR_EASE_MS);
+  const deadband = Math.max(1, Number(deadbandLowMs) || SHARE_VARDIFF_DEADBAND_LOW_MS);
   // Above the target the dial is too hard. Ease every window. No deadband.
   if (actual > target) {
-    const ease = actual >= SHARE_VARDIFF_CLEAR_EASE_MS ? SHARE_VARDIFF_EASE_MAX : 1;
+    const ease = actual >= clearEase ? SHARE_VARDIFF_EASE_MAX : 1;
     return clampShareBits(cur - ease, { blockBits, minBits });
   }
   // At or under the target, hold until the sample is clearly faster.
-  if (actual >= SHARE_VARDIFF_DEADBAND_LOW_MS) {
+  if (actual >= deadband) {
     return cur;
   }
   const ratio = target / actual;
@@ -147,12 +151,19 @@ export function liveShareBits(rows, { blockBits, minBits = 1, fallback } = {}) {
   return clampShareBits(Number.isFinite(fb) && fb > 0 ? fb : minBits, { blockBits, minBits });
 }
 
-export function shouldRetargetShare({ shares, elapsedMs } = {}) {
+export function shouldRetargetShare({
+  shares,
+  elapsedMs,
+  retargetShares = SHARE_VARDIFF_RETARGET_SHARES,
+  retargetMs = SHARE_VARDIFF_RETARGET_MS,
+} = {}) {
   const n = Math.max(0, Number(shares) || 0);
   const ms = Math.max(0, Number(elapsedMs) || 0);
+  const need = Math.max(1, Number(retargetShares) || SHARE_VARDIFF_RETARGET_SHARES);
+  const windowMs = Math.max(1, Number(retargetMs) || SHARE_VARDIFF_RETARGET_MS);
   // The slower gate binds. Eight fast shares are not a window, and one
   // slow share after a long pause is not a sample.
-  return n >= SHARE_VARDIFF_RETARGET_SHARES && ms >= SHARE_VARDIFF_RETARGET_MS;
+  return n >= need && ms >= windowMs;
 }
 
 /**
@@ -169,6 +180,10 @@ export function destVardiffOnShare({
   blockBits,
   minBits = 1,
   targetMs = SHARE_VARDIFF_TARGET_MS,
+  retargetShares = SHARE_VARDIFF_RETARGET_SHARES,
+  retargetMs = SHARE_VARDIFF_RETARGET_MS,
+  clearEaseMs = SHARE_VARDIFF_CLEAR_EASE_MS,
+  deadbandLowMs = SHARE_VARDIFF_DEADBAND_LOW_MS,
 } = {}) {
   const curBits = Number(state?.bits);
   const bits = Number.isFinite(curBits) ? curBits : minBits;
@@ -177,7 +192,7 @@ export function destVardiffOnShare({
   const elapsed = Math.max(0, Number(now) - windowAt);
   const lastStepAt = Number(state?.lastStepAt) || 0;
   const suppressClimb = state?.suppressClimb === true;
-  if (!shouldRetargetShare({ shares, elapsedMs: elapsed })) {
+  if (!shouldRetargetShare({ shares, elapsedMs: elapsed, retargetShares, retargetMs })) {
     return {
       shares,
       windowAt,
@@ -194,6 +209,8 @@ export function destVardiffOnShare({
     targetMs,
     blockBits,
     minBits,
+    clearEaseMs,
+    deadbandLowMs,
   });
   const heldClimb = suppressClimb && proposed > bits;
   const next = heldClimb ? bits : proposed;

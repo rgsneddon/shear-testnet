@@ -135,7 +135,8 @@ import { flowNeedsDummy, publicReserveReceiptRejected } from '../../crypto/dummy
 import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
-import { blockWork, HEADER_AHEAD_MS } from '../../crypto/asert.js';
+import { blockWork } from '../../crypto/asert.js';
+import { chainParams, clockFor, isHistoricalMagic, isTableMagic } from '../../crypto/chain_params.js';
 import {
   emptyPolicyState,
   recordReorg,
@@ -313,6 +314,10 @@ export function createStore(dir, {
     const genesisPin = String(genesisHash || '');
     if (genesisPin) throw new Error('regtest_genesis_pin');
     if (!regtestPermitOk(regtestPermit)) throw new Error('regtest_magic');
+  } else if (!isTableMagic(configuredMagic) && !isHistoricalMagic(configuredMagic)) {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
   }
   ensureDatadir(dir);
   const file = path.join(dir, 'chain.jsonl');
@@ -426,6 +431,14 @@ export function createStore(dir, {
   // One network for this book. The datadir check, the fingerprint, the
   // book.magic writes, and every block stamp below all use bookMagic.
   const bookMagic = book || configuredMagic;
+  if (isTableMagic(bookMagic)) {
+    const pinned = chainParams(bookMagic);
+    if (!Object.isFrozen(pinned) || pinned.magic !== bookMagic) {
+      const err = new Error('unknown_magic');
+      err.code = 'unknown_magic';
+      throw err;
+    }
+  }
   // book.seal skips the header ShearHash when it matches this install's key.
   // book.snap skips the body prefix only when that same key verifies it and
   // the snap binds this chain. A miss replays. A foreign book never uses it.
@@ -1149,7 +1162,7 @@ export function createStore(dir, {
     try {
       const parent = decodeHeader(Buffer.from(t.header));
       const mtp = medianTimePast(blocks.slice(-MTP_WINDOW).map((b) => blockTimeMs(b)));
-      return templateStampMs(parent.timestamp, wall, null, mtp);
+      return templateStampMs(parent.timestamp, wall, null, mtp, bookMagic);
     } catch {
       return wall;
     }
@@ -3059,7 +3072,7 @@ export function createStore(dir, {
       }
       let decoded;
       try { decoded = decodeHeader(header); } catch { out.dropped = true; break; }
-      if (Number(decoded.timestamp) > nowMs + HEADER_AHEAD_MS) { offerStats.orphaned += 1; continue; }
+      if (Number(decoded.timestamp) > nowMs + clockFor(bookMagic).headerAheadMs) { offerStats.orphaned += 1; continue; }
       const prevHex = decoded.prevBlockHash.toString('hex');
       let parent = null;
       let rootMs = localGenesisMs();
@@ -5625,7 +5638,7 @@ export function createStore(dir, {
       try {
         const parent = decodeHeader(Buffer.from(t.header));
         const mtp = medianTimePast(blocks.slice(-MTP_WINDOW).map((b) => blockTimeMs(b)));
-        now = templateStampMs(parent.timestamp, wall, wallIntervalMs, mtp);
+        now = templateStampMs(parent.timestamp, wall, wallIntervalMs, mtp, bookMagic);
       } catch { /* keep wall */ }
     }
     // Sealed parent interval only. Caller bits (share target, boot override,
@@ -5844,6 +5857,7 @@ export function createStore(dir, {
       hashOwedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
+      magic: bookMagic,
       prepareCoinbase: (cb) => {
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
@@ -6052,7 +6066,7 @@ export function createStore(dir, {
     magic: bookMagic,
     tipExtendPowOpts,
     tipExtendPowReason,
-    consensusFingerprint,
+    consensusFingerprint: () => consensusFingerprint(bookMagic),
     pause,
     reorgHaltDepth: haltDepth,
     headers,

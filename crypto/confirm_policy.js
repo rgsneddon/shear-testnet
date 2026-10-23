@@ -3,9 +3,19 @@
  * 9-conf floor never moves. Freeze is policy.
  */
 import { SPENDABLE_CONFIRMATIONS, MIN_CONFIRMS_POLICY, TARGET_BLOCK_INTERVAL_MS } from './asert.js';
+import { clockFor } from './chain_params.js';
 
 export const CONSENSUS_MIN = SPENDABLE_CONFIRMATIONS;
 export const MERCHANT_DEFAULT = MIN_CONFIRMS_POLICY;
+
+export function confirmPolicy(magic) {
+  const row = clockFor(magic);
+  return {
+    spendable: row.spendableConfirmations,
+    merchant: row.policyConfirmations,
+    coinbase: row.coinbaseMaturity,
+  };
+}
 
 export const POLICY_BANDS = Object.freeze({
   ui_seen: 1,
