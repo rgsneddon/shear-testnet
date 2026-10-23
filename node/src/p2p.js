@@ -2046,7 +2046,10 @@ export function createP2p({
       sock.destroy();
       return;
     }
-    if (welcomed && msg.type !== 'serve_busy' && heard) heard.busyStreak = 0;
+    // Only a served answer ends a busy streak. Census and other chatter do not.
+    if (welcomed && heard && (msg.type === 'block' || msg.type === 'blocks' || msg.type === 'getblock_nak' || msg.type === 'block_not_found')) {
+      heard.busyStreak = 0;
+    }
     if (msg.type === 'hello') {
       const rec = heard || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
       rec.remote = peerRemoteKey(sock) || rec.remote;
@@ -2309,6 +2312,13 @@ export function createP2p({
     if (msg.type === 'serve_busy') {
       const recBusy = peers.get(sock);
       const busyHash = wireHash(msg.hash);
+      // A busy header or block page has no hash. Retry it after the soft
+      // hold, so syncing is not left set on this peer.
+      if (recBusy && !busyHash && (msg.what === 'getheaders' || msg.what === 'getblocks')
+        && recBusy.syncing && !(recBusy.pending instanceof Set && recBusy.pending.size)) {
+        armSoftRetry(sock, recBusy);
+        return;
+      }
       // Only the peer we asked may answer. An unsolicited busy must not
       // clear the shared in-flight entry or the asker's pending set.
       if (!recBusy || !busyHash || !(recBusy.pending instanceof Set) || !recBusy.pending.has(busyHash)) return;
@@ -2428,7 +2438,23 @@ export function createP2p({
         return;
       }
       const jobs = freshClaimJobs(fork);
-      if (recNow && (Number(recNow.claimQueued) || 0) + jobs > P2P_CLAIM_QUEUE) return;
+      // A body we asked for is bounded by our own getblock window. A full
+      // queue hands the hash back to want, so it is not left in flight.
+      const asked = !!(lastHash && recNow?.pending?.has(lastHash));
+      const claimCap = asked ? Math.max(P2P_CLAIM_QUEUE, getblockBatch()) : P2P_CLAIM_QUEUE;
+      if (recNow && (Number(recNow.claimQueued) || 0) + jobs > claimCap) {
+        if (asked) {
+          inflightBlocks.delete(lastHash);
+          recNow.pending.delete(lastHash);
+          if (!Array.isArray(recNow.want)) recNow.want = [];
+          if (!recNow.want.includes(lastHash)) recNow.want.unshift(lastHash);
+          if (recNow.pending.size === 0) {
+            recNow.pendingAt = 0;
+            recNow.syncing = false;
+          }
+        }
+        return;
+      }
       checkBlockClaims(sock, fork, (rows) => {
         const proven = rows?.find((row) => row?.computed)?.computed || '';
         ingestDecodedFork(sock, fork, last, lastHash, recNow, proven);
@@ -2448,6 +2474,7 @@ export function createP2p({
     for (const [other, orec] of peers) {
       if (other === sock || other.destroyed || !orec) continue;
       if (!(Number(orec.helloAt) > 0)) continue;
+      if (!peerTipAhead(orec)) continue;
       destSock = other;
       break;
     }
@@ -2601,7 +2628,10 @@ export function createP2p({
     const job = hashHeaderOffLoop(header).then((buf) => {
       const computed = Buffer.from(buf).toString('hex');
       rememberHeaderClaim(headerHex, computed);
-      try { holdPreparedHeader(header, buf); } catch { /* verify hashes again */ }
+      // A wrong claim is refused before verify, so its hash is not stashed.
+      if (computed === claimed) {
+        try { holdPreparedHeader(header, buf); } catch { /* verify hashes again */ }
+      }
       return computed;
     }, (err) => {
       if (headerClaims.get(headerHex) === job) headerClaims.delete(headerHex);

@@ -27,6 +27,7 @@ import {
   STAGE_HOLD_BASE_MS,
   STAGE_HOLD_MAX_MS,
   createP2p,
+  getblockBatch,
   isFinalIngestFail,
   nextStageHold,
   p2pHelloMs,
@@ -1257,6 +1258,67 @@ describe('p2p hello deadline and idle eviction', () => {
     }
   });
 
+  it('a full getblock window of asked bodies is hashed, and an over-cap body goes back to want', async () => {
+    let calls = 0;
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest() {
+        calls += 1;
+        return { ok: true };
+      },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const rec = recFor(p2p, sock);
+      assert.ok(rec, 'peer record');
+      const window = getblockBatch();
+      assert.ok(window > P2P_CLAIM_QUEUE, 'the window is wider than the unsolicited cap');
+      const rows = [];
+      for (let n = 0; n < window; n += 1) rows.push(matchingBlock(200 + n));
+      rec.pending = new Set(rows.map((row) => row.hash));
+      rec.want = [];
+      resetP2pHashStats();
+      for (const row of rows) {
+        sock.write(frame({
+          type: 'block',
+          block: { hash: row.hash, height: 1, header: row.header },
+        }));
+      }
+      for (let i = 0; i < 200 && calls < window; i += 1) await delay(25);
+      assert.equal(p2pHashStats().started, window);
+      assert.equal(calls, window);
+
+      const extra = matchingBlock(250);
+      rec.pending = new Set([extra.hash]);
+      rec.want = [];
+      rec.claimQueued = window;
+      sock.write(frame({
+        type: 'block',
+        block: { hash: extra.hash, height: 1, header: extra.header },
+      }));
+      await delay(80);
+      assert.equal(rec.pending.has(extra.hash), false, 'not left in flight');
+      assert.equal(rec.want[0], extra.hash, 'asked again later');
+      assert.equal(calls, window);
+      rec.claimQueued = 0;
+    } finally {
+      p2p.close();
+    }
+  });
+
   it('a wrong claimed hash is dropped before the hold and does not block the real block', async () => {
     const header = encodeHeader({
       prevBlockHash: GENESIS_PREV,
@@ -1557,8 +1619,24 @@ describe('p2p hello deadline and idle eviction', () => {
         assert.equal(asker.pending.has(id), false);
         assert.ok(asker.want.includes(id));
       }
+      // The other peer is not ahead of us, so the hash stays with the asker.
       heard[1].length = 0;
       asker.pending = new Set([id]);
+      remotes[0].write(busy(id));
+      await delay(40);
+      assert.equal(asker.pending.has(id), false);
+      assert.equal(asker.want[0], id);
+      assert.equal(other.pending?.has(id) || false, false);
+      assert.equal(heard[1].some((line) => line.includes(id)), false);
+      // Once it is ahead, the third busy in a row hands the hash to it.
+      other.height = 5;
+      for (let n = 1; n < P2P_BUSY_LIMIT; n += 1) {
+        asker.pending = new Set([id]);
+        remotes[0].write(busy(id));
+        await delay(50);
+      }
+      asker.pending = new Set([id]);
+      asker.want = asker.want.filter((h) => h !== id);
       remotes[0].write(busy(id));
       await delay(40);
       assert.equal(asker.pending.has(id), false);
@@ -1568,6 +1646,57 @@ describe('p2p hello deadline and idle eviction', () => {
     } finally {
       mesh.close();
       for (const server of servers) server.close();
+    }
+  });
+
+  it('census does not end a busy streak, and a busy header page clears syncing', async () => {
+    const server = net.createServer((sock) => {
+      sock.on('data', (buf) => {
+        if (buf.toString().includes('"type":"hello"')) sock.write(helloLine());
+      });
+      sock.on('error', () => {});
+    });
+    let remote = null;
+    server.on('connection', (sock) => { remote = sock; });
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const mesh = createP2p({
+      store: { blocks: [], mempool: [], tip: () => null, on() { return () => {}; } },
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    try {
+      await mesh.connect('127.0.0.1', server.address().port);
+      for (let i = 0; i < 40 && !remote; i += 1) await delay(25);
+      await delay(40);
+      const rec = [...mesh.peers.values()][0];
+      assert.ok(rec?.helloAt);
+      const id = 'ef'.repeat(32);
+      const line = (msg) => `${JSON.stringify({ magic: MAGIC_TESTNET, ...msg })}
+`;
+      rec.pending = new Set([id]);
+      remote.write(line({ type: 'serve_busy', what: 'getblock', hash: id }));
+      await delay(50);
+      assert.equal(rec.busyStreak, 1);
+      remote.write(line({ type: 'census', hop: 0, nodes: [] }));
+      await delay(50);
+      assert.equal(rec.busyStreak, 1, 'census leaves the streak');
+
+      rec.pending = new Set();
+      rec.syncing = true;
+      rec.softHoldUntil = 0;
+      remote.write(line({ type: 'serve_busy', what: 'getheaders' }));
+      await delay(50);
+      assert.ok(Number(rec.softHoldUntil) > Date.now(), 'soft retry armed');
+      assert.ok(rec.softTimer, 'retry clears syncing');
+    } finally {
+      mesh.close();
+      server.close();
     }
   });
 
