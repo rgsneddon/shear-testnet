@@ -3233,7 +3233,9 @@ class ShearWalletAppState extends State<ShearWalletApp>
                         style: const TextStyle(fontSize: 13),
                       ),
                       Text(
-                        '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
+                        ledger.bookTip < 1
+                            ? '${t.from} → ${t.to}'
+                            : '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -3378,7 +3380,9 @@ class ShearWalletAppState extends State<ShearWalletApp>
         Padding(
           padding: EdgeInsets.only(left: row.child ? 28 : 0),
           child: ListTile(
+            // dart format off
             key: Key(row.child ? 'shearview-hash-${row.tx.id}' : 'shearview-row-${row.tx.id}'),
+            // dart format on
             dense: true,
             isThreeLine: !row.child,
             selected: row.tx.id == _focusedTxId,

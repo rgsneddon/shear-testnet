@@ -433,7 +433,9 @@ const int kSendSizeCap =
         3 * kMeasuredOutputHexBytes) ~/
     kMeasuredProofHexBytes;
 
+// dart format off
 const int _kSendMeasuredCap = kSendTimeCap < kSendSizeCap ? kSendTimeCap : kSendSizeCap;
+// dart format on
 
 /// Tighter of prove time, tx size, and the consensus input limit of one
 /// FS-1 spend. Not a hand-picked count.
@@ -1496,7 +1498,9 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
 
 /// One FS-1 spend of every input of a send ([proveFs1SpendWire]). Same
 /// off-isolate rule as [sealFlowSpendVouts].
+// dart format off
 Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) => proveFs1SpendWire(input);
+// dart format on
 
 /// Stamp from the worker, including when [sealFlowSpendVouts] throws.
 Map<String, dynamic> _sealFlowStamped(Map<String, dynamic> input) {
@@ -1544,8 +1548,10 @@ Future<Map<String, dynamic>> _sealFlowOffUi(Map<String, dynamic> input) {
     debugSendSealStamp = identityHashCode(Isolate.current).toString();
     return Future<Map<String, dynamic>>.value(sealFlowSpendVouts(input));
   }
+  // dart format off
   return Isolate.run(() => _sealFlowStamped(input))
       .then((out) => _takeOffUi(out, (s) => debugSendSealStamp = s));
+  // dart format on
 }
 
 Future<Map<String, dynamic>> _proveFlowOffUi(Map<String, dynamic> input) {
@@ -1554,8 +1560,10 @@ Future<Map<String, dynamic>> _proveFlowOffUi(Map<String, dynamic> input) {
     debugSendProveStamp = identityHashCode(Isolate.current).toString();
     return Future<Map<String, dynamic>>.value(reproveFlowSpendWire(input));
   }
+  // dart format off
   return Isolate.run(() => _proveFlowStamped(input))
       .then((out) => _takeOffUi(out, (s) => debugSendProveStamp = s));
+  // dart format on
 }
 
 /// Same hops [_sendManyNotes] uses. A caller-side seal or prove is the test shortcut.
@@ -3195,6 +3203,9 @@ String voteFailCopy(Object error) {
 const kErrNoSealedNote =
     'No sealed Continuum note ready — wait for sync/confirms';
 
+/// Header depth is still unknown. Not a balance shortfall.
+const kErrHeaderSync = 'waiting for header sync';
+
 /// Pool answered with an HTML error page (or other non-JSON). Never surface FormatException.
 const kErrPoolHtml = 'pool returned HTML';
 
@@ -3243,7 +3254,8 @@ String flowSpendFrom(
     }
     if (richest.isNotEmpty) return richest;
   }
-  throw StateError('insufficient');
+  if (ledger.bookTip < 1) throw StateError(kErrHeaderSync);
+  throw ledger.fundsRefusal();
 }
 
 /// Flow send catch: map known failures; keep generic for unknown.
@@ -3636,7 +3648,8 @@ String shearviewListTitle(
 }) {
   final kind = shearviewKindLabel(t, outgoing: outgoing, confs: confs);
   final h = t.height ?? 0;
-  if (h < 1) return 'pending  $kind  ${formatShe(t.amount)} SHE';
+  // No verified tip yet: pending, and no confirmation count.
+  if (h < 1 || confs < 1) return 'pending  $kind  ${formatShe(t.amount)} SHE';
   final pending = confs >= 1 && confs < ShearLedger.continuumConfirmations;
   final status = pending ? 'pending  $kind' : kind;
   return 'h=$h  $status  ${formatShe(t.amount)} SHE';
@@ -4776,6 +4789,11 @@ class ShearLedger implements ReadProofSink {
     _checkedHeaders.clear();
     _chainLoaded = false;
     _sealedPending = null;
+    _sealedPriors = const [];
+    _sealedWork = null;
+    _resumePriorTimes = const [];
+    _resumePriorOrigin = null;
+    _prunedWork = BigInt.zero;
     _reorgHintFrom = null;
     _seedCheckpoint();
     lag1Root = null;
@@ -4831,6 +4849,34 @@ class ShearLedger implements ReadProofSink {
   /// height is not this. Zero means the depth is unknown, so a note that
   /// carries a height is not spendable.
   int get bookTip => _verifiedTip;
+
+  /// Why a send cannot be funded. Unknown header depth is not a short note.
+  StateError fundsRefusal() {
+    if (bookTip < 1) return StateError(kErrHeaderSync);
+    for (final n in _notes) {
+      if (_noteIsSpendable(n)) return StateError('insufficient');
+    }
+    return StateError(kErrNoSealedNote);
+  }
+
+  /// A settled round is not a note. Drop it from the painted book once a
+  /// Flow send has refused it, so Spendable stops claiming that cover.
+  void _releaseUnbackedSpendable(
+    String src, {
+    String? restFrame,
+    String? paymentCode,
+  }) {
+    final keys = <String>{payKey(src)};
+    if (restFrame != null) {
+      for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+        if (isDestAddress(d)) keys.add(payKey(d));
+      }
+    }
+    for (final key in keys) {
+      if (!isDestAddress(key)) continue;
+      _spendable[key] = inventoriedNoteShe(key, sum: true);
+    }
+  }
 
   /// First-run catch-up. Null once the checked chain has reached the host.
   /// A missing native hasher is its own line, not a stuck `0/N`.
@@ -4896,6 +4942,19 @@ class ShearLedger implements ReadProofSink {
   /// Sealed rows waiting for an off-UI recheck before the tip may rise.
   List<({int height, int timeMs, Uint8List header})>? _sealedPending;
 
+  /// Priors and cumulative work that belong to [_sealedPending].
+  List<int> _sealedPriors = const [];
+  String? _sealedWork;
+
+  /// Ten header times immediately before the oldest saved row, oldest first.
+  /// The MAC covers them. MTP for the resumed tail reads them.
+  List<int> _resumePriorTimes = const [];
+  int? _resumePriorOrigin;
+
+  /// Work of headers pruned out of the retained window. The tail's work is
+  /// added on top. A fork from the pin is weighed against the sum.
+  BigInt _prunedWork = BigInt.zero;
+
   /// One header read. A stalled host must release the catch-up pass.
   Duration headerReadTimeout = const Duration(seconds: 5);
 
@@ -4929,6 +4988,12 @@ class ShearLedger implements ReadProofSink {
     if (storePath != null && storePath.isNotEmpty) _headerStorePath = storePath;
     _checkedHeaders.clear();
     _chainLoaded = false;
+    _resumePriorTimes = const [];
+    _resumePriorOrigin = null;
+    _prunedWork = BigInt.zero;
+    _sealedPending = null;
+    _sealedPriors = const [];
+    _sealedWork = null;
     _seedCheckpoint();
     _loadVerifiedChain();
   }
@@ -4999,10 +5064,20 @@ class ShearLedger implements ReadProofSink {
     final row = _checkedAt(height);
     if (row != null) return row.timeMs;
     final pin = _pin;
-    if (pin == null) return null;
-    final age = pin.height - height;
-    if (age < 1 || age > pin.priorTimesMs.length) return null;
-    return pin.priorTimesMs[pin.priorTimesMs.length - age];
+    if (pin != null) {
+      final age = pin.height - height;
+      if (age >= 1 && age <= pin.priorTimesMs.length) {
+        return pin.priorTimesMs[pin.priorTimesMs.length - age];
+      }
+    }
+    final origin = _resumePriorOrigin;
+    if (origin != null && _resumePriorTimes.length == 10) {
+      final idx = height - origin;
+      if (idx >= 0 && idx < _resumePriorTimes.length) {
+        return _resumePriorTimes[idx];
+      }
+    }
+    return null;
   }
 
   int _medianTimes(List<int> times) {
@@ -5053,14 +5128,37 @@ class ShearLedger implements ReadProofSink {
     _pruneChecked();
   }
 
-  /// Pin row stays. The saved tail is the latest [_kHeaderKeep] headers, so
-  /// a long backfill resumes above pin+1 instead of starting over.
+  /// Pin row stays. The saved tail is the latest [_kHeaderKeep] headers.
+  /// Times just below that tail stay for MTP, and their work stays in
+  /// [_prunedWork] so a later fork is weighed against the whole chain.
   void _pruneChecked() {
     if (_checkedHeaders.length <= _kHeaderKeep + 1) return;
     _checkedHeaders.sort((a, b) => a.height.compareTo(b.height));
     final tip = _checkedHeaders.last.height;
     final floor = tip - _kHeaderKeep + 1;
     final pinH = _pin?.height;
+    final priors = <int>[];
+    for (var h = floor - 10; h < floor; h++) {
+      final t = _timeAt(h);
+      if (t == null) {
+        priors.clear();
+        break;
+      }
+      priors.add(t);
+    }
+    var dropWork = BigInt.zero;
+    for (final row in _checkedHeaders) {
+      if (row.height >= floor || row.height == pinH) continue;
+      if (row.headerHex.isEmpty) continue;
+      final raw = headerFromHex(row.headerHex);
+      if (raw == null) continue;
+      dropWork += blockWork(_headerBits(raw));
+    }
+    _prunedWork += dropWork;
+    if (priors.length == 10) {
+      _resumePriorTimes = priors;
+      _resumePriorOrigin = floor - 10;
+    }
     _checkedHeaders.removeWhere(
       (row) => row.height < floor && row.height != pinH,
     );
@@ -5095,6 +5193,7 @@ class ShearLedger implements ReadProofSink {
   void _rollBackTo(int height, {bool save = true}) {
     final pinH = _pin?.height ?? 0;
     final floor = height < pinH ? pinH : height;
+    if (floor <= pinH) _prunedWork = BigInt.zero;
     _checkedHeaders.removeWhere((row) => row.height > floor);
     if (_verifiedTip > floor) _verifiedTip = floor;
     if (_verifiedTip < pinH) _verifiedTip = pinH;
@@ -5172,69 +5271,91 @@ class ShearLedger implements ReadProofSink {
 
   /// Native ShearHash-v3, prev link, MTP, the future-time bound, and ASERT
   /// from the consensus anchor (height 1, genesis bits, the pin's genesis ms).
+  /// Does not switch branches. A competing header is weighed in
+  /// [_maybeSwitchBranch] only after this same proof has passed.
   bool _headerPowOk(Uint8List header, {required int sealedHeight}) {
     final pin = _pin;
     if (pin == null) return false;
     if (_knownHeader(header, sealedHeight)) return true;
     if (_checkedAt(sealedHeight) != null) return false;
-    if (!_headerCandidate(header, sealedHeight)) return false;
-    final ts = headerTimestampMs(header);
-    final bits = _headerBits(header);
-    if (ts == null) return false;
+    if (sealedHeight != _chainTip + 1) return false;
     final parent = _checkedAt(sealedHeight - 1);
     if (parent == null) return false;
-    final digest = _digestOf(header);
-    if (digest == null || !shearMeetsTarget(digest, bits)) return false;
-    if (pin.anchorHeight != kConsensusAnchorHeight) return false;
-    if (pin.anchorBits != kConsensusAnchorBits) return false;
-    if (kV12GenesisMs > 0 && pin.anchorTimeMs != kV12GenesisMs) return false;
-    final quote = asertQuoteForHeight(
-      anchorTimeMs: pin.anchorTimeMs,
-      blockTimeMs: ts,
-      blockHeight: sealedHeight,
-      anchorHeight: kConsensusAnchorHeight,
-      anchorBits: kConsensusAnchorBits,
+    final digest = _proveHeader(
+      header,
+      height: sealedHeight,
+      parentHash: parent.hash,
       parentTimeMs: parent.timeMs,
+      timeAt: _timeAt,
     );
-    if (!consensusBitsOk(bits, quote)) return false;
+    if (digest == null) return false;
+    final ts = headerTimestampMs(header);
+    if (ts == null) return false;
     _rememberChecked(sealedHeight, digest, ts, headerHex: _bytesHex(header));
     if (sealedHeight > _verifiedTip) _verifiedTip = sealedHeight;
     return true;
   }
 
-  /// Accept [header] at [height]. A competing header replaces the current
-  /// branch only when its work is strictly greater than every header it would
-  /// drop. Equal work stays. There is no fixed rollback cap: a heavier fork
-  /// that would leave fewer than 11 MTP times re-backfills from the pin
-  /// instead of freezing. One header of the same difficulty cannot erase a
-  /// longer confirmed chain.
+  /// PoW, prev link, MTP, future bound, and the ASERT quote. No ledger writes.
+  /// Null when any check fails. [timeAt] supplies the eleven MTP samples.
+  Uint8List? _proveHeader(
+    Uint8List header, {
+    required int height,
+    required Uint8List parentHash,
+    required int parentTimeMs,
+    required int? Function(int height) timeAt,
+  }) {
+    final pin = _pin;
+    if (pin == null || height < 1 || header.length != shearHeaderLen) {
+      return null;
+    }
+    if (_headerVersion(header) != 1) return null;
+    final ts = headerTimestampMs(header);
+    final bits = _headerBits(header);
+    if (ts == null || ts <= 0 || ts <= parentTimeMs) return null;
+    if (bits < kAsertBitsScale) return null;
+    if (!_prevEquals(header, parentHash)) return null;
+    final window = <int>[];
+    for (var h = height - _kMtpWindow; h < height; h++) {
+      final t = timeAt(h);
+      if (t == null) return null;
+      window.add(t);
+    }
+    if (ts > _medianTimes(window) + _kMtpFutureMs) return null;
+    final now = _headerNowMs ?? DateTime.now().millisecondsSinceEpoch;
+    if (ts > now + _kHeaderAheadMs || ts > now + _kMtpFutureMs) return null;
+    final digest = _digestOf(header);
+    if (digest == null || !shearMeetsTarget(digest, bits)) return null;
+    if (pin.anchorHeight != kConsensusAnchorHeight) return null;
+    if (pin.anchorBits != kConsensusAnchorBits) return null;
+    if (kV12GenesisMs > 0 && pin.anchorTimeMs != kV12GenesisMs) return null;
+    final quote = asertQuoteForHeight(
+      anchorTimeMs: pin.anchorTimeMs,
+      blockTimeMs: ts,
+      blockHeight: height,
+      anchorHeight: kConsensusAnchorHeight,
+      anchorBits: kConsensusAnchorBits,
+      parentTimeMs: parentTimeMs,
+    );
+    if (!consensusBitsOk(bits, quote)) return null;
+    return digest;
+  }
+
+  /// Extend the checked tip. A competing header returns false and changes
+  /// nothing: fork choice fetches the whole branch and runs only after every
+  /// header on it has passed [_proveHeader].
   bool _acceptHeader(Uint8List header, int height) {
     if (_headerPowOk(header, sealedHeight: height)) return true;
-    final parent = _checkedParent(header);
-    if (parent == null || height != parent.height + 1) return false;
     if (_knownHeader(header, height)) return true;
-    if (parent.height >= _chainTip) return false;
-    final added = blockWork(_headerBits(header));
-    final dropped = _workAbove(parent.height);
-    if (added <= dropped) return false;
-    if (!_mtpReady(parent.height)) {
-      _rebackfillFromPin();
-      return false;
-    }
-    final saved = List<({int height, Uint8List hash, int timeMs, String headerHex})>.from(
-      _checkedHeaders,
-    );
-    final savedTip = _verifiedTip;
-    _rollBackTo(parent.height, save: false);
-    if (_headerPowOk(header, sealedHeight: height)) {
-      _saveVerifiedChain();
-      return true;
-    }
-    _checkedHeaders
-      ..clear()
-      ..addAll(saved);
-    _verifiedTip = savedTip;
     return false;
+  }
+
+  Future<Uint8List?> _hashHeader(Uint8List header) async {
+    final ready = _digestOf(header);
+    if (ready != null) return ready;
+    final digest = await _hashOffUi(header);
+    if (digest != null) _rememberDigest(_bytesHex(header), digest);
+    return digest;
   }
 
   BigInt _workAbove(int height) {
@@ -5248,26 +5369,176 @@ class ShearLedger implements ReadProofSink {
     return sum;
   }
 
-  /// Eleven prior times for the header after [parentHeight], including the
-  /// pin's stored priors when the parent is still next to the checkpoint.
-  bool _mtpReady(int parentHeight) {
-    final next = parentHeight + 1;
-    for (var h = next - _kMtpWindow; h < next; h++) {
-      if (_timeAt(h) == null) return false;
-    }
-    return true;
+  /// Work a fork from [ancestorHeight] would replace. The pin's fork drops
+  /// the pruned prefix as well as the retained tail.
+  BigInt _droppedWork(int ancestorHeight) {
+    final pinH = _pin?.height ?? 0;
+    if (ancestorHeight <= pinH) return _prunedWork + _workAbove(pinH);
+    return _workAbove(ancestorHeight);
   }
 
   /// The heavier fork sits below the stored window. Drop back to the pin and
-  /// let the next fetch walk up from there. A partial rollback would leave
-  /// too few times for MTP and then never move again.
+  /// let the next fetch walk up from there. Called only after that fork's
+  /// headers have already passed [_proveHeader].
   void _rebackfillFromPin() {
     final pinH = _pin?.height ?? 0;
     _checkedHeaders.removeWhere((row) => row.height != pinH);
     _verifiedTip = pinH;
+    _prunedWork = BigInt.zero;
+    _resumePriorTimes = const [];
+    _resumePriorOrigin = null;
     _chainLoaded = true;
     _sealedPending = null;
+    _sealedPriors = const [];
+    _sealedWork = null;
     _saveVerifiedChain();
+  }
+
+  /// Fetch the competing branch back to a retained ancestor, verify every
+  /// header, and switch only when its total work is strictly greater.
+  /// Equal work stays, so the next honest block (one more header of work)
+  /// can still win and the wallet is not stuck. No fixed depth cap: a
+  /// verified heavier fork may roll back to the pin.
+  Future<bool> _maybeSwitchBranch({
+    required int hostTip,
+    required List<({int height, Uint8List header})> have,
+    required Future<List<({int height, Uint8List header})>> Function(
+      int from,
+      int to,
+    )?
+    fetch,
+  }) async {
+    final pin = _pin;
+    if (pin == null || have.isEmpty) return false;
+    final pinHash = _hexToBytes(pin.hashHex);
+    if (pinHash == null) return false;
+    final ordered = List<({int height, Uint8List header})>.from(have)
+      ..sort((a, b) => a.height.compareTo(b.height));
+    final branch = <({int height, Uint8List header})>[ordered.first];
+    var guard = 0;
+    final limit = hostTip < pin.height ? pin.height : hostTip;
+    while (guard++ <= limit) {
+      final bottom = branch.first;
+      final linked = _checkedParent(bottom.header);
+      if (linked != null && linked.height + 1 == bottom.height) {
+        await _appendLinked(branch, ordered);
+        return _switchIfHeavier(linked, branch);
+      }
+      if (bottom.height - 1 == pin.height &&
+          _prevEquals(bottom.header, pinHash)) {
+        final pinRow = _checkedAt(pin.height);
+        if (pinRow == null) return false;
+        await _appendLinked(branch, ordered);
+        return _switchIfHeavier(pinRow, branch);
+      }
+      if (bottom.height - 1 <= pin.height) return false;
+      final digest = await _hashHeader(bottom.header);
+      if (digest == null ||
+          !shearMeetsTarget(digest, _headerBits(bottom.header))) {
+        return false;
+      }
+      final rows = await _readHeaders(
+        bottom.height - 1,
+        bottom.height - 1,
+        fetch,
+      );
+      if (rows.isEmpty) return false;
+      final lower = rows.first;
+      if (lower.height != bottom.height - 1) return false;
+      final lowerDigest = await _hashHeader(lower.header);
+      if (lowerDigest == null ||
+          !shearMeetsTarget(lowerDigest, _headerBits(lower.header)) ||
+          !_prevEquals(bottom.header, lowerDigest)) {
+        return false;
+      }
+      branch.insert(0, (height: lower.height, header: lower.header));
+    }
+    return false;
+  }
+
+  Future<void> _appendLinked(
+    List<({int height, Uint8List header})> branch,
+    List<({int height, Uint8List header})> have,
+  ) async {
+    final extra = List<({int height, Uint8List header})>.from(have)
+      ..sort((a, b) => a.height.compareTo(b.height));
+    final taken = <int>{for (final row in branch) row.height};
+    for (final row in extra) {
+      if (!taken.add(row.height)) continue;
+      if (row.height != branch.last.height + 1) continue;
+      final prev = await _hashHeader(branch.last.header);
+      if (prev == null || !_prevEquals(row.header, prev)) continue;
+      final digest = await _hashHeader(row.header);
+      if (digest == null ||
+          !shearMeetsTarget(digest, _headerBits(row.header))) {
+        continue;
+      }
+      branch.add(row);
+    }
+  }
+
+  /// [ancestor] is already checked. [branch] is the competing headers above
+  /// it, lowest height first. Work is compared only after every header proves.
+  Future<bool> _switchIfHeavier(
+    ({int height, Uint8List hash, int timeMs, String headerHex}) ancestor,
+    List<({int height, Uint8List header})> branch,
+  ) async {
+    if (branch.isEmpty) return false;
+    final times = <int, int>{ancestor.height: ancestor.timeMs};
+    int? timeAt(int height) => times[height] ?? _timeAt(height);
+    var parentHash = ancestor.hash;
+    var parentTime = ancestor.timeMs;
+    var work = BigInt.zero;
+    final proved = <({int height, Uint8List header})>[];
+    for (final row in branch) {
+      if (row.height != ancestor.height + proved.length + 1) return false;
+      final digest = await _hashHeader(row.header);
+      if (digest == null) return false;
+      _rememberDigest(_bytesHex(row.header), digest);
+      final provedDigest = _proveHeader(
+        row.header,
+        height: row.height,
+        parentHash: parentHash,
+        parentTimeMs: parentTime,
+        timeAt: timeAt,
+      );
+      if (provedDigest == null) return false;
+      final ts = headerTimestampMs(row.header);
+      if (ts == null) return false;
+      times[row.height] = ts;
+      parentHash = provedDigest;
+      parentTime = ts;
+      work += blockWork(_headerBits(row.header));
+      proved.add((height: row.height, header: row.header));
+    }
+    if (work <= _droppedWork(ancestor.height)) return false;
+    final saved =
+        List<({int height, Uint8List hash, int timeMs, String headerHex})>.from(
+          _checkedHeaders,
+        );
+    final savedTip = _verifiedTip;
+    final savedWork = _prunedWork;
+    _rollBackTo(ancestor.height, save: false);
+    var applied = true;
+    for (final row in proved) {
+      if (!_headerPowOk(row.header, sealedHeight: row.height)) {
+        applied = false;
+        break;
+      }
+    }
+    if (applied) {
+      _saveVerifiedChain();
+      return true;
+    }
+    _checkedHeaders
+      ..clear()
+      ..addAll(saved);
+    _verifiedTip = savedTip;
+    _prunedWork = savedWork;
+    // The branch proved, but the retained window cannot take the fork.
+    // Rebuild from the pin on the next pass. The proof already happened.
+    if (ancestor.height <= (_pin?.height ?? 0)) _rebackfillFromPin();
+    return false;
   }
 
   /// Headers from the checkpoint toward [hostTip]. At most 32 per call.
@@ -5308,7 +5579,17 @@ class ShearLedger implements ReadProofSink {
         final rows = await _readHeaders(hostTip, hostTip, fetch);
         for (final row in rows) {
           await _prepareTipHash(_bytesHex(row.header), row.height);
-          if (_acceptHeader(row.header, row.height)) _paintHeaderProgress(hostTip);
+          if (_acceptHeader(row.header, row.height)) {
+            _paintHeaderProgress(hostTip);
+            continue;
+          }
+          if (await _maybeSwitchBranch(
+            hostTip: hostTip,
+            have: rows,
+            fetch: fetch,
+          )) {
+            _paintHeaderProgress(hostTip);
+          }
         }
         _saveVerifiedChain();
       }
@@ -5324,9 +5605,20 @@ class ShearLedger implements ReadProofSink {
     for (final row in rows) {
       if (row.height > next) break;
       await _prepareTipHash(_bytesHex(row.header), row.height);
-      if (!_acceptHeader(row.header, row.height)) break;
+      if (_acceptHeader(row.header, row.height)) {
+        next = _chainTip + 1;
+        _paintHeaderProgress(hostTip);
+        continue;
+      }
+      final switched = await _maybeSwitchBranch(
+        hostTip: hostTip,
+        have: rows.where((r) => r.height >= row.height).toList(),
+        fetch: fetch,
+      );
+      if (!switched) break;
       next = _chainTip + 1;
       _paintHeaderProgress(hostTip);
+      break;
     }
     _saveVerifiedChain();
     _paintHeaderProgress(hostTip);
@@ -5359,7 +5651,17 @@ class ShearLedger implements ReadProofSink {
     final rows = await _readHeaders(hint, hint, fetch);
     for (final row in rows) {
       await _prepareTipHash(_bytesHex(row.header), row.height);
-      if (_acceptHeader(row.header, row.height)) _paintHeaderProgress(hostTip);
+      if (_acceptHeader(row.header, row.height)) {
+        _paintHeaderProgress(hostTip);
+        continue;
+      }
+      if (await _maybeSwitchBranch(
+        hostTip: hostTip,
+        have: rows,
+        fetch: fetch,
+      )) {
+        _paintHeaderProgress(hostTip);
+      }
     }
   }
 
@@ -5399,7 +5701,20 @@ class ShearLedger implements ReadProofSink {
   String _headerMacHex(Uint8List key, String body) =>
       Hmac(sha256, key).convert(utf8.encode(body)).toString();
 
-  String _canonicalHeaderBody(String pinHex, List<Map<String, Object>> rows) =>
+  String _canonicalHeaderBody(
+    String pinHex,
+    List<int> priors,
+    String work,
+    List<Map<String, Object>> rows,
+  ) => jsonEncode({
+    'v': 2,
+    'pin': pinHex.toLowerCase(),
+    'priors': priors,
+    'work': work,
+    'rows': rows,
+  });
+
+  String _legacyHeaderBody(String pinHex, List<Map<String, Object>> rows) =>
       jsonEncode({'v': 2, 'pin': pinHex.toLowerCase(), 'rows': rows});
 
   bool _macMatch(String got, String want) {
@@ -5433,23 +5748,40 @@ class ShearLedger implements ReadProofSink {
     }
     _headerMacReady = true;
     final sealed = _readSealedHeaderRows(key);
-    if (sealed == null || sealed.isEmpty) return;
+    if (sealed == null || sealed.rows.isEmpty) return;
     if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
-      _adoptSealedSync(sealed);
+      _adoptSealedSync(sealed.rows, priors: sealed.priors, work: sealed.work);
       return;
     }
-    _sealedPending = sealed;
+    _sealedPending = sealed.rows;
+    _sealedPriors = sealed.priors;
+    _sealedWork = sealed.work;
   }
 
-  /// Parsed sealed rows. Null discards the file. Empty means nothing to adopt.
-  List<({int height, int timeMs, Uint8List header})>? _readSealedHeaderRows(
-    Uint8List key,
-  ) {
+  /// Parsed sealed rows. Null discards the file. Empty rows means nothing to adopt.
+  ({
+    List<({int height, int timeMs, Uint8List header})> rows,
+    List<int> priors,
+    String? work,
+  })?
+  _readSealedHeaderRows(Uint8List key) {
     final path = _headerStorePath;
     final pin = _pin;
-    if (path == null || pin == null) return const [];
+    if (path == null || pin == null) {
+      return (
+        rows: <({int height, int timeMs, Uint8List header})>[],
+        priors: <int>[],
+        work: null,
+      );
+    }
     final file = File(path);
-    if (!file.existsSync()) return const [];
+    if (!file.existsSync()) {
+      return (
+        rows: <({int height, int timeMs, Uint8List header})>[],
+        priors: <int>[],
+        work: null,
+      );
+    }
     Object? decoded;
     try {
       decoded = jsonDecode(file.readAsStringSync());
@@ -5492,35 +5824,147 @@ class ShearLedger implements ReadProofSink {
     }
     canon.sort((a, b) => (a['h'] as int).compareTo(b['h'] as int));
     sealed.sort((a, b) => a.height.compareTo(b.height));
+    final parsedPriors = _parseHeaderPriors(decoded['priors']);
+    if (parsedPriors == null) {
+      _discardHeaderFile();
+      return null;
+    }
+    final hasNew = decoded.containsKey('priors') || decoded.containsKey('work');
+    final work = decoded['work']?.toString();
     final mac = decoded['mac']?.toString().toLowerCase() ?? '';
-    final want = _headerMacHex(key, _canonicalHeaderBody(pinHex, canon));
+    final want = hasNew
+        ? _headerMacHex(
+            key,
+            _canonicalHeaderBody(pinHex, parsedPriors, work ?? '0', canon),
+          )
+        : _headerMacHex(key, _legacyHeaderBody(pinHex, canon));
     if (!_macMatch(mac, want)) {
       _discardHeaderFile();
       return null;
     }
-    return sealed;
+    return (rows: sealed, priors: parsedPriors, work: hasNew ? work : null);
   }
 
-  /// Re-link every previous hash and re-run the header checks. The tip rises
-  /// only for a row that passes. A failure stops the walk.
-  void _adoptSealedSync(List<({int height, int timeMs, Uint8List header})> rows) {
-    for (final row in rows) {
+  /// Ten increasing times, or an empty list when the key is absent.
+  /// Any other shape discards the file.
+  List<int>? _parseHeaderPriors(Object? raw) {
+    if (raw == null) return const [];
+    if (raw is! List) return null;
+    if (raw.isEmpty) return const [];
+    if (raw.length != 10) return null;
+    final out = <int>[];
+    var prev = 0;
+    for (final item in raw) {
+      final t = item is num ? item.toInt() : int.tryParse('$item') ?? 0;
+      if (t <= prev) return null;
+      prev = t;
+      out.add(t);
+    }
+    return out;
+  }
+
+  void _installResumePriors(
+    List<({int height, int timeMs, Uint8List header})> rows,
+    List<int> priors,
+  ) {
+    if (rows.isEmpty || priors.length != 10) return;
+    _resumePriorTimes = List<int>.from(priors);
+    _resumePriorOrigin = rows.first.height - 10;
+  }
+
+  void _applyStoredWork(String? work) {
+    if (work == null) return;
+    final total = BigInt.tryParse(work);
+    if (total == null || total.isNegative) return;
+    final tail = _workAbove(_pin?.height ?? 0);
+    final pruned = total - tail;
+    _prunedWork = pruned.isNegative ? BigInt.zero : pruned;
+  }
+
+  /// The MAC already proved this wallet checked [row]. When it is not the
+  /// header after the pin, seed it as the resume anchor and re-check the rest.
+  bool _seedResumeAnchor(({int height, int timeMs, Uint8List header}) row) {
+    final ts = headerTimestampMs(row.header);
+    if (ts == null || ts != row.timeMs) return false;
+    if (row.height == _chainTip + 1) {
+      return _headerPowOk(row.header, sealedHeight: row.height);
+    }
+    final digest = _digestOf(row.header);
+    final bits = _headerBits(row.header);
+    if (digest == null || !shearMeetsTarget(digest, bits)) return false;
+    final parentTime = _timeAt(row.height - 1);
+    final pin = _pin;
+    if (parentTime != null && pin != null) {
+      if (ts <= parentTime) return false;
+      final quote = asertQuoteForHeight(
+        anchorTimeMs: pin.anchorTimeMs,
+        blockTimeMs: ts,
+        blockHeight: row.height,
+        anchorHeight: kConsensusAnchorHeight,
+        anchorBits: kConsensusAnchorBits,
+        parentTimeMs: parentTime,
+      );
+      if (!consensusBitsOk(bits, quote)) return false;
+    }
+    _rememberChecked(row.height, digest, ts, headerHex: _bytesHex(row.header));
+    if (row.height > _verifiedTip) _verifiedTip = row.height;
+    return true;
+  }
+
+  /// The first sealed row is the resume anchor. Rows after it are re-linked
+  /// and re-checked. The tip rises only for a row that passes.
+  void _adoptSealedSync(
+    List<({int height, int timeMs, Uint8List header})> rows, {
+    List<int> priors = const [],
+    String? work,
+  }) {
+    if (rows.isEmpty) return;
+    _installResumePriors(rows, priors);
+    if (!_seedResumeAnchor(rows.first)) return;
+    for (final row in rows.skip(1)) {
       final ts = headerTimestampMs(row.header);
       if (ts == null || ts != row.timeMs) return;
       if (!_headerPowOk(row.header, sealedHeight: row.height)) return;
     }
+    _applyStoredWork(work);
   }
 
   Future<void> _adoptSealedPending() async {
     final rows = _sealedPending;
     if (rows == null) return;
+    final priors = _sealedPriors;
+    final work = _sealedWork;
     _sealedPending = null;
-    for (final row in rows) {
+    _sealedPriors = const [];
+    _sealedWork = null;
+    if (rows.isEmpty) return;
+    _installResumePriors(rows, priors);
+    final anchor = rows.first;
+    await _hashHeader(anchor.header);
+    if (!_seedResumeAnchor(anchor)) return;
+    for (final row in rows.skip(1)) {
       final ts = headerTimestampMs(row.header);
       if (ts == null || ts != row.timeMs) return;
-      await _prepareTipHash(_bytesHex(row.header), row.height);
+      await _hashHeader(row.header);
       if (!_headerPowOk(row.header, sealedHeight: row.height)) return;
     }
+    _applyStoredWork(work);
+  }
+
+  List<int> _priorsForSave(int firstHeight) {
+    final origin = _resumePriorOrigin;
+    if (origin != null &&
+        origin == firstHeight - 10 &&
+        _resumePriorTimes.length == 10) {
+      return List<int>.from(_resumePriorTimes);
+    }
+    final priors = <int>[];
+    for (var h = firstHeight - 10; h < firstHeight; h++) {
+      final t = _timeAt(h);
+      if (t == null) return const [];
+      priors.add(t);
+    }
+    return priors;
   }
 
   void _saveVerifiedChain() {
@@ -5539,12 +5983,20 @@ class ShearLedger implements ReadProofSink {
           },
     ];
     rows.sort((a, b) => (a['h'] as int).compareTo(b['h'] as int));
+    final first = rows.isEmpty ? pin.height + 1 : rows.first['h'] as int;
+    final priors = rows.isEmpty ? const <int>[] : _priorsForSave(first);
+    final work = (_prunedWork + _workAbove(pin.height)).toString();
     final pinHex = pin.hashHex.toLowerCase();
     final text = jsonEncode({
       'v': 2,
       'pin': pinHex,
+      'priors': priors,
+      'work': work,
       'rows': rows,
-      'mac': _headerMacHex(key, _canonicalHeaderBody(pinHex, rows)),
+      'mac': _headerMacHex(
+        key,
+        _canonicalHeaderBody(pinHex, priors, work, rows),
+      ),
     });
     final file = File(path);
     file.parent.createSync(recursive: true);
@@ -6738,9 +7190,7 @@ class ShearLedger implements ReadProofSink {
     spendPub ??= decodePaymentCode(paymentCode ?? '')?['spendPub'];
     _dropProgramVaults();
     refreshTimeLockedNotes();
-    final pool = poolSpendableNotes(
-      _spendPlanInput(restFrame, paymentCode, 0),
-    );
+    final pool = poolSpendableNotes(_spendPlanInput(restFrame, paymentCode, 0));
     return _sheOfNanos(pool.freeSum);
   }
 
@@ -7061,9 +7511,7 @@ class ShearLedger implements ReadProofSink {
   /// Same exact hold and the same note rows as a max send.
   BigInt displayedSpendableNanos(String restFrame, {String? paymentCode}) {
     refreshTimeLockedNotes();
-    final pool = poolSpendableNotes(
-      _spendPlanInput(restFrame, paymentCode, 0),
-    );
+    final pool = poolSpendableNotes(_spendPlanInput(restFrame, paymentCode, 0));
     return pool.freeSum;
   }
 
@@ -8571,7 +9019,9 @@ class ShearLedger implements ReadProofSink {
         for (final row in rows)
           if (row is Map) Map<String, dynamic>.from(row),
       ];
+      // dart format off
       final parsed = await Isolate.run(() => parseHistoryPayload(<String, dynamic>{
+      // dart format on
           'amountsOnly': amountsOnly,
           'destProof': destProof,
           'key': key,
@@ -9197,7 +9647,11 @@ class ShearLedger implements ReadProofSink {
       final confs = confirmationsOf(h);
       if (t.kind == 'pool-fee') return true;
       if (isWalletBlockKind(t.kind)) return !isFeeBlockMirror(t, rolled);
-      if (isOwnerLanding(t)) return confs >= 1;
+      // Depth unknown: an incoming row stays, as pending, with no count.
+      if (isOwnerLanding(t)) {
+        if (!t.confirmed) return true;
+        return bookTip < 1 || confs >= 1;
+      }
       return confs >= continuumConfirmations;
     }).toList();
     rows.sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
@@ -9849,7 +10303,9 @@ class ShearLedger implements ReadProofSink {
   }) async {
     if (notes.isEmpty) throw StateError(kErrNoSealedNote);
     if (pool == null) throw StateError(kErrNoSealedNote);
-    if (!localSendReady(pool!.baseUrl) && !allowPublicHttp) {
+    if (!allowPublicHttp &&
+        (pool!.pinnedPublicWithoutConsent ||
+            !localSendReady(pool!.baseUrl))) {
       throw StateError(kErrPublicHttp);
     }
     final src =
@@ -10151,12 +10607,15 @@ class ShearLedger implements ReadProofSink {
     );
     if (plan['covered'] != true) {
       if (plan['shortFee'] == true) throw StateError('fee_short');
-      throw StateError('insufficient');
+      throw fundsRefusal();
     }
-    final raw = (plan['batches'] as List? ?? const []).whereType<Map>().toList();
+    final raw = (plan['batches'] as List? ?? const [])
+        .whereType<Map>()
+        .toList();
     if (raw.length != 1) throw StateError('insufficient');
     final notes = <Map<String, dynamic>>[];
-    for (final spec in (raw.single['notes'] as List? ?? const []).whereType<Map>()) {
+    for (final spec
+        in (raw.single['notes'] as List? ?? const []).whereType<Map>()) {
       final i = spec['index'];
       if (i is! num || i < 0 || i >= _notes.length) continue;
       notes.add(_notes[i.toInt()]);
@@ -10315,8 +10774,9 @@ class ShearLedger implements ReadProofSink {
         .toList();
     if (plan['covered'] != true || rawBatches.isEmpty) {
       if (plan['shortFee'] == true) throw StateError('fee_short');
+      if (bookTip < 1) throw StateError(kErrHeaderSync);
       if (plan['empty'] == true) throw StateError(kErrNoSealedNote);
-      throw StateError('insufficient');
+      throw fundsRefusal();
     }
     final batches =
         <({double pay, String payNanos, List<Map<String, dynamic>> notes})>[];
@@ -10500,8 +10960,9 @@ class ShearLedger implements ReadProofSink {
     }
     if (!local &&
         pool != null &&
-        !localSendReady(pool!.baseUrl) &&
-        !allowPublicHttp) {
+        !allowPublicHttp &&
+        (pool!.pinnedPublicWithoutConsent ||
+            !localSendReady(pool!.baseUrl))) {
       throw StateError(kErrPublicHttp);
     }
     if (sendKind == 'send' && destTo == from) {
@@ -10602,7 +11063,14 @@ class ShearLedger implements ReadProofSink {
           ? usable
           : spendableOwned(restFrame, paymentCode: paymentCode);
       if (usable + 1e-12 < amount && owned + 1e-12 < amount) {
-        throw StateError('insufficient');
+        if (sendKind == 'send') {
+          _releaseUnbackedSpendable(
+            src,
+            restFrame: restFrame,
+            paymentCode: paymentCode,
+          );
+        }
+        throw fundsRefusal();
       }
       final pk = payKey(src);
       if (usable + 1e-12 >= needShe && spendable(pk) > usable + 1e-12) {
@@ -10625,7 +11093,16 @@ class ShearLedger implements ReadProofSink {
       final owned = restFrame == null
           ? spendable(src)
           : spendableOwned(restFrame, paymentCode: paymentCode);
-      if (owned + 1e-12 < amount) throw StateError('insufficient');
+      if (owned + 1e-12 < amount) {
+        if (sendKind == 'send') {
+          _releaseUnbackedSpendable(
+            src,
+            restFrame: restFrame,
+            paymentCode: paymentCode,
+          );
+        }
+        throw fundsRefusal();
+      }
     }
     Map<String, dynamic>? spent;
     Map<String, dynamic>? chosen;
@@ -11180,7 +11657,9 @@ class ShearLedger implements ReadProofSink {
     if (sendKind != 'withdraw') {
       final netBook = spendable(src) - needShe;
       _spendable[src] = netBook <= 1e-18 ? 0 : netBook;
-      if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
+      if (sendKind == 'lock' &&
+          (_verifiedConfirmedShe(src) != null ||
+              _spendableNanosOn(src) > BigInt.zero)) {
         // This book is already net. A confirmRound pot has no opened-note cap,
         // so the assignment above is the only cut. The cap path shows the gross
         // opened sum and needs this debit once so a 0 book cannot paint it back.
@@ -11244,7 +11723,9 @@ class ShearLedger implements ReadProofSink {
     if (!isDestAddress(dest)) throw ArgumentError('dest');
     if (!login.startsWith('she1')) throw ArgumentError('need_she1');
     final nanos = (amount * kUnitsPerShe).round();
+    // dart format off
     final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
+    // dart format on
     if (pool == null) throw StateError('no_pool');
     final json = await pool!.poolWithdraw(
       login: login,
@@ -11295,7 +11776,9 @@ class ShearLedger implements ReadProofSink {
     }
     if (!isDestAddress(dest)) throw ArgumentError('dest');
     if (!login.startsWith('she1')) throw ArgumentError('need_she1');
+    // dart format off
     final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
+    // dart format on
     if (pool == null) throw StateError('no_pool');
     final json = await pool!.poolWithdraw(
       login: login,
@@ -11469,6 +11952,15 @@ class ShearPoolClient {
 
   ShearReadSync? get sync => _sync;
   bool get isPinned => _pinned != null;
+
+  /// The constructed host is a public node and this client has no consent.
+  /// [baseUrl] hides that host, so send refusal must not trust [baseUrl] alone.
+  bool get pinnedPublicWithoutConsent {
+    final raw = _ownNode ?? _pinned;
+    if (raw == null || raw.isEmpty || _publicConsent) return false;
+    return isPublicWalletHost(raw);
+  }
+
   String? _pinnedGenesis;
 
   String? get genesisHex => _sync?.genesisHex ?? _pinnedGenesis;
