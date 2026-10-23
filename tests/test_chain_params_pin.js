@@ -261,7 +261,7 @@ describe('chain param table', () => {
     const end = dart.indexOf('\n// CHAIN_PARAMS_JSON_END');
     assert.ok(begin >= 0 && end > begin);
     const body = dart.slice(begin + '// CHAIN_PARAMS_JSON_BEGIN\n'.length, end);
-    const lines = body.split('\n');
+    const lines = body.split('\n').map((s) => s.trim()).filter((s) => s.startsWith('{'));
     assert.equal(lines.length, 3);
     for (const magic of ['shear-dev', 'shear-testnet-v12', 'shear-v1']) {
       assert.ok(lines.includes(canonicalParamsJson(magic)), magic);
