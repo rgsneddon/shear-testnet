@@ -9,12 +9,14 @@ import {
   P2P_IDLE_MS,
   P2P_OUTBOUND_RESERVE,
   createP2p,
+  isFinalIngestFail,
   p2pHelloMs,
   p2pIdleMs,
   p2pInboundCap,
   p2pOutboundReserve,
   peerIsBusy,
   peerShouldEvict,
+  recordIngestFail,
 } from '../src/p2p.js';
 
 function delay(ms) {
@@ -45,6 +47,14 @@ function closedWithin(sock, ms) {
 
 function helloLine() {
   return `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`;
+}
+
+function frame(msg) {
+  return `${JSON.stringify({ ...msg, magic: MAGIC_TESTNET })}\n`;
+}
+
+function recFor(p2p, sock) {
+  return [...p2p.peers.entries()].find(([live]) => live.remotePort === sock.localPort)?.[1];
 }
 
 function ageInbound(p2p, ms = 120_000) {
@@ -487,12 +497,13 @@ describe('p2p hello deadline and idle eviction', () => {
     }
   });
 
-  it('junk does not refresh cap idle and real traffic is kept', async () => {
+  it('junk does not refresh cap idle and accepted traffic is kept', async () => {
     const store = {
       blocks: [],
       mempool: [],
       tip: () => null,
       on() { return () => {}; },
+      queueTx(tx) { return { ok: true, tx }; },
     };
     const p2p = createP2p({
       store,
@@ -513,12 +524,11 @@ describe('p2p hello deadline and idle eviction', () => {
       real.write(helloLine());
       await delay(80);
       ageInbound(p2p);
-      junk.write(`${JSON.stringify({ type: 'not-a-message', magic: MAGIC_TESTNET })}\n`);
-      real.write(`${JSON.stringify({ type: 'getmempool', magic: MAGIC_TESTNET })}\n`);
+      junk.write(frame({ type: 'not-a-message' }));
+      real.write(frame({ type: 'tx', tx: { id: 'kept-tx' } }));
       await delay(40);
-      const recFor = (sock) => [...p2p.peers.entries()].find(([live]) => live.remotePort === sock.localPort)?.[1];
-      const junkRec = recFor(junk);
-      const realRec = recFor(real);
+      const junkRec = recFor(p2p, junk);
+      const realRec = recFor(p2p, real);
       assert.ok(junkRec && realRec);
       assert.ok(Date.now() - Number(junkRec.capIdleAt) >= 5000);
       assert.ok(Date.now() - Number(realRec.capIdleAt) < 5000);
@@ -527,6 +537,205 @@ describe('p2p hello deadline and idle eviction', () => {
       assert.equal(junk.destroyed, true);
       assert.equal(real.destroyed, false);
       assert.equal(next.destroyed, false);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('each cheap message leaves an aged cap idle clock where it is', async () => {
+    let ingested = 0;
+    const store = {
+      blocks: [],
+      mempool: [],
+      tip: () => null,
+      on() { return () => {}; },
+      openRoundRows() { return []; },
+      noteOpenRound() {},
+      offerHeaders() { return { accepted: 0 }; },
+      queueTx() { return { ok: false, reason: 'shape' }; },
+      ingest() {
+        ingested += 1;
+        return { ok: false, reason: 'pow' };
+      },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      maxPeers: 4,
+      outboundReserve: 0,
+      helloMs: 5000,
+      idleMs: 5000,
+      evictCooldownMs: 0,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(60);
+      ageInbound(p2p);
+      const rec = () => [...p2p.peers.values()].find((row) => row.inbound && row.helloAt);
+      const stuck = rec()?.capIdleAt;
+      assert.ok(stuck);
+      assert.ok(Date.now() - Number(stuck) >= 5000);
+      const cheap = [
+        { type: 'hello' },
+        { type: 'addr', peers: [] },
+        { type: 'getmempool' },
+        { type: 'getheaders', locator: [] },
+        { type: 'getblocks' },
+        { type: 'getblock', hash: '11'.repeat(32) },
+        { type: 'getblock_nak', hash: '22'.repeat(32) },
+        { type: 'block_not_found', hash: '33'.repeat(32) },
+        { type: 'tip', height: 0, hash: '' },
+        { type: 'inv', height: 0, hash: '' },
+        { type: 'census', hop: 0, nodes: [] },
+        { type: 'not-a-message' },
+        { type: 'mempool', txs: [], work: [] },
+        { type: 'work', rows: [] },
+        { type: 'headers', headers: [] },
+        { type: 'tx', tx: { id: 'cheap-reject' } },
+      ];
+      for (const msg of cheap) {
+        sock.write(frame(msg));
+        await delay(30);
+        assert.equal(sock.destroyed, false, msg.type);
+        assert.equal(rec()?.capIdleAt, stuck, msg.type);
+      }
+      sock.write(frame({
+        type: 'block',
+        block: { hash: 'ab'.repeat(32), height: 1, header: '00'.repeat(80) },
+      }));
+      for (let i = 0; i < 40 && ingested < 1; i += 1) await delay(25);
+      assert.equal(ingested, 1);
+      assert.equal(rec()?.capIdleAt, stuck, 'block');
+      assert.equal(sock.destroyed, false);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('verified or accepted traffic refreshes cap idle', async () => {
+    let rounds = [];
+    let ingested = 0;
+    const store = {
+      blocks: [],
+      mempool: [],
+      tip: () => null,
+      on() { return () => {}; },
+      queueTx(tx) { return { ok: true, tx }; },
+      offerHeaders() { return { accepted: 1 }; },
+      openRoundRows() { return rounds; },
+      noteOpenRound(rows) {
+        rounds = (rows || []).map((row) => ({ tag: row.tag, count: row.count }));
+      },
+      ingest() {
+        ingested += 1;
+        return { ok: true };
+      },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      maxPeers: 8,
+      outboundReserve: 0,
+      helloMs: 5000,
+      idleMs: 5000,
+      evictCooldownMs: 0,
+    });
+    const bound = await p2p.listen();
+    try {
+      const txSock = await connect(bound.port);
+      const headerSock = await connect(bound.port);
+      const workSock = await connect(bound.port);
+      const blockSock = await connect(bound.port);
+      txSock.write(helloLine());
+      headerSock.write(helloLine());
+      workSock.write(helloLine());
+      blockSock.write(helloLine());
+      await delay(80);
+      ageInbound(p2p);
+      const before = {
+        tx: recFor(p2p, txSock)?.capIdleAt,
+        headers: recFor(p2p, headerSock)?.capIdleAt,
+        work: recFor(p2p, workSock)?.capIdleAt,
+        block: recFor(p2p, blockSock)?.capIdleAt,
+      };
+      assert.ok(before.tx && before.headers && before.work && before.block);
+      txSock.write(frame({ type: 'tx', tx: { id: 'accepted-tx' } }));
+      headerSock.write(frame({ type: 'headers', headers: [] }));
+      workSock.write(frame({ type: 'work', rows: [{ tag: 'mabcdef01', count: 4 }] }));
+      blockSock.write(frame({
+        type: 'block',
+        block: { hash: 'cd'.repeat(32), height: 1, header: '11'.repeat(80) },
+      }));
+      for (let i = 0; i < 40 && ingested < 1; i += 1) await delay(25);
+      assert.equal(ingested, 1);
+      assert.ok(Date.now() - Number(recFor(p2p, txSock)?.capIdleAt) < 5000);
+      assert.notEqual(recFor(p2p, txSock)?.capIdleAt, before.tx);
+      assert.ok(Date.now() - Number(recFor(p2p, headerSock)?.capIdleAt) < 5000);
+      assert.notEqual(recFor(p2p, headerSock)?.capIdleAt, before.headers);
+      assert.ok(Date.now() - Number(recFor(p2p, workSock)?.capIdleAt) < 5000);
+      assert.notEqual(recFor(p2p, workSock)?.capIdleAt, before.work);
+      assert.ok(Date.now() - Number(recFor(p2p, blockSock)?.capIdleAt) < 5000);
+      assert.notEqual(recFor(p2p, blockSock)?.capIdleAt, before.block);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('a stage reject scores the peer and leaves the block retryable', async () => {
+    assert.equal(isFinalIngestFail('apply_stage'), false);
+    assert.equal(isFinalIngestFail('pow'), true);
+    assert.equal(isFinalIngestFail('merkle'), true);
+    const plain = { expensiveFails: 0 };
+    assert.equal(recordIngestFail(plain, 'apply_stage'), false);
+    assert.equal(plain.expensiveFails || 0, 0);
+    const hash = 'cd'.repeat(32);
+    let calls = 0;
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest() {
+        calls += 1;
+        return { ok: false, reason: 'apply_stage', scorePeer: true };
+      },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const body = frame({
+        type: 'block',
+        block: { hash, height: 1, header: '00'.repeat(80) },
+      });
+      sock.write(body);
+      const rec = () => [...p2p.peers.values()].find((row) => row.helloAt);
+      for (let i = 0; i < 40 && calls < 1; i += 1) await delay(25);
+      assert.equal(calls, 1);
+      for (let i = 0; i < 40 && rec()?.verifying?.size; i += 1) await delay(25);
+      assert.equal(rec()?.expensiveFails, 1);
+      assert.equal(rec()?.failed instanceof Set && rec().failed.has(hash), false);
+      assert.equal(sock.destroyed, false);
+      sock.write(body);
+      for (let i = 0; i < 40 && calls < 2; i += 1) await delay(25);
+      assert.equal(calls, 2);
+      assert.equal(rec()?.expensiveFails, 2);
+      assert.equal(rec()?.failed instanceof Set && rec().failed.has(hash), false);
+      assert.equal(sock.destroyed, false);
     } finally {
       p2p.close();
     }

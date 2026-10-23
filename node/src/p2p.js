@@ -408,10 +408,12 @@ export const P2P_HELLO_MS = 20_000;
 /**
  * Census keepalive is broadcastCensus every 2s. It refreshes lastRx, which
  * the idle sweep reads, so a peer that only exchanges census is not idle-evicted.
- * Cap and reserve eviction use capIdleAt. Census, junk, and unknown message
- * types do not refresh it. Only a peer idle at least idleLimit is dropped.
- * Busy means this peer recently delivered a block that validated, and that
- * credit expires with the idle window.
+ * Cap and reserve eviction use capIdleAt. That clock starts at the first hello
+ * and moves only when a block from this peer verifies, or a tx, header offer,
+ * or miner round from this peer is accepted. Cheap requests, advertisements,
+ * census, junk, and unknown types do not move it. Only a peer idle at least
+ * idleLimit is dropped. Busy means this peer recently delivered a block that
+ * validated, and that credit expires with the idle window.
  */
 export const P2P_IDLE_MS = 180_000;
 /** Env overrides cannot go under these. Explicit createP2p options can. */
@@ -424,25 +426,6 @@ export const P2P_OUTBOUND_RESERVE = 8;
  * must not walk the idle inbound set. Our own dials are not limited by this.
  */
 export const P2P_EVICT_COOLDOWN_MS = 10_000;
-/** Post-hello traffic that refreshes cap-eviction idle. Census and unknown types do not. */
-const CAP_IDLE_TYPES = new Set([
-  'hello',
-  'addr',
-  'getmempool',
-  'mempool',
-  'tx',
-  'work',
-  'tip',
-  'inv',
-  'getblocks',
-  'getheaders',
-  'headers',
-  'getblock',
-  'getblock_nak',
-  'block_not_found',
-  'block',
-  'blocks',
-]);
 
 export function p2pOutboundReserve(maxPeers, override) {
   const max = Math.max(1, Number(maxPeers) || 1);
@@ -852,12 +835,15 @@ export function isUpgradeableIngestFail(reason) {
  * `not_heavier` must not poison that branch: a later child can still carry more work.
  * `samples_pruned` means the burial run is not here yet. A later header page can bury it.
  * `pow_worker` is a local hash-worker fault. It says nothing about the block or the peer.
+ * `apply_stage` is a local staging throw. The block stays retryable. The peer
+ * is scored from `scorePeer` on the ingest result, not from this predicate.
  * Upgradeable reasons (`evm`, `unsigned`, `admit_membership`) use a TTL, not `failed` forever. */
 export function isFinalIngestFail(reason) {
   const r = String(reason || '');
   if (r === 'pow_worker') return false;
   if (r === 'prev' || r === 'hash_bonus' || r === 'side_hold' || r === 'not_heavier') return false;
   if (r === 'samples_pruned') return false;
+  if (r === 'apply_stage') return false;
   if (isUpgradeableIngestFail(r)) return false;
   if (/native[_ ]addon[_ ]missing|native_missing/i.test(r)) return false;
   return true;
@@ -1392,6 +1378,7 @@ export function createP2p({
       }
       return;
     }
+    noteCapIdle(fromSock);
     const payload = wireTx(got.tx || tx);
     if (stem && hops < STEM_MAX_HOPS) {
       stemRelay(payload, fromSock, hops);
@@ -1907,6 +1894,12 @@ export function createP2p({
     broadcast({ type: 'census', magic, hop: 0, nodes: directCensus() });
   }
 
+  function noteCapIdle(sock) {
+    const rec = peers.get(sock);
+    if (!rec || !(Number(rec.helloAt) > 0)) return;
+    rec.capIdleAt = Date.now();
+  }
+
   function handle(sock, msg) {
     if (!msg || typeof msg !== 'object') return;
     const heard = peers.get(sock);
@@ -1921,7 +1914,6 @@ export function createP2p({
       sock.destroy();
       return;
     }
-    if (welcomed && CAP_IDLE_TYPES.has(msg.type)) heard.capIdleAt = Date.now();
     if (msg.type === 'hello') {
       const rec = heard || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
       rec.remote = peerRemoteKey(sock) || rec.remote;
@@ -1932,7 +1924,8 @@ export function createP2p({
       if (/^[0-9a-f]{8,32}$/.test(nid)) rec.nodeId = nid;
       const arrived = Number(rec.bufAt) || Date.now();
       rec.helloAt = arrived;
-      rec.capIdleAt = arrived;
+      // The first hello starts the cap-idle clock. A repeat hello does not extend it.
+      if (!Number(rec.capIdleAt)) rec.capIdleAt = arrived;
       if (!rec.attachedAt) rec.attachedAt = arrived;
       if (!Number(rec.lastRx)) rec.lastRx = arrived;
       peers.set(sock, rec);
@@ -1953,7 +1946,10 @@ export function createP2p({
     if (msg.type === 'mempool') {
       for (const tx of msg.txs || []) ingestRemoteTx(tx, sock);
       if (typeof store.noteOpenRound === 'function' && Array.isArray(msg.work)) {
+        const before = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
         store.noteOpenRound(msg.work, { source: 'peer' });
+        const after = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
+        if (freshMinerRounds(before, after).length) noteCapIdle(sock);
       }
       return;
     }
@@ -1968,7 +1964,10 @@ export function createP2p({
       }
       const after = typeof store.openRoundRows === 'function' ? store.openRoundRows() : [];
       const fresh = freshMinerRounds(before, after);
-      if (fresh.length) broadcast({ type: 'work', magic, rows: fresh }, sock);
+      if (fresh.length) {
+        noteCapIdle(sock);
+        broadcast({ type: 'work', magic, rows: fresh }, sock);
+      }
       return;
     }
     if (msg.type === 'addr') {
@@ -2052,10 +2051,11 @@ export function createP2p({
           try { sock.destroy(); } catch { /* ignore */ }
           return;
         }
+        if (Number(offered?.accepted) > 0) noteCapIdle(sock);
       }
       // A header offer is accepted against the peer-claimed hash. That is not
-      // progress: the ShearHash has not been computed yet. Credit only a
-      // verified block (ingest ok) below.
+      // progress: the ShearHash has not been computed yet. progressAt moves
+      // only when a block verifies (ingest ok) below.
       if (rec.burialWait instanceof Set && rec.burialWait.size && offered?.accepted > 0) {
         rec.burialWait.clear();
         rec.burialAskHeight = 0;
@@ -2336,11 +2336,16 @@ export function createP2p({
               } else if (isFinalIngestFail(reason)) rec.failed.add(lastHash);
             }
           }
-          if (!got?.ok && recordIngestFail(rec, got?.reason)) {
+          const stageScore = !got?.ok && got?.scorePeer === true;
+          const ban = stageScore
+            ? recordProofFail(rec)
+            : (!got?.ok && recordIngestFail(rec, got?.reason));
+          if (ban) {
             const until = Date.now() + P2P_BAN_MS;
             if (rec.remote) peerBans.set(rec.remote, until);
             try { sock.destroy(); } catch { /* ignore */ }
           } else if (got?.ok) {
+            noteCapIdle(sock);
             rec.progressAt = Date.now();
             const tipNow = store.tip();
             const tipH = Number(tipNow?.height || last?.height || 0);
