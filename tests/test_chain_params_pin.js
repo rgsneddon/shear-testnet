@@ -615,6 +615,18 @@ describe('chain param table', () => {
     const seed = Buffer.alloc(32, 7);
     const nanos = 5_000_000_000;
     const fields = { seed, login: id.paymentCode, dest, nanos };
+    const pinnedLogin = 'she1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+    const pinnedDest = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+    const pinned = poolWithdrawDigest({
+      login: pinnedLogin,
+      dest: pinnedDest,
+      nanos,
+      chainId: 'shear-testnet-v12',
+    });
+    assert.equal(
+      pinned.toString('hex'),
+      '63950b2f5a859cfee5248b4e1cd68b1de21efe47312a4e4eb3df95ae3dbf2a6e',
+    );
     const books = ['shear-dev', 'shear-testnet-v12', 'shear-v1'];
     const sigs = Object.fromEntries(books.map((magic) => [magic, signPoolWithdraw({ ...fields, chainId: magic })]));
     for (const signed of books) {

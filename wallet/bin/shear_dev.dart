@@ -5,9 +5,15 @@ import 'package:shear_wallet/shear_cli.dart';
 import 'package:shear_wallet/shear_public_confirm.dart';
 import 'package:shear_wallet/shear_session.dart';
 
-/// Dev CLI. Refuses a product (release) VM. No dart-define.
+/// Dev CLI. Refuses a product (release) or profile VM. No dart-define.
+/// `dart compile exe` strips asserts, so this exits.
 Future<void> main(List<String> args) async {
-  assert(!bool.fromEnvironment('dart.vm.product'), 'shear-dev wallet refuses release mode');
+  const release = bool.fromEnvironment('dart.vm.product');
+  const profile = bool.fromEnvironment('dart.vm.profile');
+  if (release || profile) {
+    stderr.writeln('shear-dev wallet refuses release mode');
+    exit(1);
+  }
   armWalletConnect();
   final out = StringBuffer();
   final err = StringBuffer();
