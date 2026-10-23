@@ -129,7 +129,8 @@ describe('checkpoint-bound Reserve on the store', () => {
       assert.equal(got.ok, true, got.reason);
     }
     assert.ok(local.tip().height > firstCheckpoint);
-    assert.equal(Number(local.reserveVault.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(local.reserveVault.totalLockedNanos), 0);
+    assert.match(String(local.reserveVault.vaultPrincipalSum || ''), /^[0-9a-f]{64}$/);
     const seal = local.vaultSeal();
     assert.equal(seal.height, firstCheckpoint);
     assert.equal(local.getpolicy().vault_seal_ancestry, true);
@@ -167,9 +168,10 @@ describe('checkpoint-bound Reserve on the store', () => {
     assert.equal(reorgBreaksVaultSeal(from, attacker.blocks, seal).reason, 'reorg_vault_seal');
     const refused = await Promise.resolve(local.ingest(attacker.blocks));
     assert.equal(refused.ok, false);
-    assert.equal(Number(local.reserveVault.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(local.reserveVault.totalLockedNanos), 0);
     assert.equal(vaultSnap(local.reserveVault), before);
-    assert.equal(Number(local.reserveVault.portals[portalIdFromDest(vault)].staked), PI_SHE_NANOS);
+    assert.equal(Number(local.reserveVault.portals[portalIdFromDest(vault)].staked), 0);
+    assert.match(String(local.reserveVault.vaultPrincipalSum || ''), /^[0-9a-f]{64}$/);
   });
 
   it('boot replayVault keeps the sealed pot when ancestry holds', { timeout: 600_000 }, async () => {
@@ -196,9 +198,11 @@ describe('checkpoint-bound Reserve on the store', () => {
       const h = store.tip().height;
       assert.equal((await Promise.resolve(mineOne(store, continuum, { now: t0 + h * 90_000 }))).ok, true);
     }
-    assert.equal(Number(store.reserveVault.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(store.reserveVault.totalLockedNanos), 0);
+    assert.match(String(store.reserveVault.vaultPrincipalSum || ''), /^[0-9a-f]{64}$/);
     const again = createStore(dir, { firstCheckpoint, checkpointEvery: 400 });
-    assert.equal(Number(again.reserveVault.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(Number(again.reserveVault.totalLockedNanos), 0);
+    assert.equal(again.reserveVault.vaultPrincipalSum, store.reserveVault.vaultPrincipalSum);
     assert.equal(again.vaultSeal().height, firstCheckpoint);
     assert.equal(again.getpolicy().vault_seal_ancestry, true);
   });

@@ -19,7 +19,7 @@ import { hash20FromAddress, freshStealthDest, newIdentity, ed25519SeedOf, admitB
 import { attachAdmitPub } from '../../crypto/admit.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { createStore } from '../src/store.js';
-import { createP2p } from '../src/p2p.js';
+import { createP2p, fingerprintHelloHash } from '../src/p2p.js';
 
 const AMOUNTS = [1, 2 ** 20, 2 ** 40];
 const TIPS = [
@@ -255,7 +255,7 @@ describe('v12 b-spend leaf is canonical', () => {
         tick();
       });
       await waitFor(() => lines.some((m) => m.type === 'hello' || m.type === 'tip'), 3000);
-      sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
+      sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`);
       const bodies = [
         { id: 'p2p-zz', kind: 'b-spend', commitHeight: 1, fee: 0, leaf: { dest20: 'zz', unit: 1, nonce: 1, tag: 'b' }, vout: [{ kind: 'b-spend' }] },
         { id: 'p2p-unit', kind: 'b-spend', commitHeight: 1, fee: 0, leaf: { dest20: '11'.repeat(20), unit: '5.0', nonce: 1, tag: 'b' }, vout: [{ kind: 'b-spend' }] },

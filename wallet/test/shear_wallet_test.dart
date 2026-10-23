@@ -5114,7 +5114,7 @@ void main() {
     expect(formatHashBonusShe(2), '0.00000000002');
     expect(levyNanos(0), 100);
     expect(levyTaxed('lock'), isTrue);
-    expect(levyTaxed('vote'), isTrue);
+    expect(levyTaxed('vote'), isFalse);
     expect(levyTaxed('reward-claim'), isTrue);
     expect(levyTaxed('withdraw'), isFalse);
     expect(kEip712ChainId, 2701);
@@ -8188,6 +8188,19 @@ void main() {
       expect(kTabs.contains('Reserve'), isFalse);
       expect(kTabs.contains('Join'), isFalse);
       expect(find.text('The Reserve'), findsWidgets);
+      expect(find.byKey(const Key('reserve-how')), findsOneWidget);
+      expect(
+        find.text('Locks are units of π. The remainder stays spendable.'),
+        findsOneWidget,
+      );
+      expect(find.text(reservePeriodCopy()), findsOneWidget);
+      expect(
+        find.text(
+          'Principal unlocks only at epoch end. Withdraw it, or roll it with your own signed transaction.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text(reserveVoteWindowCopy()), findsWidgets);
       expect(find.byKey(const Key('reserve-hashbonus-per-u')), findsOneWidget);
       expect(
         tester
@@ -8220,7 +8233,7 @@ void main() {
       expect(apr.data!.toLowerCase().contains('apr'), isFalse);
       expect(apr.data!.toLowerCase().contains('interest'), isFalse);
       expect(apr.data!.toLowerCase().contains('oracle'), isFalse);
-      expect(find.text('Cast vote'), findsOneWidget);
+      expect(find.text('Cast your 1 votes'), findsOneWidget);
       expect(find.text('Update vote'), findsNothing);
       expect(find.textContaining('change this vote at any time'), findsNothing);
       expect(find.text('Amount SHEAR'), findsOneWidget);
@@ -8243,7 +8256,7 @@ void main() {
       expect(find.textContaining('Reserve oracle'), findsNothing);
       expect(find.textContaining('Lock issuance rate'), findsWidgets);
       expect(find.textContaining('Interest'), findsNothing);
-      expect(find.textContaining(kReserveAccruedLabel), findsOneWidget);
+      expect(find.textContaining('$kReserveAccruedLabel  '), findsOneWidget);
       expect(find.textContaining('At epoch end'), findsOneWidget);
       expect(find.textContaining('400-day APR'), findsNothing);
       expect(find.textContaining('a year'), findsNothing);
@@ -12737,6 +12750,11 @@ class _RecordingPool extends ShearPoolClient {
     String? nanosWire,
     String? id,
     String? withdrawNonce,
+    String? portalId,
+    String? payoutPortalId,
+    String? lockAuth,
+    String? ownerPub,
+    String? vaultLockNote,
     String? fs1,
     int? anchor,
   }) async {
@@ -12767,8 +12785,13 @@ class _RecordingPool extends ShearPoolClient {
       nanosWire: nanosWire,
       id: id,
       withdrawNonce: withdrawNonce,
+      portalId: portalId,
+      payoutPortalId: payoutPortalId,
       fs1: fs1,
       anchor: anchor,
+      lockAuth: lockAuth,
+      ownerPub: ownerPub,
+      vaultLockNote: vaultLockNote,
     );
     if (fee != null) body['postedFee'] = fee;
     posts.add(body);
@@ -12846,6 +12869,11 @@ class _ReasonPool extends ShearPoolClient {
     String? nanosWire,
     String? id,
     String? withdrawNonce,
+    String? portalId,
+    String? payoutPortalId,
+    String? lockAuth,
+    String? ownerPub,
+    String? vaultLockNote,
     String? fs1,
     int? anchor,
   }) async => {

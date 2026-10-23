@@ -24,7 +24,7 @@ import {
   MAX_SHARES_PER_BLOCK,
   SAMPLE_PRUNE_CONFIRMATIONS,
 } from '../../crypto/asert.js';
-import { createP2p, encodeWireBlock, decodeWireBlock } from '../src/p2p.js';
+import { createP2p, encodeWireBlock, decodeWireBlock, fingerprintHelloHash } from '../src/p2p.js';
 import { applyVerifiedIpcBlock, attachPoolIpc } from '../src/p2p_ipc.js';
 import { pullNextHttpBlock } from '../src/http_follow.js';
 import { bookSealKeyPath } from '../src/book_seal_key.js';
@@ -530,7 +530,7 @@ describe('pruned p2p e2e', { timeout: 21_600_000 }, () => {
     const lines = collectSock(sock);
     try {
       await lines.until((m) => m.type === 'tip', 4000);
-      sock.write(line({ type: 'hello', magic: store.magic }));
+      sock.write(line({ type: 'hello', magic: store.magic, fingerprint: fingerprintHelloHash(store.magic) }));
       sock.write(line({
         type: 'tip',
         magic: store.magic,

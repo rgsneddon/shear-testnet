@@ -27,6 +27,7 @@ import {
   STAGE_HOLD_BASE_MS,
   STAGE_HOLD_MAX_MS,
   createP2p,
+  fingerprintHelloHash,
   getblockBatch,
   isFinalIngestFail,
   nextStageHold,
@@ -69,7 +70,7 @@ function closedWithin(sock, ms) {
 }
 
 function helloLine() {
-  return `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`;
+  return `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`;
 }
 
 function frame(msg) {
@@ -616,7 +617,7 @@ describe('p2p hello deadline and idle eviction', () => {
       assert.ok(stuck);
       assert.ok(Date.now() - Number(stuck) >= 5000);
       const cheap = [
-        { type: 'hello' },
+        { type: 'hello', fingerprint: fingerprintHelloHash(MAGIC_TESTNET) },
         { type: 'addr', peers: [] },
         { type: 'getmempool' },
         { type: 'getheaders', locator: [] },

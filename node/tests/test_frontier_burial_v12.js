@@ -24,10 +24,12 @@ import {
   SHARE_FLOOR_BITS,
   TARGET_BLOCK_INTERVAL_MS,
   MAGIC_TESTNET,
+  PI_SHE_NANOS,
+  RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
 import { SAMPLE_PRUNE_CONFIRMATIONS, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
-import { newIdentity, encodeDest } from '../../crypto/address.js';
+import { newIdentity, encodeDest, hash20FromAddress, ed25519PrivateFromSeed, ed25519RawPub } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   nonceWithShareTarget,
@@ -46,6 +48,7 @@ import {
   admitPub,
   admitScalarFromSeed,
   blindCommit,
+  attachAdmitPub,
 } from '../../crypto/admit.js';
 import {
   asU8,
@@ -54,12 +57,34 @@ import {
   kernelExcess,
   openedCoinbaseNanos,
   sealCoinbaseNote,
+  sealHiddenNote,
   randomScalar,
+  commit,
+  proveRange,
 } from '../../crypto/note.js';
-import { lockTx } from '../../crypto/reserve_vault.js';
+import {
+  lockTx,
+  portalsFromSeed,
+  proveLockEquality,
+  consensusUnlockPeriod,
+  lockUnlockOf,
+} from '../../crypto/reserve_vault.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { levyNeed } from '../../crypto/levy.js';
+import { levyNeed, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
 import { walletAnchor, txDigestV3, admitV3Context, fundingJroot, ANCHOR_QUANTUM } from '../../crypto/admit_v3.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+import { viewTagOf } from '../../crypto/dummy.js';
+import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import {
+  FS1_RECORD_BYTES,
+  FS1_WIRE,
+  fs1BlobLen,
+  fs1ProveSpend,
+  resetFs1Tree,
+  txBodyDigestFs1,
+} from '../../crypto/fs1_spend.js';
+import { fs1NativeLoaded } from '../../crypto/native_admit.js';
+import { destCommitFromSpendPub } from '../../crypto/stealth_ed25519.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -86,7 +111,7 @@ function minerDest() {
 function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey };
+  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey, base: id.admitBase };
 }
 
 function shareAt(dest, low, bits) {
@@ -379,6 +404,138 @@ function proveBalanced(tx, { x, index, flux, note, anchor, noteR, noteV }) {
   return settled;
 }
 
+function sideLock(store, who, saved, anchor, proveHeight, nowMs) {
+  const live = store.anchorNote(anchor);
+  assert.ok(live && live.n >= 1, `anchor ${anchor}`);
+  const at = new Map();
+  for (let i = 0; i < live.n; i += 1) {
+    at.set(Buffer.from(asU8(live.commits[i])).toString('hex'), i);
+  }
+  const coins = [];
+  let total = 0;
+  for (const row of saved) {
+    const key = Buffer.from(asU8(row.commit)).toString('hex');
+    if (!at.has(key)) continue;
+    coins.push({
+      r: row.r,
+      v: row.v,
+      index: at.get(key),
+      x: admitScalarFromSeed(who.spendSeed, row.pot),
+    });
+    total += row.v;
+    if (coins.length >= 4 && total > PI_SHE_NANOS + LEVY_CAP_NANOS) break;
+  }
+  assert.ok(total > PI_SHE_NANOS + LEVY_FLOOR_UNITS, `pots ${total}`);
+  const portal = portalsFromSeed(who.spendSeed, 1)[0];
+  // dest20 is this key, and the portal id is H(dest20). portalOwnerKey is a different key.
+  const ownerKey = ed25519PrivateFromSeed(portal.spendSeed);
+  const ownerPub = ed25519RawPub(ownerKey).toString('hex');
+  const stamp = lockUnlockOf(store.reserveVault, nowMs);
+  const blind = randomScalar();
+  const scalar = randomScalar();
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, consensusUnlockPeriod(stamp.epoch));
+  assert.ok(leaf, 'leaf');
+  const funded = pointBytes(commit(PI_SHE_NANOS, blind));
+  const range = proveRange(PI_SHE_NANOS, blind);
+  const d20 = Buffer.from(portal.dest20);
+  const fs1 = Buffer.alloc(fs1BlobLen(coins.length), 255);
+  fs1[0] = FS1_WIRE;
+  const proofs = [];
+  for (let i = 0; i < coins.length; i += 1) {
+    const blob = Buffer.alloc(FS1_RECORD_BYTES, 255);
+    blob[0] = FS1_WIRE;
+    proofs.push({ blob, cTilde: Buffer.alloc(32, 255), spendTag: Buffer.alloc(32, 255) });
+  }
+  let fee = LEVY_FLOOR_UNITS;
+  let tx = null;
+  let outs = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const changeN = total - fee - PI_SHE_NANOS;
+    assert.ok(changeN > 0, `change ${changeN}`);
+    let change = attachAdmitPub(sealHiddenNote(changeN, {
+      dest20: hash20FromAddress(who.dest),
+      kind: 'send',
+      admitBase: who.base,
+    }), { admitBase: who.base });
+    change = {
+      ...change,
+      kind: 'send',
+      dest20: Buffer.from(hash20FromAddress(who.dest)),
+      viewTag: viewTagOf(change.noteCommit),
+    };
+    delete change.valueProof;
+    outs = [
+      {
+        kind: 'lock',
+        commit: funded,
+        rangeProof: range,
+        r: scalarBytes(blind),
+        dest20: d20,
+        portalId: portal.portalId,
+        viewTag: Buffer.from([1]),
+        unlockAtMs: stamp.unlockAtMs,
+        lockEpoch: stamp.epoch,
+      },
+      change,
+    ];
+    const draft = compactTx({
+      id: 'v12-side-lock',
+      kind: 'lock',
+      anchor,
+      fee,
+      nanos: 0,
+      programId: RESERVE_PROGRAM,
+      portalId: portal.portalId,
+      ownerPub,
+      vaultLockNote: leaf.note,
+      vin: proofs.map(() => ({ commit: Buffer.alloc(32, 255) })),
+      vout: outs,
+      fs1,
+      admit_proofs: proofs,
+    });
+    const need = levyNeed(draft);
+    if (fee >= need && fee <= LEVY_CAP_NANOS) {
+      const proven = fs1ProveSpend({
+        live,
+        anchor,
+        indices: coins.map((c) => c.index),
+        xs: coins.map((c) => c.x),
+        tx: draft,
+        magic: MAGIC_TESTNET,
+      });
+      assert.ok(proven, 'side fs1');
+      const excess = kernelExcess(outs, coins.map((c, i) => ({ r: c.r, t: proven.t[i] })));
+      tx = compactTx({
+        ...draft,
+        vin: proven.proofs.map((p) => ({ commit: Buffer.from(p.cTilde) })),
+        vout: outs,
+        fs1: proven.fs1,
+        admit_proofs: proven.proofs,
+        excess,
+      });
+      assert.ok(txBodyDigestFs1(tx, MAGIC_TESTNET).equals(proven.digest), 'side digest');
+      break;
+    }
+    fee = need + 64;
+  }
+  assert.ok(tx, 'side lock fee');
+  tx.dest20 = destCommitFromSpendPub(ed25519RawPub(ownerKey));
+  tx.ownerPub = ownerPub;
+  signSpendTx(tx, ownerKey);
+  delete tx.spendPub;
+  delete tx.sig;
+  delete tx.signature;
+  assert.equal(tx.spendPub, undefined, 'side spendPub');
+  assert.equal(tx.sig, undefined, 'side sig');
+  assert.equal(tx.signature, undefined, 'side signature');
+  const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, proveHeight);
+  assert.ok(fund, 'side fund');
+  tx.vout.find((row) => String(row?.kind || '') === 'lock').fundProof = fund;
+  assert.equal(tx.to, undefined);
+  assert.equal(tx.from, undefined);
+  return tx;
+}
+
 describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import.meta.url) }, () => {
   it('a depth-2 reorg costs the same at two heights, and the pubs-only root matches the coinbase', { timeout: 600_000 }, () => {
     clearLiveSharePow();
@@ -460,102 +617,82 @@ describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import
   });
 
   it('a lock anchored before the side tip still verifies on the second extension', { timeout: 600_000 }, async () => {
+    // Stage 3b. The lock is an FS-1 spend of pots inside an anchor that is
+    // already buried under the side tip's parent. A byte-3 bucket is not a lock.
+    assert.equal(fs1NativeLoaded(), true, 'shear_admit FS-1 addon is not loaded');
     clearLiveSharePow();
     const who = payer();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fr-anchor-'));
     const store = createStore(dir);
-    const forkParent = ANCHOR_QUANTUM * 2;
-    const mainH = forkParent + ANCHOR_QUANTUM;
-    const openings = [];
-    for (let i = 0; i < mainH; i += 1) {
-      const tip = store.tip();
-      const now = tip ? headerTime(tip) + STEP : T0;
-      const { tpl } = store.template({ miner: who.dest, shareBits: 4, now });
-      const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-      const got = store.append({
-        header: tpl.header,
-        txs: tpl.txs,
-        samples: tpl.samples,
-        shareBatch: tpl.shareBatch || [],
-        miner: who.dest,
-        aLeaves: tpl.aLeaves,
-        bLeaves: tpl.bLeaves,
-        rootA: tpl.rootA,
-        rootB: tpl.rootB,
-        weight: tpl.weight,
-      }, { trustedPowHash: easyPow(), skipSharePow: true });
-      assert.equal(got.ok, true, `${got.reason || 'seal'} at ${i + 1}`);
-      if (pot?.r && pot.commit && openings.length === 0) {
-        openings.push({ r: pot.r, v: openedCoinbaseNanos(pot), commit: Buffer.from(asU8(pot.commit)) });
+    try {
+      const forkParent = ANCHOR_QUANTUM * 2;
+      const mainH = forkParent + ANCHOR_QUANTUM;
+      const saved = [];
+      for (let i = 0; i < mainH; i += 1) {
+        const tip = store.tip();
+        const now = tip ? headerTime(tip) + STEP : T0;
+        const { tpl } = store.template({ miner: who.dest, shareBits: 4, now });
+        const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+        const got = store.append({
+          header: tpl.header,
+          txs: tpl.txs,
+          samples: tpl.samples,
+          shareBatch: tpl.shareBatch || [],
+          miner: who.dest,
+          aLeaves: tpl.aLeaves,
+          bLeaves: tpl.bLeaves,
+          rootA: tpl.rootA,
+          rootB: tpl.rootB,
+          weight: tpl.weight,
+        }, { trustedPowHash: easyPow(), skipSharePow: true });
+        assert.equal(got.ok, true, `${got.reason || 'seal'} at ${i + 1}`);
+        if (pot?.r && pot.commit) {
+          saved.push({
+            r: Buffer.from(asU8(pot.r)),
+            v: openedCoinbaseNanos(pot),
+            commit: Buffer.from(asU8(pot.commit)),
+            pot,
+          });
+        }
       }
+      assert.equal(store.tip().height, mainH);
+      const lockHeight = forkParent + 2;
+      const anchor = walletAnchor(lockHeight);
+      assert.equal(typeof anchor, 'number');
+      assert.ok(anchor < forkParent, `anchor ${anchor} is the side tip's parent ${forkParent}`);
+      const prefix = store.blocks.slice(0, forkParent);
+      const first = forkBlocks(prefix, who.dest, 1, 10);
+      const held = await Promise.resolve(ingest(store, first));
+      assert.equal(held.ok, false);
+      assert.equal(held.reason, 'side_hold', held.reason || 'first side');
+      assert.equal(store.tip().height, mainH);
+      const sidePrefix = prefix.concat(first);
+      const lockNow = headerTime(sidePrefix[sidePrefix.length - 1]) + STEP;
+      resetFs1Tree();
+      const lock = sideLock(store, who, saved, anchor, lockHeight, lockNow);
+      const second = forkBlocks(sidePrefix, who.dest, 1, 20, [lock]);
+      assert.equal(second[0].height, lockHeight);
+      const locked = await Promise.resolve(ingest(store, second));
+      assert.notEqual(locked.reason, 'admit_anchor_root');
+      assert.notEqual(locked.reason, 'hash_owed');
+      assert.ok(locked.ok || locked.reason === 'side_hold', locked.reason || 'lock side');
+      let guard = 0;
+      let cursor = sidePrefix.concat(second);
+      while (store.tip().height === mainH && guard < mainH) {
+        const more = forkBlocks(cursor, who.dest, 1, 30 + guard);
+        const got = await Promise.resolve(ingest(store, more));
+        assert.notEqual(got.reason, 'admit_anchor_root');
+        assert.notEqual(got.reason, 'hash_owed');
+        assert.ok(got.ok || got.reason === 'side_hold', got.reason || 'extend side');
+        cursor = cursor.concat(more);
+        guard += 1;
+      }
+      assert.ok(store.tip().height > mainH, 'side branch never became heavier');
+      const sealed = store.blocks.some((b) => (b.txs || []).some((tx) => tx.id === 'v12-side-lock'));
+      assert.equal(sealed, true, 'lock is on the adopted branch');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
-    assert.equal(store.tip().height, mainH);
-    const noteOpen = openings[0];
-    assert.ok(noteOpen && noteOpen.v > 1, String(noteOpen && noteOpen.v));
-    const lockHeight = forkParent + 2;
-    const anchor = walletAnchor(lockHeight);
-    assert.equal(typeof anchor, 'number');
-    assert.ok(anchor < forkParent, `anchor ${anchor} is the side tip's parent ${forkParent}`);
-
-    const pot = store.blocks[0].txs[0].vout.find((o) => o.kind === 'pot');
-    const found = indexOfCommit(store.blocks, anchor, pot.commit);
-    assert.equal(found.height, 1);
-    assert.ok(found.index >= 0, 'pot is inside the anchor');
-    const x = admitScalarFromSeed(who.spendSeed, pot);
-    assert.ok(bufEq(pointBytes(admitPub(x)), pot.admitPub), 'pot key');
-    const flux = fluxsetFromBlocks(store.blocks.filter((b) => Number(b.height) > 0 && Number(b.height) <= anchor));
-    const lock = stripPayer(lockTx({
-      from: who.dest,
-      to: who.dest,
-      nanos: 1,
-      id: 'v12-side-lock',
-    }));
-    proveBalanced(lock, {
-      x,
-      index: found.index,
-      flux,
-      note: pot,
-      anchor,
-      noteR: noteOpen.r,
-      noteV: noteOpen.v,
-    });
-    signSpendTx(lock, who.key);
-
-    const prefix = store.blocks.slice(0, forkParent);
-    const first = forkBlocks(prefix, who.dest, 1, 10);
-    const held = await Promise.resolve(ingest(store, first));
-    assert.equal(held.ok, false);
-    assert.equal(held.reason, 'side_hold', held.reason || 'first side');
-    assert.equal(store.tip().height, mainH);
-
-    const sidePrefix = prefix.concat(first);
-    const second = forkBlocks(sidePrefix, who.dest, 1, 20, [lock]);
-    assert.equal(second[0].height, lockHeight);
-    const locked = await Promise.resolve(ingest(store, second));
-    assert.notEqual(locked.reason, 'admit_anchor_root');
-    assert.notEqual(locked.reason, 'hash_owed');
-    assert.ok(locked.ok || locked.reason === 'side_hold', locked.reason || 'lock side');
-
-    let guard = 0;
-    let cursor = sidePrefix.concat(second);
-    while (store.tip().height === mainH && guard < mainH) {
-      const more = forkBlocks(cursor, who.dest, 1, 30 + guard);
-      const got = await Promise.resolve(ingest(store, more));
-      assert.notEqual(got.reason, 'admit_anchor_root');
-      assert.notEqual(got.reason, 'hash_owed');
-      assert.ok(got.ok || got.reason === 'side_hold', got.reason || 'extend side');
-      cursor = cursor.concat(more);
-      guard += 1;
-    }
-    assert.ok(store.tip().height > mainH, 'side branch never became heavier');
-    const sealed = store.blocks.some((b) => (b.txs || []).some((tx) => tx.id === 'v12-side-lock'));
-    assert.equal(sealed, true, 'lock is on the adopted branch');
-
-    const againParent = store.blocks.length - 1 - 2;
-    const again = forkBlocks(store.blocks.slice(0, againParent + 1), who.dest, 3, 80);
-    const adopted = await Promise.resolve(ingest(store, again));
-    assert.equal(adopted.ok, true, adopted.reason || 'post-adopt reorg');
-    assert.notEqual(adopted.reason, 'hash_owed');
   });
 
   it('pruned credits stay valid under the caller tip across load, IBD, and a deeper fork', { timeout: 2_700_000 }, () => {

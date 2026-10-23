@@ -361,12 +361,23 @@ bool publicValueOpenKind(String? kind) {
       kind == 'pool-withdraw';
 }
 
+/// A dummy is publicly zero. Consensus verifies that opening and allows v = 0.
+bool dummyZeroOpen(Map<String, dynamic> o) {
+  if ((o['kind'] as String?) != 'dummy') return false;
+  final vp = o['valueProof'];
+  if (vp is! Map) return false;
+  final v = vp['v'];
+  if (v == 0 || v == BigInt.zero) return true;
+  return v is String && v == '0';
+}
+
 /// Compact a sealed vout the way chain persist does: drop r, keep rEph/rCt.
-/// Hidden kinds drop the value opening. The range proof stays.
+/// Hidden kinds drop the value opening. A dummy keeps its zero opening.
+/// The range proof stays.
 Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
   final posted = o['kind'] as String?;
   final kind = (posted == null || posted.isEmpty) ? 'pot' : posted;
-  final keepOpen = publicValueOpenKind(posted);
+  final keepOpen = publicValueOpenKind(posted) || dummyZeroOpen(o);
   if (o['commit'] is! Uint8List) {
     if (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'vortice-register') {
       return {
@@ -381,8 +392,12 @@ Map<String, dynamic> compactSealedVout(Map<String, dynamic> o) {
     'kind': kind,
     'noteCommit': o['noteCommit'],
     'commit': o['commit'],
-    if (keepOpen && o['valueProof'] != null) 'valueProof': o['valueProof'],
   };
+  if (keepOpen && o['valueProof'] is Map) {
+    final vp = Map<String, dynamic>.from(o['valueProof'] as Map);
+    if (kind == 'dummy') vp['v'] = 0;
+    row['valueProof'] = vp;
+  }
   if (o['rangeProof'] != null) row['rangeProof'] = o['rangeProof'];
   if (o['viewTag'] != null) row['viewTag'] = o['viewTag'];
   if (o['admitPub'] != null) row['admitPub'] = o['admitPub'];

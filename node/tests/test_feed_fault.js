@@ -26,7 +26,7 @@ import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
 import { pullNextHttpBlock, startHttpFollow } from '../src/http_follow.js';
-import { createP2p } from '../src/p2p.js';
+import { createP2p, fingerprintHelloHash } from '../src/p2p.js';
 import { applyVerifiedIpcBlock, attachPoolIpc } from '../src/p2p_ipc.js';
 import { createRpc } from '../src/rpc.js';
 import { applySoloSubmit } from '../src/solo_stratum.js';
@@ -255,7 +255,7 @@ async function runFeed(via, phase) {
     sock.once('connect', resolve);
     sock.once('error', reject);
   });
-  sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
+  sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`);
   let rec = null;
   for (let i = 0; i < 25 && !rec?.helloAt; i += 1) {
     await delay(20);

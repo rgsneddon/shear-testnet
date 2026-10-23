@@ -16,8 +16,8 @@ import {
   SHARE_FLOOR_BITS,
   RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
-import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, asU8, verifiedInputNanos } from '../../crypto/note.js';
-import { publicReserveReceipt } from '../../crypto/dummy.js';
+import { verifyMintSum, verifyRange, excessOf, noteCommitOfDest20, asU8, verifiedInputNanos, verifyFlowConservation } from '../../crypto/note.js';
+import { publicReserveReceipt, publicReceiptNanos } from '../../crypto/dummy.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
@@ -37,7 +37,7 @@ import {
   settleHashOwed,
 } from '../../crypto/hash_owed.js';
 import {
-  bonusUnitsBefore,
+  supplyUnits,
   unitsAlongChain,
   blockWithdrawInterest,
   blockPermittedInterest,
@@ -48,8 +48,10 @@ import {
   applyReserveBlock,
   txIsReserveAction,
   reserveAction,
+  lockNotePrincipal,
+  releasedWithdrawPrincipal,
 } from '../../crypto/reserve_vault.js';
-import { reserveApplyFields } from '../../crypto/reserve_oracle.js';
+import { reserveApplyFields, windowBlocksFor } from '../../crypto/reserve_oracle.js';
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
 function safeNum(n) {
@@ -86,19 +88,36 @@ export function blockNeedsReserve(block) {
 }
 
 /** Vault after `block`, or null when this block does not touch a vault. */
-function vaultApply(state, block, prior) {
+function vaultApply(state, block, prior, applyOpts = {}) {
   const parent = prior?.length ? prior[prior.length - 1] : null;
   return applyReserveBlock({
     state,
     ...reserveApplyFields({
       prior,
       block,
-      magic: MAGIC_TESTNET,
+      magic: applyOpts.magic || MAGIC_TESTNET,
       parentMs: parent ? headerMs(parent) || 0 : 0,
       genesisMs: headerMs(prior?.[0] || block) || 0,
       nowMs: headerMs(block) || 0,
     }),
+    requireStakeReward: applyOpts.requireStakeReward === true,
   });
+}
+
+/**
+ * Prior the oracle and the genesis clock need.
+ * A report outside the last `windowBlocksFor(magic)` blocks does not count.
+ * The genesis header stays at index 0 so the clock does not move.
+ */
+function priorForOracle(list, index, magic) {
+  const i = Math.max(0, Math.floor(Number(index) || 0));
+  if (i <= 0 || !Array.isArray(list) || !list.length) return [];
+  const cap = windowBlocksFor(magic);
+  const width = Number.isInteger(cap) && cap > 0 ? cap : list.length;
+  const start = Math.max(0, i - width);
+  const window = list.slice(start, i);
+  if (start === 0) return window;
+  return [list[0], ...window];
 }
 
 function asLocked(value) {
@@ -125,6 +144,9 @@ function vaultAccruedNanos(vault) {
 
 function openedLockNanos(tx) {
   if (!tx || tx.coinbase || String(tx.kind || '') !== 'lock') return 0n;
+  if (publicReserveReceipt(tx)) return publicReceiptNanos(tx);
+  const noted = lockNotePrincipal(tx);
+  if (noted > 0n) return noted;
   const act = reserveAction(tx);
   if (!act || act.opened === false) return 0n;
   return asLocked(act.nanos);
@@ -135,6 +157,18 @@ function openedLockNanos(tx) {
  * receipt, and the verified openings on its inputs cover the lock.
  * The openings are read in note.js. This file does not touch them.
  */
+/**
+ * A hidden π leaf does not open each input. The fund proof says the lock
+ * commitment is π, and the FS-1 excess says the spent notes cover that
+ * commitment plus the fee. That is a note payment, not a bare credit.
+ */
+function fs1NotePaysLock(tx, need) {
+  if (need <= 0n) return false;
+  if (tx?.fs1 == null || tx.fs1 === '' || !tx?.excess) return false;
+  if (lockNotePrincipal(tx) !== need) return false;
+  return verifyFlowConservation(tx);
+}
+
 function vinPaysNote(tx) {
   if (publicReserveReceipt(tx)) return false;
   const need = openedLockNanos(tx);
@@ -145,7 +179,8 @@ function vinPaysNote(tx) {
     if (n == null) continue;
     opened += n;
   }
-  return opened >= need;
+  if (opened >= need) return true;
+  return fs1NotePaysLock(tx, need);
 }
 
 /**
@@ -164,14 +199,19 @@ function lockPrincipalSplit(block) {
   return { note, bare };
 }
 
-/** Principal an opened withdraw receipt names. The vault must agree. */
-function openedWithdrawPrincipal(block) {
+/**
+ * Principal an opened withdraw releases. An indexed receipt is principal
+ * plus the arrival stub; the stub is minted interest, not principal.
+ * Without a parent vault the receipt total is used, and the cross-check fails closed.
+ */
+function openedWithdrawPrincipal(block, vault = null, nowMs = null) {
   let n = 0n;
   for (const tx of block?.txs || []) {
     if (!tx || tx.coinbase) continue;
     const act = reserveAction(tx);
     if (!act || act.kind !== 'withdraw' || act.opened === false) continue;
-    n += asLocked(act.nanos);
+    const released = vault ? releasedWithdrawPrincipal(vault, tx, nowMs) : null;
+    n += released == null ? asLocked(act.nanos) : released;
   }
   return n;
 }
@@ -203,11 +243,12 @@ export function rollVaultSupply(track, beforeLocked, afterLocked, block) {
   return { noteBacked: note, unfunded: bare };
 }
 
-export function vaultAfterBlock(vault, block, prior = []) {
+export function vaultAfterBlock(vault, block, prior = [], applyOpts = {}) {
   if (!vault && !blockNeedsReserve(block)) return { ok: true, vault: null };
   if (vault && vault.blankFork) return { ok: false, vault: null };
   const next = vault ? cloneVault(vault) : emptyVault();
-  const applied = vaultApply(next, block, prior);
+  if (applyOpts.magic) next.magic = applyOpts.magic;
+  const applied = vaultApply(next, block, prior, applyOpts);
   if (!applied || applied.ok !== true) return { ok: false, vault: null };
   return { ok: true, vault: next };
 }
@@ -227,7 +268,7 @@ export function vaultBefore(blocks, index) {
   const end = Math.max(0, Math.min(Number(index) || 0, list.length));
   let vault = emptyVault();
   for (let i = 0; i < end; i += 1) {
-    const applied = vaultApply(vault, list[i], list.slice(0, i));
+    const applied = vaultApply(vault, list[i], priorForOracle(list, i, MAGIC_TESTNET));
     if (!applied || applied.ok !== true) return null;
   }
   return vault;
@@ -510,16 +551,36 @@ function carriedInterest(scalar, key) {
 }
 
 /**
- * Replay withdraw interest onto snap rows. The 12-u64 snap does not store it.
- * `rows[i]` is the supply after `blocks[i]`. A miss is not published.
+ * Principal the replayed vault publishes. The 12-u64 snap has no field for
+ * it. A suffix load starts from this row, so a missing principal is supply.
+ * Returns null when the vault's own identity does not close.
  */
-export function fillSnapInterest(rows, blocks) {
+function replayedPrincipal(vault) {
+  if (!vault) return 0n;
+  const identity = supplyIdentity(vault);
+  if (!identity.ok) return null;
+  const raw = identity.principalNanos;
+  if (typeof raw === 'bigint') return raw >= 0n && raw <= U64 ? raw : null;
+  if (!Number.isSafeInteger(raw) || raw < 0) return null;
+  const n = BigInt(raw);
+  return n <= U64 ? n : null;
+}
+
+/**
+ * Replay withdraw interest onto snap rows. The 12-u64 snap does not store it,
+ * and it does not store vault principal either. `rows[i]` is the supply after
+ * `blocks[i]`. The walk is the load replay: stake rewards required, prior
+ * blocks in view. A miss is not published.
+ */
+export function fillSnapInterest(rows, blocks, opts = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   const snaps = Array.isArray(rows) ? rows : [];
   if (!snaps.length || snaps.length !== list.length) return { ok: false, reason: 'supply_state' };
   let vault = null;
   let interest = 0n;
   let permitted = 0n;
+  const magic = opts && opts.magic ? String(opts.magic) : MAGIC_TESTNET;
+  const replay = { requireStakeReward: true, magic };
   for (let i = 0; i < list.length; i += 1) {
     const row = snaps[i];
     if (!row) return { ok: false, reason: 'supply_state' };
@@ -535,11 +596,14 @@ export function fillSnapInterest(rows, blocks) {
     if (interest !== permitted) return { ok: false, reason: 'supply' };
     row.mintedInterest = interest;
     row.permittedInterest = permitted;
-    const advanced = vaultAfterBlock(vault, list[i]);
+    const advanced = vaultAfterBlock(vault, list[i], priorForOracle(list, i, magic), replay);
     if (!advanced.ok) return { ok: false, reason: 'supply' };
     vault = advanced.vault;
+    const principal = replayedPrincipal(vault);
+    if (principal == null) return { ok: false, reason: 'supply' };
+    row.vaultPrincipal = principal;
   }
-  return { ok: true, reason: '' };
+  return { ok: true, reason: '', magic: vault && vault.magic ? vault.magic : magic };
 }
 
 /** Scalar snap plus the owed rows the caller still has. */
@@ -567,7 +631,7 @@ export function supplyFromScalar(scalar, {
     dust: BigInt(scalar.dust || 0),
     overflow: BigInt(scalar.overflow || 0),
     acceptedSeries: Array.isArray(acceptedSeries) ? acceptedSeries.slice() : [],
-    liveUnit: Number(scalar.liveUnit) || HASH_BONUS_NANOS,
+    liveUnit: hashBonusUnitNanos(scalar.liveUnit),
     genesisMs: Number(scalar.genesisMs) || 0,
     owedKnown: owedKnown === true,
   };
@@ -745,10 +809,19 @@ function accountBlock(prev, block, opts = {}) {
   state.dust = settled.dust;
   state.overflow = settled.overflow;
   state.carry = carryOut;
-  const reward = stakeRewardSupply(opts.vault, block, ts, opts.oracle);
+  const reward = stakeRewardSupply(
+    opts.vault,
+    block,
+    ts,
+    Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : block?.height,
+  );
   if (!reward.ok) return { reason: reward.reason || 'supply', state };
+  // stakeRewardSupply returns claimed 0. Claim nanos live in reward.minted,
+  // and applyRewardClaim accepts them only when they equal the proof reward.
   const claimedReward = reward.claimed || 0n;
-  const publicTotal = potMinted + mintedHashHere + levy + reward.minted;
+  // A claim mint is the claim output, not a coinbase output. Counting it
+  // here made the first honest claim block fail the coinbase sum.
+  const publicTotal = potMinted + mintedHashHere + levy;
   const rememberRange = opts.rememberRange !== false;
   if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
     return { reason: 'supply', state };
@@ -807,10 +880,20 @@ export function supplyStep(prev, block, opts = {}) {
   // The vault balance is a cross-check when this step has the parent vault.
   // A public lock credits vault principal with no note debit.
   const split = lockPrincipalSplit(block);
-  const notePrincipal = (next.state.vaultPrincipal || 0n) + split.note - openedWithdrawPrincipal(block);
+  const notePrincipal = (next.state.vaultPrincipal || 0n) + split.note - openedWithdrawPrincipal(block, opts.vault, headerMs(block));
   if (notePrincipal < 0n) return { ok: false, reason: 'supply', state: null };
   if (opts.vault) {
-    const advanced = vaultAfterBlock(opts.vault, block);
+    // The reserve trial already used the structural height. A block on the
+    // wire often omits height; replaying the vault at 0 closes the vote
+    // window and this check then rejects a block the trial accepted.
+    const structural = Number(opts.height);
+    const stamped = Number(block?.height);
+    const vaultBlock = Number.isInteger(structural) && structural > 0 && !(stamped > 0)
+      ? { ...block, height: structural }
+      : block;
+    const advanced = vaultAfterBlock(opts.vault, vaultBlock, [], {
+      magic: opts.magic || undefined,
+    });
     if (!advanced.ok || !advanced.vault) return { ok: false, reason: 'supply', state: null };
     const identity = supplyIdentity(advanced.vault);
     if (!identity.ok) return { ok: false, reason: 'supply', state: null };
@@ -828,7 +911,7 @@ export function foldSupply(blocks, opts = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   const genesisMs = Number(opts.genesisMs) > 0 ? Number(opts.genesisMs) : (headerMs(list[0]) || 0);
   if (!list.length) return { ok: true, reason: '', state: emptySupplyState(genesisMs) };
-  const units = opts.units || bonusUnitsBefore(list);
+  const units = opts.units || supplyUnits(list);
   if (!units) return { ok: false, reason: 'epoch_open', state: null };
   let tip = 0;
   for (let i = 0; i < list.length; i += 1) {
@@ -854,7 +937,15 @@ export function foldSupply(blocks, opts = {}) {
     });
     if (!stepped.ok) return stepped;
     state = stepped.state;
-    const advanced = vaultAfterBlock(vault, list[i]);
+    // Same height the supply step stamped. A wire block often omits height;
+    // replaying the vault at 0 records a different arrival stub than the step.
+    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: h };
+    // Same prior and stake-reward rule as the store's vault apply.
+    const foldMagic = opts.magic || MAGIC_TESTNET;
+    const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, i, foldMagic), {
+      requireStakeReward: true,
+      magic: foldMagic,
+    });
     if (!advanced.ok) return { ok: false, reason: 'supply', state: null };
     vault = advanced.vault;
     if (vault) {
@@ -1121,7 +1212,13 @@ export function auditCirculatingSupply(blocks, opts = {}) {
     } else {
       state = next.state;
       const split = lockPrincipalSplit(list[bi]);
-      const advanced = vaultAfterBlock(vault, list[bi]);
+      const withdrawn = openedWithdrawPrincipal(list[bi], vault, headerMs(list[bi]));
+      // prior is the prefix this block was applied on. An empty prior
+      // installs this header as genesis and skips the epoch boundary.
+      const advanced = vaultAfterBlock(vault, list[bi], priorForOracle(list, bi, magic), {
+        requireStakeReward: true,
+        magic,
+      });
       if (!advanced.ok) {
         // The vault refused the row. A bare receipt is still a claim with
         // no note debit, so the difference is that amount. Keep the prior vault.
@@ -1131,7 +1228,7 @@ export function auditCirculatingSupply(blocks, opts = {}) {
         state.vaultPrincipal = notePrincipal;
       } else {
         vault = advanced.vault;
-        const nextNote = notePrincipal + split.note - openedWithdrawPrincipal(list[bi]);
+        const nextNote = notePrincipal + split.note - withdrawn;
         if (nextNote < 0n) {
           ok = false;
           reason = reason || 'supply';
@@ -1154,7 +1251,7 @@ export function auditCirculatingSupply(blocks, opts = {}) {
     burnedNanos: burnedIn,
     ok,
     reason,
-    vaultPrincipalNanos: vaultLockedNanos(vault) + claimedUnfunded,
+    vaultPrincipalNanos: notePrincipal + claimedUnfunded,
     vaultAccruedNanos: vaultAccruedNanos(vault),
     noteBackedPrincipalNanos: notePrincipal,
   };

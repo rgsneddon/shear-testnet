@@ -49,6 +49,9 @@ function bind() {
     GetCurrentProcess: kernel32.func('void * __stdcall GetCurrentProcess()'),
     CloseHandle: kernel32.func('int32 __stdcall CloseHandle(void *hObject)'),
     LocalFree: kernel32.func('void * __stdcall LocalFree(void *hMem)'),
+    lstrlenW: kernel32.func('int32 __stdcall lstrlenW(void *lpString)'),
+    // koffi.decode(ptr, 'str16') access-violates on a LocalAlloc wide string.
+    RtlMoveMemory: kernel32.func('void __stdcall RtlMoveMemory(_Out_ uint8_t *Destination, void *Source, uintptr_t Length)'),
     OpenProcessToken: advapi32.func(
       'int32 __stdcall OpenProcessToken(void *ProcessHandle, uint32 DesiredAccess, _Out_ void **TokenHandle)',
     ),
@@ -111,8 +114,12 @@ function readSystemRoot() {
 
 function localString(fn, ptr) {
   try {
-    const text = koffi.decode(ptr, 'str16');
-    return text || '';
+    if (!ptr) return '';
+    const n = fn.lstrlenW(ptr);
+    if (!Number.isInteger(n) || n < 0 || n > 65536) return '';
+    const raw = Buffer.alloc((n + 1) * 2);
+    fn.RtlMoveMemory(raw, ptr, (n + 1) * 2);
+    return raw.toString('utf16le', 0, n * 2);
   } finally {
     fn.LocalFree(ptr);
   }

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="Shear/vote/" />
+        <exclude domain="file" path="vote/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="Shear/vote/" />
+        <exclude domain="file" path="vote/" />
+    </device-transfer>
+</data-extraction-rules>

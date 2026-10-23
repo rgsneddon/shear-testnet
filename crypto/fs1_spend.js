@@ -215,13 +215,12 @@ export function fs1TreeStats() {
   return { len: tree.pubs.length, cached: rootCache.size, appends: treeAppends };
 }
 
-/** Test hook: drop the tree and every cached root. */
+/** Test hook: drop the tree and every cached root. A proof that already verified stays verified. */
 export function resetFs1Tree() {
   tree.handle = null;
   tree.pubs = [];
   tree.commits = [];
   rootCache.clear();
-  verifyCache.clear();
 }
 
 function cacheKey(n, jroot) {
@@ -293,8 +292,9 @@ function syncTree(n, pubs, commits) {
  * Prove one FS-1 spend of `indices` in the anchor row `live`. `xs` are the
  * admit scalars of those notes. `tx` must already carry its final fee and
  * outputs: the body digest is taken here. Returns the aggregate blob, one
- * bound proof per input ({ admit_proof, v, spendTag, blob, cTilde }), and
+ * bound proof per input ({ blob, cTilde, spendTag }), and
  * each input's commitment blind `t` (C̃ = C + t·H) for the kernel excess.
+ * `t` stays off the proof object. The wire allowlist is those three keys.
  */
 export function fs1ProveSpend({ live, anchor, indices, xs, tx, magic = MAGIC_TESTNET, threads = 0 }) {
   const n = Number(live?.n);
@@ -312,11 +312,9 @@ export function fs1ProveSpend({ live, anchor, indices, xs, tx, magic = MAGIC_TES
   for (let i = 0; i < indices.length; i += 1) {
     const blob = out.records.subarray(i * FS1_RECORD_BYTES, (i + 1) * FS1_RECORD_BYTES);
     proofs.push({
-      admit_proof: true,
-      v: 3,
-      spendTag: Buffer.from(blob.subarray(1, 33)),
       blob: Buffer.from(blob),
       cTilde: Buffer.from(blob.subarray(33, 65)),
+      spendTag: Buffer.from(blob.subarray(1, 33)),
     });
     ts.push(Buffer.from(out.t.subarray(i * 32, (i + 1) * 32)));
   }
@@ -333,6 +331,12 @@ export function fs1VerifyCount() {
 }
 
 export function resetFs1VerifyCount() {
+  verifyCalls = 0;
+}
+
+/** Drop cached verifies. The next check of the same proof runs native again. */
+export function resetFs1VerifyCache() {
+  verifyCache.clear();
   verifyCalls = 0;
 }
 

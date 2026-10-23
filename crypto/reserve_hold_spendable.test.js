@@ -34,7 +34,7 @@ async function seal(store, miner, now, n) {
 }
 
 describe('reserve principal is not spendable', () => {
-  it('a lock credited to the vault is principal of the payer and does not invent a portal', () => {
+  it('a lock with no lock note is not principal and does not invent a portal', () => {
     const alice = newIdentity();
     const payer = spendDestOf(alice.spendPub);
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
@@ -54,12 +54,12 @@ describe('reserve principal is not spendable', () => {
       nowMs: 1_700_000_000_000,
       genesisMs: 1_700_000_000_000,
     });
-    assert.equal(locked.some((r) => r.action === 'lock' && r.ok === true), true);
-    assert.equal(portalPrincipalNanos(state, payer), NANOS_PER_SHE);
-    assert.equal(portalPrincipalNanos(state, vault), NANOS_PER_SHE);
-    const before = Object.keys(state.portals).length;
+    assert.equal(locked.ok, false);
+    assert.equal(locked.reason, 'stake_reward');
+    assert.equal(portalPrincipalNanos(state, payer), 0);
+    assert.equal(portalPrincipalNanos(state, vault), 0);
     assert.equal(portalPrincipalNanos(state, stranger), 0);
-    assert.equal(Object.keys(state.portals).length, before);
+    assert.equal(Object.keys(state.portals).length, 0);
     assert.equal(portalPrincipalNanos(null, payer), 0);
   });
 

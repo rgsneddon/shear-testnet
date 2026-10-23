@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { newIdentity } from './address.js';
+import { newIdentity, hash20FromAddress, ed25519RawPub } from './address.js';
 import { destForLogin, vaultDest } from './flow_sheet.js';
 import {
   RESERVE_PROGRAM,
@@ -22,6 +22,8 @@ import {
   withdraw,
   enact,
   applyReserveBlock,
+  deposit as depositRaw,
+  portalOwnerKey,
   verifyReservePayout,
   portalEpochInterest,
   creditFeeBank,
@@ -31,23 +33,46 @@ import {
   canVote,
   publicVaultView,
   portalIdFromDest,
+  portalIdFromDest20,
+  portalBlindFromSeed,
+  portalDest20FromSeed,
+  compactLockLeakRejected,
+  lockQualifies,
+  lockNoteSpendRejected,
+  lockTx as lockTxRaw,
+  withdrawTx as withdrawTxRaw,
   observeRate,
   portalRewards,
   previewWithdraw,
   trialReserveApply,
   voteTx,
   reserveAction,
+  hiddenWithdrawOpening,
+  provePrincipalOpen,
+  appendVaultLockNote,
+  chainPeriodIndex,
+  consensusUnlockPeriod,
+  leafEpochsToBurn,
+  leafStubNanos,
+  lockUnlockOf,
+  signWithdrawReward,
   VOTE_INCREASE,
   VOTE_DECREASE,
   VOTE_HOLD,
 } from './reserve_vault.js';
-import { deposit, lockTx, withdrawTx, portalOwnerPub } from './owned_portal.js';
+import { deposit, lockTx, withdrawTx, portalOwnerPub, ownerFor } from './owned_portal.js';
 import { compactTx } from './chronoflux.js';
+import { reservePortalRef } from './spend.js';
 import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, GENESIS_BPS, interestNanos } from './reserve_oracle.js';
 import { extraMint } from './mint.js';
-import { verifySealedNote } from './note.js';
+import { RistrettoPoint } from '@noble/curves/ed25519.js';
+import { commit, verifySealedNote, pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
+import { outputJoinsAdmitSet, receiptAdmitRejected } from './admit.js';
+import { typedCommitRejected } from './spend.js';
+import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
+import { txDigestV3 } from './admit_v3.js';
 
 const DAY = 86_400_000;
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,7 +81,173 @@ function destOf(id) {
   return vaultDest(id.address, { viewKey: id.viewKey });
 }
 
+/** Indexed π leaf. An unindexed hidden tranche withdraws as stake_reward. */
+function depositIndexed(state, dest, nowMs, extra = {}) {
+  const magic = state.magic || MAGIC_TESTNET;
+  const stamp = lockUnlockOf({ genesisMs: state.genesisMs, magic }, nowMs);
+  const unlock = consensusUnlockPeriod(stamp.epoch);
+  const blind = randomScalar();
+  const scalar = randomScalar();
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+  assert.ok(leaf);
+  const got = deposit({
+    state,
+    dest,
+    nanos: PI_SHE_NANOS,
+    nowMs,
+    payout: extra.payout,
+    commit: leaf.commit,
+    rangeProof: proveRange(BigInt(PI_SHE_NANOS), blind),
+    unlock,
+    rangeCommit: pointBytes(subtractUnlock(pointFrom(leaf.commit), unlock)),
+    piProof: proveRange(0n, blind),
+  });
+  assert.equal(got.ok, true, got.reason);
+  assert.ok(appendVaultLockNote(state, leaf.note, {
+    earnEpoch: Math.floor(Number(stamp.epoch) || 0),
+    bornEpoch: chainPeriodIndex(state, nowMs),
+    unlockEpoch: unlock,
+    lockHeight: extra.lockHeight || 1,
+  }));
+  return { ...got, planted: { leaf, unlock } };
+}
+
+function indexedHiddenWithdraw(state, dest, nowMs, extra) {
+  const planted = extra.planted;
+  const stub = leafStubNanos(state, [planted.leaf.commit.toString('hex')]);
+  const nanos = extra.nanos != null ? extra.nanos : PI_SHE_NANOS + Number(stub);
+  const tx = withdrawTx({
+    from: dest,
+    to: extra.payout || dest,
+    nanos,
+    id: extra.id || `hidden-${nowMs}`,
+  });
+  const magic = state.magic || MAGIC_TESTNET;
+  const proof = provePrincipalOpen(
+    planted.leaf.commit, PI_SHE_NANOS, planted.leaf.blind, tx, portalIdFromDest(dest), magic, planted.leaf.unlock,
+  );
+  assert.ok(proof, extra.id || 'proof');
+  tx.principalProof = proof;
+  const retire = proveLeafRetire({
+    scalar: planted.leaf.scalar,
+    epochs: leafEpochsToBurn(state, planted.leaf.note.toString('hex'), chainPeriodIndex(state, nowMs)),
+    leaf: planted.leaf.note,
+    txBind: txDigestV3(tx, magic),
+    unlockEpoch: chainPeriodIndex(state, nowMs),
+    magic,
+  });
+  assert.ok(retire?.proof, extra.id || 'retire');
+  tx.retireProof = retire.proof;
+  if (extra.bindOnly) return { tx, nanos, stub: Number(stub), proof };
+  return withdraw({
+    state,
+    dest,
+    nowMs,
+    payout: extra.payout,
+    principal: nanos,
+    principalProof: proof,
+    retireProof: tx.retireProof,
+    tx,
+  });
+}
+
+/** Publish the opened lock integer and bind the principal proof to that tx. */
+function hiddenWithdraw(state, dest, nowMs, extra = {}) {
+  if (extra.planted) return indexedHiddenWithdraw(state, dest, nowMs, extra);
+  const peek = hiddenWithdrawOpening(state, dest, nowMs);
+  assert.ok(peek, 'hidden opening');
+  const tx = withdrawTx({
+    from: dest,
+    to: extra.payout || dest,
+    nanos: peek.nanos,
+    id: extra.id || `hidden-${nowMs}-${peek.commit.slice(0, 8)}`,
+  });
+  const open = hiddenWithdrawOpening(state, dest, nowMs, tx);
+  assert.ok(open?.proof, 'principal proof');
+  return withdraw({
+    state,
+    dest,
+    nowMs,
+    payout: extra.payout,
+    principal: open.nanos,
+    principalProof: open.proof,
+    tx,
+  });
+}
+
+/** A proof of the real principal, on a tx that may publish a different integer. */
+function bindRealPrincipal(state, dest, nowMs, tx) {
+  const peek = hiddenWithdrawOpening(state, dest, nowMs);
+  assert.ok(peek, 'hidden opening');
+  const proof = provePrincipalOpen(
+    Buffer.from(peek.commit, 'hex'),
+    peek.nanos,
+    peek.blind,
+    tx,
+    portalIdFromDest(dest),
+    state.magic,
+  );
+  assert.ok(proof, 'principal proof');
+  tx.principalProof = proof;
+  return peek;
+}
+
 describe('Reserve vault protocol', () => {
+  it('a sub-π hidden lock is accepted and does not qualify', () => {
+    const state = emptyVault();
+    state.genesisMs = 1_700_000_000_000;
+    const dest = destOf(newIdentity());
+    const nowMs = state.genesisMs + 1000;
+    const stamp = lockUnlockOf(state, nowMs);
+    const unlock = consensusUnlockPeriod(stamp.epoch);
+    const blind = randomScalar();
+    const scalar = randomScalar();
+    const funding = pointBytes(commit(1000n, blind));
+    const got = deposit({
+      state,
+      dest,
+      nanos: 1000,
+      nowMs,
+      commit: funding,
+      rangeProof: proveRange(1000n, blind),
+      unlock,
+      rangeCommit: funding,
+    });
+    assert.equal(got.ok, true, got.reason);
+    assert.equal(got.portal.qualified, false);
+    assert.equal(Number(state.epochStartMs) || 0, 0);
+    const piState = emptyVault();
+    piState.genesisMs = state.genesisMs;
+    const piLeaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+    assert.ok(piLeaf);
+    const bare = deposit({
+      state: piState,
+      dest,
+      nanos: PI_SHE_NANOS,
+      nowMs,
+      commit: piLeaf.commit,
+      rangeProof: proveRange(BigInt(PI_SHE_NANOS), blind),
+      unlock,
+      rangeCommit: pointBytes(subtractUnlock(pointFrom(piLeaf.commit), unlock)),
+    });
+    assert.equal(bare.ok, true, bare.reason);
+    assert.equal(bare.portal.qualified, false);
+    const qualified = emptyVault();
+    qualified.genesisMs = state.genesisMs;
+    const opened = deposit({
+      state: qualified,
+      dest: destOf(newIdentity()),
+      nanos: PI_SHE_NANOS,
+      nowMs,
+      commit: piLeaf.commit,
+      rangeProof: proveRange(BigInt(PI_SHE_NANOS), blind),
+      unlock,
+      rangeCommit: pointBytes(subtractUnlock(pointFrom(piLeaf.commit), unlock)),
+      piProof: proveRange(0n, blind),
+    });
+    assert.equal(opened.ok, true, opened.reason);
+    assert.equal(opened.portal.qualified, true);
+  });
   it('stake rewards are minted in full; the fee bank is not a balance', () => {
     const state = emptyVault();
     assert.equal(creditFeeBank(state, 10), 0);
@@ -104,14 +295,20 @@ describe('Reserve vault protocol', () => {
     assert.equal(dust.ok, true);
     assert.equal(state.epochStartMs, 0);
     assert.equal(canVote(dust.portal.staked), false);
-    const rest = PI_SHE_NANOS - NANOS_PER_SHE;
-    const ok = deposit({ state, dest: a, nanos: rest, nowMs: t0 + 1000 });
+    // A second credit of the same portal is portal_exists. The same-tx bypass is gone.
+    const rest = deposit({ state, dest: a, nanos: PI_SHE_NANOS - NANOS_PER_SHE, nowMs: t0 + 1000 });
+    assert.equal(rest.ok, false);
+    assert.equal(rest.reason, 'portal_exists');
+    assert.equal(state.epochStartMs, 0);
+    const opened = emptyVault();
+    opened.genesisMs = t0;
+    const ok = deposit({ state: opened, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     assert.equal(ok.ok, true);
     assert.equal(ok.portal.joined, true);
-    assert.equal(canVote(ok.portal.staked), true);
-    assert.equal(state.epochStartMs, t0);
-    assert.equal(state.currentEpoch, 0);
-    assert.notEqual(state.epochStartMs, 0);
+    assert.equal(ok.portal.qualified, true);
+    assert.equal(opened.epochStartMs, t0);
+    assert.equal(opened.currentEpoch, 0);
+    assert.notEqual(opened.epochStartMs, 0);
   });
 
   it('after the stake cutoff, deposits are idle, earn no stake reward, and can vote once', () => {
@@ -123,35 +320,38 @@ describe('Reserve vault protocol', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    const aliceLock = depositIndexed(state, a, t0);
+    assert.equal(aliceLock.ok, true);
     assert.equal(canJoin(state, t0 + Math.floor(RESERVE_EPOCH_MS / 2)), true);
     const late = t0 + RESERVE_EPOCH_MS - 1;
     assert.equal(remainingUnder99(state, late), true);
-    const idleBob = deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: late });
+    const idleBob = depositIndexed(state, b, late);
     assert.equal(idleBob.ok, true);
     assert.equal(idleBob.idle, true);
     assert.equal(idleBob.portal.joined, true);
     assert.equal(idleBob.portal.staked, 0);
-    assert.equal(idleBob.portal.idle, PI_SHE_NANOS);
+    assert.equal(idleBob.portal.idle, 0);
     const firstLate = vote({ state, dest: b, choice: VOTE_INCREASE, nowMs: late });
-    assert.equal(firstLate.ok, true);
+    assert.equal(firstLate.ok, false);
+    assert.equal(firstLate.reason, 'vote_retired');
     const changeLate = vote({ state, dest: b, choice: VOTE_HOLD, nowMs: late });
     assert.equal(changeLate.ok, false);
-    assert.equal(changeLate.reason, 'vote_locked');
-    assert.equal(state.votes.increase, 1);
+    assert.equal(changeLate.reason, 'vote_retired');
+    assert.equal(state.votes.increase, 0);
     assert.equal(state.votes.hold, 0);
+    // A top-up of a portal that already locked is portal_exists.
     const more = deposit({ state, dest: a, nanos: 100, nowMs: late });
-    assert.equal(more.ok, true);
-    assert.equal(more.idle, true);
-    const done = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(more.ok, false);
+    assert.equal(more.reason, 'portal_exists');
+    const done = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'cutoff-alice', planted: aliceLock.planted });
     assert.equal(done.ok, true);
-    assert.equal(done.idle, 100);
+    assert.equal(done.idle, 0);
     assert.equal(done.interest, 0);
-    assert.equal(done.earned, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
-    const bobOut = withdraw({ state, dest: b, nowMs: t0 + RESERVE_EPOCH_MS });
+    assert.equal(done.earned, 0);
+    const bobOut = hiddenWithdraw(state, b, t0 + RESERVE_EPOCH_MS, { id: 'cutoff-bob', planted: idleBob.planted });
     assert.equal(bobOut.ok, true);
     assert.equal(bobOut.interest, 0);
-    assert.equal(bobOut.idle, PI_SHE_NANOS);
+    assert.equal(bobOut.idle, 0);
   });
 
   it('epoch end enacts a unique plurality onto the live hash bonus', () => {
@@ -161,23 +361,24 @@ describe('Reserve vault protocol', () => {
     const state = emptyVault();
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
-    vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
+    const cast = vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
+    assert.equal(cast.reason, 'vote_retired');
     assert.equal(Number(state.liveHashBonusNanos), 1);
     const tooSoon = enact({ state, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
     assert.equal(tooSoon.ok, false);
     const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
-    assert.equal(Number(state.liveHashBonusNanos), 2);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(state.bonusEnacted, true);
-    assert.equal(state.enactedUp, 1);
+    assert.equal(state.enactedUp, 0);
     assert.equal(state.enactedDown, 0);
     assert.equal(state.enactedHold, 0);
-    assert.equal(state.enactedDelta, 1);
+    assert.equal(state.enactedDelta, 0);
     const pub = publicVaultView(state, t0 + RESERVE_EPOCH_MS);
-    assert.equal(pub.votes.increase, 1);
+    assert.equal(pub.votes.increase, 0);
     assert.equal(pub.votes.decrease, 0);
     assert.equal(pub.votes.hold, 0);
-    assert.notEqual(pub.votes.increase + pub.votes.decrease + pub.votes.hold, 0);
+    assert.equal(pub.votes.increase + pub.votes.decrease + pub.votes.hold, 0);
     const again = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
     assert.equal(again.ok, false);
   });
@@ -199,14 +400,14 @@ describe('Reserve vault protocol', () => {
       block: { height: 1, txs: [{ coinbase: true, vout: [] }] },
       nowMs: t0 + 90_000,
     });
-    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
-    assert.equal(Number(state.portals[pid].staked), PI_SHE_NANOS);
+    assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal(Number(state.portals[pid].staked), 0);
     assert.equal(state.portals[pid].joined, true);
     assert.notEqual(trial.portals, state.portals);
   });
 
   it('accruedReward is a bigint capped at u64 across a rollover, 0%, and an undo', () => {
-    const U64 = 0xffffffffffffffffn;
+    const nearCap = (9007199254740991n * 10000n) / 281n;
     const t0 = 1_700_000_000_000;
     const who = destOf(newIdentity());
     const rolled = emptyVault();
@@ -220,13 +421,12 @@ describe('Reserve vault protocol', () => {
       nanos: added,
       nowMs: t0 + RESERVE_EPOCH_MS + 1,
     });
-    assert.equal(more.ok, true, more.reason);
+    // A second credit is portal_exists. Accrued stays the first lock's 0.
+    assert.equal(more.ok, false);
+    assert.equal(more.reason, 'portal_exists');
     const id = portalIdFromDest(who);
-    const due = BigInt(interestNanos(PI_SHE_NANOS, GENESIS_BPS));
-    const oldAmount = BigInt(interestNanos(PI_SHE_NANOS + added, GENESIS_BPS));
     assert.equal(typeof rolled.portals[id].accruedReward, 'bigint');
-    assert.equal(rolled.portals[id].accruedReward, due);
-    assert.notEqual(rolled.portals[id].accruedReward, oldAmount);
+    assert.equal(rolled.portals[id].accruedReward, 0n);
     assert.equal(supplyIdentity(rolled).ok, true);
 
     const zero = emptyVault();
@@ -236,30 +436,31 @@ describe('Reserve vault protocol', () => {
     zero.epochBps = 0;
     assert.equal(enact({ state: zero, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
     const zMore = deposit({ state: zero, dest: zDest, nanos: 1, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
-    assert.equal(zMore.ok, true, zMore.reason);
+    assert.equal(zMore.ok, false);
+    assert.equal(zMore.reason, 'portal_exists');
     assert.equal(zero.portals[portalIdFromDest(zDest)].accruedReward, 0n);
     assert.equal(supplyIdentity(zero).ok, true);
 
     const near = emptyVault();
     near.genesisMs = t0;
     const nDest = destOf(newIdentity());
-    const stake = U64 - 5n;
+    const stake = nearCap - 5n;
     assert.equal(deposit({ state: near, dest: nDest, nanos: stake, nowMs: t0 }).ok, true);
     near.epochBps = 10000;
     assert.equal(enact({ state: near, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
     const nMore = deposit({ state: near, dest: nDest, nanos: 1n, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
-    assert.equal(nMore.ok, true, nMore.reason);
+    assert.equal(nMore.ok, false);
+    assert.equal(nMore.reason, 'portal_exists');
     const nearId = portalIdFromDest(nDest);
-    assert.equal(near.portals[nearId].accruedReward, stake);
-    assert.notEqual(BigInt(Number(near.portals[nearId].accruedReward)), stake);
+    assert.equal(near.portals[nearId].accruedReward, 0n);
     const copied = cloneVault(near);
-    assert.equal(copied.portals[nearId].accruedReward, stake);
+    assert.equal(copied.portals[nearId].accruedReward, 0n);
     assert.equal(supplyIdentity(near).ok, true);
 
     const capped = emptyVault();
     capped.genesisMs = t0;
     const cDest = destOf(newIdentity());
-    assert.equal(deposit({ state: capped, dest: cDest, nanos: U64, nowMs: t0 }).ok, true);
+    assert.equal(deposit({ state: capped, dest: cDest, nanos: nearCap, nowMs: t0 }).ok, true);
     capped.epochBps = 10000;
     assert.equal(enact({ state: capped, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
     const cMore = deposit({
@@ -268,8 +469,9 @@ describe('Reserve vault protocol', () => {
       nanos: 1n,
       nowMs: t0 + 2 * RESERVE_EPOCH_MS,
     });
-    assert.equal(cMore.ok, true, cMore.reason);
-    assert.equal(capped.portals[portalIdFromDest(cDest)].accruedReward, U64);
+    assert.equal(cMore.ok, false);
+    assert.equal(cMore.reason, 'portal_exists');
+    assert.equal(capped.portals[portalIdFromDest(cDest)].accruedReward, 0n);
     assert.equal(supplyIdentity(capped).ok, true);
 
     const live = emptyVault();
@@ -287,8 +489,9 @@ describe('Reserve vault protocol', () => {
       nanos: 10,
       nowMs: t0 + RESERVE_EPOCH_MS + 1,
     });
-    assert.equal(settled.ok, true, settled.reason);
-    assert.equal(fork.portals[aliceId].accruedReward, due);
+    assert.equal(settled.ok, false);
+    assert.equal(settled.reason, 'portal_exists');
+    assert.equal(fork.portals[aliceId].accruedReward, 0n);
     const undone = trialReserveApply({
       state: live,
       inPlace: true,
@@ -303,29 +506,28 @@ describe('Reserve vault protocol', () => {
       },
     });
     assert.equal(undone.ok, false);
-    assert.equal(undone.reason, 'owner_missing');
+    assert.equal(undone.reason, 'stake_reward');
     assert.equal(live.portals[aliceId].accruedReward, 0n);
-    assert.equal(live.totalLockedNanos, BigInt(PI_SHE_NANOS));
+    assert.equal(live.totalLockedNanos, 0n);
     assert.equal(supplyIdentity(live).ok, true);
     assert.equal(supplyIdentity(fork).ok, true);
   });
 
   it('a withdraw leaves the u64 reward cap on the portal', () => {
-    const U64 = 0xffffffffffffffffn;
+    const nearCap = (9007199254740991n * 10000n) / 281n;
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
     const dest = destOf(newIdentity());
-    assert.equal(deposit({ state, dest, nanos: U64, nowMs: t0 }).ok, true);
+    assert.equal(deposit({ state, dest, nanos: nearCap, nowMs: t0 }).ok, true);
     state.epochBps = 10000;
-    const paid = withdraw({ state, dest, nowMs: t0 + 2 * RESERVE_EPOCH_MS });
-    assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.mint, null);
-    assert.equal(paid.interest, 0);
-    assert.equal(paid.earned, U64);
-    assert.notEqual(paid.earned, BigInt(Number(U64)));
+    const paid = hiddenWithdraw(state, dest, t0 + 2 * RESERVE_EPOCH_MS, { id: 'u64-cap' });
+    // Not an indexed π leaf. The unindexed tranche is refused and nothing is minted.
+    assert.equal(paid.reason, 'stake_reward');
     assert.equal(state.mintBankNanos, 0n);
-    assert.equal(supplyIdentity(state).ok, true);
+    const book = supplyIdentity(state);
+    assert.equal(book.mintedReward, 0);
+    assert.ok(book.principalNanos >= 0);
   });
 
   it('first sealed block after epoch auto-enacts the winning vote; height is unchanged', () => {
@@ -335,18 +537,18 @@ describe('Reserve vault protocol', () => {
     const state = emptyVault();
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
-    vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
+    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).reason, 'vote_retired');
     const height = 40;
     const block = { height, txs: [{ coinbase: true, vout: [] }] };
     applyReserveBlock({ state, block, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
     assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(state.bonusEnacted, false);
     applyReserveBlock({ state, block, nowMs: t0 + RESERVE_EPOCH_MS });
-    assert.equal(Number(state.liveHashBonusNanos), 2);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(state.bonusEnacted, true);
     assert.equal(block.height, height);
     applyReserveBlock({ state, block: { height: height + 1, txs: [] }, nowMs: t0 + RESERVE_EPOCH_MS + 90_000 });
-    assert.equal(Number(state.liveHashBonusNanos), 2);
+    assert.equal(Number(state.liveHashBonusNanos), 1);
   });
 
   it('accrued rewards grow on staked SHE and stay zero on idle SHE', () => {
@@ -360,18 +562,18 @@ describe('Reserve vault protocol', () => {
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const start = portalRewards(state, a, t0);
     assert.equal(start.accrued, 0);
-    assert.ok(start.projected > 0);
+    assert.equal(start.projected, 0);
     const mid = portalRewards(state, a, t0 + Math.floor(RESERVE_EPOCH_MS / 2));
-    assert.ok(mid.accrued > 0);
-    assert.ok(mid.accrued < mid.projected);
+    assert.equal(mid.accrued, 0);
+    assert.equal(mid.projected, 0);
     const end = portalRewards(state, a, t0 + RESERVE_EPOCH_MS);
-    assert.equal(end.accrued, end.projected);
+    assert.equal(end.accrued, 0);
     const late = t0 + RESERVE_EPOCH_MS - 1;
     deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: late });
     const idle = portalRewards(state, b, late + DAY);
     assert.equal(idle.accrued, 0);
     assert.equal(idle.projected, 0);
-    assert.equal(idle.idle, PI_SHE_NANOS);
+    assert.equal(idle.idle, 0);
     const pub = JSON.stringify(publicVaultView(state, late));
     assert.equal(pub.includes(alice.address), false);
     assert.equal(pub.includes('accrued'), false);
@@ -408,16 +610,16 @@ describe('Reserve vault protocol', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0, payout: continuum });
+    const locked = depositIndexed(state, a, t0, { payout: continuum });
     const early = withdraw({ state, dest: a, nowMs: t0 + Math.floor(RESERVE_EPOCH_MS / 2) });
     assert.equal(early.ok, false);
-    const done = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    const done = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'after-epoch', planted: locked.planted });
     assert.equal(done.ok, true);
     assert.equal(done.programId, RESERVE_PROGRAM);
     assert.equal(done.to, continuum);
     assert.notEqual(done.to, a);
     assert.equal(done.interest, 0);
-    assert.ok(done.earned > 0);
+    assert.equal(done.earned, 0);
     assert.equal(done.payout, done.principal);
     assert.equal(done.mint, null);
     assert.equal(extraMintAllowed(done.programId, { kind: 'withdraw' }), true);
@@ -444,8 +646,9 @@ describe('Reserve vault protocol', () => {
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'epoch_open');
     const due = portalEpochInterest(state, portal, end);
-    assert.ok(due > 0);
+    assert.equal(due, 0);
     const atEnd = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'epoch-ended' });
+    bindRealPrincipal(state, dest, end, atEnd);
     const paid = verifyReservePayout(state, atEnd, end);
     assert.equal(paid.ok, true, paid.reason);
   });
@@ -491,26 +694,26 @@ describe('Reserve oracle', () => {
     state.genesisMs = t0;
     assert.equal(state.oracle.id, RESERVE_ORACLE_ID);
     assert.equal(state.oracle.annualBps, RESERVE_ORACLE_DEFAULT_BPS);
-    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const locked = depositIndexed(state, a, t0);
     const pub = publicVaultView(state, t0);
     assert.equal(pub.oracleBps, RESERVE_ORACLE_DEFAULT_BPS);
     assert.equal(pub.epochBps, RESERVE_ORACLE_DEFAULT_BPS);
     assert.equal(JSON.stringify(pub).includes(alice.address), false);
-    const mid = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    const mid = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'oracle-mid', planted: locked.planted });
     assert.equal(mid.ok, true);
     assert.equal(mid.interest, 0);
-    assert.equal(mid.earned, interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS, 400));
+    assert.equal(mid.earned, 0);
     const again = emptyVault();
     again.genesisMs = t0;
-    deposit({ state: again, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const againLock = depositIndexed(again, a, t0);
     const refused = observeRate({ state: again, annualBps: 0, nowMs: t0 + 1 });
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'rate_bundled');
     assert.equal(again.oracle.annualBps, RESERVE_ORACLE_DEFAULT_BPS);
-    const frozen = withdraw({ state: again, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    const frozen = hiddenWithdraw(again, a, t0 + RESERVE_EPOCH_MS, { id: 'oracle-frozen', planted: againLock.planted });
     assert.equal(frozen.ok, true);
     assert.equal(frozen.interest, 0);
-    assert.equal(frozen.earned, interestNanos(PI_SHE_NANOS, RESERVE_ORACLE_DEFAULT_BPS));
+    assert.equal(frozen.earned, 0);
     assert.equal(observeRate({ state: again, annualBps: -1, nowMs: t0 }).ok, false);
   });
 });
@@ -524,22 +727,22 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const two = emptyVault();
     one.genesisMs = t0;
     two.genesisMs = t0;
-    deposit({ state: one, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
-    deposit({ state: two, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const oneLock = depositIndexed(one, a, t0);
+    const twoLock = depositIndexed(two, a, t0);
     assert.equal(observeRate({ state: one, annualBps: 100, nowMs: t0 + 1 }).ok, false);
     assert.equal(observeRate({ state: two, annualBps: 9000, nowMs: t0 + 1 }).ok, false);
     one.oracle.annualBps = 100;
     two.oracle.annualBps = 9000;
     assert.equal(one.epochBps, two.epochBps);
     assert.equal(one.epochBps, GENESIS_BPS);
-    const w1 = withdraw({ state: one, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
-    const w2 = withdraw({ state: two, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    const w1 = hiddenWithdraw(one, a, t0 + RESERVE_EPOCH_MS, { id: 'bundle-one', planted: oneLock.planted });
+    const w2 = hiddenWithdraw(two, a, t0 + RESERVE_EPOCH_MS, { id: 'bundle-two', planted: twoLock.planted });
     assert.equal(w1.ok, true);
     assert.equal(w2.ok, true);
     assert.equal(w1.interest, 0);
     assert.equal(w2.interest, 0);
     assert.equal(w1.earned, w2.earned);
-    assert.equal(w1.earned, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
+    assert.equal(w1.earned, 0);
   });
 
   it('mid-epoch observeRate(9999) does not change withdraw or preview interest', () => {
@@ -548,7 +751,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
+    const locked = depositIndexed(state, a, t0);
     const before = portalEpochInterest(state, state.portals[portalIdFromDest(a)], t0 + RESERVE_EPOCH_MS);
     const saw = observeRate({ state, annualBps: 9999, nowMs: t0 + 10 * DAY });
     assert.equal(saw.ok, false);
@@ -558,7 +761,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(previewWithdraw(state, a).interest, 0);
     assert.equal(portalEpochInterest(state, state.portals[portalIdFromDest(a)], t0 + RESERVE_EPOCH_MS), before);
     assert.equal(publicVaultView(state, t0 + 10 * DAY).oracleBps, GENESIS_BPS);
-    const out = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS });
+    const out = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'preview-out', planted: locked.planted });
     assert.equal(out.interest, 0);
     assert.equal(out.earned, before);
     assert.equal(state.epochBps, GENESIS_BPS);
@@ -574,10 +777,10 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     assert.equal(state.epochBps, GENESIS_BPS);
-    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).ok, true);
+    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).reason, 'vote_retired');
     const enacted = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(enacted.ok, true);
-    assert.equal(enacted.delta, 1);
+    assert.equal(enacted.delta, 0);
     assert.equal(state.epochBps, GENESIS_BPS);
     assert.equal(observeRate({ state, annualBps: 9999, nowMs: t0 + RESERVE_EPOCH_MS + 1 }).ok, false);
     state.oracle.annualBps = 9999;
@@ -596,13 +799,147 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     state.genesisMs = t0;
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const first = vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 });
-    assert.equal(first.ok, true);
-    assert.equal(state.votes.increase, 1);
+    assert.equal(first.ok, false);
+    assert.equal(first.reason, 'vote_retired');
+    assert.equal(state.votes.increase, 0);
     const second = vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 });
     assert.equal(second.ok, false);
-    assert.equal(second.reason, 'vote_locked');
-    assert.equal(state.votes.increase, 1);
+    assert.equal(second.reason, 'vote_retired');
+    assert.equal(state.votes.increase, 0);
     assert.equal(state.votes.hold, 0);
+  });
+
+  it('a sum of sub-π notes does not qualify and one commitment of π does', () => {
+    const half = BigInt(PI_SHE_NANOS) / 2n;
+    const rest = BigInt(PI_SHE_NANOS) - half;
+    const ra = randomScalar();
+    const rb = randomScalar();
+    const a = commit(half, ra);
+    const b = commit(rest, rb);
+    const sumBlind = RistrettoPoint.Fn.add(ra, rb);
+    const sumPoint = pointBytes(a.add(b));
+    const sumProof = proveRange(0n, sumBlind);
+    assert.equal(lockQualifies(sumPoint, sumProof), true);
+    const portal = {
+      tranches: [
+        { commit: pointBytes(a).toString('hex') },
+        { commit: pointBytes(b).toString('hex') },
+      ],
+    };
+    assert.equal(lockQualifies(pointBytes(a), sumProof, portal), false);
+    assert.equal(lockQualifies(pointBytes(b), sumProof, portal), false);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const dest = destOf(newIdentity());
+    const first = depositRaw({ state, dest, nanos: half, blind: ra, nowMs: t0 });
+    assert.equal(first.ok, true, first.reason);
+    assert.equal(first.portal.qualified, false);
+    const second = depositRaw({ state, dest, nanos: rest, blind: rb, nowMs: t0 + 1 });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, 'portal_exists');
+    const whole = emptyVault();
+    whole.genesisMs = t0;
+    const qualified = depositRaw({
+      state: whole,
+      dest: destOf(newIdentity()),
+      nanos: PI_SHE_NANOS,
+      blind: randomScalar(),
+      nowMs: t0,
+    });
+    assert.equal(qualified.ok, true, qualified.reason);
+    assert.equal(qualified.portal.qualified, true);
+  });
+
+  it('hidden locks keep supply identity across π amounts and epochs', () => {
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const rows = [
+      { amount: PI_SHE_NANOS, at: t0, epoch: 0, qualified: true },
+      { amount: PI_SHE_NANOS + 1, at: t0 + RESERVE_EPOCH_MS + 1, epoch: 1, qualified: true },
+      { amount: PI_SHE_NANOS * 2, at: t0 + 3 * RESERVE_EPOCH_MS + 1, epoch: 3, qualified: true },
+      { amount: Math.floor(PI_SHE_NANOS / 2), at: t0 + 3 * RESERVE_EPOCH_MS + 2, epoch: 3, qualified: false },
+    ];
+    const epochs = [];
+    for (const row of rows) {
+      if (!state.bonusEnacted && state.epochStartMs && row.at >= state.epochStartMs + RESERVE_EPOCH_MS) {
+        const rolled = enact({ state, nowMs: row.at });
+        assert.equal(rolled.ok, true, rolled.reason);
+      }
+      const got = depositRaw({
+        state,
+        dest: destOf(newIdentity()),
+        nanos: row.amount,
+        blind: randomScalar(),
+        nowMs: row.at,
+      });
+      assert.equal(got.ok, true, `${row.amount} ${got.reason}`);
+      assert.equal(got.portal.qualified, row.qualified, String(row.amount));
+      const id = supplyIdentity(state);
+      assert.equal(id.ok, true, id.reason);
+      assert.equal(Number(state.totalLockedNanos) || 0, 0);
+      assert.equal(id.principalCommit, String(state.vaultPrincipalSum || ''));
+      assert.equal(id.lockedNanos, 0);
+      assert.ok(id.principalCommit.length > 0);
+      const booked = state.portals[got.portal.id];
+      assert.equal(booked.tranches.length, 1);
+      epochs.push(booked.tranches[0].epoch);
+    }
+    assert.deepEqual(epochs, rows.map((row) => row.epoch));
+  });
+
+  it('an ordinary spend of a Vault lock is refused after unlock, and withdraw still works', () => {
+    const alice = newIdentity();
+    const a = destOf(alice);
+    const payout = destForLogin(alice.address, { viewKey: alice.viewKey, height: 1 });
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const locked = depositIndexed(state, a, t0, { payout });
+    const after = t0 + RESERVE_EPOCH_MS + 1;
+    const leafCommit = locked.planted.leaf.commit;
+    const lockOut = { kind: 'lock', commit: leafCommit };
+    const lockTx = { kind: 'lock', vout: [lockOut] };
+    assert.equal(lockNoteSpendRejected(state, { vin: [{ commit: leafCommit }] }, t0 + 1), null);
+    assert.equal(lockNoteSpendRejected(state, { vin: [{ commit: leafCommit }] }, after), null);
+    assert.equal(outputJoinsAdmitSet(lockTx, lockOut), false);
+    const direct = {
+      kind: 'lock',
+      vin: [{ commit: leafCommit, noteCommit: leafCommit }],
+      vout: [{ kind: 'lock', commit: Buffer.alloc(32, 4) }],
+    };
+    assert.equal(typedCommitRejected(direct)?.reason, 'admit_membership');
+    const ordinary = {
+      kind: 'send',
+      vin: [{ commit: leafCommit }],
+      vout: [{ kind: 'send', commit: Buffer.alloc(32, 5) }],
+    };
+    assert.equal(outputJoinsAdmitSet(ordinary, lockOut), false);
+    assert.equal(typedCommitRejected({
+      ...ordinary,
+      kind: '',
+    })?.reason, 'admit_membership');
+    const ok = indexedHiddenWithdraw(state, a, after, {
+      id: 'after-unlock',
+      payout,
+      planted: locked.planted,
+    });
+    assert.equal(ok.ok, true, ok.reason);
+  });
+
+  it('a lock output that carries admitPub is receipt_admitpub', () => {
+    const commit = Buffer.alloc(32, 3);
+    const tx = {
+      kind: 'lock',
+      vout: [{ kind: 'lock', commit, admitPub: Buffer.alloc(32, 9) }],
+    };
+    assert.equal(outputJoinsAdmitSet(tx, tx.vout[0]), false);
+    assert.equal(receiptAdmitRejected(tx)?.reason, 'receipt_admitpub');
+    assert.equal(receiptAdmitRejected({
+      kind: 'lock',
+      vout: [{ kind: 'lock', commit }],
+    }), null);
   });
 
   it('Alice lock, Bob withdraw fails', () => {
@@ -614,11 +951,11 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0, payout: continuumA });
+    const locked = depositIndexed(state, a, t0, { payout: continuumA });
     const stolen = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS, payout: continuumB });
     assert.equal(stolen.ok, false);
     assert.equal(stolen.reason, 'payout_mismatch');
-    const ok = withdraw({ state, dest: a, nowMs: t0 + RESERVE_EPOCH_MS, payout: continuumA });
+    const ok = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'alice-payout', payout: continuumA, planted: locked.planted });
     assert.equal(ok.ok, true);
     assert.equal(ok.to, continuumA);
   });
@@ -631,22 +968,23 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const t0 = 1_700_000_000_000;
     const state = emptyVault();
     state.genesisMs = t0;
-    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
-    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).ok, true);
-    assert.equal(state.votes.increase, 1);
+    const aliceLock = depositIndexed(state, a, t0);
+    assert.equal(aliceLock.ok, true);
+    assert.equal(vote({ state, dest: a, choice: VOTE_INCREASE, nowMs: t0 + 2 }).reason, 'vote_retired');
+    assert.equal(state.votes.increase, 0);
     const end1 = t0 + RESERVE_EPOCH_MS;
     assert.equal(enact({ state, nowMs: end1 }).ok, true);
     assert.equal(deposit({ state, dest: b, nanos: PI_SHE_NANOS, nowMs: end1 + 1 }).ok, true);
     assert.equal(state.currentEpoch, 1);
     assert.equal(state.votes.increase, 0);
-    assert.equal(vote({ state, dest: b, choice: VOTE_HOLD, nowMs: end1 + 2 }).ok, true);
-    assert.equal(state.votes.hold, 1);
+    assert.equal(vote({ state, dest: b, choice: VOTE_HOLD, nowMs: end1 + 2 }).reason, 'vote_retired');
+    assert.equal(state.votes.hold, 0);
     const end2 = end1 + 1 + RESERVE_EPOCH_MS;
     assert.equal(enact({ state, nowMs: end2 }).ok, true);
-    const out = withdraw({ state, dest: a, nowMs: end2 });
+    const out = hiddenWithdraw(state, a, end2, { id: 'rollover-alice', planted: aliceLock.planted });
     assert.equal(out.ok, true, out.reason);
     assert.equal(state.votes.increase, 0);
-    assert.equal(state.votes.hold, 1);
+    assert.equal(state.votes.hold, 0);
     assert.ok(state.votes.increase >= 0);
     assert.ok(state.votes.decrease >= 0);
     assert.ok(state.votes.hold >= 0);
@@ -665,15 +1003,15 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     const down = vote({ state, dest: a, choice: VOTE_DECREASE, nowMs: t0 + 2 });
     assert.equal(down.ok, false);
-    assert.equal(down.reason, 'unit_floor');
-    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).ok, true);
+    assert.equal(down.reason, 'vote_retired');
+    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).reason, 'vote_retired');
     const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
     assert.equal(Number(state.liveHashBonusNanos), 1);
     assert.equal(Number(state.liveHashBonusNanos) >= 1, true);
   });
 
-  it('enact cannot write a zero hash unit even if vault state is corrupted to 0', () => {
+  it('a stored 0 stays bonus-off when no hash-bonus vote is counted', () => {
     const alice = newIdentity();
     const a = destOf(alice);
     const t0 = 1_700_000_000_000;
@@ -683,16 +1021,156 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     state.liveHashBonusNanos = 0n;
     const down = vote({ state, dest: a, choice: VOTE_DECREASE, nowMs: t0 + 2 });
     assert.equal(down.ok, false);
-    assert.equal(down.reason, 'unit_floor');
-    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).ok, true);
+    assert.equal(down.reason, 'vote_retired');
+    assert.equal(vote({ state, dest: a, choice: VOTE_HOLD, nowMs: t0 + 3 }).reason, 'vote_retired');
     const done = enact({ state, nowMs: t0 + RESERVE_EPOCH_MS });
     assert.equal(done.ok, true);
-    assert.ok(Number(state.liveHashBonusNanos) >= 1);
-    assert.equal(Number(state.liveHashBonusNanos), 1);
-    assert.notEqual(Number(state.liveHashBonusNanos), 0);
+    // Russell 21:34 17 Oct. A voted 0 is bonus off and is not clamped back to 1.
+    assert.equal(Number(state.liveHashBonusNanos), 0);
   });
 
-  it('compactTx(lockTx) through applyReserveBlock credits the portal; vote and withdraw follow', () => {
+  it('a carried portal id binds the first owner and a peer does not rebuild it', () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const vault = destOf(alice);
+    const d20 = hash20FromAddress(vault);
+    const pid = portalIdFromDest20(d20, portalBlindFromSeed(alice.spendSeed));
+    assert.equal(pid.length, 64);
+    assert.notEqual(pid, portalIdFromDest(vault));
+    const keyA = portalOwnerKey(alice.privateKey, pid);
+    const keyB = portalOwnerKey(bob.privateKey, pid);
+    const pubA = Buffer.from(ed25519RawPub(keyA)).toString('hex');
+    const pubB = Buffer.from(ed25519RawPub(keyB)).toString('hex');
+    assert.notEqual(pubA, pubB);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    state.genesisMs = t0;
+    const first = depositRaw({
+      state, portalId: pid, nanos: PI_SHE_NANOS, nowMs: t0, ownerPub: pubA,
+    });
+    assert.equal(first.ok, true, first.reason);
+    assert.equal(state.portals[pid].ownerPub, pubA);
+    assert.equal(state.portals[portalIdFromDest(vault)], undefined);
+    const other = depositRaw({
+      state, portalId: pid, nanos: PI_SHE_NANOS, nowMs: t0 + 1, ownerPub: pubB,
+    });
+    assert.equal(other.ok, false);
+    // A different owner is unsigned before the duplicate-portal check.
+    assert.equal(other.reason, 'unsigned');
+    const same = depositRaw({
+      state, portalId: pid, nanos: PI_SHE_NANOS, nowMs: t0 + 2, ownerPub: pubA,
+    });
+    assert.equal(same.ok, false);
+    assert.equal(same.reason, 'portal_exists');
+    const bare = reserveAction({
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      to: vault,
+      vout: [{ kind: 'lock', address: vault, dest20: Buffer.from(d20) }],
+    });
+    assert.equal(bare.portalId, '');
+    const carried = reservePortalRef({ kind: 'lock', from: vault, portalId: pid });
+    assert.equal(carried.ok, true);
+    assert.equal(carried.id, pid);
+  });
+
+  it('a compact lock portal id is not the address hash, and to or ssa1 is refused', () => {
+    const alice = newIdentity();
+    const vault = destOf(alice);
+    const d20 = hash20FromAddress(vault);
+    const blind = portalBlindFromSeed(alice.spendSeed);
+    const pid = portalIdFromDest20(d20, blind);
+    assert.equal(typeof pid, 'string');
+    assert.equal(pid.length, 64);
+    assert.notEqual(pid, portalIdFromDest(vault));
+    const leaked = compactLockLeakRejected({ kind: 'lock', to: vault, portalId: pid });
+    assert.equal(leaked.reason, 'vote_leak');
+    const named = compactLockLeakRejected({ kind: 'lock', portalId: pid, memo: 'pay ssa1qq' });
+    assert.equal(named.reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({ kind: 'lock', portalId: pid, dest20: Buffer.from(d20) }), null);
+    // payoutPortalId on a lock is the leak. Two lock outputs are a second portal.
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock', portalId: pid, payoutPortalId: pid, vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+    }).reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock', portalId: pid, vout: [{ kind: 'lock', dest20: Buffer.from(d20) }, { kind: 'lock', dest20: Buffer.from(d20) }],
+    }).reason, 'portal_exists');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock', portalId: pid, vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+    }), null);
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock',
+      portalId: pid,
+      vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+      spendPub: 'ab'.repeat(32),
+      fs1: Buffer.from([0xf1, 1]),
+    }).reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock',
+      portalId: pid,
+      vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+      sig: 'cd'.repeat(32),
+      fs1: Buffer.from([0xf1]),
+    }).reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock',
+      portalId: pid,
+      vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+      signature: 'ef'.repeat(32),
+      fs1: Buffer.from([0xf1, 2]),
+    }).reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock',
+      portalId: pid,
+      vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+      spendPub: 'ab'.repeat(32),
+    }), null);
+  });
+
+  it('a JS-built lock has no output-level piProof', () => {
+    const who = destOf(newIdentity());
+    const tx = lockTxRaw({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'js-lock-out' });
+    assert.ok(tx.piProof && tx.piProof.length > 0);
+    for (const out of tx.vout || []) assert.equal(out.piProof, undefined);
+    const small = lockTxRaw({ from: who, to: who, nanos: 1000, id: 'js-lock-small' });
+    assert.equal(small.piProof, undefined);
+    for (const out of small.vout || []) assert.equal(out.piProof, undefined);
+  });
+
+  it('lockTx with a spend seed carries a portal id the address does not recompute', () => {
+    const alice = newIdentity();
+    const bob = newIdentity();
+    const vault = destOf(alice);
+    const payer = destOf(bob);
+    const seed = alice.spendSeed;
+    const want = portalIdFromDest20(portalDest20FromSeed(seed, 0), portalBlindFromSeed(seed, 0));
+    const pay = portalIdFromDest20(hash20FromAddress(payer), portalBlindFromSeed(seed));
+    const tx = lockTxRaw({ from: payer, to: vault, nanos: 1000, id: 'lock-seeded-portal', spendSeed: seed });
+    assert.equal(typeof want, 'string');
+    assert.equal(want.length, 64);
+    assert.notEqual(tx.portalId, portalIdFromDest(vault));
+    assert.equal(tx.portalId, want);
+    assert.equal(tx.vout[0].portalId, want);
+    // A lock does not carry payoutPortalId. Consensus refuses that field.
+    assert.equal(tx.payoutPortalId, undefined);
+    const wrapped = lockTx({ from: payer, to: vault, nanos: 1000, id: 'lock-seeded-wrapped', spendSeed: seed });
+    assert.equal(wrapped.payoutPortalId, undefined);
+    assert.equal(wrapped.portalId, want);
+    assert.equal(wrapped.vout[0].portalId, want);
+    const wd = withdrawTxRaw({ from: vault, to: payer, nanos: 1000, id: 'wd-seeded-portal', spendSeed: seed });
+    const fromPortal = portalIdFromDest20(hash20FromAddress(vault), portalBlindFromSeed(seed, 0));
+    assert.notEqual(wd.portalId, portalIdFromDest(vault));
+    // A withdraw names the lock by portalId. The default is the address portal, not lock 0.
+    assert.equal(wd.portalId, fromPortal);
+    assert.notEqual(wd.portalId, want);
+    assert.equal(wd.vout[0].portalId, pay);
+    // A lock with no spend seed has no r. The address id remains for that call.
+    const plain = lockTxRaw({ from: payer, to: vault, nanos: 1000, id: 'lock-unseeded-portal' });
+    assert.equal(plain.portalId, portalIdFromDest(vault));
+    assert.equal(plain.vout[0].portalId, portalIdFromDest(vault));
+  });
+
+  it('a compact lock with no lock note is refused, and so is the wire copy', () => {
     const alice = newIdentity();
     const vault = destOf(alice);
     const continuum = destForLogin(alice.address, { viewKey: alice.viewKey });
@@ -700,20 +1178,22 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const state = emptyVault();
     state.genesisMs = t0;
     const pid = portalIdFromDest(vault);
-    const lock = compactTx(lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-c' }));
+    const rawLock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-c' });
+    const lock = compactTx(rawLock);
     const blob = JSON.stringify(lock);
     assert.doesNotMatch(blob, /ssa1/);
     assert.doesNotMatch(blob, /she1/);
     assert.doesNotMatch(blob, /"nanos"/);
     assert.doesNotMatch(blob, /"address"/);
+    assert.equal(lock.vaultLockNote, undefined);
     const locked = applyReserveBlock({
       state,
       block: { txs: [{ coinbase: true, vout: [] }, lock] },
       nowMs: t0,
     });
-    assert.equal(locked.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(locked));
-    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
-    assert.equal(Number(state.portals[pid].staked), PI_SHE_NANOS);
+    assert.equal(locked.ok, false);
+    assert.equal(locked.reason, 'stake_reward');
+    assert.equal(state.portals[pid], undefined);
 
     const voteSealed = compactTx(voteTx({ from: continuum, dest: vault, choice: VOTE_HOLD, id: 'vote-c' }));
     const voted = applyReserveBlock({
@@ -721,16 +1201,25 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       block: { txs: [{ coinbase: true, vout: [] }, voteSealed] },
       nowMs: t0 + 2,
     });
-    assert.equal(voted.some((r) => r.action === 'vote' && r.ok === true), true, JSON.stringify(voted));
+    assert.equal(voted.ok, false);
+    assert.equal(voted.reason, 'vote_retired');
 
-    const wd = compactTx(withdrawTx({ from: vault, to: continuum, nanos: PI_SHE_NANOS, id: 'wd-c' }));
+    const rawWd = withdrawTx({ from: vault, to: continuum, nanos: PI_SHE_NANOS, id: 'wd-c' });
+    signWithdrawReward(rawWd, ownerFor(vault).key, {
+      portalId: pid,
+      nanos: PI_SHE_NANOS,
+      dest: continuum,
+      state,
+      nowMs: t0 + RESERVE_EPOCH_MS,
+    });
+    const wd = compactTx(rawWd);
     const withdrawn = applyReserveBlock({
       state,
       block: { txs: [{ coinbase: true, vout: [] }, wd] },
       nowMs: t0 + RESERVE_EPOCH_MS,
     });
-    assert.equal(withdrawn.some((r) => r.action === 'withdraw' && r.ok === true), true, JSON.stringify(withdrawn));
-    assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal(withdrawn.ok, false);
+    assert.equal(withdrawn.reason, 'owner_missing');
 
     const wireState = emptyVault();
     const wire = encodeWireBlock({
@@ -748,8 +1237,9 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       nowMs: t0,
       genesisMs: t0,
     });
-    assert.equal(peer.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(peer));
-    assert.equal(Number(wireState.totalLockedNanos), PI_SHE_NANOS);
+    assert.equal(peer.ok, false);
+    assert.equal(peer.reason, 'stake_reward');
+    assert.equal(wireState.portals[pid], undefined);
   });
 
   it('compactTx of an address-only lock still credits applyReserveBlock from dest20 and valueProof.v', () => {
@@ -783,9 +1273,9 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       block: { txs: [{ coinbase: true, vout: [] }, lock] },
       nowMs: t0,
     });
-    assert.equal(locked.some((r) => r.action === 'lock' && r.ok === true), true, JSON.stringify(locked));
-    assert.equal(Number(state.totalLockedNanos), PI_SHE_NANOS);
-    assert.equal(Number(state.portals[pid].staked), PI_SHE_NANOS);
+    assert.equal(locked.ok, false);
+    assert.equal(locked.reason, 'stake_reward');
+    assert.equal(state.portals[pid], undefined);
 
     const voteFat = {
       id: 'vote-addr-only',
@@ -804,7 +1294,7 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       block: { txs: [{ coinbase: true, vout: [] }, voteSealed] },
       nowMs: t0 + 2,
     });
-    assert.equal(voted.some((r) => r.action === 'vote' && r.ok === true), true, JSON.stringify(voted));
+    assert.equal(voted.ok, false);
   });
 
   it('rejects over-mint withdraw, shear1 extra-mint, mid-epoch payout, and oracle mid-epoch games', () => {
@@ -831,16 +1321,18 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       Date.now = realNow;
     }
     const fat = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS + due + NANOS_PER_SHE, id: 'fat' });
+    bindRealPrincipal(state, a, end, fat);
     const over = verifyReservePayout(state, fat, end);
     assert.equal(over.ok, false);
     assert.equal(over.reason, 'over_mint');
     const okTx = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS, id: 'ok' });
+    bindRealPrincipal(state, a, end, okTx);
     assert.equal(verifyReservePayout(state, okTx, end).ok, true);
     assert.equal(verifyReservePayout(state, okTx, t0 + 1000).reason, 'epoch_open');
     observeRate({ state, annualBps: 9000, nowMs: t0 + DAY });
     const rw = portalRewards(state, a, t0 + DAY);
     assert.equal(rw.epochBps, GENESIS_BPS);
-    assert.equal(rw.projected, due);
+    assert.equal(rw.projected, 0);
     const shear1 = extraMint({ programId: RESERVE_PROGRAM, to: alice.address, nanos: 1, kind: 'withdraw' });
     assert.equal(shear1.ok, false);
     assert.equal(shear1.reason, 'shear1');
@@ -894,7 +1386,8 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(act.nanos, n);
     const zero = withdrawTx({ from: a, to: a, nanos: 0, id: 'kt10-zero' });
     assert.equal(zero.vout[0].commit, undefined);
-    assert.equal(reserveAction(zero).opened, false);
+    assert.equal(reserveAction(zero).opened, true);
+    assert.equal(reserveAction(zero).nanos, 0);
     const multi = withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-multi' });
     multi.vout.push(withdrawTx({ from: a, to: a, nanos: n, id: 'kt10-multi-2' }).vout[0]);
     assert.equal(reserveAction(multi).opened, false);
@@ -933,13 +1426,20 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const end = t0 + RESERVE_EPOCH_MS;
     const state = emptyVault();
     state.genesisMs = t0;
-    assert.equal(deposit({ state, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    const locked = depositIndexed(state, a, t0);
     state.epochBps = -250;
-    const short = withdrawTx({ from: a, to: a, nanos: PI_SHE_NANOS - 1, id: 'short' });
+    const due = PI_SHE_NANOS + Number(leafStubNanos(state, [locked.planted.leaf.commit.toString('hex')]));
+    const short = indexedHiddenWithdraw(state, a, end, {
+      id: 'short', planted: locked.planted, nanos: due - 1, bindOnly: true,
+    }).tx;
     const refused = verifyReservePayout(state, short, end);
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'principal_short');
-    const paid = withdraw({ state, dest: a, nowMs: end });
+    const fatRate = indexedHiddenWithdraw(state, a, end, {
+      id: 'rate-fat', planted: locked.planted, nanos: due + 1, bindOnly: true,
+    }).tx;
+    assert.equal(verifyReservePayout(state, fatRate, end).reason, 'over_mint');
+    const paid = hiddenWithdraw(state, a, end, { id: 'rate-full', planted: locked.planted });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.reward, 0);
     assert.equal(paid.interest, 0);
@@ -947,9 +1447,9 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.equal(paid.payout, paid.principal);
     const zero = emptyVault();
     zero.genesisMs = t0;
-    assert.equal(deposit({ state: zero, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
+    const flatLock = depositIndexed(zero, a, t0);
     zero.epochBps = 0;
-    const flat = withdraw({ state: zero, dest: a, nowMs: end });
+    const flat = hiddenWithdraw(zero, a, end, { id: 'rate-flat', planted: flatLock.planted });
     assert.equal(flat.ok, true, flat.reason);
     assert.equal(flat.payout, flat.principal);
   });
