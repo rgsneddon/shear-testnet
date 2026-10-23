@@ -123,7 +123,7 @@
    "texts": [
     "crypto/randomx/LICENSE"
    ],
-   "shipped": "statically linked into shearhash.node (node zips, wallet desktop sidecar, distro packs) and ShearK-Miner",
+   "shipped": "statically linked into shearhash.node (node zips, wallet desktop sidecar, distro packs), ShearK-Miner, and libshear_v3 (wallet desktop, Android, and Windows shear_v3.dll)",
    "obligation": "keep the copyright and licence text in source and binary copies; no endorsement using the holders' names",
    "status": "OK: headers kept; src/configuration.h is the one modified file and configuration.upstream.h keeps the original; notice in THIRD_PARTY_NOTICES.txt"
   },
@@ -136,7 +136,7 @@
     "Copyright 2015 Daniel Dinu, Dmitry Khovratovich, Jean-Philippe Aumasson, and Samuel Neves"
    ],
    "text": "crypto/randomx/src/argon2*.{c,h} and crypto/randomx/src/blake2/* carry this header:\n\n  Original code from Argon2 reference source code package used under CC0 Licence\n  https://github.com/P-H-C/phc-winner-argon2\n  Copyright 2015\n  Daniel Dinu, Dmitry Khovratovich, Jean-Philippe Aumasson, and Samuel Neves\n\nThe CC0 1.0 text is in LICENSES/CC0-1.0.txt.",
-   "shipped": "inside RandomX (shearhash.node, ShearK-Miner)",
+   "shipped": "inside RandomX (shearhash.node, ShearK-Miner, libshear_v3)",
    "obligation": "none (CC0); header kept as a courtesy",
    "status": "OK: headers kept; notice in THIRD_PARTY_NOTICES.txt",
    "texts": [
@@ -325,7 +325,7 @@
     "LICENSES/GPL-3.0-or-later.txt",
     "LICENSES/GCC-exception-3.1.txt"
    ],
-   "shipped": "statically linked into shearhash.node, shearadmit.node, ShearK-Miner, Shear-Miner, libshear_admit.so and the Linux wallet runner and plugins (-static-libgcc -static-libstdc++, and static winpthread on Windows). libgcc_s_seh-1.dll, libstdc++-6.dll, libstdc++.so.6 and libgcc_s.so.1 are not shipped. The prebuilt Node.js binary still loads the system libstdc++",
+   "shipped": "statically linked into shearhash.node, shearadmit.node, ShearK-Miner, Shear-Miner, libshear_admit.so, libshear_v3.so, shear_v3.dll and the Linux wallet runner and plugins (-static-libgcc -static-libstdc++, and static winpthread on Windows). libgcc_s_seh-1.dll, libstdc++-6.dll, libstdc++.so.6 and libgcc_s.so.1 are not shipped. The prebuilt Node.js binary still loads the system libstdc++",
    "obligation": "none beyond Shear's own terms: the GCC Runtime Library Exception 3.1 lets the statically linked target code be distributed under any licence; the GPL and exception texts are kept as a courtesy",
    "status": "DECIDED (decision 4, Linux included 2026-10-14 17:37 BST): static link; packers fail if a Linux archive ships libstdc++.so* or libgcc_s.so*, or if a Shear-built ELF needs them, and if a Windows binary imports libgcc_s_seh-1.dll, libstdc++-6.dll or libwinpthread-1.dll"
   },

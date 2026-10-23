@@ -42,7 +42,7 @@ void main() {
           'notes': [for (var i = 0; i < n; i++) row(i, 1)],
           'needShe': 0.5,
           'tip': 40,
-          'confs': 9,
+          'confs': 9, 'allowBare': true,
           'memo': memo,
           'holdShe': 0,
         });
@@ -57,14 +57,14 @@ void main() {
         'notes': [for (var i = 0; i < 20; i++) row(i, 0.01)],
         'needShe': 0.01 * (kMaxInputsPerSend + 1),
         'tip': 40,
-        'confs': 9,
+        'confs': 9, 'allowBare': true,
         'memo': memo,
       });
       final wholeShe = selectSpendNotesWire({
         'notes': [for (var i = 0; i < 20; i++) row(i, 0.99)],
         'needShe': 10,
         'tip': 40,
-        'confs': 9,
+        'confs': 9, 'allowBare': true,
         'memo': memo,
       });
       expect((wholeShe['batches'] as List).length, greaterThan(1), reason: 'memo=$memo');
@@ -83,7 +83,7 @@ void main() {
       ],
       'needShe': 4,
       'tip': 20,
-      'confs': 9,
+      'confs': 9, 'allowBare': true,
       'holdShe': 1,
     });
     final picked = (held['batches'] as List).cast<Map>().expand((b) => (b['notes'] as List)).toList();
@@ -235,7 +235,7 @@ void main() {
           ],
           'needNanos': '1',
           'tip': 40,
-          'confs': 9,
+          'confs': 9, 'allowBare': true,
           'memo': memo,
         });
         expect(plan['covered'], isTrue, reason: 'n=$n memo=$memo');
@@ -258,7 +258,7 @@ void main() {
         'needNanos': '1',
         'holdNanos': above,
         'tip': 40,
-        'confs': 9,
+        'confs': 9, 'allowBare': true,
         'memo': memo,
       });
       expect(held['spendableNanos'], other, reason: 'memo=$memo');
@@ -277,7 +277,7 @@ void main() {
       ],
       'needNanos': '1',
       'tip': 40,
-      'confs': 9,
+      'confs': 9, 'allowBare': true,
     });
     expect(open['spendableNanos'], freeSum);
     final openNotes = (open['batches'] as List).cast<Map>().expand((b) => (b['notes'] as List)).cast<Map>();
@@ -323,7 +323,7 @@ void main() {
           ],
           'needShe': 0.1,
           'tip': 40,
-          'confs': 9,
+          'confs': 9, 'allowBare': true,
         });
         expect(plan['covered'], isTrue, reason: 'n=$n she=$she');
         final picked = (plan['batches'] as List)
@@ -346,7 +346,7 @@ void main() {
       ],
       'needShe': 0.1,
       'tip': 40,
-      'confs': 9,
+      'confs': 9, 'allowBare': true,
     });
     expect(none['covered'], isFalse);
     expect(none['empty'], isTrue);
@@ -646,7 +646,7 @@ void main() {
             'notes': notes,
             'needNanos': '1',
             'tip': 40,
-            'confs': 9,
+            'confs': 9, 'allowBare': true,
             'memo': memo,
             'cap': 100000,
           });
@@ -662,7 +662,7 @@ void main() {
         'notes': [for (final amt in amounts) row(amt)],
         'needNanos': '9007199254740993',
         'tip': 40,
-        'confs': 9,
+        'confs': 9, 'allowBare': true,
         'memo': memo,
       });
       expect(mixed['covered'], isTrue, reason: 'mixed memo=$memo');
@@ -675,7 +675,7 @@ void main() {
         'notes': [for (var i = 0; i < nDust; i++) row('1')],
         'needNanos': '1',
         'tip': 40,
-        'confs': 9,
+        'confs': 9, 'allowBare': true,
       });
       expect(onlyDust['covered'], isFalse, reason: 'dust notes n=$nDust');
       expect(onlyDust['shortFee'], isTrue, reason: 'dust notes n=$nDust');
@@ -688,7 +688,7 @@ void main() {
       'notes': [for (var i = 0; i < n; i++) row(one.toString())],
       'needNanos': full.toString(),
       'tip': 40,
-      'confs': 9,
+      'confs': 9, 'allowBare': true,
     });
     expect(whole['covered'], isTrue);
     expect((whole['batches'] as List), hasLength(1));
@@ -699,7 +699,7 @@ void main() {
       'notes': [for (var i = 0; i < n + 1; i++) row(one.toString())],
       'needNanos': (one * BigInt.from(n)).toString(),
       'tip': 40,
-      'confs': 9,
+      'confs': 9, 'allowBare': true,
       'cap': n + 50,
     });
     expect(over['covered'], isTrue);

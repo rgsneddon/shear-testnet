@@ -116,9 +116,19 @@ val buildLibsodiumSo = tasks.register<Exec>("buildLibsodiumSo") {
     workingDir = rootProject.projectDir
 }
 
+// libshear_v3.so for every abiFilters ABI. The script reads those filters.
+val buildShearV3So = tasks.register<Exec>("buildShearV3So") {
+    group = "shear"
+    description = "Cross-compile libshear_v3.so into jniLibs for every shipped ABI"
+    val script = rootProject.file("../native/build-android-shear-v3.sh")
+    commandLine("bash", script.absolutePath)
+    workingDir = rootProject.projectDir
+}
+
 tasks.named("preBuild").configure {
     dependsOn(buildShearAdmitSo)
     dependsOn(buildLibsodiumSo)
+    dependsOn(buildShearV3So)
 }
 
 dependencies {

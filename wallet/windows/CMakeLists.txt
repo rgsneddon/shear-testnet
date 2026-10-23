@@ -70,6 +70,16 @@ add_custom_target(shear_admit_cdylib
 )
 add_dependencies(${BINARY_NAME} shear_admit_cdylib)
 
+# ShearHash-v3. Loaded from beside the executable.
+set(SHEAR_V3_DLL "${CMAKE_CURRENT_SOURCE_DIR}/../native/shear_v3.dll")
+add_custom_target(shear_v3_shared
+  COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/../native/build-shear-v3.ps1"
+  BYPRODUCTS "${SHEAR_V3_DLL}"
+  COMMENT "Building shear_v3.dll"
+  VERBATIM
+)
+add_dependencies(${BINARY_NAME} shear_v3_shared)
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
@@ -95,6 +105,9 @@ install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 install(FILES "${SHEAR_ADMIT_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+
+install(FILES "${SHEAR_V3_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 if(PLUGIN_BUNDLED_LIBRARIES)
