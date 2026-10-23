@@ -35,16 +35,33 @@ import 'shear_eip712.dart';
 import 'shear_tip_tick.dart';
 import 'shear_read_sync.dart';
 import 'shear_public_confirm.dart';
+import 'shear_checkpoint.dart';
 import 'shear_closure.dart';
 import 'shear_node_proc.dart';
 import 'rx_privacy_browser.dart';
 import 'rp_mail.dart';
 
 const kWalletVersion = '0.72';
+
+/// In place of the Spendable figure until a read from the selected source succeeds.
+const kSpendableSyncing = 'Syncing…';
+
+/// Connect bare without consent, or an own node that did not resolve.
+const kSpendableNotSyncing = 'not syncing: choose a node';
+
+/// Recipient amount on the flow screen, before the user sends.
+Widget flowRecipientAmountLine(String? she) {
+  if (she == null || she.isEmpty) return const SizedBox.shrink();
+  return Text('Recipient $she SHE', key: const Key('flow-recipient-amount'));
+}
+
 /// Lock-in card stays up at least this long; Dismiss is disabled until then.
 const kReserveLockHold = Duration(seconds: 6);
+
 /// Shown after a Reserve lock is accepted. Spendable drops and staking starts now.
-const kReserveLockSent = 'Deposit accepted. Spendable is reduced and staking has started.';
+const kReserveLockSent =
+    'Deposit accepted. Spendable is reduced and staking has started.';
+
 /// Your deposits scroller: two rows visible; extra deposits scroll inside.
 const kDepositRowHeight = 22.0;
 const kTabs = [
@@ -56,6 +73,7 @@ const kTabs = [
   'Closure',
 ];
 const kSymbols = ['∇·J = 0', 'J^μ', 'η', 'Ω^{μν}', 'S_{μν}', 'G_{μν}'];
+
 /// Continuum side-by-side spendable | stats at this width and above.
 const kContinuumSplitWidth = 720.0;
 const kExplains = [
@@ -71,6 +89,10 @@ const kExplains = [
 final List<String> debugPopulationOrder = <String>[];
 
 Future<void> main(List<String> args) async {
+  if (releaseCheckpointMissing()) {
+    runApp(const CheckpointMissingApp());
+    return;
+  }
   armWalletConnect();
   final tipFlag = args.indexOf('--print-tip');
   if (tipFlag >= 0) {
@@ -88,6 +110,23 @@ Future<void> main(List<String> args) async {
   }
   registerShearLicenses();
   runApp(ShearWalletApp(demoTx: kDebugMode, biometrics: DeviceBiometrics()));
+}
+
+/// Release build whose checkpoint pin is still empty. Debug and tests do not
+/// reach this. The text is the whole screen.
+class CheckpointMissingApp extends StatelessWidget {
+  const CheckpointMissingApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(
+      home: Scaffold(
+        body: Center(
+          child: Text('checkpoint missing', key: Key('checkpoint-missing')),
+        ),
+      ),
+    );
+  }
 }
 
 /// Parent env for the node, without bootstrap or seed overrides. Windows still needs SystemRoot and PATH.
@@ -138,9 +177,11 @@ class ShearWalletApp extends StatefulWidget {
   final ShearSession? session;
   final ShearLedger? ledger;
   final String? launchExecutable;
+
   /// Local observation only: confirm one testnet round so Shearview/Resistance have a tx.
   final bool demoTx;
   final ShearReserve? reserve;
+
   /// Test hook. When set, boot can spawn this binary instead of the pack.
   final String? nodeBinary;
 
@@ -150,25 +191,33 @@ class ShearWalletApp extends StatefulWidget {
   /// Test hook. Production fetches the origin named in the vort1. key.
   final Future<Vortice?> Function(String key)? downloadVortice;
   final ShearBiometrics? biometrics;
+
   /// Test hook. Production opens a user save dialog (SAF on Android).
   final File Function()? exportDest;
+
   /// Test hook. Production uses [defaultShewallSavePicker] (no bytes on desktop).
   final Future<String?> Function({Uint8List? bytes})? savePicker;
+
   /// Test hook. Production opens a user open dialog for shewall.bin.
   final File Function()? importSrc;
   final Future<bool> Function(Uri url)? openUrl;
+
   /// Test hook. Production opens the device camera to scan a Continuum receive QR.
   final Future<String?> Function()? scanQr;
+
   /// Test hook for Scan QR image pick. Production uses FilePicker then
   /// [decodeReceiveQrImage] (Windows has no mobile_scanner plugin).
   final Future<Uint8List?> Function()? pickQrImage;
+
   /// Tests: session already sealed and identity in memory.
   final bool startUnlocked;
+
   /// Tests: skip unlock HTTP so the sign-pull dialog can be driven without a hung pool.
   final bool skipPoolSync;
 
   /// Tests: show the first-run public-node screen even when [skipPoolSync] is set.
   final bool askPublicNode;
+
   /// Tests: post Reserve lock to [ledger.pool] even when [skipPoolSync] is set.
   final bool postReserveLock;
 
@@ -183,7 +232,8 @@ class ShearWalletApp extends StatefulWidget {
   ShearWalletAppState createState() => ShearWalletAppState();
 }
 
-class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObserver {
+class ShearWalletAppState extends State<ShearWalletApp>
+    with WidgetsBindingObserver {
   /// Phone shell. Android today. The iOS wallet, when it is cut, is this same
   /// coins-only app: no local node and no 1 SHE continuity card.
   bool get _hostAndroid =>
@@ -195,24 +245,31 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       widget.bookLoading || (_spendableAwaiting && !ledger.restoredBook);
 
   late final ShearSession session = widget.session ?? ShearSession();
-  late final ShearLedger ledger = widget.ledger ?? ShearLedger(pool: ShearPoolClient());
-  late final ShearBiometrics biometrics = widget.biometrics ?? const NoBiometrics();
+  late final ShearLedger ledger =
+      widget.ledger ?? ShearLedger(pool: ShearPoolClient());
+  late final ShearBiometrics biometrics =
+      widget.biometrics ?? const NoBiometrics();
   final GlobalKey<NavigatorState> _nav = GlobalKey<NavigatorState>();
-  final GlobalKey<ScaffoldMessengerState> _snack = GlobalKey<ScaffoldMessengerState>();
+  final GlobalKey<ScaffoldMessengerState> _snack =
+      GlobalKey<ScaffoldMessengerState>();
   ShearIdentity? id;
   String password = '';
   bool unlocked = false;
   bool _verifying = false;
+
   /// Sync chrome and the block-height label wait until spendable has painted.
   bool _chromeReady = false;
 
   /// True from the responding shell until the unlock credit read returns.
   /// The figure is not 0 SHE during that wait.
   bool _spendableAwaiting = false;
+
   /// True while opened coins are still being collated. The bar says SYNCING.
   bool _spendSyncing = false;
+
   /// True after a notes read finished and the sealed height is known.
   bool _bookCollated = false;
+
   /// Connect bare Flyclient sample. Local-node mode does not read these.
   bool _flySampling = false;
   bool _flyOk = false;
@@ -253,6 +310,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool _showCtfTranscript = false;
   Timer? _accrualTick;
   Timer? _preloginTick;
+  bool _preloginBusy = false;
   int _tipWatchGen = 0;
   bool _tipBusy = false;
   bool _creditBusy = false;
@@ -285,6 +343,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   bool get debugFlowSending => _flowSending;
   SendProgress? get debugFlowProgress => _flowProgress;
   String? _flowFeeQuote;
+  String? _flowRecipientShe;
   String? _flowProgressText;
   SendProgress? _flowProgress;
   int _flowQuoteGen = 0;
@@ -347,6 +406,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (st != null) {
       sidecar.reportedHeight = st.height;
       sidecar.reportedIbd = st.ibd;
+      if (!st.ibd &&
+          desktopNodeTipCounts(
+            sidecar.committed,
+            ownNode:
+                session.ownNodeUrl.trim().isNotEmpty ||
+                ledger.pool?.usesOwnNode == true,
+          )) {
+        ledger.noteNodeCheckedTip(st.height);
+      }
       matched = sidecar.takeOverIfMatched();
     }
     _requestShellPaint();
@@ -435,10 +503,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _pinNodeConsole();
   }
 
-  Future<void> _startSharedNode(String binary, Map<String, String> env, List<String> args) async {
+  Future<void> _startSharedNode(
+    String binary,
+    Map<String, String> env,
+    List<String> args,
+  ) async {
     await _stopSharedNode();
     final work = sidecar.workDir;
-    final merged = sharedNodeLaunchEnv(Platform.environment, env, workDir: work);
+    final merged = sharedNodeLaunchEnv(
+      Platform.environment,
+      env,
+      workDir: work,
+    );
     final handle = await startNodeProcessOffUi(
       binary: binary,
       args: args,
@@ -470,10 +546,17 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   @override
   void initState() {
     super.initState();
+    final headers = verifiedHeaderStorePath(session.store.path);
+    if (headers.isNotEmpty) ledger.bindHeaderStore(headers);
+    ledger.onHeaderProgress = () {
+      if (mounted) _requestShellPaint();
+    };
     WidgetsBinding.instance.addObserver(this);
     final beside = File(Platform.resolvedExecutable).parent.path;
     final dataDir = closureNodeDataDir(
-      override: Platform.environment['SHEAR_DATA'] ?? Platform.environment['SHEAR_NODE_DATA'],
+      override:
+          Platform.environment['SHEAR_DATA'] ??
+          Platform.environment['SHEAR_NODE_DATA'],
       besideDir: beside,
     );
     final packed = resolvePackagedNode(
@@ -481,18 +564,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       besideDir: beside,
     );
     _ownNodeCtrl.text = session.ownNodeUrl;
-    sidecar = ShearNodeSidecar(
-      android: widget.hostAndroid ?? (!kIsWeb && Platform.isAndroid),
-      storedMode: widget.session?.closureSendMode,
-      nodeBinary: widget.nodeBinary ?? packed?.binary,
-      dataDir: dataDir,
-      datadirEmpty: () => closureDatadirEmpty(dataDir),
-      startProcess: widget.startNode ?? _startSharedNode,
-      onStop: _stopSharedNode,
-    )
-      ..proofSink = ledger
-      ..nodeScript = packed?.script
-      ..workDir = packed?.workDir;
+    sidecar =
+        ShearNodeSidecar(
+            android: widget.hostAndroid ?? (!kIsWeb && Platform.isAndroid),
+            storedMode: widget.session?.closureSendMode,
+            nodeBinary: widget.nodeBinary ?? packed?.binary,
+            dataDir: dataDir,
+            datadirEmpty: () => closureDatadirEmpty(dataDir),
+            startProcess: widget.startNode ?? _startSharedNode,
+            onStop: _stopSharedNode,
+          )
+          ..proofSink = ledger
+          ..nodeScript = packed?.script
+          ..workDir = packed?.workDir;
     _tabScroll = List.generate(kTabs.length, (_) => ScrollController());
     _boot();
   }
@@ -528,7 +612,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
       _accrualPaused = true;
       _tipWatchGen += 1;
       _accrualTick?.cancel();
@@ -543,7 +628,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// Copy the unlocked choice onto the sidecar. A locked session still has the
   /// default Connect bare string, and that default is not the stored choice.
   void _installStoredNodeChoice() {
-    final mode = closureModeFromStored(session.closureSendMode, android: _hostAndroid);
+    final mode = closureModeFromStored(
+      session.closureSendMode,
+      android: _hostAndroid,
+    );
     sidecar
       ..committed = mode
       ..pending = mode;
@@ -555,7 +643,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final underTest = Platform.environment['FLUTTER_TEST'] == 'true';
     if (underTest && widget.startNode == null) return Future<void>.value();
     final mode = sidecar.committed;
-    if (mode == ClosureSendMode.localNode || mode == ClosureSendMode.localNodeFull) {
+    if (mode == ClosureSendMode.localNode ||
+        mode == ClosureSendMode.localNodeFull) {
       return sidecar.apply();
     }
     return Future<void>.value();
@@ -589,7 +678,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     } catch (_) {
       _bioStored = false;
     }
-    if (widget.startUnlocked && session.identity != null && session.password != null) {
+    if (widget.startUnlocked &&
+        session.identity != null &&
+        session.password != null) {
       await _enterWallet(session.password!);
       return;
     }
@@ -601,7 +692,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _preloginSync() async {
     Future<void> once() async {
       try {
-        await ledger.syncTip(proveChain: false);
+        await runPreloginOnce(work: () => ledger.syncTip(proveChain: false));
       } catch (_) {}
       if (mounted && !unlocked) setState(() {});
     }
@@ -613,7 +704,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         _preloginTick?.cancel();
         return;
       }
-      unawaited(once());
+      if (_preloginBusy) return;
+      _preloginBusy = true;
+      unawaited(
+        once().whenComplete(() {
+          _preloginBusy = false;
+        }),
+      );
     });
   }
 
@@ -621,14 +718,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final seen = <String>{};
     final extras = <Vortice>[];
     for (final v in [...session.deployedVortices, ...vortices]) {
-      if (isPinnedProgram(v.id) || isReservedProgram(v.id) || v.id.isEmpty || seen.contains(v.id)) continue;
+      if (isPinnedProgram(v.id) ||
+          isReservedProgram(v.id) ||
+          v.id.isEmpty ||
+          seen.contains(v.id))
+        continue;
       seen.add(v.id);
       extras.add(v);
     }
-    vortices = [
-      reserveVortice,
-      ...extras,
-    ];
+    vortices = [reserveVortice, ...extras];
     final chips = vortices.where(vorticeChipVisible).length + 1;
     if (vortexTab >= chips) vortexTab = 0;
   }
@@ -643,7 +741,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     try {
       final origin = parsed.origin ?? '';
       var consent = session.publicNodeConsent;
-      if (widget.downloadVortice == null && origin.isNotEmpty && await vorticeOriginIsPublic(origin) && !consent) {
+      if (widget.downloadVortice == null &&
+          origin.isNotEmpty &&
+          await vorticeOriginIsPublic(origin) &&
+          !consent) {
         if (!mounted) return;
         // The app state sits above MaterialApp. The navigator context can show the dialog.
         final dialogContext = _nav.currentContext;
@@ -694,7 +795,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Future<void> _removeVortice(BuildContext context, Vortice v) async {
-    if (v.id == reserveProgram || isPinnedProgram(v.id) || isReservedProgram(v.id) || v.id == '_add') {
+    if (v.id == reserveProgram ||
+        isPinnedProgram(v.id) ||
+        isReservedProgram(v.id) ||
+        v.id == '_add') {
       return;
     }
     final ok = await showDialog<bool>(
@@ -737,8 +841,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         _lockError = err == 'mismatch'
             ? 'Passwords do not match.'
             : err == 'too_short'
-                ? 'Use at least $kMinWalletPasswordLen characters.'
-                : 'Enter a password that encrypts shewall.bin.';
+            ? 'Use at least $kMinWalletPasswordLen characters.'
+            : 'Enter a password that encrypts shewall.bin.';
       });
       return;
     }
@@ -770,8 +874,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     } catch (e) {
       final msg = e is FormatException ? e.message : '';
       if (msg.startsWith('shewall_reset_required')) {
-        setState(() => _lockError =
-            'This shewall is from a prior book. Reset the wallet for $kBookMagic.');
+        setState(
+          () => _lockError =
+              'This shewall is from a prior book. Reset the wallet for $kBookMagic.',
+        );
         return;
       }
       setState(() => _lockError = 'Wrong password.');
@@ -788,7 +894,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _importShewall() async {
     final pw = unlockCtrl.text;
     if (pw.isEmpty) {
-      setState(() => _lockError = 'Enter the password that encrypts this shewall.bin.');
+      setState(
+        () => _lockError = 'Enter the password that encrypts this shewall.bin.',
+      );
       return;
     }
     try {
@@ -807,7 +915,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       await session.setPassword(pw);
       await _enterWallet(pw);
     } catch (_) {
-      setState(() => _lockError = 'Import failed. Check the file and password.');
+      setState(
+        () => _lockError = 'Import failed. Check the file and password.',
+      );
     }
   }
 
@@ -825,8 +935,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           decoration: const InputDecoration(labelText: 'Wallet password'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Seal')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Seal'),
+          ),
         ],
       ),
     );
@@ -867,7 +983,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   /// Same path as the lock-gate Set password / Unlock buttons. Argon2id cannot complete in FakeAsync.
   @visibleForTesting
-  Future<void> setPasswordNow() => _setPassword(unlockCtrl.text, confirmCtrl.text);
+  Future<void> setPasswordNow() =>
+      _setPassword(unlockCtrl.text, confirmCtrl.text);
 
   @visibleForTesting
   Future<void> unlockNow() => _unlock(unlockCtrl.text);
@@ -881,7 +998,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> exportShewallNow() async {
     final ident = id ?? session.identity;
     final pw = session.password ?? password;
-    void snack(String msg) => _snack.currentState?.showSnackBar(SnackBar(content: Text(msg)));
+    void snack(String msg) =>
+        _snack.currentState?.showSnackBar(SnackBar(content: Text(msg)));
     if (ident == null || pw.isEmpty) {
       snack('Unlock with your password first.');
       return;
@@ -922,7 +1040,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
     final stored = await biometrics.recalledPassword();
     if (stored == null || stored.isEmpty) {
-      setState(() => _lockError = 'No password stored for biometrics. Unlock once with your password.');
+      setState(
+        () => _lockError =
+            'No password stored for biometrics. Unlock once with your password.',
+      );
       return;
     }
     await _unlock(stored);
@@ -1014,7 +1135,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (widget.demoTx) {
         var pay = ledger.currentDest(id!.address);
         if (ledger.spendable(pay) <= 0) {
-          final minted = ledger.confirmRound(address: id!.address, pot: 1, height: 1);
+          final minted = ledger.confirmRound(
+            address: id!.address,
+            pot: 1,
+            height: 1,
+          );
           ledger.settleTo(ShearLedger.continuumConfirmations);
           _ingestTx(id!, minted);
         }
@@ -1087,7 +1212,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   void _onOpenedCoins() {
     final who = id;
     if (!mounted || who == null) return;
-    if (ledger.spendableOwned(who.address, paymentCode: who.paymentCode) <= 1e-12) {
+    if (ledger.spendableOwned(who.address, paymentCode: who.paymentCode) <=
+        1e-12) {
       return;
     }
     _spendableAwaiting = false;
@@ -1114,8 +1240,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _creditBusy = true;
     try {
       await _followCredits(ident, full: _fullCreditNow(wantFull: false));
-    } catch (_) {}
-    finally {
+    } catch (_) {
+    } finally {
       _creditBusy = false;
       if (_creditAgain && mounted && unlocked) _armCreditFollow();
     }
@@ -1133,8 +1259,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     // worker isolate. Sync chrome and block info stay down until it returns.
     _creditBusy = true;
     debugPopulationOrder.add('spendable');
-    // A book saved on this device paints now. The follow only opens new notes.
-    _spendableAwaiting = !ledger.restoredBook;
+    // No saved figure until this session's read from the selected source returns.
+    _spendableAwaiting = true;
     _spendSyncing = true;
     if (_usesFlyclientTip) unawaited(_runFlyclientSample());
     debugPopulationOrder.add('shell');
@@ -1160,13 +1286,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     } catch (_) {
       // A thrown credit read is not an empty book. Leave the figure on "…".
       ledger.noteSpendableReadFailed();
-    }
-    finally {
+    } finally {
       _creditBusy = false;
       _spendableAwaiting = false;
       _spendSyncing = false;
       final who = id;
-      if (who != null && ledger.sealedHeight > 0 && !ledger.spendableReadFailed) {
+      if (who != null &&
+          ledger.sealedHeight > 0 &&
+          !ledger.spendableReadFailed) {
         _bookCollated = true;
       }
       if (mounted) setState(() => _verifying = false);
@@ -1181,7 +1308,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// Desktop continuity card. Phone wallets do not fetch or show it.
   /// Runs outside the tip timeout so a slow stats read cannot hold a new coin.
   Future<void> _paintContinuity() async {
-    if (_continuityBusy || !mounted || _hostAndroid || widget.skipPoolSync) return;
+    if (_continuityBusy || !mounted || _hostAndroid || widget.skipPoolSync)
+      return;
     _continuityBusy = true;
     try {
       final changed = await ledger.readContinuityFigures();
@@ -1304,13 +1432,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     // Android has no local node. A loopback /events watch never connects and
     // is not the public book the fee wallet spends from.
     if (!_hostAndroid && !widget.skipPoolSync) {
-      unawaited(listenNodeTips(
-        base: kLocalNodeRpc,
-        cancelled: () => watchGen != _tipWatchGen || !mounted,
-        onTip: (height) {
-          unawaited(_onNodeTip(height));
-        },
-      ));
+      unawaited(
+        listenNodeTips(
+          base: kLocalNodeRpc,
+          cancelled: () => watchGen != _tipWatchGen || !mounted,
+          onTip: (height) {
+            unawaited(_onNodeTip(height));
+          },
+        ),
+      );
     }
     if (widget.skipPoolSync) {
       _accrualTick = Timer.periodic(kWalletHotPoll, (_) {
@@ -1330,7 +1460,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (_usesFlyclientTip) unawaited(_runFlyclientSample());
       if (!_hostAndroid) unawaited(_paintContinuity());
       final now = DateTime.now();
-      if (!immediate && !walletShouldPoll(lastPoll: _lastPoll, now: now, hot: true)) {
+      if (!immediate &&
+          !walletShouldPoll(lastPoll: _lastPoll, now: now, hot: true)) {
         return;
       }
       immediate = false;
@@ -1375,7 +1506,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         work: () async {
           final before = ledger.sealedHeight;
           try {
-            await ledger.syncTip(proveChain: false).timeout(const Duration(seconds: 4));
+            await ledger
+                .syncTip(proveChain: false)
+                .timeout(const Duration(seconds: 4));
           } catch (_) {}
           tipMoved = ledger.sealedHeight != before;
           if (tipMoved && mounted) {
@@ -1413,7 +1546,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               hasPendingReceive: thin,
               historyBehindTip: ledger.historyBehindTip,
               openCollatePending: notesDue,
-              tipMovedWithoutLanding: tipMoved && ledger.tipAdvancedWithoutLanding,
+              tipMovedWithoutLanding:
+                  tipMoved && ledger.tipAdvancedWithoutLanding,
             );
       thinFirst = false;
       if (_creditBusy) {
@@ -1437,19 +1571,24 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         }
         final spendUnits = (ledger.spendable(ident.address) * 1e9).round();
         final pendingN = ledger.pendingTxs(ident.address).length;
-        final owedShe = ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode);
+        final owedShe = ledger.owedTowardPi(
+          ident.address,
+          paymentCode: ident.paymentCode,
+        );
         _touchOwedClock(owedShe);
-        final dirty = ledger.sealedHeight != _lastPaintSealed
-            || spendUnits != _lastPaintSpendable
-            || pendingN != _lastPaintPending
-            || tipMoved
-            || owedShe > 0;
+        final dirty =
+            ledger.sealedHeight != _lastPaintSealed ||
+            spendUnits != _lastPaintSpendable ||
+            pendingN != _lastPaintPending ||
+            tipMoved ||
+            owedShe > 0;
         sidecar.seekerTip = ledger.pool?.liveTip ?? ledger.displayHeight;
         _openLocalReadPrefix();
         if (sidecar.takeOverIfMatched()) {
           if (mounted) {
             _requestShellPaint();
-            if (sidecar.localSyncNoticeDue(caughtTip: true)) _showLocalNodeSynced();
+            if (sidecar.localSyncNoticeDue(caughtTip: true))
+              _showLocalNodeSynced();
           }
         }
         if (dirty && mounted) {
@@ -1464,8 +1603,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         if (_creditAgain && mounted && unlocked) _armCreditFollow();
       }
     }
+
     if (immediate) unawaited(tick());
-    _accrualTick = Timer.periodic(kWalletHotPoll, (_) { unawaited(tick()); });
+    _accrualTick = Timer.periodic(kWalletHotPoll, (_) {
+      unawaited(tick());
+    });
   }
 
   /// Vortex opens the Reserve send. Read this wallet's own dest balances the
@@ -1475,7 +1617,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Future<void> _warmVortexBalance() async {
     final ident = id;
-    if (!mounted || ident == null || !unlocked || widget.skipPoolSync || ledger.pool == null) {
+    if (!mounted ||
+        ident == null ||
+        !unlocked ||
+        widget.skipPoolSync ||
+        ledger.pool == null) {
       return;
     }
     if (_vortexWarm != null) return;
@@ -1546,11 +1692,24 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (!mounted || !unlocked) return;
     try {
       ledger.bindIdentity(ident);
-      final pay = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
-      if (ledger.pendingTxs(ident.address).isEmpty && ledger.spendable(pay) > 0.25) {
+      final pay = ledger.currentDest(
+        ident.address,
+        paymentCode: ident.paymentCode,
+      );
+      if (ledger.pendingTxs(ident.address).isEmpty &&
+          ledger.spendable(pay) > 0.25) {
         final peer = createIdentity();
-        final to = destForLogin(peer.address, height: 1, viewKey: peer.viewKey)!;
-        final tx = await ledger.send(from: pay, to: to, amount: 0.25, local: true);
+        final to = destForLogin(
+          peer.address,
+          height: 1,
+          viewKey: peer.viewKey,
+        )!;
+        final tx = await ledger.send(
+          from: pay,
+          to: to,
+          amount: 0.25,
+          local: true,
+        );
         _ingestTx(ident, tx);
         _focusedTxId = tx.id;
         if (mounted) setState(() {});
@@ -1583,7 +1742,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     _cliById[tx.id] = ctfTranscript(
       identity: ident,
       tx: tx,
-      spendableAfter: ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
+      spendableAfter: ledger.spendableOwned(
+        ident.address,
+        paymentCode: ident.paymentCode,
+      ),
       continuityRoot: ledger.lag1Root,
       confs: ledger.confirmationsOf(tx.height ?? 0),
     );
@@ -1693,7 +1855,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   style: TextStyle(fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 12),
-                const Text(kPublicNodeEverySendCopy, key: Key('public-node-choice-copy')),
+                const Text(
+                  kPublicNodeEverySendCopy,
+                  key: Key('public-node-choice-copy'),
+                ),
                 const SizedBox(height: 16),
                 FilledButton(
                   key: const Key('public-node-choice-accept'),
@@ -1706,7 +1871,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   controller: _ownNodeCtrl,
                   decoration: const InputDecoration(
                     labelText: 'Own node',
-                    helperText: 'host:port or https://host:port. http is only for this machine, a private IP, or a .local name.',
+                    helperText:
+                        'host:port or https://host:port. http is only for this machine, a private IP, or a .local name.',
                   ),
                 ),
                 Align(
@@ -1731,13 +1897,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   const SizedBox(height: 8),
                   OutlinedButton(
                     key: const Key('public-node-choice-p2p'),
-                    onPressed: () => _chooseExistingLocalMode(ClosureSendMode.localNode),
+                    onPressed: () =>
+                        _chooseExistingLocalMode(ClosureSendMode.localNode),
                     child: const Text('P2P node'),
                   ),
                   const SizedBox(height: 8),
                   OutlinedButton(
                     key: const Key('public-node-choice-solo'),
-                    onPressed: () => _chooseExistingLocalMode(ClosureSendMode.localNodeFull),
+                    onPressed: () =>
+                        _chooseExistingLocalMode(ClosureSendMode.localNodeFull),
                     child: const Text('Solo node'),
                   ),
                 ],
@@ -1751,7 +1919,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   void _toggleTheme() {
     setState(() {
-      _themeMode = _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+      _themeMode = _themeMode == ThemeMode.dark
+          ? ThemeMode.light
+          : ThemeMode.dark;
     });
     session.darkMode = _themeMode == ThemeMode.dark;
     unawaited(session.persist());
@@ -1769,7 +1939,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Widget _brandWordmark({double height = 22}) {
     return Image.asset(
-      shearWordmarkAsset(_themeMode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+      shearWordmarkAsset(
+        _themeMode == ThemeMode.dark ? Brightness.dark : Brightness.light,
+      ),
       height: height,
       fit: BoxFit.contain,
       filterQuality: FilterQuality.high,
@@ -1823,7 +1995,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   TextField(
                     controller: unlockCtrl,
                     obscureText: true,
-                    decoration: InputDecoration(labelText: first ? 'New password' : 'Password'),
+                    decoration: InputDecoration(
+                      labelText: first ? 'New password' : 'Password',
+                    ),
                     onSubmitted: (_) {
                       if (first) {
                         _setPassword(unlockCtrl.text, confirmCtrl.text);
@@ -1836,13 +2010,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                     TextField(
                       controller: confirmCtrl,
                       obscureText: true,
-                      decoration: const InputDecoration(labelText: 'Confirm password'),
-                      onSubmitted: (_) => _setPassword(unlockCtrl.text, confirmCtrl.text),
+                      decoration: const InputDecoration(
+                        labelText: 'Confirm password',
+                      ),
+                      onSubmitted: (_) =>
+                          _setPassword(unlockCtrl.text, confirmCtrl.text),
                     ),
                   ],
                   if (_lockError != null) ...[
                     const SizedBox(height: 8),
-                    Text(_lockError!, style: TextStyle(color: theme.colorScheme.error)),
+                    Text(
+                      _lockError!,
+                      style: TextStyle(color: theme.colorScheme.error),
+                    ),
                   ],
                   const SizedBox(height: 12),
                   FilledButton(
@@ -1860,7 +2040,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                     onPressed: _importShewall,
                     child: const Text('Import shewall.bin'),
                   ),
-                  if (!first && _bioReady && (_bioStored || session.biometricsEnabled)) ...[
+                  if (!first &&
+                      _bioReady &&
+                      (_bioStored || session.biometricsEnabled)) ...[
                     const SizedBox(height: 8),
                     OutlinedButton(
                       key: const Key('unlock-biometrics'),
@@ -1871,7 +2053,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   const SizedBox(height: 8),
                   TextButton(
                     onPressed: _toggleTheme,
-                    child: Text(_themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode'),
+                    child: Text(
+                      _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
+                    ),
                   ),
                 ],
               ),
@@ -1913,11 +2097,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   int get _continuumVaultNanos {
     if (ledger.blankFork || ledger.vaultSealBanner.isNotEmpty) return 0;
-    return reserve.totalLockedNanos > 0 ? reserve.totalLockedNanos : (ledger.vaultLockedNanos ?? 0);
+    return reserve.totalLockedNanos > 0
+        ? reserve.totalLockedNanos
+        : (ledger.vaultLockedNanos ?? 0);
   }
 
-  int get _continuumExtraMintedNanos =>
-      reserve.mintBankNanos > 0 ? reserve.mintBankNanos : (ledger.extraMintedNanos ?? 0);
+  int get _continuumExtraMintedNanos => reserve.mintBankNanos > 0
+      ? reserve.mintBankNanos
+      : (ledger.extraMintedNanos ?? 0);
 
   /// Android has no node. Desktop uses this only while Connect bare is the
   /// committed path. p2P Node and Full Node keep their own tip word.
@@ -1934,9 +2121,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   String _linkWord() {
     if (_usesFlyclientTip) {
       final quietBook =
-          ledger.restoredBook && ledger.sealedHeight > 0 && !_flyOk && !_flyFailed;
+          ledger.restoredBook &&
+          ledger.sealedHeight > 0 &&
+          !_flyOk &&
+          !_flyFailed;
       return connectBareLinkWord(
-        sampling: !quietBook &&
+        sampling:
+            !quietBook &&
             (_flySampling || (_spendSyncing && !_flyOk && !_flyFailed)),
         sampleOk: _flyOk,
         sampleFailed: _flyFailed && !_flyOk,
@@ -1947,7 +2138,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       );
     }
     if (_spendSyncing) return 'SYNCING';
-    if (_bookCollated && ledger.sealedHeight > 0 && !_tipHud.ibd) return 'CONNECTED';
+    if (_bookCollated && ledger.sealedHeight > 0 && !_tipHud.ibd)
+      return 'CONNECTED';
     if (_tipHud.live && !_tipHud.ibd) return 'CONNECTED';
     return 'not connected';
   }
@@ -1970,7 +2162,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       return _tipHud.label;
     }
     if (_flyDisagree && _flyTip > 0) {
-      return _hostAndroid ? 'height $_flyTip' : 'block height: tip disagree · $_flyTip';
+      return _hostAndroid
+          ? 'height $_flyTip'
+          : 'block height: tip disagree · $_flyTip';
     }
     if (_flyFailed) {
       if (_hostAndroid) {
@@ -2013,7 +2207,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (sync.flyclientOk && liveGenesis.isNotEmpty) {
         ledger.bindChainGenesis(liveGenesis);
       }
-      final disagree = sync.flyclientOk &&
+      final disagree =
+          sync.flyclientOk &&
           flyclientTipDisagrees(
             sampleTip: sync.flyclientTip,
             noteTip: ledger.sealedHeight,
@@ -2066,7 +2261,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       final link = _linkWord();
       // A saved book already knows its height. The first open still waits.
       final showRestored = ledger.restoredBook && ledger.sealedHeight > 0;
-      final showHeight = showRestored ||
+      final showHeight =
+          showRestored ||
           (_chromeReady &&
               (!_spendSyncing || (_usesFlyclientTip && _flyOk && _flyTip > 0)));
       final banner = Theme.of(context).appBarTheme.backgroundColor;
@@ -2093,7 +2289,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 key: const Key('wallet-connected'),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
             const SizedBox(width: 8),
@@ -2113,12 +2312,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               ),
             IconButton(
               key: const Key('android-banner-theme'),
-              tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
+              tooltip: _themeMode == ThemeMode.dark
+                  ? 'Light mode'
+                  : 'Dark mode',
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
               onPressed: _toggleTheme,
-              icon: Icon(_themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode),
+              icon: Icon(
+                _themeMode == ThemeMode.dark
+                    ? Icons.light_mode
+                    : Icons.dark_mode,
+              ),
             ),
           ],
         ),
@@ -2152,27 +2357,29 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             children: [
               if (_chromeReady)
                 Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Text(
-                  closureChipLabel(sidecar.committed),
-                  key: Key(closureChipKey(sidecar.committed)),
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: sidecar.committed == ClosureSendMode.connectBare
-                        ? const Color(0xFF5EEAD4)
-                        : sidecar.committed == ClosureSendMode.localNode
-                            ? const Color(0xFF00E5FF)
-                            : const Color(0xFF39FF14),
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Text(
+                    closureChipLabel(sidecar.committed),
+                    key: Key(closureChipKey(sidecar.committed)),
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: sidecar.committed == ClosureSendMode.connectBare
+                          ? const Color(0xFF5EEAD4)
+                          : sidecar.committed == ClosureSendMode.localNode
+                          ? const Color(0xFF00E5FF)
+                          : const Color(0xFF39FF14),
+                    ),
                   ),
                 ),
-              ),
               if (_verifying)
                 const Padding(
                   padding: EdgeInsets.only(right: 8),
                   child: Text('Verifying…', key: Key('unlock-verifying')),
                 ),
-              if (_chromeReady && (!_spendSyncing || (_usesFlyclientTip && _flyOk && _flyTip > 0)))
+              if (_chromeReady &&
+                  (!_spendSyncing ||
+                      (_usesFlyclientTip && _flyOk && _flyTip > 0)))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: InkWell(
@@ -2190,9 +2397,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   ),
                 ),
               IconButton(
-                tooltip: _themeMode == ThemeMode.dark ? 'Light mode' : 'Dark mode',
+                tooltip: _themeMode == ThemeMode.dark
+                    ? 'Light mode'
+                    : 'Dark mode',
                 onPressed: _toggleTheme,
-                icon: Icon(_themeMode == ThemeMode.dark ? Icons.light_mode : Icons.dark_mode),
+                icon: Icon(
+                  _themeMode == ThemeMode.dark
+                      ? Icons.light_mode
+                      : Icons.dark_mode,
+                ),
               ),
             ],
           ),
@@ -2224,9 +2437,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         children: [
           Column(
             children: [
-              if (!kIsWeb && Platform.isMacOS && isEphemeralMacosLaunchPath(_exe))
+              if (!kIsWeb &&
+                  Platform.isMacOS &&
+                  isEphemeralMacosLaunchPath(_exe))
                 MaterialBanner(
-                  backgroundColor: Theme.of(context).bannerTheme.backgroundColor,
+                  backgroundColor: Theme.of(
+                    context,
+                  ).bannerTheme.backgroundColor,
                   content: Text(
                     macosMoveBody,
                     style: Theme.of(context).bannerTheme.contentTextStyle,
@@ -2252,7 +2469,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 waitDuration: const Duration(milliseconds: 400),
                 child: Text(
                   kSymbols[i],
-                  style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurface),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
                 ),
               ),
               label: kTabs[i],
@@ -2280,8 +2500,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Future<void> _finishPullRefresh(ShearIdentity ident) async {
     try {
-      await _followCredits(ident, full: _fullCreditNow(wantFull: true))
-          .timeout(const Duration(seconds: 20));
+      await _followCredits(
+        ident,
+        full: _fullCreditNow(wantFull: true),
+      ).timeout(const Duration(seconds: 20));
       _rememberLedger();
       _requestShellPaint();
     } catch (_) {
@@ -2296,23 +2518,25 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Widget _card(List<Widget> kids) {
-    return Builder(builder: (context) {
-      final list = ListView(
-        key: PageStorageKey<String>('tab-$tab'),
-        controller: _tabScroll[tab],
-        primary: false,
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.all(16),
-        children: [_panel(context, kids)],
-      );
-      final phone = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
-      if (!phone) return list;
-      return RefreshIndicator(
-        key: const Key('wallet-pull-refresh'),
-        onRefresh: _pullRefreshTipAndBalance,
-        child: list,
-      );
-    });
+    return Builder(
+      builder: (context) {
+        final list = ListView(
+          key: PageStorageKey<String>('tab-$tab'),
+          controller: _tabScroll[tab],
+          primary: false,
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(16),
+          children: [_panel(context, kids)],
+        );
+        final phone = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+        if (!phone) return list;
+        return RefreshIndicator(
+          key: const Key('wallet-pull-refresh'),
+          onRefresh: _pullRefreshTipAndBalance,
+          child: list,
+        );
+      },
+    );
   }
 
   Future<void> _scanReceiveQr(BuildContext context) async {
@@ -2330,7 +2554,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     } on MissingPluginException {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Scan failed — could not open image picker.')),
+          const SnackBar(
+            content: Text('Scan failed — could not open image picker.'),
+          ),
         );
       }
       return;
@@ -2357,9 +2583,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       _noteFlowTo(shown);
       if (mounted) setState(() {});
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text(kErrShortSsa1)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text(kErrShortSsa1)));
       }
       return;
     }
@@ -2397,17 +2623,33 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final amt = double.tryParse(flowAmt.text) ?? 0;
     final memo = flowMemo.text.trim().isNotEmpty;
     if (ident == null || amt <= 0) {
-      if (mounted && gen == _flowQuoteGen) setState(() => _flowFeeQuote = null);
+      if (mounted && gen == _flowQuoteGen) {
+        setState(() {
+          _flowFeeQuote = null;
+          _flowRecipientShe = null;
+        });
+      }
       return;
     }
+    final wire = parseSheDecimalToNanos(flowAmt.text.trim());
     final units = await ledger.quoteSendLevyUnits(
       restFrame: ident.address,
       paymentCode: ident.paymentCode,
       amount: amt,
       memo: memo,
     );
+    final shown = await ledger.quoteConfirmRecipientShe(
+      restFrame: ident.address,
+      paymentCode: ident.paymentCode,
+      amount: amt,
+      nanosWire: wire,
+      memo: memo,
+    );
     if (!mounted || gen != _flowQuoteGen) return;
-    setState(() => _flowFeeQuote = formatShe(units / kUnitsPerShe));
+    setState(() {
+      _flowFeeQuote = formatShe(units / kUnitsPerShe);
+      _flowRecipientShe = shown;
+    });
   }
 
   void _noteFlowTo(String raw) {
@@ -2422,7 +2664,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   String _offerReceiveDest(ShearIdentity ident) {
     ledger.bindIdentity(ident);
-    _flowReceiveDest ??= ledger.allocateReceiveDest(ident.address, paymentCode: ident.paymentCode);
+    _flowReceiveDest ??= ledger.allocateReceiveDest(
+      ident.address,
+      paymentCode: ident.paymentCode,
+    );
     return _flowReceiveDest!;
   }
 
@@ -2458,7 +2703,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       tooltip: name,
       onPressed: () => _openSocial(url),
       icon: name == 'X'
-          ? const Text('X', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18))
+          ? const Text(
+              'X',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18),
+            )
           : Icon(icon),
     );
   }
@@ -2484,6 +2732,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       t,
       confs: confs,
       outgoing: ledger.isOutgoingTx(address, t),
+      depthPending: ledger.headerDepthPending,
     );
   }
 
@@ -2515,7 +2764,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           children: [
             Text(
               'you have a new memo',
-              style: TextStyle(fontWeight: FontWeight.w700, color: shearAccentOf(context)),
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: shearAccentOf(context),
+              ),
             ),
             if (_newMemoExpanded) ...[
               const SizedBox(height: 6),
@@ -2543,7 +2795,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     ];
   }
 
-  Widget _glowBanner(BuildContext context, {required Key key, required String text}) {
+  Widget _glowBanner(
+    BuildContext context, {
+    required Key key,
+    required String text,
+  }) {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final fill = dark ? const Color(0xFFE8F1F8) : const Color(0xFF0A1628);
     final glow = dark ? const Color(0xFF0088A8) : const Color(0xFF4FD8E8);
@@ -2583,14 +2839,22 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           padding: const EdgeInsets.all(16),
           child: DefaultTextStyle.merge(
             style: TextStyle(color: theme.colorScheme.onSurface),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: kids),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: kids,
+            ),
           ),
         ),
       ),
     );
   }
 
-  TableRow _continuumStatRow(BuildContext context, String label, String value, {Key? key}) {
+  TableRow _continuumStatRow(
+    BuildContext context,
+    String label,
+    String value, {
+    Key? key,
+  }) {
     final style = TextStyle(color: shearMutedOf(context), fontSize: 13);
     return TableRow(
       children: [
@@ -2606,28 +2870,79 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
   }
 
+  /// Connect bare with no consent, or an own node that did not resolve.
+  /// The figure is replaced. skipPoolSync widget tests keep the in-memory book.
+  bool get _spendSourceBlocked {
+    if (widget.skipPoolSync) return false;
+    if (sidecar.committed != ClosureSendMode.connectBare) return false;
+    if (ownNodeSkipsPublicConsent(session.ownNodeUrl)) {
+      return _ownNodeError != null || ledger.pool?.usesOwnNode != true;
+    }
+    return !session.publicNodeConsent;
+  }
+
+  /// Syncing until a read from the selected source succeeds. A blocked source
+  /// names itself instead of painting 0 or a saved book.
+  String _spendableFigureText(bool spendReady, double spend) {
+    if (_spendSourceBlocked) return kSpendableNotSyncing;
+    if (!spendReady) return kSpendableSyncing;
+    return '${formatShe(spend)} SHE';
+  }
+
   /// One spinner. No step list. The bar stays so the shell is still responding.
   Widget _bookLoading() {
-    return const Center(
+    final verify = ledger.headerVerifyLine;
+    final stall = ledger.headerStallLine;
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          CircularProgressIndicator(key: Key('continuum-loading')),
-          SizedBox(height: 16),
-          Text('Loading', key: Key('continuum-loading-label')),
+          const CircularProgressIndicator(key: Key('continuum-loading')),
+          const SizedBox(height: 16),
+          const Text('Loading', key: Key('continuum-loading-label')),
+          if (verify != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              verify,
+              key: const Key('header-verify-progress'),
+              style: const TextStyle(fontSize: 13),
+            ),
+          ],
+          if (stall != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              stall,
+              key: const Key('header-stall'),
+              style: const TextStyle(fontSize: 13),
+            ),
+          ],
         ],
       ),
     );
   }
 
   Widget _continuum(BuildContext context, ShearIdentity ident) {
-    final spend = ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode);
-    final spendReady = !_spendableAwaiting &&
-        ledger.spendableFigureReady(ident.address, paymentCode: ident.paymentCode);
-    final unconfirmed = ledger.unconfirmedIncomingShe(ident.address, paymentCode: ident.paymentCode);
+    final spend = ledger.spendableOwned(
+      ident.address,
+      paymentCode: ident.paymentCode,
+    );
+    final spendReady =
+        !_spendableAwaiting &&
+        !_spendSourceBlocked &&
+        ledger.spendableFigureReady(
+          ident.address,
+          paymentCode: ident.paymentCode,
+        );
+    final spendText = _spendableFigureText(spendReady, spend);
+    final unconfirmed = ledger.unconfirmedIncomingShe(
+      ident.address,
+      paymentCode: ident.paymentCode,
+    );
     final pending = ledger.pendingTxs(ident.address);
     final reserveDest = _reserveDestOf(ident);
-    final inReserveNanos = reserveDest == null ? 0 : reserve.portal(reserveDest).nanos;
+    final inReserveNanos = reserveDest == null
+        ? 0
+        : reserve.portal(reserveDest).nanos;
     final path1 = ledger.path1Observation();
     final fluxSec = (path1.targetIntervalMs / 1000).round();
     final observed = observedIntervalLabel(ledger.sealedMeanBlockMs);
@@ -2640,7 +2955,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final resistance = resistanceBitsLabel(ledger.networkWorkBits);
     final spendPane = <Widget>[
       Text(
-        spendReady ? '${formatShe(spend)} SHE' : '…',
+        spendText,
         key: const Key('continuum-spendable'),
         style: TextStyle(
           fontSize: 28,
@@ -2649,6 +2964,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      if (ledger.headerVerifyLine != null)
+        Text(
+          ledger.headerVerifyLine!,
+          key: const Key('header-verify-progress'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 13),
+        ),
+      if (ledger.headerStallLine != null)
+        Text(
+          ledger.headerStallLine!,
+          key: const Key('header-stall'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 13),
+        ),
       if (unconfirmed > 0)
         Text(
           'Unconfirmed  ${formatShe(unconfirmed)} SHE',
@@ -2684,7 +3011,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           onPressed: () => setState(() => tab = kTabs.indexOf('Vortex')),
           child: Text(
             'In Reserve  ${formatShe(inReserveNanos / kUnitsPerShe)} SHE  ·  The Reserve',
-            style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface),
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
           ),
         ),
         Text(
@@ -2701,17 +3031,33 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ),
       ],
       const SizedBox(height: 12),
-      Text('Receive ID', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      Text(
+        'Receive ID',
+        style: TextStyle(
+          fontWeight: FontWeight.w700,
+          color: Theme.of(context).colorScheme.onSurface,
+        ),
+      ),
       const SizedBox(height: 6),
-      SelectableText(ident.paymentCodeFull, key: const Key('receive-she1-full')),
+      SelectableText(
+        ident.paymentCodeFull,
+        key: const Key('receive-she1-full'),
+      ),
       const SizedBox(height: 8),
       OutlinedButton(
         key: const Key('copy-id'),
-        onPressed: () => Clipboard.setData(ClipboardData(text: ident.paymentCodeFull)),
+        onPressed: () =>
+            Clipboard.setData(ClipboardData(text: ident.paymentCodeFull)),
         child: const Text('Copy ID'),
       ),
       const SizedBox(height: 12),
-      Text('Receive QR', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      Text(
+        'Receive QR',
+        style: TextStyle(
+          fontWeight: FontWeight.w700,
+          color: Theme.of(context).colorScheme.onSurface,
+        ),
+      ),
       const SizedBox(height: 6),
       OutlinedButton(
         key: const Key('show-qr'),
@@ -2736,14 +3082,26 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ),
       ],
       const SizedBox(height: 12),
-      Text('ssa1 dest — mining mailbox', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      Text(
+        'ssa1 dest — mining mailbox',
+        style: TextStyle(
+          fontWeight: FontWeight.w700,
+          color: Theme.of(context).colorScheme.onSurface,
+        ),
+      ),
       const SizedBox(height: 6),
-      SelectableText(ledger.homeDest(ident.address, paymentCode: ident.paymentCode), key: const Key('continuum-ssa1')),
+      SelectableText(
+        ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
+        key: const Key('continuum-ssa1'),
+      ),
       const SizedBox(height: 8),
       OutlinedButton(
         key: const Key('copy-dest'),
         onPressed: () {
-          final shown = ledger.homeDest(ident.address, paymentCode: ident.paymentCode);
+          final shown = ledger.homeDest(
+            ident.address,
+            paymentCode: ident.paymentCode,
+          );
           Clipboard.setData(ClipboardData(text: shown));
         },
         child: const Text('Copy dest'),
@@ -2751,20 +3109,22 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       const SizedBox(height: 6),
       Text(
         'Copy dest copies the mailbox shown above. Stable mining login for ShearK / stratum. Copy once — you do not need to continually update your miner dest.',
-        style: TextStyle(color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7)),
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+        ),
       ),
     ];
     final statsPane = <Widget>[
       Text(
         '1 SHE per block continuity',
-        style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface),
+        style: TextStyle(
+          fontWeight: FontWeight.w700,
+          color: Theme.of(context).colorScheme.onSurface,
+        ),
       ),
       const SizedBox(height: 8),
       Table(
-        columnWidths: const {
-          0: FlexColumnWidth(1.3),
-          1: FlexColumnWidth(1),
-        },
+        columnWidths: const {0: FlexColumnWidth(1.3), 1: FlexColumnWidth(1)},
         defaultVerticalAlignment: TableCellVerticalAlignment.middle,
         children: [
           _continuumStatRow(context, 'Height', '${ledger.displayHeight}'),
@@ -2774,8 +3134,16 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               'Network rho',
               '${ledger.networkHashrate} R/s',
             ),
-          _continuumStatRow(context, 'Closure quantum', '${formatShe(path1.quantumShe)} SHE'),
-          _continuumStatRow(context, 'Target flux', '${formatShe(path1.quantumShe)} SHE / $fluxSec s'),
+          _continuumStatRow(
+            context,
+            'Closure quantum',
+            '${formatShe(path1.quantumShe)} SHE',
+          ),
+          _continuumStatRow(
+            context,
+            'Target flux',
+            '${formatShe(path1.quantumShe)} SHE / $fluxSec s',
+          ),
           if (observed.isNotEmpty)
             _continuumStatRow(context, 'Observed interval', observed),
           if (integral != '—')
@@ -2789,12 +3157,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             context,
             'Hash bonus',
             continuumHashBonusLabel(
-              emittedNanos: (ledger.confirmedHashBonus(
-                        ident.address,
-                        paymentCode: ident.paymentCode,
-                      ) *
-                      kUnitsPerShe)
-                  .round(),
+              emittedNanos:
+                  (ledger.confirmedHashBonus(
+                            ident.address,
+                            paymentCode: ident.paymentCode,
+                          ) *
+                          kUnitsPerShe)
+                      .round(),
             ),
             key: const Key('continuum-hash-bonus'),
           ),
@@ -2830,7 +3199,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           child: Text(
             kFundsNotCorrectlyShown,
             key: const Key('continuum-supply-banner'),
-            style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 13),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.error,
+              fontSize: 13,
+            ),
           ),
         ),
       const SizedBox(height: 12),
@@ -2843,7 +3215,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ),
     ];
     final pendingPane = <Widget>[
-      Text('Pending', style: TextStyle(fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
+      Text(
+        'Pending',
+        style: TextStyle(
+          fontWeight: FontWeight.w700,
+          color: Theme.of(context).colorScheme.onSurface,
+        ),
+      ),
       Text(
         'Each pending transfer stays on this list. Tap a row to open it in Shearview. One vortex point turns yellow per confirmation; at ${ShearLedger.spendableConfirmations} confs the row drops and the coins are spendable. Hash rewards sit inside a found block, not as their own rows.',
         style: TextStyle(color: shearMutedOf(context), fontSize: 12),
@@ -2859,7 +3237,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               children: [
                 ConfirmVortex(
                   key: Key('confirm-pie-${t.id}'),
-                  filled: ledger.confirmationsOf(t.height ?? 0),
+                  filled: ledger.confirmationCountHidden(t.height ?? 0)
+                      ? 0
+                      : ledger.confirmationsOf(t.height ?? 0),
                   size: 28,
                   need: ShearLedger.continuumConfirmations,
                 ),
@@ -2873,10 +3253,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                         style: const TextStyle(fontSize: 13),
                       ),
                       Text(
-                        '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
+                        ledger.confirmationCountHidden(t.height ?? 0)
+                            ? '${t.from} → ${t.to}'
+                            : '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: shearMutedOf(context), fontSize: 11),
+                        style: TextStyle(
+                          color: shearMutedOf(context),
+                          fontSize: 11,
+                        ),
                       ),
                     ],
                   ),
@@ -2886,58 +3271,68 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           ),
         ),
     ];
-    return LayoutBuilder(builder: (context, constraints) {
-      final wide = constraints.maxWidth >= kContinuumSplitWidth;
-      return ListView(
-        controller: _tabScroll[0],
-        primary: false,
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (ledger.blankFork || ledger.vaultSealBanner.isNotEmpty) ...[
-            Text(
-              ledger.vaultSealBanner.isNotEmpty
-                  ? ledger.vaultSealBanner
-                  : 'This tip diverged before the Reserve vault seal. This fork has no Reserve vault.',
-              key: const Key('continuum-vault-seal-banner'),
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.error,
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= kContinuumSplitWidth;
+        return ListView(
+          controller: _tabScroll[0],
+          primary: false,
+          padding: const EdgeInsets.all(16),
+          children: [
+            if (ledger.blankFork || ledger.vaultSealBanner.isNotEmpty) ...[
+              Text(
+                ledger.vaultSealBanner.isNotEmpty
+                    ? ledger.vaultSealBanner
+                    : 'This tip diverged before the Reserve vault seal. This fork has no Reserve vault.',
+                key: const Key('continuum-vault-seal-banner'),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-          ],
-          if (wide && !_hostAndroid)
-            IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: _panel(context, spendPane, key: const Key('continuum-spend')),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 1,
-                    child: _panel(context, statsPane, key: const Key('continuum-stats')),
-                  ),
-                ],
-              ),
-            )
-          else ...[
-            _panel(context, spendPane, key: const Key('continuum-spend')),
-            if (!_hostAndroid) ...[
               const SizedBox(height: 12),
-              _panel(context, statsPane, key: const Key('continuum-stats')),
+            ],
+            if (wide && !_hostAndroid)
+              IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: _panel(
+                        context,
+                        spendPane,
+                        key: const Key('continuum-spend'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 1,
+                      child: _panel(
+                        context,
+                        statsPane,
+                        key: const Key('continuum-stats'),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              _panel(context, spendPane, key: const Key('continuum-spend')),
+              if (!_hostAndroid) ...[
+                const SizedBox(height: 12),
+                _panel(context, statsPane, key: const Key('continuum-stats')),
+              ],
+            ],
+            if (pending.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _panel(context, pendingPane),
             ],
           ],
-          if (pending.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _panel(context, pendingPane),
-          ],
-        ],
-      );
-    });
+        );
+      },
+    );
   }
 
   void _openPendingInShearview(ShearTx t) {
@@ -2954,14 +3349,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final query = shearviewQuery.text;
     final hist = ledger.shearviewSearch(address, query);
     final have = hist.map((t) => t.id).toSet();
-    final extra = ledger.pendingTxs(address).where((t) => !have.contains(t.id) && shearviewMatches(t, query));
+    final extra = ledger
+        .pendingTxs(address)
+        .where((t) => !have.contains(t.id) && shearviewMatches(t, query));
     return [...extra, ...hist];
   }
 
   Widget _shearview(BuildContext context, ShearIdentity ident) {
     final hist = _shearviewRows(ident.address);
     return _card([
-      const Text('Shearview  S_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
+      const Text(
+        'Shearview  S_{μν}',
+        style: TextStyle(fontWeight: FontWeight.w700),
+      ),
       Text(
         'Your transactions: height, from/to, date, amount, snippet. Tap a row for full Resistance detail. A block pot share is the parent. Hash bonuses paid in that block are children under it. The two amounts add.',
         style: TextStyle(color: shearMutedOf(context)),
@@ -2981,7 +3381,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             child: TextField(
               key: const Key('shearview-search'),
               controller: shearviewQuery,
-              decoration: const InputDecoration(labelText: 'Search id, dest, kind, amount, height, memo'),
+              decoration: const InputDecoration(
+                labelText: 'Search id, dest, kind, amount, height, memo',
+              ),
               onChanged: (_) => setState(() {}),
             ),
           ),
@@ -2998,45 +3400,55 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         Padding(
           padding: EdgeInsets.only(left: row.child ? 28 : 0),
           child: ListTile(
-          key: Key(row.child ? 'shearview-hash-${row.tx.id}' : 'shearview-row-${row.tx.id}'),
-          dense: true,
-          isThreeLine: !row.child,
-          selected: row.tx.id == _focusedTxId,
-          title: Text(row.child
-              ? 'h=${row.tx.height ?? 0}  hashbonus  ${formatShe(row.tx.amount)} SHE'
-              : _shearviewTitle(ident.address, row.tx)),
-          subtitle: row.child
-              ? null
-              : Text(
-            row.tx.kind == 'receive' && row.tx.memo && openedMemos.contains(row.tx.id) && row.tx.memoPlain != null
-                ? '${_shearviewSubtitle(row.tx)}  memo: ${row.tx.memoPlain}'
-                : _shearviewSubtitle(row.tx),
-          ),
-          onTap: () async {
-            final t = row.tx;
-            if (row.child) {
-              setState(() => _focusedTxId = t.id);
-              return;
-            }
-            if (t.memo && t.memoPlain == null && t.memoCt != null) {
-              final plain = await memoOpenOffUi(t.to, t.memoCt);
-              ledger.applyMemoPlain(t.id, plain);
-            }
-            if (!mounted) return;
-            setState(() {
-              if (t.memo) {
-                openedMemos.add(t.id);
-                lastMemoPlain = t.memoPlain ?? ledger.ownerHistory(ident.address)
-                    .cast<ShearTx?>()
-                    .firstWhere((x) => x!.id == t.id, orElse: () => t)
-                    ?.memoPlain;
+            // dart format off
+            key: Key(row.child ? 'shearview-hash-${row.tx.id}' : 'shearview-row-${row.tx.id}'),
+            // dart format on
+            dense: true,
+            isThreeLine: !row.child,
+            selected: row.tx.id == _focusedTxId,
+            title: Text(
+              row.child
+                  ? 'h=${row.tx.height ?? 0}  hashbonus  ${formatShe(row.tx.amount)} SHE'
+                  : _shearviewTitle(ident.address, row.tx),
+            ),
+            subtitle: row.child
+                ? null
+                : Text(
+                    row.tx.kind == 'receive' &&
+                            row.tx.memo &&
+                            openedMemos.contains(row.tx.id) &&
+                            row.tx.memoPlain != null
+                        ? '${_shearviewSubtitle(row.tx)}  memo: ${row.tx.memoPlain}'
+                        : _shearviewSubtitle(row.tx),
+                  ),
+            onTap: () async {
+              final t = row.tx;
+              if (row.child) {
+                setState(() => _focusedTxId = t.id);
+                return;
               }
-              _ingestTx(ident, t);
-              _focusedTxId = t.id;
-              tab = _resistanceTab;
-            });
-          },
-        ),
+              if (t.memo && t.memoPlain == null && t.memoCt != null) {
+                final plain = await memoOpenOffUi(t.to, t.memoCt);
+                ledger.applyMemoPlain(t.id, plain);
+              }
+              if (!mounted) return;
+              setState(() {
+                if (t.memo) {
+                  openedMemos.add(t.id);
+                  lastMemoPlain =
+                      t.memoPlain ??
+                      ledger
+                          .ownerHistory(ident.address)
+                          .cast<ShearTx?>()
+                          .firstWhere((x) => x!.id == t.id, orElse: () => t)
+                          ?.memoPlain;
+                }
+                _ingestTx(ident, t);
+                _focusedTxId = t.id;
+                tab = _resistanceTab;
+              });
+            },
+          ),
         ),
     ]);
   }
@@ -3044,20 +3456,30 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Widget _flow(BuildContext context, ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
-      const Text('Pay she1, ssa1, or shear1. The book only records an ssa1 dest. Coins settle on destCommit after 9 confirms.'),
-      SelectableText(_offerReceiveDest(ident), key: const Key('flow-receive-dest')),
+      const Text(
+        'Pay she1, ssa1, or shear1. The book only records an ssa1 dest. Coins settle on destCommit after 9 confirms.',
+      ),
+      SelectableText(
+        _offerReceiveDest(ident),
+        key: const Key('flow-receive-dest'),
+      ),
       const SizedBox(height: 8),
       OutlinedButton(
         key: const Key('flow-new-dest'),
         onPressed: () => setState(() {
-          _flowReceiveDest = ledger.allocateReceiveDest(ident.address, paymentCode: ident.paymentCode);
+          _flowReceiveDest = ledger.allocateReceiveDest(
+            ident.address,
+            paymentCode: ident.paymentCode,
+          );
         }),
         child: const Text('New dest'),
       ),
       const SizedBox(height: 8),
       TextField(
         controller: flowTo,
-        decoration: const InputDecoration(labelText: 'To (she1, ssa1, or shear1)'),
+        decoration: const InputDecoration(
+          labelText: 'To (she1, ssa1, or shear1)',
+        ),
         onChanged: (v) => setState(() => _noteFlowTo(v)),
       ),
       if (isUnpayableSsa1(flowTo.text)) ...[
@@ -3089,9 +3511,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
               _noteFlowTo(shown);
             });
             if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text(kErrShortSsa1)),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text(kErrShortSsa1)));
             }
             return;
           }
@@ -3099,7 +3521,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           if (next == flowTo.text) {
             final copy = receiveQrFailCopy(raw);
             if (copy != null && context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(copy)));
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text(copy)));
             }
             return;
           }
@@ -3127,6 +3551,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         _flowFeeQuote == null ? 'Fee …' : 'Fee $_flowFeeQuote SHE',
         key: const Key('flow-send-fee'),
       ),
+      flowRecipientAmountLine(_flowRecipientShe),
       if (_flowProgressText != null)
         Text(_flowProgressText!, key: const Key('flow-send-progress')),
       FilledButton(
@@ -3134,95 +3559,100 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         onPressed: _flowSending || isUnpayableSsa1(flowTo.text)
             ? null
             : () async {
-          if (!claimSingleSubmit(held: _flowSending)) return;
-          if (sidecar.sendBlocked && !walletAtTip(_syncLabel)) {
-            setState(() {
-              _flowSendAdvisory = sidecar.sendBlockedCopy;
-              _flowSendOk = false;
-            });
-            return;
-          }
-          final nanosWire = parseSheDecimalToNanos(flowAmt.text.trim());
-          final amount = double.tryParse(flowAmt.text) ?? 0;
-          if (flowAmt.text.trim().isNotEmpty && nanosWire == null) {
-            setState(() {
-              _flowSendAdvisory = kErrSendGeneric;
-              _flowSendOk = false;
-            });
-            return;
-          }
-          if (continuumPayable(flowTo.text)) {
-            final consent = await _flowPublicConsent(context);
-            if (!consent || !mounted) {
-              setState(() {
-                _flowSendAdvisory = kPublicIpWaitCopy;
-                _flowSendOk = false;
-              });
-              return;
-            }
-          }
-          final bare = sidecar.committed == ClosureSendMode.connectBare;
-          final progress = SendProgress();
-          _watchFlowProgress(progress);
-          setState(() {
-            _flowSending = true;
-            _flowProgress = progress;
-            _flowProgressText = 'Selecting notes…';
-          });
-          try {
-            final result = await submitContinuumSend(
-              ledger: ledger,
-              restFrame: ident.address,
-              paymentCode: ident.paymentCode,
-              startTo: _flowAcceptedTo,
-              enteredTo: flowTo.text,
-              amount: amount,
-              nanosWire: nanosWire,
-              memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
-              spendSeed: hexToBytes(ident.seedHex),
-              local: false,
-              allowPublicHttp: bare,
-              publicNode: _flowPostsToPublicNode(),
-              publicIpConsent: _flowPostsToPublicNode() && _reserveUnprivateOk,
-              depth: _mempoolDepth,
-              progress: progress,
-            );
-            if (!mounted) return;
-            setState(() {
-              _flowSending = false;
-              _flowProgress = null;
-              _flowProgressText = null;
-              flowTo.text = result.to;
-              if (result.posted && result.tx != null) {
-                _flowAcceptedTo = result.to;
-                _ingestTx(ident, result.tx!);
-                _focusedTxId = result.tx!.id;
-                _flowSendAdvisory = 'sent';
-                _flowSendOk = true;
-              } else {
-                _flowSendAdvisory = result.remark.isEmpty ? kErrSendGeneric : result.remark;
-                _flowSendOk = false;
-              }
-            });
-          } catch (e) {
-            if (!mounted) return;
-            setState(() {
-              _flowSending = false;
-              _flowProgress = null;
-              _flowProgressText = null;
-              _flowSendAdvisory = flowSendAdvisoryOf(e);
-              _flowSendOk = false;
-            });
-          } finally {
-            if (mounted && _flowSending) {
-              setState(() {
-                _flowSending = false;
-                _flowProgress = null;
-                _flowProgressText = null;
-              });
-            }
-          }
-        },
+                if (!claimSingleSubmit(held: _flowSending)) return;
+                if (sidecar.sendBlocked && !walletAtTip(_syncLabel)) {
+                  setState(() {
+                    _flowSendAdvisory = sidecar.sendBlockedCopy;
+                    _flowSendOk = false;
+                  });
+                  return;
+                }
+                final nanosWire = parseSheDecimalToNanos(flowAmt.text.trim());
+                final amount = double.tryParse(flowAmt.text) ?? 0;
+                if (flowAmt.text.trim().isNotEmpty && nanosWire == null) {
+                  setState(() {
+                    _flowSendAdvisory = kErrSendGeneric;
+                    _flowSendOk = false;
+                  });
+                  return;
+                }
+                if (continuumPayable(flowTo.text)) {
+                  final consent = await _flowPublicConsent(context);
+                  if (!consent || !mounted) {
+                    setState(() {
+                      _flowSendAdvisory = kPublicIpWaitCopy;
+                      _flowSendOk = false;
+                    });
+                    return;
+                  }
+                }
+                final bare = sidecar.committed == ClosureSendMode.connectBare;
+                final progress = SendProgress();
+                _watchFlowProgress(progress);
+                setState(() {
+                  _flowSending = true;
+                  _flowProgress = progress;
+                  _flowProgressText = 'Selecting notes…';
+                });
+                try {
+                  final result = await submitContinuumSend(
+                    ledger: ledger,
+                    restFrame: ident.address,
+                    paymentCode: ident.paymentCode,
+                    startTo: _flowAcceptedTo,
+                    enteredTo: flowTo.text,
+                    amount: amount,
+                    nanosWire: nanosWire,
+                    memo: flowMemo.text.trim().isEmpty
+                        ? null
+                        : flowMemo.text.trim(),
+                    spendSeed: hexToBytes(ident.seedHex),
+                    local: false,
+                    allowPublicHttp: bare,
+                    publicNode: _flowPostsToPublicNode(),
+                    publicIpConsent:
+                        _flowPostsToPublicNode() && _reserveUnprivateOk,
+                    depth: _mempoolDepth,
+                    progress: progress,
+                  );
+                  if (!mounted) return;
+                  setState(() {
+                    _flowSending = false;
+                    _flowProgress = null;
+                    _flowProgressText = null;
+                    flowTo.text = result.to;
+                    if (result.posted && result.tx != null) {
+                      _flowAcceptedTo = result.to;
+                      _ingestTx(ident, result.tx!);
+                      _focusedTxId = result.tx!.id;
+                      _flowSendAdvisory = 'sent';
+                      _flowSendOk = true;
+                    } else {
+                      _flowSendAdvisory = result.remark.isEmpty
+                          ? kErrSendGeneric
+                          : result.remark;
+                      _flowSendOk = false;
+                    }
+                  });
+                } catch (e) {
+                  if (!mounted) return;
+                  setState(() {
+                    _flowSending = false;
+                    _flowProgress = null;
+                    _flowProgressText = null;
+                    _flowSendAdvisory = flowSendAdvisoryOf(e);
+                    _flowSendOk = false;
+                  });
+                } finally {
+                  if (mounted && _flowSending) {
+                    setState(() {
+                      _flowSending = false;
+                      _flowProgress = null;
+                      _flowProgressText = null;
+                    });
+                  }
+                }
+              },
         child: const Text('Send'),
       ),
       if (_flowSending)
@@ -3236,56 +3666,58 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         onPressed: _flowSending
             ? null
             : () async {
-          if (!claimSingleSubmit(held: _flowSending)) return;
-          final consent = await _flowPublicConsent(context);
-          if (!consent || !mounted) {
-            setState(() {
-              _flowSendAdvisory = kPublicIpWaitCopy;
-              _flowSendOk = false;
-            });
-            return;
-          }
-          final who = id;
-          if (who == null) return;
-          final progress = SendProgress();
-          _watchFlowProgress(progress);
-          setState(() {
-            _flowSending = true;
-            _flowProgress = progress;
-            _flowProgressText = 'Selecting notes…';
-            _flowSendAdvisory = null;
-          });
-          try {
-            await ledger.consolidateSpendableNotes(
-              restFrame: who.address,
-              paymentCode: who.paymentCode,
-              spendSeed: hexToBytes(who.seedHex),
-              progress: progress,
-              allowPublicHttp: sidecar.committed == ClosureSendMode.connectBare,
-              publicNode: _flowPostsToPublicNode(),
-              publicIpConsent: _flowPostsToPublicNode() && _reserveUnprivateOk,
-            );
-            if (!mounted) return;
-            setState(() {
-              _flowSendAdvisory = 'Consolidated';
-              _flowSendOk = true;
-            });
-          } catch (e) {
-            if (!mounted) return;
-            setState(() {
-              _flowSendAdvisory = flowSendAdvisoryOf(e);
-              _flowSendOk = false;
-            });
-          } finally {
-            if (mounted) {
-              setState(() {
-                _flowSending = false;
-                _flowProgress = null;
-                _flowProgressText = null;
-              });
-            }
-          }
-        },
+                if (!claimSingleSubmit(held: _flowSending)) return;
+                final consent = await _flowPublicConsent(context);
+                if (!consent || !mounted) {
+                  setState(() {
+                    _flowSendAdvisory = kPublicIpWaitCopy;
+                    _flowSendOk = false;
+                  });
+                  return;
+                }
+                final who = id;
+                if (who == null) return;
+                final progress = SendProgress();
+                _watchFlowProgress(progress);
+                setState(() {
+                  _flowSending = true;
+                  _flowProgress = progress;
+                  _flowProgressText = 'Selecting notes…';
+                  _flowSendAdvisory = null;
+                });
+                try {
+                  await ledger.consolidateSpendableNotes(
+                    restFrame: who.address,
+                    paymentCode: who.paymentCode,
+                    spendSeed: hexToBytes(who.seedHex),
+                    progress: progress,
+                    allowPublicHttp:
+                        sidecar.committed == ClosureSendMode.connectBare,
+                    publicNode: _flowPostsToPublicNode(),
+                    publicIpConsent:
+                        _flowPostsToPublicNode() && _reserveUnprivateOk,
+                  );
+                  if (!mounted) return;
+                  setState(() {
+                    _flowSendAdvisory = 'Consolidated';
+                    _flowSendOk = true;
+                  });
+                } catch (e) {
+                  if (!mounted) return;
+                  setState(() {
+                    _flowSendAdvisory = flowSendAdvisoryOf(e);
+                    _flowSendOk = false;
+                  });
+                } finally {
+                  if (mounted) {
+                    setState(() {
+                      _flowSending = false;
+                      _flowProgress = null;
+                      _flowProgressText = null;
+                    });
+                  }
+                }
+              },
         child: const Text('Consolidate now'),
       ),
       if (_flowSendAdvisory != null) ...[
@@ -3297,11 +3729,15 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         ),
       ],
       const SizedBox(height: 8),
-      Builder(builder: (_) {
-        final amt = double.tryParse(flowAmt.text) ?? 0;
-        final L = levyNanos((amt * kUnitsPerShe).round());
-        return Text('Flow levy (empty mempool) ${formatShe(L / kUnitsPerShe)} SHE. Hash bonuses stay on the found block.');
-      }),
+      Builder(
+        builder: (_) {
+          final amt = double.tryParse(flowAmt.text) ?? 0;
+          final L = levyNanos((amt * kUnitsPerShe).round());
+          return Text(
+            'Flow levy (empty mempool) ${formatShe(L / kUnitsPerShe)} SHE. Hash bonuses stay on the found block.',
+          );
+        },
+      ),
       const Text(
         'Receive: she1 (silent pay), ssa1 dest, or shear1 identity. Chain dests are ssa1 only. Spendable is node-verified notes after 9 confirms. Memo plaintext opens only with the stealth shared secret.',
       ),
@@ -3353,12 +3789,18 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 TextButton(
                   key: const Key('resistance-start'),
                   onPressed: () => _resistanceStart(context),
-                  child: Text('Start', style: TextStyle(color: fg, fontFamily: 'Courier')),
+                  child: Text(
+                    'Start',
+                    style: TextStyle(color: fg, fontFamily: 'Courier'),
+                  ),
                 ),
                 TextButton(
                   key: const Key('resistance-stop'),
                   onPressed: () => _resistanceStop(context),
-                  child: Text('Stop', style: TextStyle(color: fg, fontFamily: 'Courier')),
+                  child: Text(
+                    'Stop',
+                    style: TextStyle(color: fg, fontFamily: 'Courier'),
+                  ),
                 ),
               ],
             ),
@@ -3368,7 +3810,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   ? 'Start continues from the saved tip. Stop saves the current tip.'
                   : sidecar.progress,
               key: const Key('resistance-sync-height'),
-              style: TextStyle(color: fg, fontFamily: 'Courier', fontSize: 12, height: 1.35),
+              style: TextStyle(
+                color: fg,
+                fontFamily: 'Courier',
+                fontSize: 12,
+                height: 1.35,
+              ),
             ),
             const SizedBox(height: 8),
             if (header.isNotEmpty) ...[
@@ -3407,9 +3854,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                       else ...[
                         TextButton(
                           key: const Key('ctf-transcript-toggle'),
-                          onPressed: () => setState(() => _showCtfTranscript = !_showCtfTranscript),
+                          onPressed: () => setState(
+                            () => _showCtfTranscript = !_showCtfTranscript,
+                          ),
                           child: Text(
-                            _showCtfTranscript ? 'Hide CTF transcript' : 'CTF transcript',
+                            _showCtfTranscript
+                                ? 'Hide CTF transcript'
+                                : 'CTF transcript',
                             style: TextStyle(
                               color: fg,
                               fontFamily: 'Courier',
@@ -3442,7 +3893,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   Text(
                     'Node output',
                     key: const Key('resistance-node-console-title'),
-                    style: TextStyle(color: fg, fontFamily: 'Courier', fontWeight: FontWeight.w700),
+                    style: TextStyle(
+                      color: fg,
+                      fontFamily: 'Courier',
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   SizedBox(
                     key: const Key('resistance-node-console-scroll'),
@@ -3455,7 +3910,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                               children: [
                                 Text(
                                   'Waiting for node output…',
-                                  key: const Key('resistance-node-console-empty'),
+                                  key: const Key(
+                                    'resistance-node-console-empty',
+                                  ),
                                   style: const TextStyle(
                                     fontFamily: 'Courier',
                                     fontSize: 12,
@@ -3465,17 +3922,29 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                                 if (sidecar.progress.isNotEmpty)
                                   Text(
                                     sidecar.progress,
-                                    style: TextStyle(color: fg, fontFamily: 'Courier', fontSize: 12, height: 1.2),
+                                    style: TextStyle(
+                                      color: fg,
+                                      fontFamily: 'Courier',
+                                      fontSize: 12,
+                                      height: 1.2,
+                                    ),
                                   ),
                               ],
                             )
                           : SelectableText(
                               (sidecar.log.length > 80
-                                      ? sidecar.log.sublist(sidecar.log.length - 80)
+                                      ? sidecar.log.sublist(
+                                          sidecar.log.length - 80,
+                                        )
                                       : sidecar.log)
                                   .join('\n'),
                               key: const Key('resistance-node-console-log'),
-                              style: TextStyle(color: fg, fontFamily: 'Courier', fontSize: 12, height: 1.2),
+                              style: TextStyle(
+                                color: fg,
+                                fontFamily: 'Courier',
+                                fontSize: 12,
+                                height: 1.2,
+                              ),
                             ),
                     ),
                   ),
@@ -3536,17 +4005,25 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final lockNanos = (she * kUnitsPerShe).round();
     final lockL = levyNanos(lockNanos, depth: depth);
     final need = she + lockL / kUnitsPerShe;
-    final painted = paintedContinuumSpendable(ledger, ident.address, paymentCode: ident.paymentCode);
+    final painted = paintedContinuumSpendable(
+      ledger,
+      ident.address,
+      paymentCode: ident.paymentCode,
+    );
     if (painted + 1e-12 < need) {
-      final remark = lockFundingShortfall(LockFundingPlan(
-        sources: const [],
-        from: null,
-        consolidate: false,
-        have: painted,
-        need: need,
-      ));
+      final remark = lockFundingShortfall(
+        LockFundingPlan(
+          sources: const [],
+          from: null,
+          consolidate: false,
+          have: painted,
+          need: need,
+        ),
+      );
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(remark)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(remark)));
       }
       return;
     }
@@ -3566,7 +4043,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             ),
             const SizedBox(height: 8),
             Text(
-              _txFeeAdvice(lockNanos, oneFeeTo: 'add funds to the vault', depth: depth),
+              _txFeeAdvice(
+                lockNanos,
+                oneFeeTo: 'add funds to the vault',
+                depth: depth,
+              ),
               key: const Key('reserve-lock-sign-levy'),
             ),
           ],
@@ -3675,7 +4156,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }) async {
     ledger.rememberVaultDest(dest);
     if (mounted) {
-      setState(() => _reserveDepositProgress = 'Consolidating Continuum notes for Deposit…');
+      setState(
+        () => _reserveDepositProgress =
+            'Consolidating Continuum notes for Deposit…',
+      );
       await _yieldUiFrame();
     }
     final local = reserveLockPostsLocal(
@@ -3704,7 +4188,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       if (mounted) setState(() => _reserveDepositProgress = null);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.remark.isEmpty ? 'Not enough Continuum spendable' : result.remark)),
+          SnackBar(
+            content: Text(
+              result.remark.isEmpty
+                  ? 'Not enough Continuum spendable'
+                  : result.remark,
+            ),
+          ),
         );
       }
       return;
@@ -3725,9 +4215,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       'sent': kReserveLockSent,
     };
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text(kReserveLockSent)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text(kReserveLockSent)));
     }
     if (mounted) {
       setState(() => _reserveDepositProgress = null);
@@ -3735,7 +4225,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   /// One frame of budget so the pay/connect card paints before fee crypto or Connect.
-  Future<void> _yieldUiFrame() => Future<void>.delayed(const Duration(milliseconds: 1));
+  Future<void> _yieldUiFrame() =>
+      Future<void>.delayed(const Duration(milliseconds: 1));
 
   Future<bool> _confirmPublicIp(BuildContext context) async {
     final go = await showDialog<bool>(
@@ -3747,9 +4238,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         content: const Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(kUnprivateConfirmHelper),
-          ],
+          children: [Text(kUnprivateConfirmHelper)],
         ),
         actions: [
           TextButton(
@@ -3769,7 +4258,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   Future<void> _reserveUnprivateConfirm(BuildContext context) async {
-    if (await _confirmPublicIp(context) && mounted) await _rememberPublicConsent();
+    if (await _confirmPublicIp(context) && mounted)
+      await _rememberPublicConsent();
   }
 
   bool _usesPublicNodeNow() =>
@@ -3777,7 +4267,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       !ownNodeSkipsPublicConsent(session.ownNodeUrl);
 
   bool _needsPublicChoice() {
-    if (ownNodeSkipsPublicConsent(session.ownNodeUrl) && _ownNodeError == null) return false;
+    if (ownNodeSkipsPublicConsent(session.ownNodeUrl) && _ownNodeError == null)
+      return false;
     if (sidecar.committed != ClosureSendMode.connectBare) return false;
     if (session.publicNodeConsent || session.publicNodeChoiceMade) return false;
     if (widget.skipPoolSync && !widget.askPublicNode) return false;
@@ -3838,7 +4329,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   /// Desktop only. P2P and solo are the existing Closure modes, not a new launcher.
   Future<void> _chooseExistingLocalMode(ClosureSendMode mode) async {
     if (_hostAndroid) return;
-    if (mode != ClosureSendMode.localNode && mode != ClosureSendMode.localNodeFull) return;
+    if (mode != ClosureSendMode.localNode &&
+        mode != ClosureSendMode.localNodeFull)
+      return;
     ledger.pool?.stopPublicReads();
     session.publicNodeConsent = false;
     _reserveUnprivateOk = false;
@@ -3893,8 +4386,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   }
 
   /// Public-node posts wait on the VPN / IP confirm. A local or own-node post does not.
-  Future<bool> _ensurePublicIpConsent(BuildContext context, {required bool local}) async {
-    if (local || _reserveUnprivateOk || ownNodeSkipsPublicConsent(session.ownNodeUrl)) return true;
+  Future<bool> _ensurePublicIpConsent(
+    BuildContext context, {
+    required bool local,
+  }) async {
+    if (local ||
+        _reserveUnprivateOk ||
+        ownNodeSkipsPublicConsent(session.ownNodeUrl))
+      return true;
     await _reserveUnprivateConfirm(context);
     return _reserveUnprivateOk;
   }
@@ -3927,7 +4426,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (check.url == null) {
       ledger.pool?.useOwnNode(null);
       setState(() {
-        _ownNodeError = check.dnsFailed ? kOwnNodeUnresolvedCopy : kOwnNodeUrlError;
+        _ownNodeError = check.dnsFailed
+            ? kOwnNodeUnresolvedCopy
+            : kOwnNodeUrlError;
       });
       return;
     }
@@ -3961,7 +4462,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (!mounted) return;
     if (check.url == null) {
       setState(() {
-        _ownNodeError = check.dnsFailed ? kOwnNodeUnresolvedCopy : kOwnNodeUrlError;
+        _ownNodeError = check.dnsFailed
+            ? kOwnNodeUnresolvedCopy
+            : kOwnNodeUrlError;
       });
       return;
     }
@@ -3984,18 +4487,24 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
-  Future<void> _reserveWithdraw(BuildContext context, ShearIdentity ident) async {
+  Future<void> _reserveWithdraw(
+    BuildContext context,
+    ShearIdentity ident,
+  ) async {
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
-    final to = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
+    final to = ledger.currentDest(
+      ident.address,
+      paymentCode: ident.paymentCode,
+    );
     final now = DateTime.now().millisecondsSinceEpoch;
     final p0 = dest.isNotEmpty ? reserve.portal(dest) : null;
     final canPrev = (p0?.claimableRewards ?? 0) > 0;
     if (!reserve.epochIsOver(now) && !canPrev) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(reserveEpochStillOpenCopy())),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(reserveEpochStillOpenCopy())));
       }
       return;
     }
@@ -4178,9 +4687,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
     if (posted == null) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(reserveEpochStillOpenCopy())),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(reserveEpochStillOpenCopy())));
       }
       return;
     }
@@ -4192,7 +4701,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
-  Future<void> _reserveVote(BuildContext context, ShearIdentity ident, String choice) async {
+  Future<void> _reserveVote(
+    BuildContext context,
+    ShearIdentity ident,
+    String choice,
+  ) async {
     if (!claimSingleSubmit(held: _reserveVoteBusy)) return;
     _reserveVoteBusy = true;
     if (mounted) setState(() {});
@@ -4204,7 +4717,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     }
   }
 
-  Future<void> _reserveVoteBody(BuildContext context, ShearIdentity ident, String choice) async {
+  Future<void> _reserveVoteBody(
+    BuildContext context,
+    ShearIdentity ident,
+    String choice,
+  ) async {
     final dest = _reserveDestOf(ident);
     if (dest == null || dest.isEmpty) return;
     final gate = reserveVoteGate(ledger, reserve, dest);
@@ -4232,9 +4749,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       voteL,
     )) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE',
+            ),
+          ),
+        );
       }
       return;
     }
@@ -4253,9 +4774,13 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       voteL,
     )) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE'),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Not enough Continuum spendable for vote tx fee ${formatShe(voteL / kUnitsPerShe)} SHE',
+            ),
+          ),
+        );
       }
       return;
     }
@@ -4327,7 +4852,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final p = dest.isEmpty ? ReservePortal() : reserve.portal(dest);
     final now = DateTime.now().millisecondsSinceEpoch;
     final daysLeft = (reserve.remainingMs(now) / 86400000).floor();
-    final dayOfEpoch = reserveDayOfEpoch(epochStartMs: reserve.epochStartMs, nowMs: now);
+    final dayOfEpoch = reserveDayOfEpoch(
+      epochStartMs: reserve.epochStartMs,
+      nowMs: now,
+    );
     final stakedShe = formatShe(p.staked / kUnitsPerShe);
     final idleShe = formatShe(p.idle / kUnitsPerShe);
     final totalShe = formatShe(p.nanos / kUnitsPerShe);
@@ -4335,12 +4863,21 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final vortex = reconstructVortexSums(
       reserve,
       dest,
-      flowNanos: ledger.continuumFlowNanos(ident.address, paymentCode: ident.paymentCode),
+      flowNanos: ledger.continuumFlowNanos(
+        ident.address,
+        paymentCode: ident.paymentCode,
+      ),
     );
     final needVoteShe = formatShe(p.remainingToVoteNanos / kUnitsPerShe);
     final rw = dest.isEmpty
         ? const ReserveRewards(
-            accrued: 0, projected: 0, staked: 0, idle: 0, oracleBps: 0, elapsedMs: 0)
+            accrued: 0,
+            projected: 0,
+            staked: 0,
+            idle: 0,
+            oracleBps: 0,
+            elapsedMs: 0,
+          )
         : reserve.rewards(dest, now);
     final accruedShe = formatShe(rw.accrued / kUnitsPerShe);
     final endShe = formatShe(rw.projected / kUnitsPerShe);
@@ -4423,184 +4960,245 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 ),
               ),
             ],
-            if (p.nanos > 0) ...[
-              const SizedBox(height: 8),
-              _glowBanner(
-                context,
-                key: const Key('reserve-issuance-rate'),
-                text: 'Lock issuance rate $rate · ${vaultObserveLabel(sealed: false)}',
-              ),
-            ],
-            if (p.deposits.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              const Text('Your deposits', style: TextStyle(fontWeight: FontWeight.w600)),
-              SizedBox(
-                key: const Key('reserve-deposits-scroll'),
-                height: kDepositRowHeight * 2,
-                child: ListView.builder(
-                  controller: _depositsScroll,
-                  primary: false,
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  itemExtent: kDepositRowHeight,
-                  itemCount: p.deposits.length,
-                  itemBuilder: (context, i) {
-                    final d = p.deposits.reversed.elementAt(i);
-                    return Text(
-                      '${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  ${DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first}',
-                      key: Key('reserve-deposit-$i'),
-                    );
-                  },
-                ),
-              ),
-            ],
-            const SizedBox(height: 8),
-            TextField(
-              key: const Key('reserve-amount'),
-              controller: reserveAmt,
-              keyboardType: TextInputType.number,
-              onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(labelText: 'Amount SHEAR'),
-            ),
+      if (p.nanos > 0) ...[
+        const SizedBox(height: 8),
+        _glowBanner(
+          context,
+          key: const Key('reserve-issuance-rate'),
+          text:
+              'Lock issuance rate $rate · ${vaultObserveLabel(sealed: false)}',
+        ),
+      ],
+      if (p.deposits.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        const Text(
+          'Your deposits',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        SizedBox(
+          key: const Key('reserve-deposits-scroll'),
+          height: kDepositRowHeight * 2,
+          child: ListView.builder(
+            controller: _depositsScroll,
+            primary: false,
+            physics: const AlwaysScrollableScrollPhysics(),
+            itemExtent: kDepositRowHeight,
+            itemCount: p.deposits.length,
+            itemBuilder: (context, i) {
+              final d = p.deposits.reversed.elementAt(i);
+              return Text(
+                '${formatShe(d.nanos / kUnitsPerShe)} SHE  ·  ${DateTime.fromMillisecondsSinceEpoch(d.atMs).toIso8601String().split('T').first}',
+                key: Key('reserve-deposit-$i'),
+              );
+            },
+          ),
+        ),
+      ],
+      const SizedBox(height: 8),
+      TextField(
+        key: const Key('reserve-amount'),
+        controller: reserveAmt,
+        keyboardType: TextInputType.number,
+        onChanged: (_) => setState(() {}),
+        decoration: const InputDecoration(labelText: 'Amount SHEAR'),
+      ),
+      Text(
+        _txFeeAdvice(
+          ((double.tryParse(reserveAmt.text.trim()) ?? 0) * kUnitsPerShe)
+              .round(),
+          oneFeeTo: 'add funds to the vault',
+        ),
+        key: const Key('reserve-lock-levy'),
+      ),
+      if (_reserveDepositProgress != null) ...[
+        const SizedBox(height: 8),
+        Text(
+          _reserveDepositProgress!,
+          key: const Key('reserve-deposit-progress'),
+        ),
+      ],
+      const SizedBox(height: 8),
+      const Text(kReserveIpDisclaimer, key: Key('reserve-ip-disclaimer')),
+      const SizedBox(height: 8),
+      if (p.claimableRewards > 0)
+        Text(
+          'Fee ${formatShe(rewardClaimFee() / kUnitsPerShe)} SHE',
+          key: const Key('reserve-claim-fee'),
+        ),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          FilledButton(
+            key: const Key('reserve-send'),
+            onPressed: _reserveSendReady
+                ? () => _reserveSend(context, ident)
+                : null,
+            child: const Text('Deposit sum'),
+          ),
+          if ((p.nanos > 0 && reserve.epochIsOver(now)) ||
+              p.claimableRewards > 0 ||
+              reserveLeafEpochEnded(ledger.notes, reserve.currentEpoch)) ...[
             Text(
-              _txFeeAdvice(
-                ((double.tryParse(reserveAmt.text.trim()) ?? 0) * kUnitsPerShe).round(),
-                oneFeeTo: 'add funds to the vault',
-              ),
-              key: const Key('reserve-lock-levy'),
+              kReserveWithdrawAction,
+              key: const Key('reserve-withdraw-copy'),
             ),
-            if (_reserveDepositProgress != null) ...[
-              const SizedBox(height: 8),
-              Text(_reserveDepositProgress!, key: const Key('reserve-deposit-progress')),
-            ],
-            const SizedBox(height: 8),
-            const Text(
-              kReserveIpDisclaimer,
-              key: Key('reserve-ip-disclaimer'),
+            FilledButton(
+              key: const Key('reserve-withdraw'),
+              onPressed: _reserveSendReady
+                  ? () => _reserveWithdraw(context, ident)
+                  : null,
+              child: Text(
+                p.claimableRewards > 0 && !reserve.epochIsOver(now)
+                    ? 'Withdraw previous-epoch rewards'
+                    : 'Withdraw',
+              ),
             ),
-            const SizedBox(height: 8),
-            if (p.claimableRewards > 0)
-              Text(
-                'Fee ${formatShe(rewardClaimFee() / kUnitsPerShe)} SHE',
-                key: const Key('reserve-claim-fee'),
-              ),
-            Wrap(spacing: 8, runSpacing: 8, children: [
-              FilledButton(
-                key: const Key('reserve-send'),
-                onPressed: _reserveSendReady ? () => _reserveSend(context, ident) : null,
-                child: const Text('Deposit sum'),
-              ),
-              if ((p.nanos > 0 && reserve.epochIsOver(now)) ||
-                  p.claimableRewards > 0 ||
-                  reserveLeafEpochEnded(ledger.notes, reserve.currentEpoch)) ...[
-                Text(
-                  kReserveWithdrawAction,
-                  key: const Key('reserve-withdraw-copy'),
-                ),
-                FilledButton(
-                  key: const Key('reserve-withdraw'),
-                  onPressed: _reserveSendReady ? () => _reserveWithdraw(context, ident) : null,
-                  child: Text(p.claimableRewards > 0 && !reserve.epochIsOver(now)
-                      ? 'Withdraw previous-epoch rewards'
-                      : 'Withdraw'),
-                ),
-              ],
-              if ((p.nanos > 0 || (reserveLockLeaves(ledger.notes)?.isNotEmpty ?? false)) && reserve.epochIsOver(now)) ...[
-                Text(
-                  kReserveRollAction,
-                  key: const Key('reserve-roll-copy'),
-                ),
-                FilledButton(
-                  key: const Key('reserve-roll'),
-                  onPressed: _reserveSendReady ? () => _reserveRoll(context, ident) : null,
-                  child: const Text('Roll over'),
-                ),
-              ],
-            ]),
+          ],
+          if ((p.nanos > 0 ||
+                  (reserveLockLeaves(ledger.notes)?.isNotEmpty ?? false)) &&
+              reserve.epochIsOver(now)) ...[
+            Text(
+              kReserveRollAction,
+              key: const Key('reserve-roll-copy'),
+            ),
+            FilledButton(
+              key: const Key('reserve-roll'),
+              onPressed: _reserveSendReady
+                  ? () => _reserveRoll(context, ident)
+                  : null,
+              child: const Text('Roll over'),
+            ),
+          ],
+        ],
+      ),
     ], key: const Key('reserve-yours-box'));
     final overall = _panel(context, [
-            Text('Overall sums', key: const Key('reserve-overall'), style: const TextStyle(fontWeight: FontWeight.w700)),
-            Text('program ${vortex.overallNanos}', key: const Key('vortex-overall-program')),
-            Text('Program locked  $programShe SHE'),
-            Text('Program staked  ${formatShe(reserve.totalStakedNanos / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE'),
-            Text('Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE'),
-            Text('Accrued (all portals)  ${formatShe(reserve.totalAccruedNanos / kUnitsPerShe)} SHE  ·  claimable ${formatShe(reserve.totalClaimableNanos / kUnitsPerShe)} SHE'),
-            Text('Live hash bonus  ${formatHashBonusShe(reserve.liveHashBonusNanos)} SHE/hash'),
-            Text(
-              reserve.bonusEnacted
-                  ? 'Enacted +${reserve.enactedUp} / −${reserve.enactedDown} / hold ${reserve.enactedHold} → delta ${reserve.enactedDelta}, live bonus = ${reserve.enactedLiveBonus}'
-                  : 'Votes  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}',
-              key: const Key('reserve-overall-votes'),
+      Text(
+        'Overall sums',
+        key: const Key('reserve-overall'),
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+      Text(
+        'program ${vortex.overallNanos}',
+        key: const Key('vortex-overall-program'),
+      ),
+      Text('Program locked  $programShe SHE'),
+      Text(
+        'Program staked  ${formatShe(reserve.totalStakedNanos / kUnitsPerShe)} SHE  ·  idle ${formatShe(reserve.totalIdleNanos / kUnitsPerShe)} SHE',
+      ),
+      Text(
+        'Fee bank  ${formatShe(reserve.feeBankNanos / kUnitsPerShe)} SHE  ·  extra-minted ${formatShe(reserve.mintBankNanos / kUnitsPerShe)} SHE',
+      ),
+      Text(
+        'Accrued (all portals)  ${formatShe(reserve.totalAccruedNanos / kUnitsPerShe)} SHE  ·  claimable ${formatShe(reserve.totalClaimableNanos / kUnitsPerShe)} SHE',
+      ),
+      Text(
+        'Live hash bonus  ${formatHashBonusShe(reserve.liveHashBonusNanos)} SHE/hash',
+      ),
+      Text(
+        reserve.bonusEnacted
+            ? 'Enacted +${reserve.enactedUp} / −${reserve.enactedDown} / hold ${reserve.enactedHold} → delta ${reserve.enactedDelta}, live bonus = ${reserve.enactedLiveBonus}'
+            : 'Votes  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}',
+        key: const Key('reserve-overall-votes'),
+      ),
+      Text(
+        reserve.epochStartMs == 0
+            ? 'No epoch yet. It starts when a portal\'s own deposits reach π SHE.'
+            : '$daysLeft days remaining in this epoch  ·  day $dayOfEpoch of $kReserveEpochDays',
+      ),
+      if (reserve.uniqueEpochs.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        const Text('Epochs', style: TextStyle(fontWeight: FontWeight.w600)),
+        Table(
+          key: const Key('reserve-epoch-table'),
+          columnWidths: const {
+            0: FlexColumnWidth(0.7),
+            1: FlexColumnWidth(1.4),
+            2: FlexColumnWidth(1.4),
+          },
+          children: [
+            const TableRow(
+              children: [
+                Padding(
+                  padding: EdgeInsets.symmetric(vertical: 2),
+                  child: Text('Epoch'),
+                ),
+                Padding(
+                  padding: EdgeInsets.symmetric(vertical: 2),
+                  child: Text('Start'),
+                ),
+                Padding(
+                  padding: EdgeInsets.symmetric(vertical: 2),
+                  child: Text('End'),
+                ),
+              ],
             ),
-            Text(reserve.epochStartMs == 0
-                ? 'No epoch yet. It starts when a portal\'s own deposits reach π SHE.'
-                : '$daysLeft days remaining in this epoch  ·  day $dayOfEpoch of $kReserveEpochDays'),
-            if (reserve.uniqueEpochs.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              const Text('Epochs', style: TextStyle(fontWeight: FontWeight.w600)),
-              Table(
-                key: const Key('reserve-epoch-table'),
-                columnWidths: const {
-                  0: FlexColumnWidth(0.7),
-                  1: FlexColumnWidth(1.4),
-                  2: FlexColumnWidth(1.4),
-                },
+            for (final e in reserve.uniqueEpochs)
+              TableRow(
                 children: [
-                  const TableRow(children: [
-                    Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('Epoch')),
-                    Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('Start')),
-                    Padding(padding: EdgeInsets.symmetric(vertical: 2), child: Text('End')),
-                  ]),
-                  for (final e in reserve.uniqueEpochs)
-                    TableRow(children: [
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: Text('${e.epoch}'),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: Text(reserveLocalDateTime(e.startMs)),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 2),
-                        child: Text(reserveLocalDateTime(e.endMs)),
-                      ),
-                    ]),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text('${e.epoch}'),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(reserveLocalDateTime(e.startMs)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(reserveLocalDateTime(e.endMs)),
+                  ),
                 ],
               ),
-            ],
+          ],
+        ),
+      ],
     ], key: const Key('reserve-overall-box'));
     final voteKids = <Widget>[
       Text(reserveVoteWindowCopy()),
     ];
     if (voted) {
       final choice = p.vote!;
-      voteKids.add(ListTile(
-        key: Key('reserve-vote-$choice'),
-        dense: true,
-        leading: const Icon(Icons.check, color: Color(0xFF1A9A4A), key: Key('reserve-vote-check')),
-        title: Text(choice),
-      ));
-      voteKids.add(Text(
-        'Vote results  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}',
-        key: const Key('reserve-vote-results'),
-      ));
+      voteKids.add(
+        ListTile(
+          key: Key('reserve-vote-$choice'),
+          dense: true,
+          leading: const Icon(
+            Icons.check,
+            color: Color(0xFF1A9A4A),
+            key: Key('reserve-vote-check'),
+          ),
+          title: Text(choice),
+        ),
+      );
+      voteKids.add(
+        Text(
+          'Vote results  +${reserve.votesIncrease} / −${reserve.votesDecrease} / hold ${reserve.votesHold}',
+          key: const Key('reserve-vote-results'),
+        ),
+      );
       voteKids.add(const SizedBox(height: 8));
-      voteKids.add(_glowBanner(
-        context,
-        key: const Key('reserve-your-vote'),
-        text: 'Your vote: $choice',
-      ));
+      voteKids.add(
+        _glowBanner(
+          context,
+          key: const Key('reserve-your-vote'),
+          text: 'Your vote: $choice',
+        ),
+      );
     } else {
       for (final v in [kVoteIncrease, kVoteDecrease, kVoteHold]) {
-        voteKids.add(CheckboxListTile(
-          key: Key('reserve-vote-$v'),
-          dense: true,
-          title: Text(v),
-          value: draft == v,
-          onChanged: (on) {
-            setState(() => _reserveVoteDraft = on == true ? v : null);
-          },
-        ));
+        voteKids.add(
+          CheckboxListTile(
+            key: Key('reserve-vote-$v'),
+            dense: true,
+            title: Text(v),
+            value: draft == v,
+            onChanged: (on) {
+              setState(() => _reserveVoteDraft = on == true ? v : null);
+            },
+          ),
+        );
       }
       voteKids.add(Text(
         _txFeeAdvice(0, oneFeeTo: 'cast this vote'),
@@ -4681,42 +5279,44 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
     return [
       ReserveVoteTowers(
-        decrease: reserve.bonusEnacted ? reserve.enactedDown : reserve.votesDecrease,
+        decrease: reserve.bonusEnacted
+            ? reserve.enactedDown
+            : reserve.votesDecrease,
         hold: reserve.bonusEnacted ? reserve.enactedHold : reserve.votesHold,
-        increase: reserve.bonusEnacted ? reserve.enactedUp : reserve.votesIncrease,
+        increase: reserve.bonusEnacted
+            ? reserve.enactedUp
+            : reserve.votesIncrease,
       ),
       const SizedBox(height: 12),
-      LayoutBuilder(builder: (ctx, box) {
-        final side = box.maxWidth >= 560;
-        final right = Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            overall,
-            const SizedBox(height: 12),
-            vote,
-          ],
-        );
-        if (side) {
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+      LayoutBuilder(
+        builder: (ctx, box) {
+          final side = box.maxWidth >= 560;
+          final right = Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [overall, const SizedBox(height: 12), vote],
+          );
+          if (side) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: yours),
+                const SizedBox(width: 12),
+                Expanded(child: right),
+              ],
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(child: yours),
-              const SizedBox(width: 12),
-              Expanded(child: right),
+              yours,
+              const SizedBox(height: 12),
+              overall,
+              const SizedBox(height: 12),
+              vote,
             ],
           );
-        }
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            yours,
-            const SizedBox(height: 12),
-            overall,
-            const SizedBox(height: 12),
-            vote,
-          ],
-        );
-      }),
+        },
+      ),
       const SizedBox(height: 12),
       sumsBox,
     ];
@@ -4739,10 +5339,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         final locks = _reserveLockRows(dest);
         if (locks.isNotEmpty) {
           final prior = json['locks'];
-          json['locks'] = [
-            if (prior is List) ...prior,
-            ...locks,
-          ];
+          json['locks'] = [if (prior is List) ...prior, ...locks];
         }
         reserve.applyRemotePortal(dest, json);
         // Pool can lag the lock that was just signed. The notice is not the
@@ -4777,20 +5374,25 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     final i = vortexTab.clamp(0, tabs.length - 1);
     final cur = tabs[i];
     final kids = <Widget>[
-      const Text('Vortex  Ω^{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
+      const Text(
+        'Vortex  Ω^{μν}',
+        style: TextStyle(fontWeight: FontWeight.w700),
+      ),
       SingleChildScrollView(
         scrollDirection: Axis.horizontal,
-        child: Row(children: [
-          for (var n = 0; n < tabs.length; n++)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
-                label: Text(tabs[n].name),
-                selected: n == i,
-                onSelected: (_) => setState(() => vortexTab = n),
+        child: Row(
+          children: [
+            for (var n = 0; n < tabs.length; n++)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ChoiceChip(
+                  label: Text(tabs[n].name),
+                  selected: n == i,
+                  onSelected: (_) => setState(() => vortexTab = n),
+                ),
               ),
-            ),
-        ]),
+          ],
+        ),
       ),
       const SizedBox(height: 8),
     ];
@@ -4830,24 +5432,30 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       );
     } else if (cur.id == kRxPrivacyBrowserProgram) {
       kids.add(const RxPrivacyBrowserPane());
-      kids.add(OutlinedButton(
-        key: const Key('vortice-remove'),
-        onPressed: () => _removeVortice(context, cur),
-        child: const Text('Remove vortice'),
-      ));
+      kids.add(
+        OutlinedButton(
+          key: const Key('vortice-remove'),
+          onPressed: () => _removeVortice(context, cur),
+          child: const Text('Remove vortice'),
+        ),
+      );
     } else if (cur.id == kRpMailProgram) {
       kids.add(const RpMailPane());
-      kids.add(OutlinedButton(
-        key: const Key('vortice-remove'),
-        onPressed: () => _removeVortice(context, cur),
-        child: const Text('Remove vortice'),
-      ));
+      kids.add(
+        OutlinedButton(
+          key: const Key('vortice-remove'),
+          onPressed: () => _removeVortice(context, cur),
+          child: const Text('Remove vortice'),
+        ),
+      );
     } else {
       kids.addAll([
         Text(cur.name, style: const TextStyle(fontWeight: FontWeight.w600)),
         Text('Program  ${cur.id}'),
         if (cur.origin != null) Text('Origin  ${cur.origin}'),
-        const Text('Third-party vortice cannot mint SHE; it must fund its own rewards.'),
+        const Text(
+          'Third-party vortice cannot mint SHE; it must fund its own rewards.',
+        ),
         const Text(
           'Removing it only drops it from this wallet. The vort1 origin the creator published is unchanged.',
         ),
@@ -4870,7 +5478,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     await _applyResistancePath(context, sidecar.stopResistanceNode);
   }
 
-  Future<void> _applyResistancePath(BuildContext context, Future<String> Function() run) async {
+  Future<void> _applyResistancePath(
+    BuildContext context,
+    Future<String> Function() run,
+  ) async {
     final msg = await run();
     _keepStoredNodeChoice();
     if (!widget.skipPoolSync) await session.persist();
@@ -4883,7 +5494,10 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
 
   Widget _closure(BuildContext context, ShearIdentity ident) {
     return _card([
-      const Text('Closure  G_{μν}', style: TextStyle(fontWeight: FontWeight.w700)),
+      const Text(
+        'Closure  G_{μν}',
+        style: TextStyle(fontWeight: FontWeight.w700),
+      ),
       const Text(
         'This is your rest-frame shear1. It never goes on the book. '
         'Confirmed SHE settles here. Chain dests are ssa1 mailboxes derived '
@@ -4900,7 +5514,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         key: Key('closure-she1-fingerprint'),
       ),
       const SizedBox(height: 16),
-      Text('Send path', key: const Key('closure-send-path'), style: const TextStyle(fontWeight: FontWeight.w700)),
+      Text(
+        'Send path',
+        key: const Key('closure-send-path'),
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
       Text(
         _hostAndroid
             ? 'This phone reads height and confirms coins. It does not start a node.'
@@ -5009,7 +5627,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         key: const Key('settings-dark-mode'),
         contentPadding: EdgeInsets.zero,
         title: const Text('Dark mode'),
-        subtitle: const Text('The bar stays the logo, the link, and the block height.'),
+        subtitle: const Text(
+          'The bar stays the logo, the link, and the block height.',
+        ),
         value: _themeMode == ThemeMode.dark,
         onChanged: (_) => _toggleTheme(),
       ),
@@ -5017,7 +5637,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         key: const Key('settings-biometrics'),
         contentPadding: EdgeInsets.zero,
         title: const Text('Unlock with biometrics'),
-        subtitle: const Text('Password still encrypts shewall.bin. Biometrics only unlock this device.'),
+        subtitle: const Text(
+          'Password still encrypts shewall.bin. Biometrics only unlock this device.',
+        ),
         value: session.biometricsEnabled && _bioReady && _bioStored,
         onChanged: !_bioReady
             ? null
@@ -5167,7 +5789,10 @@ class ScanReceiveQrPageState extends State<ScanReceiveQrPage> {
 
   Future<Uint8List?> _readPickedImage() async {
     if (widget.pickImage != null) return widget.pickImage!();
-    final r = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
+    final r = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      withData: true,
+    );
     if (r == null || r.files.isEmpty) return null;
     final f = r.files.single;
     if (f.bytes != null && f.bytes!.isNotEmpty) return f.bytes;
@@ -5188,9 +5813,9 @@ class ScanReceiveQrPageState extends State<ScanReceiveQrPage> {
       return;
     }
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Not a Shear receive QR.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Not a Shear receive QR.')));
     }
   }
 

@@ -100,6 +100,16 @@ add_custom_target(shear_admit_cdylib
 )
 add_dependencies(${BINARY_NAME} shear_admit_cdylib)
 
+# ShearHash-v3. The wallet dlopens lib/libshear_v3.so.
+set(SHEAR_V3_SO "${CMAKE_CURRENT_SOURCE_DIR}/../native/libshear_v3.so")
+add_custom_target(shear_v3_shared
+  COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/../native/build-shear-v3.sh"
+  BYPRODUCTS "${SHEAR_V3_SO}"
+  COMMENT "Building libshear_v3.so"
+  VERBATIM
+)
+add_dependencies(${BINARY_NAME} shear_v3_shared)
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build
@@ -129,6 +139,9 @@ install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 install(FILES "${SHEAR_ADMIT_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+
+install(FILES "${SHEAR_V3_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 foreach(bundled_library ${PLUGIN_BUNDLED_LIBRARIES})

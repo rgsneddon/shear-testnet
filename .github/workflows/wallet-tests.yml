@@ -1,0 +1,45 @@
+# Spendable, frame, and reserve-hold tests. Pure Dart ShearHash-v3, so this
+# job does not need node or shearhash.node. The mid-follow case needs the
+# Linux admit library, which is built here and not committed.
+name: wallet-tests
+on:
+  push:
+    paths:
+      - '.github/workflows/wallet-tests.yml'
+      - 'wallet/**'
+      - 'crypto/native/**'
+  pull_request:
+    paths:
+      - '.github/workflows/wallet-tests.yml'
+      - 'wallet/**'
+      - 'crypto/native/**'
+permissions:
+  contents: read
+jobs:
+  spendable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Linux admit library
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libsodium-dev
+          bash crypto/native/build-linux-admit-so.sh
+          bash wallet/native/build-shear-v3.sh
+      - name: Spendable, t18, and reserve-hold tests
+        working-directory: wallet
+        run: |
+          flutter pub get
+          dart run tool/checkpoint_guard.dart
+          python3 pack/test_check_shear_v3_bundled.py
+          flutter test \
+            test/spendable_hard_lock_test.dart \
+            test/t18_frame_test.dart \
+            test/reserve_hold_spendable_test.dart \
+            test/reserve_hold_durable_test.dart
