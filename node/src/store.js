@@ -5,7 +5,7 @@ import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HAS
 import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveRejected } from '../../crypto/reserve_oracle.js';
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
-import { hashHex } from '../../crypto/shear_hash.js';
+import { HEADER_LEN, hashHex } from '../../crypto/shear_hash.js';
 import { asCommitFault } from './process_guard.js';
 import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
@@ -3397,6 +3397,25 @@ export function createStore(dir, {
       consumePrepared: false,
     });
     if (assessed?.ok) return null;
+    let claimed = null;
+    try {
+      if (block?.hash != null) {
+        const raw = Buffer.from(block.hash);
+        if (raw.length === 32) claimed = raw;
+      }
+    } catch { claimed = null; }
+    if (claimed && block?.header) {
+      try {
+        const header = Buffer.from(block.header);
+        if (header.length === HEADER_LEN) {
+          const got = Buffer.from(headerHash(header));
+          if (!claimed.equals(got)) {
+            discardPreparedHeader(block.header);
+            return 'hash_claim';
+          }
+        }
+      } catch { /* keep the assess reason */ }
+    }
     discardPreparedHeader(block?.header);
     return assessed?.reason || 'pow';
   }
@@ -3476,15 +3495,66 @@ export function createStore(dir, {
   }
 
   function appendProven(block, verifyOpts) {
-    const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
-    if (incoming && incoming.length === 32) {
-      for (const b of blocks) {
-        if (b.hash && Buffer.from(b.hash).equals(incoming)) {
-          discardPreparedHeader(block?.header);
-          return { ok: false, reason: 'not_heavier', tip: tip() };
+    const claimedHash = () => {
+      try {
+        if (block?.hash == null) return null;
+        const raw = Buffer.from(block.hash);
+        return raw.length === 32 ? raw : null;
+      } catch {
+        return null;
+      }
+    };
+    // The id is the hash we computed. A present block.hash that differs is a
+    // claim lie, before the book treats that claim as a duplicate.
+    const judged = (computed) => {
+      const claimed = claimedHash();
+      if (claimed && computed && computed.length === 32 && !claimed.equals(computed)) {
+        discardPreparedHeader(block?.header);
+        return { ok: false, reason: 'hash_claim', tip: tip() };
+      }
+      if (computed && computed.length === 32) {
+        for (const b of blocks) {
+          if (b.hash && Buffer.from(b.hash).equals(computed)) {
+            discardPreparedHeader(block?.header);
+            return { ok: false, reason: 'not_heavier', tip: tip() };
+          }
         }
       }
+      return null;
+    };
+    const trusted = trustedHashFor(block, verifyOpts);
+    if (trusted && trusted.length === 32) {
+      const stop = judged(Buffer.from(trusted));
+      if (stop) return stop;
+      return appendProvenBody(block, verifyOpts);
     }
+    const claimed = claimedHash();
+    if (claimed) {
+      const provenHex = String(verifyOpts?.provenHeaderHash || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(provenHex)) {
+        const stop = judged(Buffer.from(provenHex, 'hex'));
+        if (stop) return stop;
+        return appendProvenBody(block, verifyOpts);
+      }
+      let header = null;
+      try { if (block?.header) header = Buffer.from(block.header); } catch { header = null; }
+      if (!header || header.length !== HEADER_LEN) {
+        discardPreparedHeader(block?.header);
+        return { ok: false, reason: 'hash_claim', tip: tip() };
+      }
+      const finish = (buf) => {
+        try { holdPreparedHeader(header, buf); } catch { /* verify hashes again */ }
+        const stop = judged(Buffer.from(buf));
+        if (stop) return stop;
+        return appendProvenBody(block, verifyOpts);
+      };
+      if (verifyOpts.offLoopPow) return hashHeaderOffLoop(header).then(finish);
+      return finish(headerHash(header));
+    }
+    return appendProvenBody(block, verifyOpts);
+  }
+
+  function appendProvenBody(block, verifyOpts) {
     if (block?.samplesPruned === true) {
       // No proven run is samples_pruned before any header hash. A height field
       // that is not this tip plus one still answers height first.
@@ -3540,6 +3610,25 @@ export function createStore(dir, {
       ...(burial ? { burialTip: burial.top } : {}),
     });
     const after = (c) => {
+      let claimedNow = null;
+      try {
+        if (block?.hash != null) {
+          const raw = Buffer.from(block.hash);
+          if (raw.length === 32) claimedNow = raw;
+        }
+      } catch { claimedNow = null; }
+      let computedNow = null;
+      try {
+        if (c?.hash) {
+          const raw = Buffer.from(c.hash);
+          if (raw.length === 32) computedNow = raw;
+        }
+      } catch { computedNow = null; }
+      if (claimedNow && computedNow && !claimedNow.equals(computedNow)) {
+        rollbackSpent(spentB, spentBefore);
+        discardPreparedHeader(block?.header);
+        return { ok: false, reason: 'hash_claim', tip: tip() };
+      }
       // A failed consensus check keeps its own reason. The vault clock is a
       // second gate only after the block verifies.
       if (!c?.ok) {
@@ -6070,6 +6159,7 @@ export function createStore(dir, {
     const allowTrust = verifyOpts?.trusted === true;
     const claimed = powHash ? Buffer.from(String(powHash), 'hex') : null;
     const okHash = allowTrust && claimed && claimed.length === 32 ? claimed : null;
+    if (claimed && claimed.length === 32) block.hash = claimed;
     void skipSharePow;
     void trustedPowHash;
     return append(block, { trustedPowHash: okHash, skipSharePow: !!okHash });
