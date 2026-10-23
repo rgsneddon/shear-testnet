@@ -74,6 +74,12 @@ jobs:
           echo "SHEAR_NDK_PIN=r27d" >> "$GITHUB_ENV"
       - name: Build arm64 libshear_admit.so
         run: bash crypto/native/build-android-arm64.sh
+      - name: Build arm64 libshear_v3.so for the shipped ABI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+          bash wallet/native/build-android-shear-v3.sh
+          test -f wallet/android/app/src/main/jniLibs/arm64-v8a/libshear_v3.so
       - name: Build the pinned libsodium.so (sha256 + minisign; reproducible with r27d)
         env:
           SHEAR_REQUIRE_MINISIGN: '1'

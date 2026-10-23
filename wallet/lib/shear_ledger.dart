@@ -2,7 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:typed_data';
+
+import 'package:crypto/crypto.dart';
 
 import 'shear_ctf.dart';
 import 'shear_identity.dart';
@@ -19,6 +22,8 @@ import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
+import 'shear_checkpoint.dart';
+import 'shear_hash.dart';
 import 'shear_tip_tick.dart';
 
 const kSheDecimals = 11;
@@ -32,6 +37,7 @@ const kBlockPotShe = 1.0;
 /// Same candidates as `openedCoinbaseNanos`. A node balance is not a candidate.
 const kPoolFeeBps = 100;
 const kPoolFeeMaxBps = 200;
+
 /// Fingerprint target interval (TARGET_BLOCK_INTERVAL_MS). Continuum display only.
 const kTargetBlockIntervalMs = 90000;
 
@@ -51,13 +57,16 @@ int owedMatureLeftMs({
   if (left <= 0) return 0;
   return left;
 }
+
 /// 0.00000000001 SHE per valid hash.
 const kHashBonusShe = 0.00000000001;
 const kHashBonusVoteDeltaShe = 0.00000000001;
 
 /// Pending receive / pool-withdraw (height < 1) must not drive full history+notes+memoOpen.
-bool pendingReceiveThinPoll(Iterable<ShearTx> txs) => txs.any((t) =>
-    (t.kind == 'pool-withdraw' || t.kind == 'receive') && (t.height ?? 0) < 1);
+bool pendingReceiveThinPoll(Iterable<ShearTx> txs) => txs.any(
+  (t) =>
+      (t.kind == 'pool-withdraw' || t.kind == 'receive') && (t.height ?? 0) < 1,
+);
 
 /// A tip ahead of the last ingest must walk every seal up to that tip.
 /// A height-less pending row does not hide those seals. Once the book is
@@ -172,26 +181,41 @@ List<NodeOwnerLand> ownerLandsFromNode({
     if (!_isMinedKind(kind)) return;
     final id = '$height|$dest|$kind';
     if (!seen.add(id)) return;
-    out.add(NodeOwnerLand(
-      height: height,
-      dest: dest,
-      amount: amount,
-      kind: kind == 'pot' || kind == 'block' || kind == 'coinbase' ? 'blockfound' : kind,
-    ));
+    out.add(
+      NodeOwnerLand(
+        height: height,
+        dest: dest,
+        amount: amount,
+        kind: kind == 'pot' || kind == 'block' || kind == 'coinbase'
+            ? 'blockfound'
+            : kind,
+      ),
+    );
   }
 
   for (final row in history) {
     final kind = row['kind']?.toString() ?? '';
     final dest = _rowDest(row);
     if (dest == null) continue;
-    add(_rowHeight(row), dest, _proofOpenedShe(row), kind.isEmpty ? 'blockfound' : kind);
+    add(
+      _rowHeight(row),
+      dest,
+      _proofOpenedShe(row),
+      kind.isEmpty ? 'blockfound' : kind,
+    );
   }
   for (final row in notes) {
-    final kind = row['kind']?.toString() ?? (row['coinbase'] == true ? 'coinbase' : '');
+    final kind =
+        row['kind']?.toString() ?? (row['coinbase'] == true ? 'coinbase' : '');
     final dest = _rowDest(row);
     if (dest == null) continue;
     if (kind == 'hash' || kind == 'dummy' || kind == 'send') continue;
-    add(_rowHeight(row), dest, _proofOpenedShe(row), kind.isEmpty ? 'coinbase' : kind);
+    add(
+      _rowHeight(row),
+      dest,
+      _proofOpenedShe(row),
+      kind.isEmpty ? 'coinbase' : kind,
+    );
   }
   for (final block in bodies) {
     final h = _rowHeight(block);
@@ -207,7 +231,8 @@ List<NodeOwnerLand> ownerLandsFromNode({
           if (list is! List) continue;
           for (final item in list) {
             if (item is! Map) continue;
-            final kind = item['kind']?.toString() ?? (coinbase ? 'coinbase' : '');
+            final kind =
+                item['kind']?.toString() ?? (coinbase ? 'coinbase' : '');
             if (kind == 'hash' || kind == 'dummy') continue;
             final dest = _rowDest(item) ?? (coinbase ? miner : null);
             if (dest == null) continue;
@@ -319,6 +344,15 @@ class SendProgress {
 /// Isolate stamp of the last [selectSpendNotesWire]. Differs from the UI isolate.
 String debugSendSelectStamp = '';
 
+/// Change output of the last send, in nanos. The held part of a note.
+BigInt? debugLastChangeNanos;
+
+/// Recipient nanos of the last send, after a hold kept the fee off the stake.
+BigInt? debugLastPayNanos;
+
+/// Fee nanos reserved by the last send.
+BigInt? debugLastFeeNanos;
+
 /// Nanos strings the last selection put in a batch. Digit strings, not doubles.
 List<String> debugSendSelectNanos = <String>[];
 
@@ -348,7 +382,8 @@ String debugSendSignStamp = '';
 
 const String kErrSendCancelled = 'Send cancelled';
 const String kErrSendTimeout = 'Send did not reach the node — try again';
-const String kErrFeeShort = 'Not enough spendable to cover this amount and the fee';
+const String kErrFeeShort =
+    'Not enough spendable to cover this amount and the fee';
 
 /// Hex-JSON sizes and one prove, padded so the posted fee is not under the
 /// sealed body. Wallet quote only. `levy.js` is not modified.
@@ -391,17 +426,22 @@ const int kSendHexBudgetBytes = 500000;
 const int kSendTimeCap = kSendProveBudgetMs ~/ kMeasuredProveMs;
 
 /// Inputs that fit [kSendHexBudgetBytes] with pay, change, and a dummy.
-const int kSendSizeCap = (kSendHexBudgetBytes -
+const int kSendSizeCap =
+    (kSendHexBudgetBytes -
         kMeasuredTxBaseBytes -
         kMeasuredFs1BaseHexBytes -
         3 * kMeasuredOutputHexBytes) ~/
     kMeasuredProofHexBytes;
 
+// dart format off
 const int _kSendMeasuredCap = kSendTimeCap < kSendSizeCap ? kSendTimeCap : kSendSizeCap;
+// dart format on
 
 /// Tighter of prove time, tx size, and the consensus input limit of one
 /// FS-1 spend. Not a hand-picked count.
-const int kMaxInputsPerSend = _kSendMeasuredCap < kFs1InputMax ? _kSendMeasuredCap : kFs1InputMax;
+const int kMaxInputsPerSend = _kSendMeasuredCap < kFs1InputMax
+    ? _kSendMeasuredCap
+    : kFs1InputMax;
 
 /// Sweep while more spendable notes than [kMaxInputsPerSend] remain.
 /// The marginal consensus levy of one extra proof is dust next to the
@@ -412,12 +452,15 @@ const int kConsolidateAboveCount = kMaxInputsPerSend;
 /// an extra output can only shrink the count.
 int measuredInputCap({int outputs = 3, bool memo = false}) {
   final nOut = outputs < 1 ? 1 : outputs;
-  final fixed = kMeasuredTxBaseBytes +
+  final fixed =
+      kMeasuredTxBaseBytes +
       kMeasuredFs1BaseHexBytes +
       nOut * kMeasuredOutputHexBytes +
       (memo ? kMeasuredMemoHexBytes : 0);
   final room = kSendHexBudgetBytes - fixed;
-  final sizeCap = room < kMeasuredProofHexBytes ? 1 : room ~/ kMeasuredProofHexBytes;
+  final sizeCap = room < kMeasuredProofHexBytes
+      ? 1
+      : room ~/ kMeasuredProofHexBytes;
   var cap = kSendTimeCap < sizeCap ? kSendTimeCap : sizeCap;
   if (cap > kFs1InputMax) cap = kFs1InputMax;
   return cap < 1 ? 1 : cap;
@@ -431,18 +474,27 @@ String? parseSheDecimalToNanos(String raw) {
   final parts = s.split('.');
   final whole = parts[0];
   final frac = parts.length > 1 ? parts[1] : '';
-  if (frac.length > 11 && RegExp(r'[^0]').hasMatch(frac.substring(11))) return null;
-  final frac11 = (frac.length >= 11 ? frac.substring(0, 11) : frac.padRight(11, '0'));
+  if (frac.length > 11 && RegExp(r'[^0]').hasMatch(frac.substring(11)))
+    return null;
+  final frac11 = (frac.length >= 11
+      ? frac.substring(0, 11)
+      : frac.padRight(11, '0'));
   final scale = BigInt.from(kUnitsPerShe);
-  final nanos = BigInt.parse(whole) * scale + BigInt.parse(frac11.isEmpty ? '0' : frac11);
+  final nanos =
+      BigInt.parse(whole) * scale + BigInt.parse(frac11.isEmpty ? '0' : frac11);
   if (nanos < BigInt.zero) return null;
   return nanos.toString();
 }
 
-int estimateSendLevyUnits({required int inputs, int outputs = 3, bool memo = false}) {
+int estimateSendLevyUnits({
+  required int inputs,
+  int outputs = 3,
+  bool memo = false,
+}) {
   final nIn = inputs < 1 ? 1 : inputs;
   final nOut = outputs < 1 ? 1 : outputs;
-  final weight = kMeasuredTxBaseBytes +
+  final weight =
+      kMeasuredTxBaseBytes +
       kMeasuredFs1BaseHexBytes +
       nIn * kMeasuredProofHexBytes +
       nOut * kMeasuredOutputHexBytes +
@@ -472,7 +524,8 @@ double? _storedNoteShe(Map<dynamic, dynamic> n) {
   final nanos = n['nanos'];
   if (nanos is num && nanos > 0) return nanos.toDouble() / kUnitsPerShe;
   final verified = n['verifiedNanos'];
-  if (verified is num && verified > 0) return verified.toDouble() / kUnitsPerShe;
+  if (verified is num && verified > 0)
+    return verified.toDouble() / kUnitsPerShe;
   return null;
 }
 
@@ -544,7 +597,9 @@ BigInt? fundedSendUnits(Map<dynamic, dynamic>? note, double fundedShe) {
 /// Exact note nanos. A digit string or an int wins over a double amount.
 /// A double is used only while it is an exact integer at or below 2^53-1.
 BigInt? noteNanosExact(Map<dynamic, dynamic> n) {
-  final direct = _positiveDigitNanos(n['nanos']) ?? _positiveDigitNanos(n['verifiedNanos']);
+  final direct =
+      _positiveDigitNanos(n['nanos']) ??
+      _positiveDigitNanos(n['verifiedNanos']);
   if (direct != null) return direct;
   final amt = n['amount'];
   if (amt is String) {
@@ -619,6 +674,21 @@ bool noteHasSealedSpendBytes(Map<dynamic, dynamic> n) {
       blind.isNotEmpty;
 }
 
+/// Spend-tag point, off the UI isolate. The predicate reads the stamp only.
+String? spendTagHexOf(Uint8List spendSeed, Map<String, dynamic> note) {
+  try {
+    final spentNote = {
+      'kind': (note['kind'] as String?) ?? 'pot',
+      'commit': _noteBytes(note['commit'])!,
+      'noteCommit': _noteBytes(note['noteCommit'])!,
+    };
+    final x = admitScalarFromSeed(spendSeed, spentNote);
+    return _bytesHex(pointBytes(spendTagPoint(x, admitPub(x))));
+  } catch (_) {
+    return null;
+  }
+}
+
 /// A lock note stays locked until the tip time reaches its unlock.
 /// No unlock on the note stays locked. Any other kind keeps its own flag.
 bool lockNoteIsLocked(Map<String, dynamic> note, int? tipMs) {
@@ -631,50 +701,116 @@ bool lockNoteIsLocked(Map<String, dynamic> note, int? tipMs) {
   return false;
 }
 
-/// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
-/// No value-proof open, no spend tag, no search beyond one greedy pass.
-/// Production calls this from [Isolate.run].
-Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
-  final stamp = identityHashCode(Isolate.current).toString();
+/// One note a send can draw. The on-screen Spendable sum, [selectSpendNotesWire],
+/// consolidate, and [ShearLedger]'s note pick all use this.
+///
+/// Spent, a chain spend tag, a lock (including [unlockAtMs]), maturity against
+/// [tip], a verified open, exact nanos, and sealed spend bytes. [tip] is the
+/// verified tip, not the notes scan cursor.
+///
+/// Spend bytes a send can build. A planner row stores that decision in
+/// `sealed` after [noteHasSealedSpendBytes]. A book row needs the commit,
+/// the note commit, and the opening. Commit and opening without noteCommit
+/// throw `no_note` at send build, so they are not spendable.
+bool spendBytesOk(Map<dynamic, dynamic> note) {
+  if (note.containsKey('sealed') && note['sealed'] != true) return false;
+  final hasCommit = note.containsKey('commit');
+  final hasNote = note.containsKey('noteCommit');
+  final hasBlind = note.containsKey('r');
+  if (!hasCommit && !hasNote && !hasBlind) {
+    return !note.containsKey('sealed') || note['sealed'] == true;
+  }
+  return noteHasSealedSpendBytes(note);
+}
+
+/// An amount-only quote omits `verified` and `sealed`. A book row does not:
+/// it needs `verified == true` and [noteHasSealedSpendBytes].
+bool spendableNote(
+  Map<dynamic, dynamic> note, {
+  required int tip,
+  int confirmations = 9,
+  int? tipMs,
+  Set<String> spentTags = const <String>{},
+  String? spendTag,
+  bool ignoreConfs = false,
+  bool allowBare = false,
+}) {
+  if (note['spent'] == true || note['reorged'] == true) return false;
+  final tag =
+      (spendTag ?? note['spendTag'] ?? note['spendTagHex'])
+          ?.toString()
+          .toLowerCase() ??
+      '';
+  if (tag.isNotEmpty && spentTags.contains(tag)) return false;
+  if (lockNoteIsLocked(Map<String, dynamic>.from(note), tipMs)) return false;
+  if (!ignoreConfs) {
+    final h = note['height'];
+    if (h is num && h >= 1) {
+      final height = h.toInt();
+      if (tip < height || (tip - height + 1) < confirmations) return false;
+    }
+  }
+  final nanos = noteNanosExact(note);
+  if (nanos == null || nanos <= BigInt.zero) return false;
+  final bare =
+      !note.containsKey('sealed') &&
+      !note.containsKey('commit') &&
+      !note.containsKey('noteCommit') &&
+      !note.containsKey('r');
+  if (bare) {
+    if (!allowBare) return false;
+  } else {
+    if (note['verified'] != true) return false;
+    if (!spendBytesOk(note)) return false;
+  }
+  return true;
+}
+
+/// Notes a max send can draw, after the same exact hold as the batches.
+class SpendablePool {
+  const SpendablePool(this.free, this.freeSum, this.noPlain);
+  final List<Map<String, dynamic>> free;
+  final BigInt freeSum;
+  final bool noPlain;
+}
+
+SpendablePool poolSpendableNotes(Map<String, dynamic> input) {
   final notes = input['notes'] as List? ?? const [];
-  final need = input['needNanos'] != null
-      ? _nanosFromAmountField(input['needNanos'])
-      : _sheToNanos(input['needShe']);
-  final memo = input['memo'] == true;
-  final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
-  final measured = measuredInputCap(outputs: outputs < 1 ? 1 : outputs, memo: memo);
-  final asked = (input['cap'] as num?)?.toInt();
-  final cap = (asked == null || asked < 1 || asked > measured) ? measured : asked;
   final tip = (input['tip'] as num?)?.toInt() ?? 0;
   final floor = (input['confs'] as num?)?.toInt() ?? 9;
+  final tipMs = (input['tipMs'] as num?)?.toInt();
+  final spentTags = <String>{
+    for (final t in (input['spentTags'] as List? ?? const <dynamic>[]))
+      t.toString().toLowerCase(),
+  };
   final hold = input['holdNanos'] != null
       ? _nanosFromAmountField(input['holdNanos'])
       : _sheToNanos(input['holdShe']);
   final dests = <String>{
     for (final d in (input['dests'] as List? ?? const [])) d.toString(),
   };
+  final allowBare = input['allowBare'] == true;
   final rows = <Map<String, dynamic>>[];
   final openedLocks = <Map<String, dynamic>>[];
   for (var i = 0; i < notes.length; i++) {
     final n = notes[i];
     if (n is! Map) continue;
-    // Callers that know the bytes set this. A missing flag stays selectable
-    // so an amount-only quote still plans. false means the note cannot be spent.
-    if (n['sealed'] == false) continue;
-    if (n['spent'] == true || n['locked'] == true) continue;
+    if (!spendableNote(
+      n,
+      tip: tip,
+      confirmations: floor,
+      tipMs: tipMs,
+      spentTags: spentTags,
+      allowBare: allowBare,
+    )) {
+      continue;
+    }
     final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
     if (addr.isEmpty) continue;
     if (dests.isNotEmpty && !dests.contains(addr)) continue;
-    final h = n['height'];
-    if (h is num && h >= 1) {
-      final height = h.toInt();
-      if (tip < height || (tip - height + 1) < floor) continue;
-    }
     final nanos = noteNanosExact(n);
     if (nanos == null || nanos <= BigInt.zero) continue;
     final row = {'i': i, 'nanos': nanos, 'addr': addr};
-    // An unlocked lock note is the principal. The hold still covers the coins
-    // that funded it, so this note is not one of the coins the hold reserves.
     if ((n['kind'] ?? '').toString() == 'lock') {
       final raw = n['unlockAtMs'];
       final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
@@ -686,16 +822,213 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
     rows.add(row);
   }
   rows.sort((a, b) => (a['nanos'] as BigInt).compareTo(b['nanos'] as BigInt));
-  var reserved = BigInt.zero;
-  var start = 0;
-  if (hold > BigInt.zero) {
-    for (; start < rows.length && reserved < hold; start++) {
-      reserved += rows[start]['nanos'] as BigInt;
+  // Exact hold: peel the stake off the smallest notes. A partly held note
+  // stays spendable for the free slice, and a send returns the held part
+  // as change. `nanos` is that slice. `gross` is the whole note.
+  var left = hold;
+  final free = <Map<String, dynamic>>[];
+  for (final row in rows) {
+    final nanos = row['nanos'] as BigInt;
+    if (left <= BigInt.zero) {
+      free.add(row);
+      continue;
+    }
+    if (nanos <= left) {
+      left -= nanos;
+      continue;
+    }
+    free.add({
+      'i': row['i'],
+      'nanos': nanos - left,
+      'gross': nanos,
+      'held': left,
+      'addr': row['addr'],
+    });
+    left = BigInt.zero;
+  }
+  free.addAll(openedLocks);
+  free.sort((a, b) => (b['nanos'] as BigInt).compareTo(a['nanos'] as BigInt));
+  final freeSum = free.fold<BigInt>(
+    BigInt.zero,
+    (s, r) => s + (r['nanos'] as BigInt),
+  );
+  return SpendablePool(free, freeSum, rows.isEmpty);
+}
+
+BigInt _heldOfRow(Map<String, dynamic> row) {
+  final held = row['held'];
+  if (held is BigInt && held > BigInt.zero) return held;
+  final gross = row['gross'];
+  final nanos = row['nanos'];
+  if (gross is BigInt && nanos is BigInt && gross > nanos) return gross - nanos;
+  return BigInt.zero;
+}
+
+/// Pay and change for one note. A positive hold returns whole as change.
+/// A max pay that leaves the levy no room takes the levy out of the pay.
+({BigInt pay, BigInt change}) holdProtectedPay({
+  required BigInt noteNanos,
+  required BigInt payNanos,
+  required BigInt feeNanos,
+  required BigInt heldNanos,
+}) {
+  var held = heldNanos;
+  if (held < BigInt.zero) held = BigInt.zero;
+  if (held > noteNanos) held = noteNanos;
+  final room = noteNanos - held;
+  final fee = feeNanos < BigInt.zero ? BigInt.zero : feeNanos;
+  var pay = payNanos < BigInt.zero ? BigInt.zero : payNanos;
+  if (pay > room) pay = room;
+  if (held > BigInt.zero && pay + fee > room) {
+    final over = pay + fee - room;
+    pay = over >= pay ? BigInt.zero : pay - over;
+  }
+  var change = noteNanos - pay - fee;
+  if (change < BigInt.zero) change = BigInt.zero;
+  return (pay: pay, change: change);
+}
+
+/// Genesis-anchored aserti3-2d. Same numbers as crypto/asert.js.
+const int kAsertTargetMs = 90000;
+const int kAsertHalflifeMs = 2 * 60 * 60 * 1000;
+const int kAsertBitsScale = 65536;
+const int kAsertLiveMinBits = 4;
+const int kAsertMaxBits = 256;
+const int kGenesisBits = 17;
+const int kGenesisBitsPacked = kGenesisBits * kAsertBitsScale;
+
+class AsertQuote {
+  const AsertQuote({
+    required this.ok,
+    required this.packed,
+    this.eased = 0,
+    this.easeBits = 0,
+  });
+  final bool ok;
+  final int packed;
+  final int eased;
+  final double easeBits;
+}
+
+/// chain.js isPackedBits. A wire word below the Q16.16 scale is not packed.
+bool isPackedBits(int bits) => bits >= kAsertBitsScale;
+
+/// chain.js unpackBits. The live floor and ceiling clamp the unpacked value.
+double unpackBits(int packed) {
+  if (packed <= 0) return kGenesisBits.toDouble();
+  if (packed <= kAsertMaxBits) {
+    final n = packed.toDouble();
+    if (n < kAsertLiveMinBits) return kAsertLiveMinBits.toDouble();
+    if (n > kAsertMaxBits) return kAsertMaxBits.toDouble();
+    return n;
+  }
+  if (packed < kAsertBitsScale) return kAsertMaxBits.toDouble();
+  final fp = packed / kAsertBitsScale;
+  if (fp < kAsertLiveMinBits) return kAsertLiveMinBits.toDouble();
+  if (fp > kAsertMaxBits) return kAsertMaxBits.toDouble();
+  return fp;
+}
+
+/// chain.js headerLinkReason bits gate: packed word, ASERT quote, then the
+/// unpacked live range.
+bool consensusBitsOk(int bits, AsertQuote quote) {
+  if (!isPackedBits(bits) || !bitsAcceptAsert(bits, quote)) return false;
+  final fp = unpackBits(bits);
+  return fp >= kAsertLiveMinBits && fp <= kAsertMaxBits;
+}
+
+/// Consensus block work. Same quantity as crypto/asert.js blockWorkBig:
+/// 2 raised to the unpacked bit difficulty.
+BigInt blockWork(int bits) {
+  final fp = unpackBits(bits);
+  if (!fp.isFinite || fp <= 0) return BigInt.one;
+  final whole = fp.floor();
+  final frac = fp - whole;
+  final scale = BigInt.from((math.pow(2, frac) * math.pow(2, 48)).round());
+  return ((BigInt.one << whole) * scale) >> 48;
+}
+
+/// Same window as crypto/asert.js bitsAcceptAsert. Exact packed bits, or any
+/// packed word in [eased, packed] when own-timestamp emergency ease applies.
+bool bitsAcceptAsert(int got, AsertQuote quote) {
+  if (!quote.ok) return false;
+  if (quote.easeBits > 0) return got <= quote.packed && got >= quote.eased;
+  return got == quote.packed;
+}
+
+BigInt _divRoundNearest(BigInt numer, BigInt denom) {
+  final neg = numer.isNegative;
+  final abs = neg ? -numer : numer;
+  final q = (abs + (denom ~/ BigInt.two)) ~/ denom;
+  return neg ? -q : q;
+}
+
+/// Exact packed quote. [parentTimeMs] opens the same emergency ease window
+/// as crypto/asert.js asertNextBits.
+AsertQuote asertQuoteForHeight({
+  required int anchorTimeMs,
+  required int blockTimeMs,
+  required int blockHeight,
+  int anchorHeight = 1,
+  int anchorBits = kGenesisBitsPacked,
+  int? parentTimeMs,
+}) {
+  if (anchorTimeMs <= 0 || blockTimeMs <= 0 || blockHeight <= anchorHeight) {
+    return const AsertQuote(ok: false, packed: 0);
+  }
+  final numer =
+      BigInt.from(blockHeight - anchorHeight) * BigInt.from(kAsertTargetMs) -
+      BigInt.from(blockTimeMs - anchorTimeMs);
+  final deltaQ = _divRoundNearest(
+    numer * BigInt.from(kAsertBitsScale),
+    BigInt.from(kAsertHalflifeMs),
+  );
+  final minQ = BigInt.from(kAsertLiveMinBits * kAsertBitsScale);
+  final maxQ = BigInt.from(kAsertMaxBits * kAsertBitsScale);
+  var next = BigInt.from(anchorBits) + deltaQ;
+  if (next < minQ) next = minQ;
+  if (next > maxQ) next = maxQ;
+  var eased = next;
+  var easeBits = 0.0;
+  if (parentTimeMs != null) {
+    final gap = blockTimeMs - parentTimeMs;
+    final trigger = 8 * kAsertTargetMs;
+    if (gap > trigger) {
+      final raw = math.log(gap / trigger) / math.ln2;
+      easeBits = raw < 0 ? 0 : (raw > 2 ? 2 : raw);
+      var easedQ = next - BigInt.from((easeBits * kAsertBitsScale).round());
+      if (easedQ < minQ) easedQ = minQ;
+      eased = easedQ;
     }
   }
-  final free = <Map<String, dynamic>>[...rows.sublist(start), ...openedLocks];
-  free.sort((a, b) => (b['nanos'] as BigInt).compareTo(a['nanos'] as BigInt));
-  final freeSum = free.fold<BigInt>(BigInt.zero, (s, r) => s + (r['nanos'] as BigInt));
+  return AsertQuote(
+    ok: true,
+    packed: next.toInt(),
+    eased: eased.toInt(),
+    easeBits: easeBits,
+  );
+}
+
+/// Largest-first, then batches of [kMaxInputsPerSend]. Stored amounts only.
+/// Same note gate as the Spendable figure. Production calls this from [Isolate.run].
+Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  final need = input['needNanos'] != null
+      ? _nanosFromAmountField(input['needNanos'])
+      : _sheToNanos(input['needShe']);
+  final memo = input['memo'] == true;
+  final outputs = (input['outputs'] as num?)?.toInt() ?? 3;
+  final measured = measuredInputCap(
+    outputs: outputs < 1 ? 1 : outputs,
+    memo: memo,
+  );
+  final asked = (input['cap'] as num?)?.toInt();
+  final cap = (asked == null || asked < 1 || asked > measured)
+      ? measured
+      : asked;
+  final pool = poolSpendableNotes(input);
+  final free = pool.free;
+  final freeSum = pool.freeSum;
   final batches = <Map<String, dynamic>>[];
   var remaining = need;
   var cursor = 0;
@@ -708,23 +1041,63 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
       taken.add(row);
       sum += row['nanos'] as BigInt;
       cursor++;
-      final fee = BigInt.from(estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo));
+      final fee = BigInt.from(
+        estimateSendLevyUnits(
+          inputs: taken.length,
+          outputs: outputs,
+          memo: memo,
+        ),
+      );
+      final heldBack = taken.fold<BigInt>(
+        BigInt.zero,
+        (s, r) => s + _heldOfRow(r),
+      );
       if (sum >= remaining + fee) break;
+      // The stake stays change. A max send of the free slice is still covered.
+      if (heldBack > BigInt.zero && sum >= remaining && fee < sum) break;
     }
-    final fee = BigInt.from(estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo));
-    final room = sum - fee;
-    if (room <= BigInt.zero) {
-      return {
-        'stamp': stamp,
-        'covered': false,
-        'empty': false,
-        'shortFee': true,
-        'batches': batches,
-        'feeShe': _sheOfNanos(feeSum + fee),
-        'spendableNanos': freeSum.toString(),
-      };
+    final fee = BigInt.from(
+      estimateSendLevyUnits(inputs: taken.length, outputs: outputs, memo: memo),
+    );
+    final heldBack = taken.fold<BigInt>(
+      BigInt.zero,
+      (s, r) => s + _heldOfRow(r),
+    );
+    final BigInt pay;
+    if (heldBack > BigInt.zero) {
+      final split = holdProtectedPay(
+        noteNanos: sum + heldBack,
+        payNanos: remaining,
+        feeNanos: fee,
+        heldNanos: heldBack,
+      );
+      if (split.pay <= BigInt.zero) {
+        return {
+          'stamp': stamp,
+          'covered': false,
+          'empty': false,
+          'shortFee': true,
+          'batches': batches,
+          'feeShe': _sheOfNanos(feeSum + fee),
+          'spendableNanos': freeSum.toString(),
+        };
+      }
+      pay = split.pay;
+    } else {
+      final room = sum - fee;
+      if (room <= BigInt.zero) {
+        return {
+          'stamp': stamp,
+          'covered': false,
+          'empty': false,
+          'shortFee': true,
+          'batches': batches,
+          'feeShe': _sheOfNanos(feeSum + fee),
+          'spendableNanos': freeSum.toString(),
+        };
+      }
+      pay = room < remaining ? room : remaining;
     }
-    final pay = room < remaining ? room : remaining;
     batches.add({
       'pay': _sheOfNanos(pay),
       'payNanos': pay.toString(),
@@ -740,7 +1113,13 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
       ],
     });
     feeSum += fee;
-    remaining -= pay;
+    // The fee came out of the requested pay so the stake stays whole.
+    // That reduced payment is the whole send.
+    if (heldBack > BigInt.zero && pay < remaining) {
+      remaining = BigInt.zero;
+    } else {
+      remaining -= pay;
+    }
   }
   final covered = remaining <= BigInt.zero && batches.isNotEmpty;
   // Notes can cover the payment and still miss the weight levy. That is a
@@ -749,7 +1128,7 @@ Map<String, dynamic> selectSpendNotesWire(Map<String, dynamic> input) {
   return {
     'stamp': stamp,
     'covered': covered,
-    'empty': rows.isEmpty,
+    'empty': pool.noPlain,
     'shortFee': shortFee,
     'batches': batches,
     'feeShe': _sheOfNanos(feeSum),
@@ -858,7 +1237,10 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
   if (!file.existsSync()) return spec;
   final raw = jsonDecode(file.readAsStringSync());
   if (raw is! Map) return spec;
-  final opened = await openSessionEnvelope(Map<String, dynamic>.from(raw), password);
+  final opened = await openSessionEnvelope(
+    Map<String, dynamic>.from(raw),
+    password,
+  );
   final plain = opened['plain'];
   if (plain is! Map) return spec;
   final j = scrubStaleBookCache(Map<String, dynamic>.from(plain));
@@ -888,7 +1270,8 @@ Future<Map<String, dynamic>> _bookFromSession(Map<String, dynamic> spec) async {
         for (final e in merged.entries) {'k': e.key, 'n': e.value},
       ];
     }(),
-    if (j['notes'] is List && (j['notes'] as List).isNotEmpty) 'notes': j['notes'],
+    if (j['notes'] is List && (j['notes'] as List).isNotEmpty)
+      'notes': j['notes'],
     'notesCovered': () {
       final sessionCovered = (j['notesCovered'] as num?)?.toInt() ?? 0;
       final specCovered = (spec['notesCovered'] as num?)?.toInt() ?? 0;
@@ -929,7 +1312,10 @@ Future<void> creditFollowEntry(List<dynamic> args) async {
   }
 }
 
-Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? partials]) async {
+Future<Map<String, dynamic>> creditFollowWorker(
+  String specJson, [
+  SendPort? partials,
+]) async {
   var spec = jsonDecode(specJson) as Map<String, dynamic>;
   spec = await _bookFromSession(spec);
   spec.remove('sessionPassword');
@@ -944,9 +1330,14 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
     base = accepted ?? '';
   }
   if (spendableFirst &&
-      creditFollowProbesPublic(ownNode: ownNode, base: base, publicConsent: publicConsent)) {
+      creditFollowProbesPublic(
+        ownNode: ownNode,
+        base: base,
+        publicConsent: publicConsent,
+      )) {
     final seeds = <String>[
-      for (final s in (spec['nodeSeeds'] as List?) ?? const <dynamic>[]) s.toString(),
+      for (final s in (spec['nodeSeeds'] as List?) ?? const <dynamic>[])
+        s.toString(),
     ];
     base = await firstLiveNodeSeed(
       seeds.isEmpty ? kPublicNodeSeeds : seeds,
@@ -957,23 +1348,25 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
   // has to finish; 400ms dropped every phone handshake and left spendable at 0.
   final workerHttp = spendableFirst
       ? (HttpClient()
-        ..connectionTimeout = const Duration(seconds: 4)
-        ..idleTimeout = const Duration(seconds: 8))
+          ..connectionTimeout = const Duration(seconds: 4)
+          ..idleTimeout = const Duration(seconds: 8))
       : null;
   if (workerHttp != null) {
     pinWalletHttp(workerHttp, allowPublic: () => publicConsent);
   }
   final pool = base.isEmpty
       ? null
-      : ShearPoolClient(
-          baseUrl: base,
-          http: workerHttp,
-        );
+      : ShearPoolClient(baseUrl: base, http: workerHttp);
   if (pool != null && ownNode) {
     pool.useOwnNode(base);
   }
   if (pool != null && publicConsent) pool.publicConsent = true;
   final ledger = ShearLedger(pool: pool);
+  ledger._stampSpendTagsInline = true;
+  ledger._v3HashInline = true;
+  final sessionPath = spec['sessionPath']?.toString() ?? '';
+  final headerStore = verifiedHeaderStorePath(sessionPath);
+  if (headerStore.isNotEmpty) ledger.bindHeaderStore(headerStore);
   try {
     ledger.installCreditFollow(spec);
     final rest = spec['restFrame']?.toString() ?? '';
@@ -993,20 +1386,20 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
             partials: partials,
           )
         : !chain
-            ? ledger.recheckRestFrameSpendable(
-                rest,
-                paymentCode: (code == null || code.isEmpty) ? null : code,
-              )
-            : full
-                ? await ledger.syncCredits(rest, paymentCode: code, partials: partials)
-                : await ledger.syncBalancesOnly(
-                    rest,
-                    paymentCode: code,
-                    also: [
-                      for (final d in (spec['uiDests'] as List?) ?? const <dynamic>[])
-                        d.toString(),
-                    ],
-                  );
+        ? ledger.recheckRestFrameSpendable(
+            rest,
+            paymentCode: (code == null || code.isEmpty) ? null : code,
+          )
+        : full
+        ? await ledger.syncCredits(rest, paymentCode: code, partials: partials)
+        : await ledger.syncBalancesOnly(
+            rest,
+            paymentCode: code,
+            also: [
+              for (final d in (spec['uiDests'] as List?) ?? const <dynamic>[])
+                d.toString(),
+            ],
+          );
     final out = ledger.exportCreditFollow(
       restFrame: rest,
       paymentCode: code,
@@ -1034,8 +1427,8 @@ Future<Map<String, dynamic>> creditFollowWorker(String specJson, [SendPort? part
     out['kind'] = spendableFirst
         ? 'spendable'
         : !chain
-            ? 'verify'
-            : (full ? 'credits' : 'balances');
+        ? 'verify'
+        : (full ? 'credits' : 'balances');
     out['opened'] = opened;
     return out;
   } finally {
@@ -1080,7 +1473,9 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
       continue;
     }
     final addr = (o['address'] as String?) ?? destTo;
-    final self = addr.isNotEmpty && (addr == src || (changeDest != null && addr == changeDest));
+    final self =
+        addr.isNotEmpty &&
+        (addr == src || (changeDest != null && addr == changeDest));
     if (!self && !isPayableDest(addr)) {
       throw StateError(kErrShortSsa1);
     }
@@ -1091,7 +1486,9 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
     final opened = admitBaseFromAddress(addr);
     final baseOk = opened != null && opened.length == 32 && isPayableDest(addr);
     // Consensus needs rEph/rCt/amtCt on every hidden output, change included.
-    final B = baseOk ? opened : (self ? (fallbackBase ?? admitBaseBytes(spendSeed)) : null);
+    final B = baseOk
+        ? opened
+        : (self ? (fallbackBase ?? admitBaseBytes(spendSeed)) : null);
     if (B == null) throw StateError(kErrShortSsa1);
     note = attachAdmitPub(note, admitBase: pointFrom(B), v: units);
     sealed.add(note);
@@ -1101,7 +1498,9 @@ Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
 
 /// One FS-1 spend of every input of a send ([proveFs1SpendWire]). Same
 /// off-isolate rule as [sealFlowSpendVouts].
+// dart format off
 Map<String, dynamic> reproveFlowSpendWire(Map<String, dynamic> input) => proveFs1SpendWire(input);
+// dart format on
 
 /// Stamp from the worker, including when [sealFlowSpendVouts] throws.
 Map<String, dynamic> _sealFlowStamped(Map<String, dynamic> input) {
@@ -1133,7 +1532,10 @@ Map<String, dynamic> _proveFlowStamped(Map<String, dynamic> input) {
   }
 }
 
-Map<String, dynamic> _takeOffUi(Map<String, dynamic> out, void Function(String) stamp) {
+Map<String, dynamic> _takeOffUi(
+  Map<String, dynamic> out,
+  void Function(String) stamp,
+) {
   stamp(out['stamp']?.toString() ?? '');
   final err = out['error'];
   if (err != null) throw StateError(err.toString());
@@ -1146,9 +1548,10 @@ Future<Map<String, dynamic>> _sealFlowOffUi(Map<String, dynamic> input) {
     debugSendSealStamp = identityHashCode(Isolate.current).toString();
     return Future<Map<String, dynamic>>.value(sealFlowSpendVouts(input));
   }
-  return Isolate.run(() => _sealFlowStamped(input)).then(
-    (out) => _takeOffUi(out, (s) => debugSendSealStamp = s),
-  );
+  // dart format off
+  return Isolate.run(() => _sealFlowStamped(input))
+      .then((out) => _takeOffUi(out, (s) => debugSendSealStamp = s));
+  // dart format on
 }
 
 Future<Map<String, dynamic>> _proveFlowOffUi(Map<String, dynamic> input) {
@@ -1157,9 +1560,10 @@ Future<Map<String, dynamic>> _proveFlowOffUi(Map<String, dynamic> input) {
     debugSendProveStamp = identityHashCode(Isolate.current).toString();
     return Future<Map<String, dynamic>>.value(reproveFlowSpendWire(input));
   }
-  return Isolate.run(() => _proveFlowStamped(input)).then(
-    (out) => _takeOffUi(out, (s) => debugSendProveStamp = s),
-  );
+  // dart format off
+  return Isolate.run(() => _proveFlowStamped(input))
+      .then((out) => _takeOffUi(out, (s) => debugSendProveStamp = s));
+  // dart format on
 }
 
 /// Same hops [_sendManyNotes] uses. A caller-side seal or prove is the test shortcut.
@@ -1174,7 +1578,9 @@ Map<String, dynamic> signSpendWire(Map<String, dynamic> input) {
   final stamp = identityHashCode(Isolate.current).toString();
   final spendSeed = input['spendSeed'] as Uint8List;
   final msg = input['message'] as Uint8List;
-  final shared = input['shared'] is Uint8List ? input['shared'] as Uint8List : null;
+  final shared = input['shared'] is Uint8List
+      ? input['shared'] as Uint8List
+      : null;
   final Uint8List sig;
   final Uint8List pub;
   if (shared != null) {
@@ -1204,7 +1610,8 @@ Future<Map<String, dynamic>> signSpendOffUi(Map<String, dynamic> input) {
   final savedSeal = debugNativeSealNote;
   return Isolate.run(() => signSpendWire(input)).then((out) {
     debugSendSignStamp = out['stamp']?.toString() ?? '';
-    if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
+    if (debugNativeSealNote == null && savedSeal != null)
+      debugNativeSealNote = savedSeal;
     return out;
   });
 }
@@ -1224,7 +1631,8 @@ Map<String, dynamic> flowPostHex(Map<String, dynamic> raw) {
   final listed = proofs is List
       ? _flowRows(proofs)
       : <Map<String, dynamic>>[
-          if (raw['admitProof'] is Map) Map<String, dynamic>.from(raw['admitProof'] as Map),
+          if (raw['admitProof'] is Map)
+            Map<String, dynamic>.from(raw['admitProof'] as Map),
         ];
   final body = postedFlowBody(
     vin: _flowRows(raw['vin']),
@@ -1234,8 +1642,13 @@ Map<String, dynamic> flowPostHex(Map<String, dynamic> raw) {
   return <String, dynamic>{
     'vin': List<dynamic>.from(_hexify(body['vin']) as List? ?? const []),
     'vout': List<dynamic>.from(_hexify(body['vout']) as List? ?? const []),
-    'admitProof': body['admitProof'] is Map ? _hexify(body['admitProof']) : null,
-    if (proofs is List) 'admitProofs': _hexify(body['admitProofs'] ?? const <Map<String, dynamic>>[]),
+    'admitProof': body['admitProof'] is Map
+        ? _hexify(body['admitProof'])
+        : null,
+    if (proofs is List)
+      'admitProofs': _hexify(
+        body['admitProofs'] ?? const <Map<String, dynamic>>[],
+      ),
   };
 }
 
@@ -1336,7 +1749,9 @@ List<dynamic> notesNotYetAccepted(List<dynamic> rows, Set<String> known) {
       continue;
     }
     final commit = _noteBytes(row['commit']);
-    if (commit != null && commit.isNotEmpty && known.contains(_bytesHex(commit))) {
+    if (commit != null &&
+        commit.isNotEmpty &&
+        known.contains(_bytesHex(commit))) {
       continue;
     }
     fresh.add(row);
@@ -1359,7 +1774,9 @@ Map<String, dynamic> scanSealedWire(Map<String, dynamic> raw) {
     'dests': List<String>.from(raw['dests'] as List? ?? const []),
     'dest': raw['dest'],
     'spendSeed': raw['spendSeed'],
-    'seenCommitHex': List<String>.from(raw['seenCommitHex'] as List? ?? const []),
+    'seenCommitHex': List<String>.from(
+      raw['seenCommitHex'] as List? ?? const [],
+    ),
     'txHints': _hexify(raw['txHints']),
     'prev': raw['prev'],
     'startIndex': raw['startIndex'],
@@ -1391,8 +1808,8 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
   final prev = prevIn == null
       ? null
       : (prevIn is Uint8List
-          ? prevIn
-          : Uint8List.fromList(List<int>.from(prevIn as List)));
+            ? prevIn
+            : Uint8List.fromList(List<int>.from(prevIn as List)));
   final startIndex = (input['startIndex'] as num?)?.toInt() ?? 0;
   final xBase = admitBaseScalar(spendSeed);
   final proofCache = proofCacheMap(input['openedProofs']);
@@ -1418,7 +1835,8 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     }
     if (matched == null && dest != null) {
       final d20 = hash20FromAddress(dest);
-      if (d20 != null && noteBytesEq(nc, noteCommitOfDest20(d20))) matched = dest;
+      if (d20 != null && noteBytesEq(nc, noteCommitOfDest20(d20)))
+        matched = dest;
     }
     if (matched == null) {
       final row20 = _noteBytes(o['dest20']);
@@ -1449,7 +1867,9 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     if (r == null) continue;
     var kindName = o['kind'] as String?;
     final proofKeyEarly = proofCacheKey(o);
-    final cachedEarly = proofKeyEarly == null ? null : proofCache[proofKeyEarly];
+    final cachedEarly = proofKeyEarly == null
+        ? null
+        : proofCache[proofKeyEarly];
     // This proof already opened on a previous read. Do not derive admit or
     // open the value again. The wire kind is the one that was sealed.
     if (cachedEarly != null &&
@@ -1498,11 +1918,15 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       for (final kindTry in tries) {
         if (!seenKind.add(kindTry)) continue;
         try {
-          final want = pointBytes(admitPub(admitScalarFromSeed(spendSeed, {
-            'kind': kindTry,
-            'noteCommit': nc,
-            'commit': commit,
-          })));
+          final want = pointBytes(
+            admitPub(
+              admitScalarFromSeed(spendSeed, {
+                'kind': kindTry,
+                'noteCommit': nc,
+                'commit': commit,
+              }),
+            ),
+          );
           if (noteBytesEq(want, admit)) {
             matchedKind = kindTry;
             break;
@@ -1517,7 +1941,8 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     final cachedNanos = proofKey == null ? null : proofCache[proofKey];
     // A remembered opening is this proof's nanos. A new proof still has to open.
     final openRow = Map<String, dynamic>.from(o)..['kind'] = kind;
-    final verifiedNanos = cachedNanos ?? openedSpendDigits(openRow) ?? _amtCtDigits(o, xBase);
+    final verifiedNanos =
+        cachedNanos ?? openedSpendDigits(openRow) ?? _amtCtDigits(o, xBase);
     final proofChecked = verifiedNanos != null;
     final amt = verifiedNanos == null ? null : _sheOfExactNanos(verifiedNanos);
     if (!noteIsFs1Leaf(admit, commit)) continue;
@@ -1557,17 +1982,35 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
   for (final e in hashFoldAt.entries) {
     if (notes[e.key]['verified'] == true) hashFolds.add(e.value);
   }
-  return {'notes': notes, 'hashFolds': hashFolds, 'unopenedProofs': unopenedProofs};
+  return {
+    'notes': notes,
+    'hashFolds': hashFolds,
+    'unopenedProofs': unopenedProofs,
+  };
 }
 
-const _payoutRangeKinds = {'pot', 'hash', 'finder-fee', 'reserve-fee', 'pool-fee'};
+const _payoutRangeKinds = {
+  'pot',
+  'hash',
+  'finder-fee',
+  'reserve-fee',
+  'pool-fee',
+};
 
-void _rememberPayoutRange(Map<int, Uint8List?> at, int index, String? kind, Map o) {
+void _rememberPayoutRange(
+  Map<int, Uint8List?> at,
+  int index,
+  String? kind,
+  Map o,
+) {
   if (kind == null || !_payoutRangeKinds.contains(kind)) return;
   at[index] = _noteBytes(o['rangeProof']);
 }
 
-int _gatePayoutRanges(List<Map<String, dynamic>> notes, Map<int, Uint8List?> at) {
+int _gatePayoutRanges(
+  List<Map<String, dynamic>> notes,
+  Map<int, Uint8List?> at,
+) {
   final jobs = <int>[];
   final commits = <Uint8List>[];
   final proofs = <Uint8List>[];
@@ -1577,7 +2020,10 @@ int _gatePayoutRanges(List<Map<String, dynamic>> notes, Map<int, Uint8List?> at)
     if (note['verified'] != true) continue;
     final commit = note['commit'];
     final proof = e.value;
-    if (commit is! Uint8List || commit.length != 32 || proof == null || proof.isEmpty) {
+    if (commit is! Uint8List ||
+        commit.length != 32 ||
+        proof == null ||
+        proof.isEmpty) {
       _dropOpenedPayout(note);
       dropped++;
       continue;
@@ -1605,10 +2051,18 @@ void _dropOpenedPayout(Map<String, dynamic> note) {
 }
 
 /// Pure history-row parse + optional memoOpen. Full-sync via [Isolate.run].
-Future<Map<String, dynamic>> parseHistoryPayload(Map<String, dynamic> input) async {
-  final amountsOnly = input['amountsOnly'] == true && input['destProof'] != true;
+Future<Map<String, dynamic>> parseHistoryPayload(
+  Map<String, dynamic> input,
+) async {
+  final amountsOnly =
+      input['amountsOnly'] == true && input['destProof'] != true;
   if (amountsOnly) {
-    return {'amountsOnly': true, 'txs': <Map<String, dynamic>>[], 'dests': <String>[], 'named': false};
+    return {
+      'amountsOnly': true,
+      'txs': <Map<String, dynamic>>[],
+      'dests': <String>[],
+      'named': false,
+    };
   }
   final key = input['key']?.toString() ?? '';
   final openMemos = input['openMemos'] == true;
@@ -1616,7 +2070,9 @@ Future<Map<String, dynamic>> parseHistoryPayload(Map<String, dynamic> input) asy
     for (final e in (input['existingPlain'] as Map? ?? {}).entries)
       e.key.toString(): e.value.toString(),
   };
-  final vaults = <String>{...List<String>.from(input['vaultDests'] as List? ?? const [])};
+  final vaults = <String>{
+    ...List<String>.from(input['vaultDests'] as List? ?? const []),
+  };
   final rows = input['rows'] as List? ?? const [];
   final txs = <Map<String, dynamic>>[];
   final dests = <String>[];
@@ -1688,7 +2144,9 @@ String? openedSpendDigits(Map o) {
   final vp = o['valueProof'];
   if (commit != null && vp is Map) {
     final claimed = tryU64Units(vp['v'] ?? o['nanos']);
-    if (claimed != null && claimed > BigInt.zero && verifyValueUnits(commit, claimed, vp)) {
+    if (claimed != null &&
+        claimed > BigInt.zero &&
+        verifyValueUnits(commit, claimed, vp)) {
       return claimed.toString();
     }
   }
@@ -1805,8 +2263,21 @@ List<Map<String, dynamic>> _postedVin(List<Map<String, dynamic>> vin) {
 
 /// Public wire fields. Same set as crypto/spend.js PROOF_KEYS.
 const postedAdmitProofKeys = <String>{
-  'admit_proof', 'v', 'version', 'spendTag', 'blob', 'cTilde', 'c0',
-  'proof', 'members', 'anchor', 'root', 'n', 'pseudo', 'commit', 'tag',
+  'admit_proof',
+  'v',
+  'version',
+  'spendTag',
+  'blob',
+  'cTilde',
+  'c0',
+  'proof',
+  'members',
+  'anchor',
+  'root',
+  'n',
+  'pseudo',
+  'commit',
+  'tag',
 };
 
 /// crypto/spend.js VALUE_PROOF_KEYS. `R` is public.
@@ -1820,9 +2291,24 @@ const postedMerkleKeys = <String>{'side', 'hash'};
 
 /// crypto/spend.js VOUT_KEYS.
 const postedVoutKeys = <String>{
-  'kind', 'address', 'nanos', 'dest20', 'noteCommit', 'commit',
-  'valueProof', 'rangeProof', 'viewTag', 'admitPub', 'rEph', 'rCt', 'amtCt',
-  'portalId', 'memo', 'memoCt', 'unlockAtMs', 'lockEpoch',
+  'kind',
+  'address',
+  'nanos',
+  'dest20',
+  'noteCommit',
+  'commit',
+  'valueProof',
+  'rangeProof',
+  'viewTag',
+  'admitPub',
+  'rEph',
+  'rCt',
+  'amtCt',
+  'portalId',
+  'memo',
+  'memoCt',
+  'unlockAtMs',
+  'lockEpoch',
 };
 
 /// Sentinel for a nested value the allow-list refuses.
@@ -1861,7 +2347,10 @@ dynamic _allowChild(String key, dynamic v) {
       if (v is List && v is! Uint8List) {
         return <dynamic>[
           for (final item in v)
-            if (item is Map) _allowMap(item, postedMemberKeys) else if (_publicLeaf(item) is! _Omit) item,
+            if (item is Map)
+              _allowMap(item, postedMemberKeys)
+            else if (_publicLeaf(item) is! _Omit)
+              item,
         ];
       }
       if (v is Map) return _allowMap(v, postedMemberKeys);
@@ -1928,7 +2417,9 @@ Map<String, dynamic> postedFlowBody({
   required List<Map<String, dynamic>> vout,
   required List<Map<String, dynamic>> proofs,
 }) {
-  final posted = <Map<String, dynamic>>[for (final proof in proofs) postedAdmitProof(proof)];
+  final posted = <Map<String, dynamic>>[
+    for (final proof in proofs) postedAdmitProof(proof),
+  ];
   return <String, dynamic>{
     'vin': _postedVin(vin),
     'vout': _postedVout(vout),
@@ -1939,7 +2430,8 @@ Map<String, dynamic> postedFlowBody({
 
 List<Map<String, dynamic>> _postedVout(List<Map<String, dynamic>> vouts) {
   return [
-    for (final row in vouts.map(compactSealedVout)) _allowMap(row, postedVoutKeys),
+    for (final row in vouts.map(compactSealedVout))
+      _allowMap(row, postedVoutKeys),
   ];
 }
 
@@ -1958,7 +2450,14 @@ Scalar kt10WithdrawBlind(String to, BigInt nanos, String id, Uint8List nonce) {
   final dest = utf8Bytes(to);
   final ident = utf8Bytes(id);
   for (var i = 0; i < 8; i++) {
-    final r = hashToScalar([dst, Uint8List.fromList([i]), dest, n, ident, nonce]);
+    final r = hashToScalar([
+      dst,
+      Uint8List.fromList([i]),
+      dest,
+      n,
+      ident,
+      nonce,
+    ]);
     if (!scalarEq(r, scalarZero())) return r;
   }
   throw StateError('kt10_blind');
@@ -1980,7 +2479,13 @@ Uint8List _withdrawNonce(Uint8List? nonce) {
 /// Public nanos + dest20 + noteCommitOfDest20, with `commit` so wallet_api
 /// keeps this body instead of minting a fresh seal after the spend sig.
 /// A withdraw uses a hash-derived non-zero r. Value 0 is not a withdrawal.
-Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {String id = '', Uint8List? nonce}) {
+Map<String, dynamic> sealedReserveVout(
+  String to,
+  Object nanos,
+  String kind, {
+  String id = '',
+  Uint8List? nonce,
+}) {
   final units = tryU64Units(nanos) ?? BigInt.zero;
   final shown = u64OnWire(units);
   final d20 = hash20FromAddress(to);
@@ -1988,7 +2493,9 @@ Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {St
   if (kind == 'withdraw' && units <= BigInt.zero) {
     return {'address': to, 'nanos': shown, 'kind': kind};
   }
-  final blindId = kind == 'withdraw' ? (id.isEmpty ? _freshWithdrawId() : id) : '';
+  final blindId = kind == 'withdraw'
+      ? (id.isEmpty ? _freshWithdrawId() : id)
+      : '';
   final blindNonce = kind == 'withdraw' ? _withdrawNonce(nonce) : null;
   final blind = kind == 'withdraw'
       ? kt10WithdrawBlind(to, units, blindId, blindNonce!)
@@ -2008,10 +2515,15 @@ Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {St
 
 /// A lock note carries the epoch end and the user's admit pub.
 /// No clock leaves the older receipt. A random pub would not be the user's key.
-void _stampLockNote(List<Map<String, dynamic>> sealed, Map<String, dynamic> input) {
+void _stampLockNote(
+  List<Map<String, dynamic>> sealed,
+  Map<String, dynamic> input,
+) {
   final epoch = input['lockEpoch'];
   final unlock = input['unlockAtMs'];
-  final spendSeed = input['spendSeed'] is Uint8List ? input['spendSeed'] as Uint8List : null;
+  final spendSeed = input['spendSeed'] is Uint8List
+      ? input['spendSeed'] as Uint8List
+      : null;
   final hasClock = epoch is int && epoch >= 0 && unlock is int && unlock > 0;
   if (!hasClock) return;
   for (var i = 0; i < sealed.length; i++) {
@@ -2019,7 +2531,9 @@ void _stampLockNote(List<Map<String, dynamic>> sealed, Map<String, dynamic> inpu
     if ((note['kind'] ?? '').toString() != 'lock') continue;
     note['lockEpoch'] = epoch;
     note['unlockAtMs'] = unlock;
-    if (spendSeed != null && spendSeed.length == 32 && note['commit'] is Uint8List) {
+    if (spendSeed != null &&
+        spendSeed.length == 32 &&
+        note['commit'] is Uint8List) {
       sealed[i] = attachAdmitPub(note, spendSeed: spendSeed);
     }
   }
@@ -2032,8 +2546,12 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
   final from = (input['from'] as String?) ?? '';
   final kind = (input['kind'] as String?) ?? 'lock';
   final nanosUnits = tryU64Units(input['nanos']) ?? BigInt.zero;
-  final spendSeed = input['spendSeed'] is Uint8List ? input['spendSeed'] as Uint8List : null;
-  final shared = input['shared'] is Uint8List ? input['shared'] as Uint8List : null;
+  final spendSeed = input['spendSeed'] is Uint8List
+      ? input['spendSeed'] as Uint8List
+      : null;
+  final shared = input['shared'] is Uint8List
+      ? input['shared'] as Uint8List
+      : null;
   final spec = <Map<String, dynamic>>[
     for (final raw in (input['vouts'] as List? ?? const []))
       if (raw is Map) Map<String, dynamic>.from(raw),
@@ -2045,7 +2563,9 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
         tryU64Units(o['nanos']) ?? (kind == 'vote' ? BigInt.zero : nanosUnits),
         (o['kind'] as String?) ?? kind,
         id: (input['id'] as String?) ?? '',
-        nonce: input['withdrawNonce'] is Uint8List ? input['withdrawNonce'] as Uint8List : null,
+        nonce: input['withdrawNonce'] is Uint8List
+            ? input['withdrawNonce'] as Uint8List
+            : null,
       ),
   ];
   if (kind == 'lock') _stampLockNote(sealed, input);
@@ -2059,12 +2579,17 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
       if (ident is String && ident.isNotEmpty) withdrawId = ident;
       if (rawNonce is Uint8List && rawNonce.length == 32) {
         withdrawNonceRaw = rawNonce;
-        withdrawNonceHex = rawNonce.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+        withdrawNonceHex = rawNonce
+            .map((b) => b.toRadixString(16).padLeft(2, '0'))
+            .join();
       }
     }
   }
   final postedVout = _postedVout(sealed);
-  final wire = flowPostHex(<String, dynamic>{'vin': const <Map<String, dynamic>>[], 'vout': postedVout});
+  final wire = flowPostHex(<String, dynamic>{
+    'vin': const <Map<String, dynamic>>[],
+    'vout': postedVout,
+  });
   final hexVout = List<dynamic>.from(wire['vout'] as List? ?? const []);
   final choice = (input['choice'] as String?) ?? '';
   final taxed = kind == 'vote' || kind == 'lock';
@@ -2092,8 +2617,12 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
   if (taxed && !weightFeeCovers(fee, draft, maxLevy: maxLevy)) {
     throw StateError('fee_short');
   }
-  final portalId = kind == 'withdraw' ? reservePortalId(from) : reservePortalId(to);
-  final payoutPortalId = kind == 'withdraw' ? reservePortalId(to) : reservePortalId(from);
+  final portalId = kind == 'withdraw'
+      ? reservePortalId(from)
+      : reservePortalId(to);
+  final payoutPortalId = kind == 'withdraw'
+      ? reservePortalId(to)
+      : reservePortalId(from);
   final commit = sealed.isNotEmpty ? _noteBytes(sealed.first['commit']) : null;
   final vp = sealed.isNotEmpty ? sealed.first['valueProof'] : null;
   final suffixNanos = jsSafeInt(vp is Map ? vp['v'] : shownNanos);
@@ -2187,7 +2716,8 @@ Map<String, dynamic> _reservePoolDraft({
       'from': from,
       'to': to,
       'nanos': nanos,
-      if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+      if (withdrawNonce != null && withdrawNonce.isNotEmpty)
+        'withdrawNonce': withdrawNonce,
       'portalId': portalFrom,
       'payoutPortalId': portalTo,
       'vin': <Map<String, dynamic>>[],
@@ -2232,7 +2762,9 @@ Future<Map<String, dynamic>> _reserveSealOffUi(Map<String, dynamic> input) {
 /// Painted Continuum send has no flux-set note, so it cannot run native
 /// range/ADMIT prove (`admit_native_required`). Commit each out, including
 /// one dummy, the way the pool's spend-sig path keeps the body. No admit proof.
-List<Map<String, dynamic>> sealPaintedSpendVouts(List<Map<String, dynamic>> spec) {
+List<Map<String, dynamic>> sealPaintedSpendVouts(
+  List<Map<String, dynamic>> spec,
+) {
   final out = <Map<String, dynamic>>[];
   for (final o in spec) {
     final kind = (o['kind'] as String?) ?? 'send';
@@ -2347,12 +2879,30 @@ LockFundingPlan planLockFunding(
     if (cover == null && s + 1e-12 >= needShe) cover = d;
   }
   if (cover != null) {
-    return LockFundingPlan(sources: [cover], from: cover, consolidate: false, have: have, need: needShe);
+    return LockFundingPlan(
+      sources: [cover],
+      from: cover,
+      consolidate: false,
+      have: have,
+      need: needShe,
+    );
   }
   if (have + 1e-12 >= needShe && holding.isNotEmpty) {
-    return LockFundingPlan(sources: holding, from: null, consolidate: true, have: have, need: needShe);
+    return LockFundingPlan(
+      sources: holding,
+      from: null,
+      consolidate: true,
+      have: have,
+      need: needShe,
+    );
   }
-  return LockFundingPlan(sources: const [], from: null, consolidate: false, have: have, need: needShe);
+  return LockFundingPlan(
+    sources: const [],
+    from: null,
+    consolidate: false,
+    have: have,
+    need: needShe,
+  );
 }
 
 /// Pool balance/status text for a gateway timeout. Other errors are not this.
@@ -2368,12 +2918,20 @@ String lockFundingShortfall(LockFundingPlan plan) {
 
 /// Verified confirmed coins only. A pool balance, owed-toward-π, and
 /// unconfirmed arrivals stay out of this figure.
-double paintedContinuumSpendable(ShearLedger ledger, String restFrame, {String? paymentCode}) {
+double paintedContinuumSpendable(
+  ShearLedger ledger,
+  String restFrame, {
+  String? paymentCode,
+}) {
   return ledger.spendableOwned(restFrame, paymentCode: paymentCode);
 }
 
 /// Sum of sealed notes on money dests. Not the painted Continuum figure.
-double chainNoteSum(ShearLedger ledger, String restFrame, {String? paymentCode}) {
+double chainNoteSum(
+  ShearLedger ledger,
+  String restFrame, {
+  String? paymentCode,
+}) {
   var n = 0.0;
   for (final d in ledger.moneyDests(restFrame, paymentCode: paymentCode)) {
     n += ledger.inventoriedNoteShe(d, sum: true);
@@ -2435,38 +2993,64 @@ Future<ContinuumSendResult> submitContinuumSend({
     return ContinuumSendResult(posted: false, to: startTo, remark: remark);
   }
   if (amount <= 0 && (nanosWire == null || nanosWire.isEmpty)) {
-    return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+    return ContinuumSendResult(
+      posted: false,
+      to: candidate,
+      remark: kErrSendGeneric,
+    );
   }
-  if (publicNode && !local && !publicNodePostAllowed(consent: publicIpConsent)) {
-    return ContinuumSendResult(posted: false, to: candidate, remark: kPublicIpWaitCopy);
+  if (publicNode &&
+      !local &&
+      !publicNodePostAllowed(consent: publicIpConsent)) {
+    return ContinuumSendResult(
+      posted: false,
+      to: candidate,
+      remark: kPublicIpWaitCopy,
+    );
   }
   if (!ledger.beginSend()) {
-    return ContinuumSendResult(posted: false, to: candidate, remark: 'send_in_flight');
+    return ContinuumSendResult(
+      posted: false,
+      to: candidate,
+      remark: 'send_in_flight',
+    );
   }
   try {
-    // Weight quote, not the amount-bps figure. Depth surge is not the consensus levy.
+    // The levy is quoted when the send is built. It is not taken off this figure.
     depth;
-    final levy = estimateSendLevyUnits(
-      inputs: 1,
-      outputs: 3,
-      memo: memo != null && memo.isNotEmpty,
-    );
     final exactWire = nanosWire != null && RegExp(r'^\d+$').hasMatch(nanosWire);
     final fromDouble = BigInt.from((amount * kUnitsPerShe).round());
     final lossyAmount = exactWire && fromDouble != BigInt.parse(nanosWire!);
-    final need = amount + levy / kUnitsPerShe;
+    // The figure is gross. The levy is taken at send time, not off the figure.
+    final need = amount;
     if (!lossyAmount) {
-      final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
+      final painted = paintedContinuumSpendable(
+        ledger,
+        restFrame,
+        paymentCode: paymentCode,
+      );
       if (painted + 1e-12 < need) {
-        return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+        return ContinuumSendResult(
+          posted: false,
+          to: candidate,
+          remark: kErrSendGeneric,
+        );
       }
     }
     debugLastContinuumSendError = null;
     final mark = ledger.markPaintedBook();
-    final gap = ledger.fundFromPaintedContinuum(restFrame, paymentCode: paymentCode, needShe: need);
+    final gap = ledger.fundFromPaintedContinuum(
+      restFrame,
+      paymentCode: paymentCode,
+      needShe: need,
+    );
     if (gap == null) {
       ledger.restorePaintedBook(mark);
-      return ContinuumSendResult(posted: false, to: candidate, remark: kErrSendGeneric);
+      return ContinuumSendResult(
+        posted: false,
+        to: candidate,
+        remark: kErrSendGeneric,
+      );
     }
     try {
       final paintedFrom = ledger.paintedFundDest;
@@ -2493,11 +3077,20 @@ Future<ContinuumSendResult> submitContinuumSend({
         progress: progress,
         nanosWire: nanosWire,
       );
-      return ContinuumSendResult(posted: true, to: candidate, remark: '', tx: tx);
+      return ContinuumSendResult(
+        posted: true,
+        to: candidate,
+        remark: '',
+        tx: tx,
+      );
     } catch (e) {
       debugLastContinuumSendError = e;
       ledger.restorePaintedBook(mark);
-      return ContinuumSendResult(posted: false, to: candidate, remark: flowSendAdvisoryOf(e));
+      return ContinuumSendResult(
+        posted: false,
+        to: candidate,
+        remark: flowSendAdvisoryOf(e),
+      );
     }
   } finally {
     ledger.endSend();
@@ -2533,7 +3126,8 @@ String formatShe(num she) {
     return she < 0 ? '-$s' : s;
   }
   final s = trunc.toStringAsFixed(kShePublicDigits);
-  if (RegExp(r'^-?\d+\.000000000$').hasMatch(s)) return trunc.truncate().toString();
+  if (RegExp(r'^-?\d+\.000000000$').hasMatch(s))
+    return trunc.truncate().toString();
   return s;
 }
 
@@ -2560,7 +3154,10 @@ String formatSheFromNanos(int nanos) {
 /// Flow nanos for the Vortex line. A spendable double inside 2^53 is that
 /// book. Above it, the exact note nanos are the figure. The double is not
 /// rounded back into a nanos count.
-int vortexFlowNanos({required double spendableShe, required Iterable<BigInt> exactNotes}) {
+int vortexFlowNanos({
+  required double spendableShe,
+  required Iterable<BigInt> exactNotes,
+}) {
   if (!spendableShe.isFinite || spendableShe <= 0) return 0;
   final scaled = spendableShe * kUnitsPerShe;
   if (scaled.isFinite && scaled >= 0 && scaled <= _kSafeDoubleNanos) {
@@ -2577,7 +3174,8 @@ int vortexFlowNanos({required double spendableShe, required Iterable<BigInt> exa
 /// Full nano SHE (`*.***********`). Do not use [formatShe] for the hashbonus banner.
 const kErrNoteSpent = 'that note was already spent';
 const kErrRangeProof = 'range proof failed';
-const kErrPublicHttp = 'node not running — sends would use the public node and show your IP';
+const kErrPublicHttp =
+    'node not running — sends would use the public node and show your IP';
 const kErrSyncTip = 'node not at tip — wait for sync';
 const kErrSendGeneric = 'not sent - try again';
 const kErrShortShe1 = 'paste full she1 from Receive (not fingerprint)';
@@ -2592,15 +3190,22 @@ String voteFailCopy(Object error) {
   if (msg.contains('vote_locked') || msg.contains('sealed')) {
     return 'Vote already sealed for this epoch';
   }
-  if (msg.contains('unsigned') || msg.contains('lock signature') || msg.contains('bad_vote')) {
+  if (msg.contains('unsigned') ||
+      msg.contains('lock signature') ||
+      msg.contains('bad_vote')) {
     return 'Vote could not be signed — check Continuum fee and portal, then try again';
   }
   return error.toString();
 }
+
 /// The picker had no sealed note, and the rest-frame sum could not cover the send.
 /// One Flow input spends one note. A user send of the sum posts one transaction per note.
 const kErrNoSealedNote =
     'No sealed Continuum note ready — wait for sync/confirms';
+
+/// Header depth is still unknown. Not a balance shortfall.
+const kErrHeaderSync = 'waiting for header sync';
+
 /// Pool answered with an HTML error page (or other non-JSON). Never surface FormatException.
 const kErrPoolHtml = 'pool returned HTML';
 
@@ -2609,7 +3214,8 @@ const kFlowMiningRefuse =
 
 /// Flow vin. A covering dest other than the mining mailbox.
 /// Throws [kFlowMiningRefuse] when the only covering dest is that mailbox.
-String flowSpendFrom(ShearLedger ledger, {
+String flowSpendFrom(
+  ShearLedger ledger, {
   required String restFrame,
   String? paymentCode,
   required double amount,
@@ -2635,7 +3241,8 @@ String flowSpendFrom(ShearLedger ledger, {
   }
   if (best != null) return best;
   if (cover == home || ledger.spendable(home) + 1e-12 >= amount) return home;
-  if (ledger.spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >= amount) {
+  if (ledger.spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >=
+      amount) {
     var richest = home;
     var richestShe = ledger.spendable(home);
     for (final d in ledger.moneyDests(restFrame, paymentCode: paymentCode)) {
@@ -2647,7 +3254,7 @@ String flowSpendFrom(ShearLedger ledger, {
     }
     if (richest.isNotEmpty) return richest;
   }
-  throw StateError('insufficient');
+  throw ledger.fundsRefusal(amount);
 }
 
 /// Flow send catch: map known failures; keep generic for unknown.
@@ -2695,13 +3302,12 @@ StateError sendHumanError(
   String? baseUrl, {
   bool allowPublicHttp = false,
   String? kind,
-}) =>
-    _sendHumanError(
-      reason,
-      baseUrl,
-      allowPublicHttp: allowPublicHttp,
-      kind: kind,
-    );
+}) => _sendHumanError(
+  reason,
+  baseUrl,
+  allowPublicHttp: allowPublicHttp,
+  kind: kind,
+);
 
 StateError _sendHumanError(
   String? reason,
@@ -2709,7 +3315,9 @@ StateError _sendHumanError(
   bool allowPublicHttp = false,
   String? kind,
 }) {
-  final why = (reason == null || reason.trim().isEmpty) ? 'send failed' : reason.trim();
+  final why = (reason == null || reason.trim().isEmpty)
+      ? 'send failed'
+      : reason.trim();
   if (why == 'no_note') return StateError(kErrNoSealedNote);
   final whyLow = why.toLowerCase();
   if (why == kErrPoolHtml ||
@@ -2722,7 +3330,8 @@ StateError _sendHumanError(
   if (why == 'admit_link_tag' || why == 'admit') {
     return StateError(kErrNoteSpent);
   }
-  if (why == 'range_proof' || why == 'commit_sum') return StateError(kErrRangeProof);
+  if (why == 'range_proof' || why == 'commit_sum')
+    return StateError(kErrRangeProof);
   if (why == 'unsigned' &&
       (kind == 'lock' || kind == 'vote' || kind == 'withdraw')) {
     return StateError(kErrLockUnsigned);
@@ -2745,8 +3354,10 @@ String continuumHashBonusLabel({int? emittedNanos}) =>
     '${formatHashBonusShe(emittedNanos ?? 0)} SHE earned';
 
 /// Amounts-only / no destProof: keep local owner notes and hash landings.
-bool keepLocalOwnerHistory({required bool amountsOnly, required bool destProof}) =>
-    amountsOnly && destProof != true;
+bool keepLocalOwnerHistory({
+  required bool amountsOnly,
+  required bool destProof,
+}) => amountsOnly && destProof != true;
 
 class ShearTx {
   const ShearTx({
@@ -2781,55 +3392,62 @@ class ShearTx {
   final int? rounds;
   final double? hashAmount;
   final int? threads;
+
   /// Sealed Path 1 pot SHE when this row is a coinbase bundle. Null if none.
   final double? pot;
+
   /// Newly derived dest that received leftover. Never [from] or the portal.
   final String? change;
+
   /// Sealed header timestamp (ms) when known. ShearView date column.
   final int? atMs;
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'from': from,
-        'to': to,
-        'amount': amount,
-        'kind': kind,
-        'height': height,
-        'confirmed': confirmed,
-        'memo': memo,
-        if (memoPlain != null) 'memoPlain': memoPlain,
-        if (memoCt != null) 'memoCt': memoCt,
-        if (rounds != null) 'rounds': rounds,
-        if (hashAmount != null) 'hashAmount': hashAmount,
-        if (threads != null) 'threads': threads,
-        if (pot != null) 'pot': pot,
-        if (change != null) 'change': change,
-        if (atMs != null) 'atMs': atMs,
-      };
+    'id': id,
+    'from': from,
+    'to': to,
+    'amount': amount,
+    'kind': kind,
+    'height': height,
+    'confirmed': confirmed,
+    'memo': memo,
+    if (memoPlain != null) 'memoPlain': memoPlain,
+    if (memoCt != null) 'memoCt': memoCt,
+    if (rounds != null) 'rounds': rounds,
+    if (hashAmount != null) 'hashAmount': hashAmount,
+    if (threads != null) 'threads': threads,
+    if (pot != null) 'pot': pot,
+    if (change != null) 'change': change,
+    if (atMs != null) 'atMs': atMs,
+  };
 
   ShearTx copyWith({bool? confirmed, int? height}) => ShearTx(
-        id: id,
-        from: from,
-        to: to,
-        amount: amount,
-        kind: kind,
-        height: height ?? this.height,
-        confirmed: confirmed ?? this.confirmed,
-        memo: memo,
-        memoPlain: memoPlain,
-        memoCt: memoCt,
-        rounds: rounds,
-        hashAmount: hashAmount,
-        threads: threads,
-        pot: pot,
-        change: change,
-        atMs: atMs,
-      );
+    id: id,
+    from: from,
+    to: to,
+    amount: amount,
+    kind: kind,
+    height: height ?? this.height,
+    confirmed: confirmed ?? this.confirmed,
+    memo: memo,
+    memoPlain: memoPlain,
+    memoCt: memoCt,
+    rounds: rounds,
+    hashAmount: hashAmount,
+    threads: threads,
+    pot: pot,
+    change: change,
+    atMs: atMs,
+  );
 
   bool get isHashReward => kind == 'hash';
 
   bool get isBlockBundle =>
-      kind == 'coinbase' || kind == 'blockfound' || kind == 'block' || kind == 'pot' || kind == 'mine';
+      kind == 'coinbase' ||
+      kind == 'blockfound' ||
+      kind == 'block' ||
+      kind == 'pot' ||
+      kind == 'mine';
 
   factory ShearTx.fromJson(Map<String, dynamic> j) {
     final kind = j['kind']?.toString() ?? '';
@@ -2853,20 +3471,25 @@ class ShearTx {
       confirmed: j['confirmed'] is bool ? j['confirmed'] as bool : true,
       memo: j['memo'] == true,
       memoPlain: j['memoPlain']?.toString(),
-      memoCt: j['memoCt'] is Map ? Map<String, dynamic>.from(j['memoCt'] as Map) : null,
+      memoCt: j['memoCt'] is Map
+          ? Map<String, dynamic>.from(j['memoCt'] as Map)
+          : null,
       rounds: (j['rounds'] as num?)?.toInt(),
-      hashAmount: (j['hashAmount'] as num?)?.toDouble() ??
+      hashAmount:
+          (j['hashAmount'] as num?)?.toDouble() ??
           (j['hashNanos'] is num && (j['hashNanos'] as num) > 0
               ? (j['hashNanos'] as num).toDouble() / kUnitsPerShe
               : null) ??
           (kind == 'hash' && amount > 0 ? amount : null),
       threads: (j['threads'] as num?)?.toInt(),
-      pot: (j['pot'] as num?)?.toDouble() ??
+      pot:
+          (j['pot'] as num?)?.toDouble() ??
           (j['potNanos'] is num && (j['potNanos'] as num) > 0
               ? (j['potNanos'] as num).toDouble() / kUnitsPerShe
               : null),
       change: j['change']?.toString(),
-      atMs: (j['atMs'] as num?)?.toInt() ??
+      atMs:
+          (j['atMs'] as num?)?.toInt() ??
           (j['ms'] as num?)?.toInt() ??
           (j['timestamp'] as num?)?.toInt(),
     );
@@ -2884,7 +3507,11 @@ double shearTxAmountFromJson(Map<String, dynamic> j) {
 }
 
 bool isWalletBlockKind(String kind) =>
-    kind == 'blockfound' || kind == 'coinbase' || kind == 'block' || kind == 'pot' || kind == 'mine';
+    kind == 'blockfound' ||
+    kind == 'coinbase' ||
+    kind == 'block' ||
+    kind == 'pot' ||
+    kind == 'mine';
 
 /// Read-only Path 1 observation: sealed pots only. Does not mint.
 class Path1Observation {
@@ -2904,6 +3531,16 @@ class Path1Observation {
       targetIntervalMs <= 0 ? 0 : quantumShe / targetIntervalMs;
 }
 
+/// verified-headers.json beside the session file. Both slash styles.
+String verifiedHeaderStorePath(String sessionPath) {
+  if (sessionPath.isEmpty) return '';
+  final slash = sessionPath.lastIndexOf('/');
+  final back = sessionPath.lastIndexOf('\\');
+  final cut = slash > back ? slash : back;
+  if (cut <= 0) return '';
+  return '${sessionPath.substring(0, cut)}${sessionPath[cut]}verified-headers.json';
+}
+
 int? headerTimestampMs(Uint8List header) {
   if (header.length < 108) return null;
   var v = 0;
@@ -2920,7 +3557,10 @@ double? sealedPotShe(ShearTx t) {
   final h = t.height ?? 0;
   if (h < 1) return null;
   final kind = t.kind;
-  if (kind == 'hash' || kind == 'send' || kind == 'receive' || kind == 'claim') {
+  if (kind == 'hash' ||
+      kind == 'send' ||
+      kind == 'receive' ||
+      kind == 'claim') {
     return null;
   }
   if (t.pot != null) return t.pot! > 0 ? t.pot : null;
@@ -2967,7 +3607,10 @@ bool isFlowTransfer(ShearTx t) => t.kind == 'send' || t.kind == 'receive';
 
 /// Owner ShearView landings: Flow + π auto-pay + dest-owned hash folded into the block.
 bool isOwnerLanding(ShearTx t) =>
-    isFlowTransfer(t) || t.kind == 'pool-withdraw' || t.kind == 'blockfound' || t.kind == 'coinbase';
+    isFlowTransfer(t) ||
+    t.kind == 'pool-withdraw' ||
+    t.kind == 'blockfound' ||
+    t.kind == 'coinbase';
 
 bool isReservePendingKind(ShearTx t) => t.kind == 'lock' || t.kind == 'vote';
 
@@ -2980,28 +3623,51 @@ String continuumPendingRemark(ShearTx t, {required bool outgoing}) {
 }
 
 /// Shearview kind after 1 conf. Pending remarks drop at 6: sent / received.
-String shearviewKindLabel(ShearTx t, {required bool outgoing, required int confs}) {
+String shearviewKindLabel(
+  ShearTx t, {
+  required bool outgoing,
+  required int confs,
+}) {
   if (t.kind == 'pool-withdraw') {
-    if (confs >= ShearLedger.continuumConfirmations) return outgoing ? 'sent' : 'received';
+    if (confs >= ShearLedger.continuumConfirmations)
+      return outgoing ? 'sent' : 'received';
     return outgoing ? 'sending' : 'receiving';
   }
   if (!isFlowTransfer(t)) return walletTxLabel(t);
-  if (confs >= ShearLedger.continuumConfirmations) return outgoing ? 'sent' : 'received';
+  if (confs >= ShearLedger.continuumConfirmations)
+    return outgoing ? 'sent' : 'received';
   return outgoing ? 'sending' : 'receiving';
 }
 
 /// Owner ShearView list: height, status, sums. Never blank amount for the owner.
-String shearviewListTitle(ShearTx t, {required int confs, required bool outgoing}) {
+String shearviewListTitle(
+  ShearTx t, {
+  required int confs,
+  required bool outgoing,
+  bool depthPending = false,
+}) {
   final kind = shearviewKindLabel(t, outgoing: outgoing, confs: confs);
   final h = t.height ?? 0;
-  if (h < 1) return 'pending  $kind  ${formatShe(t.amount)} SHE';
+  // Depth still catching the host: incoming stays pending, with no count.
+  if (depthPending &&
+      !outgoing &&
+      confs < ShearLedger.continuumConfirmations) {
+    return 'pending  $kind  ${formatShe(t.amount)} SHE';
+  }
+  // No verified tip yet: pending, and no confirmation count.
+  if (h < 1 || confs < 1) return 'pending  $kind  ${formatShe(t.amount)} SHE';
   final pending = confs >= 1 && confs < ShearLedger.continuumConfirmations;
   final status = pending ? 'pending  $kind' : kind;
   return 'h=$h  $status  ${formatShe(t.amount)} SHE';
 }
 
 /// Owner ShearView list: from/to, date, snippet. Never blank dest for the owner.
-String shearviewListSubtitle(ShearTx t, {int? tipMs, int? tipHeight, required int confs}) {
+String shearviewListSubtitle(
+  ShearTx t, {
+  int? tipMs,
+  int? tipHeight,
+  required int confs,
+}) {
   final from = t.from.isEmpty ? '—' : t.from;
   final to = t.to.isEmpty ? '—' : t.to;
   return '$from → $to  ${shearviewDate(t, tipMs: tipMs, tipHeight: tipHeight)}  ${shearviewSnippet(t)}';
@@ -3010,12 +3676,19 @@ String shearviewListSubtitle(ShearTx t, {int? tipMs, int? tipHeight, required in
 String shearviewDate(ShearTx t, {int? tipMs, int? tipHeight}) {
   final ms = t.atMs;
   if (ms != null && ms > 0) {
-    return DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true).toIso8601String();
+    return DateTime.fromMillisecondsSinceEpoch(
+      ms,
+      isUtc: true,
+    ).toIso8601String();
   }
   final h = t.height ?? 0;
   if (tipMs != null && tipHeight != null && h > 0 && tipHeight >= h) {
     final est = tipMs - (tipHeight - h) * kTargetBlockIntervalMs;
-    if (est > 0) return DateTime.fromMillisecondsSinceEpoch(est, isUtc: true).toIso8601String();
+    if (est > 0)
+      return DateTime.fromMillisecondsSinceEpoch(
+        est,
+        isUtc: true,
+      ).toIso8601String();
   }
   return h > 0 ? 'block $h' : 'pending';
 }
@@ -3027,7 +3700,8 @@ String shearviewSnippet(ShearTx t) {
     return 'hashbonus ${formatShe(t.hashAmount!)} SHE';
   }
   if (t.kind == 'pool-withdraw') return 'π auto-pay landing';
-  if (t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'block') return 'block landing';
+  if (t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'block')
+    return 'block landing';
   return t.kind;
 }
 
@@ -3053,7 +3727,11 @@ bool isFeeBlockMirror(ShearTx block, Iterable<ShearTx> rows) {
 /// A coinbase whose amount is only the pool-fee is left off the list.
 List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
   final rest = <ShearTx>[];
-  final blocks = <String, ({String dest, int height, double pot, double hash, int threads})>{};
+  final blocks =
+      <
+        String,
+        ({String dest, int height, double pot, double hash, int threads})
+      >{};
   for (final t in txs) {
     final kind = t.kind;
     if (kind == 'hash' && (t.height ?? 0) < 1) continue;
@@ -3066,7 +3744,9 @@ List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
       final dest = t.to;
       final height = t.height ?? 0;
       final key = '$dest|$height';
-      final prev = blocks[key] ?? (dest: dest, height: height, pot: 0.0, hash: 0.0, threads: 0);
+      final prev =
+          blocks[key] ??
+          (dest: dest, height: height, pot: 0.0, hash: 0.0, threads: 0);
       var pot = prev.pot;
       var hash = prev.hash;
       var threads = prev.threads;
@@ -3084,32 +3764,44 @@ List<ShearTx> rollupExplorerTxs(Iterable<ShearTx> txs) {
       } else if (amt > pot) {
         pot = amt;
       }
-      blocks[key] = (dest: dest, height: height, pot: pot, hash: hash, threads: threads);
+      blocks[key] = (
+        dest: dest,
+        height: height,
+        pot: pot,
+        hash: hash,
+        threads: threads,
+      );
       continue;
     }
     rest.add(t);
   }
   for (final b in blocks.values) {
     if (b.hash <= 1e-12 &&
-        rest.any((t) =>
-            t.kind == 'pool-fee' &&
-            t.to == b.dest &&
-            (t.height ?? 0) == b.height &&
-            (t.amount - b.pot).abs() <= 1e-9)) {
+        rest.any(
+          (t) =>
+              t.kind == 'pool-fee' &&
+              t.to == b.dest &&
+              (t.height ?? 0) == b.height &&
+              (t.amount - b.pot).abs() <= 1e-9,
+        )) {
       continue;
     }
-    rest.add(ShearTx(
-      id: b.dest.isEmpty ? 'blockfound:${b.height}' : 'blockfound:${b.height}:${b.dest}',
-      from: 'coinbase',
-      to: b.dest,
-      amount: b.pot + b.hash,
-      kind: 'blockfound',
-      height: b.height,
-      confirmed: true,
-      hashAmount: b.hash,
-      threads: b.threads > 0 ? b.threads : null,
-      pot: b.pot > 0 ? b.pot : null,
-    ));
+    rest.add(
+      ShearTx(
+        id: b.dest.isEmpty
+            ? 'blockfound:${b.height}'
+            : 'blockfound:${b.height}:${b.dest}',
+        from: 'coinbase',
+        to: b.dest,
+        amount: b.pot + b.hash,
+        kind: 'blockfound',
+        height: b.height,
+        confirmed: true,
+        hashAmount: b.hash,
+        threads: b.threads > 0 ? b.threads : null,
+        pot: b.pot > 0 ? b.pot : null,
+      ),
+    );
   }
   return rest;
 }
@@ -3128,45 +3820,50 @@ List<ShearviewTreeRow> shearviewTree(Iterable<ShearTx> rows) {
   final out = <ShearviewTreeRow>[];
   for (final t in rows) {
     final hash = t.hashAmount ?? 0;
-    final block = t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'block';
+    final block =
+        t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'block';
     if (!block || hash <= 0) {
       out.add(ShearviewTreeRow(tx: t));
       continue;
     }
     final potRaw = (t.pot != null && t.pot! > 0) ? t.pot! : t.amount - hash;
     final pot = potRaw > 1e-15 ? potRaw : 0.0;
-    out.add(ShearviewTreeRow(
-      tx: ShearTx(
-        id: t.id,
-        from: t.from,
-        to: t.to,
-        amount: pot,
-        kind: t.kind,
-        height: t.height,
-        confirmed: t.confirmed,
-        memo: t.memo,
-        memoPlain: t.memoPlain,
-        memoCt: t.memoCt,
-        pot: pot,
-        atMs: t.atMs,
-        rounds: t.rounds,
-        threads: t.threads,
-        change: t.change,
+    out.add(
+      ShearviewTreeRow(
+        tx: ShearTx(
+          id: t.id,
+          from: t.from,
+          to: t.to,
+          amount: pot,
+          kind: t.kind,
+          height: t.height,
+          confirmed: t.confirmed,
+          memo: t.memo,
+          memoPlain: t.memoPlain,
+          memoCt: t.memoCt,
+          pot: pot,
+          atMs: t.atMs,
+          rounds: t.rounds,
+          threads: t.threads,
+          change: t.change,
+        ),
       ),
-    ));
-    out.add(ShearviewTreeRow(
-      child: true,
-      tx: ShearTx(
-        id: '${t.id}:hashbonus',
-        from: 'coinbase',
-        to: t.to,
-        amount: hash,
-        kind: 'hash',
-        height: t.height,
-        confirmed: t.confirmed,
-        atMs: t.atMs,
+    );
+    out.add(
+      ShearviewTreeRow(
+        child: true,
+        tx: ShearTx(
+          id: '${t.id}:hashbonus',
+          from: 'coinbase',
+          to: t.to,
+          amount: hash,
+          kind: 'hash',
+          height: t.height,
+          confirmed: t.confirmed,
+          atMs: t.atMs,
+        ),
       ),
-    ));
+    );
   }
   return out;
 }
@@ -3189,6 +3886,13 @@ bool shearviewMatches(ShearTx t, String query) {
 }
 
 /// Spendable at block-found only. Per-hash credit sits in [pending] until confirm.
+/// Cheap header verdict. [wait] means MTP samples are still below the walk.
+enum _WalkCheap { ok, reject, wait, later }
+
+/// Result of proving a competing branch. A lighter honest fork is not a failure.
+/// [partial] keeps the branch for a later pass. Nothing is written yet.
+enum _ForkProof { switched, lighter, invalid, partial }
+
 class ShearLedger implements ReadProofSink {
   ShearLedger({this.pool}) {
     pool?.sync?.proofSink = this;
@@ -3209,8 +3913,10 @@ class ShearLedger implements ReadProofSink {
   }
 
   final Map<String, double> _spendable = {};
+
   /// Session header nanos. Never copied into [_spendable].
   final Map<String, double> _advisorySpendable = {};
+
   /// Accepted Reserve locks still sitting in the verified note sum.
   final Map<String, double> _lockDebitShe = {};
   final Map<String, BigInt> _lockDebitNanos = {};
@@ -3218,30 +3924,40 @@ class ShearLedger implements ReadProofSink {
   final Map<String, BigInt> _reserveHeldNanos = {};
   Future<int>? _payoutConsolidate;
   int _payoutConsolidateRounds = 0;
+
   /// Owned sealed notes (commit, noteCommit, r, prev, index, admit x). Reserve vault excepted.
   final List<Map<String, dynamic>> _notes = [];
+
   /// Opened proofs for this wallet only, keyed by commit|R|z. Digit strings.
   final Map<String, String> _openedProofs = {};
+
   /// Commit hex already accepted on this device. A follow skips those rows.
   final Set<String> _acceptedCommits = {};
+
   /// True after a saved book was restored. Spendable can paint before the network.
   bool restoredBook = false;
+
   /// Commits the node listed on the last complete notes read. Empty if that read failed.
   final List<String> _listedCommits = [];
+
   /// Dests whose notes carried a complete value proof this session.
   final Set<String> _proofCheckedDests = {};
+
   /// External balances written before any value proof opened. Not spendable.
   final Set<String> _unverifiedExternal = {};
+
   /// SHE a pool snapshot wrote while no value proof had opened. Subtracted
   /// from the book so a null cap cannot paint that figure.
   final Map<String, double> _externalShe = {};
+
   /// One address that receives coins and that change returns to.
   String? _coinLedger;
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
 
   List<Map<String, dynamic>> exportOpenedProofs() => [
-        for (final e in _openedProofs.entries) {'k': e.key, 'n': e.value.toString()},
-      ];
+    for (final e in _openedProofs.entries)
+      {'k': e.key, 'n': e.value.toString()},
+  ];
 
   /// Verified notes for the encrypted session. The follow spec does not carry
   /// this list. The worker reads it from the session file.
@@ -3266,7 +3982,11 @@ class ShearLedger implements ReadProofSink {
 
   /// Paint spendable and pending from notes this device already accepted.
   /// Does not open a proof and does not talk to the network.
-  void restoreSessionNotes(Object? raw, {int covered = 0, String? paymentCode}) {
+  void restoreSessionNotes(
+    Object? raw, {
+    int covered = 0,
+    String? paymentCode,
+  }) {
     final revived = _followRevive(raw);
     if (revived is List) {
       for (final item in revived) {
@@ -3281,14 +4001,16 @@ class ShearLedger implements ReadProofSink {
           rememberDest(dest);
         }
         final commit = _noteBytes(row['commit']);
-        if (commit != null && commit.isNotEmpty) _acceptedCommits.add(_bytesHex(commit));
+        if (commit != null && commit.isNotEmpty)
+          _acceptedCommits.add(_bytesHex(commit));
       }
     }
     if (covered > _notesCovered) _notesCovered = covered;
     if (_notes.isEmpty) return;
     restoredBook = true;
     _openCollated = true;
-    _spendableReadFailed = false;
+    // A saved book is not a notes read in this process. Spendable stays hidden
+    // until the selected source answers.
     _replayOpenedNotes();
     final rest = _restFrame;
     if (rest != null && rest.isNotEmpty) {
@@ -3319,7 +4041,8 @@ class ShearLedger implements ReadProofSink {
       if ((o['kind'] ?? '').toString() != 'lock') continue;
       final unlock = o['unlockAtMs'];
       if (unlock is! int || unlock <= 0) continue;
-      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit'])))
+        continue;
       final row = <String, dynamic>{
         'address': dest,
         'dest': dest,
@@ -3366,23 +4089,34 @@ class ShearLedger implements ReadProofSink {
   /// opens and it has [spendableConfirmations] against the known live tip.
   /// A failed proof and a bare `{v}` stay unverified. An unread height is skipped.
   @override
-  void ingestReadOpen(ReadBlockOpen open, {required List blocks, String? dest}) {
-    rememberNodeChain(bodies: [
-      for (final b in blocks)
-        if (b is Map) Map<String, dynamic>.from(b),
-    ]);
+  void ingestReadOpen(
+    ReadBlockOpen open, {
+    required List blocks,
+    String? dest,
+  }) {
+    rememberNodeChain(
+      bodies: [
+        for (final b in blocks)
+          if (b is Map) Map<String, dynamic>.from(b),
+      ],
+    );
     if (open.liveTip >= 1) noteLiveHeight(open.liveTip);
     creditKnownNodeLands();
     final frame = (dest != null && dest.isNotEmpty) ? dest : (_restFrame ?? '');
     if (frame.isEmpty && open.opened.every((n) => n.dest.isEmpty)) return;
-    final fallback = frame.isEmpty ? '' : (isDestAddress(frame) ? frame : homeDest(frame));
+    final fallback = frame.isEmpty
+        ? ''
+        : (isDestAddress(frame) ? frame : homeDest(frame));
     final used = <Map>[];
     var credited = false;
     for (final opened in open.opened) {
-      if (!opened.verified || opened.nanos <= 0 || opened.commit.isEmpty) continue;
+      if (!opened.verified || opened.nanos <= 0 || opened.commit.isEmpty)
+        continue;
       final raw = _takeReadNote(blocks, opened, used);
       if (raw == null) continue;
-      final tagged = opened.dest.isNotEmpty ? opened.dest : (_rowDest(raw) ?? fallback);
+      final tagged = opened.dest.isNotEmpty
+          ? opened.dest
+          : (_rowDest(raw) ?? fallback);
       if (tagged.isEmpty || !isDestAddress(tagged)) continue;
       final row = <String, dynamic>{
         ...raw,
@@ -3396,7 +4130,11 @@ class ShearLedger implements ReadProofSink {
       if ((row['kind'] ?? '').toString() == 'lock') {
         row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
       }
-      if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
+      if (!noteIsFs1Leaf(
+        _noteBytes(row['admitPub']),
+        _noteBytes(row['commit']),
+      ))
+        continue;
       rememberNote(row);
       _creditNoteToShearview(row);
       rememberDest(tagged);
@@ -3409,7 +4147,11 @@ class ShearLedger implements ReadProofSink {
 
   /// The vout whose commit is the one [opened] verified. A failed or foreign
   /// output with the same value is a different note.
-  Map<String, dynamic>? _takeReadNote(List blocks, OpenedReadNote opened, List<Map> used) {
+  Map<String, dynamic>? _takeReadNote(
+    List blocks,
+    OpenedReadNote opened,
+    List<Map> used,
+  ) {
     if (opened.commit.isEmpty) return null;
     for (final block in blocks) {
       if (block is! Map || readBlockHeight(block) != opened.height) continue;
@@ -3466,7 +4208,8 @@ class ShearLedger implements ReadProofSink {
       if (!badHeights.contains(h) || !_noteOnDest(row, money)) continue;
       final commit = _noteBytes(row['commit']);
       final openedHere = openedByHeight[h] ?? const <Uint8List>[];
-      if (commit != null && openedHere.any((c) => _bytesEq(c, commit))) continue;
+      if (commit != null && openedHere.any((c) => _bytesEq(c, commit)))
+        continue;
       row['verified'] = false;
     }
   }
@@ -3496,6 +4239,12 @@ class ShearLedger implements ReadProofSink {
       spendPub ??= ed25519PublicFromSeed(seed);
       admitBase ??= admitBaseBytes(seed);
     }
+    if (!_headerMacReady &&
+        _pin != null &&
+        (_headerStorePath ?? '').isNotEmpty) {
+      _chainLoaded = false;
+      _loadVerifiedChain();
+    }
   }
 
   Map<String, dynamic> _sealedScanInput(
@@ -3504,24 +4253,24 @@ class ShearLedger implements ReadProofSink {
     String? dest,
     Uint8List? prev,
     int startIndex = 0,
-  }) =>
-      {
-        'vouts': vouts,
-        'dests': _dests.toList(),
-        'dest': dest,
-        'spendSeed': spendSeed,
-        'seenCommitHex': [
-          for (final n in _notes)
-            if (_noteBytes(n['commit']) != null) _bytesHex(_noteBytes(n['commit'])!),
-        ],
-        'txHints': [
-          for (final t in _txs)
-            {'to': t.to, 'kind': t.kind, 'height': t.height, 'amount': t.amount},
-        ],
-        'prev': prev,
-        'startIndex': startIndex,
-        'openedProofs': exportOpenedProofs(),
-      };
+  }) => {
+    'vouts': vouts,
+    'dests': _dests.toList(),
+    'dest': dest,
+    'spendSeed': spendSeed,
+    'seenCommitHex': [
+      for (final n in _notes)
+        if (_noteBytes(n['commit']) != null)
+          _bytesHex(_noteBytes(n['commit'])!),
+    ],
+    'txHints': [
+      for (final t in _txs)
+        {'to': t.to, 'kind': t.kind, 'height': t.height, 'amount': t.amount},
+    ],
+    'prev': prev,
+    'startIndex': startIndex,
+    'openedProofs': exportOpenedProofs(),
+  };
 
   void _applySealedScan(Map<String, dynamic> out) {
     final notes = out['notes'];
@@ -3529,7 +4278,11 @@ class ShearLedger implements ReadProofSink {
       for (final n in notes) {
         if (n is Map) {
           final row = Map<String, dynamic>.from(n);
-          if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
+          if (!noteIsFs1Leaf(
+            _noteBytes(row['admitPub']),
+            _noteBytes(row['commit']),
+          ))
+            continue;
           rememberNote(row);
           _rememberProofRow(row);
           if (row['proofChecked'] == true) {
@@ -3577,16 +4330,18 @@ class ShearLedger implements ReadProofSink {
           change: t.change,
         );
       } else {
-        _txs.add(ShearTx(
-          id: id,
-          from: 'coinbase',
-          to: matched,
-          amount: she,
-          kind: 'blockfound',
-          height: h,
-          confirmed: h > 0 && confirmationsOf(h) >= spendableConfirmations,
-          hashAmount: she,
-        ));
+        _txs.add(
+          ShearTx(
+            id: id,
+            from: 'coinbase',
+            to: matched,
+            amount: she,
+            kind: 'blockfound',
+            height: h,
+            confirmed: h > 0 && confirmationsOf(h) >= spendableConfirmations,
+            hashAmount: she,
+          ),
+        );
       }
       if (h > 0) {
         _immature.add((dest: matched, amount: she, height: h));
@@ -3600,7 +4355,11 @@ class ShearLedger implements ReadProofSink {
   /// does not wait for a later history/incoming delta. Hash folds stay in
   /// [_applySealedScan]. Existing dest+height rows are filled, not duplicated.
   void _creditNoteToShearview(Map<String, dynamic> note) {
-    if (!noteIsFs1Leaf(_noteBytes(note['admitPub']), _noteBytes(note['commit']))) return;
+    if (!noteIsFs1Leaf(
+      _noteBytes(note['admitPub']),
+      _noteBytes(note['commit']),
+    ))
+      return;
     final dest = (note['dest'] ?? note['address'])?.toString() ?? '';
     if (dest.isEmpty) return;
     final kind = (note['kind'] as String?) ?? 'receive';
@@ -3614,7 +4373,9 @@ class ShearLedger implements ReadProofSink {
     final isBlock = isWalletBlockKind(kind);
     final commit = _noteBytes(note['commit']);
     final tag = commit != null && commit.isNotEmpty
-        ? _bytesHex(commit).substring(0, commit.length < 8 ? commit.length * 2 : 16)
+        ? _bytesHex(
+            commit,
+          ).substring(0, commit.length < 8 ? commit.length * 2 : 16)
         : '${dest.hashCode}';
     final existing = _txs.indexWhere((t) {
       if (t.to != dest) return false;
@@ -3625,24 +4386,29 @@ class ShearLedger implements ReadProofSink {
     final id = existing >= 0
         ? _txs[existing].id
         : (isBlock && h != null && h > 0
-            ? 'blockfound:$h:$dest'
-            : (h != null && h > 0 ? 'note:$h:$dest:$tag' : 'note-pending:$dest:$tag'));
+              ? 'blockfound:$h:$dest'
+              : (h != null && h > 0
+                    ? 'note:$h:$dest:$tag'
+                    : 'note-pending:$dest:$tag'));
     var atMs = _headerTimestampMs;
     if (atMs != null && h != null && h > 0 && _sealedHeight >= h) {
       atMs = atMs - (_sealedHeight - h) * kTargetBlockIntervalMs;
     } else if (h == null || h < 1) {
       atMs = null;
     }
-    mergeChainTx(ShearTx(
-      id: id,
-      from: isBlock ? 'coinbase' : (note['from']?.toString() ?? 'pending'),
-      to: dest,
-      amount: amt.toDouble(),
-      kind: isBlock ? 'blockfound' : (kind == 'send' ? 'receive' : kind),
-      height: h,
-      confirmed: h != null && h > 0 && confirmationsOf(h) >= spendableConfirmations,
-      atMs: atMs,
-    ));
+    mergeChainTx(
+      ShearTx(
+        id: id,
+        from: isBlock ? 'coinbase' : (note['from']?.toString() ?? 'pending'),
+        to: dest,
+        amount: amt.toDouble(),
+        kind: isBlock ? 'blockfound' : (kind == 'send' ? 'receive' : kind),
+        height: h,
+        confirmed:
+            h != null && h > 0 && confirmationsOf(h) >= spendableConfirmations,
+        atMs: atMs,
+      ),
+    );
   }
 
   /// Opened notes are the pending rows. A follow that shipped spendable
@@ -3665,13 +4431,17 @@ class ShearLedger implements ReadProofSink {
     Uint8List? prev,
     int startIndex = 0,
   }) {
-    _applySealedScan(scanSealedVouts(_sealedScanInput(
-      vouts,
-      spendSeed: spendSeed,
-      dest: dest,
-      prev: prev,
-      startIndex: startIndex,
-    )));
+    _applySealedScan(
+      scanSealedVouts(
+        _sealedScanInput(
+          vouts,
+          spendSeed: spendSeed,
+          dest: dest,
+          prev: prev,
+          startIndex: startIndex,
+        ),
+      ),
+    );
   }
 
   final Map<String, double> _pending = {};
@@ -3680,30 +4450,41 @@ class ShearLedger implements ReadProofSink {
   final Map<String, Uint8List> _stealthShared = {};
   final Set<String> _vaultDests = {};
   final Set<String> _spentHistory = {};
+
   /// Next dest height (tip sealed height + 1).
   int tipHeight = 1;
+
   /// continuity_root of the sealed tip (lag-1 for the next dest).
   Uint8List? lag1Root;
+
   /// How many indexed she1 dests this wallet has minted (always ≥ 1).
   int destCount = 1;
+
   /// Selected dest index (0 .. destCount-1).
   int destIndex = 0;
   int _sealedHeight = 0;
+
+  /// Height whose header this wallet checked. Zero means depth is unknown.
+  int _verifiedTip = 0;
+
   /// Last height whose open-round pending was settled. Display [sealedHeight]
   /// can run ahead (1s tip poll); settlement uses this so confirmRound still
   /// fires after syncTip.
   int _settledHeight = 0;
   final Map<String, int> _historyAt = {};
   final Map<String, int> _notesAt = {};
+
   /// Highest height a notes response has covered. The header may sit above it.
   /// Spendable and Pending use this until the next response catches up.
   int _notesCovered = 0;
+
   /// Empty history/notes pulls while an immature owner land is still absent.
   final Map<String, int> _ingestMisses = {};
   static const ingestMissBudget = 2;
   final List<Map<String, dynamic>> _nodeBodies = [];
   final List<Map<String, dynamic>> _nodeHistoryRows = [];
   final List<Map<String, dynamic>> _nodeNoteRows = [];
+
   /// Heights in the latest tip gap with no owner land in node material.
   final List<int> honestLandMisses = [];
   bool tipAdvancedWithoutLanding = false;
@@ -3787,12 +4568,15 @@ class ShearLedger implements ReadProofSink {
   bool immatureOwnerLandsMissing(String address) {
     final key = payKey(address);
     for (final land in _openedOwnerLands(extraDest: address)) {
-      if (land.dest != key && payKey(land.dest) != key && land.dest != address) continue;
+      if (land.dest != key && payKey(land.dest) != key && land.dest != address)
+        continue;
       if (confirmationsOf(land.height) >= spendableConfirmations) continue;
-      final have = _txs.any((t) =>
-          isWalletBlockKind(t.kind) &&
-          (t.height ?? 0) == land.height &&
-          (t.to == land.dest || payKey(t.to) == key));
+      final have = _txs.any(
+        (t) =>
+            isWalletBlockKind(t.kind) &&
+            (t.height ?? 0) == land.height &&
+            (t.to == land.dest || payKey(t.to) == key),
+      );
       if (!have) return true;
     }
     return false;
@@ -3819,13 +4603,19 @@ class ShearLedger implements ReadProofSink {
 
   /// One immature row per node/history land. A tx inserted by history must
   /// still enroll, or [settleTo] never moves it into spendable.
-  void _enrollOwnerLand({required String dest, required double amount, required int height}) {
+  void _enrollOwnerLand({
+    required String dest,
+    required double amount,
+    required int height,
+  }) {
     if (height < 1 || amount <= 0 || dest.isEmpty) return;
     final pk = payKey(dest);
     final key = _ownerLandKey(pk, height);
     if (_landSettled.contains(key) || _landEnrolled.contains(key)) return;
     _landEnrolled.add(key);
-    final already = _immature.any((r) => r.height == height && payKey(r.dest) == pk);
+    final already = _immature.any(
+      (r) => r.height == height && payKey(r.dest) == pk,
+    );
     if (!already) {
       _immature.add((dest: pk, amount: amount, height: height));
     }
@@ -3843,28 +4633,36 @@ class ShearLedger implements ReadProofSink {
       confirmed: false,
     );
     if (isFeeBlockMirror(candidate, _txs)) return;
-    final have = _txs.any((t) =>
-        t.id == id ||
-        (isWalletBlockKind(t.kind) &&
-            (t.height ?? 0) == land.height &&
-            (t.to == land.dest || payKey(t.to) == payKey(land.dest))));
+    final have = _txs.any(
+      (t) =>
+          t.id == id ||
+          (isWalletBlockKind(t.kind) &&
+              (t.height ?? 0) == land.height &&
+              (t.to == land.dest || payKey(t.to) == payKey(land.dest))),
+    );
     if (!have) {
-      _txs.add(ShearTx(
-        id: id,
-        from: 'coinbase',
-        to: land.dest,
-        amount: land.amount,
-        kind: land.kind == 'mine' ? 'mine' : 'blockfound',
-        height: land.height,
-        confirmed: false,
-      ));
+      _txs.add(
+        ShearTx(
+          id: id,
+          from: 'coinbase',
+          to: land.dest,
+          amount: land.amount,
+          kind: land.kind == 'mine' ? 'mine' : 'blockfound',
+          height: land.height,
+          confirmed: false,
+        ),
+      );
       rememberDest(land.dest);
     }
     _enrollOwnerLand(dest: land.dest, amount: land.amount, height: land.height);
   }
 
   /// Credit every node land in (before, tip]. A height with none is a miss.
-  void creditNodeLandsInGap({required int before, required int tip, String? extraDest}) {
+  void creditNodeLandsInGap({
+    required int before,
+    required int tip,
+    String? extraDest,
+  }) {
     final plan = planTipGap(
       before: before,
       tip: tip,
@@ -3904,9 +4702,11 @@ class ShearLedger implements ReadProofSink {
     }
     return false;
   }
+
   /// Failed note pulls while spendable is ahead of the sealed book.
   /// Stop the background retry after two misses at this height; Pay still forces one.
   final Map<String, int> _noteMisses = {};
+
   /// First unlock notes-then-history collate finished. Thin pending-receive
   /// ticks must not skip that first full pull.
   bool _openCollated = false;
@@ -3927,8 +4727,10 @@ class ShearLedger implements ReadProofSink {
   void noteSpendableReadFailed() {
     _spendableReadFailed = true;
   }
+
   String _collateError = '';
   bool get openCollated => _openCollated;
+
   /// Height-1 header hex of the book this ledger is bound to.
   String? _chainGenesis;
 
@@ -3943,7 +4745,8 @@ class ShearLedger implements ReadProofSink {
 
   /// Last known sealed tip from shewall. Never apply 0 over a remembered height.
   void restoreSealedTip(int height, {String? genesis}) {
-    if (genesis != null && genesis.trim().isNotEmpty) restoreChainGenesis(genesis);
+    if (genesis != null && genesis.trim().isNotEmpty)
+      restoreChainGenesis(genesis);
     final h = height;
     if (h < 1) return;
     if (h > _sealedHeight) _sealedHeight = h;
@@ -3993,13 +4796,26 @@ class ShearLedger implements ReadProofSink {
     _openCollated = false;
     _openedProofs.clear();
     _sealedHeight = 0;
+    _verifiedTip = 0;
+    _headerHostTip = 0;
     _settledHeight = 0;
+    _checkedHeaders.clear();
+    _chainLoaded = false;
+    _sealedPending = null;
+    _sealedPriors = const [];
+    _sealedWork = null;
+    _resumePriorTimes = const [];
+    _resumePriorOrigin = null;
+    _prunedWork = BigInt.zero;
+    _reorgHintFrom = null;
+    _seedCheckpoint();
     lag1Root = null;
     tipHeight = 1;
   }
 
   int? _headerTimestampMs;
   int? _prevHeaderTimestampMs;
+
   /// Network circulating supply from pool /api/stats. Continuum Integral Q.
   int? circulatingNanos;
 
@@ -4009,12 +4825,16 @@ class ShearLedger implements ReadProofSink {
     final n = raw.round();
     if (n > 0) circulatingNanos = n;
   }
+
   /// Network-wide stats from /api/stats (Continuum right-hand box).
   int? networkHashrate;
+
   /// Unpacked work bits from pool stats. Not the packed blockBits integer.
   double? networkWorkBits;
+
   /// Height that [potEmittedNanos] was counted through. Same stats body.
   int? emittedAtHeight;
+
   /// Sealed-chain mean block time, the explorer average. Not the last gap.
   int? sealedMeanBlockMs;
   int? liveHashBonusNanos;
@@ -4038,12 +4858,2021 @@ class ShearLedger implements ReadProofSink {
     return live > _sealedHeight ? live : _sealedHeight;
   }
 
-  /// Confirmation height. A header that the notes read has not covered yet
-  /// does not mature a coin or drop it from Pending.
-  int get bookTip {
-    final live = displayHeight;
-    if (_notesCovered >= 1 && _notesCovered < live) return _notesCovered;
-    return live;
+  /// Confirmation depth for Spendable and the planner. A host `/stats`
+  /// height is not this. Zero means the depth is unknown, so a note that
+  /// carries a height is not spendable.
+  int get bookTip => _verifiedTip;
+
+  /// Why a send cannot be funded. Unknown header depth is not a short note.
+  /// A pin makes [bookTip] non-zero while backfill is still behind the host.
+  /// A sealed note excluded only by that gap is still [kErrHeaderSync].
+  /// Spendable coins that cannot cover [amount], while depth-pending notes
+  /// would, are the same wait — not a short balance.
+  StateError fundsRefusal([double amount = 0]) {
+    if (bookTip < 1) return StateError(kErrHeaderSync);
+    var spendableSum = 0.0;
+    var depthSum = 0.0;
+    var anySpendable = false;
+    for (final n in _notes) {
+      final she = _noteSheOf(n, 0);
+      if (_noteIsSpendable(n)) {
+        anySpendable = true;
+        spendableSum += she;
+      } else if (headerDepthPending && _noteIsSpendable(n, ignoreConfs: true)) {
+        depthSum += she;
+      }
+    }
+    final withDepth = spendableSum + depthSum;
+    if (headerDepthPending &&
+        spendableSum + 1e-12 < amount &&
+        withDepth + 1e-12 >= amount) {
+      return StateError(kErrHeaderSync);
+    }
+    if (anySpendable) return StateError('insufficient');
+    if (headerDepthPending &&
+        depthSum > 0 &&
+        withDepth + 1e-12 >= amount) {
+      return StateError(kErrHeaderSync);
+    }
+    return StateError(kErrNoSealedNote);
+  }
+
+  /// A settled round is not a note. Drop it from the painted book once a
+  /// Flow send has refused it, so Spendable stops claiming that cover.
+  void _releaseUnbackedSpendable(
+    String src, {
+    String? restFrame,
+    String? paymentCode,
+  }) {
+    final keys = <String>{payKey(src)};
+    if (restFrame != null) {
+      for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+        if (isDestAddress(d)) keys.add(payKey(d));
+      }
+    }
+    for (final key in keys) {
+      if (!isDestAddress(key)) continue;
+      _spendable[key] = inventoriedNoteShe(key, sum: true);
+    }
+  }
+
+  /// Header depth is still short of the host, so a confirmation count would
+  /// describe an unverified tip. Incoming rows stay pending with no count.
+  bool confirmationCountHidden(int height) {
+    if (bookTip < 1) return true;
+    if (!headerDepthPending) return false;
+    return confirmationsOf(height) < continuumConfirmations;
+  }
+
+  /// The checked chain is behind the host tip, or the verify line is up.
+  /// A sealed note waiting only on that gap is not a short balance.
+  bool get headerDepthPending {
+    if (headerVerifyLine != null) return true;
+    final pin = _pin;
+    return pin != null && _headerHostTip > bookTip && _headerHostTip > pin.height;
+  }
+
+  /// First-run catch-up. Null once the checked chain has reached the host.
+  /// A missing native hasher is its own line, not a stuck `0/N`.
+  String? get headerVerifyLine {
+    final pin = _pin;
+    final host = _headerHostTip;
+    final behind = pin != null && host > bookTip && host > pin.height;
+    if (_hasherMissing && behind) return 'ShearHash unavailable';
+    if (!behind) return null;
+    final done = bookTip - pin.height;
+    final total = host - pin.height;
+    if (done < 0 || total < 1 || done >= total) return null;
+    return 'Verifying headers $done/$total';
+  }
+
+  /// The host has stopped moving this fork. The shell can say so.
+  String? get headerStallLine => _forkStallPasses >= _kForkStallPasses
+      ? 'host not serving headers'
+      : null;
+
+  /// The native library did not hash a header. Tests set [hostTip] to show
+  /// the line without waiting on a host.
+  void reportHeaderHasherMissing({int? hostTip}) {
+    _hasherMissing = true;
+    if (hostTip != null && hostTip > _headerHostTip) _headerHostTip = hostTip;
+    final paint = onHeaderProgress;
+    if (paint != null) paint();
+  }
+
+  /// Paints [headerVerifyLine] on the shell. The line is the only chrome.
+  void Function()? onHeaderProgress;
+
+  /// Desktop P2P, Solo, or own-node. [height] is that node's own checked tip.
+  /// Connect bare does not call this.
+  void noteNodeCheckedTip(int height) {
+    if (height < 1) return;
+    if (height > _verifiedTip) _verifiedTip = height;
+  }
+
+  /// Release checkpoint. Empty until [installCheckpoint]. A host header cannot fill it.
+  CheckpointPin? _pin;
+  String? _headerStorePath;
+  bool _chainLoaded = false;
+
+  /// Verifier clock for the future-time bound. Tests pin it. Production uses
+  /// the wall clock.
+  int? _headerNowMs;
+
+  final List<({int height, Uint8List hash, int timeMs, String headerHex})>
+  _checkedHeaders = [];
+  final Map<String, Uint8List> _v3Ready = {};
+
+  /// The credit worker is already off the UI isolate.
+  bool _v3HashInline = false;
+
+  /// Host height the current catch-up is walking toward.
+  int _headerHostTip = 0;
+
+  /// Native ShearHash-v3 did not load. The progress line says so.
+  bool _hasherMissing = false;
+
+  /// True once a vault key has been used to read the header file.
+  bool _headerMacReady = false;
+
+  /// Host reorg list: refetch this height. Not a depth change.
+  int? _reorgHintFrom;
+
+  /// Sealed rows waiting for an off-UI recheck before the tip may rise.
+  List<({int height, int timeMs, Uint8List header})>? _sealedPending;
+
+  /// Priors and cumulative work that belong to [_sealedPending].
+  List<int> _sealedPriors = const [];
+  String? _sealedWork;
+
+  /// Ten header times immediately before the oldest saved row, oldest first.
+  /// The MAC covers them. MTP for the resumed tail reads them.
+  List<int> _resumePriorTimes = const [];
+  int? _resumePriorOrigin;
+
+  /// Work of headers pruned out of the retained window. The tail's work is
+  /// added on top. A fork from the pin is weighed against the sum.
+  BigInt _prunedWork = BigInt.zero;
+
+  /// One header read. A stalled host must release the catch-up pass.
+  Duration headerReadTimeout = const Duration(seconds: 5);
+
+  /// One fork walk. Past this, the pass returns and the next one continues.
+  Duration headerWalkDeadline = const Duration(seconds: 8);
+
+  /// First wait after a host's fork proof fails. Later failures double it.
+  Duration forkProofBackoff = const Duration(seconds: 1);
+
+  /// Headers one fork attempt may fetch and hash. The rest wait for the next.
+  int forkWalkCap = 64;
+
+  /// Native ShearHash calls on this ledger. A trivial-bits fork stays at zero.
+  int headerHashCount = 0;
+
+  /// Fork walks that got past the per-host backoff. Tests watch the replay stop.
+  int forkProofAttempts = 0;
+
+  int? _forkClockMs;
+  final Map<String, ({int untilMs, int step})> _forkBackoff = {};
+  String? _forkResumeHost;
+
+  /// Hash of the lowest header still on this walk. A new tip does not change it.
+  String? _forkResumeBottom;
+  List<({int height, Uint8List header})>? _forkResumeBranch;
+
+  /// Branch headers already proved, from the bottom. Digests stay in memory.
+  int _forkResumeProved = 0;
+
+  /// ShearHash results for headers that proved. A reject does not drop them.
+  final Map<String, Uint8List> _forkDigests = {};
+
+  /// Branch ids this host already failed. The same header bytes are not walked again.
+  final Map<String, List<String>> _forkBanned = {};
+
+  /// Host tip at which those ids were banned. A higher tip clears them.
+  final Map<String, int> _forkBannedAtTip = {};
+
+  /// Header hashes on the branch being proved. Eviction skips these.
+  final Set<String> _forkPinnedDigests = {};
+
+  int _forkStallPasses = 0;
+  int? _forkStallBottom;
+  int? _forkStallTop;
+  int _forkStallProved = 0;
+  int _forkStallLen = 0;
+  int _forkStallHashes = 0;
+  int _forkHostTipSeen = 0;
+
+  /// Test clock for fork backoff and the walk deadline. Header time is separate.
+  void bindForkClock(int nowMs) {
+    _forkClockMs = nowMs;
+  }
+
+  int _forkNowMs() => _forkClockMs ?? DateTime.now().millisecondsSinceEpoch;
+
+  /// One catch-up per ledger. A second caller waits for this pass.
+  Future<int>? _catchUpFlight;
+
+  /// One Isolate.run hash at a time on this ledger.
+  Future<void>? _hashTail;
+
+  static const int _kHeaderAheadMs = 15000;
+  static const int _kMtpFutureMs = 2 * 60 * 60 * 1000;
+  static const int _kMtpWindow = 11;
+  static const int _kHeaderBackfillCap = 32;
+
+  /// Resume anchor: the pin plus at least an 11-header MTP window.
+  static const int _kHeaderKeep = 16;
+
+  /// Digests kept for headers that are not on the open branch.
+  /// The branch being proved is exempt, so a fork longer than this still
+  /// finishes. The pin is the only floor.
+  static const int _kForkDigestCap = 8192;
+
+  /// Rejected branch ids remembered per host.
+  static const int _kBannedForks = 64;
+
+  /// Empty passes with the same bottom before the shell says the host stalled.
+  static const int _kForkStallPasses = 4;
+
+  /// Tests shrink this. The open branch is not limited by it.
+  int forkDigestCap = _kForkDigestCap;
+
+  int get _chainTip {
+    var tip = 0;
+    for (final row in _checkedHeaders) {
+      if (row.height > tip) tip = row.height;
+    }
+    return tip;
+  }
+
+  /// Install a release checkpoint. This block is the anchor. Later headers
+  /// still have to link, pass MTP and the future-time bound, and meet ASERT.
+  void installCheckpoint(CheckpointPin pin, {String? storePath}) {
+    if (!checkpointPinWellFormed(pin)) return;
+    _pin = pin;
+    if (storePath != null && storePath.isNotEmpty) _headerStorePath = storePath;
+    _checkedHeaders.clear();
+    _chainLoaded = false;
+    _resumePriorTimes = const [];
+    _resumePriorOrigin = null;
+    _prunedWork = BigInt.zero;
+    _sealedPending = null;
+    _sealedPriors = const [];
+    _sealedWork = null;
+    _seedCheckpoint();
+    _loadVerifiedChain();
+  }
+
+  /// Where the verified header chain is stored. Loaded once a pin is installed.
+  void bindHeaderStore(String path) {
+    if (path.isEmpty) return;
+    _headerStorePath = path;
+    _chainLoaded = false;
+    if (_pin != null) _loadVerifiedChain();
+  }
+
+  void _installReleaseCheckpoint() {
+    if (_pin != null || kCheckpointIsPlaceholder) return;
+    if (!checkpointPinWellFormed(kReleaseCheckpoint)) return;
+    installCheckpoint(kReleaseCheckpoint);
+  }
+
+  void _seedCheckpoint() {
+    final pin = _pin;
+    if (pin == null) return;
+    final hash = _hexToBytes(pin.hashHex);
+    if (hash == null) return;
+    _rememberChecked(pin.height, hash, pin.timeMs, headerHex: '');
+    if (pin.height > _verifiedTip) _verifiedTip = pin.height;
+  }
+
+  /// Test clock for the header future-time bound.
+  void bindHeaderClock(int nowMs) {
+    if (nowMs > 0) _headerNowMs = nowMs;
+  }
+
+  /// FlyClient does not move spendable depth. A sample counts only when
+  /// [catchUpVerifiedChain] accepts the header onto the linked chain.
+  void noteVerifiedHeight(int height) {
+    if (height < 1) return;
+  }
+
+  int _headerVersion(Uint8List header) =>
+      header[0] | (header[1] << 8) | (header[2] << 16) | (header[3] << 24);
+
+  int _headerBits(Uint8List header) {
+    var bits = 0;
+    for (var i = 0; i < 4; i++) {
+      bits |= header[108 + i] << (8 * i);
+    }
+    return bits;
+  }
+
+  bool _prevEquals(Uint8List header, Uint8List hash) {
+    if (hash.length != 32) return false;
+    for (var i = 0; i < 32; i++) {
+      if (header[4 + i] != hash[i]) return false;
+    }
+    return true;
+  }
+
+  ({int height, Uint8List hash, int timeMs, String headerHex})? _checkedAt(
+    int height,
+  ) {
+    for (final row in _checkedHeaders) {
+      if (row.height == height) return row;
+    }
+    return null;
+  }
+
+  int? _timeAt(int height) {
+    final row = _checkedAt(height);
+    if (row != null) return row.timeMs;
+    final pin = _pin;
+    if (pin != null) {
+      final age = pin.height - height;
+      if (age >= 1 && age <= pin.priorTimesMs.length) {
+        return pin.priorTimesMs[pin.priorTimesMs.length - age];
+      }
+    }
+    final origin = _resumePriorOrigin;
+    if (origin != null && _resumePriorTimes.length == 10) {
+      final idx = height - origin;
+      if (idx >= 0 && idx < _resumePriorTimes.length) {
+        return _resumePriorTimes[idx];
+      }
+    }
+    return null;
+  }
+
+  int _medianTimes(List<int> times) {
+    if (times.isEmpty) return 0;
+    final sorted = List<int>.from(times)..sort();
+    return sorted[(sorted.length - 1) ~/ 2];
+  }
+
+  /// Prev link, 11-header MTP, and the future-time bound. No hash yet.
+  bool _headerCandidate(Uint8List header, int sealedHeight) {
+    if (_pin == null || sealedHeight < 1 || header.length != shearHeaderLen) {
+      return false;
+    }
+    if (_headerVersion(header) != 1) return false;
+    final ts = headerTimestampMs(header);
+    if (ts == null || ts <= 0) return false;
+    if (_headerBits(header) < kAsertBitsScale) return false;
+    if (sealedHeight != _chainTip + 1) return false;
+    final parent = _checkedAt(sealedHeight - 1);
+    if (parent == null || !_prevEquals(header, parent.hash)) return false;
+    if (ts <= parent.timeMs) return false;
+    final window = <int>[];
+    for (var h = sealedHeight - _kMtpWindow; h < sealedHeight; h++) {
+      final t = _timeAt(h);
+      if (t == null) return false;
+      window.add(t);
+    }
+    if (window.length < _kMtpWindow) return false;
+    if (ts > _medianTimes(window) + _kMtpFutureMs) return false;
+    final now = _headerNowMs ?? DateTime.now().millisecondsSinceEpoch;
+    if (ts > now + _kHeaderAheadMs || ts > now + _kMtpFutureMs) return false;
+    return true;
+  }
+
+  void _rememberChecked(
+    int height,
+    Uint8List hash,
+    int timeMs, {
+    String headerHex = '',
+  }) {
+    _checkedHeaders.removeWhere((row) => row.height == height);
+    _checkedHeaders.add((
+      height: height,
+      hash: Uint8List.fromList(hash),
+      timeMs: timeMs,
+      headerHex: headerHex,
+    ));
+    _pruneChecked();
+  }
+
+  /// Pin row stays. The saved tail is the latest [_kHeaderKeep] headers.
+  /// Times just below that tail stay for MTP, and their work stays in
+  /// [_prunedWork] so a later fork is weighed against the whole chain.
+  void _pruneChecked() {
+    if (_checkedHeaders.length <= _kHeaderKeep + 1) return;
+    _checkedHeaders.sort((a, b) => a.height.compareTo(b.height));
+    final tip = _checkedHeaders.last.height;
+    final floor = tip - _kHeaderKeep + 1;
+    final pinH = _pin?.height;
+    final priors = <int>[];
+    for (var h = floor - 10; h < floor; h++) {
+      final t = _timeAt(h);
+      if (t == null) {
+        priors.clear();
+        break;
+      }
+      priors.add(t);
+    }
+    var dropWork = BigInt.zero;
+    for (final row in _checkedHeaders) {
+      if (row.height >= floor || row.height == pinH) continue;
+      if (row.headerHex.isEmpty) continue;
+      final raw = headerFromHex(row.headerHex);
+      if (raw == null) continue;
+      dropWork += blockWork(_headerBits(raw));
+    }
+    _prunedWork += dropWork;
+    if (priors.length == 10) {
+      _resumePriorTimes = priors;
+      _resumePriorOrigin = floor - 10;
+    }
+    _checkedHeaders.removeWhere(
+      (row) => row.height < floor && row.height != pinH,
+    );
+  }
+
+  bool _same32(Uint8List a, Uint8List b) {
+    if (a.length != 32 || b.length != 32) return false;
+    for (var i = 0; i < 32; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  ({int height, Uint8List hash, int timeMs, String headerHex})? _checkedParent(
+    Uint8List header,
+  ) {
+    for (final row in _checkedHeaders) {
+      if (_prevEquals(header, row.hash)) return row;
+    }
+    return null;
+  }
+
+  void _paintHeaderProgress(int host) {
+    _headerHostTip = host;
+    final paint = onHeaderProgress;
+    if (paint != null) paint();
+  }
+
+  /// Drop checked rows above [height]. The pin is never dropped.
+  /// Disk is updated only when [save] is set, after the replacement header
+  /// has already passed.
+  void _rollBackTo(int height, {bool save = true}) {
+    final pinH = _pin?.height ?? 0;
+    final floor = height < pinH ? pinH : height;
+    if (floor <= pinH) _prunedWork = BigInt.zero;
+    _checkedHeaders.removeWhere((row) => row.height > floor);
+    if (_verifiedTip > floor) _verifiedTip = floor;
+    if (_verifiedTip < pinH) _verifiedTip = pinH;
+    _chainLoaded = true;
+    if (save) _saveVerifiedChain();
+  }
+
+  /// A header already checked must be the same bytes. A different header at
+  /// that height is a competing branch, not a repeat.
+  bool _knownHeader(Uint8List header, int sealedHeight) {
+    final known = _checkedAt(sealedHeight);
+    if (known == null) return false;
+    final hex = _bytesHex(header);
+    if (known.headerHex.isNotEmpty && known.headerHex == hex) return true;
+    final digest = _digestOf(header);
+    return digest != null && _same32(digest, known.hash);
+  }
+
+  void _rememberDigest(String hex, Uint8List digest) {
+    if (_v3Ready.length > 8) _v3Ready.remove(_v3Ready.keys.first);
+    _v3Ready[hex] = digest;
+  }
+
+  /// A digest already computed. Does not hash.
+  Uint8List? _cachedForkDigest(Uint8List header) {
+    final hex = _bytesHex(header);
+    return _forkDigests[hex] ?? _v3Ready[hex];
+  }
+
+  Uint8List? _digestOf(Uint8List header) {
+    final hex = _bytesHex(header);
+    final kept = _forkDigests[hex];
+    if (kept != null) return kept;
+    final ready = _v3Ready[hex];
+    if (ready != null) return ready;
+    if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
+      headerHashCount += 1;
+      final digest = shearHashV3(header);
+      if (digest != null) {
+        _rememberDigest(hex, digest);
+      } else if (header.length == shearHeaderLen) {
+        reportHeaderHasherMissing();
+      }
+      return digest;
+    }
+    return null;
+  }
+
+  /// One native hash at a time on this ledger. The library lock covers the
+  /// other isolate.
+  Future<Uint8List?> _hashOffUi(Uint8List header) {
+    headerHashCount += 1;
+    if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
+      return Future<Uint8List?>.value(shearHashV3(header));
+    }
+    final copy = Uint8List.fromList(header);
+    final previous = _hashTail ?? Future<void>.value();
+    final gate = Completer<void>();
+    _hashTail = gate.future;
+    return previous.then((_) async {
+      try {
+        final digest = await Isolate.run(() => shearHashV3(copy));
+        if (digest == null && copy.length == shearHeaderLen) {
+          reportHeaderHasherMissing();
+        }
+        return digest;
+      } finally {
+        if (!gate.isCompleted) gate.complete();
+      }
+    });
+  }
+
+  /// Hash a header off the UI isolate, then [applyTipHex] can use it.
+  Future<void> _prepareTipHash(String headerHex, int sealedHeight) async {
+    final raw = headerFromHex(headerHex);
+    if (raw == null) return;
+    final extendsTip = _headerCandidate(raw, sealedHeight);
+    final competes = _checkedParent(raw) != null;
+    if (!extendsTip && !competes) return;
+    final hex = _bytesHex(raw);
+    if (_v3Ready.containsKey(hex)) return;
+    final digest = await _hashOffUi(raw);
+    if (digest != null) _rememberDigest(hex, digest);
+  }
+
+  /// Native ShearHash-v3, prev link, MTP, the future-time bound, and ASERT
+  /// from the consensus anchor (height 1, genesis bits, the pin's genesis ms).
+  /// Does not switch branches. A competing header is weighed in
+  /// [_maybeSwitchBranch] only after this same proof has passed.
+  bool _headerPowOk(Uint8List header, {required int sealedHeight}) {
+    final pin = _pin;
+    if (pin == null) return false;
+    if (_knownHeader(header, sealedHeight)) return true;
+    if (_checkedAt(sealedHeight) != null) return false;
+    if (sealedHeight != _chainTip + 1) return false;
+    final parent = _checkedAt(sealedHeight - 1);
+    if (parent == null) return false;
+    final digest = _proveHeader(
+      header,
+      height: sealedHeight,
+      parentHash: parent.hash,
+      parentTimeMs: parent.timeMs,
+      timeAt: _timeAt,
+    );
+    if (digest == null) return false;
+    final ts = headerTimestampMs(header);
+    if (ts == null) return false;
+    _rememberChecked(sealedHeight, digest, ts, headerHex: _bytesHex(header));
+    if (sealedHeight > _verifiedTip) _verifiedTip = sealedHeight;
+    return true;
+  }
+
+  /// Timestamp order, ASERT, MTP, and the future bound. No ShearHash.
+  /// Null MTP means the eleven samples are not in hand yet.
+  _WalkCheap _headerLinkCheap(
+    Uint8List header, {
+    required int height,
+    required int parentTimeMs,
+    required int? Function(int height) timeAt,
+    Uint8List? parentHash,
+  }) {
+    final pin = _pin;
+    if (pin == null || height < 1 || header.length != shearHeaderLen) {
+      return _WalkCheap.reject;
+    }
+    if (_headerVersion(header) != 1) return _WalkCheap.reject;
+    final ts = headerTimestampMs(header);
+    final bits = _headerBits(header);
+    if (ts == null || ts <= 0 || ts <= parentTimeMs) return _WalkCheap.reject;
+    if (bits < kAsertBitsScale) return _WalkCheap.reject;
+    if (parentHash != null && !_prevEquals(header, parentHash)) {
+      return _WalkCheap.reject;
+    }
+    final now = _headerNowMs ?? DateTime.now().millisecondsSinceEpoch;
+    // Clock bounds are not a bad header. A step backward must not ban it.
+    if (ts > now + _kHeaderAheadMs || ts > now + _kMtpFutureMs) {
+      return _WalkCheap.later;
+    }
+    if (pin.anchorHeight != kConsensusAnchorHeight) return _WalkCheap.reject;
+    if (pin.anchorBits != kConsensusAnchorBits) return _WalkCheap.reject;
+    if (kV12GenesisMs > 0 && pin.anchorTimeMs != kV12GenesisMs) {
+      return _WalkCheap.reject;
+    }
+    final quote = asertQuoteForHeight(
+      anchorTimeMs: pin.anchorTimeMs,
+      blockTimeMs: ts,
+      blockHeight: height,
+      anchorHeight: kConsensusAnchorHeight,
+      anchorBits: kConsensusAnchorBits,
+      parentTimeMs: parentTimeMs,
+    );
+    if (!consensusBitsOk(bits, quote)) return _WalkCheap.reject;
+    final window = <int>[];
+    for (var h = height - _kMtpWindow; h < height; h++) {
+      final t = timeAt(h);
+      if (t == null) return _WalkCheap.wait;
+      window.add(t);
+    }
+    if (ts > _medianTimes(window) + _kMtpFutureMs) return _WalkCheap.later;
+    return _WalkCheap.ok;
+  }
+
+  /// PoW, prev link, MTP, future bound, and the ASERT quote. No ledger writes.
+  /// Cheap checks run before ShearHash. Null when any check fails.
+  /// [timeAt] supplies the eleven MTP samples.
+  Uint8List? _proveHeader(
+    Uint8List header, {
+    required int height,
+    required Uint8List parentHash,
+    required int parentTimeMs,
+    required int? Function(int height) timeAt,
+  }) {
+    final cheap = _headerLinkCheap(
+      header,
+      height: height,
+      parentTimeMs: parentTimeMs,
+      timeAt: timeAt,
+      parentHash: parentHash,
+    );
+    if (cheap != _WalkCheap.ok) return null;
+    final digest = _digestOf(header);
+    final bits = _headerBits(header);
+    if (digest == null || !shearMeetsTarget(digest, bits)) return null;
+    return digest;
+  }
+
+  /// Extend the checked tip. A competing header returns false and changes
+  /// nothing: fork choice fetches the whole branch and runs only after every
+  /// header on it has passed [_proveHeader].
+  bool _acceptHeader(Uint8List header, int height) {
+    final ok =
+        _headerPowOk(header, sealedHeight: height) ||
+        _knownHeader(header, height);
+    if (ok) _expireForkBans(_forkHostKey, height);
+    return ok;
+  }
+
+  Future<Uint8List?> _hashHeader(Uint8List header) async {
+    final ready = _digestOf(header);
+    if (ready != null) return ready;
+    final digest = await _hashOffUi(header);
+    if (digest != null) _rememberDigest(_bytesHex(header), digest);
+    return digest;
+  }
+
+  BigInt _workAbove(int height) {
+    var sum = BigInt.zero;
+    for (final row in _checkedHeaders) {
+      if (row.height <= height || row.headerHex.isEmpty) continue;
+      final raw = headerFromHex(row.headerHex);
+      if (raw == null) continue;
+      sum += blockWork(_headerBits(raw));
+    }
+    return sum;
+  }
+
+  /// Work a fork from [ancestorHeight] would replace. The pin's fork drops
+  /// the pruned prefix as well as the retained tail.
+  BigInt _droppedWork(int ancestorHeight) {
+    final pinH = _pin?.height ?? 0;
+    if (ancestorHeight <= pinH) return _prunedWork + _workAbove(pinH);
+    return _workAbove(ancestorHeight);
+  }
+
+  /// The heavier fork sits below the stored window. Drop back to the pin and
+  /// let the next fetch walk up from there. Called only after that fork's
+  /// headers have already passed [_proveHeader].
+  void _rebackfillFromPin() {
+    final pinH = _pin?.height ?? 0;
+    _checkedHeaders.removeWhere((row) => row.height != pinH);
+    _verifiedTip = pinH;
+    _prunedWork = BigInt.zero;
+    _resumePriorTimes = const [];
+    _resumePriorOrigin = null;
+    _chainLoaded = true;
+    _sealedPending = null;
+    _sealedPriors = const [];
+    _sealedWork = null;
+    _saveVerifiedChain();
+  }
+
+  String get _forkHostKey {
+    final raw = pool?.baseUrl ?? '';
+    return raw.isEmpty ? 'direct' : raw;
+  }
+
+  bool _forkBackedOff(String host) {
+    final row = _forkBackoff[host];
+    if (row == null) return false;
+    return _forkNowMs() < row.untilMs;
+  }
+
+  void _armForkBackoff(String host) {
+    final prev = _forkBackoff[host];
+    final step = prev == null ? 0 : (prev.step + 1).clamp(0, 8);
+    final base = forkProofBackoff.inMilliseconds;
+    final delay = base <= 0 ? 0 : base * (1 << step);
+    _forkBackoff[host] = (untilMs: _forkNowMs() + delay, step: step);
+  }
+
+  void _clearForkBackoff(String host) => _forkBackoff.remove(host);
+
+  void _clearForkResume({bool resetStall = true}) {
+    _forkResumeHost = null;
+    _forkResumeBottom = null;
+    _forkResumeBranch = null;
+    _forkResumeProved = 0;
+    _forkPinnedDigests.clear();
+    if (!resetStall) return;
+    _forkStallPasses = 0;
+    _forkStallBottom = null;
+    _forkStallTop = null;
+    _forkStallProved = 0;
+    _forkStallLen = 0;
+    _forkStallHashes = headerHashCount;
+  }
+
+  /// The open branch keeps every digest it still needs. Other entries
+  /// leave first. Past the cap, the branch itself is the bound.
+  void _protectForkDigests(List<({int height, Uint8List header})> branch) {
+    _forkPinnedDigests
+      ..clear()
+      ..addAll([for (final row in branch) _bytesHex(row.header)]);
+  }
+
+  void _evictUnpinnedForkDigest() {
+    String? drop;
+    for (final key in _forkDigests.keys) {
+      if (_forkPinnedDigests.contains(key)) continue;
+      drop = key;
+      break;
+    }
+    if (drop != null) _forkDigests.remove(drop);
+  }
+
+  void _keepForkDigest(Uint8List header, Uint8List digest) {
+    final hex = _bytesHex(header);
+    final cap = forkDigestCap < 1 ? 1 : forkDigestCap;
+    if (_forkDigests.length >= cap && !_forkDigests.containsKey(hex)) {
+      _evictUnpinnedForkDigest();
+    }
+    _forkDigests[hex] = Uint8List.fromList(digest);
+    _rememberDigest(hex, digest);
+  }
+
+  /// [tip] is set only when that header's link down to [failed] checked out.
+  void _banFork(
+    String host,
+    Uint8List failed, {
+    Uint8List? tip,
+  }) {
+    final ids = _forkBanned.putIfAbsent(host, () => <String>[]);
+    void add(String hex) {
+      ids.remove(hex);
+      ids.add(hex);
+    }
+
+    add(_bytesHex(failed));
+    if (tip != null) add(_bytesHex(tip));
+    while (ids.length > _kBannedForks) {
+      ids.removeAt(0);
+    }
+    final seen = _forkBannedAtTip[host];
+    if (seen == null || _forkHostTipSeen > seen) {
+      _forkBannedAtTip[host] = _forkHostTipSeen;
+    }
+  }
+
+  void _expireForkBans(String host, int hostTip) {
+    final at = _forkBannedAtTip[host];
+    if (at == null || hostTip <= at) return;
+    _forkBanned.remove(host);
+    _forkBannedAtTip.remove(host);
+  }
+
+  /// A higher host tip clears bans only after a header at that height has
+  /// passed the cheap checks. A bare tip number does not.
+  void _maybeExpireForkBans(
+    String host,
+    int hostTip,
+    List<({int height, Uint8List header})> ordered,
+  ) {
+    final at = _forkBannedAtTip[host];
+    if (at == null || hostTip <= at) return;
+    ({int height, Uint8List header})? tip;
+    for (final row in ordered) {
+      if (row.height == hostTip) tip = row;
+    }
+    if (tip == null) return;
+    int? parentTime;
+    for (final row in ordered) {
+      if (row.height != hostTip - 1) continue;
+      parentTime = headerTimestampMs(row.header);
+      break;
+    }
+    parentTime ??= _timeAt(hostTip - 1);
+    if (parentTime == null) return;
+    final times = <int, int>{};
+    for (final row in ordered) {
+      final ts = headerTimestampMs(row.header);
+      if (ts != null) times[row.height] = ts;
+    }
+    int? timeAt(int height) => times[height] ?? _timeAt(height);
+    if (_headerLinkCheap(
+          tip.header,
+          height: hostTip,
+          parentTimeMs: parentTime,
+          timeAt: timeAt,
+        ) !=
+        _WalkCheap.ok) {
+      return;
+    }
+    _expireForkBans(host, hostTip);
+  }
+
+  /// True when every link from the branch tip down to [target] is cached.
+  bool _forkLinksTo(
+    List<({int height, Uint8List header})> branch,
+    Uint8List target,
+  ) {
+    if (branch.isEmpty) return false;
+    final targetHex = _bytesHex(target);
+    if (_bytesHex(branch.last.header) == targetHex) return true;
+    for (var i = branch.length - 1; i > 0; i--) {
+      final parent = _cachedForkDigest(branch[i - 1].header);
+      if (parent == null || !_prevEquals(branch[i].header, parent)) {
+        return false;
+      }
+      if (_bytesHex(branch[i - 1].header) == targetHex) return true;
+    }
+    return false;
+  }
+
+  bool _forkIsBanned(
+    String host,
+    List<({int height, Uint8List header})> rows,
+  ) {
+    final ids = _forkBanned[host];
+    if (ids == null || ids.isEmpty) return false;
+    for (final row in rows) {
+      if (ids.contains(_bytesHex(row.header))) return true;
+    }
+    return false;
+  }
+
+  /// Honest catch-up passed the saved fork. That walk is not this chain.
+  void _dropForkResumeIfBehind() {
+    final saved = _forkResumeBranch;
+    if (saved == null || saved.isEmpty) return;
+    if (_chainTip > saved.last.height) _clearForkResume();
+  }
+
+  int? _forkConflictHeight(
+    List<({int height, Uint8List header})> saved,
+    List<({int height, Uint8List header})> have,
+  ) {
+    final at = <int, String>{};
+    for (final row in saved) {
+      at[row.height] = _bytesHex(row.header);
+    }
+    int? low;
+    for (final row in have) {
+      final hex = at[row.height];
+      if (hex == null || hex == _bytesHex(row.header)) continue;
+      if (low == null || row.height < low) low = row.height;
+    }
+    return low;
+  }
+
+  List<({int height, Uint8List header})> _freshForkBranch(
+    List<({int height, Uint8List header})> ordered,
+  ) {
+    _clearForkResume();
+    return [
+      (
+        height: ordered.first.height,
+        header: Uint8List.fromList(ordered.first.header),
+      ),
+    ];
+  }
+
+  /// Same host and a have that still meets this bottom. A one-block tip
+  /// reorg keeps every row below the conflict. A have that starts above the
+  /// saved top is a different fork.
+  List<({int height, Uint8List header})> _takeForkBranch(
+    String host,
+    List<({int height, Uint8List header})> ordered,
+  ) {
+    final saved = _forkResumeBranch;
+    if (saved == null ||
+        saved.isEmpty ||
+        _forkResumeHost != host ||
+        _forkResumeBottom != _bytesHex(saved.first.header)) {
+      return _freshForkBranch(ordered);
+    }
+    final conflictAt = _forkConflictHeight(saved, ordered);
+    if (conflictAt != null) {
+      final kept = [
+        for (final row in saved)
+          if (row.height < conflictAt)
+            (height: row.height, header: Uint8List.fromList(row.header)),
+      ];
+      if (kept.isEmpty) return _freshForkBranch(ordered);
+      _forkResumeBranch = [
+        for (final row in kept)
+          (height: row.height, header: Uint8List.fromList(row.header)),
+      ];
+      _forkResumeBottom = _bytesHex(kept.first.header);
+      if (_forkResumeProved > kept.length) _forkResumeProved = kept.length;
+      return kept;
+    }
+    final low = ordered.first.height;
+    final bottom = saved.first.height;
+    final top = saved.last.height;
+    if (low < bottom || low > top + 1) return _freshForkBranch(ordered);
+    return [
+      for (final row in saved)
+        (height: row.height, header: Uint8List.fromList(row.header)),
+    ];
+  }
+
+  void _saveForkResume(
+    String host,
+    List<({int height, Uint8List header})> branch, {
+    int? proved,
+    bool countStall = true,
+  }) {
+    if (branch.isEmpty) {
+      _clearForkResume();
+      return;
+    }
+    _forkResumeHost = host;
+    _forkResumeBottom = _bytesHex(branch.first.header);
+    _forkResumeBranch = [
+      for (final row in branch)
+        (height: row.height, header: Uint8List.fromList(row.header)),
+    ];
+    _protectForkDigests(_forkResumeBranch!);
+    if (proved != null) _forkResumeProved = proved;
+    _noteForkStall(count: countStall);
+  }
+
+  /// Progress is a new header, a new proof, or a real hash. A full digest
+  /// map is not progress. Wallet-side waits pass [count] false.
+  void _noteForkStall({bool count = true}) {
+    final branch = _forkResumeBranch;
+    final bottom = (branch == null || branch.isEmpty)
+        ? null
+        : branch.first.height;
+    final top = (branch == null || branch.isEmpty)
+        ? null
+        : branch.last.height;
+    final len = branch?.length ?? 0;
+    final proved = _forkResumeProved;
+    final hashes = headerHashCount;
+    final grew =
+        (bottom != null &&
+            (_forkStallBottom == null || bottom < _forkStallBottom!)) ||
+        (top != null && (_forkStallTop == null || top > _forkStallTop!)) ||
+        (branch != null && len > _forkStallLen);
+    final moreProof = proved > _forkStallProved;
+    final moreHashes = hashes > _forkStallHashes;
+    if (grew || moreProof || moreHashes) {
+      _forkStallPasses = 0;
+    } else if (count) {
+      _forkStallPasses += 1;
+    }
+    if (bottom != null) _forkStallBottom = bottom;
+    if (top != null) _forkStallTop = top;
+    if (branch != null) _forkStallLen = len;
+    _forkStallProved = proved;
+    _forkStallHashes = hashes;
+  }
+
+  /// Claimed ASERT work, plus the heaviest remaining quote down to the pin,
+  /// still cannot beat the chain this fork would replace.
+  bool _forkClaimCannotWin(List<({int height, Uint8List header})> branch) {
+    final pin = _pin;
+    if (pin == null || branch.isEmpty) return false;
+    var claimed = BigInt.zero;
+    for (final row in branch) {
+      claimed += blockWork(_headerBits(row.header));
+    }
+    final lowest = branch.first.height;
+    var remain = lowest - 1 - pin.height;
+    if (remain < 0) remain = 0;
+    final ceiling =
+        claimed +
+        blockWork(kAsertMaxBits * kAsertBitsScale) * BigInt.from(remain);
+    return ceiling <= _droppedWork(pin.height);
+  }
+
+  void _rejectFork(String host) {
+    _clearForkResume();
+    _armForkBackoff(host);
+  }
+
+  Future<bool> _finishFork(
+    String host,
+    ({int height, Uint8List hash, int timeMs, String headerHex}) ancestor,
+    List<({int height, Uint8List header})> branch, {
+    required int budget,
+    required bool Function() expired,
+  }) async {
+    if (budget < 1 || expired()) {
+      _saveForkResume(host, branch);
+      return false;
+    }
+    final result = await _switchIfHeavier(
+      ancestor,
+      branch,
+      alreadyProved: _forkResumeProved,
+      budget: budget,
+      expired: expired,
+    );
+    if (result.kind == _ForkProof.partial) {
+      _saveForkResume(
+        host,
+        branch,
+        proved: result.proved,
+        countStall: result.countStall,
+      );
+      return false;
+    }
+    if (result.kind == _ForkProof.invalid) {
+      if (result.failed != null) {
+        _banFork(
+          host,
+          result.failed!,
+          tip: result.banTip && branch.isNotEmpty
+              ? branch.last.header
+              : null,
+        );
+      }
+      _rejectFork(host);
+      return false;
+    }
+    _clearForkResume();
+    _clearForkBackoff(host);
+    return result.kind == _ForkProof.switched;
+  }
+
+  /// Fetch the competing branch back to a retained ancestor, verify every
+  /// header, and switch only when its total work is strictly greater.
+  /// Equal work stays, so the next honest block (one more header of work)
+  /// can still win and the wallet is not stuck. No fixed depth cap: a
+  /// verified heavier fork may roll back to the pin. One attempt is bounded
+  /// by [forkWalkCap], [headerWalkDeadline], and claimed work.
+  ///
+  /// The resume key is the host plus the branch bottom. A newer tip extends
+  /// that branch upward. An empty or timed-out read keeps the resume and
+  /// does not back off. Only a proved-bad header does.
+  Future<bool> _maybeSwitchBranch({
+    required int hostTip,
+    required List<({int height, Uint8List header})> have,
+    required Future<List<({int height, Uint8List header})>> Function(
+      int from,
+      int to,
+    )?
+    fetch,
+  }) async {
+    final pin = _pin;
+    if (pin == null || have.isEmpty || hostTip < pin.height) return false;
+    final host = _forkHostKey;
+    if (_forkBackedOff(host)) return false;
+    final ordered = List<({int height, Uint8List header})>.from(have)
+      ..sort((a, b) => a.height.compareTo(b.height));
+    _forkHostTipSeen = hostTip;
+    _maybeExpireForkBans(host, hostTip, ordered);
+    _dropForkResumeIfBehind();
+    if (_forkIsBanned(host, ordered)) {
+      _noteForkStall();
+      return false;
+    }
+    forkProofAttempts += 1;
+    final pinHash = _hexToBytes(pin.hashHex);
+    if (pinHash == null) return false;
+    final started = _forkNowMs();
+    bool expired() =>
+        _forkNowMs() - started >= headerWalkDeadline.inMilliseconds;
+    final branch = _takeForkBranch(host, ordered);
+    _protectForkDigests(branch);
+    final cap = forkWalkCap < 1 ? 1 : forkWalkCap;
+    var steps = 0;
+    Future<bool> atAncestor(
+      ({int height, Uint8List hash, int timeMs, String headerHex}) ancestor,
+    ) async {
+      if (_forkClaimCannotWin(branch)) {
+        // Not a proved-bad header. A light branch must not clear the
+        // backoff a fake already armed.
+        _clearForkResume();
+        return false;
+      }
+      if (steps < cap && !expired()) {
+        steps += await _extendBranchUp(
+          branch,
+          ordered,
+          budget: cap - steps,
+          expired: expired,
+        );
+      }
+      return _finishFork(
+        host,
+        ancestor,
+        branch,
+        budget: cap - steps,
+        expired: expired,
+      );
+    }
+
+    while (steps < cap) {
+      if (expired()) {
+        _saveForkResume(host, branch);
+        return false;
+      }
+      steps += await _extendBranchUp(
+        branch,
+        ordered,
+        budget: cap - steps,
+        expired: expired,
+      );
+      if (expired() || steps >= cap) {
+        _saveForkResume(host, branch);
+        return false;
+      }
+      final bottom = branch.first;
+      final linked = _checkedParent(bottom.header);
+      if (linked != null && linked.height + 1 == bottom.height) {
+        return atAncestor(linked);
+      }
+      if (bottom.height - 1 == pin.height &&
+          _prevEquals(bottom.header, pinHash)) {
+        final pinRow = _checkedAt(pin.height);
+        if (pinRow == null) {
+          _rejectFork(host);
+          return false;
+        }
+        return atAncestor(pinRow);
+      }
+      if (bottom.height - 1 <= pin.height) {
+        _rejectFork(host);
+        return false;
+      }
+      steps += 1;
+      final rows = await _readHeaders(
+        bottom.height - 1,
+        bottom.height - 1,
+        fetch,
+      );
+      if (expired()) {
+        _saveForkResume(host, branch);
+        return false;
+      }
+      // A stall or a short page is the host, not a bad header.
+      if (rows.isEmpty || rows.first.height != bottom.height - 1) {
+        _saveForkResume(host, branch);
+        return false;
+      }
+      final lower = rows.first;
+      if (_forkIsBanned(host, [(height: lower.height, header: lower.header)])) {
+        _clearForkResume(resetStall: false);
+        _noteForkStall();
+        return false;
+      }
+      final parentTs = headerTimestampMs(lower.header);
+      if (parentTs == null) {
+        _rejectFork(host);
+        return false;
+      }
+      final times = <int, int>{lower.height: parentTs};
+      for (final row in branch) {
+        final ts = headerTimestampMs(row.header);
+        if (ts != null) times[row.height] = ts;
+      }
+      int? timeAt(int height) => times[height] ?? _timeAt(height);
+      final cheap = _headerLinkCheap(
+        bottom.header,
+        height: bottom.height,
+        parentTimeMs: parentTs,
+        timeAt: timeAt,
+      );
+      if (cheap == _WalkCheap.later) {
+        _saveForkResume(host, branch, countStall: false);
+        return false;
+      }
+      if (cheap == _WalkCheap.reject) {
+        _rejectFork(host);
+        return false;
+      }
+      branch.insert(
+        0,
+        (height: lower.height, header: Uint8List.fromList(lower.header)),
+      );
+      _forkPinnedDigests.add(_bytesHex(lower.header));
+      if (cheap == _WalkCheap.wait) continue;
+      final lowerDigest = await _hashHeader(lower.header);
+      final bottomDigest = await _hashHeader(bottom.header);
+      if (expired()) {
+        _saveForkResume(host, branch);
+        return false;
+      }
+      if (lowerDigest == null || bottomDigest == null) {
+        _saveForkResume(host, branch, countStall: false);
+        return false;
+      }
+      final lowerOk = shearMeetsTarget(lowerDigest, _headerBits(lower.header));
+      final bottomOk = shearMeetsTarget(
+        bottomDigest,
+        _headerBits(bottom.header),
+      );
+      final linkedOk = _prevEquals(bottom.header, lowerDigest);
+      if (!lowerOk || !bottomOk || !linkedOk) {
+        final Uint8List failed;
+        var banTip = false;
+        if (!lowerOk) {
+          failed = lower.header;
+          banTip = linkedOk && _forkLinksTo(branch, bottom.header);
+        } else if (!bottomOk) {
+          failed = bottom.header;
+          banTip = _forkLinksTo(branch, bottom.header);
+        } else {
+          failed = bottom.header;
+        }
+        _banFork(host, failed, tip: banTip ? branch.last.header : null);
+        _rejectFork(host);
+        return false;
+      }
+      _keepForkDigest(lower.header, lowerDigest);
+      _keepForkDigest(bottom.header, bottomDigest);
+    }
+    _saveForkResume(host, branch);
+    return false;
+  }
+
+  /// Headers already fetched above [branch]. Stops at the deadline or [budget].
+  /// A header that does not link is left for a later pass, not a failed proof.
+  Future<int> _extendBranchUp(
+    List<({int height, Uint8List header})> branch,
+    List<({int height, Uint8List header})> have, {
+    required int budget,
+    required bool Function() expired,
+  }) async {
+    if (budget < 1 || branch.isEmpty || expired()) return 0;
+    var used = 0;
+    final extra = List<({int height, Uint8List header})>.from(have)
+      ..sort((a, b) => a.height.compareTo(b.height));
+    final taken = <int>{for (final row in branch) row.height};
+    for (final row in extra) {
+      if (expired() || used >= budget) break;
+      if (!taken.add(row.height)) continue;
+      if (row.height != branch.last.height + 1) continue;
+      final parentTs = headerTimestampMs(branch.last.header);
+      if (parentTs == null) break;
+      final times = <int, int>{};
+      for (final haveRow in branch) {
+        final ts = headerTimestampMs(haveRow.header);
+        if (ts != null) times[haveRow.height] = ts;
+      }
+      int? timeAt(int height) => times[height] ?? _timeAt(height);
+      final cheap = _headerLinkCheap(
+        row.header,
+        height: row.height,
+        parentTimeMs: parentTs,
+        timeAt: timeAt,
+      );
+      if (cheap != _WalkCheap.ok) break;
+      final prev = await _hashHeader(branch.last.header);
+      if (prev == null || !_prevEquals(row.header, prev)) break;
+      if (expired() || used >= budget) break;
+      used += 1;
+      final digest = await _hashHeader(row.header);
+      if (digest == null ||
+          !shearMeetsTarget(digest, _headerBits(row.header))) {
+        break;
+      }
+      branch.add((
+        height: row.height,
+        header: Uint8List.fromList(row.header),
+      ));
+      _forkPinnedDigests.add(_bytesHex(row.header));
+      _keepForkDigest(row.header, digest);
+    }
+    return used;
+  }
+
+  ({
+    _ForkProof kind,
+    int proved,
+    Uint8List? failed,
+    bool banTip,
+    bool countStall,
+  })
+  _forkResult(
+    _ForkProof kind,
+    int proved, {
+    Uint8List? failed,
+    bool banTip = false,
+    bool countStall = true,
+  }) {
+    return (
+      kind: kind,
+      proved: proved,
+      failed: failed,
+      banTip: banTip,
+      countStall: countStall,
+    );
+  }
+
+  /// [ancestor] is already checked. [branch] is the competing headers above
+  /// it, lowest height first. Work is compared only after every header proves.
+  /// Timestamp, ASERT, MTP, and the future bound run before ShearHash.
+  /// Screening walks from the tip down, so a bad header fails before the
+  /// prefix under it is hashed. One pass hashes at most [budget] new headers.
+  /// A cached digest is free. The chain is not rolled back until the whole
+  /// branch proves. [failed] is the header that did not prove. [banTip] is
+  /// set only when the tip's link down to that header checked out.
+  Future<
+    ({
+      _ForkProof kind,
+      int proved,
+      Uint8List? failed,
+      bool banTip,
+      bool countStall,
+    })
+  >
+  _switchIfHeavier(
+    ({int height, Uint8List hash, int timeMs, String headerHex}) ancestor,
+    List<({int height, Uint8List header})> branch, {
+    required int alreadyProved,
+    required int budget,
+    required bool Function() expired,
+  }) async {
+    if (branch.isEmpty) {
+      return _forkResult(_ForkProof.invalid, 0);
+    }
+    _protectForkDigests(branch);
+    for (var i = 0; i < branch.length; i++) {
+      if (branch[i].height != ancestor.height + i + 1) {
+        return _forkResult(
+          _ForkProof.invalid,
+          0,
+          failed: branch[i].header,
+        );
+      }
+    }
+    final times = <int, int>{ancestor.height: ancestor.timeMs};
+    for (final row in branch) {
+      final ts = headerTimestampMs(row.header);
+      if (ts != null) times[row.height] = ts;
+    }
+    int? timeAt(int height) => times[height] ?? _timeAt(height);
+    var fresh = 0;
+    for (var i = branch.length - 1; i >= 0; i--) {
+      final row = branch[i];
+      final parentTime = i == 0
+          ? ancestor.timeMs
+          : headerTimestampMs(branch[i - 1].header);
+      if (parentTime == null) {
+        return _forkResult(_ForkProof.invalid, 0, failed: row.header);
+      }
+      final cached = _cachedForkDigest(row.header);
+      if (cached == null && (fresh >= budget || expired())) break;
+      final cheap = _headerLinkCheap(
+        row.header,
+        height: row.height,
+        parentTimeMs: parentTime,
+        timeAt: timeAt,
+      );
+      if (cheap == _WalkCheap.wait || cheap == _WalkCheap.later) {
+        return _forkResult(_ForkProof.partial, 0, countStall: false);
+      }
+      if (cheap != _WalkCheap.ok) {
+        return _forkResult(_ForkProof.invalid, 0, failed: row.header);
+      }
+      var digest = cached;
+      if (digest == null) {
+        fresh += 1;
+        digest = await _hashHeader(row.header);
+      }
+      if (digest == null) {
+        return _forkResult(_ForkProof.partial, 0, countStall: false);
+      }
+      if (!shearMeetsTarget(digest, _headerBits(row.header))) {
+        final above = i + 1 < branch.length;
+        final childLinks =
+            above && _prevEquals(branch[i + 1].header, digest);
+        return _forkResult(
+          _ForkProof.invalid,
+          0,
+          failed: row.header,
+          banTip: !above || childLinks,
+        );
+      }
+      _keepForkDigest(row.header, digest);
+      if (i + 1 < branch.length &&
+          !_prevEquals(branch[i + 1].header, digest)) {
+        return _forkResult(
+          _ForkProof.invalid,
+          0,
+          failed: branch[i + 1].header,
+        );
+      }
+      if (i == 0 && !_prevEquals(row.header, ancestor.hash)) {
+        return _forkResult(_ForkProof.invalid, 0, failed: row.header);
+      }
+    }
+    var parentHash = ancestor.hash;
+    var parentTime = ancestor.timeMs;
+    var work = BigInt.zero;
+    final proved = <({int height, Uint8List header})>[];
+    for (final row in branch) {
+      if (row.height != ancestor.height + proved.length + 1) {
+        return _forkResult(
+          _ForkProof.invalid,
+          proved.length,
+          failed: row.header,
+        );
+      }
+      final cached = _cachedForkDigest(row.header);
+      final counting = proved.length >= alreadyProved;
+      if (cached == null && counting && (fresh >= budget || expired())) {
+        return _forkResult(_ForkProof.partial, proved.length);
+      }
+      final cheap = _headerLinkCheap(
+        row.header,
+        height: row.height,
+        parentTimeMs: parentTime,
+        timeAt: timeAt,
+        parentHash: parentHash,
+      );
+      if (cheap == _WalkCheap.wait || cheap == _WalkCheap.later) {
+        return _forkResult(
+          _ForkProof.partial,
+          proved.length,
+          countStall: false,
+        );
+      }
+      if (cheap != _WalkCheap.ok) {
+        return _forkResult(
+          _ForkProof.invalid,
+          proved.length,
+          failed: row.header,
+        );
+      }
+      if (cached == null && counting) fresh += 1;
+      final digest = cached ?? await _hashHeader(row.header);
+      if (digest == null) {
+        return _forkResult(
+          _ForkProof.partial,
+          proved.length,
+          countStall: false,
+        );
+      }
+      final provedDigest = _proveHeader(
+        row.header,
+        height: row.height,
+        parentHash: parentHash,
+        parentTimeMs: parentTime,
+        timeAt: timeAt,
+      );
+      if (provedDigest == null) {
+        return _forkResult(
+          _ForkProof.invalid,
+          proved.length,
+          failed: row.header,
+        );
+      }
+      _keepForkDigest(row.header, provedDigest);
+      final ts = headerTimestampMs(row.header);
+      if (ts == null) {
+        return _forkResult(
+          _ForkProof.invalid,
+          proved.length,
+          failed: row.header,
+        );
+      }
+      times[row.height] = ts;
+      parentHash = provedDigest;
+      parentTime = ts;
+      work += blockWork(_headerBits(row.header));
+      proved.add((height: row.height, header: row.header));
+    }
+    if (work <= _droppedWork(ancestor.height)) {
+      return _forkResult(_ForkProof.lighter, proved.length);
+    }
+    final saved =
+        List<({int height, Uint8List hash, int timeMs, String headerHex})>.from(
+          _checkedHeaders,
+        );
+    final savedTip = _verifiedTip;
+    final savedWork = _prunedWork;
+    _rollBackTo(ancestor.height, save: false);
+    var applied = true;
+    for (final row in proved) {
+      if (!_headerPowOk(row.header, sealedHeight: row.height)) {
+        applied = false;
+        break;
+      }
+    }
+    if (applied) {
+      _saveVerifiedChain();
+      return _forkResult(_ForkProof.switched, proved.length);
+    }
+    _checkedHeaders
+      ..clear()
+      ..addAll(saved);
+    _verifiedTip = savedTip;
+    _prunedWork = savedWork;
+    // The branch proved, but the retained window cannot take the fork.
+    // Rebuild from the pin on the next pass. The proof already happened.
+    if (ancestor.height <= (_pin?.height ?? 0)) _rebackfillFromPin();
+    return _forkResult(_ForkProof.lighter, proved.length);
+  }
+
+  /// Headers from the checkpoint toward [hostTip]. At most 32 per call.
+  /// One pass at a time: a second caller waits for the pass already running.
+  /// The credit worker calls this off the UI isolate. A bare wallet stays at
+  /// depth 0 until this chain reaches the note.
+  Future<int> catchUpVerifiedChain(
+    int hostTip, {
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetch,
+  }) {
+    final inflight = _catchUpFlight;
+    if (inflight != null) return inflight;
+    final run = _catchUpPass(hostTip, fetch: fetch);
+    _catchUpFlight = run;
+    return run.whenComplete(() {
+      if (identical(_catchUpFlight, run)) _catchUpFlight = null;
+    });
+  }
+
+  Future<int> _catchUpPass(
+    int hostTip, {
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetch,
+  }) async {
+    _installReleaseCheckpoint();
+    if (_pin == null || hostTip < 1) return bookTip;
+    _loadVerifiedChain();
+    await _adoptSealedPending();
+    _paintHeaderProgress(hostTip);
+    await _refetchReorgHint(hostTip, fetch);
+    var next = _chainTip + 1;
+    if (hostTip < next) {
+      final floor = _pin?.height ?? 0;
+      // A shorter host tip can be a heavier branch. The same height is
+      // already checked, so a resumed wallet does not fetch again.
+      if (hostTip > floor && hostTip < _chainTip) {
+        final rows = await _readHeaders(hostTip, hostTip, fetch);
+        for (final row in rows) {
+          await _prepareTipHash(_bytesHex(row.header), row.height);
+          if (_acceptHeader(row.header, row.height)) {
+            _dropForkResumeIfBehind();
+            _paintHeaderProgress(hostTip);
+            continue;
+          }
+          if (await _maybeSwitchBranch(
+            hostTip: hostTip,
+            have: rows,
+            fetch: fetch,
+          )) {
+            _paintHeaderProgress(hostTip);
+          }
+        }
+        _saveVerifiedChain();
+      }
+      _paintHeaderProgress(hostTip);
+      return bookTip;
+    }
+    final cap = next + _kHeaderBackfillCap - 1;
+    final to = hostTip < cap ? hostTip : cap;
+    final rows = List<({int height, Uint8List header})>.from(
+      await _readHeaders(next, to, fetch),
+    );
+    rows.sort((a, b) => a.height.compareTo(b.height));
+    for (final row in rows) {
+      if (row.height > next) break;
+      await _prepareTipHash(_bytesHex(row.header), row.height);
+      if (_acceptHeader(row.header, row.height)) {
+        _dropForkResumeIfBehind();
+        next = _chainTip + 1;
+        _paintHeaderProgress(hostTip);
+        continue;
+      }
+      final switched = await _maybeSwitchBranch(
+        hostTip: hostTip,
+        have: rows.where((r) => r.height >= row.height).toList(),
+        fetch: fetch,
+      );
+      if (!switched) break;
+      next = _chainTip + 1;
+      _paintHeaderProgress(hostTip);
+      break;
+    }
+    _saveVerifiedChain();
+    _paintHeaderProgress(hostTip);
+    return bookTip;
+  }
+
+  Future<List<({int height, Uint8List header})>> _readHeaders(
+    int from,
+    int to,
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetch,
+  ) {
+    if (fetch != null) {
+      return fetch(from, to).timeout(
+        headerReadTimeout,
+        onTimeout: () => <({int height, Uint8List header})>[],
+      );
+    }
+    return _fetchHeaderPage(from, to);
+  }
+
+  Future<void> _refetchReorgHint(
+    int hostTip,
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetch,
+  ) async {
+    final hint = _reorgHintFrom;
+    if (hint == null) return;
+    _reorgHintFrom = null;
+    final rows = await _readHeaders(hint, hint, fetch);
+    for (final row in rows) {
+      await _prepareTipHash(_bytesHex(row.header), row.height);
+      if (_acceptHeader(row.header, row.height)) {
+        _dropForkResumeIfBehind();
+        _paintHeaderProgress(hostTip);
+        continue;
+      }
+      if (await _maybeSwitchBranch(
+        hostTip: hostTip,
+        have: rows,
+        fetch: fetch,
+      )) {
+        _paintHeaderProgress(hostTip);
+      }
+    }
+  }
+
+  Future<List<({int height, Uint8List header})>> _fetchHeaderPage(
+    int from,
+    int to,
+  ) async {
+    final client = pool;
+    if (client == null) return const [];
+    final out = <({int height, Uint8List header})>[];
+    for (var h = from; h <= to; h++) {
+      try {
+        final json = await client.headerAt(h, timeout: headerReadTimeout);
+        final raw = headerFromHex(json['header']?.toString() ?? '');
+        if (raw == null) break;
+        final height = (json['height'] as num?)?.toInt() ?? h;
+        out.add((height: height, header: raw));
+      } catch (_) {
+        break;
+      }
+    }
+    return out;
+  }
+
+  /// MAC over the sealed header file. The key is derived from the spend
+  /// seed, the wallet vault secret. A bad MAC deletes the file.
+  Uint8List? _headerMacKey() {
+    final seed = spendSeed;
+    if (seed == null || seed.length != 32) return null;
+    final raw = Hmac(
+      sha256,
+      utf8.encode('shear-verified-headers-v1'),
+    ).convert(seed);
+    return Uint8List.fromList(raw.bytes);
+  }
+
+  String _headerMacHex(Uint8List key, String body) =>
+      Hmac(sha256, key).convert(utf8.encode(body)).toString();
+
+  String _canonicalHeaderBody(
+    String pinHex,
+    List<int> priors,
+    String work,
+    List<Map<String, Object>> rows,
+  ) => jsonEncode({
+    'v': 2,
+    'pin': pinHex.toLowerCase(),
+    'priors': priors,
+    'work': work,
+    'rows': rows,
+  });
+
+  bool _macMatch(String got, String want) {
+    if (got.length != want.length || got.isEmpty) return false;
+    var diff = 0;
+    for (var i = 0; i < got.length; i++) {
+      diff |= got.codeUnitAt(i) ^ want.codeUnitAt(i);
+    }
+    return diff == 0;
+  }
+
+  void _discardHeaderFile() {
+    final path = _headerStorePath;
+    if (path == null || path.isEmpty) return;
+    final file = File(path);
+    if (!file.existsSync()) return;
+    try {
+      file.deleteSync();
+    } catch (_) {}
+  }
+
+  void _loadVerifiedChain() {
+    if (_chainLoaded || _pin == null) return;
+    final path = _headerStorePath;
+    if (path == null || path.isEmpty) return;
+    _chainLoaded = true;
+    final key = _headerMacKey();
+    if (key == null) {
+      _headerMacReady = false;
+      return;
+    }
+    _headerMacReady = true;
+    final sealed = _readSealedHeaderRows(key);
+    if (sealed == null || sealed.rows.isEmpty) return;
+    if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
+      _adoptSealedSync(sealed.rows, priors: sealed.priors, work: sealed.work);
+      return;
+    }
+    _sealedPending = sealed.rows;
+    _sealedPriors = sealed.priors;
+    _sealedWork = sealed.work;
+  }
+
+  /// Parsed sealed rows. Null discards the file. Empty rows means nothing to adopt.
+  ({
+    List<({int height, int timeMs, Uint8List header})> rows,
+    List<int> priors,
+    String? work,
+  })?
+  _readSealedHeaderRows(Uint8List key) {
+    final path = _headerStorePath;
+    final pin = _pin;
+    if (path == null || pin == null) {
+      return (
+        rows: <({int height, int timeMs, Uint8List header})>[],
+        priors: <int>[],
+        work: null,
+      );
+    }
+    final file = File(path);
+    if (!file.existsSync()) {
+      return (
+        rows: <({int height, int timeMs, Uint8List header})>[],
+        priors: <int>[],
+        work: null,
+      );
+    }
+    Object? decoded;
+    try {
+      decoded = jsonDecode(file.readAsStringSync());
+    } catch (_) {
+      _discardHeaderFile();
+      return null;
+    }
+    if (decoded is! Map || decoded['v'] != 2) {
+      _discardHeaderFile();
+      return null;
+    }
+    final pinHex = decoded['pin']?.toString().toLowerCase() ?? '';
+    if (pinHex != pin.hashHex.toLowerCase()) {
+      _discardHeaderFile();
+      return null;
+    }
+    // A file from before cumulative work was sealed cannot price a fork.
+    // Refuse it and backfill from the pin rather than treating work as zero.
+    final workRaw = decoded['work']?.toString() ?? '';
+    if (!decoded.containsKey('work') ||
+        workRaw.isEmpty ||
+        (BigInt.tryParse(workRaw)?.isNegative ?? true)) {
+      _discardHeaderFile();
+      return null;
+    }
+    final rawRows = decoded['rows'];
+    if (rawRows is! List) {
+      _discardHeaderFile();
+      return null;
+    }
+    final canon = <Map<String, Object>>[];
+    final sealed = <({int height, int timeMs, Uint8List header})>[];
+    for (final row in rawRows) {
+      if (row is! Map) {
+        _discardHeaderFile();
+        return null;
+      }
+      final height = (row['h'] as num?)?.toInt() ?? 0;
+      final timeMs = (row['t'] as num?)?.toInt() ?? 0;
+      final hex = row['hdr']?.toString() ?? '';
+      final id = row['id']?.toString().toLowerCase() ?? '';
+      final header = headerFromHex(hex);
+      if (height <= pin.height || header == null || timeMs <= 0) {
+        _discardHeaderFile();
+        return null;
+      }
+      canon.add({'h': height, 't': timeMs, 'hdr': hex, 'id': id});
+      sealed.add((height: height, timeMs: timeMs, header: header));
+    }
+    canon.sort((a, b) => (a['h'] as int).compareTo(b['h'] as int));
+    sealed.sort((a, b) => a.height.compareTo(b.height));
+    final parsedPriors = _parseHeaderPriors(decoded['priors']);
+    if (parsedPriors == null) {
+      _discardHeaderFile();
+      return null;
+    }
+    final mac = decoded['mac']?.toString().toLowerCase() ?? '';
+    final want = _headerMacHex(
+      key,
+      _canonicalHeaderBody(pinHex, parsedPriors, workRaw, canon),
+    );
+    if (!_macMatch(mac, want)) {
+      _discardHeaderFile();
+      return null;
+    }
+    return (rows: sealed, priors: parsedPriors, work: workRaw);
+  }
+
+  /// Ten increasing times, or an empty list when the key is absent.
+  /// Any other shape discards the file.
+  List<int>? _parseHeaderPriors(Object? raw) {
+    if (raw == null) return const [];
+    if (raw is! List) return null;
+    if (raw.isEmpty) return const [];
+    if (raw.length != 10) return null;
+    final out = <int>[];
+    var prev = 0;
+    for (final item in raw) {
+      final t = item is num ? item.toInt() : int.tryParse('$item') ?? 0;
+      if (t <= prev) return null;
+      prev = t;
+      out.add(t);
+    }
+    return out;
+  }
+
+  void _installResumePriors(
+    List<({int height, int timeMs, Uint8List header})> rows,
+    List<int> priors,
+  ) {
+    if (rows.isEmpty || priors.length != 10) return;
+    _resumePriorTimes = List<int>.from(priors);
+    _resumePriorOrigin = rows.first.height - 10;
+  }
+
+  void _applyStoredWork(String? work) {
+    if (work == null) return;
+    final total = BigInt.tryParse(work);
+    if (total == null || total.isNegative) return;
+    final tail = _workAbove(_pin?.height ?? 0);
+    final pruned = total - tail;
+    _prunedWork = pruned.isNegative ? BigInt.zero : pruned;
+  }
+
+  /// The MAC already proved this wallet checked [row]. When it is not the
+  /// header after the pin, seed it as the resume anchor and re-check the rest.
+  bool _seedResumeAnchor(({int height, int timeMs, Uint8List header}) row) {
+    final ts = headerTimestampMs(row.header);
+    if (ts == null || ts != row.timeMs) return false;
+    if (row.height == _chainTip + 1) {
+      return _headerPowOk(row.header, sealedHeight: row.height);
+    }
+    final digest = _digestOf(row.header);
+    final bits = _headerBits(row.header);
+    if (digest == null || !shearMeetsTarget(digest, bits)) return false;
+    final parentTime = _timeAt(row.height - 1);
+    final pin = _pin;
+    if (parentTime != null && pin != null) {
+      if (ts <= parentTime) return false;
+      final quote = asertQuoteForHeight(
+        anchorTimeMs: pin.anchorTimeMs,
+        blockTimeMs: ts,
+        blockHeight: row.height,
+        anchorHeight: kConsensusAnchorHeight,
+        anchorBits: kConsensusAnchorBits,
+        parentTimeMs: parentTime,
+      );
+      if (!consensusBitsOk(bits, quote)) return false;
+    }
+    _rememberChecked(row.height, digest, ts, headerHex: _bytesHex(row.header));
+    if (row.height > _verifiedTip) _verifiedTip = row.height;
+    return true;
+  }
+
+  /// The first sealed row is the resume anchor. Rows after it are re-linked
+  /// and re-checked. The tip rises only for a row that passes.
+  void _adoptSealedSync(
+    List<({int height, int timeMs, Uint8List header})> rows, {
+    List<int> priors = const [],
+    String? work,
+  }) {
+    if (rows.isEmpty) return;
+    _installResumePriors(rows, priors);
+    if (!_seedResumeAnchor(rows.first)) return;
+    for (final row in rows.skip(1)) {
+      final ts = headerTimestampMs(row.header);
+      if (ts == null || ts != row.timeMs) return;
+      if (!_headerPowOk(row.header, sealedHeight: row.height)) return;
+    }
+    _applyStoredWork(work);
+  }
+
+  Future<void> _adoptSealedPending() async {
+    final rows = _sealedPending;
+    if (rows == null) return;
+    final priors = _sealedPriors;
+    final work = _sealedWork;
+    _sealedPending = null;
+    _sealedPriors = const [];
+    _sealedWork = null;
+    if (rows.isEmpty) return;
+    _installResumePriors(rows, priors);
+    final anchor = rows.first;
+    await _hashHeader(anchor.header);
+    if (!_seedResumeAnchor(anchor)) return;
+    for (final row in rows.skip(1)) {
+      final ts = headerTimestampMs(row.header);
+      if (ts == null || ts != row.timeMs) return;
+      await _hashHeader(row.header);
+      if (!_headerPowOk(row.header, sealedHeight: row.height)) return;
+    }
+    _applyStoredWork(work);
+  }
+
+  List<int> _priorsForSave(int firstHeight) {
+    final origin = _resumePriorOrigin;
+    if (origin != null &&
+        origin == firstHeight - 10 &&
+        _resumePriorTimes.length == 10) {
+      return List<int>.from(_resumePriorTimes);
+    }
+    final priors = <int>[];
+    for (var h = firstHeight - 10; h < firstHeight; h++) {
+      final t = _timeAt(h);
+      if (t == null) return const [];
+      priors.add(t);
+    }
+    return priors;
+  }
+
+  void _saveVerifiedChain() {
+    final path = _headerStorePath;
+    final pin = _pin;
+    final key = _headerMacKey();
+    if (path == null || path.isEmpty || pin == null || key == null) return;
+    final rows = <Map<String, Object>>[
+      for (final row in _checkedHeaders)
+        if (row.height > pin.height && row.headerHex.isNotEmpty)
+          {
+            'h': row.height,
+            't': row.timeMs,
+            'hdr': row.headerHex,
+            'id': _bytesHex(row.hash),
+          },
+    ];
+    rows.sort((a, b) => (a['h'] as int).compareTo(b['h'] as int));
+    final first = rows.isEmpty ? pin.height + 1 : rows.first['h'] as int;
+    final priors = rows.isEmpty ? const <int>[] : _priorsForSave(first);
+    final work = (_prunedWork + _workAbove(pin.height)).toString();
+    final pinHex = pin.hashHex.toLowerCase();
+    final text = jsonEncode({
+      'v': 2,
+      'pin': pinHex,
+      'priors': priors,
+      'work': work,
+      'rows': rows,
+      'mac': _headerMacHex(
+        key,
+        _canonicalHeaderBody(pinHex, priors, work, rows),
+      ),
+    });
+    final file = File(path);
+    file.parent.createSync(recursive: true);
+    final tmp = File('$path.tmp');
+    tmp.writeAsStringSync(text);
+    if (file.existsSync()) file.deleteSync();
+    tmp.renameSync(file.path);
+  }
+
+  Uint8List? _hexToBytes(String hex) {
+    if (hex.length != 64) return null;
+    final out = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      final byte = int.tryParse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+      if (byte == null) return null;
+      out[i] = byte;
+    }
+    return out;
   }
 
   /// Record how far a notes response reached. Never moves backward.
@@ -4071,38 +6900,49 @@ class ShearLedger implements ReadProofSink {
     _avgBlockTimeMs = ms;
   }
 
-  Path1Observation path1Observation() => foldSealedPots(
-        _txs,
-        observedIntervalMs: observedIntervalMs,
-      );
+  Path1Observation path1Observation() =>
+      foldSealedPots(_txs, observedIntervalMs: observedIntervalMs);
 
   /// Last height Continuum already settled into spendable.
   int get settledHeight => _settledHeight;
+
   /// Consensus floor: 9 confirmations. Operator lock — do not change; flag them.
   static const spendableConfirmations = 9;
+
   /// Continuum vortex lifetime matches consensus spendable.
   static const continuumConfirmations = 9;
+
   /// Third-party/merchant policy (~18 min). Not consensus.
   static const minConfirms = 12;
+
   /// Pool/merchant "confirmed" band. Policy, not consensus. From getpolicy.
   int confirmedNeed = 30;
+
   /// Policy freeze: Continuum spendable stays pending even past 6.
   bool creditsFrozen = false;
+
   /// Policy freeze_reason from getpolicy (h_ratio / d_max / side_lead).
   String freezeReason = '';
+
   /// One-line Continuum banner when frozen. Empty when not frozen.
   String freezeBanner = '';
+
   /// True when the connected tip includes the Reserve vault seal (or no seal yet).
   bool vaultSealAncestry = true;
+
   /// Divergent pre-seal fork: Continuum paints a blank pot.
   bool blankFork = false;
+
   /// One-line Continuum banner when the tip lacks vault-seal ancestry. Empty otherwise.
   String vaultSealBanner = '';
   final List<({String dest, double amount, int height})> _immature = [];
+
   /// Node/history lands enrolled into [_immature], keyed `dest|height`.
   final Set<String> _landEnrolled = {};
+
   /// Those lands already moved into [_spendable] by [settleTo].
   final Set<String> _landSettled = {};
+
   /// Matured node-land SHE by dest. A balance snapshot must not erase this.
   final Map<String, double> _settledNodeShe = {};
 
@@ -4115,6 +6955,9 @@ class ShearLedger implements ReadProofSink {
         _prevHeaderTimestampMs = _headerTimestampMs;
       }
       _headerTimestampMs = ts;
+    }
+    if (_acceptHeader(header, sealedHeight) && sealedHeight > _verifiedTip) {
+      _verifiedTip = sealedHeight;
     }
     _advanceSealed(sealedHeight);
   }
@@ -4148,7 +6991,7 @@ class ShearLedger implements ReadProofSink {
     final prev = _sealedHeight;
     if (sealedHeight < 1) {
       // Unreachable/failed RPC must not paint 0 over a remembered tip.
-      settleTo(_sealedHeight);
+      settleTo(bookTip);
       return;
     }
     tipHeight = sealedHeight + 1;
@@ -4253,7 +7096,8 @@ class ShearLedger implements ReadProofSink {
   }
 
   double spendable(String address) {
-    if (_isProgramVaultDest(address) || _isProgramVaultDest(payKey(address))) return 0;
+    if (_isProgramVaultDest(address) || _isProgramVaultDest(payKey(address)))
+      return 0;
     return _spendable[payKey(address)] ?? _spendable[address] ?? 0;
   }
 
@@ -4267,6 +7111,7 @@ class ShearLedger implements ReadProofSink {
       if (k.isEmpty || !seen.add(k)) return;
       n += _pending[k] ?? 0;
     }
+
     add(address);
     add(currentDest(address, paymentCode: paymentCode));
     for (final d in moneyDests(address, paymentCode: paymentCode)) {
@@ -4301,14 +7146,16 @@ class ShearLedger implements ReadProofSink {
     final id = _hashPendingId(dest);
     _txs.removeWhere((t) => t.id == id);
     if (amount <= 0) return;
-    _txs.add(ShearTx(
-      id: id,
-      from: 'hash',
-      to: dest,
-      amount: amount,
-      kind: 'hash',
-      confirmed: false,
-    ));
+    _txs.add(
+      ShearTx(
+        id: id,
+        from: 'hash',
+        to: dest,
+        amount: amount,
+        kind: 'hash',
+        confirmed: false,
+      ),
+    );
   }
 
   /// Incoming transfer this open round. Live pending until [confirmRound].
@@ -4322,20 +7169,22 @@ class ShearLedger implements ReadProofSink {
   }) {
     if (amount <= 0) throw ArgumentError('amount');
     var dest = to;
-    if (ephPub != null && paymentCode != null && (viewSecret ?? '').isNotEmpty) {
+    if (ephPub != null &&
+        paymentCode != null &&
+        (viewSecret ?? '').isNotEmpty) {
       final parsed = decodePaymentCode(paymentCode);
       final spend = parsed?['spendPub'];
       if (spend != null) {
-      final rec = recognizeSilentDest(
-        viewKey: viewSecret!,
-        spendPub: spend,
-        dest: to,
-        ephPub: ephPub,
-      );
-      if (rec != null) {
-        dest = rec['dest'] as String;
-        _stealthShared[dest] = rec['shared'] as Uint8List;
-      }
+        final rec = recognizeSilentDest(
+          viewKey: viewSecret!,
+          spendPub: spend,
+          dest: to,
+          ephPub: ephPub,
+        );
+        if (rec != null) {
+          dest = rec['dest'] as String;
+          _stealthShared[dest] = rec['shared'] as Uint8List;
+        }
       }
     }
     final key = payKey(dest);
@@ -4349,7 +7198,12 @@ class ShearLedger implements ReadProofSink {
       confirmed: false,
     );
     final have = _txs.indexWhere((t) => _sameReceiptMoney(t, tx));
-    if (have >= 0 && (_standInReceipt(tx.id) || _standInReceipt(_txs[have].id) || !_anchorReceipt(tx) || !_anchorReceipt(_txs[have]) || (tx.height ?? 0) == (_txs[have].height ?? 0))) {
+    if (have >= 0 &&
+        (_standInReceipt(tx.id) ||
+            _standInReceipt(_txs[have].id) ||
+            !_anchorReceipt(tx) ||
+            !_anchorReceipt(_txs[have]) ||
+            (tx.height ?? 0) == (_txs[have].height ?? 0))) {
       _txs[have] = _preferReceipt([_txs[have], tx]);
       _collapseDuplicateReceipts();
       return _txs[have];
@@ -4365,11 +7219,13 @@ class ShearLedger implements ReadProofSink {
     // Only the still-open round. Height-stamped receives are Continuum pie
     // rows, not live pending — recounting them refilled pending() after tip.
     final recv = _txs
-        .where((t) =>
-            !t.confirmed &&
-            t.kind == 'receive' &&
-            (t.height ?? 0) < 1 &&
-            (t.to == key || t.from == key || t.to == address))
+        .where(
+          (t) =>
+              !t.confirmed &&
+              t.kind == 'receive' &&
+              (t.height ?? 0) < 1 &&
+              (t.to == key || t.from == key || t.to == address),
+        )
         .fold<double>(0, (n, t) => n + t.amount);
     _pending[key] = recv + hashAmount;
     if (key != address) _pending[address] = 0;
@@ -4377,7 +7233,8 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// A pool send and the wallet's echo of it. Not a block reward.
-  bool _receiptKind(String kind) => kind == 'receive' || kind == 'pool-withdraw';
+  bool _receiptKind(String kind) =>
+      kind == 'receive' || kind == 'pool-withdraw';
 
   bool _standInReceipt(String id) =>
       id.startsWith('recv-pending-') ||
@@ -4502,10 +7359,12 @@ class ShearLedger implements ReadProofSink {
     if (fee.kind != 'pool-fee') return;
     _txs.removeWhere((t) => isFeeBlockMirror(t, [fee]));
     final h = fee.height ?? 0;
-    _immature.removeWhere((r) =>
-        r.height == h &&
-        payKey(r.dest) == payKey(fee.to) &&
-        (r.amount - fee.amount).abs() <= 1e-9);
+    _immature.removeWhere(
+      (r) =>
+          r.height == h &&
+          payKey(r.dest) == payKey(fee.to) &&
+          (r.amount - fee.amount).abs() <= 1e-9,
+    );
   }
 
   void mergeChainTx(ShearTx tx) {
@@ -4533,17 +7392,19 @@ class ShearLedger implements ReadProofSink {
             atMs: t.atMs ?? tx.atMs,
           );
         } else {
-          _txs.add(ShearTx(
-            id: id,
-            from: 'coinbase',
-            to: tx.to,
-            amount: she,
-            kind: 'blockfound',
-            height: h,
-            confirmed: confirmationsOf(h) >= spendableConfirmations,
-            hashAmount: she,
-            atMs: tx.atMs,
-          ));
+          _txs.add(
+            ShearTx(
+              id: id,
+              from: 'coinbase',
+              to: tx.to,
+              amount: she,
+              kind: 'blockfound',
+              height: h,
+              confirmed: confirmationsOf(h) >= spendableConfirmations,
+              hashAmount: she,
+              atMs: tx.atMs,
+            ),
+          );
         }
         rememberDest(tx.to);
       }
@@ -4551,15 +7412,19 @@ class ShearLedger implements ReadProofSink {
     }
     var i = _txs.indexWhere((t) => t.id == tx.id);
     if (i < 0 && tx.kind == 'pool-withdraw') {
-      i = _txs.indexWhere((t) =>
-          t.kind == 'pool-withdraw' &&
-          (t.height ?? 0) < 1 &&
-          t.to == tx.to &&
-          (t.amount - tx.amount).abs() < 1e-9);
+      i = _txs.indexWhere(
+        (t) =>
+            t.kind == 'pool-withdraw' &&
+            (t.height ?? 0) < 1 &&
+            t.to == tx.to &&
+            (t.amount - tx.amount).abs() < 1e-9,
+      );
     }
     if (i >= 0) {
       final prev = _txs[i];
-      final nextHeight = (tx.height ?? 0) > (prev.height ?? 0) ? tx.height : prev.height;
+      final nextHeight = (tx.height ?? 0) > (prev.height ?? 0)
+          ? tx.height
+          : prev.height;
       _txs[i] = ShearTx(
         id: tx.id.isNotEmpty ? tx.id : prev.id,
         from: tx.from.isNotEmpty ? tx.from : prev.from,
@@ -4588,7 +7453,8 @@ class ShearLedger implements ReadProofSink {
     }
     if (_receiptKind(tx.kind)) {
       final have = _txs.indexWhere((t) => _sameReceiptMoney(t, tx));
-      final sameSlot = have >= 0 &&
+      final sameSlot =
+          have >= 0 &&
           (_standInReceipt(tx.id) ||
               _standInReceipt(_txs[have].id) ||
               !_anchorReceipt(tx) ||
@@ -4599,7 +7465,8 @@ class ShearLedger implements ReadProofSink {
       if (sameSlot) {
         _txs[have] = _preferReceipt([_txs[have], tx]);
         _collapseDuplicateReceipts();
-        if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) rememberDest(tx.to);
+        if (tx.to.isNotEmpty && !_isProgramVaultDest(tx.to))
+          rememberDest(tx.to);
         return;
       }
     }
@@ -4608,8 +7475,9 @@ class ShearLedger implements ReadProofSink {
       return;
     }
     if (tx.isBlockBundle && (tx.height ?? 0) >= 1 && tx.to.isNotEmpty) {
-      final slot = _txs.indexWhere((t) =>
-          t.isBlockBundle && t.to == tx.to && (t.height ?? 0) == tx.height);
+      final slot = _txs.indexWhere(
+        (t) => t.isBlockBundle && t.to == tx.to && (t.height ?? 0) == tx.height,
+      );
       if (slot >= 0) {
         final prev = _txs[slot];
         _txs[slot] = ShearTx(
@@ -4630,7 +7498,11 @@ class ShearLedger implements ReadProofSink {
           change: prev.change ?? tx.change,
           atMs: prev.atMs ?? tx.atMs,
         );
-        _enrollOwnerLand(dest: prev.to, amount: prev.amount > 0 ? prev.amount : tx.amount, height: prev.height ?? 0);
+        _enrollOwnerLand(
+          dest: prev.to,
+          amount: prev.amount > 0 ? prev.amount : tx.amount,
+          height: prev.height ?? 0,
+        );
         return;
       }
     }
@@ -4662,21 +7534,23 @@ class ShearLedger implements ReadProofSink {
       }
     }
     if (found == null) return;
-    mergeChainTx(ShearTx(
-      id: found.id,
-      from: found.from,
-      to: found.to,
-      amount: found.amount,
-      kind: found.kind,
-      height: found.height,
-      confirmed: found.confirmed,
-      memo: true,
-      memoPlain: plain,
-      memoCt: found.memoCt,
-      hashAmount: found.hashAmount,
-      threads: found.threads,
-      pot: found.pot,
-    ));
+    mergeChainTx(
+      ShearTx(
+        id: found.id,
+        from: found.from,
+        to: found.to,
+        amount: found.amount,
+        kind: found.kind,
+        height: found.height,
+        confirmed: found.confirmed,
+        memo: true,
+        memoPlain: plain,
+        memoCt: found.memoCt,
+        hashAmount: found.hashAmount,
+        threads: found.threads,
+        pot: found.pot,
+      ),
+    );
   }
 
   /// Live mempool pays. Same row as [creditReceive]; merge height when the
@@ -4695,15 +7569,19 @@ class ShearLedger implements ReadProofSink {
       if (id.isEmpty || to.isEmpty || amount <= 0) continue;
       final kind = row['kind']?.toString() ?? 'receive';
       final height = (row['height'] as num?)?.toInt();
-      mergeChainTx(ShearTx(
-        id: id,
-        from: row['from']?.toString() ?? (kind == 'pool-withdraw' ? 'pool' : 'pending'),
-        to: to,
-        amount: amount,
-        kind: kind == 'pool-withdraw' ? 'pool-withdraw' : 'receive',
-        height: height,
-        confirmed: row['confirmed'] == true,
-      ));
+      mergeChainTx(
+        ShearTx(
+          id: id,
+          from:
+              row['from']?.toString() ??
+              (kind == 'pool-withdraw' ? 'pool' : 'pending'),
+          to: to,
+          amount: amount,
+          kind: kind == 'pool-withdraw' ? 'pool-withdraw' : 'receive',
+          height: height,
+          confirmed: row['confirmed'] == true,
+        ),
+      );
     }
   }
 
@@ -4716,10 +7594,13 @@ class ShearLedger implements ReadProofSink {
   }) {
     final dest = payKey(address);
     final roundId = 'round-$height-$dest';
-    final existing = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == roundId, orElse: () => null);
+    final existing = _txs.cast<ShearTx?>().firstWhere(
+      (t) => t!.id == roundId,
+      orElse: () => null,
+    );
     if (existing != null) {
       if (height > _sealedHeight) _sealedHeight = height;
-      settleTo(_sealedHeight);
+      settleTo(bookTip);
       prune();
       _collapseDuplicateReceipts();
       return _txs.firstWhere((t) => t.id == roundId, orElse: () => existing);
@@ -4734,7 +7615,8 @@ class ShearLedger implements ReadProofSink {
       _immature.add((dest: dest, amount: total, height: height));
     }
     _dests.add(dest);
-    final hashBonus = hashPendingOf(dest) + (dest == address ? 0 : hashPendingOf(address));
+    final hashBonus =
+        hashPendingOf(dest) + (dest == address ? 0 : hashPendingOf(address));
     final coinbaseAmt = pot + hashBonus;
     final tx = ShearTx(
       id: roundId,
@@ -4753,16 +7635,18 @@ class ShearLedger implements ReadProofSink {
       if (_txs[i].confirmed) continue;
       _txs[i] = _txs[i].copyWith(height: _txs[i].height ?? height);
     }
-    settleTo(_sealedHeight);
+    settleTo(bookTip);
     prune();
     _collapseDuplicateReceipts();
-    final kept = _txs.cast<ShearTx?>().firstWhere((t) => t!.id == roundId, orElse: () => null);
+    final kept = _txs.cast<ShearTx?>().firstWhere(
+      (t) => t!.id == roundId,
+      orElse: () => null,
+    );
     return kept ?? tx;
   }
 
   /// Confirmations of a sealed height, counting the including block as 1.
-  /// Uses [bookTip] so a header ahead of the notes read does not mature a coin
-  /// the list has not covered yet.
+  /// Depth is [bookTip], the verified tip, not the notes scan cursor.
   int confirmationsOf(int height, [int? tip]) {
     final t = tip ?? bookTip;
     if (height < 1 || t < height) return 0;
@@ -4845,8 +7729,10 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Disconnect orphaned heights; rows bounce to pending.
+  /// Does not delete notes. A host height list is not a reason to drop coins.
   void bounceHeights(Iterable<int> heights) {
     final drop = heights.toSet();
+    if (drop.isEmpty) return;
     for (var i = 0; i < _txs.length; i++) {
       final h = _txs[i].height ?? 0;
       if (!drop.contains(h)) continue;
@@ -4876,6 +7762,7 @@ class ShearLedger implements ReadProofSink {
   /// Move immature credits into spendable once the committing block is accepted.
   /// Six confirmations is the fingerprint floor. A freeze banner does not hold them.
   void settleTo(int tip) {
+    if (tip > _verifiedTip) _verifiedTip = tip;
     if (tip > _sealedHeight) _sealedHeight = tip;
     final keep = <({String dest, double amount, int height})>[];
     for (final row in _immature) {
@@ -4922,7 +7809,8 @@ class ShearLedger implements ReadProofSink {
           t.kind != 'pool-fee' &&
           t.kind != 'pool-withdraw' &&
           t.kind != 'lock' &&
-          t.kind != 'withdraw') continue;
+          t.kind != 'withdraw')
+        continue;
       if (!seen.add(t.id)) continue;
       next.add(t);
     }
@@ -4934,7 +7822,8 @@ class ShearLedger implements ReadProofSink {
   /// Header figure from an old session. Advisory only: it never raises
   /// Spendable above notes this wallet has already reconstructed.
   void rememberSpendable(String address, double amount) {
-    if (_isProgramVaultDest(address) || _isProgramVaultDest(payKey(address))) return;
+    if (_isProgramVaultDest(address) || _isProgramVaultDest(payKey(address)))
+      return;
     final key = isDestAddress(address) ? address : payKey(address);
     if (!isDestAddress(key)) return;
     _advisorySpendable[key] = amount;
@@ -4943,7 +7832,10 @@ class ShearLedger implements ReadProofSink {
     if (shown > owned + 1e-12) _spendable[key] = owned;
   }
 
-  Future<void> _applyStatsTip(Map<String, dynamic> json, {bool walkGenesis = true}) async {
+  Future<void> _applyStatsTip(
+    Map<String, dynamic> json, {
+    bool walkGenesis = true,
+  }) async {
     if (pool != null && isPoolLedgerHost(pool!.baseUrl)) return;
     final paint = chainPaintFromNodeStats(json);
     if (!paint.usable) {
@@ -4960,51 +7852,58 @@ class ShearLedger implements ReadProofSink {
       });
     }
     applyVaultSeal(json);
-      final sealed = paint.tip;
-      final hex = paint.headerHex;
-      if (walkGenesis) {
-        final genesis = pool!.genesisHex ?? await pool!.fetchGenesisHex();
-        if (genesis != null && genesis.isNotEmpty) bindChainGenesis(genesis);
-      } else {
-        final named = json['genesis']?.toString() ?? '';
-        if (named.isNotEmpty) bindChainGenesis(named);
+    final sealed = paint.tip;
+    final hex = paint.headerHex;
+    if (walkGenesis) {
+      final genesis = pool!.genesisHex ?? await pool!.fetchGenesisHex();
+      if (genesis != null && genesis.isNotEmpty) bindChainGenesis(genesis);
+    } else {
+      final named = json['genesis']?.toString() ?? '';
+      if (named.isNotEmpty) bindChainGenesis(named);
+    }
+    await catchUpVerifiedChain(sealed);
+    await _prepareTipHash(hex, sealed);
+    applyTipHex(hex, sealedHeight: sealed);
+    _applyReorgList(json['orphans'] ?? json['reorgHeights']);
+    if (json.containsKey('hashrate')) networkHashrate = paint.hashrate;
+    if (json.containsKey('circulatingNanos'))
+      circulatingNanos = paint.circulatingNanos;
+    if (json.containsKey('bits') || json.containsKey('blockBits')) {
+      networkBits = paint.bits;
+    }
+    final raw = json['networkAvgBlockTimeMs'] ?? json['avgBlockTimeMs'];
+    final avg = raw is num ? raw.round() : int.tryParse('$raw');
+    if (avg != null && avg >= 0) applyAvgBlockTimeMs(avg);
+    applyCirculatingNanos(json['circulatingNanos']);
+    void take(String k, void Function(int) set) {
+      final v = json[k];
+      if (v is num && v >= 0) set(v.round());
+    }
+
+    take('hashBonusNanos', (n) => liveHashBonusNanos = n);
+    take('extraMintedNanos', (n) => extraMintedNanos = n);
+    take('mintBankNanos', (n) => extraMintedNanos = n);
+    if (blankFork) {
+      _clearReserveHold();
+    } else {
+      take('lockedNanos', (n) => vaultLockedNanos = n);
+      if (json['reserveVaultNanos'] is num) {
+        vaultLockedNanos = (json['reserveVaultNanos'] as num).round();
       }
-      applyTipHex(hex, sealedHeight: sealed);
-      if (json.containsKey('hashrate')) networkHashrate = paint.hashrate;
-      if (json.containsKey('circulatingNanos')) circulatingNanos = paint.circulatingNanos;
-      if (json.containsKey('bits') || json.containsKey('blockBits')) {
-        networkBits = paint.bits;
-      }
-      final raw = json['networkAvgBlockTimeMs'] ?? json['avgBlockTimeMs'];
-      final avg = raw is num ? raw.round() : int.tryParse('$raw');
-      if (avg != null && avg >= 0) applyAvgBlockTimeMs(avg);
-      applyCirculatingNanos(json['circulatingNanos']);
-      void take(String k, void Function(int) set) {
-        final v = json[k];
-        if (v is num && v >= 0) set(v.round());
-      }
-      take('hashBonusNanos', (n) => liveHashBonusNanos = n);
-      take('extraMintedNanos', (n) => extraMintedNanos = n);
-      take('mintBankNanos', (n) => extraMintedNanos = n);
-      if (blankFork) {
-        _clearReserveHold();
-      } else {
-        take('lockedNanos', (n) => vaultLockedNanos = n);
-        if (json['reserveVaultNanos'] is num) {
-          vaultLockedNanos = (json['reserveVaultNanos'] as num).round();
-        }
-      }
-      take('potEmittedNanos', (n) => potEmittedNanos = n);
-      take('hashBonusEmittedNanos', (n) => hashBonusEmittedNanos = n);
-      if (json.containsKey('potEmittedNanos') || json.containsKey('hashBonusEmittedNanos')) {
-        final at = (json['height'] as num?)?.toInt() ?? 0;
-        if (at > 0) emittedAtHeight = at;
-      }
-      final work = json['bits'];
-      if (work is num && work > 0 && work < 1000) networkWorkBits = work.toDouble();
-      final mean = sealedMeanBlockMsFromStats(json);
-      if (mean != null) sealedMeanBlockMs = mean;
-      take('miners', (n) => networkMiners = n);
+    }
+    take('potEmittedNanos', (n) => potEmittedNanos = n);
+    take('hashBonusEmittedNanos', (n) => hashBonusEmittedNanos = n);
+    if (json.containsKey('potEmittedNanos') ||
+        json.containsKey('hashBonusEmittedNanos')) {
+      final at = (json['height'] as num?)?.toInt() ?? 0;
+      if (at > 0) emittedAtHeight = at;
+    }
+    final work = json['bits'];
+    if (work is num && work > 0 && work < 1000)
+      networkWorkBits = work.toDouble();
+    final mean = sealedMeanBlockMsFromStats(json);
+    if (mean != null) sealedMeanBlockMs = mean;
+    take('miners', (n) => networkMiners = n);
   }
 
   /// Display fields from a public `/api/stats` body. Does not move the tip
@@ -5015,6 +7914,7 @@ class ShearLedger implements ReadProofSink {
       if (v is num && v >= 0) return v.round();
       return null;
     }
+
     final hr = takeInt('hashrate');
     if (hr != null) networkHashrate = hr;
     final circ = takeInt('circulatingNanos');
@@ -5028,7 +7928,8 @@ class ShearLedger implements ReadProofSink {
       if (at != null && at > 0) emittedAtHeight = at;
     }
     final work = json['bits'];
-    if (work is num && work > 0 && work < 1000) networkWorkBits = work.toDouble();
+    if (work is num && work > 0 && work < 1000)
+      networkWorkBits = work.toDouble();
     final mean = sealedMeanBlockMsFromStats(json);
     if (mean != null) sealedMeanBlockMs = mean;
   }
@@ -5037,17 +7938,24 @@ class ShearLedger implements ReadProofSink {
   /// mean. The explorer reads those from the pool stats feed. A loopback book
   /// (tests) does not call the public pool. Phone wallets do not call this.
   /// Returns true when a displayed figure changed.
-  Future<bool> readContinuityFigures({ShearPoolClient Function(String baseUrl)? open}) async {
+  Future<bool> readContinuityFigures({
+    ShearPoolClient Function(String baseUrl)? open,
+  }) async {
     if (pool?.usesOwnNode == true) return false;
     if (pool?.publicConsent != true) return false;
     final host = Uri.tryParse(pool?.baseUrl ?? '')?.host ?? '';
-    if (host == '127.0.0.1' || host == 'localhost' || host == '::1') return false;
-    final client = open != null ? open(kPublicPoolHttp) : ShearPoolClient(baseUrl: kPublicPoolHttp);
+    if (host == '127.0.0.1' || host == 'localhost' || host == '::1')
+      return false;
+    final client = open != null
+        ? open(kPublicPoolHttp)
+        : ShearPoolClient(baseUrl: kPublicPoolHttp);
     try {
       final json = await client.stats().timeout(const Duration(seconds: 6));
-      final before = '$networkHashrate|$sealedMeanBlockMs|$circulatingNanos|$potEmittedNanos|$networkWorkBits|$emittedAtHeight';
+      final before =
+          '$networkHashrate|$sealedMeanBlockMs|$circulatingNanos|$potEmittedNanos|$networkWorkBits|$emittedAtHeight';
       applyContinuityStats(json);
-      final after = '$networkHashrate|$sealedMeanBlockMs|$circulatingNanos|$potEmittedNanos|$networkWorkBits|$emittedAtHeight';
+      final after =
+          '$networkHashrate|$sealedMeanBlockMs|$circulatingNanos|$potEmittedNanos|$networkWorkBits|$emittedAtHeight';
       return before != after;
     } catch (_) {
       return false;
@@ -5108,7 +8016,12 @@ class ShearLedger implements ReadProofSink {
       final before = _settledHeight;
       await syncTip(proveChain: false);
       final json = await _balanceWithOne504Retry(address);
-      applyPoolSnapshot(address, json, beforeHeight: before, tipSealed: _sealedHeight);
+      applyPoolSnapshot(
+        address,
+        json,
+        beforeHeight: before,
+        tipSealed: _sealedHeight,
+      );
       _markSettled(_sealedHeight, before);
       await syncHistory(address);
       return spendable(address);
@@ -5118,35 +8031,25 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  /// False while no opened coin is on the book and the notes read failed,
-  /// never finished, or listed complete proofs that did not open.
-  /// A successful empty list may paint 0. A node balance does not make this true.
+  /// False when the last notes read failed or none has run in this process.
+  /// A saved book and a positive balance do not make this true. A successful
+  /// empty list may paint 0. A node balance does not make this true.
   bool spendableFigureReady(String restFrame, {String? paymentCode}) {
-    if (spendableOwned(restFrame, paymentCode: paymentCode) > 1e-12) return true;
     if (_spendableReadFailed == true) return false;
-    if (_unopenedListedProofs > 0) return false;
     if (_spendableReadFailed != false) return false;
+    if (_unopenedListedProofs > 0 &&
+        spendableOwned(restFrame, paymentCode: paymentCode) <= 1e-12) {
+      return false;
+    }
     return true;
   }
 
   double spendableOwned(String restFrame, {String? paymentCode}) {
     spendPub ??= decodePaymentCode(paymentCode ?? '')?['spendPub'];
     _dropProgramVaults();
-    final seen = <String>{};
-    var n = 0.0;
-    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
-      if (!isDestAddress(d)) continue;
-      final key = payKey(d);
-      if (!isDestAddress(key) || !seen.add(key)) continue;
-      if (_isProgramVaultDest(key)) continue;
-      n += _shownSpendable(key);
-    }
-    // confirmRound before a spend pub parks the coin on the shear1 rest-frame.
-    // payKey aliases an ssa once a spend pub exists; that book is already summed.
-    if (!isDestAddress(restFrame) && payKey(restFrame) == restFrame) {
-      n += _shownSpendable(restFrame);
-    }
-    return n;
+    refreshTimeLockedNotes();
+    final pool = poolSpendableNotes(_spendPlanInput(restFrame, paymentCode, 0));
+    return _sheOfNanos(pool.freeSum);
   }
 
   /// Vortex Flow figure. One reconstruct input. Exact note nanos win when the
@@ -5197,7 +8100,8 @@ class ShearLedger implements ReadProofSink {
       final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
       if (addr.isEmpty || _isProgramVaultDest(addr)) continue;
       if (isDestAddress(addr)) {
-        if (!isBindable(addr, restFrame: restFrame, paymentCode: paymentCode)) continue;
+        if (!isBindable(addr, restFrame: restFrame, paymentCode: paymentCode))
+          continue;
         rememberDest(addr);
         if (n['verified'] == true) _proofCheckedDests.add(payKey(addr));
         continue;
@@ -5243,7 +8147,9 @@ class ShearLedger implements ReadProofSink {
     }
     _reserveHeldNanos[pk] = nanos;
     final asDouble = nanos.toDouble();
-    _reserveHeldShe[pk] = asDouble.isFinite ? asDouble / kUnitsPerShe : double.infinity;
+    _reserveHeldShe[pk] = asDouble.isFinite
+        ? asDouble / kUnitsPerShe
+        : double.infinity;
   }
 
   /// Snapshot principal for the selector, before a live portal read.
@@ -5281,24 +8187,7 @@ class ShearLedger implements ReadProofSink {
   }
 
   double _grossShown(String key) {
-    final cap = _verifiedConfirmedShe(key);
-    final pk = payKey(key);
-    if (cap != null) {
-      _unverifiedExternal.remove(pk);
-      _externalShe.remove(pk);
-      if ((spendable(pk) - cap).abs() > 1e-12) _spendable[pk] = cap;
-      return cap;
-    }
-    // Settled history is not a second coin. A larger pool figure does not raise this.
-    final rest = _bookMinusUnverified(pk, spendable(key));
-    final settled = _settledNodeShe[pk] ?? 0;
-    if (settled <= 1e-12 || rest + 1e-12 >= settled) return rest;
-    final book = spendable(key);
-    final external = _externalShe[pk];
-    if (external != null && book + 1e-12 >= settled && external + 1e-12 >= book) {
-      return settled;
-    }
-    return rest;
+    return _sheOfNanos(_spendableNanosOn(payKey(key)));
   }
 
   /// One reserve principal for the whole wallet. The vault dest is not where the
@@ -5322,7 +8211,10 @@ class ShearLedger implements ReadProofSink {
       if (at <= 0) continue;
       if (!_noteOnDest(note, key)) continue;
       if (!_noteMature(note)) continue;
-      final open = !lockNoteIsLocked(Map<String, dynamic>.from(note), tipTimestampMs);
+      final open = !lockNoteIsLocked(
+        Map<String, dynamic>.from(note),
+        tipTimestampMs,
+      );
       if (open != unlocked) continue;
       final she = _noteSheOf(note, 0);
       if (she > 0) n += she;
@@ -5364,7 +8256,9 @@ class ShearLedger implements ReadProofSink {
         pendingSum += d;
       }
     }
-    final extra = _reserveHoldShe() > pendingSum ? _reserveHoldShe() - pendingSum : 0.0;
+    final extra = _reserveHoldShe() > pendingSum
+        ? _reserveHoldShe() - pendingSum
+        : 0.0;
     final left = <String, double>{};
     for (final e in gross.entries) {
       final remain = e.value - (pending[e.key] ?? 0);
@@ -5396,10 +8290,18 @@ class ShearLedger implements ReadProofSink {
 
   double _shownSpendable(String key) {
     final pk = payKey(key);
-    if (_reserveHoldShe() <= 1e-12 && _lockDebitShe.isEmpty) return _grossShown(pk);
-    final shares = _spendableAfterHold();
-    if (shares.containsKey(pk)) return shares[pk]!;
-    return _grossShown(pk);
+    final frame = _restFrame ?? '';
+    if (frame.isEmpty) return _sheOfNanos(_spendableNanosOn(pk));
+    refreshTimeLockedNotes();
+    final pool = poolSpendableNotes(_spendPlanInput(frame, null, 0));
+    var n = BigInt.zero;
+    for (final row in pool.free) {
+      final addr = row['addr']?.toString() ?? '';
+      if (addr == key || addr == pk || payKey(addr) == pk) {
+        n += row['nanos'] as BigInt;
+      }
+    }
+    return _sheOfNanos(n);
   }
 
   /// Notes minus a vault lock. The pending debit and the confirmed principal
@@ -5423,41 +8325,82 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  /// Null cap: the pool figure is not spendable. A confirmRound credit that
-  /// settled locally is what remains after that figure is removed.
-  /// A recorded 0 is a zero pool figure, not a claim on coins landed later.
-  double _bookMinusUnverified(String pk, double book) {
-    if (_externalShe.containsKey(pk)) {
-      final local = book - (_externalShe[pk] ?? 0);
-      if (local <= 1e-12) return 0;
-      return local;
-    }
-    if (_unverifiedExternal.contains(pk)) return 0;
-    return book;
-  }
-
   /// Null when this dest has not presented a complete value proof.
+  /// The sum is [spendableNote]: the same notes the planner can select.
   double? _verifiedConfirmedShe(String dest) {
     final key = payKey(dest);
     if (!_proofCheckedDests.contains(key)) return null;
-    var total = 0.0;
+    final nanos = _spendableNanosOn(key);
+    return _sheOfNanos(nanos);
+  }
+
+  /// Exact nanos on [dest] a max send can draw. Same gate as the planner.
+  BigInt _spendableNanosOn(String dest) {
+    var total = BigInt.zero;
     for (final n in _notes) {
-      if (n['spent'] == true || n['verified'] != true) continue;
-      if (!_noteOnDest(n, key)) continue;
-      // A time-locked note stays out of Spendable until its epoch ends.
-      if ((n['kind'] ?? '').toString() == 'lock' && lockNoteIsLocked(n, tipTimestampMs)) {
-        final raw = n['unlockAtMs'];
-        final at = raw is num ? raw.toInt() : int.tryParse('${raw ?? ''}') ?? 0;
-        if (at > 0) continue;
-      }
-      // Same floor as the Flow picker. A missing height is already in the
-      // mature book; a stamped height still waits for 9 confirmations.
-      if (!_noteMature(n)) continue;
-      final she = _noteSheOf(n, 0);
-      if (she <= 0) continue;
-      total += she;
+      if (!_noteOnDest(n, dest)) continue;
+      if (!_noteIsSpendable(n)) continue;
+      final nanos = noteNanosExact(n);
+      if (nanos == null) continue;
+      total += nanos;
     }
     return total;
+  }
+
+  bool _noteIsSpendable(Map<String, dynamic> n, {bool ignoreConfs = false}) {
+    return spendableNote(
+      n,
+      tip: bookTip,
+      confirmations: spendableConfirmations,
+      tipMs: tipTimestampMs,
+      spentTags: _spentTagHex,
+      spendTag: _spendTagFor(n),
+      ignoreConfs: ignoreConfs,
+    );
+  }
+
+  String? _spendTagFor(Map<String, dynamic> n) {
+    final stamped = n['spendTag']?.toString();
+    if (stamped == null || stamped.isEmpty) return null;
+    return stamped;
+  }
+
+  /// Nanos the Spendable figure is naming for [restFrame].
+  /// Same exact hold and the same note rows as a max send.
+  BigInt displayedSpendableNanos(String restFrame, {String? paymentCode}) {
+    refreshTimeLockedNotes();
+    final pool = poolSpendableNotes(_spendPlanInput(restFrame, paymentCode, 0));
+    return pool.freeSum;
+  }
+
+  /// Nanos [selectSpendNotesWire] would treat as free for a max send.
+  BigInt plannerSelectableNanos(String restFrame, {String? paymentCode}) {
+    refreshTimeLockedNotes();
+    final raw = selectSpendNotesWire(
+      _spendPlanInput(restFrame, paymentCode, 0),
+    );
+    return BigInt.parse(raw['spendableNanos']?.toString() ?? '0');
+  }
+
+  Set<String> _spendDests(String restFrame, {String? paymentCode}) {
+    final dests = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (!isDestAddress(d)) continue;
+      dests.add(d);
+      dests.add(payKey(d));
+    }
+    for (final n in _notes) {
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr.isEmpty) continue;
+      if (isBindable(addr, restFrame: restFrame, paymentCode: paymentCode))
+        dests.add(addr);
+    }
+    if (restFrame.isNotEmpty &&
+        !isDestAddress(restFrame) &&
+        payKey(restFrame) == restFrame) {
+      dests.add(restFrame);
+    }
+    return dests;
   }
 
   double _noteSheOf(Map<String, dynamic> note, double fallback) {
@@ -5503,7 +8446,8 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['spent'] == true) continue;
       if (!_noteOnDest(n, dest)) continue;
-      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null)
+        continue;
       if (!_noteMature(n)) continue;
       final amt = n['amount'];
       if (amt is num) {
@@ -5534,7 +8478,8 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['spent'] == true) continue;
       if (!_noteOnDest(n, dest)) continue;
-      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null)
+        continue;
       final she = _noteSheOf(n, 0);
       if (she <= 0) continue;
       total += she;
@@ -5547,7 +8492,8 @@ class ShearLedger implements ReadProofSink {
     for (final n in _notes) {
       if (n['spent'] == true) continue;
       if (!_noteOnDest(n, dest)) continue;
-      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+      if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null)
+        continue;
       return true;
     }
     return false;
@@ -5574,6 +8520,62 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
+  final List<String> _noteSnap = [];
+  final List<String> _removedThisFollow = [];
+  int _followFlight = 0;
+  final Set<String> _uiCommitsAtFollow = <String>{};
+
+  String _commitHexOf(Map<dynamic, dynamic> n) {
+    final c = _noteBytes(n['commit']);
+    if (c == null || c.isEmpty) return '';
+    return _bytesHex(c);
+  }
+
+  void _armFollowFlight() {
+    if (_followFlight == 0) {
+      _uiCommitsAtFollow.clear();
+      for (final n in _notes) {
+        final hex = _commitHexOf(n);
+        if (hex.isNotEmpty) _uiCommitsAtFollow.add(hex);
+      }
+    }
+    _followFlight++;
+  }
+
+  void _disarmFollowFlight() {
+    if (_followFlight > 0) _followFlight--;
+    if (_followFlight == 0) _uiCommitsAtFollow.clear();
+  }
+
+  bool _bornDuringFollow(Map<dynamic, dynamic> n) {
+    if (_followFlight < 1) return false;
+    final hex = _commitHexOf(n);
+    return hex.isNotEmpty && !_uiCommitsAtFollow.contains(hex);
+  }
+
+  void _beginNoteFollow() {
+    _noteSnap
+      ..clear()
+      ..addAll([
+        for (final n in _notes)
+          if (_noteBytes(n['commit']) case final Uint8List c)
+            if (c.isNotEmpty) _bytesHex(c),
+      ]);
+    _removedThisFollow.clear();
+  }
+
+  /// Commits removed during this follow (reorg). Adopt must not put them back.
+  void _finishNoteFollow() {
+    final now = <String>{
+      for (final n in _notes)
+        if (_noteBytes(n['commit']) case final Uint8List c)
+          if (c.isNotEmpty) _bytesHex(c),
+    };
+    _removedThisFollow
+      ..clear()
+      ..addAll(_noteSnap.where((c) => !now.contains(c)));
+  }
+
   /// Login's first read. One `/stats` sets the confirmation height, then this
   /// wallet's notes open and are emitted as soon as a proof verifies. `/balance`
   /// runs after that paint. The balance number is not a coin. A pool balance,
@@ -5585,16 +8587,23 @@ class ShearLedger implements ReadProofSink {
     SendPort? partials,
   }) async {
     keepOwnedDests(restFrame, paymentCode: paymentCode);
+    _beginNoteFollow();
     var sawNotes = false;
     var hostHeight = 0;
     if (pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
-      // Height before the open, so the first verified note is already mature
-      // and can paint. This is one stats read, not a header walk.
+      // One stats read. A header whose ShearHash meets its bits sets the
+      // spendable tip. A host height with no checked header does not.
       try {
         final json = await pool!.stats().timeout(const Duration(seconds: 2));
         final h = (json['height'] as num?)?.toInt() ?? 0;
         hostHeight = h;
-        if (h > _sealedHeight) noteLiveHeight(h);
+        if (h > 0) {
+          final tipHex = json['header']?.toString() ?? '';
+          await catchUpVerifiedChain(h);
+          await _prepareTipHash(tipHex, h);
+          applyTipHex(tipHex, sealedHeight: h);
+        }
+        _applyReorgList(json['orphans'] ?? json['reorgHeights']);
       } catch (_) {}
       try {
         // The shell is already up. This open is off the UI isolate. A short
@@ -5610,13 +8619,70 @@ class ShearLedger implements ReadProofSink {
         _collateError = 'populate:$e';
       }
       try {
-        await _readNodeBalance(restFrame, paymentCode: paymentCode)
-            .timeout(const Duration(seconds: 2));
+        await _readNodeBalance(
+          restFrame,
+          paymentCode: paymentCode,
+        ).timeout(const Duration(seconds: 2));
       } catch (_) {}
     }
+    await _applyFollowSpentTags();
+    _finishNoteFollow();
     _spendableReadFailed = !sawNotes;
     if (sawNotes) _openCollated = true;
     return recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
+  }
+
+  /// Host `orphans` / `reorgHeights` is a hint to re-fetch those headers.
+  /// It does not move depth and it does not write the header file. Notes
+  /// and the scan cursor stay.
+  void noteHostReorg(Object? raw) => _applyReorgList(raw);
+
+  void _applyReorgList(Object? raw) {
+    if (raw is! List || raw.isEmpty || _pin == null) return;
+    final pinH = _pin!.height;
+    var from = _chainTip;
+    var hit = false;
+    for (final item in raw) {
+      final h = item is num ? item.toInt() : int.tryParse('$item') ?? 0;
+      if (h <= pinH || h > _chainTip) continue;
+      hit = true;
+      if (h < from) from = h;
+    }
+    if (!hit) return;
+    _reorgHintFrom = from;
+  }
+
+  void _takeSpendTags(Map<String, dynamic> live) {
+    _spentTagHex.clear();
+    final tags = live['spendTags'];
+    if (tags is! List) return;
+    for (final t in tags) {
+      if (t is String && t.isNotEmpty) {
+        _spentTagHex.add(t.toLowerCase());
+      } else {
+        final b = _noteBytes(t);
+        if (b != null && b.isNotEmpty) _spentTagHex.add(_bytesHex(b));
+      }
+    }
+  }
+
+  void _markNotesSpentByTag() {
+    for (final n in _notes) {
+      final tag = n['spendTag']?.toString() ?? '';
+      if (tag.isEmpty) continue;
+      if (_spentTagHex.contains(tag.toLowerCase())) n['spent'] = true;
+    }
+  }
+
+  Future<void> _applyFollowSpentTags() async {
+    final client = pool;
+    if (client == null || isPoolLedgerHost(client.baseUrl)) return;
+    try {
+      final live = await client.fluxset().timeout(const Duration(seconds: 2));
+      _takeSpendTags(live);
+      await _stampSpendTagsOffUi();
+      _markNotesSpentByTag();
+    } catch (_) {}
   }
 
   /// GET `/api/wallet/balance` for this wallet's dests. The returned SHE is
@@ -5663,7 +8729,10 @@ class ShearLedger implements ReadProofSink {
   /// event is sent before the next proof. The credit worker is already off
   /// the UI isolate. A nested [Isolate.run] from that worker never finished
   /// on the phone, so the fee book stayed on the first handful of coins.
-  Future<void> _scanNotesProgressive(Map<String, dynamic> raw, {SendPort? partials}) async {
+  Future<void> _scanNotesProgressive(
+    Map<String, dynamic> raw, {
+    SendPort? partials,
+  }) async {
     final known = <String>{..._acceptedCommits};
     for (final n in _notes) {
       if (n['verified'] != true) continue;
@@ -5691,7 +8760,10 @@ class ShearLedger implements ReadProofSink {
         misses.add(row);
       }
     }
-    Future<void> applySlice(List<dynamic> slice, {required bool useCache}) async {
+    Future<void> applySlice(
+      List<dynamic> slice, {
+      required bool useCache,
+    }) async {
       if (slice.isEmpty) return;
       final scanned = scanSealedWire(<String, dynamic>{
         ...raw,
@@ -5762,7 +8834,10 @@ class ShearLedger implements ReadProofSink {
         if (rows.isEmpty) continue;
         final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
         await _scanNotesProgressive(raw, partials: partials);
-        final mark = notesHostStamp(sealed: _sealedHeight, hostHeight: hostHeight);
+        final mark = notesHostStamp(
+          sealed: _sealedHeight,
+          hostHeight: hostHeight,
+        );
         if (mark > 0 && _stampIngest(key, count: false)) {
           _notesAt[key] = mark;
           noteCovered(mark);
@@ -5788,17 +8863,12 @@ class ShearLedger implements ReadProofSink {
     Map<String, dynamic>? best;
     var bestShe = -1.0;
     for (final n in _notes) {
-      if (n['spent'] == true) continue;
       if (!_noteOnDest(n, dest)) continue;
-      if (!noteHasSealedSpendBytes(n)) continue;
-      if (!_noteMature(n, ignoreConfs: ignoreConfs)) continue;
+      final tag = (n['spendTag'] ?? '').toString().toLowerCase();
+      if (tag.isNotEmpty && _spentTagHex.contains(tag)) n['spent'] = true;
+      if (!_noteIsSpendable(n, ignoreConfs: ignoreConfs)) continue;
       final noteShe = _storedNoteShe(n) ?? _noteSheOf(n, amountFallback);
       if (noteShe + 1e-18 < needShe) continue;
-      final tag = _noteSpendTagHex(spendSeed, n);
-      if (tag != null && _spentTagHex.contains(tag)) {
-        n['spent'] = true;
-        continue;
-      }
       if (best == null || noteShe > bestShe) {
         best = n;
         bestShe = noteShe;
@@ -5809,15 +8879,31 @@ class ShearLedger implements ReadProofSink {
 
   /// Dest that actually holds reconstructed credits for a spend.
   /// Only dests [isBindable] accepts for the signing key. destAtIndex is not a money path.
-  String spendFrom(String restFrame, {String? paymentCode, required double amount, bool requireCover = false}) {
-    final plan = planLockFunding(this, restFrame: restFrame, paymentCode: paymentCode, needShe: amount);
+  String spendFrom(
+    String restFrame, {
+    String? paymentCode,
+    required double amount,
+    bool requireCover = false,
+  }) {
+    final plan = planLockFunding(
+      this,
+      restFrame: restFrame,
+      paymentCode: paymentCode,
+      needShe: amount,
+    );
     if (plan.from != null) return plan.from!;
     if (requireCover) return '';
     final dests = moneyDests(restFrame, paymentCode: paymentCode).toList();
-    return dests.isNotEmpty ? dests.first : currentDest(restFrame, paymentCode: paymentCode);
+    return dests.isNotEmpty
+        ? dests.first
+        : currentDest(restFrame, paymentCode: paymentCode);
   }
 
-  String _hopOffMiningMailbox(String home, String restFrame, {String? paymentCode}) {
+  String _hopOffMiningMailbox(
+    String home,
+    String restFrame, {
+    String? paymentCode,
+  }) {
     final fresh = newDest(restFrame, paymentCode: paymentCode);
     final amt = _spendable.remove(home) ?? 0;
     if (amt > 0) _spendable[fresh] = (_spendable[fresh] ?? 0) + amt;
@@ -5825,10 +8911,8 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Copy of chain spendable and the owed already folded into it.
-  PaintedBookMark markPaintedBook() => PaintedBookMark(
-        Map<String, double>.from(_spendable),
-        _owedSpent,
-      );
+  PaintedBookMark markPaintedBook() =>
+      PaintedBookMark(Map<String, double>.from(_spendable), _owedSpent);
 
   void restorePaintedBook(PaintedBookMark mark) {
     _spendable
@@ -5861,7 +8945,11 @@ class ShearLedger implements ReadProofSink {
   /// Verified confirmed coins only. Owed-toward-π stays at the pool until a
   /// real payment arrives. Returns 0 when those coins already cover [needShe],
   /// or null when they do not.
-  double? fundFromPaintedContinuum(String restFrame, {String? paymentCode, required double needShe}) {
+  double? fundFromPaintedContinuum(
+    String restFrame, {
+    String? paymentCode,
+    required double needShe,
+  }) {
     _paintedFundDest = '';
     _paintedFundOwedNanos = 0;
     if (needShe <= 1e-12) return 0;
@@ -5881,14 +8969,20 @@ class ShearLedger implements ReadProofSink {
     required double needShe,
     bool keepHome = false,
   }) {
-    final plan = planLockFunding(this, restFrame: restFrame, paymentCode: paymentCode, needShe: needShe);
+    final plan = planLockFunding(
+      this,
+      restFrame: restFrame,
+      paymentCode: paymentCode,
+      needShe: needShe,
+    );
     final home = homeDest(restFrame, paymentCode: paymentCode);
     if (plan.from != null && plan.from != home) return plan.from!;
     final miss = lockFundingShortfall(plan);
     if (miss.isNotEmpty) throw StateError(miss);
     if (plan.from == home) {
       if (keepHome) return home;
-      if (_paintedFundDest == home && spendable(home) + 1e-9 >= needShe) return home;
+      if (_paintedFundDest == home && spendable(home) + 1e-9 >= needShe)
+        return home;
       return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
     }
     var target = plan.sources.first;
@@ -5903,7 +8997,8 @@ class ShearLedger implements ReadProofSink {
     }
     if (target == home) {
       if (keepHome) return home;
-      if (_paintedFundDest == home && spendable(home) + 1e-9 >= needShe) return home;
+      if (_paintedFundDest == home && spendable(home) + 1e-9 >= needShe)
+        return home;
       return _hopOffMiningMailbox(home, restFrame, paymentCode: paymentCode);
     }
     return target;
@@ -5913,7 +9008,8 @@ class ShearLedger implements ReadProofSink {
   /// she1 / shear1 / destAtIndex are never queried as pay dests.
   Set<String> syncDests(String restFrame, {String? paymentCode}) {
     final keys = moneyDests(restFrame, paymentCode: paymentCode);
-    if (isDestAddress(restFrame) && isBindable(restFrame, restFrame: restFrame, paymentCode: paymentCode)) {
+    if (isDestAddress(restFrame) &&
+        isBindable(restFrame, restFrame: restFrame, paymentCode: paymentCode)) {
       keys.add(restFrame);
     }
     return keys;
@@ -5927,7 +9023,10 @@ class ShearLedger implements ReadProofSink {
   void _takeOwed(Map<String, dynamic> json, String address) {
     final owed = json['owedPi'] ?? json['confirmingPot'];
     if (owed is num && owed >= 0) _owedPiDisplay = owed.toDouble();
-    if (owed is num && owed > 0 && isDestAddress(address) && !_isProgramVaultDest(address)) {
+    if (owed is num &&
+        owed > 0 &&
+        isDestAddress(address) &&
+        !_isProgramVaultDest(address)) {
       _owedPiDest = address;
     }
   }
@@ -5936,7 +9035,10 @@ class ShearLedger implements ReadProofSink {
   /// must not wipe the mailbox's positive owed-π.
   void _finishOwedSweep(double owedMax, {required bool saw, String dest = ''}) {
     if (saw) _owedPiDisplay = owedMax;
-    if (saw && owedMax > 0 && isDestAddress(dest) && !_isProgramVaultDest(dest)) {
+    if (saw &&
+        owedMax > 0 &&
+        isDestAddress(dest) &&
+        !_isProgramVaultDest(dest)) {
       _owedPiDest = dest;
     }
   }
@@ -5953,11 +9055,15 @@ class ShearLedger implements ReadProofSink {
     if (!isDestAddress(address)) return;
     _applyPoolHashPending(address, (json['pending'] as num?)?.toDouble() ?? 0);
     if (tipSealed > beforeHeight) {
-      creditNodeLandsInGap(before: beforeHeight, tip: tipSealed, extraDest: address);
+      creditNodeLandsInGap(
+        before: beforeHeight,
+        tip: tipSealed,
+        extraDest: address,
+      );
       if (beforeHeight > 0 && tipSealed == beforeHeight + 1) {
         confirmRound(address: address, pot: 0, height: beforeHeight + 1);
       }
-      if (beforeHeight > 0) settleTo(tipSealed);
+      if (beforeHeight > 0) settleTo(bookTip);
     }
     if (_isProgramVaultDest(address)) {
       _dropProgramVaults();
@@ -6000,7 +9106,10 @@ class ShearLedger implements ReadProofSink {
 
   /// Balance sweep. Owed-π is the max pull-book figure across dests, applied
   /// after the loop so a change dest's 0 does not clear the mailbox.
-  Future<({double max, bool saw, String dest})> _balancesFor(Iterable<String> dests, {required int before}) async {
+  Future<({double max, bool saw, String dest})> _balancesFor(
+    Iterable<String> dests, {
+    required int before,
+  }) async {
     var maxOwed = 0.0;
     var saw = false;
     var maxDest = '';
@@ -6058,28 +9167,37 @@ class ShearLedger implements ReadProofSink {
       'proofChecked': _proofCheckedDests.toList(),
       'unverifiedExternal': _unverifiedExternal.toList(),
       'sealed': _sealedHeight,
+      'verifiedTip': _verifiedTip,
       'settled': _settledHeight,
       'notesAt': _followEncode(_notesAt),
       'notesCovered': _notesCovered,
       if (networkHashrate != null) 'networkHashrate': networkHashrate,
       if (circulatingNanos != null) 'circulatingNanos': circulatingNanos,
       if (potEmittedNanos != null) 'potEmittedNanos': potEmittedNanos,
-      if (hashBonusEmittedNanos != null) 'hashBonusEmittedNanos': hashBonusEmittedNanos,
+      if (hashBonusEmittedNanos != null)
+        'hashBonusEmittedNanos': hashBonusEmittedNanos,
       if (emittedAtHeight != null) 'emittedAtHeight': emittedAtHeight,
       if (networkWorkBits != null) 'networkWorkBits': networkWorkBits,
       if (sealedMeanBlockMs != null) 'sealedMeanBlockMs': sealedMeanBlockMs,
       'historyAt': _followEncode(_historyAt),
       'openCollated': _openCollated,
-      if (_spendableReadFailed != null) 'spendableReadFailed': _spendableReadFailed,
-      if (_scannedNotesThisFollow) 'unopenedListedProofs': _unopenedListedProofs,
+      if (_spendableReadFailed != null)
+        'spendableReadFailed': _spendableReadFailed,
+      if (_scannedNotesThisFollow)
+        'unopenedListedProofs': _unopenedListedProofs,
       if (_collateError.isNotEmpty) 'collateError': _collateError,
       'destCount': destCount,
       'destIndex': destIndex,
       'nodeBodies': <Object?>[for (final b in _nodeBodies) _followEncode(b)],
-      'nodeHistory': <Object?>[for (final b in _nodeHistoryRows) _followEncode(b)],
+      'nodeHistory': <Object?>[
+        for (final b in _nodeHistoryRows) _followEncode(b),
+      ],
       'nodeNotes': <Object?>[for (final b in _nodeNoteRows) _followEncode(b)],
       'openedProofs': exportOpenedProofs(),
-      if (_listedCommits.isNotEmpty) 'listedCommits': List<String>.from(_listedCommits),
+      if (_listedCommits.isNotEmpty)
+        'listedCommits': List<String>.from(_listedCommits),
+      if (_removedThisFollow.isNotEmpty)
+        'removedCommits': List<String>.from(_removedThisFollow),
     };
   }
 
@@ -6089,7 +9207,8 @@ class ShearLedger implements ReadProofSink {
     if (t.kind == 'hash' || t.kind == 'sample') return false;
     if (isFeeBlockMirror(t, _txs)) return false;
     final h = t.height ?? 0;
-    final liveKind = t.kind == 'pool-fee' ||
+    final liveKind =
+        t.kind == 'pool-fee' ||
         t.kind == 'receive' ||
         t.kind == 'send' ||
         t.kind == 'pool-withdraw' ||
@@ -6104,22 +9223,33 @@ class ShearLedger implements ReadProofSink {
     final address = spec['address']?.toString() ?? '';
     final view = spec['viewKey']?.toString() ?? '';
     final code = spec['paymentCode']?.toString() ?? '';
-    if (seed.isNotEmpty && address.isNotEmpty && view.isNotEmpty && code.isNotEmpty) {
-      bindIdentity(ShearIdentity(
-        seedHex: seed,
-        address: address,
-        viewKey: view,
-        paymentCode: code,
-      ));
+    if (seed.isNotEmpty &&
+        address.isNotEmpty &&
+        view.isNotEmpty &&
+        code.isNotEmpty) {
+      bindIdentity(
+        ShearIdentity(
+          seedHex: seed,
+          address: address,
+          viewKey: view,
+          paymentCode: code,
+        ),
+      );
     }
     _dests
       ..clear()
-      ..addAll(((spec['dests'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
+      ..addAll(
+        ((spec['dests'] as List?) ?? const <dynamic>[]).map(
+          (e) => e.toString(),
+        ),
+      );
     if (spec.containsKey('txs')) {
       final incoming = <ShearTx>[
         for (final raw in (spec['txs'] as List?) ?? const <dynamic>[])
           if (_followRevive(raw) is Map)
-            ShearTx.fromJson(Map<String, dynamic>.from(_followRevive(raw) as Map)),
+            ShearTx.fromJson(
+              Map<String, dynamic>.from(_followRevive(raw) as Map),
+            ),
       ];
       final incomingIds = <String>{for (final t in incoming) t.id};
       final keep = <ShearTx>[
@@ -6145,6 +9275,7 @@ class ShearLedger implements ReadProofSink {
         ..clear()
         ..addAll(_followDoubles(_followRevive(raw)));
     }
+
     takeDoubles(_spendable, spec['spendable']);
     takeDoubles(_pending, spec['pending']);
     takeDoubles(_advisorySpendable, spec['advisory']);
@@ -6154,10 +9285,18 @@ class ShearLedger implements ReadProofSink {
     takeDoubles(_settledNodeShe, spec['settledNodeShe']);
     _proofCheckedDests
       ..clear()
-      ..addAll(((spec['proofChecked'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
+      ..addAll(
+        ((spec['proofChecked'] as List?) ?? const <dynamic>[]).map(
+          (e) => e.toString(),
+        ),
+      );
     _unverifiedExternal
       ..clear()
-      ..addAll(((spec['unverifiedExternal'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
+      ..addAll(
+        ((spec['unverifiedExternal'] as List?) ?? const <dynamic>[]).map(
+          (e) => e.toString(),
+        ),
+      );
     // A follow that did not see the live tip must not rewind it. Rewinding
     // makes opened coins look short of the confirmation floor, so Spendable
     // stays 0 after every verify.
@@ -6165,6 +9304,8 @@ class ShearLedger implements ReadProofSink {
     if (incomingSealed != null && incomingSealed > _sealedHeight) {
       _sealedHeight = incomingSealed;
     }
+    final incomingTip = (spec['verifiedTip'] as num?)?.toInt() ?? 0;
+    if (incomingTip > _verifiedTip) _verifiedTip = incomingTip;
     _settledHeight = (spec['settled'] as num?)?.toInt() ?? _settledHeight;
     _notesAt
       ..clear()
@@ -6173,16 +9314,22 @@ class ShearLedger implements ReadProofSink {
     if (covered > _notesCovered) _notesCovered = covered;
     _acceptedCommits
       ..clear()
-      ..addAll(((spec['acceptedCommits'] as List?) ?? const <dynamic>[]).map((e) => e.toString()));
+      ..addAll(
+        ((spec['acceptedCommits'] as List?) ?? const <dynamic>[]).map(
+          (e) => e.toString(),
+        ),
+      );
     for (final n in _notes) {
       if (n['verified'] != true) continue;
       final commit = _noteBytes(n['commit']);
-      if (commit != null && commit.isNotEmpty) _acceptedCommits.add(_bytesHex(commit));
+      if (commit != null && commit.isNotEmpty)
+        _acceptedCommits.add(_bytesHex(commit));
     }
     void takeCont(String key, void Function(int) set) {
       final v = spec[key];
       if (v is num && v >= 0) set(v.round());
     }
+
     takeCont('networkHashrate', (n) => networkHashrate = n);
     takeCont('circulatingNanos', (n) {
       if (n > 0) circulatingNanos = n;
@@ -6207,17 +9354,18 @@ class ShearLedger implements ReadProofSink {
       _spendableReadFailed = spec['spendableReadFailed'] == true;
     }
     if (spec.containsKey('unopenedListedProofs')) {
-      _unopenedListedProofs = (spec['unopenedListedProofs'] as num?)?.toInt() ?? 0;
+      _unopenedListedProofs =
+          (spec['unopenedListedProofs'] as num?)?.toInt() ?? 0;
     }
     final collateError = spec['collateError']?.toString() ?? '';
     if (collateError.isNotEmpty) debugCollateError = collateError;
     destCount = (spec['destCount'] as num?)?.toInt() ?? destCount;
     destIndex = (spec['destIndex'] as num?)?.toInt() ?? destIndex;
     List<Map<String, dynamic>> rows(Object? raw) => <Map<String, dynamic>>[
-          for (final item in (raw as List?) ?? const <dynamic>[])
-            if (_followRevive(item) is Map)
-              Map<String, dynamic>.from(_followRevive(item) as Map),
-        ];
+      for (final item in (raw as List?) ?? const <dynamic>[])
+        if (_followRevive(item) is Map)
+          Map<String, dynamic>.from(_followRevive(item) as Map),
+    ];
     if (spec.containsKey('nodeBodies')) {
       _nodeBodies
         ..clear()
@@ -6245,7 +9393,8 @@ class ShearLedger implements ReadProofSink {
     // send can draw. A pool balance in [spec] does not raise that sum.
     final kept = <Map<String, dynamic>>[
       for (final n in _notes)
-        if (n['verified'] == true) Map<String, dynamic>.from(n),
+        if (n['verified'] == true || _bornDuringFollow(n))
+          Map<String, dynamic>.from(n),
     ];
     final keptProofs = Set<String>.from(_proofCheckedDests);
     final rawNotes = spec['notes'];
@@ -6268,30 +9417,61 @@ class ShearLedger implements ReadProofSink {
     } else {
       installCreditFollow(spec);
     }
+    _proofCheckedDests.addAll(keptProofs);
+    final rest = spec['restFrame']?.toString() ?? _restFrame ?? '';
+    final rawCode = spec['paymentCode']?.toString() ?? '';
+    final removed = <String>{
+      for (final e in (spec['removedCommits'] as List?) ?? const <dynamic>[])
+        e.toString(),
+    };
     for (final n in kept) {
+      final commit = _noteBytes(n['commit']);
+      if (commit != null &&
+          commit.isNotEmpty &&
+          removed.contains(_bytesHex(commit))) {
+        continue;
+      }
+      if (commit != null) {
+        for (final row in _notes) {
+          final have = _noteBytes(row['commit']);
+          if (have == null || !_bytesEq(have, commit)) continue;
+          if (row['spent'] == true) {
+            n['spent'] = true;
+            if (row['spendTag'] != null) n['spendTag'] = row['spendTag'];
+          }
+          break;
+        }
+      }
       rememberNote(n);
       final dest = (n['dest'] ?? n['address'])?.toString() ?? '';
       if (dest.isNotEmpty) _proofCheckedDests.add(payKey(dest));
     }
-    _proofCheckedDests.addAll(keptProofs);
-    final rest = spec['restFrame']?.toString() ?? _restFrame ?? '';
-    final rawCode = spec['paymentCode']?.toString() ?? '';
     final listed = spec['listedCommits'];
     if (listed is List && listed.isNotEmpty) {
       final have = <String>{for (final e in listed) e.toString()};
+      final born = <String>{
+        for (final n in kept)
+          if (_bornDuringFollow(n)) _commitHexOf(n),
+      };
       _notes.removeWhere((n) {
-        final c = _noteBytes(n['commit']);
-        if (c == null) return false;
-        return !have.contains(_bytesHex(c));
+        final hex = _commitHexOf(n);
+        if (hex.isEmpty || born.contains(hex)) return false;
+        return !have.contains(hex);
       });
       _openedProofs.removeWhere((k, _) => !have.contains(k.split('|').first));
     }
     if (rest.isNotEmpty) {
-      recheckRestFrameSpendable(rest, paymentCode: rawCode.isEmpty ? null : rawCode);
+      recheckRestFrameSpendable(
+        rest,
+        paymentCode: rawCode.isEmpty ? null : rawCode,
+      );
     }
   }
 
-  Future<void> _adoptCoinMessage(Map<String, dynamic> message, void Function()? onCoins) async {
+  Future<void> _adoptCoinMessage(
+    Map<String, dynamic> message,
+    void Function()? onCoins,
+  ) async {
     final sealed = message['sealed'];
     if (sealed is num && sealed.toInt() > _sealedHeight) {
       noteLiveHeight(sealed.toInt());
@@ -6303,7 +9483,11 @@ class ShearLedger implements ReadProofSink {
       if (raw is! Map) continue;
       final row = Map<String, dynamic>.from(raw);
       if (row['verified'] != true) continue;
-      if (!noteIsFs1Leaf(_noteBytes(row['admitPub']), _noteBytes(row['commit']))) continue;
+      if (!noteIsFs1Leaf(
+        _noteBytes(row['admitPub']),
+        _noteBytes(row['commit']),
+      ))
+        continue;
       rememberNote(row);
       _rememberProofRow(row);
       _creditNoteToShearview(row);
@@ -6319,6 +9503,33 @@ class ShearLedger implements ReadProofSink {
   /// Balance poll or full credit sync. HTTP and note scan run in [Isolate.run].
   /// This isolate only copies the worker's collated book back.
   Future<double> followOffUi({
+    required String restFrame,
+    String? paymentCode,
+    required bool full,
+    bool chain = true,
+    bool spendableFirst = false,
+    String? sessionPath,
+    String? sessionPassword,
+    void Function()? onCoins,
+  }) async {
+    _armFollowFlight();
+    try {
+      return await _followOffUiBody(
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        full: full,
+        chain: chain,
+        spendableFirst: spendableFirst,
+        sessionPath: sessionPath,
+        sessionPassword: sessionPassword,
+        onCoins: onCoins,
+      );
+    } finally {
+      _disarmFollowFlight();
+    }
+  }
+
+  Future<double> _followOffUiBody({
     required String restFrame,
     String? paymentCode,
     required bool full,
@@ -6347,7 +9558,8 @@ class ShearLedger implements ReadProofSink {
       'acceptedCommits': <String>[
         for (final n in _notes)
           if (n['verified'] == true)
-            if (_noteBytes(n['commit']) != null && _noteBytes(n['commit'])!.isNotEmpty)
+            if (_noteBytes(n['commit']) != null &&
+                _noteBytes(n['commit'])!.isNotEmpty)
               _bytesHex(_noteBytes(n['commit'])!),
       ],
       'destCount': destCount,
@@ -6426,7 +9638,10 @@ class ShearLedger implements ReadProofSink {
     });
     Map<String, dynamic> result;
     try {
-      await Isolate.spawn(creditFollowEntry, <dynamic>[jsonEncode(spec), recv.sendPort]);
+      await Isolate.spawn(creditFollowEntry, <dynamic>[
+        jsonEncode(spec),
+        recv.sendPort,
+      ]);
       final done = await doneWait.future;
       await adoptChain;
       if (done['event'] == 'error') {
@@ -6449,7 +9664,9 @@ class ShearLedger implements ReadProofSink {
     debugCreditFollowRuns += 1;
     await adoptCreditFollow(result);
     final opened = result['opened'];
-    return opened is num ? opened.toDouble() : spendableOwned(restFrame, paymentCode: paymentCode);
+    return opened is num
+        ? opened.toDouble()
+        : spendableOwned(restFrame, paymentCode: paymentCode);
   }
 
   /// Pull Continuum for this wallet's own money dests.
@@ -6462,11 +9679,15 @@ class ShearLedger implements ReadProofSink {
     SendPort? partials,
   }) async {
     if (pool == null) {
-      final opened = recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
+      final opened = recheckRestFrameSpendable(
+        restFrame,
+        paymentCode: paymentCode,
+      );
       _openCollated = true;
       return opened;
     }
     keepOwnedDests(restFrame, paymentCode: paymentCode);
+    _beginNoteFollow();
     final before = _settledHeight;
     try {
       final live = pool?.liveTip ?? 0;
@@ -6491,6 +9712,9 @@ class ShearLedger implements ReadProofSink {
       } catch (_) {}
     }
     final histSeen = <String>{};
+    var notesTried = false;
+    var notesSaw = false;
+    var notesFailed = false;
     for (final d in dests) {
       final key = payKey(d);
       if (!histSeen.add(key)) continue;
@@ -6499,32 +9723,45 @@ class ShearLedger implements ReadProofSink {
         if (!lag || (_noteMisses[key] ?? 0) >= 2) continue;
       }
       final seed = spendSeed;
-      if (seed != null && seed.length == 32 && pool != null && !isPoolLedgerHost(pool!.baseUrl)) {
+      if (seed != null &&
+          seed.length == 32 &&
+          pool != null &&
+          !isPoolLedgerHost(pool!.baseUrl)) {
         final open = destProofOpen(key);
         if (open == null || open.isEmpty) continue;
+        notesTried = true;
         try {
           final json = await pool!.notes(key, open: open);
           final rows = json['notes'];
-          if (rows is List) {
-            _takeListedCommits(rows);
-            if (rows.isNotEmpty) {
-              final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
-              await _scanNotesProgressive(raw, partials: partials);
-            }
-            final mark = notesHostStamp(sealed: _sealedHeight, hostHeight: hostHeight);
-            if (mark > 0 && _stampIngest(key, count: false)) {
-              _notesAt[key] = mark;
-              noteCovered(mark);
-            }
-            if (_ownsSealedOn(key)) {
-              _noteMisses.remove(key);
-            } else if (spendable(key) > 1e-12) {
-              _noteMisses[key] = (_noteMisses[key] ?? 0) + 1;
-            }
+          if (rows is! List) {
+            notesFailed = true;
+            continue;
           }
-        } catch (_) {}
+          notesSaw = true;
+          _takeListedCommits(rows);
+          if (rows.isNotEmpty) {
+            final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
+            await _scanNotesProgressive(raw, partials: partials);
+          }
+          final mark = notesHostStamp(
+            sealed: _sealedHeight,
+            hostHeight: hostHeight,
+          );
+          if (mark > 0 && _stampIngest(key, count: false)) {
+            _notesAt[key] = mark;
+            noteCovered(mark);
+          }
+          if (_ownsSealedOn(key)) {
+            _noteMisses.remove(key);
+          } else if (spendable(key) > 1e-12) {
+            _noteMisses[key] = (_noteMisses[key] ?? 0) + 1;
+          }
+        } catch (_) {
+          notesFailed = true;
+        }
       }
     }
+    if (notesTried) _spendableReadFailed = !notesSaw || notesFailed;
     histSeen.clear();
     for (final d in dests) {
       final key = payKey(d);
@@ -6536,7 +9773,7 @@ class ShearLedger implements ReadProofSink {
     // Node bodies and the history just pulled. A tip that did not move still
     // credits every opened owner land. Pool balance is not in that material.
     creditKnownNodeLands();
-    settleTo(_sealedHeight);
+    settleTo(bookTip);
     // Opened coins with 9 confirmations are the book. The pre-notes snapshot
     // must not write a 0 or an inflated figure back over that sum. Without a
     // proof, the snapshot still caps a higher local pile. Vault dests stay out.
@@ -6568,7 +9805,12 @@ class ShearLedger implements ReadProofSink {
       final piled = spendable(e.key);
       if (piled > e.value + 1e-12) _spendable[e.key] = e.value;
     }
-    final opened = recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
+    await _applyFollowSpentTags();
+    _finishNoteFollow();
+    final opened = recheckRestFrameSpendable(
+      restFrame,
+      paymentCode: paymentCode,
+    );
     _openCollated = true;
     startPayoutConsolidate(restFrame, paymentCode: paymentCode);
     return opened;
@@ -6580,7 +9822,8 @@ class ShearLedger implements ReadProofSink {
     String? paymentCode,
     Iterable<String> also = const [],
   }) async {
-    if (pool == null) return spendableOwned(restFrame, paymentCode: paymentCode);
+    if (pool == null)
+      return spendableOwned(restFrame, paymentCode: paymentCode);
     keepOwnedDests(restFrame, paymentCode: paymentCode);
     final before = _settledHeight;
     try {
@@ -6606,7 +9849,10 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
-  Future<List<ShearTx>> syncHistory(String address, {bool openMemos = false}) async {
+  Future<List<ShearTx>> syncHistory(
+    String address, {
+    bool openMemos = false,
+  }) async {
     if (pool == null) return ownerHistory(address);
     if (isPoolLedgerHost(pool!.baseUrl)) return ownerHistory(address);
     final key = payKey(address);
@@ -6614,11 +9860,15 @@ class ShearLedger implements ReadProofSink {
       return ownerHistory(address);
     }
     try {
-      final json = await pool!.history(address, open: destProofOpen(homeDest(address)));
+      final json = await pool!.history(
+        address,
+        open: destProofOpen(homeDest(address)),
+      );
       final rows = (json['txs'] as List?) ?? const [];
       final existingPlain = <String, String>{
         for (final t in _txs)
-          if (t.memoPlain != null && t.memoPlain!.isNotEmpty) t.id: t.memoPlain!,
+          if (t.memoPlain != null && t.memoPlain!.isNotEmpty)
+            t.id: t.memoPlain!,
       };
       final amountsOnly = json['amountsOnly'] == true;
       final destProof = json['destProof'] == true;
@@ -6627,30 +9877,42 @@ class ShearLedger implements ReadProofSink {
         for (final row in rows)
           if (row is Map) Map<String, dynamic>.from(row),
       ];
+      // dart format off
       final parsed = await Isolate.run(() => parseHistoryPayload(<String, dynamic>{
-        'amountsOnly': amountsOnly,
-        'destProof': destProof,
-        'key': key,
-        'openMemos': openMemos,
-        'existingPlain': Map<String, String>.from(existingPlain),
-        'vaultDests': vaultDests,
-        'rows': jsonDecode(jsonEncode(rowSnapshot)),
-      }));
+      // dart format on
+          'amountsOnly': amountsOnly,
+          'destProof': destProof,
+          'key': key,
+          'openMemos': openMemos,
+          'existingPlain': Map<String, String>.from(existingPlain),
+          'vaultDests': vaultDests,
+          'rows': jsonDecode(jsonEncode(rowSnapshot)),
+        }),
+      );
       if (keepLocalOwnerHistory(
-        amountsOnly: json['amountsOnly'] == true || parsed['amountsOnly'] == true,
+        amountsOnly:
+            json['amountsOnly'] == true || parsed['amountsOnly'] == true,
         destProof: json['destProof'] == true,
       )) {
         return ownerHistory(address);
       }
-      final txs = <ShearTx>[
-        for (final raw in (parsed['txs'] as List? ?? const []))
-          if (raw is Map) ShearTx.fromJson(Map<String, dynamic>.from(raw)),
-      ].where((tx) =>
-          (tx.to.isNotEmpty || tx.from.isNotEmpty) &&
-          (tx.amount > 0 || (tx.hashAmount ?? 0) > 0)).toList();
+      final txs =
+          <ShearTx>[
+                for (final raw in (parsed['txs'] as List? ?? const []))
+                  if (raw is Map)
+                    ShearTx.fromJson(Map<String, dynamic>.from(raw)),
+              ]
+              .where(
+                (tx) =>
+                    (tx.to.isNotEmpty || tx.from.isNotEmpty) &&
+                    (tx.amount > 0 || (tx.hashAmount ?? 0) > 0),
+              )
+              .toList();
       adoptLiveHistory(key, txs);
       for (final tx in txs) {
-        if (payKey(tx.to) == key && tx.to.isNotEmpty && !_isProgramVaultDest(tx.to)) {
+        if (payKey(tx.to) == key &&
+            tx.to.isNotEmpty &&
+            !_isProgramVaultDest(tx.to)) {
           _dests.add(tx.to);
         }
         mergeChainTx(tx);
@@ -6665,15 +9927,18 @@ class ShearLedger implements ReadProofSink {
         for (final row in rows)
           if (row is Map) Map<String, dynamic>.from(row),
       ];
-      if (!isPoolLedgerHost(pool!.baseUrl)) rememberNodeChain(history: histRows);
+      if (!isPoolLedgerHost(pool!.baseUrl))
+        rememberNodeChain(history: histRows);
     } catch (_) {}
     prune();
     return ownerHistory(address);
   }
 
   /// Dests this shear1 wallet has seen. Encrypted session stores these locally.
-  List<String> exportedDests() =>
-      _dests.where(isDestAddress).where((d) => !_isProgramVaultDest(d)).toList();
+  List<String> exportedDests() => _dests
+      .where(isDestAddress)
+      .where((d) => !_isProgramVaultDest(d))
+      .toList();
 
   void restoreDests(Iterable<String> dests) {
     for (final d in dests) {
@@ -6685,7 +9950,14 @@ class ShearLedger implements ReadProofSink {
   void keepOwnedDests(String restFrame, {String? paymentCode}) {
     final allow = moneyDests(restFrame, paymentCode: paymentCode);
     if (isDestAddress(restFrame)) allow.add(restFrame);
-    final drop = _dests.where((d) => !allow.contains(d) && d != restFrame && !_stealthShared.containsKey(d)).toList();
+    final drop = _dests
+        .where(
+          (d) =>
+              !allow.contains(d) &&
+              d != restFrame &&
+              !_stealthShared.containsKey(d),
+        )
+        .toList();
     for (final d in drop) {
       _dests.remove(d);
       _spendable.remove(d);
@@ -6709,7 +9981,11 @@ class ShearLedger implements ReadProofSink {
     if (pool == null) return lag1Root;
     try {
       final json = await pool!.headerAt(height);
-      final raw = _continuityBytes(json['continuity']?.toString() ?? json['continuityRoot']?.toString() ?? '');
+      final raw = _continuityBytes(
+        json['continuity']?.toString() ??
+            json['continuityRoot']?.toString() ??
+            '',
+      );
       if (raw != null) {
         _continuityAt[height] = raw;
         return raw;
@@ -6755,10 +10031,13 @@ class ShearLedger implements ReadProofSink {
   }
 
   String? viewSecret;
+
   /// Long-term Ed25519 spend pub. currentDest is destCommit(spendPub).
   Uint8List? spendPub;
+
   /// ristretto B = x_base·G. Copy dest payload dest20||B so mining notes wrap r.
   Uint8List? admitBase;
+
   /// Spend seed for Admit x and rEph unwrap. In-memory after unlock.
   Uint8List? spendSeed;
 
@@ -6773,7 +10052,8 @@ class ShearLedger implements ReadProofSink {
   }
 
   String? _ownPaymentCode(String restFrame, {String? paymentCode}) {
-    if (paymentCode != null && isFullPaymentCode(paymentCode)) return paymentCode;
+    if (paymentCode != null && isFullPaymentCode(paymentCode))
+      return paymentCode;
     final pub = spendPub;
     final v = viewSecret;
     if (pub != null && pub.length == 32 && v != null && v.isNotEmpty) {
@@ -6805,10 +10085,12 @@ class ShearLedger implements ReadProofSink {
     final pub = _spendPubOf(paymentCode);
     final keys = <String>{};
     void add(String? a) {
-      if (a == null || a.isEmpty || !isDestAddress(a) || _isProgramVaultDest(a)) return;
+      if (a == null || a.isEmpty || !isDestAddress(a) || _isProgramVaultDest(a))
+        return;
       if (_isIndexedDest(a, restFrame)) return;
       if (pub != null && pub.length == 32) {
-        if (isBindable(a, restFrame: restFrame, paymentCode: paymentCode)) keys.add(a);
+        if (isBindable(a, restFrame: restFrame, paymentCode: paymentCode))
+          keys.add(a);
       } else {
         keys.add(a);
       }
@@ -6838,10 +10120,15 @@ class ShearLedger implements ReadProofSink {
   void _foldFlowDest(String restFrame, {String? paymentCode}) {
     final pub = _spendPubOf(paymentCode);
     if (pub == null || pub.length != 32) return;
-    final bound = encodeDestAddress(destCommitFromSpendPub(pub), _admitBaseOf(paymentCode));
+    final bound = encodeDestAddress(
+      destCommitFromSpendPub(pub),
+      _admitBaseOf(paymentCode),
+    );
     if (!isDestAddress(bound)) return;
     final fromKeys = <String>{};
-    if (restFrame.isNotEmpty && !isDestAddress(restFrame) && restFrame != bound) {
+    if (restFrame.isNotEmpty &&
+        !isDestAddress(restFrame) &&
+        restFrame != bound) {
       fromKeys.add(restFrame);
     }
     final flow = destForLogin(
@@ -6915,11 +10202,13 @@ class ShearLedger implements ReadProofSink {
     if (hit != null) return hit;
     final spend = hash20FromAddress(restFrame);
     if (spend == null) return null;
-    return encodeDestAddress(indexedDestHash(
-      spendHash20: spend,
-      closure: closureCommit(v),
-      index: index,
-    ));
+    return encodeDestAddress(
+      indexedDestHash(
+        spendHash20: spend,
+        closure: closureCommit(v),
+        index: index,
+      ),
+    );
   }
 
   List<String> listedDests(String restFrame) {
@@ -6945,9 +10234,17 @@ class ShearLedger implements ReadProofSink {
     if (pub != null && pub.length == 32) {
       // Mining mailbox is destCommit(spendPub)||B so coinbase wrap can
       // attach rEph/rCt and ingestSealedVouts can recover r.
-      return encodeDestAddress(destCommitFromSpendPub(pub), _admitBaseOf(paymentCode));
+      return encodeDestAddress(
+        destCommitFromSpendPub(pub),
+        _admitBaseOf(paymentCode),
+      );
     }
-    return destForLogin(restFrame, height: tipHeight, continuityRoot: lag1Root, viewKey: viewSecret) ??
+    return destForLogin(
+          restFrame,
+          height: tipHeight,
+          continuityRoot: lag1Root,
+          viewKey: viewSecret,
+        ) ??
         restFrame;
   }
 
@@ -6960,13 +10257,21 @@ class ShearLedger implements ReadProofSink {
     return d;
   }
 
-  String _freshStealthDest(String restFrame, {String? paymentCode, String? from, String? portalDest}) {
+  String _freshStealthDest(
+    String restFrame, {
+    String? paymentCode,
+    String? from,
+    String? portalDest,
+  }) {
     final code = _ownPaymentCode(restFrame, paymentCode: paymentCode);
     if (code != null) {
       for (var i = 0; i < 24; i++) {
         final pay = silentPay(code);
         if (pay == null) continue;
-        if (pay.dest == from || pay.dest == portalDest || _isProgramVaultDest(pay.dest)) continue;
+        if (pay.dest == from ||
+            pay.dest == portalDest ||
+            _isProgramVaultDest(pay.dest))
+          continue;
         _stealthShared[pay.dest] = pay.shared;
         _dests.add(pay.dest);
         return pay.dest;
@@ -6985,7 +10290,11 @@ class ShearLedger implements ReadProofSink {
       return have;
     }
     final home = homeDest(restFrame, paymentCode: paymentCode);
-    final d = _freshStealthDest(restFrame, paymentCode: paymentCode, from: home);
+    final d = _freshStealthDest(
+      restFrame,
+      paymentCode: paymentCode,
+      from: home,
+    );
     _coinLedger = d;
     _dests.add(d);
     return d;
@@ -6996,7 +10305,12 @@ class ShearLedger implements ReadProofSink {
       coinLedgerDest(restFrame, paymentCode: paymentCode);
 
   /// Change returns to the coin ledger. Never [from] and never the Reserve portal.
-  String allocateChangeDest(String restFrame, {String? from, String? portalDest, String? paymentCode}) {
+  String allocateChangeDest(
+    String restFrame, {
+    String? from,
+    String? portalDest,
+    String? paymentCode,
+  }) {
     if (_ownPaymentCode(restFrame, paymentCode: paymentCode) == null) {
       throw ArgumentError('same_dest');
     }
@@ -7009,7 +10323,12 @@ class ShearLedger implements ReadProofSink {
       return ledgerDest;
     }
     for (var i = 0; i < 24; i++) {
-      final d = _freshStealthDest(restFrame, paymentCode: paymentCode, from: from, portalDest: portalDest);
+      final d = _freshStealthDest(
+        restFrame,
+        paymentCode: paymentCode,
+        from: from,
+        portalDest: portalDest,
+      );
       if (d != from && d != portalDest && !_isProgramVaultDest(d)) return d;
     }
     throw ArgumentError('same_dest');
@@ -7060,13 +10379,15 @@ class ShearLedger implements ReadProofSink {
 
   List<ShearTx> ownerHistory(String address) {
     return _ownedRolled(address)
-        .where((t) =>
-            t.kind != 'sample' &&
-            (t.confirmed ||
-                t.kind == 'send' ||
-                t.kind == 'pool-withdraw' ||
-                t.kind == 'blockfound' ||
-                t.kind == 'coinbase'))
+        .where(
+          (t) =>
+              t.kind != 'sample' &&
+              (t.confirmed ||
+                  t.kind == 'send' ||
+                  t.kind == 'pool-withdraw' ||
+                  t.kind == 'blockfound' ||
+                  t.kind == 'coinbase'),
+        )
         .toList();
   }
 
@@ -7076,7 +10397,10 @@ class ShearLedger implements ReadProofSink {
       if (t.kind == 'sample') return false;
       return keys.contains(t.to) ||
           keys.contains(t.from) ||
-          ((t.from == 'hash' || t.from == 'coinbase' || t.from == 'pending' || t.from == 'pool') &&
+          ((t.from == 'hash' ||
+                  t.from == 'coinbase' ||
+                  t.from == 'pending' ||
+                  t.from == 'pool') &&
               keys.contains(t.to));
     });
     return rollupExplorerTxs(mine).where((t) => t.kind != 'hash').toList();
@@ -7091,7 +10415,12 @@ class ShearLedger implements ReadProofSink {
     }
     final rest = _restFrame;
     if (rest != null && rest.isNotEmpty) {
-      return openingForDest(from: dest, restFrame: rest, viewKey: view, destCount: destCount);
+      return openingForDest(
+        from: dest,
+        restFrame: rest,
+        viewKey: view,
+        destCount: destCount,
+      );
     }
     if (spendPub != null) return destOpeningFromView(view, spendPub!);
     return null;
@@ -7111,13 +10440,21 @@ class ShearLedger implements ReadProofSink {
       if (h < 1) return false;
       // Still on the Continuum pending vortex. A history page that omits this
       // id must not drop it before 9 confirmations.
-      if (h <= _sealedHeight + 1 && confirmationsOf(h) < spendableConfirmations) return false;
+      if (h <= _sealedHeight + 1 && confirmationsOf(h) < spendableConfirmations)
+        return false;
       // Lock/withdraw rows replay portal principal after a thin staked=0 sync.
       // A later history page of payouts must not erase them.
       if (t.kind == 'lock' || t.kind == 'withdraw') return false;
-      final mine = payKey(t.to) == key || t.to == key || payKey(t.from) == key || t.from == key;
+      final mine =
+          payKey(t.to) == key ||
+          t.to == key ||
+          payKey(t.from) == key ||
+          t.from == key;
       if (!mine) {
-        if ((t.from == 'coinbase' || t.from == 'pool' || t.kind == 'block' || t.kind == 'blockfound') &&
+        if ((t.from == 'coinbase' ||
+                t.from == 'pool' ||
+                t.kind == 'block' ||
+                t.kind == 'blockfound') &&
             !liveIds.contains(t.id)) {
           return true;
         }
@@ -7168,7 +10505,13 @@ class ShearLedger implements ReadProofSink {
       final confs = confirmationsOf(h);
       if (t.kind == 'pool-fee') return true;
       if (isWalletBlockKind(t.kind)) return !isFeeBlockMirror(t, rolled);
-      if (isOwnerLanding(t)) return confs >= 1;
+      // Depth unknown, including a pin that has not caught the host:
+      // an incoming row stays, as pending, with no count.
+      if (isOwnerLanding(t)) {
+        if (!t.confirmed) return true;
+        if (confirmationCountHidden(h)) return true;
+        return bookTip < 1 || confs >= 1;
+      }
       return confs >= continuumConfirmations;
     }).toList();
     rows.sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
@@ -7181,7 +10524,14 @@ class ShearLedger implements ReadProofSink {
     _replayOpenedNotes();
     _collapseDuplicateReceipts();
     final keys = ownedAddresses(restFrame, paymentCode: paymentCode).toSet();
-    const incoming = {'receive', 'coinbase', 'blockfound', 'pool-withdraw', 'withdraw', 'pool-fee'};
+    const incoming = {
+      'receive',
+      'coinbase',
+      'blockfound',
+      'pool-withdraw',
+      'withdraw',
+      'pool-fee',
+    };
     var n = 0.0;
     final covered = <String>{};
     for (final t in _txs) {
@@ -7236,7 +10586,9 @@ class ShearLedger implements ReadProofSink {
   int _paintedFundOwedNanos = 0;
 
   List<ShearTx> shearviewSearch(String address, String query) {
-    return shearviewTxs(address).where((t) => shearviewMatches(t, query)).toList();
+    return shearviewTxs(
+      address,
+    ).where((t) => shearviewMatches(t, query)).toList();
   }
 
   /// Continuum: full blocks still filling the 6-slice pie, plus in-flight
@@ -7252,12 +10604,16 @@ class ShearLedger implements ReadProofSink {
         if (h < 1) return true;
         return confirmationsOf(h) < continuumConfirmations;
       }
-      if (!t.confirmed && (t.kind == 'send' || t.kind == 'lock' || t.kind == 'vote')) return true;
+      if (!t.confirmed &&
+          (t.kind == 'send' || t.kind == 'lock' || t.kind == 'vote'))
+        return true;
       final h = t.height ?? 0;
       if (h < 1) {
         // Rollup paints block rows confirmed. The book row is still unconfirmed
         // until a height is stamped and the maturity floor is met.
-        if (t.kind == 'blockfound' || t.kind == 'coinbase' || t.kind == 'mine') {
+        if (t.kind == 'blockfound' ||
+            t.kind == 'coinbase' ||
+            t.kind == 'mine') {
           return !isFeeBlockMirror(t, rolled);
         }
         return !t.confirmed && (t.kind == 'receive' || t.kind == 'pool-fee');
@@ -7292,17 +10648,69 @@ class ShearLedger implements ReadProofSink {
 
   final Set<String> _spentTagHex = {};
 
-  String? _noteSpendTagHex(Uint8List spendSeed, Map<String, dynamic> note) {
-    try {
-      final spentNote = {
-        'kind': (note['kind'] as String?) ?? 'pot',
-        'commit': _noteBytes(note['commit'])!,
-        'noteCommit': _noteBytes(note['noteCommit'])!,
-      };
-      final x = admitScalarFromSeed(spendSeed, spentNote);
-      return _bytesHex(pointBytes(spendTagPoint(x, admitPub(x))));
-    } catch (_) {
-      return null;
+  /// The credit worker is already off the UI isolate. A nested [Isolate.run]
+  /// from it never finishes, so that worker stamps in place.
+  bool _stampSpendTagsInline = false;
+
+  /// Held nanos on [note] from the same peel as the Spendable figure.
+  BigInt _heldNanosOf(
+    Map<String, dynamic> note,
+    String? restFrame,
+    String? paymentCode,
+  ) {
+    var index = -1;
+    for (var i = 0; i < _notes.length; i++) {
+      if (identical(_notes[i], note)) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) {
+      final want = _commitHexOf(note);
+      if (want.isNotEmpty) {
+        for (var i = 0; i < _notes.length; i++) {
+          if (_commitHexOf(_notes[i]) == want) {
+            index = i;
+            break;
+          }
+        }
+      }
+    }
+    if (index < 0) return BigInt.zero;
+    final pool = poolSpendableNotes(
+      _spendPlanInput(restFrame ?? _restFrame ?? '', paymentCode, 0),
+    );
+    for (final row in pool.free) {
+      if (row['i'] == index) return _heldOfRow(row);
+    }
+    return BigInt.zero;
+  }
+
+  Future<void> _stampSpendTagsOffUi() async {
+    final seed = spendSeed;
+    if (seed == null || seed.length != 32) return;
+    final index = <int>[];
+    final payload = <Map<String, dynamic>>[];
+    for (var i = 0; i < _notes.length; i++) {
+      final n = _notes[i];
+      if ((n['spendTag']?.toString() ?? '').isNotEmpty) continue;
+      if (!noteHasSealedSpendBytes(n)) continue;
+      index.add(i);
+      payload.add({
+        'kind': (n['kind'] ?? 'pot').toString(),
+        'commit': _noteBytes(n['commit']),
+        'noteCommit': _noteBytes(n['noteCommit']),
+      });
+    }
+    if (index.isEmpty) return;
+    final tags = _stampSpendTagsInline
+        ? <String?>[for (final n in payload) spendTagHexOf(seed, n)]
+        : await Isolate.run(
+            () => <String?>[for (final n in payload) spendTagHexOf(seed, n)],
+          );
+    for (var j = 0; j < index.length; j++) {
+      final tag = tags[j];
+      if (tag != null && tag.isNotEmpty) _notes[index[j]]['spendTag'] = tag;
     }
   }
 
@@ -7315,37 +10723,57 @@ class ShearLedger implements ReadProofSink {
   /// One FS-1 spend of every note in [notes] for the [sealed] outputs at
   /// [fee]. The digest binds the posted outputs, the fee, and the anchor, so
   /// none may change after this. Vin is C̃ only.
-  Future<({List<Map<String, dynamic>> vin, List<Map<String, dynamic>> proofs, Uint8List fs1, int anchor, Uint8List excess})>
-      _fs1Spend({
+  Future<
+    ({
+      List<Map<String, dynamic>> vin,
+      List<Map<String, dynamic>> proofs,
+      Uint8List fs1,
+      int anchor,
+      Uint8List excess,
+    })
+  >
+  _fs1Spend({
     required List<Map<String, dynamic>> notes,
     required List<Map<String, dynamic>> sealed,
     required int fee,
     required Uint8List spendSeed,
     String kind = 'send',
   }) async {
-    if (notes.isEmpty || notes.length > kFs1InputMax) throw StateError('fs1_inputs');
+    if (notes.isEmpty || notes.length > kFs1InputMax)
+      throw StateError('fs1_inputs');
     final cols = await _fluxColumns();
-    if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length) throw StateError('fluxset');
+    if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length)
+      throw StateError('fluxset');
     final spent = <Map<String, dynamic>>[];
     final indices = <int>[];
     for (final note in notes) {
       final commit = _noteBytes(note['commit']);
       final nc = _noteBytes(note['noteCommit']);
       final r = _noteBytes(note['r']);
-      if (commit == null || nc == null || r == null || commit.length != 32 || r.length != 32) {
+      if (commit == null ||
+          nc == null ||
+          r == null ||
+          commit.length != 32 ||
+          r.length != 32) {
         throw StateError('no_note');
       }
       final pub = _noteBytes(note['admitPub']);
       var at = -1;
       for (var i = 0; i < cols.commits.length; i++) {
-        if (_sameBytes32(cols.commits[i], commit) && (pub == null || _sameBytes32(cols.pubs[i], pub))) {
+        if (_sameBytes32(cols.commits[i], commit) &&
+            (pub == null || _sameBytes32(cols.pubs[i], pub))) {
           at = i;
           break;
         }
       }
       if (at < 0 || indices.contains(at)) throw StateError('no_note');
       indices.add(at);
-      spent.add({'kind': (note['kind'] as String?) ?? 'pot', 'commit': commit, 'noteCommit': nc, 'r': r});
+      spent.add({
+        'kind': (note['kind'] as String?) ?? 'pot',
+        'commit': commit,
+        'noteCommit': nc,
+        'r': r,
+      });
     }
     final top = indices.reduce((a, b) => a > b ? a : b);
     final anchor = pickFs1Anchor(_fs1Anchors, top);
@@ -7375,7 +10803,8 @@ class ShearLedger implements ReadProofSink {
     }
     _fs1Tree = Fs1TreeState.fromWire(proved['tree']);
     final proofs = <Map<String, dynamic>>[
-      for (final rec in (proved['records'] as List)) fs1PostedProof(rec as Uint8List),
+      for (final rec in (proved['records'] as List))
+        fs1PostedProof(rec as Uint8List),
     ];
     if (proofs.length != notes.length) throw StateError('fs1_prove');
     return (
@@ -7389,25 +10818,18 @@ class ShearLedger implements ReadProofSink {
     );
   }
 
-  Future<({List<Uint8List> pubs, List<Uint8List> commits})> _fluxColumns() async {
-    if (pool == null) return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
+  Future<({List<Uint8List> pubs, List<Uint8List> commits})>
+  _fluxColumns() async {
+    if (pool == null)
+      return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
     try {
       final live = await pool!.fluxset();
-      _spentTagHex.clear();
-      final tags = live['spendTags'];
-      if (tags is List) {
-        for (final t in tags) {
-          if (t is String && t.isNotEmpty) {
-            _spentTagHex.add(t.toLowerCase());
-          } else {
-            final b = _noteBytes(t);
-            if (b != null && b.isNotEmpty) _spentTagHex.add(_bytesHex(b));
-          }
-        }
-      }
+      _takeSpendTags(live);
       final rawPubs = live['pubs'];
       final rawCommits = live['commits'];
-      if (rawPubs is! List || rawCommits is! List || rawPubs.length != rawCommits.length) {
+      if (rawPubs is! List ||
+          rawCommits is! List ||
+          rawPubs.length != rawCommits.length) {
         return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
       }
       final pubs = <Uint8List>[];
@@ -7434,15 +10856,62 @@ class ShearLedger implements ReadProofSink {
   /// put until [consolidateSpendableNotes] merges them on chain.
   void consolidateIncomingRewards(String restFrame, {String? paymentCode}) {
     final bound = _coinLedger;
-    if (bound == null || !isDestAddress(bound) || _isProgramVaultDest(bound)) return;
+    if (bound == null || !isDestAddress(bound) || _isProgramVaultDest(bound))
+      return;
     for (final n in _notes) {
       if (n['spent'] == true) continue;
       final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
-      if (addr.isEmpty || isDestAddress(addr) || _isProgramVaultDest(addr)) continue;
+      if (addr.isEmpty || isDestAddress(addr) || _isProgramVaultDest(addr))
+        continue;
       n['address'] = bound;
       n['dest'] = bound;
       rememberDest(bound);
     }
+  }
+
+  Map<String, dynamic> _spendPlanInput(
+    String restFrame,
+    String? paymentCode,
+    double amount, {
+    bool memo = false,
+    String? needNanos,
+  }) {
+    final snap = <Map<String, dynamic>>[
+      for (final n in _notes)
+        {
+          'spent': n['spent'] == true,
+          'reorged': n['reorged'] == true,
+          'locked': n['locked'] == true,
+          'verified': n['verified'] == true,
+          'sealed': noteHasSealedSpendBytes(n),
+          'address': (n['address'] ?? n['dest'])?.toString() ?? '',
+          'height': n['height'],
+          'amount': n['amount'],
+          'nanos': n['nanos'],
+          'verifiedNanos': n['verifiedNanos'],
+          'kind': (n['kind'] ?? '').toString(),
+          'unlockAtMs': n['unlockAtMs'],
+          if ((n['spendTag']?.toString() ?? '').isNotEmpty)
+            'spendTag': n['spendTag'].toString(),
+        },
+    ];
+    return <String, dynamic>{
+      'notes': snap,
+      'needShe': amount,
+      'allowBare': false,
+      if (needNanos != null && needNanos.isNotEmpty) 'needNanos': needNanos,
+      'cap': kMaxInputsPerSend,
+      'tip': bookTip,
+      'tipMs': tipTimestampMs,
+      'confs': spendableConfirmations,
+      'spentTags': _spentTagHex.toList(),
+      'holdNanos': selectionHoldNanos(
+        lockDebits: _lockDebitNanos.values,
+        reservePrincipals: _reserveHeldNanos.values,
+      ),
+      'memo': memo,
+      'dests': _spendDests(restFrame, paymentCode: paymentCode).toList(),
+    };
   }
 
   Future<Map<String, dynamic>> _planSpendOffUi(
@@ -7452,59 +10921,56 @@ class ShearLedger implements ReadProofSink {
     bool memo = false,
     String? needNanos,
   }) async {
+    await _stampSpendTagsOffUi();
     refreshTimeLockedNotes();
-    final dests = <String>{};
-    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
-      if (!isDestAddress(d)) continue;
-      dests.add(d);
-      dests.add(payKey(d));
-    }
-    for (final n in _notes) {
-      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
-      if (addr.isEmpty) continue;
-      if (isBindable(addr, restFrame: restFrame, paymentCode: paymentCode)) dests.add(addr);
-    }
-    // Same length and order as [_notes]. The planner's index is the book index.
-    final snap = <Map<String, dynamic>>[
-      for (final n in _notes)
-        {
-          'spent': n['spent'] == true,
-          'locked': n['locked'] == true,
-          'sealed': noteHasSealedSpendBytes(n),
-          'address': (n['address'] ?? n['dest'])?.toString() ?? '',
-          'height': n['height'],
-          'amount': n['amount'],
-          'nanos': n['nanos'],
-          'verifiedNanos': n['verifiedNanos'],
-          'kind': (n['kind'] ?? '').toString(),
-          'unlockAtMs': n['unlockAtMs'],
-        },
-    ];
     // flutter_tester's later Isolate.run nulls this closure hook on the
     // caller. The closure captured here survives that, and selection still
     // runs off this isolate. Production leaves the hook null.
     final savedSeal = debugNativeSealNote;
     // The map is built here. The closure must not capture this ledger: a pool
     // that holds a Completer cannot cross to the worker.
-    final input = <String, dynamic>{
-      'notes': snap,
-      'needShe': amount,
-      if (needNanos != null && needNanos.isNotEmpty) 'needNanos': needNanos,
-      'cap': kMaxInputsPerSend,
-      'tip': bookTip,
-      'confs': spendableConfirmations,
-      'holdNanos': selectionHoldNanos(
-        lockDebits: _lockDebitNanos.values,
-        reservePrincipals: _reserveHeldNanos.values,
-      ),
-      'memo': memo,
-      'dests': dests.toList(),
-    };
+    final input = _spendPlanInput(
+      restFrame,
+      paymentCode,
+      amount,
+      memo: memo,
+      needNanos: needNanos,
+    );
     final raw = await Isolate.run(() => selectSpendNotesWire(input));
     debugSendSelectStamp = raw['stamp']?.toString() ?? '';
     debugSendSelectNanos = _selectedNanos(raw);
-    if (debugNativeSealNote == null && savedSeal != null) debugNativeSealNote = savedSeal;
+    if (debugNativeSealNote == null && savedSeal != null)
+      debugNativeSealNote = savedSeal;
     return raw;
+  }
+
+  /// Recipient SHE the flow screen shows before a send. Same split as the post.
+  Future<String?> quoteConfirmRecipientShe({
+    required String restFrame,
+    String? paymentCode,
+    required double amount,
+    String? nanosWire,
+    bool memo = false,
+  }) async {
+    final plan = await _planSpendOffUi(
+      restFrame,
+      paymentCode,
+      amount,
+      memo: memo,
+      needNanos: nanosWire,
+    );
+    if (plan['covered'] != true) return null;
+    final batches = plan['batches'];
+    if (batches is! List || batches.isEmpty) return null;
+    var pay = BigInt.zero;
+    for (final batch in batches) {
+      if (batch is! Map) continue;
+      final n = BigInt.tryParse('${batch['payNanos'] ?? ''}');
+      if (n == null || n <= BigInt.zero) return null;
+      pay += n;
+    }
+    if (pay.bitLength >= 63) return null;
+    return formatSheFromNanos(pay.toInt());
   }
 
   /// Weight-levy quote for [amount]. Selection runs off the UI isolate.
@@ -7518,7 +10984,8 @@ class ShearLedger implements ReadProofSink {
     String? nanosWire,
   }) async {
     final exact = nanosWire != null && nanosWire.isNotEmpty;
-    if (!exact && amount <= 0) return estimateSendLevyUnits(inputs: 1, memo: memo);
+    if (!exact && amount <= 0)
+      return estimateSendLevyUnits(inputs: 1, memo: memo);
     final plan = await _planSpendOffUi(
       restFrame,
       paymentCode,
@@ -7541,12 +11008,9 @@ class ShearLedger implements ReadProofSink {
     }
     var n = 0;
     for (final note in _notes) {
-      if (note['spent'] == true || note['locked'] == true) continue;
-      if (!_noteMature(note)) continue;
       final addr = (note['address'] ?? note['dest'])?.toString() ?? '';
       if (addr.isEmpty || !owned.contains(addr)) continue;
-      if (_storedNoteShe(note) == null || (_storedNoteShe(note) ?? 0) <= 0) continue;
-      if (_noteBytes(note['commit']) == null || _noteBytes(note['r']) == null) continue;
+      if (!_noteIsSpendable(note)) continue;
       n++;
     }
     return n;
@@ -7558,8 +11022,14 @@ class ShearLedger implements ReadProofSink {
     if (_payoutConsolidate != null) return;
     final seed = spendSeed;
     if (seed == null || seed.length != 32) return;
-    if (_matureOwnedCount(restFrame, paymentCode: paymentCode) <= kConsolidateAboveCount) return;
-    _payoutConsolidate = _runPayoutConsolidate(restFrame, paymentCode: paymentCode, seed: seed);
+    if (_matureOwnedCount(restFrame, paymentCode: paymentCode) <=
+        kConsolidateAboveCount)
+      return;
+    _payoutConsolidate = _runPayoutConsolidate(
+      restFrame,
+      paymentCode: paymentCode,
+      seed: seed,
+    );
   }
 
   Future<int> _runPayoutConsolidate(
@@ -7617,18 +11087,15 @@ class ShearLedger implements ReadProofSink {
       }
       final mature = <Map<String, dynamic>>[];
       for (final n in _notes) {
-        if (n['spent'] == true || n['locked'] == true) continue;
-        if (!_noteMature(n)) continue;
         final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
         if (addr.isEmpty || !owned.contains(addr)) continue;
-        final she = _storedNoteShe(n);
-        if (she == null || she <= 0) continue;
-        if (noteNanosExact(n) == null) continue;
-        if (_noteBytes(n['commit']) == null || _noteBytes(n['r']) == null) continue;
+        if (!_noteIsSpendable(n)) continue;
         mature.add(n);
       }
       if (mature.length <= kConsolidateAboveCount) break;
-      mature.sort((a, b) => (_storedNoteShe(a) ?? 0).compareTo(_storedNoteShe(b) ?? 0));
+      mature.sort(
+        (a, b) => (_storedNoteShe(a) ?? 0).compareTo(_storedNoteShe(b) ?? 0),
+      );
       final take = mature.sublist(0, kMaxInputsPerSend);
       var sumN = BigInt.zero;
       var sumExact = true;
@@ -7641,12 +11108,19 @@ class ShearLedger implements ReadProofSink {
         sumN += exact;
       }
       if (!sumExact || sumN <= BigInt.zero) break;
-      final feeQuoted = BigInt.from(estimateSendLevyUnits(inputs: take.length, outputs: 2));
+      final feeQuoted = BigInt.from(
+        estimateSendLevyUnits(inputs: take.length, outputs: 2),
+      );
       if (sumN <= feeQuoted) break;
       final payN = sumN - feeQuoted;
       if (payN.bitLength > 64) break;
-      final src = (take.first['address'] ?? take.first['dest'])?.toString() ?? '';
-      final dest = allocateChangeDest(restFrame, from: src, paymentCode: paymentCode);
+      final src =
+          (take.first['address'] ?? take.first['dest'])?.toString() ?? '';
+      final dest = allocateChangeDest(
+        restFrame,
+        from: src,
+        paymentCode: paymentCode,
+      );
       progress?.bump(phase: 'prove', done: 0, total: take.length);
       await _sendManyNotes(
         notes: take,
@@ -7689,10 +11163,13 @@ class ShearLedger implements ReadProofSink {
   }) async {
     if (notes.isEmpty) throw StateError(kErrNoSealedNote);
     if (pool == null) throw StateError(kErrNoSealedNote);
-    if (!localSendReady(pool!.baseUrl) && !allowPublicHttp) {
+    if (!allowPublicHttp &&
+        (pool!.pinnedPublicWithoutConsent ||
+            !localSendReady(pool!.baseUrl))) {
       throw StateError(kErrPublicHttp);
     }
-    final src = (notes.first['address'] ?? notes.first['dest'])?.toString() ?? '';
+    final src =
+        (notes.first['address'] ?? notes.first['dest'])?.toString() ?? '';
     if (!isDestAddress(src)) throw ArgumentError('bad_send');
     var destTo = to;
     SilentPay? pay;
@@ -7717,27 +11194,60 @@ class ShearLedger implements ReadProofSink {
       inputSum += exact;
     }
     final memoOn = memo != null && memo.isNotEmpty;
-    final feeUnits = estimateSendLevyUnits(inputs: notes.length, outputs: 3, memo: memoOn);
+    final feeUnits = estimateSendLevyUnits(
+      inputs: notes.length,
+      outputs: 3,
+      memo: memoOn,
+    );
     final fee = BigInt.from(feeUnits);
     var payUnits = sendUnitsFromWire(payNanosWire);
     if (payUnits <= BigInt.zero) {
       final scaled = payShe * kUnitsPerShe;
       if (!scaled.isFinite) throw StateError('fee_short');
       final rounded = scaled.round();
-      if (rounded <= 0 || rounded > _kSafeDoubleNanos) throw StateError('fee_short');
-      if ((rounded.toDouble() - scaled).abs() > 1e-4) throw StateError('fee_short');
+      if (rounded <= 0 || rounded > _kSafeDoubleNanos)
+        throw StateError('fee_short');
+      if ((rounded.toDouble() - scaled).abs() > 1e-4)
+        throw StateError('fee_short');
       payUnits = BigInt.from(rounded);
     }
-    if (payUnits + fee > inputSum) payUnits = inputSum - fee;
-    if (payUnits <= BigInt.zero || payUnits.bitLength > 64) throw StateError('fee_short');
+    var heldUnits = BigInt.zero;
+    for (final n in notes) {
+      heldUnits += _heldNanosOf(n, restFrame, paymentCode);
+    }
+    if (heldUnits > BigInt.zero) {
+      final split = holdProtectedPay(
+        noteNanos: inputSum,
+        payNanos: payUnits,
+        feeNanos: fee,
+        heldNanos: heldUnits,
+      );
+      payUnits = split.pay;
+    } else if (payUnits + fee > inputSum) {
+      payUnits = inputSum - fee;
+    }
+    if (payUnits <= BigInt.zero || payUnits.bitLength > 64)
+      throw StateError('fee_short');
     final change = inputSum - payUnits - fee;
-    if (change < BigInt.zero || change.bitLength > 64) throw StateError('fee_short');
+    if (heldUnits > BigInt.zero && change < heldUnits) {
+      throw StateError('fee_short');
+    }
+    debugLastPayNanos = payUnits;
+    debugLastFeeNanos = fee;
+    debugLastChangeNanos = change;
+    if (change < BigInt.zero || change.bitLength > 64)
+      throw StateError('fee_short');
     final payNanos = u64OnWire(payUnits);
     final changeNanos = u64OnWire(change);
     String? changeDest;
     if (change > BigInt.zero) {
-      changeDest = allocateChangeDest(restFrame, from: src, paymentCode: paymentCode);
-      if (changeDest == src || changeDest == destTo) throw ArgumentError('same_dest');
+      changeDest = allocateChangeDest(
+        restFrame,
+        from: src,
+        paymentCode: paymentCode,
+      );
+      if (changeDest == src || changeDest == destTo)
+        throw ArgumentError('same_dest');
     }
     Map<String, dynamic>? memoCt;
     if (memoOn) {
@@ -7746,7 +11256,8 @@ class ShearLedger implements ReadProofSink {
     }
     final vouts = <Map<String, dynamic>>[
       {'address': destTo, 'nanos': payNanos, 'kind': 'send'},
-      if (changeDest != null) {'address': changeDest, 'nanos': changeNanos, 'kind': 'send'},
+      if (changeDest != null)
+        {'address': changeDest, 'nanos': changeNanos, 'kind': 'send'},
       {'kind': 'dummy', 'nanos': 0},
     ];
     if (progress?.cancelRequested == true) throw StateError('send_cancelled');
@@ -7766,7 +11277,12 @@ class ShearLedger implements ReadProofSink {
     final total = proveTotal < notes.length ? notes.length : proveTotal;
     if (progress?.cancelRequested == true) throw StateError('send_cancelled');
     progress?.bump(phase: 'prove', done: done, total: total);
-    final spend = await _fs1Spend(notes: notes, sealed: sealed, fee: feeUnits, spendSeed: spendSeed);
+    final spend = await _fs1Spend(
+      notes: notes,
+      sealed: sealed,
+      fee: feeUnits,
+      spendSeed: spendSeed,
+    );
     final vin = spend.vin;
     final proofs = spend.proofs;
     final excess = spend.excess;
@@ -7778,12 +11294,21 @@ class ShearLedger implements ReadProofSink {
       throw StateError('unspendable_dest');
     }
     final postedVin = List<Map<String, dynamic>>.from(
-      (posted['vin'] as List).whereType<Map>().map((v) => Map<String, dynamic>.from(v)),
+      (posted['vin'] as List).whereType<Map>().map(
+        (v) => Map<String, dynamic>.from(v),
+      ),
     );
     final postedVout = List<Map<String, dynamic>>.from(
-      (posted['vout'] as List).whereType<Map>().map((v) => Map<String, dynamic>.from(v)),
+      (posted['vout'] as List).whereType<Map>().map(
+        (v) => Map<String, dynamic>.from(v),
+      ),
     );
-    final msg = spendMessage(from: src, vout: postedVout, kind: 'send', vin: postedVin);
+    final msg = spendMessage(
+      from: src,
+      vout: postedVout,
+      kind: 'send',
+      vin: postedVin,
+    );
     final shared = _stealthShared[src];
     final signed = await signSpendOffUi(<String, dynamic>{
       'spendSeed': spendSeed,
@@ -7829,7 +11354,9 @@ class ShearLedger implements ReadProofSink {
           : proofs.first,
       admitProofs: wire['admitProofs'] is List
           ? List<Map<String, dynamic>>.from(
-              (wire['admitProofs'] as List).whereType<Map>().map((p) => Map<String, dynamic>.from(p)),
+              (wire['admitProofs'] as List).whereType<Map>().map(
+                (p) => Map<String, dynamic>.from(p),
+              ),
             )
           : null,
       spendTag: proofs.first['spendTag'] is Uint8List
@@ -7855,11 +11382,13 @@ class ShearLedger implements ReadProofSink {
       if ((o['kind'] as String?) == 'dummy') continue;
       final addr = o['address'] as String?;
       if (addr == null) continue;
-      final ours = addr == src ||
+      final ours =
+          addr == src ||
           addr == changeDest ||
           isBindable(addr, restFrame: restFrame, paymentCode: paymentCode);
       if (!ours) continue;
-      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
+      if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit'])))
+        continue;
       rememberNote({
         'address': addr,
         'dest': addr,
@@ -7876,12 +11405,15 @@ class ShearLedger implements ReadProofSink {
         if (o['valueProof'] != null) 'valueProof': o['valueProof'],
         if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
         if (o['nanos'] != null) 'nanos': o['nanos'],
-        if (tryU64Units(o['nanos']) != null && _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
+        if (tryU64Units(o['nanos']) != null &&
+            _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
           'amount': _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()),
       });
       _proofCheckedDests.add(payKey(addr));
       final addUnits = tryU64Units(o['nanos']);
-      final add = addUnits == null ? null : _sheOfExactNanos(addUnits.toString());
+      final add = addUnits == null
+          ? null
+          : _sheOfExactNanos(addUnits.toString());
       if (add != null && addr != changeDest) {
         _spendable[payKey(addr)] = spendable(payKey(addr)) + add;
         _dests.add(addr);
@@ -7895,7 +11427,7 @@ class ShearLedger implements ReadProofSink {
       _dests.add(changeDest);
     }
     final echoed = Map<String, dynamic>.from(json['tx'] as Map);
-    echoed['amount'] ??= _sheOfExactNanos(payUnits.toString()) ?? payShe;
+    echoed['amount'] = _sheOfExactNanos(payUnits.toString()) ?? payShe;
     echoed['from'] ??= src;
     final raw = ShearTx.fromJson(echoed);
     final tx = ShearTx(
@@ -7909,6 +11441,98 @@ class ShearLedger implements ReadProofSink {
       memo: memoCt != null || raw.memo,
       memoPlain: memo,
       memoCt: memoCt ?? raw.memoCt,
+      change: changeDest,
+    );
+    _txs.add(tx);
+    return tx;
+  }
+
+  /// Local multi-note send. The same hold split as [_sendManyNotes], without
+  /// a proof, so a test can see the recipient, the fee, and the change.
+  Future<ShearTx> _sendLocalHeldBatch({
+    required String from,
+    required String to,
+    required double amount,
+    required String restFrame,
+    String? paymentCode,
+    String? nanosWire,
+    String? memo,
+  }) async {
+    final plan = await _planSpendOffUi(
+      restFrame,
+      paymentCode,
+      amount,
+      memo: memo != null && memo.isNotEmpty,
+      needNanos: nanosWire,
+    );
+    if (plan['covered'] != true) {
+      if (plan['shortFee'] == true) throw StateError('fee_short');
+      throw fundsRefusal(amount);
+    }
+    final raw = (plan['batches'] as List? ?? const [])
+        .whereType<Map>()
+        .toList();
+    if (raw.length != 1) throw StateError('insufficient');
+    final notes = <Map<String, dynamic>>[];
+    for (final spec
+        in (raw.single['notes'] as List? ?? const []).whereType<Map>()) {
+      final i = spec['index'];
+      if (i is! num || i < 0 || i >= _notes.length) continue;
+      notes.add(_notes[i.toInt()]);
+    }
+    if (notes.length < 2) throw StateError('insufficient');
+    var input = BigInt.zero;
+    var held = BigInt.zero;
+    for (final n in notes) {
+      final exact = noteNanosExact(n);
+      if (exact == null) throw StateError('fee_short');
+      input += exact;
+      held += _heldNanosOf(n, restFrame, paymentCode);
+    }
+    final fee = BigInt.from(
+      estimateSendLevyUnits(
+        inputs: notes.length,
+        outputs: 3,
+        memo: memo != null && memo.isNotEmpty,
+      ),
+    );
+    var pay = sendUnitsFromWire(nanosWire);
+    if (pay <= BigInt.zero) {
+      final rounded = (amount * kUnitsPerShe).round();
+      if (rounded > 0) pay = BigInt.from(rounded);
+    }
+    final split = holdProtectedPay(
+      noteNanos: input,
+      payNanos: pay,
+      feeNanos: fee,
+      heldNanos: held,
+    );
+    if (split.pay <= BigInt.zero || split.change < held) {
+      throw StateError('fee_short');
+    }
+    debugLastPayNanos = split.pay;
+    debugLastFeeNanos = fee;
+    debugLastChangeNanos = split.change;
+    final postedShe = _sheOfExactNanos(split.pay.toString()) ?? amount;
+    String? changeDest;
+    if (split.change > BigInt.zero) {
+      changeDest = allocateChangeDest(
+        restFrame,
+        from: from,
+        paymentCode: paymentCode,
+      );
+      _rememberBuiltChange(changeDest, split.change);
+    }
+    for (final n in notes) {
+      n['spent'] = true;
+    }
+    final tx = ShearTx(
+      id: 'send-${DateTime.now().millisecondsSinceEpoch}',
+      from: from,
+      to: to,
+      amount: postedShe,
+      kind: 'send',
+      confirmed: false,
       change: changeDest,
     );
     _txs.add(tx);
@@ -7940,8 +11564,14 @@ class ShearLedger implements ReadProofSink {
     SendProgress? progress,
     String? nanosWire,
   }) async {
-    final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
-    Future<ShearTx> once(double pay, String src, {Map<String, dynamic>? note, String? payNanos}) {
+    final sendKind =
+        kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
+    Future<ShearTx> once(
+      double pay,
+      String src, {
+      Map<String, dynamic>? note,
+      String? payNanos,
+    }) {
       final wire = (payNanos != null && payNanos.isNotEmpty) ? payNanos : null;
       return send(
         from: src,
@@ -7968,8 +11598,23 @@ class ShearLedger implements ReadProofSink {
         nanosWire: wire,
       );
     }
-    if (sendKind != 'send' || local || paintedCover || restFrame == null) {
+
+    if (sendKind != 'send' || paintedCover || restFrame == null) {
       return once(amount, from, payNanos: nanosWire);
+    }
+    if (local) {
+      if (_matureOwnedCount(restFrame, paymentCode: paymentCode) <= 1) {
+        return once(amount, from, payNanos: nanosWire);
+      }
+      return _sendLocalHeldBatch(
+        from: from,
+        to: to,
+        amount: amount,
+        restFrame: restFrame,
+        paymentCode: paymentCode,
+        nanosWire: nanosWire,
+        memo: memo,
+      );
     }
     if (spendSeed == null || spendSeed.length != 32 || pool == null) {
       return once(amount, from, payNanos: nanosWire);
@@ -7984,13 +11629,18 @@ class ShearLedger implements ReadProofSink {
       needNanos: nanosWire,
     );
     if (progress?.cancelRequested == true) throw StateError('send_cancelled');
-    final rawBatches = (plan['batches'] as List? ?? const []).whereType<Map>().toList();
+    final rawBatches = (plan['batches'] as List? ?? const [])
+        .whereType<Map>()
+        .toList();
     if (plan['covered'] != true || rawBatches.isEmpty) {
       if (plan['shortFee'] == true) throw StateError('fee_short');
+      final refusal = fundsRefusal(amount);
+      if (refusal.message == kErrHeaderSync) throw refusal;
       if (plan['empty'] == true) throw StateError(kErrNoSealedNote);
-      throw StateError('insufficient');
+      throw refusal;
     }
-    final batches = <({double pay, String payNanos, List<Map<String, dynamic>> notes})>[];
+    final batches =
+        <({double pay, String payNanos, List<Map<String, dynamic>> notes})>[];
     for (final b in rawBatches) {
       final specs = (b['notes'] as List? ?? const []).whereType<Map>().toList();
       final refs = <Map<String, dynamic>>[];
@@ -8011,7 +11661,9 @@ class ShearLedger implements ReadProofSink {
       final only = batches.single;
       final tx = await once(
         only.pay,
-        (only.notes.single['address'] ?? only.notes.single['dest'])?.toString() ?? from,
+        (only.notes.single['address'] ?? only.notes.single['dest'])
+                ?.toString() ??
+            from,
         note: only.notes.single,
         payNanos: only.payNanos,
       );
@@ -8027,7 +11679,9 @@ class ShearLedger implements ReadProofSink {
         progress?.bump(phase: 'prove', done: done, total: totalProofs);
         last = await once(
           batch.pay,
-          (batch.notes.single['address'] ?? batch.notes.single['dest'])?.toString() ?? from,
+          (batch.notes.single['address'] ?? batch.notes.single['dest'])
+                  ?.toString() ??
+              from,
           note: batch.notes.single,
           payNanos: batch.payNanos,
         );
@@ -8050,7 +11704,8 @@ class ShearLedger implements ReadProofSink {
         );
         done += batch.notes.length;
       }
-      if (Platform.environment['FLUTTER_TEST'] != 'true' && batches.length > 1) {
+      if (Platform.environment['FLUTTER_TEST'] != 'true' &&
+          batches.length > 1) {
         await Future<void>.delayed(const Duration(milliseconds: 40));
       }
     }
@@ -8070,8 +11725,15 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Notes whose individual rooms are under [amount], together covering it.
-  List<({String dest, double pay})> _sumSlices(String restFrame, String? paymentCode, double amount) {
-    final owned = moneyDests(restFrame, paymentCode: paymentCode).map(payKey).toSet();
+  List<({String dest, double pay})> _sumSlices(
+    String restFrame,
+    String? paymentCode,
+    double amount,
+  ) {
+    final owned = moneyDests(
+      restFrame,
+      paymentCode: paymentCode,
+    ).map(payKey).toSet();
     final rows = <({String dest, double room})>[];
     for (final n in _notes) {
       if (n['spent'] == true) continue;
@@ -8130,7 +11792,8 @@ class ShearLedger implements ReadProofSink {
     Map<String, dynamic>? spendNote,
     String? nanosWire,
   }) async {
-    final sendKind = kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
+    final sendKind =
+        kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
     if (sendKind != 'vote' && amount <= 0) throw ArgumentError('amount');
     if (isShearAddress(from)) {
       throw ArgumentError('rest_frame');
@@ -8158,8 +11821,9 @@ class ShearLedger implements ReadProofSink {
     }
     if (!local &&
         pool != null &&
-        !localSendReady(pool!.baseUrl) &&
-        !allowPublicHttp) {
+        !allowPublicHttp &&
+        (pool!.pinnedPublicWithoutConsent ||
+            !localSendReady(pool!.baseUrl))) {
       throw StateError(kErrPublicHttp);
     }
     if (sendKind == 'send' && destTo == from) {
@@ -8168,7 +11832,9 @@ class ShearLedger implements ReadProofSink {
     if (sendKind == 'send' && change != null && change == from) {
       throw ArgumentError('same_dest');
     }
-    if (sendKind == 'send' && restFrame != null && (viewSecret ?? '').isNotEmpty) {
+    if (sendKind == 'send' &&
+        restFrame != null &&
+        (viewSecret ?? '').isNotEmpty) {
       final portal = vaultDest(restFrame, viewKey: viewSecret!);
       if (portal != null && (destTo == portal || change == portal)) {
         throw ArgumentError('portal_change');
@@ -8184,7 +11850,10 @@ class ShearLedger implements ReadProofSink {
     }
     if (spendPub != null && spendPub!.length == 32) {
       if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
-        src = encodeDestAddress(destCommitFromSpendPub(spendPub!), admitBase ?? _admitBaseOf(paymentCode));
+        src = encodeDestAddress(
+          destCommitFromSpendPub(spendPub!),
+          admitBase ?? _admitBaseOf(paymentCode),
+        );
       }
     }
     var depth = 0;
@@ -8198,10 +11867,13 @@ class ShearLedger implements ReadProofSink {
       } catch (_) {}
     }
     final taxed = levyTaxed(sendKind);
-    var payUnits = sendKind == 'vote' ? BigInt.zero : sendUnitsFromWire(nanosWire);
+    var payUnits = sendKind == 'vote'
+        ? BigInt.zero
+        : sendUnitsFromWire(nanosWire);
     if (payUnits <= BigInt.zero && sendKind != 'vote') {
       final rounded = (amount * kUnitsPerShe).round();
-      if (rounded > 0 && rounded <= _kSafeDoubleNanos) payUnits = BigInt.from(rounded);
+      if (rounded > 0 && rounded <= _kSafeDoubleNanos)
+        payUnits = BigInt.from(rounded);
     }
     final nanos = payUnits.bitLength <= 63 ? payUnits.toInt() : 0;
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
@@ -8210,7 +11882,8 @@ class ShearLedger implements ReadProofSink {
       final home = homeDest(restFrame, paymentCode: paymentCode);
       final short = spendable(src) + 1e-12 < needShe;
       if (src == home || short) {
-        if (spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >= needShe) {
+        if (spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >=
+            needShe) {
           src = consolidateSpendableForLock(
             restFrame,
             paymentCode: paymentCode,
@@ -8227,7 +11900,8 @@ class ShearLedger implements ReadProofSink {
     if (src != from &&
         spendable(src) + 1e-12 < needShe &&
         restFrame != null &&
-        spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >= needShe) {
+        spendableOwned(restFrame, paymentCode: paymentCode) + 1e-12 >=
+            needShe) {
       _moveSpendableOnto(src);
     }
     if (sendKind == 'send' &&
@@ -8236,7 +11910,11 @@ class ShearLedger implements ReadProofSink {
         _coinLedger != null &&
         src == _coinLedger &&
         !_ownsSealedOn(src)) {
-      final hopped = _hopOffMiningMailbox(src, restFrame, paymentCode: paymentCode);
+      final hopped = _hopOffMiningMailbox(
+        src,
+        restFrame,
+        paymentCode: paymentCode,
+      );
       if (hopped != src) src = hopped;
     }
     // A withdraw pays the reserve principal. Continuum spendable is not the source.
@@ -8245,8 +11923,15 @@ class ShearLedger implements ReadProofSink {
       final owned = restFrame == null
           ? usable
           : spendableOwned(restFrame, paymentCode: paymentCode);
-      if (usable + 1e-12 < needShe && owned + 1e-12 < needShe) {
-        throw StateError('insufficient');
+      if (usable + 1e-12 < amount && owned + 1e-12 < amount) {
+        if (sendKind == 'send') {
+          _releaseUnbackedSpendable(
+            src,
+            restFrame: restFrame,
+            paymentCode: paymentCode,
+          );
+        }
+        throw fundsRefusal(amount);
       }
       final pk = payKey(src);
       if (usable + 1e-12 >= needShe && spendable(pk) > usable + 1e-12) {
@@ -8265,74 +11950,73 @@ class ShearLedger implements ReadProofSink {
         _spendable[src] = fromNotes;
       }
     }
-    if (sendKind != 'withdraw' && spendable(src) < needShe) {
+    if (sendKind != 'withdraw' && spendable(src) < amount) {
       final owned = restFrame == null
           ? spendable(src)
           : spendableOwned(restFrame, paymentCode: paymentCode);
-      if (owned + 1e-12 < needShe) throw StateError('insufficient');
+      if (owned + 1e-12 < amount) {
+        if (sendKind == 'send') {
+          _releaseUnbackedSpendable(
+            src,
+            restFrame: restFrame,
+            paymentCode: paymentCode,
+          );
+        }
+        throw fundsRefusal(amount);
+      }
     }
     Map<String, dynamic>? spent;
     Map<String, dynamic>? chosen;
     var fundedShe = spendable(src);
-    if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local && !paintedCover) {
+    if (sendKind == 'send' &&
+        spendSeed != null &&
+        spendSeed.length == 32 &&
+        pool != null &&
+        !local &&
+        !paintedCover) {
       // The planner already chose this note off the UI isolate. Do not scan
       // spend tags for every other note.
       if (spendNote != null) {
         chosen = spendNote;
-        final addr = (spendNote['address'] ?? spendNote['dest'])?.toString() ?? '';
+        final addr =
+            (spendNote['address'] ?? spendNote['dest'])?.toString() ?? '';
         if (addr.isNotEmpty) src = addr;
         fundedShe = _storedNoteShe(spendNote) ?? spendable(src);
       } else {
-      // Pull the pool note list when the local book has no covering note.
-      await _fluxColumns();
-      Map<String, dynamic>? pick(String fromDest, {bool ignoreConfs = false}) =>
-          _pickSpendNote(
-            fromDest,
-            needShe,
-            spendSeed,
-            ignoreConfs: ignoreConfs,
-            amountFallback: spendable(fromDest),
-          );
-      void adopt(String fromDest, Map<String, dynamic> note) {
-        spent = note;
-        src = fromDest;
-      }
-      bool sealedOn(String d) => _ownsSealedOn(d);
-      var hadLocal = sealedOn(src);
-      if (!hadLocal && restFrame != null) {
-        for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
-          if (sealedOn(d)) {
-            hadLocal = true;
-            break;
-          }
-        }
-      }
-      final first = pick(src);
-      if (first != null) {
-        adopt(src, first);
-      } else if (restFrame != null) {
-        for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
-          if (d == src) continue;
-          final alt = pick(d);
-          if (alt != null) {
-            adopt(d, alt);
-            break;
-          }
-        }
-      }
-      // Collate when the local book has no sealed note. A spend-tag reject
-      // stays no_note; the book is then rebuilt from the notes still held.
-      if (spent == null && !hadLocal) {
-        await collateSpendNotes(
-          dest: src,
-          restFrame: restFrame,
-          paymentCode: paymentCode,
+        // Pull the pool note list when the local book has no covering note.
+        await _fluxColumns();
+        await _stampSpendTagsOffUi();
+        Map<String, dynamic>? pick(
+          String fromDest, {
+          bool ignoreConfs = false,
+        }) => _pickSpendNote(
+          fromDest,
+          needShe,
+          spendSeed,
+          ignoreConfs: ignoreConfs,
+          amountFallback: spendable(fromDest),
         );
-        final again = pick(src);
-        if (again != null) {
-          adopt(src, again);
+        void adopt(String fromDest, Map<String, dynamic> note) {
+          spent = note;
+          src = fromDest;
+        }
+
+        bool sealedOn(String d) => _ownsSealedOn(d);
+        var hadLocal = sealedOn(src);
+        if (!hadLocal && restFrame != null) {
+          for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+            if (sealedOn(d)) {
+              hadLocal = true;
+              break;
+            }
+          }
+        }
+        final first = pick(src);
+        if (first != null) {
+          adopt(src, first);
         } else if (restFrame != null) {
           for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+            if (d == src) continue;
             final alt = pick(d);
             if (alt != null) {
               adopt(d, alt);
@@ -8340,66 +12024,127 @@ class ShearLedger implements ReadProofSink {
             }
           }
         }
-      }
-      // 9 confirmations stay in force. A balance snapshot does not make a
-      // young note spendable.
-      // After the picker misses, the book is the notes we can actually spend
-      // so Continuum does not keep claiming a cover this send cannot use.
-      if (spent == null) {
-        final keys = <String>{payKey(src), payKey(from)};
-        if (restFrame != null) {
-          for (final d in syncDests(restFrame, paymentCode: paymentCode)) {
-            if (isDestAddress(d)) keys.add(payKey(d));
+        // Collate when the local book has no sealed note. A spend-tag reject
+        // stays no_note; the book is then rebuilt from the notes still held.
+        if (spent == null && !hadLocal) {
+          await collateSpendNotes(
+            dest: src,
+            restFrame: restFrame,
+            paymentCode: paymentCode,
+          );
+          final again = pick(src);
+          if (again != null) {
+            adopt(src, again);
+          } else if (restFrame != null) {
+            for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+              final alt = pick(d);
+              if (alt != null) {
+                adopt(d, alt);
+                break;
+              }
+            }
           }
         }
-        for (final key in keys) {
-          if (!isDestAddress(key)) continue;
-          _spendable[key] = inventoriedNoteShe(key, sum: true);
+        // 9 confirmations stay in force. A balance snapshot does not make a
+        // young note spendable.
+        // After the picker misses, the book is the notes we can actually spend
+        // so Continuum does not keep claiming a cover this send cannot use.
+        if (spent == null) {
+          final keys = <String>{payKey(src), payKey(from)};
+          if (restFrame != null) {
+            for (final d in syncDests(restFrame, paymentCode: paymentCode)) {
+              if (isDestAddress(d)) keys.add(payKey(d));
+            }
+          }
+          for (final key in keys) {
+            if (!isDestAddress(key)) continue;
+            _spendable[key] = inventoriedNoteShe(key, sum: true);
+          }
+          throw StateError(hadLocal ? 'no_note' : kErrNoSealedNote);
         }
-        throw StateError(hadLocal ? 'no_note' : kErrNoSealedNote);
-      }
-      chosen = spent;
-      fundedShe = _noteSheOf(chosen!, spendable(src));
+        chosen = spent;
+        fundedShe = _noteSheOf(chosen!, spendable(src));
       }
     }
     String? changeDest = change;
     // Change is the note minus the pay minus the weight-floor levy.
     // A double must not round it or drop it once it no longer fits in 2^53.
     final feeUnits = BigInt.from(levy < 0 ? 0 : levy);
-    final fundedUnits = sendKind == 'send' ? fundedSendUnits(chosen ?? spendNote, fundedShe) : null;
+    final fundedUnits = sendKind == 'send'
+        ? fundedSendUnits(chosen ?? spendNote, fundedShe)
+        : null;
     BigInt? changeUnits;
-    if (fundedUnits != null && (chosen != null || spendNote != null) && noteNanosExact((chosen ?? spendNote)!) != null) {
-      final cost = payUnits + feeUnits;
-      if (cost > fundedUnits) throw StateError('insufficient');
-      final next = fundedUnits - cost;
-      if (next.bitLength > 64) throw StateError('fee_short');
-      changeUnits = next;
+    if (fundedUnits != null &&
+        (chosen != null || spendNote != null) &&
+        noteNanosExact((chosen ?? spendNote)!) != null) {
+      final note = (chosen ?? spendNote)!;
+      final heldUnits = _heldNanosOf(note, restFrame, paymentCode);
+      if (heldUnits > BigInt.zero) {
+        final split = holdProtectedPay(
+          noteNanos: fundedUnits,
+          payNanos: payUnits,
+          feeNanos: feeUnits,
+          heldNanos: heldUnits,
+        );
+        if (payUnits > BigInt.zero && split.pay <= BigInt.zero) {
+          throw StateError('insufficient');
+        }
+        payUnits = split.pay;
+        changeUnits = split.change;
+      } else {
+        final cost = payUnits + feeUnits;
+        if (cost > fundedUnits) throw StateError('insufficient');
+        final next = fundedUnits - cost;
+        if (next.bitLength > 64) throw StateError('fee_short');
+        changeUnits = next;
+      }
     }
+    debugLastChangeNanos = changeUnits;
+    if (sendKind == 'send') {
+      debugLastPayNanos = payUnits;
+      debugLastFeeNanos = feeUnits;
+    }
+    final postedShe = sendKind == 'send'
+        ? (_sheOfExactNanos(payUnits.toString()) ?? amount)
+        : amount;
     if (sendKind == 'send') {
       String? portal;
       if (restFrame != null && (viewSecret ?? '').isNotEmpty) {
         portal = vaultDest(restFrame, viewKey: viewSecret!);
       }
       final leftover = fundedShe - needShe;
-      final wantsChange = changeUnits != null ? changeUnits > BigInt.zero : leftover > 1e-18;
+      final wantsChange = changeUnits != null
+          ? changeUnits > BigInt.zero
+          : leftover > 1e-18;
       if (wantsChange) {
         final derive = restFrame ?? src;
         if (paymentCode != null && isFullPaymentCode(paymentCode)) {
           final payChange = silentPay(paymentCode);
           changeDest ??= payChange?.dest;
-          if (payChange != null) _stealthShared[payChange.dest] = payChange.shared;
+          if (payChange != null)
+            _stealthShared[payChange.dest] = payChange.shared;
           if (changeDest == src || changeDest == portal) {
             final again = silentPay(paymentCode);
             changeDest = again?.dest;
             if (again != null) _stealthShared[again.dest] = again.shared;
           }
         } else if ((viewSecret ?? '').isNotEmpty) {
-          changeDest ??= allocateChangeDest(derive, from: src, portalDest: portal, paymentCode: paymentCode);
+          changeDest ??= allocateChangeDest(
+            derive,
+            from: src,
+            portalDest: portal,
+            paymentCode: paymentCode,
+          );
         } else {
           throw ArgumentError('same_dest');
         }
       }
-      refuseSheetChange(from: src, to: destTo, change: changeDest, portalDest: portal);
+      refuseSheetChange(
+        from: src,
+        to: destTo,
+        change: changeDest,
+        portalDest: portal,
+      );
       rememberSpentDest(src);
       rememberSpentDest(destTo);
       if (changeDest != null) rememberSpentDest(changeDest);
@@ -8417,12 +12162,20 @@ class ShearLedger implements ReadProofSink {
     if (sendKind == 'send' && changeDest != null) {
       if (changeUnits != null) {
         if (changeUnits > BigInt.zero) {
-          vouts.add({'address': changeDest, 'nanos': u64OnWire(changeUnits), 'kind': 'send'});
+          vouts.add({
+            'address': changeDest,
+            'nanos': u64OnWire(changeUnits),
+            'kind': 'send',
+          });
         }
       } else {
         final leftoverNanos = ((fundedShe - needShe) * kUnitsPerShe).round();
         if (leftoverNanos > 0 && leftoverNanos <= _kSafeDoubleNanos) {
-          vouts.add({'address': changeDest, 'nanos': leftoverNanos, 'kind': 'send'});
+          vouts.add({
+            'address': changeDest,
+            'nanos': leftoverNanos,
+            'kind': 'send',
+          });
         }
       }
     }
@@ -8430,14 +12183,18 @@ class ShearLedger implements ReadProofSink {
       vouts.add({'kind': 'dummy', 'nanos': 0});
     }
     List<Map<String, dynamic>> vin = [
-      {'address': src}
+      {'address': src},
     ];
     Map<String, dynamic>? admitProof;
     dynamic excess;
     String? fs1Hex;
     int? fs1Anchor;
     final flowFee = levy < 0 ? 0 : levy;
-    if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
+    if (sendKind == 'send' &&
+        spendSeed != null &&
+        spendSeed.length == 32 &&
+        pool != null &&
+        !local) {
       if (chosen == null && paintedCover) {
         final sealed = sealPaintedSpendVouts([
           for (final o in vouts) Map<String, dynamic>.from(o),
@@ -8449,59 +12206,70 @@ class ShearLedger implements ReadProofSink {
         throw StateError('no_note');
       }
       if (chosen != null) {
-      final note = chosen!;
-      if (!noteHasSealedSpendBytes(note)) throw StateError('no_note');
-      final sealedBuilt = await _sealFlowOffUi({
-        'spendSeed': spendSeed,
-        'destTo': destTo,
-        'src': src,
-        'changeDest': changeDest,
-        'admitBase': admitBase ?? _admitBaseOf(paymentCode),
-        'vouts': [for (final o in vouts) Map<String, dynamic>.from(o)],
-      });
-      final sealed = <Map<String, dynamic>>[
-        for (final raw in (sealedBuilt['vouts'] as List))
-          Map<String, dynamic>.from(raw as Map),
-      ];
-      vouts
-        ..clear()
-        ..addAll(sealed);
-      for (var i = 0; i < vouts.length; i++) {
-        final o = vouts[i];
-        if ((o['kind'] as String?) == 'dummy') continue;
-        final addr = o['address'] as String?;
-        if (addr == null || addr.isEmpty) continue;
-        if (addr == src || addr == changeDest) {
-          if (!noteIsFs1Leaf(_noteBytes(o['admitPub']), _noteBytes(o['commit']))) continue;
-          rememberNote({
-            'address': addr,
-            'dest': addr,
-            'kind': o['kind'] ?? 'send',
-            'commit': o['commit'],
-            'noteCommit': o['noteCommit'],
-            'r': o['r'],
-            'rEph': o['rEph'],
-            'rCt': o['rCt'],
-            'admitPub': o['admitPub'],
-            'index': i,
-            'prev': Uint8List(32),
-            if (o['valueProof'] != null) 'valueProof': o['valueProof'],
-            if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
-            if (o['nanos'] != null) 'nanos': o['nanos'],
-            if (tryU64Units(o['nanos']) != null && _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
-              'amount': _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()),
-          });
+        final note = chosen!;
+        if (!noteHasSealedSpendBytes(note)) throw StateError('no_note');
+        final sealedBuilt = await _sealFlowOffUi({
+          'spendSeed': spendSeed,
+          'destTo': destTo,
+          'src': src,
+          'changeDest': changeDest,
+          'admitBase': admitBase ?? _admitBaseOf(paymentCode),
+          'vouts': [for (final o in vouts) Map<String, dynamic>.from(o)],
+        });
+        final sealed = <Map<String, dynamic>>[
+          for (final raw in (sealedBuilt['vouts'] as List))
+            Map<String, dynamic>.from(raw as Map),
+        ];
+        vouts
+          ..clear()
+          ..addAll(sealed);
+        for (var i = 0; i < vouts.length; i++) {
+          final o = vouts[i];
+          if ((o['kind'] as String?) == 'dummy') continue;
+          final addr = o['address'] as String?;
+          if (addr == null || addr.isEmpty) continue;
+          if (addr == src || addr == changeDest) {
+            if (!noteIsFs1Leaf(
+              _noteBytes(o['admitPub']),
+              _noteBytes(o['commit']),
+            ))
+              continue;
+            rememberNote({
+              'address': addr,
+              'dest': addr,
+              'kind': o['kind'] ?? 'send',
+              'commit': o['commit'],
+              'noteCommit': o['noteCommit'],
+              'r': o['r'],
+              'rEph': o['rEph'],
+              'rCt': o['rCt'],
+              'admitPub': o['admitPub'],
+              'index': i,
+              'prev': Uint8List(32),
+              if (o['valueProof'] != null) 'valueProof': o['valueProof'],
+              if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
+              if (o['nanos'] != null) 'nanos': o['nanos'],
+              if (tryU64Units(o['nanos']) != null &&
+                  _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()) != null)
+                'amount': _sheOfExactNanos(tryU64Units(o['nanos'])!.toString()),
+            });
+          }
         }
-      }
-      if (progress?.cancelRequested == true) throw StateError('send_cancelled');
-      progress?.bump(phase: 'prove', done: 0, total: 1);
-      final spend = await _fs1Spend(notes: [note], sealed: vouts, fee: flowFee, spendSeed: spendSeed);
-      vin = spend.vin;
-      excess = spend.excess;
-      admitProof = spend.proofs.first;
-      fs1Hex = _bytesHex(spend.fs1);
-      fs1Anchor = spend.anchor;
-      progress?.bump(phase: 'prove', done: 1, total: 1);
+        if (progress?.cancelRequested == true)
+          throw StateError('send_cancelled');
+        progress?.bump(phase: 'prove', done: 0, total: 1);
+        final spend = await _fs1Spend(
+          notes: [note],
+          sealed: vouts,
+          fee: flowFee,
+          spendSeed: spendSeed,
+        );
+        vin = spend.vin;
+        excess = spend.excess;
+        admitProof = spend.proofs.first;
+        fs1Hex = _bytesHex(spend.fs1);
+        fs1Anchor = spend.anchor;
+        progress?.bump(phase: 'prove', done: 1, total: 1);
       }
     }
     List<Map<String, dynamic>> postedVin;
@@ -8556,7 +12324,8 @@ class ShearLedger implements ReadProofSink {
       final boundFee = built['fee'];
       if (boundFee is int && boundFee > 0) reserveFee = boundFee;
       if (built['id'] is String) postedWithdrawId = built['id'] as String;
-      if (built['withdrawNonce'] is String) postedWithdrawNonce = built['withdrawNonce'] as String;
+      if (built['withdrawNonce'] is String)
+        postedWithdrawNonce = built['withdrawNonce'] as String;
     } else {
       postedVin = _postedVin(vin);
       postedVout = _postedVout(vouts);
@@ -8565,7 +12334,12 @@ class ShearLedger implements ReadProofSink {
           throw StateError('unspendable_dest');
         }
         // Sign the posted C̃-only vin/vout so spendPackDigest matches the server.
-        final msg = spendMessage(from: src, vout: postedVout, kind: sendKind, vin: postedVin);
+        final msg = spendMessage(
+          from: src,
+          vout: postedVout,
+          kind: sendKind,
+          vin: postedVin,
+        );
         final shared = _stealthShared[src];
         final signed = await signSpendOffUi(<String, dynamic>{
           'spendSeed': spendSeed,
@@ -8590,7 +12364,7 @@ class ShearLedger implements ReadProofSink {
           publicConsent: publicConsent,
           from: src,
           to: destTo,
-          amount: sendKind == 'vote' ? 0 : amount,
+          amount: sendKind == 'vote' ? 0 : postedShe,
           memoCt: memoCt,
           kind: sendKind,
           programId: programId,
@@ -8605,7 +12379,9 @@ class ShearLedger implements ReadProofSink {
           vout: List<dynamic>.from(wire['vout'] as List? ?? const []),
           excess: excess is Uint8List ? _bytesHex(excess) : excess,
           admitProof: proof is Map ? Map<String, dynamic>.from(proof) : null,
-          admitProofs: fs1Hex != null && proof is Map ? [Map<String, dynamic>.from(proof)] : null,
+          admitProofs: fs1Hex != null && proof is Map
+              ? [Map<String, dynamic>.from(proof)]
+              : null,
           spendTag: admitProof?['spendTag'] is Uint8List
               ? _bytesHex(admitProof!['spendTag'] as Uint8List)
               : admitProof?['spendTag']?.toString(),
@@ -8625,15 +12401,30 @@ class ShearLedger implements ReadProofSink {
         final retryNote = chosen;
         // A stale anchor is the one reject a fresh prove can fix. C̃ changes
         // with every prove, so vin, excess, and the signature are rebuilt.
-        if (attempt > 0 && sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && retryNote != null && fs1Hex != null) {
-          final spend = await _fs1Spend(notes: [retryNote], sealed: vouts, fee: flowFee, spendSeed: spendSeed);
+        if (attempt > 0 &&
+            sendKind == 'send' &&
+            spendSeed != null &&
+            spendSeed.length == 32 &&
+            retryNote != null &&
+            fs1Hex != null) {
+          final spend = await _fs1Spend(
+            notes: [retryNote],
+            sealed: vouts,
+            fee: flowFee,
+            spendSeed: spendSeed,
+          );
           vin = spend.vin;
           excess = spend.excess;
           admitProof = spend.proofs.first;
           fs1Hex = _bytesHex(spend.fs1);
           fs1Anchor = spend.anchor;
           postedVin = _postedVin(vin);
-          final msg = spendMessage(from: src, vout: postedVout, kind: sendKind, vin: postedVin);
+          final msg = spendMessage(
+            from: src,
+            vout: postedVout,
+            kind: sendKind,
+            vin: postedVin,
+          );
           final shared = _stealthShared[src];
           final signed = await signSpendOffUi(<String, dynamic>{
             'spendSeed': spendSeed,
@@ -8652,7 +12443,11 @@ class ShearLedger implements ReadProofSink {
           kind: sendKind,
         );
         final why = json['reason']?.toString() ?? '';
-        if (why != 'admit' && why != 'admit_membership' && why != 'admit_anchor_root' && why != 'admit_anchor_window') break;
+        if (why != 'admit' &&
+            why != 'admit_membership' &&
+            why != 'admit_anchor_root' &&
+            why != 'admit_anchor_window')
+          break;
       }
       if (json == null || json['ok'] != true || json['tx'] is! Map) {
         throw lastErr ?? StateError('send failed');
@@ -8665,7 +12460,11 @@ class ShearLedger implements ReadProofSink {
         _noteLockDebit(src, needShe, nanos: payUnits + BigInt.from(levy));
       }
       final echoed = Map<String, dynamic>.from(json['tx'] as Map);
-      echoed['amount'] ??= needShe;
+      if (sendKind == 'send') {
+        echoed['amount'] = postedShe;
+      } else {
+        echoed['amount'] ??= needShe;
+      }
       echoed['from'] ??= src;
       final raw = ShearTx.fromJson(echoed);
       // wallet_api.js sets fromBalance to 0 and sends changeBalance for the
@@ -8675,8 +12474,16 @@ class ShearLedger implements ReadProofSink {
       if (sendKind == 'send') {
         final left = spendable(src) - needShe;
         _spendable[src] = left <= 1e-18 ? 0 : left;
-        final noteChange = fundedShe - needShe;
-        _parkChange(src, changeDest, changeShe: noteChange > 1e-18 ? noteChange : null);
+        if (changeUnits != null) {
+          _rememberBuiltChange(changeDest, changeUnits);
+        } else {
+          final noteChange = fundedShe - needShe;
+          _parkChange(
+            src,
+            changeDest,
+            changeShe: noteChange > 1e-18 ? noteChange : null,
+          );
+        }
       } else if (sendKind != 'withdraw') {
         final reported = (json['fromBalance'] as num?)?.toDouble();
         var nextBal = reported ?? (spendable(src) - needShe);
@@ -8711,19 +12518,25 @@ class ShearLedger implements ReadProofSink {
     if (sendKind != 'withdraw') {
       final netBook = spendable(src) - needShe;
       _spendable[src] = netBook <= 1e-18 ? 0 : netBook;
-      if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
+      if (sendKind == 'lock' &&
+          (_verifiedConfirmedShe(src) != null ||
+              _spendableNanosOn(src) > BigInt.zero)) {
         // This book is already net. A confirmRound pot has no opened-note cap,
         // so the assignment above is the only cut. The cap path shows the gross
         // opened sum and needs this debit once so a 0 book cannot paint it back.
         _noteLockDebit(src, needShe, nanos: payUnits + BigInt.from(levy));
       }
-      _parkChange(src, changeDest, changeShe: fundedShe - needShe);
+      if (sendKind == 'send' && changeUnits != null) {
+        _rememberBuiltChange(changeDest, changeUnits);
+      } else {
+        _parkChange(src, changeDest, changeShe: fundedShe - needShe);
+      }
     }
     final tx = ShearTx(
       id: 'send-${DateTime.now().millisecondsSinceEpoch}',
       from: src,
       to: destTo,
-      amount: amount,
+      amount: sendKind == 'send' ? postedShe : amount,
       kind: kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send'),
       confirmed: false,
       memo: memoCt != null,
@@ -8733,6 +12546,15 @@ class ShearLedger implements ReadProofSink {
     );
     _txs.add(tx);
     return tx;
+  }
+
+  void _rememberBuiltChange(String? changeDest, BigInt? changeUnits) {
+    if (changeDest == null || changeDest.isEmpty) return;
+    if (changeUnits == null || changeUnits <= BigInt.zero) return;
+    final she = _sheOfExactNanos(changeUnits.toString());
+    if (she == null || she <= 1e-18) return;
+    _spendable[changeDest] = spendable(changeDest) + she;
+    _dests.add(changeDest);
   }
 
   void _parkChange(String src, String? changeDest, {double? changeShe}) {
@@ -8762,16 +12584,27 @@ class ShearLedger implements ReadProofSink {
     if (!isDestAddress(dest)) throw ArgumentError('dest');
     if (!login.startsWith('she1')) throw ArgumentError('need_she1');
     final nanos = (amount * kUnitsPerShe).round();
+    // dart format off
     final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
+    // dart format on
     if (pool == null) throw StateError('no_pool');
-    final json = await pool!.poolWithdraw(login: login, dest: dest, nanos: nanos, sig: sig);
+    final json = await pool!.poolWithdraw(
+      login: login,
+      dest: dest,
+      nanos: nanos,
+      sig: sig,
+    );
     if (json['ok'] != true) {
       throw StateError(json['reason']?.toString() ?? 'withdraw');
     }
     final raw = json['tx'];
-    final map = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final map = raw is Map
+        ? Map<String, dynamic>.from(raw)
+        : <String, dynamic>{};
     final tx = ShearTx(
-      id: map['id']?.toString() ?? 'pull-${DateTime.now().millisecondsSinceEpoch}',
+      id:
+          map['id']?.toString() ??
+          'pull-${DateTime.now().millisecondsSinceEpoch}',
       from: 'pool',
       to: dest,
       amount: amount,
@@ -8804,16 +12637,27 @@ class ShearLedger implements ReadProofSink {
     }
     if (!isDestAddress(dest)) throw ArgumentError('dest');
     if (!login.startsWith('she1')) throw ArgumentError('need_she1');
+    // dart format off
     final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
+    // dart format on
     if (pool == null) throw StateError('no_pool');
-    final json = await pool!.poolWithdraw(login: login, dest: dest, nanos: nanos, sig: sig);
+    final json = await pool!.poolWithdraw(
+      login: login,
+      dest: dest,
+      nanos: nanos,
+      sig: sig,
+    );
     if (json['ok'] != true) {
       throw StateError(json['reason']?.toString() ?? 'withdraw');
     }
     final raw = json['tx'];
-    final map = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final map = raw is Map
+        ? Map<String, dynamic>.from(raw)
+        : <String, dynamic>{};
     final tx = ShearTx(
-      id: map['id']?.toString() ?? 'pull-${DateTime.now().millisecondsSinceEpoch}',
+      id:
+          map['id']?.toString() ??
+          'pull-${DateTime.now().millisecondsSinceEpoch}',
       from: 'pool',
       to: dest,
       amount: nanos / kUnitsPerShe,
@@ -8841,7 +12685,8 @@ class ShearLedger implements ReadProofSink {
     this.destCount = (destCount ?? this.destCount);
     if (this.destCount < 1) this.destCount = 1;
     this.destIndex = destIndex ?? this.destIndex;
-    if (this.destIndex < 0 || this.destIndex >= this.destCount) this.destIndex = this.destCount - 1;
+    if (this.destIndex < 0 || this.destIndex >= this.destCount)
+      this.destIndex = this.destCount - 1;
     prune();
   }
 }
@@ -8851,8 +12696,7 @@ bool creditFollowProbesPublic({
   required bool ownNode,
   required String base,
   bool publicConsent = false,
-}) =>
-    publicConsent && !ownNode && base.trim().isEmpty;
+}) => publicConsent && !ownNode && base.trim().isEmpty;
 
 /// Read base for the credit-follow worker. An own node replaces the public book.
 /// A public live base is not passed on without consent.
@@ -8885,13 +12729,12 @@ class ShearPoolClient {
     HttpClient? http,
     ShearReadSync? sync,
     String? userUrl,
-  })  : _pinned = baseUrl,
-        _ownsHttp = http == null,
-        _http = http ?? _freshHttp() {
-    _sync = sync ??
-        (baseUrl == null
-            ? ShearReadSync(http: _http, userUrl: userUrl)
-            : null);
+  }) : _pinned = baseUrl,
+       _ownsHttp = http == null,
+       _http = http ?? _freshHttp() {
+    _sync =
+        sync ??
+        (baseUrl == null ? ShearReadSync(http: _http, userUrl: userUrl) : null);
     pinWalletHttp(_http, allowPublic: () => _publicConsent);
   }
 
@@ -8970,15 +12813,27 @@ class ShearPoolClient {
 
   ShearReadSync? get sync => _sync;
   bool get isPinned => _pinned != null;
+
+  /// The constructed host is a public node and this client has no consent.
+  /// [baseUrl] hides that host, so send refusal must not trust [baseUrl] alone.
+  bool get pinnedPublicWithoutConsent {
+    final raw = _ownNode ?? _pinned;
+    if (raw == null || raw.isEmpty || _publicConsent) return false;
+    return isPublicWalletHost(raw);
+  }
+
   String? _pinnedGenesis;
 
   String? get genesisHex => _sync?.genesisHex ?? _pinnedGenesis;
 
   String get baseUrl {
     if (_ownNode != null) return _ownNode!;
-    if (_pinned != null && (_publicConsent || !isPublicWalletHost(_pinned!))) return _pinned!;
+    if (_pinned != null && (_publicConsent || !isPublicWalletHost(_pinned!)))
+      return _pinned!;
     final live = _sync?.liveBase;
-    if (live != null && live.isNotEmpty && (_publicConsent || !isPublicWalletHost(live))) {
+    if (live != null &&
+        live.isNotEmpty &&
+        (_publicConsent || !isPublicWalletHost(live))) {
       return live;
     }
     return kWalletDefaultSeed;
@@ -8987,19 +12842,20 @@ class ShearPoolClient {
   int get provenHeaders => _sync?.provenHeaders ?? _pinnedProven.length;
   int get wantedHeaders =>
       _sync?.wantedHeaders ?? (_pinnedTip < 1 ? 0 : _pinnedTip);
-  bool get nodeLive =>
-      _sync != null ? _sync!.liveBase != null : _pinned != null && _pinnedTip > 0;
+  bool get nodeLive => _sync != null
+      ? _sync!.liveBase != null
+      : _pinned != null && _pinnedTip > 0;
 
   /// Live chain tip from the last successful /stats (0 if never seen).
   int get liveTip => _sync?.sampledTip ?? _pinnedTip;
 
   String honestyText() => walletHonestyText(
-        live: nodeLive,
-        proven: provenHeaders,
-        wanted: wantedHeaders,
-        failures: _sync?.failures ?? 0,
-        height: _sync?.sampledTip ?? _pinnedTip,
-      );
+    live: nodeLive,
+    proven: provenHeaders,
+    wanted: wantedHeaders,
+    failures: _sync?.failures ?? 0,
+    height: _sync?.sampledTip ?? _pinnedTip,
+  );
 
   Future<void> followLive() async {
     if (_ownNode != null || _pinned != null) {
@@ -9080,7 +12936,8 @@ class ShearPoolClient {
               '/header?height=$h',
               '/api/explorer/header?height=$h',
             ]);
-            if ((hdr?['header']?.toString() ?? '').isNotEmpty) _pinnedProven.add(h);
+            if ((hdr?['header']?.toString() ?? '').isNotEmpty)
+              _pinnedProven.add(h);
           } catch (_) {}
         }
       }
@@ -9091,7 +12948,11 @@ class ShearPoolClient {
     _http.close(force: true);
   }
 
-  Future<Map<String, dynamic>> _getRaw(String path, {String? open}) async {
+  Future<Map<String, dynamic>> _getRaw(
+    String path, {
+    String? open,
+    Duration? timeout,
+  }) async {
     final base = baseUrl;
     if (!_publicConsent && _ownNode == null && isPublicWalletHost(base)) {
       throw StateError(kLocalNodeDownCopy);
@@ -9104,12 +12965,20 @@ class ShearPoolClient {
     if (open != null && open.isNotEmpty) {
       req.headers.set('X-Shear-Open', open);
     }
-    final res = await req.close();
-    final text = await utf8.decodeStream(res);
+    final res = timeout == null
+        ? await req.close()
+        : await req.close().timeout(timeout);
+    final text = timeout == null
+        ? await utf8.decodeStream(res)
+        : await utf8.decodeStream(res).timeout(timeout);
     if (res.statusCode >= 300 && res.statusCode < 400) {
       throw StateError('redirect');
     }
-    final map = _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
+    final map = _decodePoolBody(
+      res.statusCode,
+      res.headers.contentType?.mimeType,
+      text,
+    );
     // GET fallbacks try the next path on non-2xx. HTML already threw above.
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw StateError('http_${res.statusCode}');
@@ -9117,7 +12986,10 @@ class ShearPoolClient {
     return map;
   }
 
-  Future<Map<String, dynamic>?> _getRawFirst(List<String> paths, {String? open}) async {
+  Future<Map<String, dynamic>?> _getRawFirst(
+    List<String> paths, {
+    String? open,
+  }) async {
     for (final path in paths) {
       try {
         return await _getRaw(path, open: open);
@@ -9144,7 +13016,11 @@ class ShearPoolClient {
     }
   }
 
-  Future<Map<String, dynamic>> _postOnce(String base, String path, Map<String, dynamic> body) async {
+  Future<Map<String, dynamic>> _postOnce(
+    String base,
+    String path,
+    Map<String, dynamic> body,
+  ) async {
     if (!_publicConsent && _ownNode == null && isPublicWalletHost(base)) {
       throw StateError(kLocalNodeDownCopy);
     }
@@ -9168,7 +13044,11 @@ class ShearPoolClient {
       throw StateError('redirect');
     }
     final text = await utf8.decodeStream(res);
-    return _decodePoolBody(res.statusCode, res.headers.contentType?.mimeType, text);
+    return _decodePoolBody(
+      res.statusCode,
+      res.headers.contentType?.mimeType,
+      text,
+    );
   }
 
   /// Non-spend posts (history, register) keep the configured host.
@@ -9179,6 +13059,7 @@ class ShearPoolClient {
       final s = raw.trim();
       return s.endsWith('/') ? s.substring(0, s.length - 1) : s;
     }
+
     if (url != null && url.isNotEmpty) {
       if (isPublicPoolHttp(url) || isPublicWalletHost(url)) {
         if (publicConsent) return trim(url);
@@ -9199,16 +13080,27 @@ class ShearPoolClient {
   }) async {
     await _ensureBase(publicConsent: publicConsent);
     if (path == '/api/wallet/send') {
-      return _postSpend(path, body, legacyPoolSend: legacyPoolSend, publicConsent: publicConsent);
+      return _postSpend(
+        path,
+        body,
+        legacyPoolSend: legacyPoolSend,
+        publicConsent: publicConsent,
+      );
     }
-    final first = _ownNode ?? _pinned ?? _nonSpendPostBase(baseUrl, publicConsent: publicConsent);
+    final first =
+        _ownNode ??
+        _pinned ??
+        _nonSpendPostBase(baseUrl, publicConsent: publicConsent);
     try {
       return await _postOnce(first, path, body);
     } on FormatException {
       if (_pinned == null && _ownNode == null) _sync?.noteFailure();
       throw StateError(kErrPoolHtml);
     } on SocketException {
-      if (_ownNode != null || _pinned != null || isPublicPoolHttp(first) || !publicConsent) {
+      if (_ownNode != null ||
+          _pinned != null ||
+          isPublicPoolHttp(first) ||
+          !publicConsent) {
         if (_pinned == null && _ownNode == null) _sync?.noteFailure();
         if (!publicConsent && _ownNode == null && _pinned == null) {
           throw StateError(kLocalNodeDownCopy);
@@ -9263,7 +13155,11 @@ class ShearPoolClient {
   /// JSON error objects (non-2xx with a reason) are returned so send mapping
   /// still sees `unsigned` / `insufficient`. HTML and other non-JSON become
   /// [kErrPoolHtml] or `http_<status>`. FormatException never leaves here.
-  Map<String, dynamic> _decodePoolBody(int status, String? contentType, String text) {
+  Map<String, dynamic> _decodePoolBody(
+    int status,
+    String? contentType,
+    String text,
+  ) {
     final trimmed = text.trimLeft();
     if (_poolBodyLooksHtml(contentType, trimmed)) {
       throw StateError('pool returned an error page (http_$status)');
@@ -9285,7 +13181,8 @@ class ShearPoolClient {
 
   bool _poolBodyLooksHtml(String? contentType, String trimmed) {
     final ct = (contentType ?? '').toLowerCase();
-    if (ct.contains('text/html') || ct.contains('application/xhtml')) return true;
+    if (ct.contains('text/html') || ct.contains('application/xhtml'))
+      return true;
     final sample = trimmed.length > 160 ? trimmed.substring(0, 160) : trimmed;
     final low = sample.toLowerCase();
     if (low.startsWith('<!doctype') ||
@@ -9298,36 +13195,59 @@ class ShearPoolClient {
   }
 
   Future<Map<String, dynamic>> balance(String address, {String? open}) {
-    final q = StringBuffer('/api/wallet/balance?address=${Uri.encodeQueryComponent(address)}');
+    final q = StringBuffer(
+      '/api/wallet/balance?address=${Uri.encodeQueryComponent(address)}',
+    );
     if (open != null && open.isNotEmpty) {
       q.write('&open=${Uri.encodeQueryComponent(open)}');
     }
     return _get(q.toString(), open: open);
   }
 
-  Future<Map<String, dynamic>> history(String address, {String? viewKey, String? open}) {
+  Future<Map<String, dynamic>> history(
+    String address, {
+    String? viewKey,
+    String? open,
+  }) {
     if (viewKey != null && viewKey.isNotEmpty) {
-      return _post('/api/wallet/history', {'address': address, 'viewKey': viewKey, if (open != null && open.isNotEmpty) 'open': open});
+      return _post('/api/wallet/history', {
+        'address': address,
+        'viewKey': viewKey,
+        if (open != null && open.isNotEmpty) 'open': open,
+      });
     }
-    final q = StringBuffer('/api/wallet/history?address=${Uri.encodeQueryComponent(address)}');
+    final q = StringBuffer(
+      '/api/wallet/history?address=${Uri.encodeQueryComponent(address)}',
+    );
     if (open != null && open.isNotEmpty) {
       q.write('&open=${Uri.encodeQueryComponent(open)}');
     }
     return _get(q.toString(), open: open);
   }
 
-  Future<Map<String, dynamic>> explorerHistory({required String viewKey, String? address}) =>
-      _post('/api/explorer/history', {
-        'viewKey': viewKey,
-        if (address != null) 'address': address,
-      });
+  Future<Map<String, dynamic>> explorerHistory({
+    required String viewKey,
+    String? address,
+  }) => _post('/api/explorer/history', {
+    'viewKey': viewKey,
+    if (address != null) 'address': address,
+  });
 
-  Future<Map<String, dynamic>> registerView({required String address, required String viewKey}) {
+  Future<Map<String, dynamic>> registerView({
+    required String address,
+    required String viewKey,
+  }) {
     final host = Uri.tryParse(baseUrl)?.host ?? '';
-    if (host.isNotEmpty && host != '127.0.0.1' && host != 'localhost' && host != '::1') {
+    if (host.isNotEmpty &&
+        host != '127.0.0.1' &&
+        host != 'localhost' &&
+        host != '::1') {
       throw StateError('view_register_remote_blocked');
     }
-    return _post('/api/wallet/register', {'address': address, 'viewKey': viewKey});
+    return _post('/api/wallet/register', {
+      'address': address,
+      'viewKey': viewKey,
+    });
   }
 
   Future<Map<String, dynamic>> send({
@@ -9362,36 +13282,41 @@ class ShearPoolClient {
     String? fs1,
     int? anchor,
   }) {
-    return _post('/api/wallet/send', walletSendBody(
-      from: from,
-      to: to,
-      amount: amount,
-      memoCt: memoCt,
-      open: open,
-      sig: sig,
-      portalOpen: portalOpen,
-      kind: kind,
-      programId: programId,
-      choice: choice,
-      currentEpoch: currentEpoch,
-      epochStartMs: epochStartMs,
-      change: change,
-      spendPub: spendPub,
-      ephPub: ephPub,
-      vin: vin,
-      vout: vout,
-      excess: excess,
-      admitProof: admitProof,
-      admitProofs: admitProofs,
-      spendTag: spendTag,
-      fee: fee,
-      paintedOwedNanos: paintedOwedNanos,
-      nanosWire: nanosWire,
-      id: id,
-      withdrawNonce: withdrawNonce,
-      fs1: fs1,
-      anchor: anchor,
-    ), legacyPoolSend: legacyPoolSend, publicConsent: publicConsent);
+    return _post(
+      '/api/wallet/send',
+      walletSendBody(
+        from: from,
+        to: to,
+        amount: amount,
+        memoCt: memoCt,
+        open: open,
+        sig: sig,
+        portalOpen: portalOpen,
+        kind: kind,
+        programId: programId,
+        choice: choice,
+        currentEpoch: currentEpoch,
+        epochStartMs: epochStartMs,
+        change: change,
+        spendPub: spendPub,
+        ephPub: ephPub,
+        vin: vin,
+        vout: vout,
+        excess: excess,
+        admitProof: admitProof,
+        admitProofs: admitProofs,
+        spendTag: spendTag,
+        fee: fee,
+        paintedOwedNanos: paintedOwedNanos,
+        nanosWire: nanosWire,
+        id: id,
+        withdrawNonce: withdrawNonce,
+        fs1: fs1,
+        anchor: anchor,
+      ),
+      legacyPoolSend: legacyPoolSend,
+      publicConsent: publicConsent,
+    );
   }
 
   Future<Map<String, dynamic>> fluxset() async {
@@ -9413,20 +13338,20 @@ class ShearPoolClient {
     return _get('/api/wallet/notes?address=$q$extra', open: open);
   }
 
-  Future<Map<String, dynamic>> mempoolPressure() => _get('/api/mempoolPressure');
+  Future<Map<String, dynamic>> mempoolPressure() =>
+      _get('/api/mempoolPressure');
 
   Future<Map<String, dynamic>> poolWithdraw({
     required String login,
     required String dest,
     required int nanos,
     required String sig,
-  }) =>
-      _post('/api/pool/withdraw', {
-        'login': login,
-        'dest': dest,
-        'nanos': nanos,
-        'sig': sig,
-      });
+  }) => _post('/api/pool/withdraw', {
+    'login': login,
+    'dest': dest,
+    'nanos': nanos,
+    'sig': sig,
+  });
 
   Future<Map<String, dynamic>> pullPending(String login) =>
       _get('/api/pool/pullPending?login=${Uri.encodeQueryComponent(login)}');
@@ -9438,13 +13363,23 @@ class ShearPoolClient {
   }
 
   /// Public header at height. No identity, view key, or shear1.
-  Future<Map<String, dynamic>> headerAt(int height) async {
-    final got = await _getRawFirst([
+  /// [timeout] bounds the read so a host that accepts and stays silent
+  /// cannot hold the catch-up pass.
+  Future<Map<String, dynamic>> headerAt(
+    int height, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    for (final path in [
       '/header?height=$height',
       '/api/explorer/header?height=$height',
-    ]);
-    if (got != null) return got;
-    return _get('/api/explorer/header?height=$height');
+    ]) {
+      try {
+        return await _getRaw(path, timeout: timeout);
+      } on TimeoutException {
+        rethrow;
+      } catch (_) {}
+    }
+    return _get('/api/explorer/header?height=$height').timeout(timeout);
   }
 
   /// Public HASH_TX DAG. Used only to read continuity at a claim height.
@@ -9460,9 +13395,17 @@ class ShearPoolClient {
 /// Tip lines the Windows binary prints for `--print-tip`.
 /// Default seeds are the local node RPC and the public node HTTP seeds.
 /// A refused loopback must not hide a live same-genesis height.
-Future<String> continuumTipReport({List<String>? seeds, HttpClient? http}) async {
-  final clientHttp = http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8));
-  final sync = ShearReadSync(seeds: seeds, jitter: Duration.zero, http: clientHttp);
+Future<String> continuumTipReport({
+  List<String>? seeds,
+  HttpClient? http,
+}) async {
+  final clientHttp =
+      http ?? (HttpClient()..connectionTimeout = const Duration(seconds: 8));
+  final sync = ShearReadSync(
+    seeds: seeds,
+    jitter: Duration.zero,
+    http: clientHttp,
+  );
   final client = ShearPoolClient(http: clientHttp, sync: sync);
   final ledger = ShearLedger(pool: client);
   await ledger.syncTip();
@@ -9514,8 +13457,10 @@ Map<String, dynamic> walletSendBody({
 }) {
   final flow = kind == null || kind.isEmpty || kind == 'send';
   if (flow) {
-    if (admitBaseFromAddress(to) == null) throw StateError('send_dest_no_admit_base');
-    final sealed = sig != null &&
+    if (admitBaseFromAddress(to) == null)
+      throw StateError('send_dest_no_admit_base');
+    final sealed =
+        sig != null &&
         sig.isNotEmpty &&
         spendPub != null &&
         spendPub.isNotEmpty &&
@@ -9526,7 +13471,9 @@ Map<String, dynamic> walletSendBody({
         (admitProof != null || (admitProofs != null && admitProofs.isNotEmpty));
     if (!sealed) throw StateError('send_not_sealed');
     for (final o in vout) {
-      if (o is Map && o['kind'] != 'dummy' && (o['amtCt'] == null || o['rEph'] == null || o['rCt'] == null)) {
+      if (o is Map &&
+          o['kind'] != 'dummy' &&
+          (o['amtCt'] == null || o['rEph'] == null || o['rCt'] == null)) {
         throw StateError('send_vout_not_wrapped');
       }
     }
@@ -9539,12 +13486,14 @@ Map<String, dynamic> walletSendBody({
       'vout': vout,
       if (excess != null) 'excess': excess,
       if (admitProof != null) 'admit_proof': admitProof,
-      if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
+      if (admitProofs != null && admitProofs.isNotEmpty)
+        'admit_proofs': admitProofs,
       if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
       if (fs1 != null && fs1.isNotEmpty) 'fs1': fs1,
       if (anchor != null && anchor > 0) 'anchor': anchor,
       if (id != null && id.isNotEmpty) 'id': id,
-      if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+      if (withdrawNonce != null && withdrawNonce.isNotEmpty)
+        'withdrawNonce': withdrawNonce,
     };
   }
   return {
@@ -9570,10 +13519,12 @@ Map<String, dynamic> walletSendBody({
     if (vout != null) 'vout': vout,
     if (excess != null) 'excess': excess,
     if (admitProof != null) 'admit_proof': admitProof,
-    if (admitProofs != null && admitProofs.isNotEmpty) 'admit_proofs': admitProofs,
+    if (admitProofs != null && admitProofs.isNotEmpty)
+      'admit_proofs': admitProofs,
     if (spendTag != null && spendTag.isNotEmpty) 'spendTag': spendTag,
     if (id != null && id.isNotEmpty) 'id': id,
-    if (withdrawNonce != null && withdrawNonce.isNotEmpty) 'withdrawNonce': withdrawNonce,
+    if (withdrawNonce != null && withdrawNonce.isNotEmpty)
+      'withdrawNonce': withdrawNonce,
   };
 }
 
@@ -9684,7 +13635,9 @@ Map<String, dynamic> rewardClaimFeePresets({
   });
   ({int fee, bool capped}) at(int index) {
     if (rates.isEmpty) return (fee: floor, capped: false);
-    final slot = index < 0 ? 0 : (index >= rates.length ? rates.length - 1 : index);
+    final slot = index < 0
+        ? 0
+        : (index >= rates.length ? rates.length - 1 : index);
     final rate = rates[slot];
     final raw = _feeAtRate(rate.fee, rate.w, weight < 1 ? 1 : weight);
     var fee = raw;
@@ -9700,9 +13653,7 @@ Map<String, dynamic> rewardClaimFeePresets({
   }
 
   final n = rates.length;
-  final picks = n == 0
-      ? [at(0), at(0), at(0)]
-      : [at(0), at(n ~/ 2), at(n - 1)];
+  final picks = n == 0 ? [at(0), at(0), at(0)] : [at(0), at(n ~/ 2), at(n - 1)];
   const labels = [
     ['low', 'Low'],
     ['medium', 'Medium'],
@@ -9720,7 +13671,13 @@ Map<String, dynamic> rewardClaimFeePresets({
   ];
   Map<String, dynamic> customRow;
   if (custom == null) {
-    customRow = {'id': 'custom', 'label': 'Custom', 'fee': null, 'she': null, 'ok': true};
+    customRow = {
+      'id': 'custom',
+      'label': 'Custom',
+      'fee': null,
+      'she': null,
+      'ok': true,
+    };
   } else {
     final legal = custom >= floor && custom <= kLevyCapNanos;
     customRow = {
@@ -9770,7 +13727,11 @@ Map<String, dynamic> rewardClaimSendBody({
     'vout': vout,
     if (id != null && id.isNotEmpty) 'id': id,
   };
-  final quote = rewardClaimFeePresets(body: draft, mempool: mempool, custom: fee);
+  final quote = rewardClaimFeePresets(
+    body: draft,
+    mempool: mempool,
+    custom: fee,
+  );
   final presets = (quote['presets'] as List).cast<Map<String, dynamic>>();
   final custom = quote['custom'] as Map<String, dynamic>;
   int chosen = quote['floor'] as int;
@@ -9781,9 +13742,5 @@ Map<String, dynamic> rewardClaimSendBody({
     chosen = named.first['fee'] as int;
   }
   draft['fee'] = chosen;
-  return {
-    'tx': draft,
-    ...quote,
-    'bytes': _publicByteCount(draft, <Object>{}),
-  };
+  return {'tx': draft, ...quote, 'bytes': _publicByteCount(draft, <Object>{})};
 }
