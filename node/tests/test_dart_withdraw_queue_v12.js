@@ -24,7 +24,7 @@ import {
 import { VAULT_PERIODS_PER_EPOCH } from '../../crypto/vault_accrual.js';
 import { admitScalarFromSeed } from '../../crypto/admit.js';
 import { asU8, openedCoinbaseNanos } from '../../crypto/note.js';
-import { walletAnchor } from '../../crypto/admit_v3.js';
+import { readyHeight, walletAnchor } from '../../crypto/admit_v3.js';
 import { resetFs1Tree } from '../../crypto/fs1_spend.js';
 import { fs1NativeLoaded } from '../../crypto/native_admit.js';
 import {
@@ -33,9 +33,9 @@ import {
   leafStubNanos,
   lockNotePrincipal,
   publicTrancheBook,
-  rewardClaimTx,
 } from '../../crypto/reserve_vault.js';
-import { proveVaultReward, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { handleWalletApi } from '../../pool/src/wallet_api.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const wallet = path.join(root, 'wallet');
@@ -46,7 +46,7 @@ const BYTE_KEYS = new Set([
   'dest20', 'spendPub', 'sig', 'withdrawNonce', 'excess', 'fs1',
   'commit', 'blob', 'cTilde', 'spendTag', 'R', 'z', 'note',
   'r', 'noteCommit', 'admitPub', 'rangeProof', 'rEph', 'rCt', 'amtCt', 'viewTag',
-  'lockAuth', 'vaultLockNote', 'retireProof',
+  'lockAuth', 'vaultLockNote', 'retireProof', 'vaultProof',
 ]);
 
 function payer() {
@@ -263,6 +263,7 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     const changeDest = Buffer.from(hash20FromAddress(who.dest));
     const lockFixture = {
       seed: Buffer.from(who.spendSeed).toString('hex'),
+      dest: who.dest,
       lockIndex: 0,
       lockEpoch: 0,
       proveHeight: 0,
@@ -277,6 +278,7 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
         commit: c.commit.toString('hex'),
         noteCommit: c.noteCommit.toString('hex'),
         r: c.r.toString('hex'),
+        nanos: c.v,
       })),
     };
     const lockPath = path.join(dir, 'lock.json');
@@ -298,7 +300,8 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     const queuedLock = store.queueTx(tx, { nowMs: lastStamp(store) });
     assert.equal(queuedLock.ok, true, `lock queue ${queuedLock.reason || ''} ${queuedLock.error || ''}`);
     const sealed = await mine(store, who.dest);
-    assert.ok(sealed.tpl.txs.some((row) => row.id === 'dart-queue-lock'), 'lock mined');
+    assert.ok(sealed.tpl.txs.some((row) => row.id === tx.id), 'lock mined');
+    console.log(`e2e lock height=${sealed.tpl.height} id=${String(tx.id).slice(0, 12)}`);
     for (const c of use) spent.add(c.commit.toString('hex'));
     const changeCoin = {
       r: Buffer.from(asU8(built.change.r)),
@@ -315,38 +318,35 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     const root = String(store.reserveVault.epochStartRoots?.['1'] || '');
     assert.equal(root, store.reserveVault.vaultLockRoot, 'period root is the lock');
     resetFs1Tree();
-    const proved = proveVaultReward({
-      locks: [{
-        amount: PI_SHE_NANOS,
-        scalar: built.scalar,
-        blind: built.blind,
-        unlockEpoch: built.unlock,
-      }],
-      which: 0,
+    const claimFixture = {
+      seed: Buffer.from(who.spendSeed).toString('hex'),
+      dest: pay.dest,
+      dest20: Buffer.from(hash20FromAddress(pay.dest)).toString('hex'),
       rootEpoch: 1,
       earnEpoch: 1,
       bps: GENESIS_BPS,
-      dest20: hash20FromAddress(pay.dest),
-    });
-    assert.ok(proved, 'claim proof');
-    assert.equal(proved.rootHex, root, 'claim root');
-    const claim = rewardClaimTx({
-      to: pay.dest,
-      vault: proved,
-      id: 'dart-queue-claim',
-      ownerKey: pay.key,
-    });
-    delete claim.to;
-    delete claim.from;
-    delete claim.portalId;
-    delete claim.payoutPortalId;
-    delete claim.full;
-    delete claim.spendPub;
+      remainMs: 1,
+      span: 1,
+      locks: [{
+        amount: PI_SHE_NANOS,
+        scalar: Buffer.from(asU8(built.scalar)).toString('hex'),
+        blind: Buffer.from(asU8(built.blind)).toString('hex'),
+        unlockEpoch: built.unlock,
+        index: 0,
+      }],
+    };
+    const claimPath = path.join(dir, 'claim.json');
+    fs.writeFileSync(claimPath, JSON.stringify(claimFixture));
+    const claim = runFlutter('test/emit_vault_claim_test.dart', { SHEAR_CLAIM_FIXTURE: claimPath });
+    assert.equal(claim.kind, 'reward-claim');
+    assert.equal(claim.from, undefined);
+    assert.equal(claim.to, undefined);
     resetFs1Tree();
     const claimQueued = store.queueTx(claim, { nowMs: lastStamp(store) });
     assert.equal(claimQueued.ok, true, `claim queue ${claimQueued.reason || ''}`);
     const claimBlock = await mine(store, who.dest);
-    assert.ok(claimBlock.tpl.txs.some((row) => row.id === 'dart-queue-claim'), 'claim mined');
+    assert.ok(claimBlock.tpl.txs.some((row) => row.id === claim.id), 'claim mined');
+    console.log(`e2e claim height=${claimBlock.tpl.height} id=${String(claim.id).slice(0, 12)}`);
 
     const genesis = Number(store.reserveVault.genesisMs);
     assert.ok(genesis > 0, 'genesis');
@@ -411,7 +411,10 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     assert.ok(withdrawFixture.host.nanos > 100, 'change covers the fee');
     const withdrawPath = path.join(dir, 'withdraw.json');
     fs.writeFileSync(withdrawPath, JSON.stringify(withdrawFixture));
-    const body = runFlutter('test/emit_matured_withdraw_test.dart', { SHEAR_WITHDRAW_FIXTURE: withdrawPath });
+    const packed = runFlutter('test/emit_matured_withdraw_test.dart', { SHEAR_WITHDRAW_FIXTURE: withdrawPath });
+    const body = packed.posted || packed;
+    const receiptOpen = packed.receipt || null;
+    const changeOpen = packed.changeNote || null;
     if (body.retireProof && typeof body.retireProof === 'string') body.retireProof = asHexBuf(body.retireProof);
     assert.equal(body.kind, 'withdraw');
     assert.equal(body.from, undefined);
@@ -433,5 +436,64 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     assert.equal(got.ok, true, `queue ${got.reason || ''} ${got.error || ''}`);
     const withdrawn = await mine(store, who.dest, wall + 1000);
     assert.ok(withdrawn.tpl.txs.some((row) => row.id === body.id), 'withdraw mined');
+    console.log(`e2e withdraw height=${withdrawn.tpl.height} id=${String(body.id).slice(0, 12)}`);
+    assert.ok(receiptOpen && receiptOpen.payoutSeed && receiptOpen.r, 'receipt opening');
+    const ready = readyHeight(withdrawn.tpl.height);
+    assert.ok(ready, 'receipt ready height');
+    while (store.tip().height < ready) await mine(store, who.dest);
+    const after = liveCoins(store, coins, spent);
+    const receiptCommit = Buffer.from(asU8(receiptOpen.commit));
+    let receiptAt = -1;
+    for (let i = 0; i < after.live.n; i += 1) {
+      if (Buffer.from(asU8(after.live.commits[i])).equals(receiptCommit)) receiptAt = i;
+    }
+    assert.ok(receiptAt >= 0, 'receipt in the anchor');
+    const spendTo = payer();
+    const payNanos = 100000000000;
+    const spendFixture = {
+      seed: Buffer.from(who.spendSeed).toString('hex'),
+      to: spendTo.dest,
+      anchor: after.anchor,
+      notes: notesHex(after.live),
+      payNanos,
+      note: {
+        kind: 'withdraw',
+        commit: receiptCommit.toString('hex'),
+        noteCommit: Buffer.from(asU8(receiptOpen.noteCommit)).toString('hex'),
+        r: Buffer.from(asU8(receiptOpen.r)).toString('hex'),
+        admitPub: Buffer.from(asU8(after.live.pubs[receiptAt])).toString('hex'),
+        nanos: body.nanos,
+        payoutSeed: Buffer.from(asU8(receiptOpen.payoutSeed)).toString('hex'),
+      },
+    };
+    const spendPath = path.join(dir, 'spend.json');
+    fs.writeFileSync(spendPath, JSON.stringify(spendFixture));
+    resetFs1Tree();
+    const spentBody = runFlutter('test/emit_receipt_spend_test.dart', { SHEAR_SPEND_FIXTURE: spendPath });
+    assert.ok(spentBody.fs1, 'receipt spend proof');
+    assert.ok(Array.isArray(spentBody.vin) && spentBody.vin.length === 1, 'receipt spend vin');
+    assert.equal(spentBody.kind, undefined, 'sealed send posts no kind');
+    assert.equal(spentBody.from, undefined);
+    assert.equal(spentBody.to, undefined);
+    const posted = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', spentBody, {
+      store,
+      miners: new Map(),
+      queueSend(draft, meta) {
+        const id = draft.id || `send-${Date.now()}`;
+        const tx = { id, ...draft };
+        const got = store.queueTx(tx, { ...(meta || {}), nowMs: wall + 2000 });
+        if (!got || got.ok === false) return got;
+        return got.tx || tx;
+      },
+    });
+    assert.equal(posted.status, 200, `spend queue ${posted.json?.reason || ''} ${posted.json?.state || ''}`);
+    const spentId = String(posted.json?.tx?.id || '');
+    const spentBlock = await mine(store, who.dest, wall + 2000);
+    const spentMined = spentId
+      ? spentBlock.tpl.txs.some((row) => row.id === spentId)
+      : spentBlock.tpl.txs.length > 1;
+    assert.ok(spentMined, 'receipt spend mined');
+    console.log(`e2e spend height=${spentBlock.tpl.height} id=${spentId.slice(0, 12)}`);
+    assert.ok(changeOpen && changeOpen.changeSeed, 'withdraw change recorded');
   });
 });

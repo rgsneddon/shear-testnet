@@ -5750,13 +5750,13 @@ void main() {
     expect(find.text('The Reserve'), findsWidgets);
     expect(find.byKey(const Key('reserve-how')), findsOneWidget);
     expect(find.text('Locks are units of π. The remainder stays spendable.'), findsOneWidget);
-    expect(find.text('Rewards are claimable each period, about 25 days.'), findsOneWidget);
+    expect(find.text(reservePeriodCopy()), findsOneWidget);
     expect(
       find.text('Principal unlocks only at epoch end. Withdraw it, or roll it with your own signed transaction.'),
       findsOneWidget,
     );
     expect(
-      find.text('Votes equal your locked π. Cast them on days 0-301. Two ballots: the hash-bonus rate and the reserve rate.'),
+      find.text(reserveVoteWindowCopy()),
       findsWidgets,
     );
     expect(find.byKey(const Key('reserve-hashbonus-per-u')), findsOneWidget);

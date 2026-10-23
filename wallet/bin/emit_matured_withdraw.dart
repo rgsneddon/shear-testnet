@@ -105,8 +105,56 @@ Future<void> main() async {
     withdrawNonce: nonce,
   );
   if (posts.isEmpty) throw StateError('no post ${posted.length}');
-  stdout.writeln(jsonEncode(posts.single));
+  Map<String, dynamic>? receipt;
+  Map<String, dynamic>? change;
+  for (final note in ledger.notes) {
+    if (note['payoutSeed'] is Uint8List) receipt = note;
+    if (note['changeSeed'] is Uint8List && note['payoutSeed'] == null) change = note;
+  }
+  stdout.writeln(jsonEncode(_json({
+    'posted': posts.single,
+    if (receipt != null) 'receipt': {
+      'r': receipt['r'],
+      'commit': receipt['commit'],
+      'noteCommit': receipt['noteCommit'],
+      'admitPub': receipt['admitPub'],
+      'dest20': receipt['dest20'],
+      'nanos': bodyNanos(posts.single),
+      'payoutSeed': receipt['payoutSeed'],
+      'portalId': receipt['portalId'],
+      'withdrawNonce': receipt['withdrawNonce'],
+    },
+    if (change != null) 'changeNote': {
+      'r': change['r'],
+      'commit': change['commit'],
+      'noteCommit': change['noteCommit'],
+      'admitPub': change['admitPub'],
+      'dest20': change['dest20'],
+      'nanos': change['nanos'],
+      'changeSeed': change['changeSeed'],
+      'portalId': change['portalId'],
+      'withdrawNonce': change['withdrawNonce'],
+    },
+  })));
   pool.close();
+}
+
+String _hex(List<int> b) => b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+
+Object? _json(Object? v) {
+  if (v is Uint8List) return _hex(v);
+  if (v is List) return [for (final row in v) _json(row)];
+  if (v is Map) {
+    return {for (final e in v.entries) e.key.toString(): _json(e.value)};
+  }
+  return v;
+}
+
+int bodyNanos(Map<String, dynamic> body) {
+  final raw = body['nanos'];
+  if (raw is int) return raw;
+  if (raw is String) return int.parse(raw);
+  return 0;
 }
 
 class _BookPool extends ShearPoolClient {

@@ -20,8 +20,8 @@ import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
-import 'shear_vault_reward.dart' show consensusUnlockPeriod, kPiSheNanos, kVaultUnlockOpen, vaultLockBlindBytes, vaultLockOwnerBytes;
-import 'shear_withdraw.dart' show vaultLeafNote;
+import 'shear_vault_reward.dart' show consensusUnlockPeriod, hiddenChangeNote, kPiSheNanos, kVaultUnlockOpen, vaultLockBlindBytes, vaultLockOwnerBytes;
+import 'shear_withdraw.dart' show proveLockFundEquality, vaultLeafNote;
 import 'shear_tip_tick.dart';
 
 const kSheDecimals = 11;
@@ -1360,6 +1360,41 @@ Future<Map<String, dynamic>> scanSealedWireOffUi(Map<String, dynamic> raw) {
 
 /// Pure CPU scan of compacted vouts. Full-sync calls this via [Isolate.run].
 /// Returns `{notes, hashFolds}` maps — no ledger mutation.
+/// One-time key for a vout the wallet did not address to a known dest.
+/// Payout and withdraw-change need the public portal id and the withdraw
+/// nonce. A vote-change note carries the fee commitment. Lock portal ids
+/// are tried only for a lock output.
+(Uint8List, String)? _oneTimeSeedFor(Map<String, dynamic> o, Uint8List spendSeed) {
+  if (spendSeed.length != 32) return null;
+  final row20 = _noteBytes(o['dest20']);
+  if (row20 == null || row20.length < 20) return null;
+  final want = Uint8List.fromList(row20.sublist(0, 20));
+  bool hits(Uint8List seed) {
+    final d20 = destCommitFromSpendPub(ed25519PublicFromSeed(seed));
+    return d20.length >= 20 && noteBytesEq(Uint8List.sublistView(d20, 0, 20), want);
+  }
+  final portal = (o['portalId'] ?? '').toString();
+  final nonce = _noteBytes(o['withdrawNonce']);
+  if (portal.isNotEmpty && nonce != null && nonce.length == 32) {
+    final pay = withdrawPayoutSeedOf(spendSeed, portal, nonce);
+    if (pay != null && hits(pay)) return (pay, 'payout');
+    final change = withdrawChangeSeedOf(spendSeed, portal, nonce);
+    if (change != null && hits(change)) return (change, 'change');
+  }
+  final fee = _noteBytes(o['feeCommit']);
+  if (fee != null && fee.length >= 32) {
+    final vote = voteChangeSeedOf(spendSeed, Uint8List.sublistView(fee, 0, 32));
+    if (vote != null && hits(vote)) return (vote, 'vote');
+  }
+  if ((o['kind'] ?? '').toString() == 'lock') {
+    for (var i = 0; i < 64; i++) {
+      final seed = reservePortalSpendSeed(spendSeed, i);
+      if (seed != null && hits(seed)) return (seed, 'lock');
+    }
+  }
+  return null;
+}
+
 Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
   final vouts = List<dynamic>.from(input['vouts'] as List? ?? const []);
   final dests = <String>{
@@ -1420,8 +1455,19 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         }
       }
     }
+    Uint8List? trialSeed;
+    String? trialRole;
+    if (matched == null) {
+      final trial = _oneTimeSeedFor(o, spendSeed);
+      if (trial != null) {
+        trialSeed = trial.$1;
+        trialRole = trial.$2;
+        matched = dest ?? (dests.isEmpty ? null : dests.first);
+      }
+    }
     if (matched == null) continue;
     final commitHex = _bytesHex(commit);
+    final admitSeed = trialSeed ?? spendSeed;
     final seenCommit = seenHex.contains(commitHex);
     Uint8List? r = _noteBytes(o['r']);
     final rEph = _noteBytes(o['rEph']);
@@ -1464,6 +1510,12 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         'verifiedNanos': cachedEarly,
         'proofChecked': true,
         'verified': true,
+        if (trialSeed != null && trialRole == 'payout') 'payoutSeed': trialSeed,
+        if (trialSeed != null && trialRole == 'payout') 'spendSeed': trialSeed,
+        if (trialSeed != null && (trialRole == 'change' || trialRole == 'vote')) 'changeSeed': trialSeed,
+        if (trialSeed != null && (trialRole == 'change' || trialRole == 'vote')) 'spendSeed': trialSeed,
+        if (trialSeed != null && o['portalId'] != null) 'portalId': o['portalId'],
+        if (trialSeed != null && _noteBytes(o['withdrawNonce']) != null) 'withdrawNonce': _noteBytes(o['withdrawNonce']),
       });
       _rememberPayoutRange(payoutRangeAt, notes.length - 1, kindName, o);
       seenHex.add(commitHex);
@@ -1485,7 +1537,7 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       for (final kindTry in tries) {
         if (!seenKind.add(kindTry)) continue;
         try {
-          final want = pointBytes(admitPub(admitScalarFromSeed(spendSeed, {
+          final want = pointBytes(admitPub(admitScalarFromSeed(admitSeed, {
             'kind': kindTry,
             'noteCommit': nc,
             'commit': commit,
@@ -1526,6 +1578,12 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       if (verifiedNanos != null) 'verifiedNanos': verifiedNanos,
       if (proofChecked) 'proofChecked': true,
       if (verifiedNanos != null) 'verified': true,
+      if (trialSeed != null && trialRole == 'payout') 'payoutSeed': trialSeed,
+      if (trialSeed != null && trialRole == 'payout') 'spendSeed': trialSeed,
+      if (trialSeed != null && (trialRole == 'change' || trialRole == 'vote')) 'changeSeed': trialSeed,
+      if (trialSeed != null && (trialRole == 'change' || trialRole == 'vote')) 'spendSeed': trialSeed,
+      if (trialSeed != null && o['portalId'] != null) 'portalId': o['portalId'],
+      if (trialSeed != null && _noteBytes(o['withdrawNonce']) != null) 'withdrawNonce': _noteBytes(o['withdrawNonce']),
     });
     seenHex.add(commitHex);
     _rememberPayoutRange(payoutRangeAt, notes.length - 1, kind, o);
@@ -2223,6 +2281,220 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
   };
 }
 
+Uint8List? _hexToBytes(Object? raw) {
+  if (raw is Uint8List) return raw;
+  if (raw is! String || raw.isEmpty) return null;
+  try {
+    return hexToBytes(raw.startsWith('0x') ? raw.substring(2) : raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+Map<String, dynamic> _lockWireRow(Map<String, dynamic> row) {
+  return <String, dynamic>{
+    'kind': row['kind'],
+    'commit': row['commit'],
+    if (row['noteCommit'] != null) 'noteCommit': row['noteCommit'],
+    if (row['admitPub'] != null) 'admitPub': row['admitPub'],
+    if (row['rEph'] != null) 'rEph': row['rEph'],
+    if (row['rCt'] != null) 'rCt': row['rCt'],
+    if (row['amtCt'] != null) 'amtCt': row['amtCt'],
+    if (row['rangeProof'] != null) 'rangeProof': row['rangeProof'],
+    if (row['dest20'] != null) 'dest20': row['dest20'],
+    if (row['viewTag'] != null) 'viewTag': row['viewTag'],
+    if (row['portalId'] != null) 'portalId': row['portalId'],
+  };
+}
+
+/// Production lock body. [send] posts this. The leaf comes from
+/// [sealSignReserveWire], the input spend is the wallet FS-1 prover, and the
+/// fund proof is bound to that finished body.
+Map<String, Object?>? sealWalletLockTx({
+  required Uint8List spendSeed,
+  required String address,
+  required int lockIndex,
+  required int lockEpoch,
+  required int proveHeight,
+  required int anchor,
+  required Uint8List fluxNotes,
+  required List<Map<String, dynamic>> inputs,
+  required int inputNanos,
+  required Uint8List changeDest20,
+  required String id,
+  String magic = kBookMagic,
+  int? fee,
+}) {
+  if (spendSeed.length != 32 || inputs.isEmpty || inputs.length > kFs1InputMax) return null;
+  if (changeDest20.length != 20 || id.isEmpty || proveHeight < 0 || anchor < 0) return null;
+  Map<String, dynamic> sealed;
+  try {
+    sealed = sealSignReserveWire(<String, dynamic>{
+      'to': address,
+      'from': address,
+      'kind': 'lock',
+      'nanos': kPiSheNanos,
+      'spendSeed': spendSeed,
+      'lockIndex': lockIndex,
+      'lockEpoch': lockEpoch,
+      'vouts': <Map<String, dynamic>>[
+        {'address': address, 'nanos': kPiSheNanos, 'kind': 'lock'},
+      ],
+    });
+  } catch (_) {
+    return null;
+  }
+  final scalar = sealed['lockScalar'];
+  final blind = sealed['lockBlind'];
+  final note = _hexToBytes(sealed['vaultLockNote']);
+  final auth = _hexToBytes(sealed['lockAuth']);
+  final ownerHex = sealed['ownerPub'];
+  final portalId = sealed['portalId'];
+  if (scalar is! Uint8List || blind is! Uint8List || note == null || note.length != 64) return null;
+  if (auth == null || auth.length != 96 || ownerHex is! String || ownerHex.length != 64) return null;
+  if (portalId is! String || portalId.isEmpty) return null;
+  Map<String, dynamic>? lockSealed;
+  final sealedOuts = sealed['vouts'];
+  if (sealedOuts is List) {
+    for (final row in sealedOuts) {
+      if (row is Map && (row['kind'] ?? 'lock').toString() == 'lock') {
+        lockSealed = Map<String, dynamic>.from(row);
+        break;
+      }
+    }
+  }
+  final funded = lockSealed?['commit'];
+  final range = lockSealed?['rangeProof'];
+  if (funded is! Uint8List || funded.length != 32 || range is! Uint8List || range.isEmpty) return null;
+  if (lockSealed?['nanos'] != 0 || lockSealed?.containsKey('valueProof') == true) return null;
+  final paid = fee ?? kLevyCapNanos;
+  final changeN = inputNanos - paid - kPiSheNanos;
+  if (paid <= 0 || changeN <= 0) return null;
+  final lockDest = lockSealed?['dest20'];
+  if (lockDest is Uint8List && lockDest.length >= 20) {
+    var same = true;
+    for (var i = 0; i < 20; i++) {
+      if (lockDest[i] != changeDest20[i]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return null;
+  }
+  final change = hiddenChangeNote(
+    changeN,
+    changeDest20,
+    spendSeed: spendSeed,
+    admitBase: admitPub(admitBaseScalar(spendSeed)),
+  );
+  if (change == null) return null;
+  final lockRow = <String, dynamic>{
+    'kind': 'lock',
+    'commit': funded,
+    'rangeProof': range,
+    'r': blind,
+    'dest20': lockDest ?? reservePortalDest20FromSeed(spendSeed, lockIndex),
+    'portalId': portalId,
+  };
+  final withBlind = <Map<String, dynamic>>[lockRow, change];
+  final posted = <Map<String, dynamic>>[
+    _lockWireRow(lockRow),
+    _lockWireRow(change),
+  ];
+  final digest = fs1BodyDigest(
+    magic: magic,
+    kind: 'lock',
+    anchor: anchor,
+    fee: paid,
+    nIn: inputs.length,
+    vout: posted,
+    portalId: portalId,
+    programId: 'shear-reserve-v1',
+    reserveNanos: 0,
+    oneTimePub: ownerHex,
+  );
+  final indices = <int>[];
+  final spent = <Map<String, dynamic>>[];
+  for (final row in inputs) {
+    final index = row['index'];
+    final commit = row['commit'];
+    final nc = row['noteCommit'];
+    final r = row['r'];
+    if (index is! int || commit is! Uint8List || nc is! Uint8List || r is! Uint8List) return null;
+    indices.add(index);
+    final noteSeed = row['spendSeed'] ?? row['changeSeed'] ?? row['payoutSeed'];
+    spent.add({
+      'kind': (row['kind'] ?? 'pot').toString(),
+      'commit': commit,
+      'noteCommit': nc,
+      'r': r,
+      if (noteSeed is Uint8List && noteSeed.length == 32) 'spendSeed': noteSeed,
+    });
+  }
+  final proved = proveFs1SpendWire({
+    'notes': fluxNotes,
+    'indices': indices,
+    'spent': spent,
+    'spendSeed': spendSeed,
+    'vout': withBlind,
+    'digest': digest,
+    'anchor': anchor,
+    'tree': const Fs1TreeState().toWire(),
+  });
+  final tree = Fs1TreeState.fromWire(proved['tree']);
+  try {
+    final records = [for (final rec in (proved['records'] as List)) rec as Uint8List];
+    final proofs = [for (final rec in records) fs1PostedProof(rec)];
+    if (proofs.length != inputs.length) return null;
+    final body = <String, Object?>{
+      'id': id,
+      'kind': 'lock',
+      'nanos': 0,
+      'portalId': portalId,
+      'programId': 'shear-reserve-v1',
+      'ownerPub': ownerHex,
+      'vaultLockNote': note,
+      'lockAuth': auth,
+      'anchor': anchor,
+      'fee': paid,
+      'vin': [
+        for (final proof in proofs) {'commit': proof['cTilde']},
+      ],
+      'vout': posted,
+      'fs1': proved['fs1'],
+      'excess': proved['excess'],
+      'admit_proofs': proofs,
+    };
+    final fund = proveLockFundEquality(
+      commit: funded,
+      amount: kPiSheNanos,
+      blind: blind,
+      tx: body,
+      height: proveHeight,
+      magic: magic,
+    );
+    if (fund == null) return null;
+    posted[0]['fundProof'] = fund;
+    return {
+      'tx': body,
+      'scalar': scalar,
+      'blind': blind,
+      'note': note,
+      'unlock': sealed['lockUnlock'] is int ? sealed['lockUnlock'] as int : consensusUnlockPeriod(lockEpoch),
+      'commit': funded,
+      'portalId': portalId,
+      'ownerPub': ownerHex,
+      'fee': paid,
+      'changeNanos': changeN,
+      'change': change,
+      'dest20': lockRow['dest20'],
+      'lockIndex': lockIndex,
+    };
+  } finally {
+    Fs1Native.tryLoad()?.treeFree(tree.handle);
+  }
+}
+
 /// JSON the pool's vote/lock/withdraw draft stringifies for [levyNeed].
 /// `id` is the same width as `vote-${Date.now()}`. Buffer fields use Node's
 /// `{"type":"Buffer","data":[...]}` form. The signature is not in this map.
@@ -2685,8 +2957,44 @@ const kErrShortShe1 = 'paste full she1 from Receive (not fingerprint)';
 const kErrPayIdentity = 'pay this identity with their full she1 or ssa1 dest';
 const kErrLockUnsigned = 'lock signature rejected';
 
+/// User copy for a reserve reason. Raw consensus codes stay off the screen.
+String reserveReasonCopy(String reason) {
+  switch (reason.trim()) {
+    case 'stake_reward':
+      return 'That lock was not accepted. A lock is one π, funded to the leaf.';
+    case 'portal_exists':
+      return 'This lock is already on the chain. Sync, then the next lock uses a new index.';
+    case 'mint_amount':
+      return 'The withdraw amount does not match the matured lock.';
+    case 'vote_retired':
+      return 'Portal votes are retired. Cast a leaf vote.';
+    case 'bad_amount':
+      return 'Enter an amount of at least one π.';
+    case 'epoch_open':
+      return 'The epoch is still open.';
+    case 'proof_reuse':
+      return 'That leaf was already claimed.';
+    case 'double_mint':
+      return 'That reward was already minted.';
+    case 'claim_cap':
+      return 'This block is full of claims. Try the next block.';
+    case 'vote_cap':
+      return 'This block is full of votes. Try the next block.';
+    case 'retire_cap':
+      return 'This block is full of withdrawals. Try the next block.';
+    case 'admit_mismatch':
+    case 'fs1_not_owner':
+      return 'That note cannot be spent with this key.';
+    case 'need_enact':
+      return 'The lock was posted. The local vault book is waiting for the next epoch.';
+    default:
+      return reason;
+  }
+}
+
 String voteFailCopy(Object error) {
-  final msg = error.toString().toLowerCase();
+  final raw = error.toString();
+  final msg = raw.toLowerCase();
   if (msg.contains('not_voter') || msg.contains('not eligible')) {
     return 'You’re not eligible to vote from this portal this epoch';
   }
@@ -2696,7 +3004,25 @@ String voteFailCopy(Object error) {
   if (msg.contains('unsigned') || msg.contains('lock signature') || msg.contains('bad_vote')) {
     return 'Vote could not be signed — check Continuum fee and portal, then try again';
   }
-  return error.toString();
+  for (final code in const [
+    'stake_reward',
+    'portal_exists',
+    'mint_amount',
+    'vote_retired',
+    'bad_amount',
+    'epoch_open',
+    'proof_reuse',
+    'double_mint',
+    'claim_cap',
+    'vote_cap',
+    'retire_cap',
+    'admit_mismatch',
+    'fs1_not_owner',
+  ]) {
+    if (msg.contains(code)) return reserveReasonCopy(code);
+  }
+  if (raw.startsWith('Bad state: ')) return reserveReasonCopy(raw.substring('Bad state: '.length));
+  return raw;
 }
 /// The picker had no sealed note, and the rest-frame sum could not cover the send.
 /// One Flow input spends one note. A user send of the sum posts one transaction per note.
@@ -2823,6 +3149,23 @@ StateError _sendHumanError(
   if (why == 'admit_link_tag' || why == 'admit') {
     return StateError(kErrNoteSpent);
   }
+  if (why == 'admit_mismatch' || why == 'fs1_not_owner') {
+    return StateError(reserveReasonCopy(why));
+  }
+  const named = {
+    'stake_reward',
+    'portal_exists',
+    'mint_amount',
+    'vote_retired',
+    'bad_amount',
+    'epoch_open',
+    'proof_reuse',
+    'double_mint',
+    'claim_cap',
+    'vote_cap',
+    'retire_cap',
+  };
+  if (named.contains(why)) return StateError(reserveReasonCopy(why));
   if (why == 'range_proof' || why == 'commit_sum') return StateError(kErrRangeProof);
   if (why == 'unsigned' &&
       (kind == 'lock' || kind == 'vote' || kind == 'withdraw' || kind == 'roll')) {
@@ -3412,6 +3755,17 @@ class ShearLedger implements ReadProofSink {
     _openedProofs[key] = nanos;
   }
 
+  /// Portal ids seen on the chain. A restored wallet has no lock notes, so the
+  /// next index is the first seed-derived portal that is not in this set.
+  final Set<String> _chainPortalIds = {};
+
+  void noteChainPortals(Iterable<String> ids) {
+    for (final id in ids) {
+      final hex = id.toLowerCase();
+      if (RegExp(r'^[0-9a-f]{64}$').hasMatch(hex)) _chainPortalIds.add(hex);
+    }
+  }
+
   /// Next unused lock index. Recovery scans the seed; a new lock must not reuse one.
   int _nextLockIndex() {
     var max = -1;
@@ -3426,7 +3780,85 @@ class ShearLedger implements ReadProofSink {
       }
     }
     if (bare - 1 > max) max = bare - 1;
+    final seed = spendSeed;
+    if (seed != null && seed.length == 32) {
+      for (var i = 0; i < 64; i++) {
+        final id = reservePortalIdFromSeed('', seed, i);
+        if (id != null && _chainPortalIds.contains(id.toLowerCase()) && i > max) max = i;
+      }
+    }
     return max + 1;
+  }
+
+  /// Next lock index a restored wallet would use. Chain portal ids count.
+  int get nextLockIndex => _nextLockIndex();
+
+  /// Rebuild lock leaves from the master secret and the public tranche book.
+  /// A portal the wallet already stored is left as it is.
+  void rememberDerivedLockLeaves(Iterable<dynamic> tranches) {
+    final seed = spendSeed;
+    if (seed == null || seed.length != 32) return;
+    final epochsOf = <String, List<int>>{};
+    final commitOf = <String, List<Uint8List>>{};
+    for (final raw in tranches) {
+      if (raw is! Map) continue;
+      final id = raw['portalId']?.toString().toLowerCase() ?? '';
+      if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(id)) continue;
+      final epoch = raw['epoch'];
+      if (epoch is int && epoch >= 0) (epochsOf[id] ??= <int>[]).add(epoch);
+      final commit = _hexToBytes(raw['commit']);
+      if (commit != null && commit.length == 32) (commitOf[id] ??= <Uint8List>[]).add(commit);
+    }
+    noteChainPortals(epochsOf.keys);
+    for (var i = 0; i < 64; i++) {
+      final id = reservePortalIdFromSeed('', seed, i);
+      if (id == null) continue;
+      final key = id.toLowerCase();
+      if (!epochsOf.containsKey(key)) continue;
+      var known = false;
+      for (final note in _notes) {
+        if ((note['kind'] ?? '').toString() != 'lock') continue;
+        if (note['scalar'] == null || note['blind'] == null || note['note'] == null) continue;
+        if ((note['portalId'] ?? '').toString().toLowerCase() == key) known = true;
+      }
+      if (known) continue;
+      final ownerSeed = reservePortalSpendSeed(seed, i);
+      if (ownerSeed == null) continue;
+      final scalar = vaultLockOwnerBytes(ownerSeed, i);
+      final blind = vaultLockBlindBytes(ownerSeed, i, kPiSheNanos, 0);
+      final want = commitOf[key] ?? const <Uint8List>[];
+      Uint8List? leaf;
+      var unlock = 0;
+      var lockEpoch = epochsOf[key]!.first;
+      for (var epoch = 0; epoch < 8; epoch++) {
+        final period = consensusUnlockPeriod(epoch);
+        final note = vaultLeafNote(amount: kPiSheNanos, scalar: scalar, blind: blind, unlock: period);
+        if (note.length != 64) continue;
+        final commit = Uint8List.sublistView(note, 32, 64);
+        final hit = want.isEmpty || want.any((row) => _bytesEq(row, commit));
+        if (!hit) continue;
+        leaf = note;
+        unlock = period;
+        lockEpoch = epoch;
+        break;
+      }
+      if (leaf == null) continue;
+      rememberNote({
+        'kind': 'lock',
+        'scalar': scalar,
+        'blind': blind,
+        'note': leaf,
+        'unlock': unlock,
+        'amount': kPiSheNanos,
+        'nanos': kPiSheNanos,
+        'epochs': epochsOf[key],
+        'lockEpoch': lockEpoch,
+        'lockIndex': i,
+        'portalId': id,
+        'dest20': reservePortalDest20FromSeed(seed, i),
+        'verified': true,
+      });
+    }
   }
 
   /// Keep the lock note's blind. The chain drops it, and the spend needs it
@@ -4094,13 +4526,21 @@ class ShearLedger implements ReadProofSink {
     _chainGenesis = g;
   }
 
+  /// Set after shewall import. Sync must pull notes at and below this tip.
+  bool _rescanBelowSealed = false;
+
+  bool get rescanBelowSealed => _rescanBelowSealed;
+
   /// Last known sealed tip from shewall. Never apply 0 over a remembered height.
+  /// The notes cursor is cleared so the next sync reads below this height.
   void restoreSealedTip(int height, {String? genesis}) {
     if (genesis != null && genesis.trim().isNotEmpty) restoreChainGenesis(genesis);
     final h = height;
     if (h < 1) return;
     if (h > _sealedHeight) _sealedHeight = h;
     if (h + 1 > tipHeight) tipHeight = h + 1;
+    _notesAt.clear();
+    _rescanBelowSealed = true;
   }
 
   /// Bind to the live book's genesis. A different genesis (testnet reset or
@@ -6637,10 +7077,11 @@ class ShearLedger implements ReadProofSink {
       } catch (_) {}
     }
     final histSeen = <String>{};
+    var rescanned = false;
     for (final d in dests) {
       final key = payKey(d);
       if (!histSeen.add(key)) continue;
-      if (_notesAt[key] == _sealedHeight) {
+      if (!_rescanBelowSealed && _notesAt[key] == _sealedHeight) {
         final lag = spendable(key) > 1e-12 && !_ownsSealedOn(key);
         if (!lag || (_noteMisses[key] ?? 0) >= 2) continue;
       }
@@ -6656,6 +7097,7 @@ class ShearLedger implements ReadProofSink {
             if (rows.isNotEmpty) {
               final raw = _sealedScanInput(rows, spendSeed: seed, dest: key);
               await _scanNotesProgressive(raw, partials: partials);
+              rescanned = true;
             }
             final mark = notesHostStamp(sealed: _sealedHeight, hostHeight: hostHeight);
             if (mark > 0 && _stampIngest(key, count: false)) {
@@ -6671,6 +7113,7 @@ class ShearLedger implements ReadProofSink {
         } catch (_) {}
       }
     }
+    if (rescanned) _rescanBelowSealed = false;
     histSeen.clear();
     for (final d in dests) {
       final key = payKey(d);
@@ -6907,6 +7350,19 @@ class ShearLedger implements ReadProofSink {
   Uint8List? admitBase;
   /// Spend seed for Admit x and rEph unwrap. In-memory after unlock.
   Uint8List? spendSeed;
+
+  /// Last vault wait or refusal the UI can show. Not a chain field.
+  String reserveRemark = '';
+  int? reserveWaitMs;
+
+  void noteReserveWait(int slotMs) {
+    if (slotMs <= 0) return;
+    if (reserveWaitMs == null || slotMs < reserveWaitMs!) reserveWaitMs = slotMs;
+  }
+
+  void noteReserveRemark(String text) {
+    reserveRemark = text;
+  }
 
   Uint8List? _spendPubOf(String? paymentCode) {
     final parsed = decodePaymentCode(paymentCode ?? '');
@@ -7497,7 +7953,7 @@ class ShearLedger implements ReadProofSink {
       }
       if (at < 0 || indices.contains(at)) throw StateError('no_note');
       indices.add(at);
-      final noteSeed = note['spendSeed'] ?? note['changeSeed'];
+      final noteSeed = note['spendSeed'] ?? note['changeSeed'] ?? note['payoutSeed'];
       spent.add({
         'kind': (note['kind'] as String?) ?? 'pot',
         'commit': commit,
@@ -8310,6 +8766,148 @@ class ShearLedger implements ReadProofSink {
     return out;
   }
 
+  /// Production lock. [sealSignReserveWire] funds the π leaf, the wallet FS-1
+  /// prover spends the inputs, and the fund proof is bound to that body.
+  Future<ShearTx> _sendSealedLock({
+    required String from,
+    required Uint8List spendSeed,
+    required int lockEpoch,
+  }) async {
+    this.spendSeed ??= spendSeed;
+    if (spendPub == null || spendPub!.length != 32) {
+      spendPub = ed25519PublicFromSeed(spendSeed);
+    }
+    final client = pool;
+    if (client == null) throw StateError('no_pool');
+    try {
+      final book = await client.reserveTrancheBook();
+      final rows = book['tranches'];
+      if (rows is List) rememberDerivedLockLeaves(rows);
+    } catch (_) {}
+    final lockIndex = _nextLockIndex();
+    final cols = await _fluxColumns();
+    if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length) throw StateError('fluxset');
+    final picked = <Map<String, dynamic>>[];
+    var have = 0;
+    final need = kPiSheNanos + kLevyCapNanos + 1;
+    for (final note in _notes) {
+      if (note['spent'] == true) continue;
+      if ((note['kind'] ?? '').toString() == 'lock') continue;
+      if (!noteHasSealedSpendBytes(note)) continue;
+      final units = tryU64Units(note['nanos']);
+      if (units == null || units <= BigInt.zero || units.bitLength > 63) continue;
+      final commit = _noteBytes(note['commit']);
+      final pub = _noteBytes(note['admitPub']);
+      if (commit == null) continue;
+      var at = -1;
+      for (var i = 0; i < cols.commits.length; i++) {
+        if (_sameBytes32(cols.commits[i], commit) && (pub == null || _sameBytes32(cols.pubs[i], pub))) {
+          at = i;
+          break;
+        }
+      }
+      if (at < 0 || picked.any((row) => row['index'] == at)) continue;
+      picked.add({...note, 'index': at});
+      have += units.toInt();
+      if (picked.length >= kFs1InputMax || have >= need) break;
+    }
+    if (picked.isEmpty || have < need) throw StateError('insufficient');
+    final top = picked.map((row) => row['index'] as int).reduce((a, b) => a > b ? a : b);
+    final anchor = pickFs1Anchor(_fs1Anchors, top);
+    if (anchor == null) throw StateError(kErrFs1Anchor);
+    final changeDest = hash20FromAddress(from);
+    if (changeDest == null || changeDest.length != 20) throw StateError('bad_send');
+    final id = 'lock-${_bytesHex(randomBytes(16))}';
+    final built = sealWalletLockTx(
+      spendSeed: spendSeed,
+      address: from,
+      lockIndex: lockIndex,
+      lockEpoch: lockEpoch,
+      proveHeight: 0,
+      anchor: anchor.height,
+      fluxNotes: fs1NotesBytes(cols.pubs, cols.commits, anchor.n),
+      inputs: picked,
+      inputNanos: have,
+      changeDest20: changeDest,
+      id: id,
+    );
+    if (built == null) throw StateError('stake_reward');
+    final rawTx = built['tx'];
+    if (rawTx is! Map) throw StateError('stake_reward');
+    final wire = _hexify(Map<String, dynamic>.from(rawTx));
+    if (wire is! Map) throw StateError('bad_send');
+    final ack = await client.postRaw(Map<String, dynamic>.from(wire));
+    if (ack['ok'] == false) throw StateError(ack['reason']?.toString() ?? 'bad_send');
+    for (final note in picked) {
+      final commit = _noteBytes(note['commit']);
+      if (commit == null) continue;
+      for (final row in _notes) {
+        final haveCommit = _noteBytes(row['commit']);
+        if (haveCommit != null && _bytesEq(haveCommit, commit)) row['spent'] = true;
+      }
+    }
+    final scalar = built['scalar'];
+    final blind = built['blind'];
+    final leaf = built['note'];
+    final portalId = built['portalId']?.toString() ?? '';
+    final unlock = built['unlock'] is int ? built['unlock'] as int : consensusUnlockPeriod(lockEpoch);
+    if (scalar is Uint8List && blind is Uint8List && leaf is Uint8List && leaf.length == 64) {
+      rememberNote({
+        'kind': 'lock',
+        'address': from,
+        'dest': from,
+        'scalar': scalar,
+        'blind': blind,
+        'note': leaf,
+        'unlock': unlock,
+        'amount': kPiSheNanos,
+        'nanos': kPiSheNanos,
+        'epochs': <int>[lockEpoch],
+        'lockEpoch': lockEpoch,
+        'lockIndex': lockIndex,
+        'portalId': portalId,
+        'dest20': built['dest20'],
+        'commit': built['commit'],
+        'verified': true,
+      });
+      if (portalId.isNotEmpty) noteChainPortals([portalId]);
+    }
+    final change = built['change'];
+    final changeN = built['changeNanos'];
+    if (change is Map) {
+      rememberNote({
+        'address': from,
+        'dest': from,
+        'kind': 'send',
+        'commit': change['commit'],
+        'noteCommit': change['noteCommit'],
+        'r': change['r'],
+        'admitPub': change['admitPub'],
+        if (change['rEph'] != null) 'rEph': change['rEph'],
+        if (change['rCt'] != null) 'rCt': change['rCt'],
+        if (change['amtCt'] != null) 'amtCt': change['amtCt'],
+        'nanos': changeN,
+        'spendSeed': spendSeed,
+        'changeSeed': spendSeed,
+        'verified': true,
+        if (changeN is int && _sheOfExactNanos(changeN.toString()) != null)
+          'amount': _sheOfExactNanos(changeN.toString()),
+      });
+    }
+    lastSealedLock = Map<String, Object?>.from(built);
+    return ShearTx(
+      id: id,
+      from: from,
+      to: from,
+      amount: kPiSheNanos / kUnitsPerShe,
+      kind: 'lock',
+      confirmed: false,
+    );
+  }
+
+  /// The body [ _sendSealedLock] just posted, including the leaf opening.
+  Map<String, Object?>? lastSealedLock;
+
   Future<ShearTx> send({
     required String from,
     required String to,
@@ -8365,6 +8963,13 @@ class ShearLedger implements ReadProofSink {
         !localSendReady(pool!.baseUrl) &&
         !allowPublicHttp) {
       throw StateError(kErrPublicHttp);
+    }
+    if (sendKind == 'lock' && !local && pool != null && spendSeed != null && spendSeed.length == 32) {
+      return _sendSealedLock(
+        from: from,
+        spendSeed: spendSeed,
+        lockEpoch: lockEpoch ?? currentEpoch ?? 0,
+      );
     }
     if (sendKind == 'send' && destTo == from) {
       throw ArgumentError('same_dest');
@@ -8641,7 +9246,7 @@ class ShearLedger implements ReadProofSink {
     dynamic excess;
     String? fs1Hex;
     int? fs1Anchor;
-    final flowFee = levy < 0 ? 0 : levy;
+    var flowFee = levy < 0 ? 0 : levy;
     if (sendKind == 'send' && spendSeed != null && spendSeed.length == 32 && pool != null && !local) {
       if (chosen == null && paintedCover) {
         final sealed = sealPaintedSpendVouts([
@@ -8656,6 +9261,23 @@ class ShearLedger implements ReadProofSink {
       if (chosen != null) {
       final note = chosen!;
       if (!noteHasSealedSpendBytes(note)) throw StateError('no_note');
+      // The pool weighs the sealed body, including the FS-1 proof, and refuses
+      // a fee under that weight or over the cap. The proof binds the fee, so
+      // the change note is sealed to the cap before the proof is built.
+      final have = fundedSendUnits(note, fundedShe);
+      final cap = BigInt.from(kLevyCapNanos);
+      if (have != null && have >= payUnits + cap && flowFee < kLevyCapNanos) {
+        final next = have - payUnits - cap;
+        flowFee = kLevyCapNanos;
+        final changeAt = changeDest == null
+            ? -1
+            : vouts.indexWhere((o) => o['kind'] == 'send' && o['address'] == changeDest);
+        if (next > BigInt.zero && changeAt >= 0) {
+          vouts[changeAt]['nanos'] = u64OnWire(next);
+        } else if (changeAt >= 0) {
+          vouts.removeAt(changeAt);
+        }
+      }
       final sealedBuilt = await _sealFlowOffUi({
         'spendSeed': spendSeed,
         'destTo': destTo,
@@ -9167,6 +9789,12 @@ class ShearPoolClient {
   void _dropPublicLiveBase() {
     final live = _sync?.liveBase;
     if (live != null && isPublicWalletHost(live)) _sync!.liveBase = null;
+  }
+
+  /// Drop the current sockets so the next post is a new connection.
+  void openFreshConnection() {
+    if (!_ownsHttp) return;
+    _abandonInFlight();
   }
 
   void _abandonInFlight() {

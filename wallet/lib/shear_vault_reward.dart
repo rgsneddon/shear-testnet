@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'shear_admit.dart';
+import 'shear_pack.dart' show reservePortalSpendSeed;
 import 'shear_vault_blob.dart';
 
 export 'shear_vault_blob.dart' show packVaultRewardProof, kVaultBlobVer;
@@ -311,13 +312,18 @@ Map<String, dynamic> proveVaultLockReward({
     var blind = _asBytes(lock['blind']);
     var unlock = kVaultUnlockOpen;
     if (lock['unlockEpoch'] != null) unlock = (lock['unlockEpoch'] as num).toInt();
+    final ownerSeed = seed.length == 32 ? (reservePortalSpendSeed(seed, index) ?? seed) : null;
     if (owner.length != 32) {
-      if (seed.length == 0) owner = scalarBytes(randomScalar());
-      else owner = vaultNullBytes(seed, index);
+      if (ownerSeed == null) owner = scalarBytes(randomScalar());
+      else owner = vaultLockOwnerBytes(ownerSeed, index);
     }
     if (blind.length != 32) {
-      if (seed.length == 0) blind = scalarBytes(randomScalar());
-      else blind = vaultLockBlindBytes(seed, index, amount, lockMs);
+      if (ownerSeed == null) blind = scalarBytes(randomScalar());
+      else blind = vaultLockBlindBytes(ownerSeed, index, amount, 0);
+    }
+    if (lock['unlockEpoch'] == null && ownerSeed != null) {
+      final epoch = (lock['lockEpoch'] as num?)?.toInt() ?? 0;
+      unlock = consensusUnlockPeriod(epoch);
     }
     notes.add(_lockNote(amount, owner, blind, unlock));
     blinds.add(blind);
@@ -488,6 +494,7 @@ Map<String, dynamic> proveVaultLockReward({
         'amtCt': amtCt,
         'dest20': dest20,
         'rangeProof': noteRange,
+        'r': scalarBytes(noteR),
         if (wrapped['rEph'] != null) 'rEph': wrapped['rEph'],
         if (wrapped['rCt'] != null) 'rCt': wrapped['rCt'],
       },

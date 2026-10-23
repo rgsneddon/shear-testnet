@@ -12,6 +12,7 @@ import 'shear_ledger.dart';
 import 'shear_levy.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
+import 'shear_pack.dart' show voteChangeSeedOf, withdrawChangeSeedOf, withdrawPayoutSeedOf;
 import 'shear_public_confirm.dart';
 import 'shear_ristretto.dart';
 import 'shear_vault_reward.dart';
@@ -65,6 +66,29 @@ int reserveDayOfEpoch({
 
 String reserveEpochStillOpenCopy([int days = kReserveEpochDays]) =>
     'The epoch is still open. Withdraw after $days days.';
+
+/// Why a withdraw or claim did not post. A future slot names its time.
+String reservePostWaitCopy({String remark = '', int? waitMs}) {
+  if (waitMs != null && waitMs > 0) {
+    final at = DateTime.fromMillisecondsSinceEpoch(waitMs, isUtc: true).toIso8601String();
+    return 'Scheduled for $at.';
+  }
+  if (remark.isNotEmpty) return remark;
+  return reserveEpochStillOpenCopy();
+}
+
+/// Period length the screen may say. Testnet is about 6 hours, not 25 days.
+String reservePeriodCopy() => kBookMagic == 'shear-v1'
+    ? 'Rewards are claimable each period, about 25 days.'
+    : 'Rewards are claimable each period, about 6 hours.';
+
+/// Vote window the screen may say. Testnet does not use days 0-301.
+String reserveVoteWindowCopy() => kBookMagic == 'shear-v1'
+    ? 'Votes equal your locked π. Cast them on days 0-301. Two ballots: the hash-bonus rate and the reserve rate.'
+    : 'Votes equal your locked π. On this testnet an epoch is 4 days. Two ballots: the hash-bonus rate and the reserve rate.';
+
+/// Projected-reward label. Testnet epoch is 4 days.
+String reserveEpochLengthCopy() => kBookMagic == 'shear-v1' ? 'full 400-day epoch' : 'full 4-day epoch';
 
 String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
     'Return principal and the Reserve reward for this $days-day epoch to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
@@ -194,31 +218,41 @@ Map<String, dynamic> _vaultPostBody({
   required int nanos,
 }) {
   final note = proof['note'];
-  final vout = note is Map
-      ? [
-          {
-            'kind': 'reward-claim',
-            'commit': _byteHex(note['commit']),
-            'noteCommit': _byteHex(note['noteCommit']),
-            'amtCt': _byteHex(note['amtCt']),
-            'dest20': _byteHex(note['dest20']),
-            'rangeProof': _byteHex(note['rangeProof']),
-            if (note['rEph'] != null) 'rEph': _byteHex(note['rEph']),
-            if (note['rCt'] != null) 'rCt': _byteHex(note['rCt']),
-          },
-        ]
-      : const <Map<String, dynamic>>[];
-  return {
+  final vout = <Map<String, dynamic>>[];
+  if (note is Map) {
+    final row = <String, dynamic>{
+      'kind': kind == 'roll' ? 'roll' : 'reward-claim',
+      'commit': note['commit'],
+      'noteCommit': note['noteCommit'],
+      'amtCt': note['amtCt'],
+      'dest20': note['dest20'],
+      'rangeProof': note['rangeProof'],
+      if (note['rEph'] != null) 'rEph': note['rEph'],
+      if (note['rCt'] != null) 'rCt': note['rCt'],
+      if (note['admitPub'] != null) 'admitPub': note['admitPub'],
+    };
+    final stamped = attachAdmitPub(Map<String, dynamic>.from(row));
+    final r = note['r'];
+    if (kind != 'roll' && nanos > 0 && r is Uint8List && r.length == 32 && stamped['commit'] is Uint8List) {
+      final opened = proveValueUnits(BigInt.from(nanos), scalarFromBytes(r));
+      stamped['valueProof'] = {'R': opened['R'], 'z': opened['z'], 'v': nanos};
+    }
+    vout.add(Map<String, dynamic>.from(_hexPost(stamped)));
+  }
+  final nullifier = proof['nullifier']?.toString() ?? '';
+  final body = <String, dynamic>{
+    'id': kind == 'roll' ? 'roll-$nullifier' : 'claim-$nullifier',
     'kind': kind,
     'programId': kReserveProgram,
-    'nanos': nanos.toString(),
-    'nullifier': proof['nullifier'],
+    'nanos': nanos,
+    'nullifier': nullifier,
     'vaultProof': proof['blobHex'] ?? _byteHex(proof['blob']),
     'rootEpoch': proof['rootEpoch'],
     'earnEpoch': proof['earnEpoch'],
     'vout': vout,
-    'fee': rewardClaimFee(),
   };
+  body['fee'] = rewardClaimFee(body: body);
+  return body;
 }
 
 /// Blocks after epoch close that share one claim slot. Matches VAULT_MINT_DELAY_BLOCKS.
@@ -518,6 +552,7 @@ Future<List<({ShearTx tx, Map<String, int> settled})>> postMaturedWithdraws(
   try {
     book = tranchesFromNode(await ledger.pool!.reserveTrancheBook());
   } catch (_) {
+    ledger.noteReserveRemark('Could not read the vault. Try again once the node answers.');
     return const [];
   }
   final byPortal = <String, List<Map<String, Object?>>>{};
@@ -526,6 +561,9 @@ Future<List<({ShearTx tx, Map<String, int> settled})>> postMaturedWithdraws(
     if (id is! String) continue;
     (byPortal[id] ??= <Map<String, Object?>>[]).add(row);
   }
+  ledger.noteChainPortals(byPortal.keys);
+  ledger.spendSeed ??= spendSeed;
+  ledger.rememberDerivedLockLeaves(book);
   final out = <({ShearTx tx, Map<String, int> settled})>[];
   var n = 0;
   for (final entry in groups.entries) {
@@ -535,7 +573,11 @@ Future<List<({ShearTx tx, Map<String, int> settled})>> postMaturedWithdraws(
       if (epoch is int && epoch >= 0 && epoch < slotEpoch) slotEpoch = epoch;
     }
     final slot = vaultWithdrawSlotMs(reserve, slotEpoch, entry.key);
-    if (slot > 0 && nowMs < slot) continue;
+    if (slot > 0 && nowMs < slot) {
+      ledger.noteReserveWait(slot);
+      continue;
+    }
+    ledger.pool?.openFreshConnection();
     final one = await _postPortalWithdraw(
       ledger,
       reserve: reserve,
@@ -551,6 +593,8 @@ Future<List<({ShearTx tx, Map<String, int> settled})>> postMaturedWithdraws(
     );
     n += 1;
     if (one != null) out.add(one);
+    // One matured portal per run. A later portal waits for the next run.
+    break;
   }
   return out;
 }
@@ -650,12 +694,15 @@ Future<({ShearTx tx, Map<String, int> settled})?> _postPortalWithdraw(
   );
   sealedReceipt['kind'] = 'withdraw';
   sealedReceipt['dest20'] = payout20;
-  var changeDest = Uint8List.fromList(randomBytes(20));
-  if (_same20(changeDest, payout20)) changeDest = Uint8List.fromList(randomBytes(20));
+  final changeSeedBytes = withdrawChangeSeedOf(spendSeed, portalId, nonce);
+  final changeDest = changeSeedBytes == null
+      ? null
+      : destCommitFromSpendPub(ed25519PublicFromSeed(changeSeedBytes));
+  if (changeSeedBytes == null || changeDest == null || _same20(changeDest, payout20)) return null;
   final change = hiddenChangeNote(
     changeN,
     changeDest,
-    spendSeed: spendSeed,
+    spendSeed: changeSeedBytes,
     admitBase: admitPub(admitBaseScalar(spendSeed)),
   );
   if (change == null) return null;
@@ -733,6 +780,23 @@ Future<({ShearTx tx, Map<String, int> settled})?> _postPortalWithdraw(
     'portalId': portalId,
     'withdrawNonce': nonce,
     'payoutSeed': payoutSeed,
+    'spendSeed': payoutSeed,
+  });
+  ledger.rememberNote(<String, dynamic>{
+    'kind': 'send',
+    'dest20': Uint8List.fromList(changeDest),
+    'commit': change['commit'],
+    'noteCommit': change['noteCommit'],
+    'r': change['r'],
+    'admitPub': change['admitPub'],
+    'rEph': change['rEph'],
+    'rCt': change['rCt'],
+    'amtCt': change['amtCt'],
+    'nanos': changeN,
+    'portalId': portalId,
+    'withdrawNonce': nonce,
+    'spendSeed': changeSeedBytes,
+    'changeSeed': changeSeedBytes,
   });
   final settled = reserve.withdraw(dest: dest, nowMs: nowMs, payout: payout);
   if (settled == null) return null;
@@ -915,19 +979,12 @@ Uint8List? portalSpendSeed(Uint8List spendSeed, [int lockIndex = 0]) {
 
 /// One-time payout key. The identity spend key is not the payout.
 Uint8List? withdrawPayoutSeed(Uint8List spendSeed, String portalId, List<int> nonce) {
-  if (spendSeed.length != 32 || nonce.length != 32) return null;
-  final hex = portalId.startsWith('0x') ? portalId.substring(2) : portalId;
-  if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(hex)) return null;
-  final id = <int>[];
-  for (var i = 0; i < 64; i += 2) {
-    id.add(int.parse(hex.substring(i, i + 2), radix: 16));
-  }
-  return Uint8List.fromList(sha256.convert(<int>[
-    ...utf8.encode('shear-withdraw-payout-v1'),
-    ...spendSeed,
-    ...id,
-    ...nonce,
-  ]).bytes);
+  return withdrawPayoutSeedOf(spendSeed, portalId, nonce);
+}
+
+/// One-time key for withdraw change. Domain-separated from the payout seed.
+Uint8List? withdrawChangeSeed(Uint8List spendSeed, String portalId, List<int> nonce) {
+  return withdrawChangeSeedOf(spendSeed, portalId, nonce);
 }
 
 /// dest20 the wallet can spend. Re-derived from the seed, the portal, and the nonce.
@@ -1513,9 +1570,15 @@ Future<ReserveDepositResult> postReserveDeposit({
   bool publicIpConsent = false,
 }) async {
   if (she <= 0 || !isDestAddress(dest)) {
-    return const ReserveDepositResult(posted: false, remark: 'bad_amount');
+    return const ReserveDepositResult(posted: false, remark: 'Enter an amount of at least one π.');
   }
   final lockNanos = (she * kUnitsPerShe).round();
+  if (lockNanos < kPiSheNanos) {
+    return const ReserveDepositResult(
+      posted: false,
+      remark: 'A lock is one π. Amounts below π stay spendable.',
+    );
+  }
   final lockL = levyNanos(lockNanos, depth: depth);
   final need = she + lockL / kUnitsPerShe;
   final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
@@ -1581,13 +1644,14 @@ Future<ReserveDepositResult> postReserveDeposit({
     }
     final err = reserve.deposit(
       dest: dest,
-      she: she,
+      she: kPiSheNanos / kUnitsPerShe,
       nowMs: DateTime.now().millisecondsSinceEpoch,
       payout: from,
       lockIndex: lockedAt,
     );
     if (err != null) {
-      return ReserveDepositResult(posted: false, remark: err, tx: tx);
+      // The lock is already on the wire. A local book remark is not a failed post.
+      return ReserveDepositResult(posted: true, remark: reserveReasonCopy(err), tx: tx);
     }
     return ReserveDepositResult(posted: true, remark: '', tx: tx);
   } catch (e) {
@@ -1686,13 +1750,7 @@ Uint8List? _commitHexBytes(String hex) {
 
 /// One-time seed for a vote-fee change. The dest20 is this key's commit.
 Uint8List? voteChangeSeed(Uint8List spendSeed, List<int> feeCommit) {
-  if (spendSeed.length != 32 || feeCommit.length < 32) return null;
-  final commit = feeCommit.length == 32 ? feeCommit : feeCommit.sublist(0, 32);
-  return Uint8List.fromList(sha256.convert(<int>[
-    ...utf8.encode('shear-vote-change-v1'),
-    ...spendSeed,
-    ...commit,
-  ]).bytes);
+  return voteChangeSeedOf(spendSeed, feeCommit);
 }
 
 /// Change for a vote fee. A fresh one-time address, not the fee note's dest20.

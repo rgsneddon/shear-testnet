@@ -4073,15 +4073,19 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (posted == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(reserveEpochStillOpenCopy())),
+          SnackBar(content: Text(reservePostWaitCopy(
+            remark: ledger.reserveRemark,
+            waitMs: ledger.reserveWaitMs,
+          ))),
         );
       }
       return;
     }
     if (mounted) setState(() {});
     if (context.mounted) {
+      final label = posted.tx.kind == 'reward-claim' ? 'Reward claim submitted' : 'Withdraw submitted';
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Withdraw submitted — tx ${posted.tx.id}')),
+        SnackBar(content: Text('$label — tx ${posted.tx.id}')),
       );
     }
   }
@@ -4356,13 +4360,11 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             const Text('How it works', key: Key('reserve-how'), style: TextStyle(fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             const Text('Locks are units of π. The remainder stays spendable.'),
-            const Text('Rewards are claimable each period, about 25 days.'),
+            Text(reservePeriodCopy()),
             const Text(
               'Principal unlocks only at epoch end. Withdraw it, or roll it with your own signed transaction.',
             ),
-            const Text(
-              'Votes equal your locked π. Cast them on days 0-301. Two ballots: the hash-bonus rate and the reserve rate.',
-            ),
+            Text(reserveVoteWindowCopy()),
             const SizedBox(height: 8),
             const Text(
               "Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins.",
@@ -4487,27 +4489,27 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                 onPressed: _reserveSendReady ? () => _reserveSend(context, ident) : null,
                 child: const Text('Deposit sum'),
               ),
-              if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0) ...[
+              if ((p.nanos > 0 && reserve.epochIsOver(now)) || p.claimableRewards > 0 || (reserveLockLeaves(ledger.notes)?.isNotEmpty ?? false)) ...[
                 Text(
                   kReserveWithdrawAction,
                   key: const Key('reserve-withdraw-copy'),
                 ),
                 FilledButton(
                   key: const Key('reserve-withdraw'),
-                  onPressed: () => _reserveWithdraw(context, ident),
+                  onPressed: _reserveSendReady ? () => _reserveWithdraw(context, ident) : null,
                   child: Text(p.claimableRewards > 0 && !reserve.epochIsOver(now)
                       ? 'Withdraw previous-epoch rewards'
                       : 'Withdraw'),
                 ),
               ],
-              if (p.nanos > 0 && reserve.epochIsOver(now)) ...[
+              if ((p.nanos > 0 || (reserveLockLeaves(ledger.notes)?.isNotEmpty ?? false)) && reserve.epochIsOver(now)) ...[
                 Text(
                   kReserveRollAction,
                   key: const Key('reserve-roll-copy'),
                 ),
                 FilledButton(
                   key: const Key('reserve-roll'),
-                  onPressed: () => _reserveRoll(context, ident),
+                  onPressed: _reserveSendReady ? () => _reserveRoll(context, ident) : null,
                   child: const Text('Roll over'),
                 ),
               ],
@@ -4566,7 +4568,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             ],
     ], key: const Key('reserve-overall-box'));
     final voteKids = <Widget>[
-      const Text('Votes equal your locked π. Cast them on days 0-301. Two ballots: the hash-bonus rate and the reserve rate.'),
+      Text(reserveVoteWindowCopy()),
     ];
     if (voted) {
       final choice = p.vote!;
@@ -4604,7 +4606,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       ));
       voteKids.add(FilledButton(
         key: const Key('reserve-vote-submit'),
-        onPressed: draft == null || _reserveVoteBusy
+        onPressed: draft == null || _reserveVoteBusy || !_reserveSendReady
             ? null
             : () => _reserveVote(context, ident, draft),
         child: Text(p.nanos ~/ kPiSheNanos > 0

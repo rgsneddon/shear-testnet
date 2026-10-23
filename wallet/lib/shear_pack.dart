@@ -287,6 +287,49 @@ String? reservePortalIdFromDest20(List<int> dest20) {
   return sha256.convert(<int>[...utf8.encode('shear-portal-id-v1'), ...d20]).toString();
 }
 
+Uint8List _domainSeed(String domain, List<List<int>> parts) {
+  final acc = <int>[...utf8.encode(domain)];
+  for (final part in parts) {
+    acc.addAll(part);
+  }
+  return Uint8List.fromList(sha256.convert(acc).bytes);
+}
+
+Uint8List? _portalIdBytes(String portalId) {
+  final hex = portalId.startsWith('0x') || portalId.startsWith('0X') ? portalId.substring(2) : portalId;
+  if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(hex)) return null;
+  final out = Uint8List(32);
+  for (var i = 0; i < 32; i++) {
+    final byte = int.tryParse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    if (byte == null) return null;
+    out[i] = byte;
+  }
+  return out;
+}
+
+/// One-time payout key. The identity spend key is not the payout.
+Uint8List? withdrawPayoutSeedOf(List<int> spendSeed, String portalId, List<int> nonce) {
+  if (spendSeed.length != 32 || nonce.length != 32) return null;
+  final id = _portalIdBytes(portalId);
+  if (id == null) return null;
+  return _domainSeed('shear-withdraw-payout-v1', [spendSeed, id, nonce]);
+}
+
+/// One-time change key for a withdraw. Wrapped to the wallet base, not the identity key.
+Uint8List? withdrawChangeSeedOf(List<int> spendSeed, String portalId, List<int> nonce) {
+  if (spendSeed.length != 32 || nonce.length != 32) return null;
+  final id = _portalIdBytes(portalId);
+  if (id == null) return null;
+  return _domainSeed('shear-withdraw-change-v1', [spendSeed, id, nonce]);
+}
+
+/// One-time seed for a vote-fee change. The dest20 is this key's commit.
+Uint8List? voteChangeSeedOf(List<int> spendSeed, List<int> feeCommit) {
+  if (spendSeed.length != 32 || feeCommit.length < 32) return null;
+  final commit = feeCommit.length == 32 ? feeCommit : feeCommit.sublist(0, 32);
+  return _domainSeed('shear-vote-change-v1', [spendSeed, commit]);
+}
+
 /// portalId = H(tag, one-time dest20). [dest] is not hashed. Null when the seed is missing.
 String? reservePortalIdFromSeed(String dest, List<int> spendSeed, [int lockIndex = 0]) {
   dest;

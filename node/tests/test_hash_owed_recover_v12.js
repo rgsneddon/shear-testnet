@@ -42,9 +42,12 @@ import {
   VOTE_DECREASE,
   VOTE_INCREASE,
   bonusUnitsBefore,
+  consensusUnlockPeriod,
   lockTx,
+  unitsAlongChain,
   voteTx,
 } from '../../crypto/reserve_vault.js';
+import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { GENESIS_PREV, buildTemplate, digestTx, shouldAdopt, verifyBlock } from '../src/chain.js';
 import { createStore } from '../src/store.js';
@@ -413,17 +416,27 @@ describe('HASH_OWED_RECOVER_V1', () => {
     assert.equal(HASH_OWED_MAX_ENTRIES, cap);
   });
 
-  it('holds the hash-bonus unit at 1 and refuses a portal vote and a shifted series', () => {
+  it('FLOOR 1 is the clamp for a malformed unit only; a governance-set 0 (bonus off) stays 0; the unit moves only by passed votes, 1 rho per vote, floor 0, no ceiling', () => {
     const who = minerDest();
     const other = minerDest();
     const t0 = 1_700_000_000_000;
     const epoch = RESERVE_EPOCH_MS;
     const times = [t0, t0 + epoch, t0 + epoch + 90_000, t0 + epoch + 90_000 + epoch, t0 + (2 * epoch) + 180_000];
-    const owner = 'ab'.repeat(32);
+    const funded = (from, id, nowMs) => {
+      const at = nowMs >= t0 ? Math.floor((nowMs - t0) / epoch) : 0;
+      const unlock = consensusUnlockPeriod(at);
+      const blind = 11n;
+      const leaf = vaultLockNote(PI_SHE_NANOS, 3n, blind, unlock);
+      const tx = lockTx({
+        from, to: from, nanos: PI_SHE_NANOS, id, ownerPub: 'ab'.repeat(32), blind,
+      });
+      tx.vaultLockNote = leaf.note;
+      return tx;
+    };
     const extras = [
-      [lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'lock-pi', ownerPub: owner })],
+      [funded(who, 'lock-pi', times[0])],
       [],
-      [lockTx({ from: other, to: other, nanos: PI_SHE_NANOS, id: 'lock-roll', ownerPub: owner })],
+      [funded(other, 'lock-roll', times[2])],
       [],
       [],
     ];
@@ -436,17 +449,27 @@ describe('HASH_OWED_RECOVER_V1', () => {
       now: t0,
       bits: GENESIS_BITS_PACKED,
       txs: [
-        lockTx({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'lock-vote', ownerPub: owner }),
+        funded(who, 'lock-vote', t0),
         voteTx({ from: who, dest: who, choice: VOTE_INCREASE, id: 'vote-up' }),
       ],
       hashBonusNanos: 1,
     });
-    assert.equal(bonusUnitsBefore([{
+    const voteBlock = {
       header: voted.header,
       txs: voted.txs,
       shareBatch: [],
       height: 1,
-    }]), null);
+    };
+    const voteWalk = unitsAlongChain({
+      history: [],
+      fork: [voteBlock],
+      timeOf: (block) => {
+        try { return Number(decodeHeader(Buffer.from(block.header)).timestamp); } catch { return 0; }
+      },
+    });
+    assert.equal(voteWalk.ok, false);
+    assert.equal(voteWalk.reason, 'vote_retired');
+    assert.equal(bonusUnitsBefore([voteBlock]), null);
     const expectUnits = [1, 1, 1, 1, 1];
     const chain = [];
     let prevHash = GENESIS_PREV;
