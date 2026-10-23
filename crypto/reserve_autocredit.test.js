@@ -139,8 +139,13 @@ describe('time-locked lock notes', () => {
     const after = { ...clock, tipMs: T0 + RESERVE_EPOCH_MS };
     assert.equal(onlyVault.spendable(dest, 1, after), 0);
     assert.equal(onlyVault.unlockedLockNanos(dest, 1, after), 0);
-    assert.equal(onlyVault.coveredLockNanos(dest, 1, after), opened);
+    assert.equal(onlyVault.coveredLockNanos(dest, 1, after), 0);
     assert.equal(onlyVault.coveredLockNanos(dest, 1, { ...clock, tipMs: T0 + 1 }), 0);
+    const principal = opened;
+    const covered = onlyVault.coveredLockNanos(dest, 1, after);
+    const noteNanos = onlyVault.spendable(dest, 1, after);
+    assert.equal(Math.max(0, noteNanos - Math.max(0, principal - covered)), 0);
+    assert.equal(book.coveredLockNanos(dest, 1, { ...clock, tipMs: T0 + RESERVE_EPOCH_MS }), opened);
   });
 
   it('keeps two top-ups as two notes that unlock together', () => {

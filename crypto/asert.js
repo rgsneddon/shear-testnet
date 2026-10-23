@@ -271,6 +271,11 @@ export const VAULT_ACCRUAL_LAW = 'epoch-total-bps';
 export const DIGEST_LOCK_STAMP = 'unlockAtMs+lockEpoch+H(piProof)';
 /** One commitment that opens to at least π. A sum of smaller notes does not qualify. */
 export const VAULT_QUALIFY_LAW = 'single-commitment';
+/**
+ * Russell 18:23 BST. spendPub, sig, or signature on an FS-1 lock is vote_leak.
+ * Mainnet shares this token. Folded into the wipe.
+ */
+export const FS1_SPEND_IDENTITY_LAW = 'refuse';
 export const COMPACT_VAULT_WIRE = 'roots+census+claimNanos';
 export const COINBASE_PUBLIC_TOTAL = 'pot+hash+levy';
 export const UNINDEXED_WITHDRAW = 'stake_reward';
@@ -480,6 +485,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'LOCK_OWNER=signer',
     'LOCK_OUTPUTS=1',
     'LOCK_PAYOUT=refuse',
+    `FS1_SPEND_IDENTITY=${FS1_SPEND_IDENTITY_LAW}`,
     'HASH_BONUS_CEIL=none',
     'P2P_HELLO=fingerprint',
     `COMPACT_TO=${COMPACT_TO}`,

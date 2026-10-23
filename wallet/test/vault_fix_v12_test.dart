@@ -124,7 +124,6 @@ void main() {
     }
     expect(found, isTrue);
     final earlier = slotA <= slotB ? a : b;
-    final later = slotA <= slotB ? b : a;
     final earlySlot = slotA <= slotB ? slotA : slotB;
     final lateSlot = slotA <= slotB ? slotB : slotA;
     expect(earlySlot, isNot(lateSlot));
@@ -140,7 +139,7 @@ void main() {
     expect(one.bookGets, 1);
     expect(one.posts, hasLength(1));
     expect(one.posts.single['portalId'], earlier);
-    final both = await _post(
+    final first = await _post(
       seed: seed,
       hosts: 2,
       nowMs: lateSlot,
@@ -149,8 +148,24 @@ void main() {
         _leaf(amount: 2000, portalId: b, lockIndex: 1, epoch: 0, stubNanos: 11),
       ],
     );
-    expect(both.posts, hasLength(2));
-    final ids = [for (final body in both.posts) body['id'].toString()];
+    expect(first.posts, hasLength(1));
+    expect(first.posts.single['portalId'], a);
+    expect(first.posts.single['nanos'], 1007);
+    final second = await _post(
+      seed: seed,
+      hosts: 1,
+      nowMs: lateSlot,
+      leaves: (_) => [
+        _leaf(amount: 2000, portalId: b, lockIndex: 1, epoch: 0, stubNanos: 11),
+      ],
+    );
+    expect(second.posts, hasLength(1));
+    expect(second.posts.single['portalId'], b);
+    expect(second.posts.single['nanos'], 2011);
+    final ids = [
+      first.posts.single['id'].toString(),
+      second.posts.single['id'].toString(),
+    ];
     expect(ids[0], matches(RegExp(r'^wd-[0-9a-f]{32}$')));
     expect(ids[1], matches(RegExp(r'^wd-[0-9a-f]{32}$')));
     expect(ids[0].substring(3) == ids[1].substring(3), isFalse);
@@ -158,10 +173,34 @@ void main() {
     expect(ids[1].contains('$lateSlot'), isFalse);
     expect(ids[0].startsWith(ids[1]), isFalse);
     expect(ids[1].startsWith(ids[0]), isFalse);
-    final byPortal = {for (final body in both.posts) body['portalId']: body['nanos']};
-    expect(byPortal[a], 1007);
-    expect(byPortal[b], 2011);
-    expect(both.posts.map((body) => body['portalId']).toSet(), {earlier, later});
+    expect(first.posts.single['portalId'], a);
+    expect(second.posts.single['portalId'], b);
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('a run posts at most one matured portal', () async {
+    const t0 = 1700000000000;
+    final reserve = ShearReserve()
+      ..currentEpoch = 1
+      ..epochStartMs = t0;
+    final seed = Uint8List(32)..[0] = 7;
+    final portals = portalsFromSeed(seed, 2);
+    final a = portals[0]['portalId'] as String;
+    final b = portals[1]['portalId'] as String;
+    final late = [
+      vaultWithdrawSlotMs(reserve, 0, a),
+      vaultWithdrawSlotMs(reserve, 0, b),
+    ].reduce((x, y) => x > y ? x : y);
+    final run = await _post(
+      seed: seed,
+      hosts: 2,
+      nowMs: late,
+      leaves: (_) => [
+        _leaf(amount: 1000, portalId: a, lockIndex: 0, epoch: 0),
+        _leaf(amount: 2000, portalId: b, lockIndex: 1, epoch: 0),
+      ],
+    );
+    expect(run.posts, hasLength(1));
+    expect(run.posts.map((body) => body['portalId']).toSet(), hasLength(1));
   }, timeout: const Timeout(Duration(minutes: 5)));
 }
 

@@ -4778,6 +4778,7 @@ class ShearLedger implements ReadProofSink {
         'lockIndex': i,
         'portalId': id,
         'dest20': reservePortalDest20FromSeed(seed, i),
+        'vaultLock': true,
         'verified': true,
       });
     }
@@ -4805,6 +4806,7 @@ class ShearLedger implements ReadProofSink {
         if (o['lockEpoch'] != null) 'lockEpoch': o['lockEpoch'],
         if (o['lockIndex'] is int) 'lockIndex': o['lockIndex'],
         if (o['portalId'] != null) 'portalId': o['portalId'],
+        if (o['portalId'] != null || o['lockIndex'] is int) 'vaultLock': true,
         if (o['dest20'] != null) 'dest20': o['dest20'],
         if (o['valueProof'] != null) 'valueProof': o['valueProof'],
         if (o['rangeProof'] != null) 'rangeProof': o['rangeProof'],
@@ -12842,6 +12844,7 @@ class ShearLedger implements ReadProofSink {
         'portalId': portalId,
         'dest20': built['dest20'],
         'commit': built['commit'],
+        'vaultLock': true,
         'verified': true,
       });
       if (portalId.isNotEmpty) noteChainPortals([portalId]);

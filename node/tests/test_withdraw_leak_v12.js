@@ -203,6 +203,54 @@ describe('withdraw leak gate', () => {
     }
   });
 
+  it('refuses spendPub, sig, and signature on an FS-1 lock in the mempool and in a block', () => {
+    const dir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-identity-'));
+    const book = createStore(dir3);
+    const fs1 = Buffer.from([0xf1, 1, 2]);
+    const cases = [
+      ['spendPub', { spendPub: 'ee'.repeat(32) }],
+      ['sig', { sig: 'ab'.repeat(64) }],
+      ['signature', { signature: 'cd'.repeat(64) }],
+    ];
+    function lockBody(extra = {}) {
+      return {
+        id: 'lock-identity',
+        kind: 'lock',
+        programId: RESERVE_PROGRAM,
+        portalId: PORTAL,
+        nanos: 0,
+        fee: 0,
+        vin: [],
+        vout: [{ kind: 'lock', dest20: Buffer.alloc(20, 3) }],
+        fs1,
+        ...extra,
+      };
+    }
+    try {
+      for (const [name, extra] of cases) {
+        const tx = lockBody(extra);
+        const pooled = admitMempool(emptyMempool(), tx, { height: 2, reserveState: emptyVault() });
+        assert.equal(pooled.ok, false, name);
+        assert.equal(pooled.reason, 'vote_leak', `${name} mempool ${pooled.reason}`);
+        const queued = book.queueTx(structuredClone(tx));
+        assert.equal(queued.ok, false, `${name} queue`);
+        assert.equal(queued.reason, 'vote_leak', `${name} queue ${queued.reason}`);
+        const block = verifyBlock(carry(who, tx), null, { probeBody: true, magic: 'shear-testnet-v12' });
+        assert.equal(block.ok, false, `${name} block`);
+        assert.equal(block.reason, 'vote_leak', `${name} block ${block.reason}`);
+      }
+      const bare = lockBody({ spendPub: 'ee'.repeat(32), sig: 'ab'.repeat(64), signature: 'cd'.repeat(64) });
+      delete bare.fs1;
+      assert.equal(compactLockLeakRejected(bare), null);
+      const clean = lockBody();
+      assert.equal(compactLockLeakRejected(clean), null);
+      const accepted = admitMempool(emptyMempool(), clean, { height: 2, reserveState: emptyVault() });
+      if (!accepted.ok) assert.notEqual(accepted.reason, 'vote_leak', accepted.reason);
+    } finally {
+      fs.rmSync(dir3, { recursive: true, force: true });
+    }
+  });
+
   it('a principal of 0 pays nothing', () => {
     const state = emptyVault();
     state.portals[PORTAL] = { id: PORTAL, ownerPub: '11'.repeat(32), tranches: [] };

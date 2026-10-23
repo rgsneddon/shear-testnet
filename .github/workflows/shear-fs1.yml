@@ -57,6 +57,8 @@ jobs:
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native -j"$(nproc)"
           node -e 'const r = require("module").createRequire(process.cwd() + "/"); for (const m of ["shearhash", "shearadmit"]) { const n = r("./crypto/native/" + m + ".node"); if (!n || !Object.keys(n).length) throw new Error(m); }'
+      - name: Vault qualification, autocredit, and FS-1 lock identity, with shearadmit
+        run: node --test --test-concurrency=1 --test-timeout=180000 crypto/reserve_vault.test.js crypto/reserve_autocredit.test.js
       - name: FS-1 Stage 0 send gate, with the native modules
         run: node --test node/tests/test_fs1_send_gate_v12.js
       - name: Consensus admit set against the FS-1 leaf set

@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { nativeProveRange, nativeLoaded } from './native_admit.js';
 import { provePackedRange, proveRange, scalarBytes, randomScalar, sealCoinbaseNote, sealHiddenNote } from './note.js';
 
+const FIXED_HEDGE = Buffer.alloc(32, 9);
+
 const root = fileURLToPath(new URL('..', import.meta.url));
 
 function runPolicy(env, script) {
@@ -71,17 +73,21 @@ describe('range JS is opt-in and hidden amounts fail closed', () => {
   it('native prove ignores the public flag', () => {
     assert.equal(nativeLoaded(), true, 'parent comparison host must have shearadmit.node');
     const r = scalarBytes(randomScalar());
+    const js = provePackedRange(9, r, FIXED_HEDGE);
+    const native = nativeProveRange(9, r, FIXED_HEDGE);
+    assert.ok(js && native && js.equals(Buffer.from(native)));
     const hidden = proveRange(9, r);
     const pub = proveRange(9, r, { public: true });
     assert.equal(hidden.length, 14433);
-    assert.equal(Buffer.from(hidden).equals(pub), true);
+    assert.equal(pub.length, 14433);
+    assert.equal(Buffer.from(hidden).equals(pub), false);
   });
 
   it('missing native fails verify closed, warns on public prove, and refuses hidden notes', () => {
     assert.equal(nativeLoaded(), true, 'parent comparison host must have shearadmit.node');
     const r = scalarBytes(randomScalar());
-    const proof = provePackedRange(100_000_000_000n, r);
-    const native = nativeProveRange('100000000000', r);
+    const proof = provePackedRange(100_000_000_000n, r, FIXED_HEDGE);
+    const native = nativeProveRange('100000000000', r, FIXED_HEDGE);
     assert.ok(proof && native && proof.equals(Buffer.from(native)));
     const bareOnly = runPolicy({ SHEAR_ADMIT_DISABLE: '1' }, `
       import { proveRange, sealHiddenNote } from './crypto/note.js';

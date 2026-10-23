@@ -627,6 +627,8 @@ Future<List<({ShearTx tx, Map<String, int> settled})>> postMaturedWithdraws(
       out.add(one);
       ledger.clearReserveNotice();
     }
+    // One matured portal per run. A later portal waits for the next run.
+    break;
   }
   return out;
 }

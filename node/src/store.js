@@ -1329,9 +1329,10 @@ export function createStore(dir, {
     void _rows;
     // A lock tranche is not a send input. The note walk omits lock outputs.
     // A hidden funding leaf can still sit in the walk, so subtract the vault
-    // principal once. A lock output that has passed its unlock covers that
-    // subtraction, including after the output is spent, so a later inbound
-    // is not frozen. The tranche itself stays out of this sum.
+    // principal once. A hidden Vault lock does not cover that subtraction,
+    // before or after unlock. A non-Vault lock that has passed its unlock
+    // covers it, including after the output is spent. The tranche itself
+    // stays out of this sum.
     // The live book and a fork book each keep their own suffix index.
     // A request does not open notes that belong to someone else.
     if (chain === blocks) spendChecks += 1;

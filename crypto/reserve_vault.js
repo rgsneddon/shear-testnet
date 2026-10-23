@@ -3544,7 +3544,6 @@ function lockLeafOutput(to, amount, blind, timeLock, lockEpoch, unlockAtMs, spen
     if (Number.isInteger(epoch) && epoch >= 0) out.lockEpoch = epoch;
     if (unlock > 0) out.unlockAtMs = unlock;
   }
-  if (amount === BigInt(PI_SHE_NANOS)) out.piProof = proveRange(0n, blind);
   return out;
 }
 
@@ -3590,7 +3589,7 @@ export function lockTx({
     vin: [vinDest20(from)],
     vout,
   };
-  if (amount >= pi) tx.piProof = vout[0].piProof;
+  if (amount >= pi) tx.piProof = proveRange(0n, leaves[0].blind);
   LOCK_WITNESS.set(tx, {
     amount: leaves[0].amount,
     blind: leaves[0].blind,

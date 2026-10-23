@@ -311,9 +311,16 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
       fee = next;
     }
     assert.ok(tx, `${id} fee`);
-    // Compact lock. `to` is vote_leak. The spend signature binds dest20.
+    // Compact lock. `to` is vote_leak. The wallet lock carries lockAuth
+    // and no spendPub or signature.
     tx.dest20 = Buffer.from(hash20FromAddress(who.dest));
     signSpendTx(tx, who.key);
+    delete tx.spendPub;
+    delete tx.sig;
+    delete tx.signature;
+    assert.equal(tx.spendPub, undefined, `${id} spendPub`);
+    assert.equal(tx.sig, undefined, `${id} sig`);
+    assert.equal(tx.signature, undefined, `${id} signature`);
     // The leaf amount is the public constant π. The fund proof opens the
     // lock commitment to that constant so supply can count the note payment.
     const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, 0);

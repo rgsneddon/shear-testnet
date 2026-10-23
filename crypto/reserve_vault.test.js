@@ -1116,8 +1116,25 @@ describe('Reserve freeze, vote-once, dest bind', () => {
       kind: 'lock',
       portalId: pid,
       vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+      signature: 'ef'.repeat(32),
+      fs1: Buffer.from([0xf1, 2]),
+    }).reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock',
+      portalId: pid,
+      vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
       spendPub: 'ab'.repeat(32),
     }), null);
+  });
+
+  it('a JS-built lock has no output-level piProof', () => {
+    const who = destOf(newIdentity());
+    const tx = lockTxRaw({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'js-lock-out' });
+    assert.ok(tx.piProof && tx.piProof.length > 0);
+    for (const out of tx.vout || []) assert.equal(out.piProof, undefined);
+    const small = lockTxRaw({ from: who, to: who, nanos: 1000, id: 'js-lock-small' });
+    assert.equal(small.piProof, undefined);
+    for (const out of small.vout || []) assert.equal(out.piProof, undefined);
   });
 
   it('lockTx with a spend seed carries a portal id the address does not recompute', () => {

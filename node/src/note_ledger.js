@@ -18,8 +18,8 @@ function vaultLockOutput(out) {
 }
 
 /**
- * Time rule for a lock note. Covered principal uses this so an unlocked
- * output can lift the subtraction without becoming a send input.
+ * Time rule for a non-Vault lock note. An unlocked note can cover principal.
+ * A Vault lock never covers it, and it never becomes a send input.
  */
 function timeLockHeld(out, { tipMs = 0, genesisMs = 0, magic = MAGIC_TESTNET } = {}) {
   if (String(out?.kind || '') !== 'lock') return false;
@@ -297,6 +297,7 @@ export function createNoteLedger({ digestsOf = null } = {}) {
     for (const rec of rows) {
       const kind = String(rec.out?.kind || rec.tx?.kind || '');
       if (kind !== 'lock') continue;
+      if (vaultLockOutput(rec.out)) continue;
       if (opts.coinbaseOnly && !rec.coinbase) continue;
       if (timeLockHeld(rec.out, opts)) continue;
       const h = Number(rec.height) || 0;
