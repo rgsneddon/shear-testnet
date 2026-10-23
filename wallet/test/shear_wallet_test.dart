@@ -1608,6 +1608,10 @@ void main() {
       final pool = _RecordingPool(posts, pubs: pubs, commits: commits);
       pool.sealedNotes = [pot];
       final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+      expect(ledger.notes, isEmpty);
+      final listed = await pool.notes(dest);
+      expect(pool.notesHits, greaterThan(0));
+      expect((listed['notes'] as List).isNotEmpty, isTrue);
       ledger.ingestSealedVouts(
         [pot],
         spendSeed: seed,
@@ -2114,7 +2118,7 @@ void main() {
       ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
       expect(
         ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-        greaterThan(0),
+        closeTo(0.4, 1e-9),
       );
       final opened = await ledger.syncCredits(
         id.address,
@@ -2293,7 +2297,7 @@ void main() {
           })
           .fold<double>(0, (sum, n) => sum + (n['amount'] as num).toDouble());
       expect(unsent, greaterThan(0.39));
-      expect(after, lessThanOrEqualTo(unsent + 1e-9));
+      expect(after, closeTo(unsent, 1e-9));
       expect(after, greaterThan(0.39));
       expect(after, lessThan(before - 0.2));
       expect(after, lessThan(1));

@@ -2730,6 +2730,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
       t,
       confs: confs,
       outgoing: ledger.isOutgoingTx(address, t),
+      depthPending: ledger.headerDepthPending,
     );
   }
 
@@ -3219,7 +3220,9 @@ class ShearWalletAppState extends State<ShearWalletApp>
               children: [
                 ConfirmVortex(
                   key: Key('confirm-pie-${t.id}'),
-                  filled: ledger.confirmationsOf(t.height ?? 0),
+                  filled: ledger.confirmationCountHidden(t.height ?? 0)
+                      ? 0
+                      : ledger.confirmationsOf(t.height ?? 0),
                   size: 28,
                   need: ShearLedger.continuumConfirmations,
                 ),
@@ -3233,7 +3236,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
                         style: const TextStyle(fontSize: 13),
                       ),
                       Text(
-                        ledger.bookTip < 1
+                        ledger.confirmationCountHidden(t.height ?? 0)
                             ? '${t.from} → ${t.to}'
                             : '${ledger.confirmationsOf(t.height ?? 0).clamp(0, ShearLedger.continuumConfirmations)}/${ShearLedger.continuumConfirmations} conf  ${t.from} → ${t.to}',
                         maxLines: 1,

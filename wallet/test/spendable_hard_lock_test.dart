@@ -646,6 +646,257 @@ void main() {
     expect(ledger.confirmationsOf(12), greaterThanOrEqualTo(9));
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  test('a fake trivial-bits chain is rejected before ShearHash', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()
+      ..bindIdentity(id)
+      ..bindHeaderClock(_lowBitsAt(24))
+      ..installCheckpoint(_fixturePin());
+    final honest = await _mineAbovePin(from: 20, to: 22);
+    expect(
+      await ledger.catchUpVerifiedChain(
+        22,
+        fetch: (from, to) => _headersFrom(honest, from, to),
+      ),
+      22,
+    );
+    final hashes = ledger.headerHashCount;
+    final asked = <int>[];
+    final fakeTip = _linkedHeader(
+      prev: Uint8List(32),
+      timestampMs: _lowBitsAt(23),
+      bits: 65536,
+    );
+    final held = await ledger.catchUpVerifiedChain(
+      23,
+      fetch: (from, to) async {
+        asked.add(from);
+        final header = from == 23
+            ? fakeTip
+            : _linkedHeader(
+                prev: Uint8List(32),
+                timestampMs: _lowBitsAt(from),
+                bits: 65536,
+              );
+        return [(height: from, header: header)];
+      },
+    );
+    expect(held, 22);
+    expect(ledger.bookTip, 22);
+    expect(ledger.headerHashCount, hashes);
+    expect(asked.where((h) => h < 22), isEmpty);
+    expect(ledger.forkProofAttempts, 1);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a failed fork proof backs off and then doubles the wait', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()
+      ..bindIdentity(id)
+      ..bindHeaderClock(_lowBitsAt(24))
+      ..forkProofBackoff = const Duration(milliseconds: 1000)
+      ..bindForkClock(50000)
+      ..installCheckpoint(_fixturePin());
+    final honest = await _mineAbovePin(from: 20, to: 22);
+    expect(
+      await ledger.catchUpVerifiedChain(
+        22,
+        fetch: (from, to) => _headersFrom(honest, from, to),
+      ),
+      22,
+    );
+    Future<void> offerFake() async {
+      final fake = _linkedHeader(
+        prev: Uint8List(32),
+        timestampMs: _lowBitsAt(23),
+        bits: 65536,
+      );
+      await ledger.catchUpVerifiedChain(
+        23,
+        fetch: (from, to) async => [(height: from, header: fake)],
+      );
+    }
+
+    await offerFake();
+    expect(ledger.forkProofAttempts, 1);
+    expect(ledger.bookTip, 22);
+    await offerFake();
+    expect(ledger.forkProofAttempts, 1);
+    ledger.bindForkClock(50999);
+    await offerFake();
+    expect(ledger.forkProofAttempts, 1);
+    ledger.bindForkClock(51000);
+    await offerFake();
+    expect(ledger.forkProofAttempts, 2);
+    ledger.bindForkClock(52999);
+    await offerFake();
+    expect(ledger.forkProofAttempts, 2);
+    ledger.bindForkClock(53000);
+    await offerFake();
+    expect(ledger.forkProofAttempts, 3);
+    expect(ledger.bookTip, 22);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a fork walk deadline releases the catch-up pass', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()
+      ..bindIdentity(id)
+      ..bindHeaderClock(_lowBitsAt(24))
+      ..headerWalkDeadline = const Duration(milliseconds: 20)
+      ..bindForkClock(0)
+      ..installCheckpoint(_fixturePin());
+    final honest = await _mineAbovePin(from: 20, to: 22);
+    expect(
+      await ledger.catchUpVerifiedChain(
+        22,
+        fetch: (from, to) => _headersFrom(honest, from, to),
+      ),
+      22,
+    );
+    final hashes = ledger.headerHashCount;
+    final fake = _linkedHeader(
+      prev: Uint8List(32),
+      timestampMs: _lowBitsAt(23),
+      bits: 4 * 65536,
+    );
+    final hung = await ledger.catchUpVerifiedChain(
+      23,
+      fetch: (from, to) async {
+        if (from < 23) ledger.bindForkClock(50);
+        final header = from == 23
+            ? fake
+            : _linkedHeader(
+                prev: Uint8List(32),
+                timestampMs: _lowBitsAt(from),
+                bits: 4 * 65536,
+              );
+        return [(height: from, header: header)];
+      },
+    );
+    expect(hung, 22);
+    expect(ledger.bookTip, 22);
+    expect(ledger.headerHashCount, hashes);
+    final released = await ledger.catchUpVerifiedChain(
+      23,
+      fetch: (from, to) async => <({int height, Uint8List header})>[],
+    );
+    expect(released, 22);
+    expect(ledger.bookTip, 22);
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('a legacy header file with no stored work is discarded', () async {
+    final id = createIdentity();
+    final dir = Directory.systemTemp.createTempSync('shear-hdr-legacy-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    final path = '${dir.path}/verified-headers.json';
+    final pin = _fixturePin();
+    File(path).writeAsStringSync(
+      jsonEncode({
+        'v': 2,
+        'pin': pin.hashHex,
+        'rows': [
+          {
+            'h': 20,
+            't': _lowBitsAt(20),
+            'hdr': _v3CkptHeader,
+            'id': 'ab' * 32,
+          },
+        ],
+        'mac': '00' * 32,
+      }),
+    );
+    final ledger = ShearLedger()
+      ..bindIdentity(id)
+      ..bindHeaderClock(_lowBitsAt(20));
+    ledger.installCheckpoint(pin, storePath: path);
+    expect(ledger.bookTip, pin.height);
+    expect(File(path).existsSync(), isFalse);
+    final cheap = _linkedHeader(
+      prev: _hexBytes(_v3GenesisDigest),
+      timestampMs: _lowBitsAt(20),
+      bits: 4 * 65536,
+    );
+    final held = await ledger.catchUpVerifiedChain(
+      20,
+      fetch: (from, to) async => [(height: 20, header: cheap)],
+    );
+    expect(held, pin.height);
+    expect(ledger.bookTip, pin.height);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test(
+    'a send during backfill from a real pin waits for header sync',
+    () async {
+      final id = createIdentity();
+      final ledger = ShearLedger()
+        ..bindIdentity(id)
+        ..bindHeaderClock(_lowBitsAt(40))
+        ..installCheckpoint(_fixturePin());
+      final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+      final bobId = createIdentity();
+      final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(
+        bobId.address,
+        paymentCode: bobId.paymentCode,
+      );
+      ledger.rememberNote(_coin(dest, nanos: kUnitsPerShe, height: 12));
+      expect(ledger.bookTip, _fixturePin().height);
+      expect(ledger.headerDepthPending, isFalse);
+      Future<void> send() => ledger.send(
+        from: dest,
+        to: bob,
+        amount: 0.1,
+        local: true,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: hexToBytes(id.seedHex),
+      );
+      await expectLater(
+        send(),
+        throwsA(
+          isA<StateError>().having((e) => e.message, 'msg', kErrNoSealedNote),
+        ),
+      );
+      await ledger.catchUpVerifiedChain(40, fetch: (from, to) async => []);
+      expect(ledger.headerVerifyLine, isNotNull);
+      expect(ledger.headerDepthPending, isTrue);
+      expect(
+        ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+        0,
+      );
+      await expectLater(
+        send(),
+        throwsA(
+          isA<StateError>().having((e) => e.message, 'msg', kErrHeaderSync),
+        ),
+      );
+      ledger.mergeChainTx(
+        ShearTx(
+          id: 'in-pin',
+          from: 'alice',
+          to: dest,
+          amount: 1,
+          kind: 'receive',
+          height: 30,
+          confirmed: true,
+        ),
+      );
+      final view = ledger.shearviewTxs(id.address);
+      final row = view.where((t) => t.id == 'in-pin');
+      expect(row, isNotEmpty);
+      final title = shearviewListTitle(
+        row.single,
+        confs: ledger.confirmationsOf(30),
+        outgoing: false,
+        depthPending: ledger.headerDepthPending,
+      );
+      expect(title, startsWith('pending'));
+      expect(title.contains('h='), isFalse);
+      expect(title.contains('conf'), isFalse);
+      expect(ledger.confirmationCountHidden(30), isTrue);
+    },
+  );
+
   test(
     'a tampered header file is discarded and backfill starts at the pin',
     () async {

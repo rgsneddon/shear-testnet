@@ -3254,7 +3254,6 @@ String flowSpendFrom(
     }
     if (richest.isNotEmpty) return richest;
   }
-  if (ledger.bookTip < 1) throw StateError(kErrHeaderSync);
   throw ledger.fundsRefusal();
 }
 
@@ -3645,9 +3644,16 @@ String shearviewListTitle(
   ShearTx t, {
   required int confs,
   required bool outgoing,
+  bool depthPending = false,
 }) {
   final kind = shearviewKindLabel(t, outgoing: outgoing, confs: confs);
   final h = t.height ?? 0;
+  // Depth still catching the host: incoming stays pending, with no count.
+  if (depthPending &&
+      !outgoing &&
+      confs < ShearLedger.continuumConfirmations) {
+    return 'pending  $kind  ${formatShe(t.amount)} SHE';
+  }
   // No verified tip yet: pending, and no confirmation count.
   if (h < 1 || confs < 1) return 'pending  $kind  ${formatShe(t.amount)} SHE';
   final pending = confs >= 1 && confs < ShearLedger.continuumConfirmations;
@@ -3880,6 +3886,12 @@ bool shearviewMatches(ShearTx t, String query) {
 }
 
 /// Spendable at block-found only. Per-hash credit sits in [pending] until confirm.
+/// Cheap header verdict. [wait] means MTP samples are still below the walk.
+enum _WalkCheap { ok, reject, wait }
+
+/// Result of proving a competing branch. A lighter honest fork is not a failure.
+enum _ForkProof { switched, lighter, invalid }
+
 class ShearLedger implements ReadProofSink {
   ShearLedger({this.pool}) {
     pool?.sync?.proofSink = this;
@@ -4851,11 +4863,18 @@ class ShearLedger implements ReadProofSink {
   int get bookTip => _verifiedTip;
 
   /// Why a send cannot be funded. Unknown header depth is not a short note.
+  /// A pin makes [bookTip] non-zero while backfill is still behind the host.
+  /// A sealed note excluded only by that gap is still [kErrHeaderSync].
   StateError fundsRefusal() {
     if (bookTip < 1) return StateError(kErrHeaderSync);
+    var depthOnly = false;
     for (final n in _notes) {
       if (_noteIsSpendable(n)) return StateError('insufficient');
+      if (headerDepthPending && _noteIsSpendable(n, ignoreConfs: true)) {
+        depthOnly = true;
+      }
     }
+    if (depthOnly) return StateError(kErrHeaderSync);
     return StateError(kErrNoSealedNote);
   }
 
@@ -4876,6 +4895,22 @@ class ShearLedger implements ReadProofSink {
       if (!isDestAddress(key)) continue;
       _spendable[key] = inventoriedNoteShe(key, sum: true);
     }
+  }
+
+  /// Header depth is still short of the host, so a confirmation count would
+  /// describe an unverified tip. Incoming rows stay pending with no count.
+  bool confirmationCountHidden(int height) {
+    if (bookTip < 1) return true;
+    if (!headerDepthPending) return false;
+    return confirmationsOf(height) < continuumConfirmations;
+  }
+
+  /// The checked chain is behind the host tip, or the verify line is up.
+  /// A sealed note waiting only on that gap is not a short balance.
+  bool get headerDepthPending {
+    if (headerVerifyLine != null) return true;
+    final pin = _pin;
+    return pin != null && _headerHostTip > bookTip && _headerHostTip > pin.height;
   }
 
   /// First-run catch-up. Null once the checked chain has reached the host.
@@ -4957,6 +4992,34 @@ class ShearLedger implements ReadProofSink {
 
   /// One header read. A stalled host must release the catch-up pass.
   Duration headerReadTimeout = const Duration(seconds: 5);
+
+  /// One fork walk. Past this, the pass returns and the next one continues.
+  Duration headerWalkDeadline = const Duration(seconds: 8);
+
+  /// First wait after a host's fork proof fails. Later failures double it.
+  Duration forkProofBackoff = const Duration(seconds: 1);
+
+  /// Headers one fork attempt may fetch and hash. The rest wait for the next.
+  int forkWalkCap = 64;
+
+  /// Native ShearHash calls on this ledger. A trivial-bits fork stays at zero.
+  int headerHashCount = 0;
+
+  /// Fork walks that got past the per-host backoff. Tests watch the replay stop.
+  int forkProofAttempts = 0;
+
+  int? _forkClockMs;
+  final Map<String, ({int untilMs, int step})> _forkBackoff = {};
+  String? _forkResumeHost;
+  String? _forkResumeTip;
+  List<({int height, Uint8List header})>? _forkResumeBranch;
+
+  /// Test clock for fork backoff and the walk deadline. Header time is separate.
+  void bindForkClock(int nowMs) {
+    _forkClockMs = nowMs;
+  }
+
+  int _forkNowMs() => _forkClockMs ?? DateTime.now().millisecondsSinceEpoch;
 
   /// One catch-up per ledger. A second caller waits for this pass.
   Future<int>? _catchUpFlight;
@@ -5236,6 +5299,7 @@ class ShearLedger implements ReadProofSink {
   /// One native hash at a time on this ledger. The library lock covers the
   /// other isolate.
   Future<Uint8List?> _hashOffUi(Uint8List header) {
+    headerHashCount += 1;
     if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
       return Future<Uint8List?>.value(shearHashV3(header));
     }
@@ -5296,39 +5360,36 @@ class ShearLedger implements ReadProofSink {
     return true;
   }
 
-  /// PoW, prev link, MTP, future bound, and the ASERT quote. No ledger writes.
-  /// Null when any check fails. [timeAt] supplies the eleven MTP samples.
-  Uint8List? _proveHeader(
+  /// Timestamp order, ASERT, MTP, and the future bound. No ShearHash.
+  /// Null MTP means the eleven samples are not in hand yet.
+  _WalkCheap _headerLinkCheap(
     Uint8List header, {
     required int height,
-    required Uint8List parentHash,
     required int parentTimeMs,
     required int? Function(int height) timeAt,
+    Uint8List? parentHash,
   }) {
     final pin = _pin;
     if (pin == null || height < 1 || header.length != shearHeaderLen) {
-      return null;
+      return _WalkCheap.reject;
     }
-    if (_headerVersion(header) != 1) return null;
+    if (_headerVersion(header) != 1) return _WalkCheap.reject;
     final ts = headerTimestampMs(header);
     final bits = _headerBits(header);
-    if (ts == null || ts <= 0 || ts <= parentTimeMs) return null;
-    if (bits < kAsertBitsScale) return null;
-    if (!_prevEquals(header, parentHash)) return null;
-    final window = <int>[];
-    for (var h = height - _kMtpWindow; h < height; h++) {
-      final t = timeAt(h);
-      if (t == null) return null;
-      window.add(t);
+    if (ts == null || ts <= 0 || ts <= parentTimeMs) return _WalkCheap.reject;
+    if (bits < kAsertBitsScale) return _WalkCheap.reject;
+    if (parentHash != null && !_prevEquals(header, parentHash)) {
+      return _WalkCheap.reject;
     }
-    if (ts > _medianTimes(window) + _kMtpFutureMs) return null;
     final now = _headerNowMs ?? DateTime.now().millisecondsSinceEpoch;
-    if (ts > now + _kHeaderAheadMs || ts > now + _kMtpFutureMs) return null;
-    final digest = _digestOf(header);
-    if (digest == null || !shearMeetsTarget(digest, bits)) return null;
-    if (pin.anchorHeight != kConsensusAnchorHeight) return null;
-    if (pin.anchorBits != kConsensusAnchorBits) return null;
-    if (kV12GenesisMs > 0 && pin.anchorTimeMs != kV12GenesisMs) return null;
+    if (ts > now + _kHeaderAheadMs || ts > now + _kMtpFutureMs) {
+      return _WalkCheap.reject;
+    }
+    if (pin.anchorHeight != kConsensusAnchorHeight) return _WalkCheap.reject;
+    if (pin.anchorBits != kConsensusAnchorBits) return _WalkCheap.reject;
+    if (kV12GenesisMs > 0 && pin.anchorTimeMs != kV12GenesisMs) {
+      return _WalkCheap.reject;
+    }
     final quote = asertQuoteForHeight(
       anchorTimeMs: pin.anchorTimeMs,
       blockTimeMs: ts,
@@ -5337,7 +5398,38 @@ class ShearLedger implements ReadProofSink {
       anchorBits: kConsensusAnchorBits,
       parentTimeMs: parentTimeMs,
     );
-    if (!consensusBitsOk(bits, quote)) return null;
+    if (!consensusBitsOk(bits, quote)) return _WalkCheap.reject;
+    final window = <int>[];
+    for (var h = height - _kMtpWindow; h < height; h++) {
+      final t = timeAt(h);
+      if (t == null) return _WalkCheap.wait;
+      window.add(t);
+    }
+    if (ts > _medianTimes(window) + _kMtpFutureMs) return _WalkCheap.reject;
+    return _WalkCheap.ok;
+  }
+
+  /// PoW, prev link, MTP, future bound, and the ASERT quote. No ledger writes.
+  /// Cheap checks run before ShearHash. Null when any check fails.
+  /// [timeAt] supplies the eleven MTP samples.
+  Uint8List? _proveHeader(
+    Uint8List header, {
+    required int height,
+    required Uint8List parentHash,
+    required int parentTimeMs,
+    required int? Function(int height) timeAt,
+  }) {
+    final cheap = _headerLinkCheap(
+      header,
+      height: height,
+      parentTimeMs: parentTimeMs,
+      timeAt: timeAt,
+      parentHash: parentHash,
+    );
+    if (cheap != _WalkCheap.ok) return null;
+    final digest = _digestOf(header);
+    final bits = _headerBits(header);
+    if (digest == null || !shearMeetsTarget(digest, bits)) return null;
     return digest;
   }
 
@@ -5394,11 +5486,98 @@ class ShearLedger implements ReadProofSink {
     _saveVerifiedChain();
   }
 
+  String get _forkHostKey {
+    final raw = pool?.baseUrl ?? '';
+    return raw.isEmpty ? 'direct' : raw;
+  }
+
+  bool _forkBackedOff(String host) {
+    final row = _forkBackoff[host];
+    if (row == null) return false;
+    return _forkNowMs() < row.untilMs;
+  }
+
+  void _armForkBackoff(String host) {
+    final prev = _forkBackoff[host];
+    final step = prev == null ? 0 : (prev.step + 1).clamp(0, 8);
+    final base = forkProofBackoff.inMilliseconds;
+    final delay = base <= 0 ? 0 : base * (1 << step);
+    _forkBackoff[host] = (untilMs: _forkNowMs() + delay, step: step);
+  }
+
+  void _clearForkBackoff(String host) => _forkBackoff.remove(host);
+
+  void _clearForkResume() {
+    _forkResumeHost = null;
+    _forkResumeTip = null;
+    _forkResumeBranch = null;
+  }
+
+  String _forkTipId(List<({int height, Uint8List header})> rows) {
+    var top = rows.first;
+    for (final row in rows) {
+      if (row.height >= top.height) top = row;
+    }
+    return _bytesHex(top.header);
+  }
+
+  void _saveForkResume(
+    String host,
+    String tipId,
+    List<({int height, Uint8List header})> branch,
+  ) {
+    _forkResumeHost = host;
+    _forkResumeTip = tipId;
+    _forkResumeBranch = [
+      for (final row in branch)
+        (height: row.height, header: Uint8List.fromList(row.header)),
+    ];
+  }
+
+  /// Claimed ASERT work, plus the heaviest remaining quote down to the pin,
+  /// still cannot beat the chain this fork would replace.
+  bool _forkClaimCannotWin(List<({int height, Uint8List header})> branch) {
+    final pin = _pin;
+    if (pin == null || branch.isEmpty) return false;
+    var claimed = BigInt.zero;
+    for (final row in branch) {
+      claimed += blockWork(_headerBits(row.header));
+    }
+    final lowest = branch.first.height;
+    var remain = lowest - 1 - pin.height;
+    if (remain < 0) remain = 0;
+    final ceiling =
+        claimed +
+        blockWork(kAsertMaxBits * kAsertBitsScale) * BigInt.from(remain);
+    return ceiling <= _droppedWork(pin.height);
+  }
+
+  void _rejectFork(String host) {
+    _clearForkResume();
+    _armForkBackoff(host);
+  }
+
+  Future<bool> _finishFork(
+    String host,
+    ({int height, Uint8List hash, int timeMs, String headerHex}) ancestor,
+    List<({int height, Uint8List header})> branch,
+  ) async {
+    _clearForkResume();
+    final result = await _switchIfHeavier(ancestor, branch);
+    if (result == _ForkProof.invalid) {
+      _armForkBackoff(host);
+      return false;
+    }
+    _clearForkBackoff(host);
+    return result == _ForkProof.switched;
+  }
+
   /// Fetch the competing branch back to a retained ancestor, verify every
   /// header, and switch only when its total work is strictly greater.
   /// Equal work stays, so the next honest block (one more header of work)
   /// can still win and the wallet is not stuck. No fixed depth cap: a
-  /// verified heavier fork may roll back to the pin.
+  /// verified heavier fork may roll back to the pin. One attempt is bounded
+  /// by [forkWalkCap], [headerWalkDeadline], and claimed work.
   Future<bool> _maybeSwitchBranch({
     required int hostTip,
     required List<({int height, Uint8List header})> have,
@@ -5409,50 +5588,127 @@ class ShearLedger implements ReadProofSink {
     fetch,
   }) async {
     final pin = _pin;
-    if (pin == null || have.isEmpty) return false;
+    if (pin == null || have.isEmpty || hostTip < pin.height) return false;
+    final host = _forkHostKey;
+    if (_forkBackedOff(host)) return false;
+    forkProofAttempts += 1;
     final pinHash = _hexToBytes(pin.hashHex);
     if (pinHash == null) return false;
     final ordered = List<({int height, Uint8List header})>.from(have)
       ..sort((a, b) => a.height.compareTo(b.height));
-    final branch = <({int height, Uint8List header})>[ordered.first];
-    var guard = 0;
-    final limit = hostTip < pin.height ? pin.height : hostTip;
-    while (guard++ <= limit) {
+    final tipId = _forkTipId(ordered);
+    final started = _forkNowMs();
+    bool expired() =>
+        _forkNowMs() - started >= headerWalkDeadline.inMilliseconds;
+    final List<({int height, Uint8List header})> branch;
+    if (_forkResumeHost == host &&
+        _forkResumeTip == tipId &&
+        _forkResumeBranch != null &&
+        _forkResumeBranch!.isNotEmpty) {
+      branch = [
+        for (final row in _forkResumeBranch!)
+          (height: row.height, header: Uint8List.fromList(row.header)),
+      ];
+    } else {
+      _clearForkResume();
+      branch = <({int height, Uint8List header})>[
+        (height: ordered.first.height, header: ordered.first.header),
+      ];
+    }
+    final cap = forkWalkCap < 1 ? 1 : forkWalkCap;
+    var steps = 0;
+    while (steps < cap) {
+      if (expired()) {
+        _saveForkResume(host, tipId, branch);
+        return false;
+      }
       final bottom = branch.first;
       final linked = _checkedParent(bottom.header);
       if (linked != null && linked.height + 1 == bottom.height) {
+        if (_forkClaimCannotWin(branch)) {
+          _clearForkResume();
+          _clearForkBackoff(host);
+          return false;
+        }
         await _appendLinked(branch, ordered);
-        return _switchIfHeavier(linked, branch);
+        return _finishFork(host, linked, branch);
       }
       if (bottom.height - 1 == pin.height &&
           _prevEquals(bottom.header, pinHash)) {
         final pinRow = _checkedAt(pin.height);
-        if (pinRow == null) return false;
+        if (pinRow == null) {
+          _rejectFork(host);
+          return false;
+        }
+        if (_forkClaimCannotWin(branch)) {
+          _clearForkResume();
+          _clearForkBackoff(host);
+          return false;
+        }
         await _appendLinked(branch, ordered);
-        return _switchIfHeavier(pinRow, branch);
+        return _finishFork(host, pinRow, branch);
       }
-      if (bottom.height - 1 <= pin.height) return false;
-      final digest = await _hashHeader(bottom.header);
-      if (digest == null ||
-          !shearMeetsTarget(digest, _headerBits(bottom.header))) {
+      if (bottom.height - 1 <= pin.height) {
+        _rejectFork(host);
         return false;
       }
+      steps += 1;
       final rows = await _readHeaders(
         bottom.height - 1,
         bottom.height - 1,
         fetch,
       );
-      if (rows.isEmpty) return false;
-      final lower = rows.first;
-      if (lower.height != bottom.height - 1) return false;
-      final lowerDigest = await _hashHeader(lower.header);
-      if (lowerDigest == null ||
-          !shearMeetsTarget(lowerDigest, _headerBits(lower.header)) ||
-          !_prevEquals(bottom.header, lowerDigest)) {
+      if (expired()) {
+        _saveForkResume(host, tipId, branch);
         return false;
       }
-      branch.insert(0, (height: lower.height, header: lower.header));
+      if (rows.isEmpty || rows.first.height != bottom.height - 1) {
+        _rejectFork(host);
+        return false;
+      }
+      final lower = rows.first;
+      final parentTs = headerTimestampMs(lower.header);
+      if (parentTs == null) {
+        _rejectFork(host);
+        return false;
+      }
+      final times = <int, int>{lower.height: parentTs};
+      for (final row in branch) {
+        final ts = headerTimestampMs(row.header);
+        if (ts != null) times[row.height] = ts;
+      }
+      int? timeAt(int height) => times[height] ?? _timeAt(height);
+      final cheap = _headerLinkCheap(
+        bottom.header,
+        height: bottom.height,
+        parentTimeMs: parentTs,
+        timeAt: timeAt,
+      );
+      if (cheap == _WalkCheap.reject) {
+        _rejectFork(host);
+        return false;
+      }
+      branch.insert(
+        0,
+        (height: lower.height, header: Uint8List.fromList(lower.header)),
+      );
+      if (cheap == _WalkCheap.wait) continue;
+      final lowerDigest = await _hashHeader(lower.header);
+      final bottomDigest = await _hashHeader(bottom.header);
+      if (expired()) {
+        _saveForkResume(host, tipId, branch);
+        return false;
+      }
+      if (lowerDigest == null ||
+          bottomDigest == null ||
+          !shearMeetsTarget(lowerDigest, _headerBits(lower.header)) ||
+          !shearMeetsTarget(bottomDigest, _headerBits(bottom.header)) ||
+          !_prevEquals(bottom.header, lowerDigest)) {
+        _rejectFork(host);
+        return false;
+      }
     }
+    _saveForkResume(host, tipId, branch);
     return false;
   }
 
@@ -5466,12 +5722,27 @@ class ShearLedger implements ReadProofSink {
     for (final row in extra) {
       if (!taken.add(row.height)) continue;
       if (row.height != branch.last.height + 1) continue;
+      final parentTs = headerTimestampMs(branch.last.header);
+      if (parentTs == null) break;
+      final times = <int, int>{};
+      for (final haveRow in branch) {
+        final ts = headerTimestampMs(haveRow.header);
+        if (ts != null) times[haveRow.height] = ts;
+      }
+      int? timeAt(int height) => times[height] ?? _timeAt(height);
+      final cheap = _headerLinkCheap(
+        row.header,
+        height: row.height,
+        parentTimeMs: parentTs,
+        timeAt: timeAt,
+      );
+      if (cheap != _WalkCheap.ok) break;
       final prev = await _hashHeader(branch.last.header);
-      if (prev == null || !_prevEquals(row.header, prev)) continue;
+      if (prev == null || !_prevEquals(row.header, prev)) break;
       final digest = await _hashHeader(row.header);
       if (digest == null ||
           !shearMeetsTarget(digest, _headerBits(row.header))) {
-        continue;
+        break;
       }
       branch.add(row);
     }
@@ -5479,11 +5750,12 @@ class ShearLedger implements ReadProofSink {
 
   /// [ancestor] is already checked. [branch] is the competing headers above
   /// it, lowest height first. Work is compared only after every header proves.
-  Future<bool> _switchIfHeavier(
+  /// Timestamp, ASERT, MTP, and the future bound run before ShearHash.
+  Future<_ForkProof> _switchIfHeavier(
     ({int height, Uint8List hash, int timeMs, String headerHex}) ancestor,
     List<({int height, Uint8List header})> branch,
   ) async {
-    if (branch.isEmpty) return false;
+    if (branch.isEmpty) return _ForkProof.invalid;
     final times = <int, int>{ancestor.height: ancestor.timeMs};
     int? timeAt(int height) => times[height] ?? _timeAt(height);
     var parentHash = ancestor.hash;
@@ -5491,9 +5763,19 @@ class ShearLedger implements ReadProofSink {
     var work = BigInt.zero;
     final proved = <({int height, Uint8List header})>[];
     for (final row in branch) {
-      if (row.height != ancestor.height + proved.length + 1) return false;
+      if (row.height != ancestor.height + proved.length + 1) {
+        return _ForkProof.invalid;
+      }
+      final cheap = _headerLinkCheap(
+        row.header,
+        height: row.height,
+        parentTimeMs: parentTime,
+        timeAt: timeAt,
+        parentHash: parentHash,
+      );
+      if (cheap != _WalkCheap.ok) return _ForkProof.invalid;
       final digest = await _hashHeader(row.header);
-      if (digest == null) return false;
+      if (digest == null) return _ForkProof.invalid;
       _rememberDigest(_bytesHex(row.header), digest);
       final provedDigest = _proveHeader(
         row.header,
@@ -5502,16 +5784,16 @@ class ShearLedger implements ReadProofSink {
         parentTimeMs: parentTime,
         timeAt: timeAt,
       );
-      if (provedDigest == null) return false;
+      if (provedDigest == null) return _ForkProof.invalid;
       final ts = headerTimestampMs(row.header);
-      if (ts == null) return false;
+      if (ts == null) return _ForkProof.invalid;
       times[row.height] = ts;
       parentHash = provedDigest;
       parentTime = ts;
       work += blockWork(_headerBits(row.header));
       proved.add((height: row.height, header: row.header));
     }
-    if (work <= _droppedWork(ancestor.height)) return false;
+    if (work <= _droppedWork(ancestor.height)) return _ForkProof.lighter;
     final saved =
         List<({int height, Uint8List hash, int timeMs, String headerHex})>.from(
           _checkedHeaders,
@@ -5528,7 +5810,7 @@ class ShearLedger implements ReadProofSink {
     }
     if (applied) {
       _saveVerifiedChain();
-      return true;
+      return _ForkProof.switched;
     }
     _checkedHeaders
       ..clear()
@@ -5538,7 +5820,7 @@ class ShearLedger implements ReadProofSink {
     // The branch proved, but the retained window cannot take the fork.
     // Rebuild from the pin on the next pass. The proof already happened.
     if (ancestor.height <= (_pin?.height ?? 0)) _rebackfillFromPin();
-    return false;
+    return _ForkProof.lighter;
   }
 
   /// Headers from the checkpoint toward [hostTip]. At most 32 per call.
@@ -5714,9 +5996,6 @@ class ShearLedger implements ReadProofSink {
     'rows': rows,
   });
 
-  String _legacyHeaderBody(String pinHex, List<Map<String, Object>> rows) =>
-      jsonEncode({'v': 2, 'pin': pinHex.toLowerCase(), 'rows': rows});
-
   bool _macMatch(String got, String want) {
     if (got.length != want.length || got.isEmpty) return false;
     var diff = 0;
@@ -5798,6 +6077,15 @@ class ShearLedger implements ReadProofSink {
       _discardHeaderFile();
       return null;
     }
+    // A file from before cumulative work was sealed cannot price a fork.
+    // Refuse it and backfill from the pin rather than treating work as zero.
+    final workRaw = decoded['work']?.toString() ?? '';
+    if (!decoded.containsKey('work') ||
+        workRaw.isEmpty ||
+        (BigInt.tryParse(workRaw)?.isNegative ?? true)) {
+      _discardHeaderFile();
+      return null;
+    }
     final rawRows = decoded['rows'];
     if (rawRows is! List) {
       _discardHeaderFile();
@@ -5829,20 +6117,16 @@ class ShearLedger implements ReadProofSink {
       _discardHeaderFile();
       return null;
     }
-    final hasNew = decoded.containsKey('priors') || decoded.containsKey('work');
-    final work = decoded['work']?.toString();
     final mac = decoded['mac']?.toString().toLowerCase() ?? '';
-    final want = hasNew
-        ? _headerMacHex(
-            key,
-            _canonicalHeaderBody(pinHex, parsedPriors, work ?? '0', canon),
-          )
-        : _headerMacHex(key, _legacyHeaderBody(pinHex, canon));
+    final want = _headerMacHex(
+      key,
+      _canonicalHeaderBody(pinHex, parsedPriors, workRaw, canon),
+    );
     if (!_macMatch(mac, want)) {
       _discardHeaderFile();
       return null;
     }
-    return (rows: sealed, priors: parsedPriors, work: hasNew ? work : null);
+    return (rows: sealed, priors: parsedPriors, work: workRaw);
   }
 
   /// Ten increasing times, or an empty list when the key is absent.
@@ -9647,9 +9931,11 @@ class ShearLedger implements ReadProofSink {
       final confs = confirmationsOf(h);
       if (t.kind == 'pool-fee') return true;
       if (isWalletBlockKind(t.kind)) return !isFeeBlockMirror(t, rolled);
-      // Depth unknown: an incoming row stays, as pending, with no count.
+      // Depth unknown, including a pin that has not caught the host:
+      // an incoming row stays, as pending, with no count.
       if (isOwnerLanding(t)) {
         if (!t.confirmed) return true;
+        if (confirmationCountHidden(h)) return true;
         return bookTip < 1 || confs >= 1;
       }
       return confs >= continuumConfirmations;
@@ -10774,9 +11060,10 @@ class ShearLedger implements ReadProofSink {
         .toList();
     if (plan['covered'] != true || rawBatches.isEmpty) {
       if (plan['shortFee'] == true) throw StateError('fee_short');
-      if (bookTip < 1) throw StateError(kErrHeaderSync);
+      final refusal = fundsRefusal();
+      if (refusal.message == kErrHeaderSync) throw refusal;
       if (plan['empty'] == true) throw StateError(kErrNoSealedNote);
-      throw fundsRefusal();
+      throw refusal;
     }
     final batches =
         <({double pay, String payNanos, List<Map<String, dynamic>> notes})>[];
