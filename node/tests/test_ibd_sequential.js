@@ -234,7 +234,7 @@ describe('sequential IBD', () => {
     const src = fs.readFileSync(new URL('../src/p2p.js', import.meta.url), 'utf8');
     assert.match(src, /nextSequentialHeader\(/);
     assert.match(src, /if \(next\) \{\s*rec\.want = \[next\.hash\];/);
-    assert.match(src, /got\?\.reason === 'hash_bonus'/);
+    assert.match(src, /reason === 'hash_bonus'\s*&&\s*!have\.has\(lastHash\)/);
     assert.match(src, /requeuePrevHash\(rec, lastHash\)/);
     assert.doesNotMatch(src, /tipHeight: networkTip/);
     assert.match(src, /IBD validates every block/);

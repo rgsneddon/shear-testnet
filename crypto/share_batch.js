@@ -796,6 +796,11 @@ export function stashSharePow(header, hash) {
   return key;
 }
 
+export function peekSharePow(header) {
+  const found = preparedSharePow.get(Buffer.from(header).toString('hex'));
+  return found ? Buffer.from(found) : null;
+}
+
 export function takeSharePow(header) {
   const key = Buffer.from(header).toString('hex');
   const found = preparedSharePow.get(key);
