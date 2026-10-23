@@ -17,9 +17,11 @@ try {
   console.error(JSON.stringify({ event: 'hash_lane', backend: laneBackend }));
 } catch { /* ignore */ }
 
-const hangPrefix = process.env.SHEAR_TEST_HANG_HEADER_PREFIX || '';
-const delayPrefix = process.env.SHEAR_TEST_DELAY_HEADER_PREFIX || '';
-const delayMs = Number(process.env.SHEAR_TEST_DELAY_MS) || 0;
+const laneTest = process.env.SHEAR_HASH_LANE_TEST === '1';
+if (laneTest && process.env.SHEAR_TEST_CRASH_ON_START === '1') process.exit(1);
+const hangPrefix = laneTest ? (process.env.SHEAR_TEST_HANG_HEADER_PREFIX || '') : '';
+const delayPrefix = laneTest ? (process.env.SHEAR_TEST_DELAY_HEADER_PREFIX || '') : '';
+const delayMs = laneTest ? (Number(process.env.SHEAR_TEST_DELAY_MS) || 0) : 0;
 
 function answer(id, hex) {
   try {

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
+process.env.SHEAR_HASH_LANE_TEST = '1';
 process.env.SHEAR_HASH_WORKER_TIMEOUT_MS = '20000';
 process.env.SHEAR_TEST_HANG_HEADER_PREFIX = '0000000000000000';
 process.env.SHEAR_TEST_DELAY_HEADER_PREFIX = '0303030303030303';

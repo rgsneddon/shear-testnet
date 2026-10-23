@@ -21,6 +21,7 @@ let children = [];
 let seq = 0;
 
 const pending = new Map();
+let spawned = 0;
 
 let active = 0;
 let maxActive = 0;
@@ -35,8 +36,9 @@ const waiters = [];
 /**
  * A lane that has not answered one header in this long is hung. That lane's
  * jobs fail as a local worker fault and only that child is replaced.
- * Light RandomX hashes one header in milliseconds, so this only trips on a
- * stuck child.
+ * A child that exits or errors is left down until the next post asks for a
+ * lane. Light RandomX hashes one header in milliseconds, so the timer only
+ * trips on a stuck child.
  */
 export const HASH_WORKER_TIMEOUT_MS = 120_000;
 export const HASH_WORKER_TIMEOUT_MIN_MS = 5_000;
@@ -49,6 +51,10 @@ function workerTimeoutMs(env = process.env) {
 
 export function p2pHashCap() {
   return P2P_VERIFY_CAP;
+}
+
+export function p2pHashSpawns() {
+  return spawned;
 }
 
 export function p2pHashStats() {
@@ -81,7 +87,7 @@ function touchChild(proc, live) {
   try { proc.stdin?.[fn](); } catch { /* ignore */ }
 }
 
-function retireChild(proc, err) {
+function retireChild(proc, err, replace = false) {
   const idx = children.indexOf(proc);
   if (idx < 0) return;
   children.splice(idx, 1);
@@ -96,17 +102,21 @@ function retireChild(proc, err) {
   workerActive = Math.max(0, workerActive - jobs.length);
   try { proc.kill(); } catch { /* ignore */ }
   for (const job of jobs) job.reject(err);
-  if (children.length < P2P_VERIFY_CAP) {
+  // A timeout replaces that one lane. An exit or error does not: the next
+  // post fills the cap, so a child that dies at startup cannot respawn itself.
+  if (replace) {
     try { bootChild(); } catch { /* the next post boots a replacement */ }
   }
 }
 
 function bootChild() {
+  spawned += 1;
   const proc = spawn(process.execPath, [childUrl], {
     stdio: ['pipe', 'pipe', 'inherit'],
     windowsHide: true,
   });
   proc._inflight = 0;
+  proc.stdin.on('error', () => { /* a dead lane's pipe closes on exit */ });
   const rl = createInterface({ input: proc.stdout });
   rl.on('line', (line) => {
     const parts = line.split('\t');
@@ -155,7 +165,7 @@ function post(header) {
         job.reject(new Error('hash_worker_timeout'));
         return;
       }
-      retireChild(job.proc, new Error('hash_worker_timeout'));
+      retireChild(job.proc, new Error('hash_worker_timeout'), true);
     }, workerTimeoutMs());
     timer.unref?.();
     const resolve = (v) => { clearTimeout(timer); resolveJob(v); };
