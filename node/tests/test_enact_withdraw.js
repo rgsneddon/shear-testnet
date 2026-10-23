@@ -233,17 +233,17 @@ function enactWithdraw(magic) {
       lockedAudit.circulatingNanos,
       potSubsidyAt({ nowMs: lockAt, genesisMs: genesis, magic }),
     );
-    // bonusUnitsBefore walks emptyVault(), and vaultApply passes the v12
-    // magic. This withdraw is the dev enactment instant, still inside that
-    // v12 epoch, so the two-block walk stops at epoch_open. The refused
-    // row is not a second mint.
     const folded = foldSupply(chain, { genesisMs: genesis, magic });
-    assert.equal(folded.ok, false, 'dev enactment fold');
-    assert.equal(folded.reason, 'epoch_open');
+    assert.equal(folded.ok, true, `dev enactment fold ${folded.reason}`);
+    assert.equal(folded.state.mintedInterest, 0n);
     const audit = auditCirculatingSupply(chain, { magic });
-    assert.notEqual(audit.status, 'verified');
+    assert.equal(audit.status, 'verified', audit.reason);
     assert.equal(audit.extraMintNanos, 0);
     assert.equal(audit.measuredHashNanos, 0);
+    assert.equal(audit.vaultPrincipalNanos, 0);
+    const pot = potSubsidyAt({ nowMs: lockAt, genesisMs: genesis, magic })
+      + potSubsidyAt({ nowMs: enactAt, genesisMs: genesis, magic });
+    assert.equal(audit.circulatingNanos, pot);
   }
   return { store, drawBlock };
 }

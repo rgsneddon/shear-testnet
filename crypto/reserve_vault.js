@@ -877,7 +877,8 @@ function mintEpoch(state, nowMs) {
   return chain > live ? chain : live;
 }
 
-export function emptyVault() {
+export function emptyVault(magic) {
+  const book = magic == null || magic === '' ? MAGIC_TESTNET : String(magic);
   return {
     programId: RESERVE_PROGRAM,
     epochStartMs: 0,
@@ -902,7 +903,7 @@ export function emptyVault() {
     rewardPermittedNanos: 0n,
     freezes: Object.create(null),
     genesisMs: 0,
-    magic: MAGIC_TESTNET,
+    magic: book,
     enactedUp: 0,
     enactedDown: 0,
     enactedHold: 0,
@@ -2675,11 +2676,13 @@ export function unitsAlongChain({
 }
 
 /** Hash-bonus unit live at each block, before that block's own enact. */
-export function bonusUnitsBefore(blocks) {
+export function bonusUnitsBefore(blocks, magic) {
+  const book = magic == null || magic === '' ? null : String(magic);
   const walked = unitsAlongChain({
     history: [],
     fork: blocks || [],
-    vault: emptyVault(),
+    vault: book ? emptyVault(book) : emptyVault(),
+    magic: book,
     timeOf: (block) => {
       try {
         return Number(decodeHeader(Buffer.from(block.header)).timestamp);

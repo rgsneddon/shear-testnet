@@ -85,15 +85,23 @@ export function blockNeedsReserve(block) {
   return false;
 }
 
+/** Book the replay applies. An omitted argument keeps the vault's own magic. */
+function replayMagic(magic, state) {
+  if (magic != null && magic !== '') return String(magic);
+  if (state && state.magic != null && state.magic !== '') return String(state.magic);
+  return MAGIC_TESTNET;
+}
+
 /** Vault after `block`, or null when this block does not touch a vault. */
-function vaultApply(state, block, prior) {
+function vaultApply(state, block, prior, magic) {
   const parent = prior?.length ? prior[prior.length - 1] : null;
+  if (state && magic != null && magic !== '') state.magic = String(magic);
   return applyReserveBlock({
     state,
     ...reserveApplyFields({
       prior,
       block,
-      magic: MAGIC_TESTNET,
+      magic: replayMagic(magic, state),
       parentMs: parent ? headerMs(parent) || 0 : 0,
       genesisMs: headerMs(prior?.[0] || block) || 0,
       nowMs: headerMs(block) || 0,
@@ -203,11 +211,11 @@ export function rollVaultSupply(track, beforeLocked, afterLocked, block) {
   return { noteBacked: note, unfunded: bare };
 }
 
-export function vaultAfterBlock(vault, block, prior = []) {
+export function vaultAfterBlock(vault, block, prior = [], magic) {
   if (!vault && !blockNeedsReserve(block)) return { ok: true, vault: null };
   if (vault && vault.blankFork) return { ok: false, vault: null };
-  const next = vault ? cloneVault(vault) : emptyVault();
-  const applied = vaultApply(next, block, prior);
+  const next = vault ? cloneVault(vault) : emptyVault(magic);
+  const applied = vaultApply(next, block, prior, magic);
   if (!applied || applied.ok !== true) return { ok: false, vault: null };
   return { ok: true, vault: next };
 }
@@ -217,7 +225,7 @@ export function vaultAfterBlock(vault, block, prior = []) {
  * Null when a prefix apply fails. An empty vault is the parent of the first
  * reserve block, and is not null.
  */
-export function vaultBefore(blocks, index) {
+export function vaultBefore(blocks, index, magic) {
   const list = Array.isArray(blocks) ? blocks : [];
   let needs = false;
   for (let i = 0; i < list.length; i += 1) {
@@ -225,18 +233,18 @@ export function vaultBefore(blocks, index) {
   }
   if (!needs) return null;
   const end = Math.max(0, Math.min(Number(index) || 0, list.length));
-  let vault = emptyVault();
+  let vault = emptyVault(magic);
   for (let i = 0; i < end; i += 1) {
-    const applied = vaultApply(vault, list[i], list.slice(0, i));
+    const applied = vaultApply(vault, list[i], list.slice(0, i), magic);
     if (!applied || applied.ok !== true) return null;
   }
   return vault;
 }
 
 /** `{ ok, vault }` so a failed prefix is not the same as a coinbase-only list. */
-export function vaultParent(blocks, index) {
+export function vaultParent(blocks, index, magic) {
   const list = Array.isArray(blocks) ? blocks : [];
-  const vault = vaultBefore(list, index);
+  const vault = vaultBefore(list, index, magic);
   if (vault) return { ok: true, vault };
   for (let i = 0; i < list.length; i += 1) {
     if (blockNeedsReserve(list[i])) return { ok: false, vault: null };
@@ -513,7 +521,7 @@ function carriedInterest(scalar, key) {
  * Replay withdraw interest onto snap rows. The 12-u64 snap does not store it.
  * `rows[i]` is the supply after `blocks[i]`. A miss is not published.
  */
-export function fillSnapInterest(rows, blocks) {
+export function fillSnapInterest(rows, blocks, magic) {
   const list = Array.isArray(blocks) ? blocks : [];
   const snaps = Array.isArray(rows) ? rows : [];
   if (!snaps.length || snaps.length !== list.length) return { ok: false, reason: 'supply_state' };
@@ -535,7 +543,7 @@ export function fillSnapInterest(rows, blocks) {
     if (interest !== permitted) return { ok: false, reason: 'supply' };
     row.mintedInterest = interest;
     row.permittedInterest = permitted;
-    const advanced = vaultAfterBlock(vault, list[i]);
+    const advanced = vaultAfterBlock(vault, list[i], [], magic);
     if (!advanced.ok) return { ok: false, reason: 'supply' };
     vault = advanced.vault;
   }
@@ -815,7 +823,7 @@ export function supplyStep(prev, block, opts = {}) {
   const notePrincipal = (next.state.vaultPrincipal || 0n) + split.note - openedWithdrawPrincipal(block);
   if (notePrincipal < 0n) return { ok: false, reason: 'supply', state: null };
   if (opts.vault) {
-    const advanced = vaultAfterBlock(opts.vault, block);
+    const advanced = vaultAfterBlock(opts.vault, block, [], opts.magic);
     if (!advanced.ok || !advanced.vault) return { ok: false, reason: 'supply', state: null };
     const identity = supplyIdentity(advanced.vault);
     if (!identity.ok) return { ok: false, reason: 'supply', state: null };
@@ -833,7 +841,7 @@ export function foldSupply(blocks, opts = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   const genesisMs = Number(opts.genesisMs) > 0 ? Number(opts.genesisMs) : (headerMs(list[0]) || 0);
   if (!list.length) return { ok: true, reason: '', state: emptySupplyState(genesisMs) };
-  const units = opts.units || bonusUnitsBefore(list);
+  const units = opts.units || bonusUnitsBefore(list, opts.magic);
   if (!units) return { ok: false, reason: 'epoch_open', state: null };
   let tip = 0;
   for (let i = 0; i < list.length; i += 1) {
@@ -859,7 +867,7 @@ export function foldSupply(blocks, opts = {}) {
     });
     if (!stepped.ok) return stepped;
     state = stepped.state;
-    const advanced = vaultAfterBlock(vault, list[i]);
+    const advanced = vaultAfterBlock(vault, list[i], [], opts.magic);
     if (!advanced.ok) return { ok: false, reason: 'supply', state: null };
     vault = advanced.vault;
     if (vault) {
@@ -986,12 +994,14 @@ export function supplyReport(state, opts = {}) {
  * Units for a supply audit. A refused reserve row still has a unit, so the
  * walk can report that row. A hole before the last block stays epoch_open.
  */
-function auditUnits(blocks) {
+function auditUnits(blocks, magic) {
   const list = Array.isArray(blocks) ? blocks : [];
+  const book = magic == null || magic === '' ? null : magic;
   const walked = unitsAlongChain({
     history: [],
     fork: list,
-    vault: emptyVault(),
+    vault: book ? emptyVault(book) : emptyVault(),
+    magic: book,
     timeOf: (block) => {
       try {
         return Number(decodeHeader(Buffer.from(block.header)).timestamp);
@@ -1090,7 +1100,7 @@ export function auditCirculatingSupply(blocks, opts = {}) {
 
   let ok = true;
   let reason = '';
-  const units = auditUnits(list);
+  const units = auditUnits(list, magic);
   if (!units) return { ...blank, reason: 'epoch_open' };
   let auditTip = 0;
   for (let i = 0; i < list.length; i += 1) {
@@ -1118,20 +1128,20 @@ export function auditCirculatingSupply(blocks, opts = {}) {
       state = next.state;
       ok = false;
       reason = reason || next.reason;
-      const broken = emptyVault();
+      const broken = emptyVault(magic);
       broken.blankFork = true;
       vault = broken;
     } else if (next.state.mintedInterest !== next.state.permittedInterest) {
       // Same comparison as supplyStep. The inflated block is not the measured mint.
       ok = false;
       reason = reason || 'supply';
-      const broken = emptyVault();
+      const broken = emptyVault(magic);
       broken.blankFork = true;
       vault = broken;
     } else {
       state = next.state;
       const split = lockPrincipalSplit(list[bi]);
-      const advanced = vaultAfterBlock(vault, list[bi]);
+      const advanced = vaultAfterBlock(vault, list[bi], [], magic);
       if (!advanced.ok) {
         // The vault refused the row. A bare receipt is still a claim with
         // no note debit, so the difference is that amount. Keep the prior vault.
