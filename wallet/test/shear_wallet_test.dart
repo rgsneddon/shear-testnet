@@ -9343,7 +9343,10 @@ class _PublicReadPool extends ShearPoolClient {
   Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
 
   @override
-  Future<Map<String, dynamic>> headerAt(int height) => inner.headerAt(height);
+  Future<Map<String, dynamic>> headerAt(
+    int height, {
+    Duration timeout = const Duration(seconds: 5),
+  }) => inner.headerAt(height, timeout: timeout);
 
   @override
   Future<Map<String, dynamic>> fluxset() async => {

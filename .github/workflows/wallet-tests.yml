@@ -37,6 +37,7 @@ jobs:
         run: |
           flutter pub get
           dart run tool/checkpoint_guard.dart
+          python3 pack/test_check_shear_v3_bundled.py
           flutter test \
             test/spendable_hard_lock_test.dart \
             test/t18_frame_test.dart \

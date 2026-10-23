@@ -690,7 +690,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
   Future<void> _preloginSync() async {
     Future<void> once() async {
       try {
-        await ledger.syncTip(proveChain: false);
+        await runPreloginOnce(work: () => ledger.syncTip(proveChain: false));
       } catch (_) {}
       if (mounted && !unlocked) setState(() {});
     }

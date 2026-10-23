@@ -103,6 +103,17 @@ void pinWalletHttp(HttpClient client, {required bool Function() allowPublic}) {
 /// while that pass is still running, so the next tick cannot start a second
 /// native hash.
 const kWalletTipTimeout = Duration(seconds: 8);
+
+/// Pre-login tip read. A host that accepts and never answers must not hold
+/// the single pass.
+const kPreloginPassTimeout = Duration(seconds: 8);
+
+Future<void> runPreloginOnce({
+  required Future<void> Function() work,
+  Duration timeout = kPreloginPassTimeout,
+}) {
+  return work().timeout(timeout);
+}
 /// Connect Bare asks for the tip and any seals still missing, on this cadence.
 const kWalletHotPoll = Duration(seconds: 8);
 const kWalletIdlePoll = Duration(seconds: 8);

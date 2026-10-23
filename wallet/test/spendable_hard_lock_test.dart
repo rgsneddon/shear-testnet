@@ -346,7 +346,7 @@ void main() {
   });
 
   test(
-    'one catch-up runs at a time and a gap on disk still resumes',
+    'one catch-up runs at a time and an unlinked file does not raise the tip',
     () async {
       final dir = Directory.systemTemp.createTempSync('shear-hdr-gap-');
       addTearDown(() {
@@ -412,10 +412,13 @@ void main() {
       File(gapPath).writeAsStringSync(
         jsonEncode({'v': 2, 'pin': _fixturePin().hashHex, 'rows': rows}),
       );
-      final resumed = ShearLedger()..bindHeaderClock(resumeTipMs);
+      final resumed = ShearLedger()
+        ..bindIdentity(createIdentity())
+        ..bindHeaderClock(resumeTipMs);
       resumed.installCheckpoint(_fixturePin(), storePath: gapPath);
-      expect(resumed.bookTip, 80);
+      expect(resumed.bookTip, _fixturePin().height);
       expect(resumed.headerVerifyLine, isNull);
+      expect(File(gapPath).existsSync(), isFalse);
       final behind = ShearLedger()
         ..installCheckpoint(_fixturePin())
         ..bindHeaderClock(_v3CkptMs);
@@ -430,7 +433,7 @@ void main() {
   );
 
   test(
-    'a heavier branch inside the checked range rolls the tip back',
+    'a one-block competing header does not erase confirmations',
     () async {
       final id = createIdentity();
       final ledger = ShearLedger()
@@ -456,23 +459,129 @@ void main() {
         ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
         greaterThan(0),
       );
-      final rolled = await ledger.catchUpVerifiedChain(
+      final held = await ledger.catchUpVerifiedChain(
         20,
         fetch: (from, to) async => [(height: 20, header: sibling)],
       );
-      expect(rolled, 20);
-      expect(ledger.bookTip, 20);
-      expect(ledger.confirmationsOf(13), 8);
+      expect(held, 21);
+      expect(ledger.bookTip, 21);
+      expect(ledger.confirmationsOf(13), 9);
       expect(
         ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
-        0,
+        greaterThan(0),
       );
+      var hinted = 0;
       ledger.noteHostReorg(<int>[20]);
-      expect(ledger.bookTip, 19);
-      expect(ledger.confirmationsOf(13), lessThan(9));
+      expect(ledger.bookTip, 21);
+      final after = await ledger.catchUpVerifiedChain(
+        21,
+        fetch: (from, to) async {
+          hinted++;
+          expect(from, 20);
+          return [(height: 20, header: sibling)];
+        },
+      );
+      expect(hinted, 1);
+      expect(after, 21);
+      expect(ledger.bookTip, 21);
+      expect(
+        ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+        greaterThan(0),
+      );
     },
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  test(
+    'a tampered header file is discarded and backfill starts at the pin',
+    () async {
+      final id = createIdentity();
+      final dir = Directory.systemTemp.createTempSync('shear-hdr-mac-');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      final path = '${dir.path}/verified-headers.json';
+      final child = _hexBytes(_v3CkptHeader);
+      final ledger = ShearLedger()
+        ..bindIdentity(id)
+        ..bindHeaderClock(_v3CkptMs)
+        ..installCheckpoint(_fixturePin(), storePath: path);
+      await ledger.catchUpVerifiedChain(
+        20,
+        fetch: (from, to) async => [(height: 20, header: child)],
+      );
+      expect(ledger.bookTip, 20);
+      final saved = jsonDecode(File(path).readAsStringSync()) as Map;
+      expect(saved['mac'], isA<String>());
+      saved['mac'] = '00' * 32;
+      File(path).writeAsStringSync(jsonEncode(saved));
+      final stolen = ShearLedger()
+        ..bindIdentity(id)
+        ..bindHeaderClock(_v3CkptMs);
+      stolen.installCheckpoint(_fixturePin(), storePath: path);
+      expect(stolen.bookTip, _fixturePin().height);
+      expect(File(path).existsSync(), isFalse);
+      var fetches = 0;
+      final again = await stolen.catchUpVerifiedChain(
+        20,
+        fetch: (from, to) async {
+          fetches++;
+          return [(height: 20, header: child)];
+        },
+      );
+      expect(fetches, 1);
+      expect(again, 20);
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test('a stalled header read releases the catch-up pass', () async {
+    final id = createIdentity();
+    final ledger = ShearLedger()
+      ..bindIdentity(id)
+      ..bindHeaderClock(_v3CkptMs)
+      ..headerReadTimeout = const Duration(milliseconds: 40)
+      ..installCheckpoint(_fixturePin());
+    final hung = Completer<List<({int height, Uint8List header})>>();
+    final stalled = ledger.catchUpVerifiedChain(
+      20,
+      fetch: (from, to) => hung.future,
+    );
+    final tip = await stalled;
+    expect(tip, _fixturePin().height);
+    final child = _hexBytes(_v3CkptHeader);
+    final next = await ledger.catchUpVerifiedChain(
+      20,
+      fetch: (from, to) async => [(height: 20, header: child)],
+    );
+    expect(next, 20);
+    if (!hung.isCompleted) {
+      hung.complete(const <({int height, Uint8List header})>[]);
+    }
+  });
+
+  test('a stalled prelogin pass releases its busy flag', () async {
+    var busy = true;
+    final hung = Completer<void>();
+    final job = runPreloginOnce(
+      work: () => hung.future,
+      timeout: const Duration(milliseconds: 40),
+    ).then<void>((_) {}, onError: (_) {}).whenComplete(() {
+      busy = false;
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(busy, isFalse);
+    if (!hung.isCompleted) hung.complete();
+    await job;
+  });
+
+  test('a missing hasher is not a stuck zero progress line', () {
+    final ledger = ShearLedger()
+      ..bindHeaderClock(_v3CkptMs)
+      ..installCheckpoint(_fixturePin());
+    ledger.reportHeaderHasherMissing(hostTip: 100);
+    expect(ledger.headerVerifyLine, 'ShearHash unavailable');
+  });
 
   test('desktop own-node depth comes from the node tip without settleTo', () {
     expect(

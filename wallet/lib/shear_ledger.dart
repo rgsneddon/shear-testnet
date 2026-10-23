@@ -5,6 +5,8 @@ import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
+
 import 'shear_ctf.dart';
 import 'shear_identity.dart';
 import 'shear_eip712.dart';
@@ -931,6 +933,17 @@ bool consensusBitsOk(int bits, AsertQuote quote) {
   if (!isPackedBits(bits) || !bitsAcceptAsert(bits, quote)) return false;
   final fp = unpackBits(bits);
   return fp >= kAsertLiveMinBits && fp <= kAsertMaxBits;
+}
+
+/// Consensus block work. Same quantity as crypto/asert.js blockWorkBig:
+/// 2 raised to the unpacked bit difficulty.
+BigInt blockWork(int bits) {
+  final fp = unpackBits(bits);
+  if (!fp.isFinite || fp <= 0) return BigInt.one;
+  final whole = fp.floor();
+  final frac = fp - whole;
+  final scale = BigInt.from((math.pow(2, frac) * math.pow(2, 48)).round());
+  return ((BigInt.one << whole) * scale) >> 48;
 }
 
 /// Same window as crypto/asert.js bitsAcceptAsert. Exact packed bits, or any
@@ -4200,6 +4213,12 @@ class ShearLedger implements ReadProofSink {
       spendPub ??= ed25519PublicFromSeed(seed);
       admitBase ??= admitBaseBytes(seed);
     }
+    if (!_headerMacReady &&
+        _pin != null &&
+        (_headerStorePath ?? '').isNotEmpty) {
+      _chainLoaded = false;
+      _loadVerifiedChain();
+    }
   }
 
   Map<String, dynamic> _sealedScanInput(
@@ -4756,6 +4775,8 @@ class ShearLedger implements ReadProofSink {
     _settledHeight = 0;
     _checkedHeaders.clear();
     _chainLoaded = false;
+    _sealedPending = null;
+    _reorgHintFrom = null;
     _seedCheckpoint();
     lag1Root = null;
     tipHeight = 1;
@@ -4812,14 +4833,26 @@ class ShearLedger implements ReadProofSink {
   int get bookTip => _verifiedTip;
 
   /// First-run catch-up. Null once the checked chain has reached the host.
+  /// A missing native hasher is its own line, not a stuck `0/N`.
   String? get headerVerifyLine {
     final pin = _pin;
     final host = _headerHostTip;
-    if (pin == null || host <= bookTip || host <= pin.height) return null;
+    final behind = pin != null && host > bookTip && host > pin.height;
+    if (_hasherMissing && behind) return 'ShearHash unavailable';
+    if (!behind) return null;
     final done = bookTip - pin.height;
     final total = host - pin.height;
     if (done < 0 || total < 1 || done >= total) return null;
     return 'Verifying headers $done/$total';
+  }
+
+  /// The native library did not hash a header. Tests set [hostTip] to show
+  /// the line without waiting on a host.
+  void reportHeaderHasherMissing({int? hostTip}) {
+    _hasherMissing = true;
+    if (hostTip != null && hostTip > _headerHostTip) _headerHostTip = hostTip;
+    final paint = onHeaderProgress;
+    if (paint != null) paint();
   }
 
   /// Paints [headerVerifyLine] on the shell. The line is the only chrome.
@@ -4850,6 +4883,21 @@ class ShearLedger implements ReadProofSink {
 
   /// Host height the current catch-up is walking toward.
   int _headerHostTip = 0;
+
+  /// Native ShearHash-v3 did not load. The progress line says so.
+  bool _hasherMissing = false;
+
+  /// True once a vault key has been used to read the header file.
+  bool _headerMacReady = false;
+
+  /// Host reorg list: refetch this height. Not a depth change.
+  int? _reorgHintFrom;
+
+  /// Sealed rows waiting for an off-UI recheck before the tip may rise.
+  List<({int height, int timeMs, Uint8List header})>? _sealedPending;
+
+  /// One header read. A stalled host must release the catch-up pass.
+  Duration headerReadTimeout = const Duration(seconds: 5);
 
   /// One catch-up per ledger. A second caller waits for this pass.
   Future<int>? _catchUpFlight;
@@ -5042,14 +5090,16 @@ class ShearLedger implements ReadProofSink {
   }
 
   /// Drop checked rows above [height]. The pin is never dropped.
-  void _rollBackTo(int height) {
+  /// Disk is updated only when [save] is set, after the replacement header
+  /// has already passed.
+  void _rollBackTo(int height, {bool save = true}) {
     final pinH = _pin?.height ?? 0;
     final floor = height < pinH ? pinH : height;
     _checkedHeaders.removeWhere((row) => row.height > floor);
     if (_verifiedTip > floor) _verifiedTip = floor;
     if (_verifiedTip < pinH) _verifiedTip = pinH;
     _chainLoaded = true;
-    _saveVerifiedChain();
+    if (save) _saveVerifiedChain();
   }
 
   /// A header already checked must be the same bytes. A different header at
@@ -5074,7 +5124,11 @@ class ShearLedger implements ReadProofSink {
     if (ready != null) return ready;
     if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
       final digest = shearHashV3(header);
-      if (digest != null) _rememberDigest(hex, digest);
+      if (digest != null) {
+        _rememberDigest(hex, digest);
+      } else if (header.length == shearHeaderLen) {
+        reportHeaderHasherMissing();
+      }
       return digest;
     }
     return null;
@@ -5092,7 +5146,11 @@ class ShearLedger implements ReadProofSink {
     _hashTail = gate.future;
     return previous.then((_) async {
       try {
-        return await Isolate.run(() => shearHashV3(copy));
+        final digest = await Isolate.run(() => shearHashV3(copy));
+        if (digest == null && copy.length == shearHeaderLen) {
+          reportHeaderHasherMissing();
+        }
+        return digest;
       } finally {
         if (!gate.isCompleted) gate.complete();
       }
@@ -5144,16 +5202,72 @@ class ShearLedger implements ReadProofSink {
     return true;
   }
 
-  /// Accept [header] at [height], or roll back to the ancestor it links to
-  /// when the host is serving a heavier branch inside the checked range.
+  /// Accept [header] at [height]. A competing header replaces the current
+  /// branch only when its work is strictly greater than every header it would
+  /// drop. Equal work stays. There is no fixed rollback cap: a heavier fork
+  /// that would leave fewer than 11 MTP times re-backfills from the pin
+  /// instead of freezing. One header of the same difficulty cannot erase a
+  /// longer confirmed chain.
   bool _acceptHeader(Uint8List header, int height) {
     if (_headerPowOk(header, sealedHeight: height)) return true;
     final parent = _checkedParent(header);
     if (parent == null || height != parent.height + 1) return false;
     if (_knownHeader(header, height)) return true;
-    if (parent.height < _chainTip) _rollBackTo(parent.height);
-    if (height != _chainTip + 1) return false;
-    return _headerPowOk(header, sealedHeight: height);
+    if (parent.height >= _chainTip) return false;
+    final added = blockWork(_headerBits(header));
+    final dropped = _workAbove(parent.height);
+    if (added <= dropped) return false;
+    if (!_mtpReady(parent.height)) {
+      _rebackfillFromPin();
+      return false;
+    }
+    final saved = List<({int height, Uint8List hash, int timeMs, String headerHex})>.from(
+      _checkedHeaders,
+    );
+    final savedTip = _verifiedTip;
+    _rollBackTo(parent.height, save: false);
+    if (_headerPowOk(header, sealedHeight: height)) {
+      _saveVerifiedChain();
+      return true;
+    }
+    _checkedHeaders
+      ..clear()
+      ..addAll(saved);
+    _verifiedTip = savedTip;
+    return false;
+  }
+
+  BigInt _workAbove(int height) {
+    var sum = BigInt.zero;
+    for (final row in _checkedHeaders) {
+      if (row.height <= height || row.headerHex.isEmpty) continue;
+      final raw = headerFromHex(row.headerHex);
+      if (raw == null) continue;
+      sum += blockWork(_headerBits(raw));
+    }
+    return sum;
+  }
+
+  /// Eleven prior times for the header after [parentHeight], including the
+  /// pin's stored priors when the parent is still next to the checkpoint.
+  bool _mtpReady(int parentHeight) {
+    final next = parentHeight + 1;
+    for (var h = next - _kMtpWindow; h < next; h++) {
+      if (_timeAt(h) == null) return false;
+    }
+    return true;
+  }
+
+  /// The heavier fork sits below the stored window. Drop back to the pin and
+  /// let the next fetch walk up from there. A partial rollback would leave
+  /// too few times for MTP and then never move again.
+  void _rebackfillFromPin() {
+    final pinH = _pin?.height ?? 0;
+    _checkedHeaders.removeWhere((row) => row.height != pinH);
+    _verifiedTip = pinH;
+    _chainLoaded = true;
+    _sealedPending = null;
+    _saveVerifiedChain();
   }
 
   /// Headers from the checkpoint toward [hostTip]. At most 32 per call.
@@ -5182,16 +5296,16 @@ class ShearLedger implements ReadProofSink {
     _installReleaseCheckpoint();
     if (_pin == null || hostTip < 1) return bookTip;
     _loadVerifiedChain();
+    await _adoptSealedPending();
     _paintHeaderProgress(hostTip);
+    await _refetchReorgHint(hostTip, fetch);
     var next = _chainTip + 1;
     if (hostTip < next) {
       final floor = _pin?.height ?? 0;
       // A shorter host tip can be a heavier branch. The same height is
       // already checked, so a resumed wallet does not fetch again.
       if (hostTip > floor && hostTip < _chainTip) {
-        final rows = fetch != null
-            ? await fetch(hostTip, hostTip)
-            : await _fetchHeaderPage(hostTip, hostTip);
+        final rows = await _readHeaders(hostTip, hostTip, fetch);
         for (final row in rows) {
           await _prepareTipHash(_bytesHex(row.header), row.height);
           if (_acceptHeader(row.header, row.height)) _paintHeaderProgress(hostTip);
@@ -5203,9 +5317,9 @@ class ShearLedger implements ReadProofSink {
     }
     final cap = next + _kHeaderBackfillCap - 1;
     final to = hostTip < cap ? hostTip : cap;
-    final rows = fetch != null
-        ? await fetch(next, to)
-        : await _fetchHeaderPage(next, to);
+    final rows = List<({int height, Uint8List header})>.from(
+      await _readHeaders(next, to, fetch),
+    );
     rows.sort((a, b) => a.height.compareTo(b.height));
     for (final row in rows) {
       if (row.height > next) break;
@@ -5219,6 +5333,36 @@ class ShearLedger implements ReadProofSink {
     return bookTip;
   }
 
+  Future<List<({int height, Uint8List header})>> _readHeaders(
+    int from,
+    int to,
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetch,
+  ) {
+    if (fetch != null) {
+      return fetch(from, to).timeout(
+        headerReadTimeout,
+        onTimeout: () => <({int height, Uint8List header})>[],
+      );
+    }
+    return _fetchHeaderPage(from, to);
+  }
+
+  Future<void> _refetchReorgHint(
+    int hostTip,
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetch,
+  ) async {
+    final hint = _reorgHintFrom;
+    if (hint == null) return;
+    _reorgHintFrom = null;
+    final rows = await _readHeaders(hint, hint, fetch);
+    for (final row in rows) {
+      await _prepareTipHash(_bytesHex(row.header), row.height);
+      if (_acceptHeader(row.header, row.height)) _paintHeaderProgress(hostTip);
+    }
+  }
+
   Future<List<({int height, Uint8List header})>> _fetchHeaderPage(
     int from,
     int to,
@@ -5228,7 +5372,7 @@ class ShearLedger implements ReadProofSink {
     final out = <({int height, Uint8List header})>[];
     for (var h = from; h <= to; h++) {
       try {
-        final json = await client.headerAt(h);
+        final json = await client.headerAt(h, timeout: headerReadTimeout);
         final raw = headerFromHex(json['header']?.toString() ?? '');
         if (raw == null) break;
         final height = (json['height'] as num?)?.toInt() ?? h;
@@ -5240,85 +5384,151 @@ class ShearLedger implements ReadProofSink {
     return out;
   }
 
+  /// MAC over the sealed header file. The key is derived from the spend
+  /// seed, the wallet vault secret. A bad MAC deletes the file.
+  Uint8List? _headerMacKey() {
+    final seed = spendSeed;
+    if (seed == null || seed.length != 32) return null;
+    final raw = Hmac(
+      sha256,
+      utf8.encode('shear-verified-headers-v1'),
+    ).convert(seed);
+    return Uint8List.fromList(raw.bytes);
+  }
+
+  String _headerMacHex(Uint8List key, String body) =>
+      Hmac(sha256, key).convert(utf8.encode(body)).toString();
+
+  String _canonicalHeaderBody(String pinHex, List<Map<String, Object>> rows) =>
+      jsonEncode({'v': 2, 'pin': pinHex.toLowerCase(), 'rows': rows});
+
+  bool _macMatch(String got, String want) {
+    if (got.length != want.length || got.isEmpty) return false;
+    var diff = 0;
+    for (var i = 0; i < got.length; i++) {
+      diff |= got.codeUnitAt(i) ^ want.codeUnitAt(i);
+    }
+    return diff == 0;
+  }
+
+  void _discardHeaderFile() {
+    final path = _headerStorePath;
+    if (path == null || path.isEmpty) return;
+    final file = File(path);
+    if (!file.existsSync()) return;
+    try {
+      file.deleteSync();
+    } catch (_) {}
+  }
+
   void _loadVerifiedChain() {
     if (_chainLoaded || _pin == null) return;
     final path = _headerStorePath;
     if (path == null || path.isEmpty) return;
     _chainLoaded = true;
+    final key = _headerMacKey();
+    if (key == null) {
+      _headerMacReady = false;
+      return;
+    }
+    _headerMacReady = true;
+    final sealed = _readSealedHeaderRows(key);
+    if (sealed == null || sealed.isEmpty) return;
+    if (_v3HashInline || Platform.environment['FLUTTER_TEST'] == 'true') {
+      _adoptSealedSync(sealed);
+      return;
+    }
+    _sealedPending = sealed;
+  }
+
+  /// Parsed sealed rows. Null discards the file. Empty means nothing to adopt.
+  List<({int height, int timeMs, Uint8List header})>? _readSealedHeaderRows(
+    Uint8List key,
+  ) {
+    final path = _headerStorePath;
+    final pin = _pin;
+    if (path == null || pin == null) return const [];
     final file = File(path);
-    if (!file.existsSync()) return;
+    if (!file.existsSync()) return const [];
     Object? decoded;
     try {
       decoded = jsonDecode(file.readAsStringSync());
     } catch (_) {
-      return;
+      _discardHeaderFile();
+      return null;
     }
-    if (decoded is! Map) return;
-    if (decoded['pin']?.toString().toLowerCase() != _pin!.hashHex.toLowerCase()) {
-      return;
+    if (decoded is! Map || decoded['v'] != 2) {
+      _discardHeaderFile();
+      return null;
     }
-    final rows = decoded['rows'];
-    if (rows is! List) return;
-    final pin = _pin!;
-    final pinHash = _hexToBytes(pin.hashHex);
-    if (pinHash == null) return;
-    final pending =
-        <
-          ({
-            int height,
-            int timeMs,
-            Uint8List header,
-            Uint8List? id,
-            String headerHex,
-          })
-        >[];
-    for (final row in rows) {
-      if (row is! Map) return;
+    final pinHex = decoded['pin']?.toString().toLowerCase() ?? '';
+    if (pinHex != pin.hashHex.toLowerCase()) {
+      _discardHeaderFile();
+      return null;
+    }
+    final rawRows = decoded['rows'];
+    if (rawRows is! List) {
+      _discardHeaderFile();
+      return null;
+    }
+    final canon = <Map<String, Object>>[];
+    final sealed = <({int height, int timeMs, Uint8List header})>[];
+    for (final row in rawRows) {
+      if (row is! Map) {
+        _discardHeaderFile();
+        return null;
+      }
       final height = (row['h'] as num?)?.toInt() ?? 0;
       final timeMs = (row['t'] as num?)?.toInt() ?? 0;
       final hex = row['hdr']?.toString() ?? '';
-      final raw = headerFromHex(hex);
-      if (height <= pin.height || raw == null || timeMs <= 0) return;
-      final idHex = row['id']?.toString() ?? '';
-      pending.add((
-        height: height,
-        timeMs: timeMs,
-        header: raw,
-        id: idHex.isEmpty ? null : _hexToBytes(idHex),
-        headerHex: hex,
-      ));
+      final id = row['id']?.toString().toLowerCase() ?? '';
+      final header = headerFromHex(hex);
+      if (height <= pin.height || header == null || timeMs <= 0) {
+        _discardHeaderFile();
+        return null;
+      }
+      canon.add({'h': height, 't': timeMs, 'hdr': hex, 'id': id});
+      sealed.add((height: height, timeMs: timeMs, header: header));
     }
-    pending.sort((a, b) => a.height.compareTo(b.height));
-    if (pending.isEmpty) return;
-    var expect = pending.first.height;
-    Uint8List? prevId;
-    for (var i = 0; i < pending.length; i++) {
-      final row = pending[i];
-      if (row.height != expect) return;
-      if (prevId != null && !_prevEquals(row.header, prevId)) return;
-      if (row.height == pin.height + 1 && !_prevEquals(row.header, pinHash)) {
-        return;
-      }
-      final continues =
-          i + 1 < pending.length && pending[i + 1].height == row.height + 1;
-      if (!continues) {
-        _headerPowOk(row.header, sealedHeight: row.height);
-        return;
-      }
-      final id = row.id ?? shearHashV3(row.header);
-      if (id == null) return;
-      _rememberChecked(row.height, id, row.timeMs, headerHex: row.headerHex);
-      if (row.height > _verifiedTip) _verifiedTip = row.height;
-      prevId = id;
-      expect = row.height + 1;
+    canon.sort((a, b) => (a['h'] as int).compareTo(b['h'] as int));
+    sealed.sort((a, b) => a.height.compareTo(b.height));
+    final mac = decoded['mac']?.toString().toLowerCase() ?? '';
+    final want = _headerMacHex(key, _canonicalHeaderBody(pinHex, canon));
+    if (!_macMatch(mac, want)) {
+      _discardHeaderFile();
+      return null;
+    }
+    return sealed;
+  }
+
+  /// Re-link every previous hash and re-run the header checks. The tip rises
+  /// only for a row that passes. A failure stops the walk.
+  void _adoptSealedSync(List<({int height, int timeMs, Uint8List header})> rows) {
+    for (final row in rows) {
+      final ts = headerTimestampMs(row.header);
+      if (ts == null || ts != row.timeMs) return;
+      if (!_headerPowOk(row.header, sealedHeight: row.height)) return;
+    }
+  }
+
+  Future<void> _adoptSealedPending() async {
+    final rows = _sealedPending;
+    if (rows == null) return;
+    _sealedPending = null;
+    for (final row in rows) {
+      final ts = headerTimestampMs(row.header);
+      if (ts == null || ts != row.timeMs) return;
+      await _prepareTipHash(_bytesHex(row.header), row.height);
+      if (!_headerPowOk(row.header, sealedHeight: row.height)) return;
     }
   }
 
   void _saveVerifiedChain() {
     final path = _headerStorePath;
     final pin = _pin;
-    if (path == null || path.isEmpty || pin == null) return;
-    final rows = [
+    final key = _headerMacKey();
+    if (path == null || path.isEmpty || pin == null || key == null) return;
+    final rows = <Map<String, Object>>[
       for (final row in _checkedHeaders)
         if (row.height > pin.height && row.headerHex.isNotEmpty)
           {
@@ -5328,11 +5538,20 @@ class ShearLedger implements ReadProofSink {
             'id': _bytesHex(row.hash),
           },
     ];
+    rows.sort((a, b) => (a['h'] as int).compareTo(b['h'] as int));
+    final pinHex = pin.hashHex.toLowerCase();
+    final text = jsonEncode({
+      'v': 2,
+      'pin': pinHex,
+      'rows': rows,
+      'mac': _headerMacHex(key, _canonicalHeaderBody(pinHex, rows)),
+    });
     final file = File(path);
     file.parent.createSync(recursive: true);
-    file.writeAsStringSync(
-      jsonEncode({'v': 2, 'pin': pin.hashHex, 'rows': rows}),
-    );
+    final tmp = File('$path.tmp');
+    tmp.writeAsStringSync(text);
+    if (file.existsSync()) file.deleteSync();
+    tmp.renameSync(file.path);
   }
 
   Uint8List? _hexToBytes(String hex) {
@@ -7107,24 +7326,24 @@ class ShearLedger implements ReadProofSink {
     return recheckRestFrameSpendable(restFrame, paymentCode: paymentCode);
   }
 
-  /// Host `orphans` / `reorgHeights` inside the checked range roll the
-  /// verified tip back to the fork. Notes and the scan cursor stay.
+  /// Host `orphans` / `reorgHeights` is a hint to re-fetch those headers.
+  /// It does not move depth and it does not write the header file. Notes
+  /// and the scan cursor stay.
   void noteHostReorg(Object? raw) => _applyReorgList(raw);
 
   void _applyReorgList(Object? raw) {
     if (raw is! List || raw.isEmpty || _pin == null) return;
     final pinH = _pin!.height;
-    var fork = _chainTip;
+    var from = _chainTip;
     var hit = false;
     for (final item in raw) {
       final h = item is num ? item.toInt() : int.tryParse('$item') ?? 0;
-      if (h <= pinH || _checkedAt(h) == null) continue;
+      if (h <= pinH || h > _chainTip) continue;
       hit = true;
-      final at = h - 1;
-      if (at < fork) fork = at;
+      if (h < from) from = h;
     }
     if (!hit) return;
-    _rollBackTo(fork);
+    _reorgHintFrom = from;
   }
 
   void _takeSpendTags(Map<String, dynamic> live) {
@@ -11376,7 +11595,11 @@ class ShearPoolClient {
     _http.close(force: true);
   }
 
-  Future<Map<String, dynamic>> _getRaw(String path, {String? open}) async {
+  Future<Map<String, dynamic>> _getRaw(
+    String path, {
+    String? open,
+    Duration? timeout,
+  }) async {
     final base = baseUrl;
     if (!_publicConsent && _ownNode == null && isPublicWalletHost(base)) {
       throw StateError(kLocalNodeDownCopy);
@@ -11389,8 +11612,12 @@ class ShearPoolClient {
     if (open != null && open.isNotEmpty) {
       req.headers.set('X-Shear-Open', open);
     }
-    final res = await req.close();
-    final text = await utf8.decodeStream(res);
+    final res = timeout == null
+        ? await req.close()
+        : await req.close().timeout(timeout);
+    final text = timeout == null
+        ? await utf8.decodeStream(res)
+        : await utf8.decodeStream(res).timeout(timeout);
     if (res.statusCode >= 300 && res.statusCode < 400) {
       throw StateError('redirect');
     }
@@ -11783,13 +12010,23 @@ class ShearPoolClient {
   }
 
   /// Public header at height. No identity, view key, or shear1.
-  Future<Map<String, dynamic>> headerAt(int height) async {
-    final got = await _getRawFirst([
+  /// [timeout] bounds the read so a host that accepts and stays silent
+  /// cannot hold the catch-up pass.
+  Future<Map<String, dynamic>> headerAt(
+    int height, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    for (final path in [
       '/header?height=$height',
       '/api/explorer/header?height=$height',
-    ]);
-    if (got != null) return got;
-    return _get('/api/explorer/header?height=$height');
+    ]) {
+      try {
+        return await _getRaw(path, timeout: timeout);
+      } on TimeoutException {
+        rethrow;
+      } catch (_) {}
+    }
+    return _get('/api/explorer/header?height=$height').timeout(timeout);
   }
 
   /// Public HASH_TX DAG. Used only to read continuity at a claim height.
