@@ -1,7 +1,8 @@
 /**
- * A withdraw built by the Dart wallet enters through queueTx.
- * The chain lock is mined here. Dart seals the payout, proves the spend,
- * and the wallet recognises that one-time dest20.
+ * A lock built by the Dart wallet enters through queueTx.
+ * The node mines that lock, claims it, and then mines the withdraw
+ * postMaturedWithdraws built. Nothing here stubs queueSend or seals the
+ * lock in JavaScript.
  */
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,57 +16,37 @@ import { createStore } from '../src/store.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { newIdentity, encodeDest, hash20FromAddress, destCommitFromSpendPub, ed25519PrivateFromSeed, ed25519RawPub } from '../../crypto/address.js';
 import {
+  GENESIS_BPS,
   MAGIC_TESTNET,
   PI_SHE_NANOS,
   RESERVE_EPOCH_MS,
-  RESERVE_PROGRAM,
 } from '../../crypto/asert.js';
 import { VAULT_PERIODS_PER_EPOCH } from '../../crypto/vault_accrual.js';
-import { levyNeed, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
-import { compactTx } from '../../crypto/chronoflux.js';
-import { admitScalarFromSeed, attachAdmitPub } from '../../crypto/admit.js';
-import {
-  asU8,
-  kernelExcess,
-  openedCoinbaseNanos,
-  pointBytes,
-  proveRange,
-  randomScalar,
-  scalarBytes,
-  sealHiddenNote,
-  commit,
-} from '../../crypto/note.js';
-import { viewTagOf } from '../../crypto/dummy.js';
+import { admitScalarFromSeed } from '../../crypto/admit.js';
+import { asU8, openedCoinbaseNanos } from '../../crypto/note.js';
 import { walletAnchor } from '../../crypto/admit_v3.js';
-import {
-  FS1_RECORD_BYTES,
-  FS1_WIRE,
-  fs1BlobLen,
-  fs1ProveSpend,
-  resetFs1Tree,
-  txBodyDigestFs1,
-} from '../../crypto/fs1_spend.js';
+import { resetFs1Tree } from '../../crypto/fs1_spend.js';
 import { fs1NativeLoaded } from '../../crypto/native_admit.js';
-import { signSpendTx } from '../../crypto/spend.js';
 import {
   chainPeriodIndex,
-  consensusUnlockPeriod,
   leafEpochsToBurn,
   leafStubNanos,
-  portalsFromSeed,
-  publicTrancheRows,
-  proveLockEquality,
+  lockNotePrincipal,
+  publicTrancheBook,
+  rewardClaimTx,
 } from '../../crypto/reserve_vault.js';
-import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { proveVaultReward, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const wallet = path.join(root, 'wallet');
 const T0 = 1_700_000_000_000;
+const FLUTTER_BIN = '/tmp/flutter-sdk/flutter/bin';
 
 const BYTE_KEYS = new Set([
   'dest20', 'spendPub', 'sig', 'withdrawNonce', 'excess', 'fs1',
   'commit', 'blob', 'cTilde', 'spendTag', 'R', 'z', 'note',
   'r', 'noteCommit', 'admitPub', 'rangeProof', 'rEph', 'rCt', 'amtCt', 'viewTag',
+  'lockAuth', 'vaultLockNote', 'retireProof',
 ]);
 
 function payer() {
@@ -120,7 +101,7 @@ async function advanceClock(store, dest, targetMs) {
   const step = 15 * 60_000;
   let guard = 0;
   while (lastStamp(store) < targetMs) {
-    assert.ok(guard < 2000, 'clock');
+    assert.ok(guard < 4000, 'clock');
     guard += 1;
     const want = Math.min(targetMs, lastStamp(store) + step);
     await mine(store, dest, want);
@@ -141,28 +122,6 @@ function potOf(tpl, who) {
   };
 }
 
-function rangeSlack(outs) {
-  let bytes = 0;
-  for (const o of outs) if (o?.rangeProof) bytes += Buffer.from(asU8(o.rangeProof)).length;
-  return Math.ceil((bytes * 2) / 2048) + 8;
-}
-
-function placeholders(k) {
-  const fs1 = Buffer.alloc(fs1BlobLen(k), 255);
-  fs1[0] = FS1_WIRE;
-  const proofs = [];
-  for (let i = 0; i < k; i += 1) {
-    const blob = Buffer.alloc(FS1_RECORD_BYTES, 255);
-    blob[0] = FS1_WIRE;
-    proofs.push({
-      blob,
-      cTilde: Buffer.alloc(32, 255),
-      spendTag: Buffer.alloc(32, 255),
-    });
-  }
-  return { fs1, proofs, vin: proofs.map(() => ({ commit: Buffer.alloc(32, 255) })) };
-}
-
 function liveCoins(store, coins, spent) {
   const height = store.tip().height + 1;
   const anchor = walletAnchor(height);
@@ -180,37 +139,6 @@ function liveCoins(store, coins, spent) {
     out.push({ ...c, index: at.get(key) });
   }
   return { anchor, live, coins: out };
-}
-
-function hiddenChange(nanos, dest20, admitBase) {
-  let note = attachAdmitPub(sealHiddenNote(nanos, { dest20, kind: 'send', admitBase }), { admitBase });
-  note = { ...note, kind: 'send', dest20: Buffer.from(dest20), viewTag: viewTagOf(note.noteCommit) };
-  delete note.valueProof;
-  return note;
-}
-
-function proveSpend(tx, use, anchor, live, outs) {
-  const proven = fs1ProveSpend({
-    live,
-    anchor,
-    indices: use.map((c) => c.index),
-    xs: use.map((c) => c.x),
-    tx,
-    magic: MAGIC_TESTNET,
-  });
-  assert.ok(proven, 'fs1 prove');
-  const excess = kernelExcess(outs, use.map((c, i) => ({ r: c.r, t: proven.t[i] })));
-  assert.ok(excess, 'excess');
-  const settled = compactTx({
-    ...tx,
-    vin: proven.proofs.map((p) => ({ commit: Buffer.from(p.cTilde) })),
-    vout: outs,
-    fs1: proven.fs1,
-    admit_proofs: proven.proofs,
-    excess,
-  });
-  assert.ok(txBodyDigestFs1(settled, MAGIC_TESTNET).equals(proven.digest), 'digest');
-  return settled;
 }
 
 function asHexBuf(raw) {
@@ -254,7 +182,54 @@ function notesHex(live) {
   return Buffer.concat(parts).toString('hex');
 }
 
-describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () => {
+/** Same slot as Dart vaultWithdrawSlotMs: hash(portal id) inside the two-epoch window. */
+function withdrawSlotMs(epochStart, epoch, portalId) {
+  const close = epochStart + (epoch + 1) * RESERVE_EPOCH_MS;
+  const windowBlocks = Math.floor((2 * RESERVE_EPOCH_MS) / 90_000);
+  const span = windowBlocks > 0 ? windowBlocks : 1;
+  const digest = createHash('sha256').update(Buffer.concat([
+    Buffer.from('shear-withdraw-slot-v1'),
+    Buffer.from(String(portalId).toLowerCase()),
+  ])).digest();
+  const pick = digest.readUInt32LE(0) % span;
+  return close + pick * 90_000;
+}
+
+function epochOf(state, ms) {
+  return Math.floor(chainPeriodIndex(state, ms) / VAULT_PERIODS_PER_EPOCH);
+}
+
+function runFlutter(testFile, env) {
+  const ran = spawnSync('flutter', ['test', testFile], {
+    cwd: wallet,
+    env: {
+      ...process.env,
+      PATH: `${FLUTTER_BIN}${path.delimiter}${process.env.PATH || ''}`,
+      ...env,
+    },
+    encoding: 'utf8',
+    timeout: 600_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const dartErr = ran.error ? String(ran.error.message || ran.error) : '';
+  assert.equal(ran.status, 0, dartErr || ran.stderr || ran.stdout || testFile);
+  const rows = String(ran.stdout || '').split(/\r?\n/);
+  let parsed = null;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const at = rows[i].indexOf('{');
+    if (at < 0) continue;
+    try {
+      parsed = JSON.parse(rows[i].slice(at));
+      break;
+    } catch {
+      parsed = null;
+    }
+  }
+  assert.ok(parsed, ran.stderr || `no json from ${testFile}`);
+  return revive(parsed);
+}
+
+describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () => {
   if (!fs1NativeLoaded()) {
     it('needs the native FS-1 addon', () => {
       assert.fail('shear_admit FS-1 addon is not loaded');
@@ -267,11 +242,12 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () 
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('a Dart-built withdraw is accepted by queueTx and the wallet recognises the payout', async () => {
+  it('a Dart-built lock is mined, claimed, and withdrawn through postMaturedWithdraws', async () => {
     resetFs1Tree();
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-dart-wd-'));
     const store = createStore(dir);
     const who = payer();
+    const pay = payer();
     const coins = [];
     const spent = new Set();
     for (let n = 0; n < 4; n += 1) {
@@ -280,173 +256,162 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () 
     }
     while (store.tip().height < 24) await mine(store, who.dest);
 
-    const portal = portalsFromSeed(who.spendSeed, 1)[0];
-    assert.ok(portal && portal.portalId && portal.dest20.length === 20, 'portal');
-    // The lock owner is the portal spend key. The identity key is not it.
-    const ownerKey = ed25519PrivateFromSeed(portal.spendSeed);
-    const ownerPub = ed25519RawPub(ownerKey).toString('hex');
     const view = liveCoins(store, coins, spent);
     const use = view.coins.filter((c) => c.who === who).slice(0, 4);
     assert.equal(use.length, 4, 'lock inputs');
     const total = use.reduce((s, c) => s + c.v, 0);
-    const blind = randomScalar();
-    const scalar = randomScalar();
-    const unlock = consensusUnlockPeriod(0);
-    const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
-    assert.ok(leaf, 'leaf');
-    const funded = pointBytes(commit(PI_SHE_NANOS, blind));
-    const range = proveRange(PI_SHE_NANOS, blind);
-    assert.ok(range, 'range');
-    const d20 = Buffer.from(portal.dest20);
     const changeDest = Buffer.from(hash20FromAddress(who.dest));
-    const ph = placeholders(4);
-    let fee = LEVY_FLOOR_UNITS;
-    let tx = null;
-    let spentOuts = null;
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      const changeN = total - fee - PI_SHE_NANOS;
-      assert.ok(changeN > 0, `lock change ${changeN}`);
-      const outs = [
-        {
-          kind: 'lock',
-          commit: funded,
-          rangeProof: range,
-          r: scalarBytes(blind),
-          dest20: d20,
-          portalId: portal.portalId,
-          viewTag: Buffer.from([1]),
-        },
-        hiddenChange(changeN, changeDest, who.base),
-      ];
-      const draft = compactTx({
-        id: 'dart-queue-lock',
-        kind: 'lock',
-        anchor: view.anchor,
-        fee,
-        nanos: 0,
-        programId: RESERVE_PROGRAM,
-        portalId: portal.portalId,
-        ownerPub,
-        vaultLockNote: leaf.note,
-        vin: ph.vin,
-        vout: outs,
-        fs1: ph.fs1,
-        admit_proofs: ph.proofs,
-      });
-      const need = levyNeed(draft);
-      if (fee >= need && fee <= LEVY_CAP_NANOS) {
-        tx = proveSpend(draft, use, view.anchor, view.live, outs);
-        spentOuts = outs;
-        break;
-      }
-      const next = need + rangeSlack(outs);
-      assert.ok(next > fee && next <= LEVY_CAP_NANOS, `lock levy ${need}`);
-      fee = next;
-    }
-    assert.ok(tx, 'lock fee');
-    tx.ownerPub = ownerPub;
-    // The coins sit at the identity dest. A compact FS-1 lock authorises with
-    // lockAuth, not that spendPub. The portal key would fail the coin dest.
-    signSpendTx(tx, ownerKey);
-    delete tx.spendPub;
-    delete tx.sig;
-    const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, 0);
-    assert.ok(fund, 'fund');
-    const lockOut = tx.vout.find((row) => String(row?.kind || '') === 'lock');
-    assert.ok(lockOut, 'lock out');
-    lockOut.fundProof = fund;
+    const lockFixture = {
+      seed: Buffer.from(who.spendSeed).toString('hex'),
+      lockIndex: 0,
+      lockEpoch: 0,
+      proveHeight: 0,
+      anchor: view.anchor,
+      notes: notesHex(view.live),
+      inputNanos: total,
+      changeDest20: changeDest.toString('hex'),
+      id: 'dart-queue-lock',
+      inputs: use.map((c) => ({
+        index: c.index,
+        kind: c.kind,
+        commit: c.commit.toString('hex'),
+        noteCommit: c.noteCommit.toString('hex'),
+        r: c.r.toString('hex'),
+      })),
+    };
+    const lockPath = path.join(dir, 'lock.json');
+    fs.writeFileSync(lockPath, JSON.stringify(lockFixture));
+    const built = runFlutter('test/emit_queue_lock_test.dart', { SHEAR_LOCK_FIXTURE: lockPath });
+    const expectLeaf = vaultLockNote(PI_SHE_NANOS, built.scalar, built.blind, built.unlock);
+    assert.ok(expectLeaf, 'js leaf');
+    assert.ok(expectLeaf.note.equals(Buffer.from(asU8(built.note))), 'dart leaf matches vaultLockNote');
+    const tx = built.tx;
+    assert.equal(tx.nanos, 0);
     assert.equal(tx.from, undefined);
+    assert.equal(tx.to, undefined);
+    assert.equal(tx.payoutPortalId, undefined);
+    assert.equal(tx.kind, 'lock');
+    const lockOut = (tx.vout || []).find((row) => row && row.kind === 'lock');
+    assert.ok(lockOut && lockOut.fundProof && lockOut.fundProof.R && lockOut.fundProof.z, 'fund proof');
+    assert.equal(lockNotePrincipal(tx, MAGIC_TESTNET), BigInt(PI_SHE_NANOS));
     resetFs1Tree();
-    const queuedLock = store.queueTx(tx);
-    assert.equal(queuedLock.ok, true, `lock queue ${queuedLock.reason}`);
+    const queuedLock = store.queueTx(tx, { nowMs: lastStamp(store) });
+    assert.equal(queuedLock.ok, true, `lock queue ${queuedLock.reason || ''} ${queuedLock.error || ''}`);
     const sealed = await mine(store, who.dest);
     assert.ok(sealed.tpl.txs.some((row) => row.id === 'dart-queue-lock'), 'lock mined');
     for (const c of use) spent.add(c.commit.toString('hex'));
-    const change = spentOuts[1];
     const changeCoin = {
-      r: Buffer.from(asU8(change.r)),
-      v: total - tx.fee - PI_SHE_NANOS,
-      commit: Buffer.from(asU8(change.commit)),
-      noteCommit: Buffer.from(asU8(change.noteCommit)),
+      r: Buffer.from(asU8(built.change.r)),
+      v: built.changeNanos,
+      commit: Buffer.from(asU8(built.change.commit)),
+      noteCommit: Buffer.from(asU8(built.change.noteCommit)),
+      admitPub: Buffer.from(asU8(built.change.admitPub)),
       kind: 'send',
-      x: admitScalarFromSeed(who.spendSeed, change),
       who,
     };
     coins.push(changeCoin);
 
+    while (store.tip().height < 240) await mine(store, who.dest);
+    const root = String(store.reserveVault.epochStartRoots?.['1'] || '');
+    assert.equal(root, store.reserveVault.vaultLockRoot, 'period root is the lock');
+    resetFs1Tree();
+    const proved = proveVaultReward({
+      locks: [{
+        amount: PI_SHE_NANOS,
+        scalar: built.scalar,
+        blind: built.blind,
+        unlockEpoch: built.unlock,
+      }],
+      which: 0,
+      rootEpoch: 1,
+      earnEpoch: 1,
+      bps: GENESIS_BPS,
+      dest20: hash20FromAddress(pay.dest),
+    });
+    assert.ok(proved, 'claim proof');
+    assert.equal(proved.rootHex, root, 'claim root');
+    const claim = rewardClaimTx({
+      to: pay.dest,
+      vault: proved,
+      id: 'dart-queue-claim',
+      ownerKey: pay.key,
+    });
+    delete claim.to;
+    delete claim.from;
+    delete claim.portalId;
+    delete claim.payoutPortalId;
+    delete claim.full;
+    delete claim.spendPub;
+    resetFs1Tree();
+    const claimQueued = store.queueTx(claim, { nowMs: lastStamp(store) });
+    assert.equal(claimQueued.ok, true, `claim queue ${claimQueued.reason || ''}`);
+    const claimBlock = await mine(store, who.dest);
+    assert.ok(claimBlock.tpl.txs.some((row) => row.id === 'dart-queue-claim'), 'claim mined');
+
     const genesis = Number(store.reserveVault.genesisMs);
-    await advanceClock(store, who.dest, genesis + RESERVE_EPOCH_MS);
-    const wall = lastStamp(store) + 1_000;
-    assert.ok(wall < genesis + 2 * RESERVE_EPOCH_MS, 'release epoch');
+    assert.ok(genesis > 0, 'genesis');
+    const portalId = String(built.portalId);
+    const slot = withdrawSlotMs(genesis, 0, portalId);
+    await advanceClock(store, who.dest, Math.max(genesis + RESERVE_EPOCH_MS, slot));
+    let wall = lastStamp(store);
+    const boundary = genesis + (epochOf(store.reserveVault, wall) + 1) * RESERVE_EPOCH_MS;
+    if (wall + 120_000 >= boundary) {
+      await advanceClock(store, who.dest, boundary + 120_000);
+      wall = lastStamp(store);
+    }
+    assert.ok(wall >= slot, 'withdraw slot');
+    assert.equal(epochOf(store.reserveVault, wall), epochOf(store.reserveVault, wall + 120_000), 'signed epoch');
+    const releaseEpoch = epochOf(store.reserveVault, wall);
+    assert.ok(releaseEpoch > 0, 'epoch rolled');
     const held = liveCoins(store, coins, spent);
     const input = held.coins.find((c) => c.commit.equals(changeCoin.commit));
     assert.ok(input, 'change still in the anchor');
-    const stub = leafStubNanos(store.reserveVault, [leaf.commit.toString('hex')]);
+    const chainPub = Buffer.from(asU8(held.live.pubs[input.index]));
+    assert.ok(chainPub.equals(changeCoin.admitPub), 'change admit');
+    const leafCommit = Buffer.from(asU8(expectLeaf.commit)).toString('hex');
+    const stub = leafStubNanos(store.reserveVault, [leafCommit]);
     assert.ok(stub > 0n, 'arrival stub');
-    const withdrawNanos = PI_SHE_NANOS + Number(stub);
+    assert.ok(stub <= BigInt(Number.MAX_SAFE_INTEGER), 'stub fits');
     const period = chainPeriodIndex(store.reserveVault, wall);
-    const burn = leafEpochsToBurn(store.reserveVault, leaf.note.toString('hex'), period);
+    const burn = leafEpochsToBurn(store.reserveVault, expectLeaf.note.toString('hex'), period);
     assert.equal(burn.length, 3, `burn ${burn.join(',')}`);
     const nonce = Buffer.alloc(32);
     nonce[0] = 9;
     nonce[31] = 7;
-    const fixture = {
+    const withdrawFixture = {
       seed: Buffer.from(who.spendSeed).toString('hex'),
+      dest: who.dest,
       nonce: nonce.toString('hex'),
-      portalId: portal.portalId,
-      id: 'dart-queue-wd',
+      nowMs: wall,
+      epochStartMs: genesis,
+      currentEpoch: releaseEpoch,
       anchor: held.anchor,
-      fee: LEVY_CAP_NANOS,
-      nanos: withdrawNanos,
-      inputValue: input.v,
-      changeDest20: changeDest.toString('hex'),
       notes: notesHex(held.live),
-      index: input.index,
-      spent: {
+      host: {
         kind: 'send',
         commit: input.commit.toString('hex'),
         noteCommit: input.noteCommit.toString('hex'),
         r: input.r.toString('hex'),
+        admitPub: chainPub.toString('hex'),
+        nanos: input.v,
       },
-      leaf: {
-        scalar: scalarBytes(scalar).toString('hex'),
-        blind: scalarBytes(blind).toString('hex'),
-        note: Buffer.from(leaf.note).toString('hex'),
-        unlock,
+      leaves: [{
+        scalar: Buffer.from(asU8(built.scalar)).toString('hex'),
+        blind: Buffer.from(asU8(built.blind)).toString('hex'),
+        note: expectLeaf.note.toString('hex'),
+        unlock: built.unlock,
         amount: PI_SHE_NANOS,
         epochs: burn,
         withdrawPeriod: period,
+        portalId,
         lockIndex: 0,
-      },
-      releaseEpoch: Math.floor(period / VAULT_PERIODS_PER_EPOCH),
-      // The wallet reads the node serializer. The test does not copy the rows.
-      nodePortal: {
-        ok: true,
-        portalId: portal.portalId,
-        tranches: publicTrancheRows(store.reserveVault.portals[portal.portalId]),
-      },
+      }],
+      tranches: publicTrancheBook(store.reserveVault),
     };
-    assert.ok(fixture.inputValue > fixture.fee, 'change covers the fee');
-    const fixturePath = path.join(dir, 'fixture.json');
-    fs.writeFileSync(fixturePath, JSON.stringify(fixture));
-    const ran = process.platform === 'win32'
-      ? spawnSync('cmd.exe', ['/d', '/s', '/c', 'flutter', 'test', 'test/emit_proved_withdraw_test.dart'], {
-        cwd: wallet,
-        env: { ...process.env, SHEAR_WITHDRAW_FIXTURE: fixturePath },
-        encoding: 'utf8',
-        timeout: 600_000,
-      })
-      : spawnSync('flutter', ['test', 'test/emit_proved_withdraw_test.dart'], {
-        cwd: wallet,
-        env: { ...process.env, SHEAR_WITHDRAW_FIXTURE: fixturePath },
-        encoding: 'utf8',
-        timeout: 600_000,
-      });
-    const dartErr = ran.error ? String(ran.error.message || ran.error) : '';
-    assert.equal(ran.status, 0, dartErr || ran.stderr || ran.stdout || 'dart withdraw');
-    const line = String(ran.stdout || '').split(/\r?\n/).map((row) => row.trim()).filter((row) => row.startsWith('{')).pop();
-    assert.ok(line, ran.stdout || ran.stderr || 'no withdraw json');
-    const body = revive(JSON.parse(line));
+    assert.ok(withdrawFixture.host.nanos > 100, 'change covers the fee');
+    const withdrawPath = path.join(dir, 'withdraw.json');
+    fs.writeFileSync(withdrawPath, JSON.stringify(withdrawFixture));
+    const body = runFlutter('test/emit_matured_withdraw_test.dart', { SHEAR_WITHDRAW_FIXTURE: withdrawPath });
     if (body.retireProof && typeof body.retireProof === 'string') body.retireProof = asHexBuf(body.retireProof);
     assert.equal(body.kind, 'withdraw');
     assert.equal(body.from, undefined);
@@ -454,7 +419,11 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () 
     assert.equal(body.payoutPortalId, undefined);
     assert.equal(body.spendPub, undefined);
     assert.equal(body.sig, undefined);
-    const want = payoutDest20(who.spendSeed, portal.portalId, nonce);
+    assert.match(String(body.id), /^wd-[0-9a-f]{32}$/);
+    assert.equal(String(body.id).includes(String(wall)), false);
+    const wantNanos = PI_SHE_NANOS + Number(stub);
+    assert.equal(body.nanos, wantNanos);
+    const want = payoutDest20(who.spendSeed, portalId, nonce);
     assert.ok(Buffer.from(body.dest20).equals(want), 'payout dest20');
     const receipt = (body.vout || []).find((row) => row && row.kind === 'withdraw');
     assert.ok(receipt, 'receipt');
@@ -462,5 +431,7 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () 
     resetFs1Tree();
     const got = store.queueTx(body, { nowMs: wall });
     assert.equal(got.ok, true, `queue ${got.reason || ''} ${got.error || ''}`);
+    const withdrawn = await mine(store, who.dest, wall + 1000);
+    assert.ok(withdrawn.tpl.txs.some((row) => row.id === body.id), 'withdraw mined');
   });
 });

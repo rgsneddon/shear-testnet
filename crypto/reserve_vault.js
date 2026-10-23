@@ -2150,6 +2150,23 @@ function votesView(state) {
   return { ...state.votes };
 }
 
+/** Every portal's public tranche rows, plus the arrival stub. No portal is named by the caller. */
+export function publicTrancheBook(state) {
+  const out = [];
+  const portals = state?.portals || {};
+  for (const [portalId, portal] of Object.entries(portals)) {
+    const id = String(portalId || '').replace(/^0x/i, '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(id)) continue;
+    for (const row of publicTrancheRows(portal)) {
+      let stub = 0;
+      try { stub = Number(leafStubNanos(state, [row.commit])); } catch { stub = 0; }
+      if (!Number.isSafeInteger(stub) || stub < 0) stub = 0;
+      out.push({ ...row, portalId: id, stubNanos: stub });
+    }
+  }
+  return out;
+}
+
 /** Matured-tranche rows a wallet can hash. No amount, no blind, no owner. */
 export function publicTrancheRows(portal) {
   const rows = Array.isArray(portal?.tranches) ? portal.tranches : [];

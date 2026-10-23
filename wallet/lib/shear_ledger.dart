@@ -19,6 +19,8 @@ import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
+import 'shear_vault_reward.dart' show consensusUnlockPeriod, kPiSheNanos, kVaultUnlockOpen, vaultLockBlindBytes, vaultLockOwnerBytes;
+import 'shear_withdraw.dart' show vaultLeafNote;
 import 'shear_tip_tick.dart';
 
 const kSheDecimals = 11;
@@ -2145,13 +2147,29 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
   String? lockAuthHex;
   String? ownerPubHex;
   String? vaultLockNoteHex;
-  if (kind == 'lock' && spendSeed != null && spendSeed.length == 32 && commit != null && commit.length == 32) {
+  Uint8List? lockScalar;
+  Uint8List? lockBlind;
+  var lockUnlock = 0;
+  if (kind == 'lock' && spendSeed != null && spendSeed.length == 32) {
     final ownerSeed = reservePortalSpendSeed(spendSeed, lockIndex);
-    final auth = ownerSeed == null ? null : _reserveLockAuth(ownerSeed, portalId, Uint8List.fromList(commit));
-    if (auth != null && auth.length == 96) {
-      lockAuthHex = _bytesHex(auth);
-      ownerPubHex = _bytesHex(auth.sublist(0, 32));
-      vaultLockNoteHex = _bytesHex(Uint8List.fromList([...auth.sublist(0, 32), ...commit]));
+    final epoch = input['lockEpoch'];
+    lockUnlock = epoch is int ? consensusUnlockPeriod(epoch) : 0;
+    if (ownerSeed != null && lockUnlock != kVaultUnlockOpen) {
+      lockScalar = vaultLockOwnerBytes(ownerSeed, lockIndex);
+      lockBlind = vaultLockBlindBytes(ownerSeed, lockIndex, kPiSheNanos, 0);
+      final note = vaultLeafNote(
+        amount: kPiSheNanos,
+        scalar: lockScalar,
+        blind: lockBlind,
+        unlock: lockUnlock,
+      );
+      final leafCommit = Uint8List.sublistView(note, 32, 64);
+      final auth = reserveLockAuth(ownerSeed, portalId, leafCommit);
+      if (auth != null && auth.length == 96 && note.length == 64) {
+        lockAuthHex = _bytesHex(auth);
+        ownerPubHex = _bytesHex(auth.sublist(0, 32));
+        vaultLockNoteHex = _bytesHex(note);
+      }
     }
   }
   return {
@@ -2169,34 +2187,10 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     if (lockAuthHex != null) 'lockAuth': lockAuthHex,
     if (ownerPubHex != null) 'ownerPub': ownerPubHex,
     if (vaultLockNoteHex != null) 'vaultLockNote': vaultLockNoteHex,
+    if (lockScalar != null) 'lockScalar': lockScalar,
+    if (lockBlind != null) 'lockBlind': lockBlind,
+    if (kind == 'lock') 'lockUnlock': lockUnlock,
   };
-}
-
-/// ownerPub || sig over shear-lock-owner-v1 || portalId || commit || magic || chain.
-/// The key is the per-portal spend seed, never the identity seed.
-Uint8List? _reserveLockAuth(Uint8List ownerSeed, String portalId, Uint8List commit) {
-  if (ownerSeed.length != 32 || commit.length != 32) return null;
-  final hex = portalId.startsWith('0x') ? portalId.substring(2) : portalId;
-  if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(hex)) return null;
-  final id = Uint8List(32);
-  for (var i = 0; i < 32; i++) {
-    id[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
-  }
-  final chain = Uint8List(8);
-  const chainId = 2701;
-  for (var i = 0; i < 8; i++) {
-    chain[i] = (chainId >> (8 * i)) & 0xff;
-  }
-  final message = Uint8List.fromList([
-    ...utf8.encode('shear-lock-owner-v1'),
-    ...id,
-    ...commit,
-    ...keccak256(Uint8List.fromList(utf8.encode(kBookMagic))),
-    ...chain,
-  ]);
-  final pub = ed25519PublicFromSeed(ownerSeed);
-  final sig = ed25519Sign(ownerSeed, message);
-  return Uint8List.fromList([...pub, ...sig]);
 }
 
 /// JSON the pool's vote/lock/withdraw draft stringifies for [levyNeed].
@@ -7473,7 +7467,14 @@ class ShearLedger implements ReadProofSink {
       }
       if (at < 0 || indices.contains(at)) throw StateError('no_note');
       indices.add(at);
-      spent.add({'kind': (note['kind'] as String?) ?? 'pot', 'commit': commit, 'noteCommit': nc, 'r': r});
+      final noteSeed = note['spendSeed'] ?? note['changeSeed'];
+      spent.add({
+        'kind': (note['kind'] as String?) ?? 'pot',
+        'commit': commit,
+        'noteCommit': nc,
+        'r': r,
+        if (noteSeed is Uint8List && noteSeed.length == 32) 'spendSeed': noteSeed,
+      });
     }
     final top = indices.reduce((a, b) => a > b ? a : b);
     final anchor = pickFs1Anchor(_fs1Anchors, top);
@@ -9672,9 +9673,9 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
 
-  /// Matured-tranche rows for one portal. commit, epoch, remainMs, noteIsPrincipal.
-  Future<Map<String, dynamic>> reserveTranches(String portalId) =>
-      _get('/api/vault/reserve?portal=${Uri.encodeQueryComponent(portalId)}');
+  /// Every portal's matured-tranche rows. No portal id is on the query.
+  Future<Map<String, dynamic>> reserveTrancheBook() =>
+      _get('/api/vault/reserve?view=tranches');
 }
 
 /// Tip lines the Windows binary prints for `--print-tip`.

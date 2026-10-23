@@ -80,31 +80,122 @@ void main() {
     expect(run.ledger.notes, hasLength(run.before));
     expect(run.host['spent'], isNot(true));
   }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('the receipt adds the arrival stub', () async {
+    final run = await _post(
+      leaves: (seed) {
+        final portal = portalsFromSeed(seed, 1).first['portalId'] as String;
+        return [
+          _leaf(amount: 1000, portalId: portal, lockIndex: 0, epoch: 0, stubNanos: 50),
+        ];
+      },
+    );
+    expect(run.posts, hasLength(1));
+    expect(run.posts.single['nanos'], 1050);
+    expect(run.bookGets, 1);
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('two portals get unrelated ids and post on their own slots', () async {
+    const t0 = 1700000000000;
+    final reserve = ShearReserve()
+      ..currentEpoch = 1
+      ..epochStartMs = t0;
+    late final Uint8List seed;
+    late final String a;
+    late final String b;
+    late final int slotA;
+    late final int slotB;
+    var found = false;
+    for (var n = 1; n < 64; n++) {
+      final trial = Uint8List(32)..[0] = n;
+      final portals = portalsFromSeed(trial, 2);
+      final left = portals[0]['portalId'] as String;
+      final right = portals[1]['portalId'] as String;
+      final one = vaultWithdrawSlotMs(reserve, 0, left);
+      final two = vaultWithdrawSlotMs(reserve, 0, right);
+      if (one == two) continue;
+      seed = trial;
+      a = left;
+      b = right;
+      slotA = one;
+      slotB = two;
+      found = true;
+      break;
+    }
+    expect(found, isTrue);
+    final earlier = slotA <= slotB ? a : b;
+    final later = slotA <= slotB ? b : a;
+    final earlySlot = slotA <= slotB ? slotA : slotB;
+    final lateSlot = slotA <= slotB ? slotB : slotA;
+    expect(earlySlot, isNot(lateSlot));
+    final one = await _post(
+      seed: seed,
+      hosts: 2,
+      nowMs: earlySlot,
+      leaves: (_) => [
+        _leaf(amount: 1000, portalId: a, lockIndex: 0, epoch: 0),
+        _leaf(amount: 2000, portalId: b, lockIndex: 1, epoch: 0),
+      ],
+    );
+    expect(one.bookGets, 1);
+    expect(one.posts, hasLength(1));
+    expect(one.posts.single['portalId'], earlier);
+    final both = await _post(
+      seed: seed,
+      hosts: 2,
+      nowMs: lateSlot,
+      leaves: (_) => [
+        _leaf(amount: 1000, portalId: a, lockIndex: 0, epoch: 0, stubNanos: 7),
+        _leaf(amount: 2000, portalId: b, lockIndex: 1, epoch: 0, stubNanos: 11),
+      ],
+    );
+    expect(both.posts, hasLength(2));
+    final ids = [for (final body in both.posts) body['id'].toString()];
+    expect(ids[0], matches(RegExp(r'^wd-[0-9a-f]{32}$')));
+    expect(ids[1], matches(RegExp(r'^wd-[0-9a-f]{32}$')));
+    expect(ids[0].substring(3) == ids[1].substring(3), isFalse);
+    expect(ids[0].contains('$lateSlot'), isFalse);
+    expect(ids[1].contains('$lateSlot'), isFalse);
+    expect(ids[0].startsWith(ids[1]), isFalse);
+    expect(ids[1].startsWith(ids[0]), isFalse);
+    final byPortal = {for (final body in both.posts) body['portalId']: body['nanos']};
+    expect(byPortal[a], 1007);
+    expect(byPortal[b], 2011);
+    expect(both.posts.map((body) => body['portalId']).toSet(), {earlier, later});
+  }, timeout: const Timeout(Duration(minutes: 5)));
 }
 
 class _Run {
-  _Run(this.ledger, this.posts, this.posted, this.seed, this.host, this.before);
+  _Run(this.ledger, this.posts, this.posted, this.seed, this.host, this.before, this.bookGets);
   final ShearLedger ledger;
   final List<Map<String, dynamic>> posts;
   final List<Object?> posted;
   final Uint8List seed;
   final Map<String, dynamic> host;
   final int before;
+  final int bookGets;
 }
 
 Future<_Run> _post({
   required List<Map<String, Object?>> Function(Uint8List seed) leaves,
   bool ok = true,
+  Uint8List? seed,
+  int hosts = 1,
+  int? nowMs,
 }) async {
   expect(Fs1Native.tryLoad(), isNotNull, reason: 'fs1_prover_unavailable');
-  final id = createIdentity();
-  final dest = id.address;
-  final seed = hexToBytes(id.seedHex);
-  final made = leaves(seed);
-  final host = attachAdmitPub(
-    sealCoinbaseNote(4000, dest20: Uint8List(20)..[0] = 3, kind: 'pot'),
-    spendSeed: seed,
-  );
+  final id = seed == null ? createIdentity() : null;
+  final spend = seed ?? hexToBytes(createIdentity().seedHex);
+  final bound = id ?? createIdentity();
+  final dest = bound.address;
+  final made = leaves(spend);
+  final hostNotes = <Map<String, dynamic>>[];
+  for (var i = 0; i < hosts; i++) {
+    hostNotes.add(attachAdmitPub(
+      sealCoinbaseNote(4000, dest20: Uint8List(20)..[0] = 3 + i, kind: 'pot'),
+      spendSeed: spend,
+    ));
+  }
   final tranches = <String, List<Map<String, Object?>>>{};
   for (final leaf in made) {
     final portal = leaf['portalId'] as String;
@@ -112,20 +203,23 @@ Future<_Run> _post({
       'commit': _hex((leaf['note'] as Uint8List).sublist(32, 64)),
       'epoch': (leaf['epochs'] as List).first,
       'remainMs': 0,
+      if (leaf['stubNanos'] is int) 'stubNanos': leaf['stubNanos'],
     });
   }
   final posts = <Map<String, dynamic>>[];
   final pool = _WdPool(posts, {
-    'pubs': [host['admitPub']],
-    'commits': [host['commit']],
+    'pubs': [for (final host in hostNotes) host['admitPub']],
+    'commits': [for (final host in hostNotes) host['commit']],
     'anchors': [
-      {'height': 32, 'n': 1},
+      {'height': 32, 'n': hostNotes.length},
     ],
     'spendTags': <Object>[],
   }, tranches, ok: ok);
   addTearDown(pool.close);
-  final ledger = ShearLedger(pool: pool)..bindIdentity(id);
-  ledger.rememberNote(host);
+  final ledger = ShearLedger(pool: pool)..bindIdentity(bound);
+  for (final host in hostNotes) {
+    ledger.rememberNote(host);
+  }
   for (final leaf in made) {
     ledger.rememberNote(Map<String, dynamic>.from(leaf));
   }
@@ -138,19 +232,28 @@ Future<_Run> _post({
     ..joined = true;
   final before = ledger.notes.length;
   final storedHost = ledger.notes.firstWhere((n) => n['kind'] == 'pot');
+  String? maturedPortal;
+  for (final leaf in made) {
+    final epoch = (leaf['epochs'] as List).first;
+    if (epoch is int && reserve.currentEpoch > epoch) {
+      maturedPortal = leaf['portalId'] as String;
+      break;
+    }
+  }
+  final slot = maturedPortal == null ? t0 + kReserveEpochMs : vaultWithdrawSlotMs(reserve, 0, maturedPortal);
   // The CLI passes the seed and the lock leaves. This is that call.
   final posted = await postMaturedWithdraws(
     ledger,
     reserve: reserve,
     dest: dest,
     payout: dest,
-    nowMs: t0 + kReserveEpochMs,
-    spendSeed: hexToBytes(id.seedHex),
+    nowMs: nowMs ?? slot,
+    spendSeed: spend,
     leaves: reserveLockLeaves(ledger.notes),
     local: false,
     publicIpConsent: true,
   );
-  return _Run(ledger, posts, posted, seed, storedHost, before);
+  return _Run(ledger, posts, posted, spend, storedHost, before, pool.bookGets);
 }
 
 Map<String, Object?> _leaf({
@@ -158,6 +261,7 @@ Map<String, Object?> _leaf({
   required String portalId,
   required int lockIndex,
   required int epoch,
+  int stubNanos = 0,
 }) {
   final scalar = scalarBytes(randomScalar());
   final blind = scalarBytes(randomScalar());
@@ -173,6 +277,7 @@ Map<String, Object?> _leaf({
     'withdrawPeriod': epoch,
     'portalId': portalId,
     'lockIndex': lockIndex,
+    if (stubNanos > 0) 'stubNanos': stubNanos,
   };
 }
 
@@ -189,16 +294,25 @@ class _WdPool extends ShearPoolClient {
   final Map<String, dynamic> flux;
   final Map<String, List<Map<String, Object?>>> tranches;
   final bool ok;
+  int bookGets = 0;
 
   @override
   Future<Map<String, dynamic>> fluxset() async => flux;
 
   @override
-  Future<Map<String, dynamic>> reserveTranches(String portalId) async => {
-        'ok': true,
-        'portalId': portalId,
-        'tranches': tranches[portalId] ?? const <Map<String, Object?>>[],
-      };
+  Future<Map<String, dynamic>> reserveTrancheBook() async {
+    bookGets += 1;
+    final rows = <Map<String, Object?>>[];
+    for (final entry in tranches.entries) {
+      for (final row in entry.value) {
+        rows.add({
+          ...row,
+          'portalId': entry.key,
+        });
+      }
+    }
+    return {'ok': true, 'tranches': rows};
+  }
 
   @override
   Future<Map<String, dynamic>> postRaw(Map<String, dynamic> body) async {

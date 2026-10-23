@@ -2,11 +2,17 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import 'shear_admit.dart';
+import 'shear_admit_ffi.dart';
 import 'shear_ed25519.dart';
 import 'shear_eip712.dart';
+import 'shear_fs1.dart';
+import 'shear_identity.dart' show kBookMagic;
+import 'shear_levy.dart' show kLevyCapNanos;
 import 'shear_note.dart';
 import 'shear_pack.dart';
 import 'shear_ristretto.dart';
+import 'shear_vault_reward.dart';
 
 /// A withdraw the wallet can ship. It spends an FS-1 note and carries the
 /// retire proof and the principal opening. A plaintext `from` is refused.
@@ -580,4 +586,284 @@ Map<String, Object?>? buildProvedWithdraw({
     return null;
   }
   return body;
+}
+
+/// SHA-256 of the lock body JS `txDigestV3` binds. The fund proof is not in it.
+Uint8List lockTxDigest({
+  required Map<String, Object?> tx,
+  required String magic,
+}) {
+  final kind = (tx['kind'] ?? 'lock').toString();
+  final anchor = (tx['anchor'] as int?) ?? 0;
+  final fee = (tx['fee'] as int?) ?? 0;
+  final vins = (tx['vin'] as List?) ?? const [];
+  final proofs = (tx['admit_proofs'] as List?) ?? const [];
+  final outs = (tx['vout'] as List?) ?? const [];
+  final parts = <List<int>>[
+    utf8Bytes('shear-admit-v3-txd'),
+    [0x03],
+    utf8Bytes(magic),
+    _lenPref(utf8Bytes(kind)),
+    _u64(anchor),
+    _u64(fee),
+    _u64(0),
+    Uint8List(32),
+    _u32(vins.length),
+  ];
+  for (var i = 0; i < vins.length; i++) {
+    final proof = i < proofs.length && proofs[i] is Map ? proofs[i] as Map : const {};
+    final tag = _asBytes(proof['spendTag']);
+    final tilde = _asBytes(proof['cTilde']);
+    final vin = vins[i] is Map ? vins[i] as Map : const {};
+    final commit = tilde.length == 32 ? tilde : _asBytes(vin['commit']);
+    parts.add(tag.length == 32 ? tag : Uint8List(32));
+    parts.add(commit.length == 32 ? commit : Uint8List(32));
+  }
+  parts.add(_u32(outs.length));
+  List<int> boundCommit = const [];
+  final postedVout = <Map<String, dynamic>>[];
+  for (final row in outs) {
+    final o = row is Map ? Map<String, dynamic>.from(row) : <String, dynamic>{};
+    postedVout.add(o);
+    final outKind = (o['kind'] ?? kind).toString();
+    final rp = _asBytes(o['rangeProof']);
+    final view = _asBytes(o['viewTag']);
+    final vp = o['valueProof'];
+    final publicKind = outKind == 'lock' || outKind == 'vote' || outKind == 'withdraw';
+    final publicNanos = publicKind
+        ? (vp is Map && vp['v'] is int
+            ? vp['v'] as int
+            : ((o['nanos'] as int?) ?? (tx['nanos'] as int?) ?? 0))
+        : 0;
+    final d20 = _asBytes(o['dest20']);
+    final commit = _asBytes(o['commit']);
+    if (boundCommit.isEmpty && (outKind == 'withdraw' || outKind == 'lock' || outKind == 'vote') && commit.length == 32) {
+      boundCommit = commit;
+    }
+    parts.add(_lenPref(utf8Bytes(outKind)));
+    parts.add(commit.length == 32 ? commit : Uint8List(32));
+    parts.add(_asBytes(o['admitPub']).length == 32 ? _asBytes(o['admitPub']) : Uint8List(32));
+    parts.add(_asBytes(o['noteCommit']).length == 32 ? _asBytes(o['noteCommit']) : Uint8List(32));
+    parts.add(_asBytes(o['rEph']).length == 32 ? _asBytes(o['rEph']) : Uint8List(32));
+    parts.add(_lenPref(_asBytes(o['rCt'])));
+    parts.add(_lenPref(_asBytes(o['memoCt'])));
+    parts.add(view.isEmpty ? [0] : [view[0]]);
+    parts.add(_sha(rp));
+    parts.add(_u64(publicNanos));
+    parts.add(_lenPref(d20.length >= 20 ? d20.sublist(0, 20) : const []));
+    parts.add([0xa7]);
+    parts.add(_lenPref(_asBytes(o['amtCt'])));
+  }
+  parts.add(_lenPref(utf8Bytes((tx['portalId'] ?? '').toString().toLowerCase())));
+  parts.add(_lenPref(utf8Bytes((tx['programId'] ?? '').toString())));
+  parts.add(_lenPref(utf8Bytes((tx['payoutPortalId'] ?? '').toString().toLowerCase())));
+  final suffixNanos = (tx['nanos'] as int?) ?? 0;
+  parts.add(reserveDigestSuffixBytes(
+    kind: kind,
+    portalId: (tx['portalId'] ?? '').toString(),
+    payoutPortalId: (tx['payoutPortalId'] ?? '').toString(),
+    programId: (tx['programId'] ?? '').toString(),
+    choice: '',
+    suffixNanos: suffixNanos,
+    commit: boundCommit.length == 32 ? Uint8List.fromList(boundCommit) : null,
+    vout: postedVout,
+    oneTimePub: (tx['ownerPub'] ?? '').toString(),
+  ));
+  return _sha(_cat(parts));
+}
+
+/// Opening of [amount] under [blind] for this lock commitment, bound to the tx and height.
+Map<String, Object>? proveLockFundEquality({
+  required List<int> commit,
+  required int amount,
+  required List<int> blind,
+  required Map<String, Object?> tx,
+  required int height,
+  String magic = kBookMagic,
+}) {
+  if (commit.length != 32 || blind.length != 32 || height < 0 || amount < 0) return null;
+  final digest = lockTxDigest(tx: tx, magic: magic);
+  final at = Uint8List(8);
+  ByteData.sublistView(at).setUint64(0, height, Endian.little);
+  final extra = Uint8List.fromList([
+    ...utf8Bytes('shear-lock-fund-v1'),
+    ...digest,
+    ...at,
+  ]);
+  final word = Uint8List.fromList(commit);
+  final blindB = Uint8List.fromList(blind);
+  final vg = amount == 0
+      ? pointBytes(ristrettoZero())
+      : mulGBytes(scalarBytes(scalarFromU64(BigInt.from(amount))));
+  final p = subBytes(word, vg);
+  final sch = schnorrProveHBytes(p, blindB, extra);
+  return {'R': sch['R']!, 'z': sch['z']!, 'height': height};
+}
+
+Map<String, dynamic> _postedLockRow(Map<String, dynamic> row) {
+  return <String, dynamic>{
+    'kind': row['kind'],
+    'commit': row['commit'],
+    if (row['noteCommit'] != null) 'noteCommit': row['noteCommit'],
+    if (row['admitPub'] != null) 'admitPub': row['admitPub'],
+    if (row['rEph'] != null) 'rEph': row['rEph'],
+    if (row['rCt'] != null) 'rCt': row['rCt'],
+    if (row['amtCt'] != null) 'amtCt': row['amtCt'],
+    if (row['rangeProof'] != null) 'rangeProof': row['rangeProof'],
+    if (row['dest20'] != null) 'dest20': row['dest20'],
+    if (row['viewTag'] != null) 'viewTag': row['viewTag'],
+    if (row['portalId'] != null) 'portalId': row['portalId'],
+  };
+}
+
+/// One compact FS-1 lock. The leaf is admitPub(x) || commit(π, s) + unlock·U.
+/// The funding proof opens the output commitment to π under s, bound to this tx.
+Map<String, Object?>? buildQueuedLockTx({
+  required Uint8List spendSeed,
+  required int lockIndex,
+  required int lockEpoch,
+  required int proveHeight,
+  required int anchor,
+  required Uint8List fluxNotes,
+  required List<Map<String, dynamic>> inputs,
+  required int inputNanos,
+  required Uint8List changeDest20,
+  required String id,
+  String magic = kBookMagic,
+  int? fee,
+}) {
+  if (spendSeed.length != 32 || inputs.isEmpty || inputs.length > 8) return null;
+  if (changeDest20.length != 20 || id.isEmpty || proveHeight < 0 || anchor < 0) return null;
+  final ownerSeed = reservePortalSpendSeed(spendSeed, lockIndex);
+  final dest20 = reservePortalDest20FromSeed(spendSeed, lockIndex);
+  if (ownerSeed == null || dest20 == null) return null;
+  final portalId = reservePortalIdFromDest20(dest20);
+  if (portalId == null) return null;
+  final unlock = consensusUnlockPeriod(lockEpoch);
+  if (unlock <= 0 || unlock == kVaultUnlockOpen) return null;
+  final scalar = vaultLockOwnerBytes(ownerSeed, lockIndex);
+  final blind = vaultLockBlindBytes(ownerSeed, lockIndex, kPiSheNanos, 0);
+  final note = vaultLeafNote(amount: kPiSheNanos, scalar: scalar, blind: blind, unlock: unlock);
+  if (note.length != 64) return null;
+  final admit = AdmitNative.tryLoad();
+  if (admit == null) return null;
+  final range = admit.proveRange(BigInt.from(kPiSheNanos), blind);
+  if (range == null || range.isEmpty || range[0] != 2) return null;
+  final paid = fee ?? kLevyCapNanos;
+  final changeN = inputNanos - paid - kPiSheNanos;
+  if (paid <= 0 || changeN <= 0) return null;
+  final funded = commitBytes(kPiSheNanos, blind);
+  final change = hiddenChangeNote(
+    changeN,
+    changeDest20,
+    spendSeed: spendSeed,
+    admitBase: admitPub(admitBaseScalar(spendSeed)),
+  );
+  if (change == null) return null;
+  final lockRow = <String, dynamic>{
+    'kind': 'lock',
+    'commit': funded,
+    'rangeProof': range,
+    'r': blind,
+    'dest20': dest20,
+    'portalId': portalId,
+  };
+  final withBlind = <Map<String, dynamic>>[lockRow, change];
+  final posted = <Map<String, dynamic>>[
+    _postedLockRow(lockRow),
+    _postedLockRow(change),
+  ];
+  final ownerHex = _hexOf(ed25519PublicFromSeed(ownerSeed));
+  final digest = fs1BodyDigest(
+    magic: magic,
+    kind: 'lock',
+    anchor: anchor,
+    fee: paid,
+    nIn: inputs.length,
+    vout: posted,
+    portalId: portalId,
+    programId: 'shear-reserve-v1',
+    reserveNanos: 0,
+    oneTimePub: ownerHex,
+  );
+  final indices = <int>[];
+  final spent = <Map<String, dynamic>>[];
+  for (final row in inputs) {
+    final index = row['index'];
+    final commit = row['commit'];
+    final nc = row['noteCommit'];
+    final r = row['r'];
+    if (index is! int || commit is! Uint8List || nc is! Uint8List || r is! Uint8List) return null;
+    indices.add(index);
+    spent.add({
+      'kind': (row['kind'] ?? 'pot').toString(),
+      'commit': commit,
+      'noteCommit': nc,
+      'r': r,
+    });
+  }
+  final proved = proveFs1SpendWire({
+    'notes': fluxNotes,
+    'indices': indices,
+    'spent': spent,
+    'spendSeed': spendSeed,
+    'vout': withBlind,
+    'digest': digest,
+    'anchor': anchor,
+    'tree': const Fs1TreeState().toWire(),
+    'keepT': true,
+  });
+  final tree = Fs1TreeState.fromWire(proved['tree']);
+  try {
+    final records = [for (final rec in (proved['records'] as List)) rec as Uint8List];
+    final proofs = [for (final rec in records) fs1PostedProof(rec)];
+    if (proofs.length != inputs.length) return null;
+    final leafCommit = Uint8List.sublistView(note, 32, 64);
+    final auth = reserveLockAuth(ownerSeed, portalId, leafCommit);
+    if (auth == null || auth.length != 96) return null;
+    final body = <String, Object?>{
+      'id': id,
+      'kind': 'lock',
+      'nanos': 0,
+      'portalId': portalId,
+      'programId': 'shear-reserve-v1',
+      'ownerPub': ownerHex,
+      'vaultLockNote': note,
+      'lockAuth': auth,
+      'anchor': anchor,
+      'fee': paid,
+      'vin': [
+        for (final proof in proofs) {'commit': proof['cTilde']},
+      ],
+      'vout': posted,
+      'fs1': proved['fs1'],
+      'excess': proved['excess'],
+      'admit_proofs': proofs,
+    };
+    final fund = proveLockFundEquality(
+      commit: funded,
+      amount: kPiSheNanos,
+      blind: blind,
+      tx: body,
+      height: proveHeight,
+      magic: magic,
+    );
+    if (fund == null) return null;
+    posted[0]['fundProof'] = fund;
+    return {
+      'tx': body,
+      'scalar': scalar,
+      'blind': blind,
+      'note': note,
+      'unlock': unlock,
+      'commit': funded,
+      'portalId': portalId,
+      'ownerPub': ownerHex,
+      'fee': paid,
+      'changeNanos': changeN,
+      'change': change,
+    };
+  } finally {
+    Fs1Native.tryLoad()?.treeFree(tree.handle);
+  }
 }

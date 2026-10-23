@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'shear_ed25519.dart';
+import 'shear_eip712.dart' show keccak256;
 import 'shear_identity.dart';
 import 'shear_note.dart';
 
@@ -411,7 +412,8 @@ Uint8List _commit32(Object? raw) {
 
 /// JS `reserveDigestSuffix`. Unlock time and lock epoch are always bound.
 /// A withdraw also binds its id and its 32-byte nonce. Lock and vote do not.
-/// A lock with a one-time owner appends sha256("shear-reward-owner-v1" || pub).
+/// A lock appends the raw 32-byte owner pub. An empty owner is 32 zero bytes.
+/// That is the word JS `rewardOwnerPub` appends.
 Uint8List reserveDigestSuffixBytes({
   required String kind,
   required String portalId,
@@ -451,14 +453,43 @@ Uint8List reserveDigestSuffixBytes({
   final ownerHex = oneTimePub.startsWith('0x') || oneTimePub.startsWith('0X')
       ? oneTimePub.substring(2)
       : oneTimePub;
-  if (kind == 'lock' && RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(ownerHex)) {
+  if (kind == 'lock') {
     final pub = Uint8List(32);
-    for (var i = 0; i < 32; i++) {
-      pub[i] = int.parse(ownerHex.substring(i * 2, i * 2 + 2), radix: 16);
+    if (RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(ownerHex)) {
+      for (var i = 0; i < 32; i++) {
+        pub[i] = int.parse(ownerHex.substring(i * 2, i * 2 + 2), radix: 16);
+      }
     }
-    chunks.addAll(sha256.convert([...utf8.encode('shear-reward-owner-v1'), ...pub]).bytes);
+    chunks.addAll(pub);
   }
   return Uint8List.fromList(chunks);
+}
+
+/// ownerPub || sig over shear-lock-owner-v1 || portalId || commit || magic || chain.
+/// The key is the per-lock spend seed. [commit] is the leaf commitment.
+Uint8List? reserveLockAuth(Uint8List ownerSeed, String portalId, Uint8List commit) {
+  if (ownerSeed.length != 32 || commit.length != 32) return null;
+  final hex = portalId.startsWith('0x') ? portalId.substring(2) : portalId;
+  if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(hex)) return null;
+  final id = Uint8List(32);
+  for (var i = 0; i < 32; i++) {
+    id[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+  }
+  final chain = Uint8List(8);
+  const chainId = 2701;
+  for (var i = 0; i < 8; i++) {
+    chain[i] = (chainId >> (8 * i)) & 0xff;
+  }
+  final message = Uint8List.fromList([
+    ...utf8.encode('shear-lock-owner-v1'),
+    ...id,
+    ...commit,
+    ...keccak256(Uint8List.fromList(utf8.encode(kBookMagic))),
+    ...chain,
+  ]);
+  final pub = ed25519PublicFromSeed(ownerSeed);
+  final sig = ed25519Sign(ownerSeed, message);
+  return Uint8List.fromList([...pub, ...sig]);
 }
 
 /// Commit of the output whose kind matches, else the first output. Empty when it is not 32 bytes.

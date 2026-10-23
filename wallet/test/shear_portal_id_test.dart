@@ -10,6 +10,7 @@ import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
+import 'package:shear_wallet/shear_vault_reward.dart';
 
 String _hex(List<int> raw) => raw.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
@@ -85,7 +86,11 @@ void main() {
     expect(first['lockAuth'], isA<String>());
     expect((first['lockAuth'] as String).startsWith(ownerPub), isTrue);
     expect(first['vaultLockNote'], isA<String>());
-    expect((first['vaultLockNote'] as String).startsWith(ownerPub), isTrue);
+    final ownerScalar = vaultLockOwnerBytes(ownerSeed, 0);
+    final admitPoint = _hex(mulGBytes(ownerScalar));
+    expect((first['vaultLockNote'] as String).length, 128);
+    expect((first['vaultLockNote'] as String).startsWith(admitPoint), isTrue);
+    expect((first['vaultLockNote'] as String).substring(0, 64), isNot(ownerPub));
     final note0 = (first['vouts'] as List).first as Map;
     final note1 = (second['vouts'] as List).first as Map;
     expect(note0['portalId'], recovered[0]['portalId']);

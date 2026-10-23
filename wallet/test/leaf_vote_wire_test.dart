@@ -11,6 +11,7 @@ import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
+import 'package:shear_wallet/shear_vault_reward.dart' hide kPiSheNanos;
 
 /// The vote screen posts one leaf vote per plan row. The proof, the fee
 /// spend, and the window are the ones the wallet already holds. There is
@@ -239,6 +240,39 @@ void main() {
     expect(want, isNotNull);
     expect(got, orderedEquals(want!));
     expect(got, isNot(orderedEquals(feeDest)));
+    final storedFee = ledger.notes.where((n) => n['commit'] is Uint8List && _hex(n['commit'] as Uint8List) == feeHex);
+    expect(storedFee.single['spent'], isTrue);
+    final remembered = ledger.notes.where((n) => n['changeSeed'] is Uint8List).toList();
+    expect(remembered, hasLength(1));
+    final changeNote = remembered.single;
+    final changeSeed = changeNote['changeSeed'] as Uint8List;
+    final stamped = <String, dynamic>{
+      'commit': changeNote['commit'],
+      'noteCommit': changeNote['noteCommit'],
+      'kind': 'send',
+    };
+    expect(
+      changeNote['admitPub'],
+      orderedEquals(pointBytes(admitPub(admitScalarFromSeed(changeSeed, stamped)))),
+    );
+    final opened = openNoteAmount(changeNote, admitBaseScalar(seed));
+    expect(opened, isNotNull);
+    final changeNanos = feeNanos - voteL;
+    expect(opened!['v'], BigInt.from(changeNanos));
+    (pool.flux['pubs'] as List).add(changeNote['admitPub']);
+    (pool.flux['commits'] as List).add(changeNote['commit']);
+    ((pool.flux['anchors'] as List).single as Map)['n'] = 2;
+    final outDest = Uint8List(20)..[0] = 9;
+    final out = hiddenChangeNote(changeNanos - 100, outDest);
+    expect(out, isNotNull);
+    final spent = await ledger.spendFs1Notes(
+      notes: [Map<String, dynamic>.from(changeNote)],
+      sealed: [out!],
+      fee: 100,
+      spendSeed: changeSeed,
+    );
+    expect(spent.fs1.isNotEmpty, isTrue);
+    expect(spent.fs1.first, 0xf1);
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
 

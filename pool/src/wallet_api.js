@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, publicTrancheRows, lockTx, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, lockTx, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1920,6 +1920,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     };
   }
   if (path === '/api/vault/reserve' && verb === 'GET') {
+    if (url.searchParams.get('view') === 'tranches') {
+      const vault = store?.reserveVault;
+      if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
+      return { status: 200, json: { ok: true, tranches: publicTrancheBook(vault) } };
+    }
     const portalQ = String(url.searchParams.get('portal') || '').replace(/^0x/i, '').toLowerCase();
     if (/^[0-9a-f]{64}$/.test(portalQ)) {
       const vault = store?.reserveVault;

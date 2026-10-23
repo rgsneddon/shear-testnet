@@ -38,6 +38,12 @@ int vaultPeriodBlocksFor(String magic) {
   return blocks ~/ 16;
 }
 
+/// Periods a lock must outlast. The same word as JS `consensusUnlockPeriod`.
+int consensusUnlockPeriod(int lockEpoch) {
+  final epoch = lockEpoch < 0 ? 0 : lockEpoch;
+  return (epoch + 1) * 16;
+}
+
 Element vaultUnlockBase() =>
     pointFrom(fromHashBytes(sha512Bytes(utf8Bytes(kVaultUnlockDst))));
 
@@ -688,19 +694,31 @@ Uint8List? voteProposalId(int epoch, String param) {
 }
 
 /// Hidden change for a vote fee. No value opening. The range proof stays.
-Map<String, dynamic>? hiddenChangeNote(int nanos, Uint8List dest20) {
+/// [spendSeed] is the one-time key the note will be spent under. [admitBase]
+/// is the wallet base that opens the blind. A call with neither keeps the
+/// discarded random base the older emitter used.
+Map<String, dynamic>? hiddenChangeNote(
+  int nanos,
+  Uint8List dest20, {
+  Uint8List? spendSeed,
+  Element? admitBase,
+}) {
   if (nanos <= 0 || dest20.length != 20) return null;
   final admit = AdmitNative.tryLoad();
   if (admit == null) return null;
   final r = randomScalar();
   final range = admit.proveRange(BigInt.from(nanos), scalarBytes(r));
   if (range == null || range.isEmpty) return null;
-  return wrapNoteBlind({
+  final note = <String, dynamic>{
     'kind': 'send',
     'noteCommit': noteCommitOfDest20(dest20),
     'commit': commitBytes(nanos, scalarBytes(r)),
     'r': scalarBytes(r),
     'rangeProof': range,
     'dest20': dest20,
-  }, admitPub(randomScalar()), v: BigInt.from(nanos));
+  };
+  if (spendSeed != null && spendSeed.length == 32) {
+    return attachAdmitPub(note, spendSeed: spendSeed, admitBase: admitBase, v: BigInt.from(nanos));
+  }
+  return wrapNoteBlind(note, admitPub(randomScalar()), v: BigInt.from(nanos));
 }

@@ -494,7 +494,9 @@ Map<String, dynamic> proveFs1SpendWire(Map<String, dynamic> input) {
   final xs = <Uint8List>[];
   try {
     for (var i = 0; i < spent.length; i++) {
-      final x = admitScalarFromSeed(spendSeed, spent[i]);
+      final rowSeed = spent[i]['spendSeed'];
+      final seed = rowSeed is Uint8List && rowSeed.length == 32 ? rowSeed : spendSeed;
+      final x = admitScalarFromSeed(seed, spent[i]);
       final at = indices[i] * kFs1NoteBytes;
       final want = pointBytes(admitPub(x));
       for (var k = 0; k < 32; k++) {
