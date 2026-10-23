@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
@@ -688,6 +689,55 @@ void main() {
     expect(ledger.forkProofAttempts, 1);
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  test(
+    'a heavier fork below the retained window survives a moving tip and an empty read',
+    () async {
+      final id = createIdentity();
+      final ledger = ShearLedger()
+        ..bindIdentity(id)
+        ..bindHeaderClock(_lowBitsAt(130))
+        ..headerWalkDeadline = const Duration(hours: 1)
+        ..forkWalkCap = 8
+        ..bindForkClock(1)
+        ..installCheckpoint(_fixturePin());
+      final main = await _mineAbovePin(from: 20, to: 36);
+      expect(
+        await ledger.catchUpVerifiedChain(
+          36,
+          fetch: (from, to) => _headersFrom(main, from, to),
+        ),
+        36,
+      );
+      expect(ledger.bookTip, 36);
+      final fork = await _mineAbovePin(from: 20, to: 119, salt: 4);
+      var emptied = false;
+      var hostTip = 38;
+      const kPasses = 48;
+      for (var pass = 0; pass < kPasses && ledger.bookTip < 119; pass++) {
+        if (ledger.bookTip <= 36) {
+          hostTip = 38 + pass;
+          if (hostTip > 68) hostTip = 68;
+        } else {
+          hostTip = 119;
+        }
+        await ledger.catchUpVerifiedChain(
+          hostTip,
+          fetch: (from, to) async {
+            if (!emptied && from < 37) {
+              emptied = true;
+              return <({int height, Uint8List header})>[];
+            }
+            return _headersFrom(fork, from, to);
+          },
+        );
+      }
+      expect(emptied, isTrue);
+      expect(ledger.forkProofAttempts, greaterThan(2));
+      expect(ledger.bookTip, 119);
+    },
+    timeout: const Timeout(Duration(minutes: 15)),
+  );
+
   test('a failed fork proof backs off and then doubles the wait', () async {
     final id = createIdentity();
     final ledger = ShearLedger()
@@ -791,19 +841,25 @@ void main() {
     });
     final path = '${dir.path}/verified-headers.json';
     final pin = _fixturePin();
+    final rows = [
+      {
+        'h': 20,
+        't': _lowBitsAt(20),
+        'hdr': _v3CkptHeader,
+        'id': 'ab' * 32,
+      },
+    ];
+    final legacyBody = jsonEncode({
+      'v': 2,
+      'pin': pin.hashHex.toLowerCase(),
+      'rows': rows,
+    });
     File(path).writeAsStringSync(
       jsonEncode({
         'v': 2,
         'pin': pin.hashHex,
-        'rows': [
-          {
-            'h': 20,
-            't': _lowBitsAt(20),
-            'hdr': _v3CkptHeader,
-            'id': 'ab' * 32,
-          },
-        ],
-        'mac': '00' * 32,
+        'rows': rows,
+        'mac': _legacyHeaderMac(hexToBytes(id.seedHex), legacyBody),
       }),
     );
     final ledger = ShearLedger()
@@ -894,6 +950,56 @@ void main() {
       expect(title.contains('h='), isFalse);
       expect(title.contains('conf'), isFalse);
       expect(ledger.confirmationCountHidden(30), isTrue);
+    },
+  );
+
+  test(
+    'a short spendable note plus a depth-pending note waits for header sync',
+    () async {
+      final id = createIdentity();
+      final ledger = ShearLedger()
+        ..bindIdentity(id)
+        ..bindHeaderClock(_lowBitsAt(40))
+        ..installCheckpoint(_fixturePin());
+      final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+      final bobId = createIdentity();
+      final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(
+        bobId.address,
+        paymentCode: bobId.paymentCode,
+      );
+      ledger.rememberNote(
+        _coin(dest, nanos: kUnitsPerShe ~/ 10, height: 11, salt: 3),
+      );
+      ledger.rememberNote(
+        _coin(dest, nanos: 5 * kUnitsPerShe, height: 19, salt: 4),
+      );
+      await ledger.catchUpVerifiedChain(40, fetch: (from, to) async => []);
+      expect(ledger.headerDepthPending, isTrue);
+      expect(
+        ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
+        closeTo(0.1, 1e-9),
+      );
+      Future<void> send(double amount) => ledger.send(
+        from: dest,
+        to: bob,
+        amount: amount,
+        local: true,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: hexToBytes(id.seedHex),
+      );
+      await expectLater(
+        send(1),
+        throwsA(
+          isA<StateError>().having((e) => e.message, 'msg', kErrHeaderSync),
+        ),
+      );
+      await expectLater(
+        send(6),
+        throwsA(
+          isA<StateError>().having((e) => e.message, 'msg', 'insufficient'),
+        ),
+      );
     },
   );
 
@@ -1963,6 +2069,16 @@ String _hexOf(Uint8List bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
 int _lowBitsAt(int height) => _v3AnchorMs + (height - 1) * 90000 + 93600000;
+
+/// MAC over the pre-work header body. A missing `work` key must still discard
+/// the file when this MAC is genuine.
+String _legacyHeaderMac(Uint8List seed, String body) {
+  final key = Hmac(
+    sha256,
+    utf8.encode('shear-verified-headers-v1'),
+  ).convert(seed).bytes;
+  return Hmac(sha256, key).convert(utf8.encode(body)).toString();
+}
 
 Uint8List? _mineLinked({
   required Uint8List prev,
