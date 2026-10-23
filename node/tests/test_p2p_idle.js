@@ -12,8 +12,12 @@ import {
   P2P_IDLE_FLOOR_MS,
   P2P_IDLE_MS,
   P2P_OUTBOUND_RESERVE,
+  P2P_SERVE_HEADERS_PER_WINDOW,
+  STAGE_HOLD_BASE_MS,
+  STAGE_HOLD_MAX_MS,
   createP2p,
   isFinalIngestFail,
+  nextStageHold,
   p2pHelloMs,
   p2pIdleMs,
   p2pInboundCap,
@@ -21,6 +25,7 @@ import {
   peerIsBusy,
   peerShouldEvict,
   recordIngestFail,
+  stageHoldActive,
 } from '../src/p2p.js';
 
 function delay(ms) {
@@ -750,15 +755,156 @@ describe('p2p hello deadline and idle eviction', () => {
       await miss({ type: 'getblocks', locator: [hex] });
       await hit({ type: 'getblock', hash: hex });
       await miss({ type: 'getblock', hash: '00'.repeat(32) });
+
+      const again = await connect(bound.port);
+      again.write(helloLine());
+      await delay(40);
+      again.write(frame({ type: 'getheaders', locator: [] }));
+      await delay(40);
+      ageInbound(p2p);
+      const stuck = recFor(p2p, again)?.capIdleAt;
+      again.write(frame({ type: 'getheaders', locator: [] }));
+      again.write(frame({ type: 'getblocks', locator: [] }));
+      again.write(frame({ type: 'getblock', hash: hex }));
+      await delay(40);
+      assert.equal(recFor(p2p, again)?.capIdleAt, stuck);
+      const higher = Buffer.alloc(32, 0x44);
+      store.blocks.push({ hash: higher, header: Buffer.alloc(80, 0x44), height: 2, txs: [] });
+      again.write(frame({ type: 'getblock', hash: higher.toString('hex') }));
+      await delay(40);
+      assert.notEqual(recFor(p2p, again)?.capIdleAt, stuck);
+      assert.equal(again.destroyed, false);
     } finally {
       p2p.close();
     }
   });
 
-  it('a stage reject leaves the block retryable and does not score the peer', async () => {
+  it('header and block serves are rate-limited per peer', async () => {
+    const hash = Buffer.alloc(32, 0x11);
+    const store = {
+      blocks: [{ hash, header: Buffer.alloc(80, 0x22), height: 1, txs: [] }],
+      mempool: [],
+      tip: () => ({ height: 1, hash }),
+      on() { return () => {}; },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      maxPeers: 4,
+      outboundReserve: 0,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      let headers = 0;
+      sock.on('data', (buf) => {
+        headers += buf.toString().split('\n').filter((line) => line.includes('"type":"headers"')).length;
+      });
+      sock.write(helloLine());
+      await delay(40);
+      const burst = P2P_SERVE_HEADERS_PER_WINDOW + 4;
+      for (let i = 0; i < burst; i += 1) sock.write(frame({ type: 'getheaders', locator: [] }));
+      await delay(80);
+      assert.equal(headers, P2P_SERVE_HEADERS_PER_WINDOW);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('an old locator or getblock is evicted at 180s and a forward peer stays', async () => {
+    const blocks = [1, 2, 3].map((n) => ({
+      hash: Buffer.alloc(32, n),
+      header: Buffer.alloc(80, n),
+      height: n,
+      txs: [],
+    }));
+    const store = {
+      blocks,
+      mempool: [],
+      tip: () => blocks[blocks.length - 1],
+      on() { return () => {}; },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      maxPeers: 2,
+      outboundReserve: 0,
+      helloMs: 5000,
+      idleMs: 180_000,
+      evictCooldownMs: 0,
+    });
+    const bound = await p2p.listen();
+    try {
+      const squatter = await connect(bound.port);
+      const forward = await connect(bound.port);
+      squatter.write(helloLine());
+      forward.write(helloLine());
+      await delay(40);
+      // Empty locator serves the whole page (tip height 3). Later repeats of
+      // that locator, and getblock of a hash already inside it, must not move
+      // the clock. A later height does.
+      squatter.write(frame({ type: 'getheaders', locator: [] }));
+      forward.write(frame({ type: 'getheaders', locator: [] }));
+      await delay(40);
+      assert.equal(recFor(p2p, squatter)?.servedHeight, 3);
+      assert.equal(recFor(p2p, forward)?.servedHeight, 3);
+      const oldBlock = blocks[0].hash.toString('hex');
+      const tipHash = blocks[2].hash.toString('hex');
+      for (const age of [30_000, 90_000, 170_000]) {
+        const rec = recFor(p2p, squatter);
+        rec.capIdleAt = Date.now() - age;
+        const stuck = rec.capIdleAt;
+        squatter.write(frame({ type: 'getheaders', locator: [] }));
+        squatter.write(frame({ type: 'getblocks', locator: [tipHash] }));
+        squatter.write(frame({ type: 'getblock', hash: oldBlock }));
+        await delay(30);
+        assert.equal(recFor(p2p, squatter)?.capIdleAt, stuck, `squatter at ${age}`);
+        assert.equal(squatter.destroyed, false);
+      }
+      recFor(p2p, squatter).capIdleAt = Date.now() - 180_000;
+      recFor(p2p, forward).capIdleAt = Date.now() - 170_000;
+      const squatAt = recFor(p2p, squatter).capIdleAt;
+      squatter.write(frame({ type: 'getheaders', locator: [] }));
+      squatter.write(frame({ type: 'getblock', hash: oldBlock }));
+      await delay(40);
+      assert.equal(recFor(p2p, squatter)?.capIdleAt, squatAt);
+      const higher = {
+        hash: Buffer.alloc(32, 4),
+        header: Buffer.alloc(80, 4),
+        height: 4,
+        txs: [],
+      };
+      blocks.push(higher);
+      forward.write(frame({ type: 'getblock', hash: higher.hash.toString('hex') }));
+      await delay(40);
+      assert.equal(recFor(p2p, squatter)?.capIdleAt, squatAt);
+      assert.ok(Date.now() - Number(recFor(p2p, forward)?.capIdleAt) < 5000);
+      assert.equal(recFor(p2p, forward)?.servedHeight, 4);
+      const next = await connect(bound.port);
+      await delay(40);
+      assert.equal(squatter.destroyed, true);
+      assert.equal(forward.destroyed, false);
+      assert.equal(next.destroyed, false);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('a stage reject is held without a score and retried after the backoff', async () => {
     assert.equal(isFinalIngestFail('apply_stage'), false);
     assert.equal(isFinalIngestFail('pow'), true);
-    assert.equal(isFinalIngestFail('merkle'), true);
+    assert.equal(nextStageHold(null, 1_000).delay, STAGE_HOLD_BASE_MS);
+    assert.equal(nextStageHold(null, 1_000).until, 1_000 + STAGE_HOLD_BASE_MS);
+    assert.equal(nextStageHold({ delay: STAGE_HOLD_BASE_MS }, 1_000).delay, STAGE_HOLD_BASE_MS * 2);
+    assert.equal(nextStageHold({ delay: STAGE_HOLD_MAX_MS }, 1_000).delay, STAGE_HOLD_MAX_MS);
+    assert.equal(stageHoldActive({ until: 100 }, 99), true);
+    assert.equal(stageHoldActive({ until: 100 }, 100), false);
     const plain = { expensiveFails: 0 };
     assert.equal(recordIngestFail(plain, 'apply_stage'), false);
     assert.equal(plain.expensiveFails || 0, 0);
@@ -773,6 +919,7 @@ describe('p2p hello deadline and idle eviction', () => {
         return { ok: false, reason: 'apply_stage' };
       },
     };
+    const holdMs = 200;
     const p2p = createP2p({
       store,
       port: 0,
@@ -780,6 +927,7 @@ describe('p2p hello deadline and idle eviction', () => {
       magic: MAGIC_TESTNET,
       helloMs: 5000,
       idleMs: 5000,
+      stageHoldBaseMs: holdMs,
     });
     const bound = await p2p.listen();
     try {
@@ -795,14 +943,17 @@ describe('p2p hello deadline and idle eviction', () => {
       for (let i = 0; i < 40 && calls < 1; i += 1) await delay(25);
       assert.equal(calls, 1);
       for (let i = 0; i < 40 && rec()?.verifying?.size; i += 1) await delay(25);
+      sock.write(body);
+      await delay(80);
+      assert.equal(calls, 1);
       assert.equal(Number(rec()?.expensiveFails) || 0, 0);
       assert.equal(rec()?.failed instanceof Set && rec().failed.has(hash), false);
       assert.equal(sock.destroyed, false);
+      await delay(holdMs + 40);
       sock.write(body);
       for (let i = 0; i < 40 && calls < 2; i += 1) await delay(25);
       assert.equal(calls, 2);
       assert.equal(Number(rec()?.expensiveFails) || 0, 0);
-      assert.equal(rec()?.failed instanceof Set && rec().failed.has(hash), false);
       assert.equal(sock.destroyed, false);
     } finally {
       p2p.close();
@@ -822,6 +973,7 @@ describe('p2p hello deadline and idle eviction', () => {
             return { ok: false, reason: 'apply_stage' };
           },
         };
+        const holdMs = 150;
         const p2p = createP2p({
           store,
           port: 0,
@@ -832,6 +984,7 @@ describe('p2p hello deadline and idle eviction', () => {
           inboundPer24: 32,
           helloMs: 5000,
           idleMs: 5000,
+          stageHoldBaseMs: holdMs,
         });
         const bound = await p2p.listen();
         try {
@@ -847,24 +1000,25 @@ describe('p2p hello deadline and idle eviction', () => {
             type: 'block',
             block: { hash: 'ee'.repeat(32), height: 1, header: '33'.repeat(80) },
           });
+          sockets[0].write(body);
+          for (let i = 0; i < 40 && calls < 1; i += 1) await delay(25);
+          assert.equal(calls, 1, `${peersN}x${deliveries} first`);
           for (let n = 0; n < deliveries; n += 1) {
             for (const sock of sockets) sock.write(body);
-            const want = (n + 1) * peersN;
-            for (let i = 0; i < 80 && calls < want; i += 1) await delay(25);
-            for (const sock of sockets) {
-              const rec = recFor(p2p, sock);
-              if (rec?.verifying?.size) {
-                for (let i = 0; i < 40 && rec.verifying.size; i += 1) await delay(15);
-              }
-            }
           }
-          assert.equal(calls, peersN * deliveries, `${peersN}x${deliveries}`);
+          await delay(60);
+          assert.equal(calls, 1, `${peersN}x${deliveries} held`);
           for (const sock of sockets) {
             const rec = recFor(p2p, sock);
             assert.equal(sock.destroyed, false, `${peersN}x${deliveries}`);
             assert.equal(Number(rec?.expensiveFails) || 0, 0, `${peersN}x${deliveries}`);
             assert.equal(rec?.failed instanceof Set && rec.failed.has('ee'.repeat(32)), false);
           }
+          await delay(holdMs + 30);
+          sockets[0].write(body);
+          for (let i = 0; i < 40 && calls < 2; i += 1) await delay(25);
+          assert.equal(calls, 2, `${peersN}x${deliveries} retry`);
+          assert.equal(sockets[0].destroyed, false);
         } finally {
           p2p.close();
         }
