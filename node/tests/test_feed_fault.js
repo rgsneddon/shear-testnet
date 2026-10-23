@@ -280,6 +280,35 @@ async function runBook(mode, dir) {
     console.log('alive');
     process.exit(0);
   }
+  if (mode === 'publish-throw' || mode === 'publish-ignore') {
+    if (mode === 'publish-ignore') delete process.env.NODE_TEST_CONTEXT;
+    const store = createStore(dir, { pruneAfter: 1_000_000 });
+    const dest = minerDest();
+    const built = grow(store, dest, 2, 100);
+    if (!built.ok) {
+      console.log(JSON.stringify({ stage: 'grow', reason: built.reason || '' }));
+      process.exit(2);
+    }
+    const fork = heavierFork(store, dest, 0, 3, 500);
+    const candidate = store.blocks.slice(0, 1).concat(fork);
+    if (!shouldAdopt(store.blocks, candidate)) {
+      console.log(JSON.stringify({ stage: 'weight', height: store.tip().height }));
+      process.exit(2);
+    }
+    const before = store.tip().height;
+    const got = await Promise.resolve(store.ingest(fork, {
+      trustBlockHash: true,
+      throwAfterPublish: 'spent',
+    }));
+    console.log(JSON.stringify({
+      ok: got?.ok === true,
+      reason: got?.reason || '',
+      height: store.tip()?.height || 0,
+      before,
+    }));
+    console.log('alive');
+    process.exit(0);
+  }
   const store = createStore(dir, { bookFault: mode, pruneAfter: 1_000_000 });
   const dest = minerDest();
   const built = grow(store, dest, 2, 100);
@@ -384,7 +413,8 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       try {
         const got = sealNext(store, minerDest(), 8);
         assert.equal(got.ok, false);
-        assert.equal(got.reason, 'stage_local');
+        assert.equal(got.reason, 'apply_stage');
+        assert.equal(got.scorePeer, true);
         assert.equal(store.tip(), null);
         assert.equal(store.blocks.length, 0);
         assert.ok(notes.some((line) => line.includes('"event":"apply_stage"') && line.includes('stage_local')));
@@ -420,6 +450,30 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       assert.match(res.stdout, /"height":2/);
       assert.match(res.stdout, /alive/);
       openedBook(dir, 2);
+    });
+
+    it('throwAfterPublish fires under node:test and leaves the tip', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-publish-throw-'));
+      const res = await runChild(['--book', 'publish-throw', '--dir', dir], 120_000);
+      assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+      assert.match(res.stdout, /alive/);
+      const row = JSON.parse(res.stdout.trim().split('\n').find((line) => line.startsWith('{')));
+      assert.equal(row.ok, false);
+      assert.equal(row.reason, 'adopt_throw_spent');
+      assert.equal(row.height, row.before);
+    });
+
+    it('a production store ignores throwAfterPublish', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-publish-ignore-'));
+      const env = { ...process.env };
+      delete env.NODE_TEST_CONTEXT;
+      const res = await runChild(['--book', 'publish-ignore', '--dir', dir], 120_000, env);
+      assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+      assert.match(res.stdout, /alive/);
+      const row = JSON.parse(res.stdout.trim().split('\n').find((line) => line.startsWith('{')));
+      assert.equal(row.ok, true);
+      assert.equal(row.reason, '');
+      assert.ok(row.height > row.before);
     });
 
     it('a production store ignores bookFault', async () => {

@@ -3563,12 +3563,13 @@ export function createStore(dir, {
       staged = stageAppend(check, block, burial);
     } catch (err) {
       // A throw here is local state, still before owedRows is replaced.
-      // Score the block and stay up. The log is its own event, not a peer ban line.
-      const reason = String(err?.message || 'apply').slice(0, 80);
+      // The block stays retryable, the peer is scored, and the node stays up.
+      // The log keeps the throw text. The reason the peer sees is stable.
+      const detail = String(err?.message || 'apply').slice(0, 80);
       try {
-        console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason }));
+        console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason: detail }));
       } catch { /* ignore */ }
-      return { ok: false, reason, tip: tip() };
+      return { ok: false, reason: 'apply_stage', scorePeer: true, tip: tip() };
     }
     if (!staged || staged.ready !== true) return staged;
     try {
@@ -5314,8 +5315,9 @@ export function createStore(dir, {
         return { ok: false, reason: 'share_credit_bind', tip: tip() };
       }
       const image = captureAdoptImage();
+      // Same gate as bookFault. A production book ignores the option.
       const fault = (stage) => {
-        if (verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
+        if (faultHooks && verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
       };
       try {
         if (injectedFault === 'reorg' || injectedFault === 'reorg-restore') throw new Error('reorg_fault');
