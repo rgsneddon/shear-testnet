@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../src/store.js';
-import { installNodeGuards } from '../src/process_guard.js';
+import { STORE_CORRUPT_EXIT, installNodeGuards } from '../src/process_guard.js';
 import { createRpc, nonceToU64 } from '../src/rpc.js';
 
 const self = fileURLToPath(import.meta.url);
@@ -56,20 +56,31 @@ function get(port, pathname) {
 
 if (chainProbe) {
   installNodeGuards();
+  const mode = process.argv[process.argv.indexOf('--rpc-chain') + 1] || 'request';
   const store = {
     tip() { return null; },
     on() { return () => {}; },
     reservePinOk() { return true; },
     submitHeader() {
+      if (mode === 'corrupt') {
+        const err = new Error('book bytes diverged');
+        err.storeCorrupt = true;
+        err.code = 'store_corrupt';
+        throw err;
+      }
       const err = new Error('chain_state:book');
       err.chainState = true;
+      err.code = 'chain_state';
       throw err;
     },
   };
   const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
   const bound = await rpc.listen();
   console.log(JSON.stringify({ port: bound.port }));
-  setTimeout(() => process.exit(0), 5000);
+  setTimeout(() => {
+    console.log('alive');
+    process.exit(0);
+  }, mode === 'corrupt' ? 4000 : 1000);
 }
 
 if (!chainProbe) describe('RPC bad input stays up', () => {
@@ -144,8 +155,8 @@ if (!chainProbe) describe('RPC bad input stays up', () => {
     }
   });
 
-  it('a chain-state throw is logged, answered 500, and the process exits', async () => {
-    const child = spawn(process.execPath, [self, '--rpc-chain'], {
+  async function faultChild(mode) {
+    const child = spawn(process.execPath, [self, '--rpc-chain', mode], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -155,7 +166,7 @@ if (!chainProbe) describe('RPC bad input stays up', () => {
     const exited = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         child.kill();
-        reject(new Error(`rpc chain probe hung\n${stdout}\n${stderr}`));
+        reject(new Error(`rpc ${mode} probe hung\n${stdout}\n${stderr}`));
       }, 8000);
       child.on('exit', (code) => {
         clearTimeout(timer);
@@ -164,12 +175,14 @@ if (!chainProbe) describe('RPC bad input stays up', () => {
     });
     const portLine = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`no port\n${stdout}\n${stderr}`)), 4000);
-      child.stdout.on('data', () => {
+      const look = () => {
         const line = stdout.trim().split('\n').find((row) => row.includes('"port"'));
         if (!line) return;
         clearTimeout(timer);
         resolve(line);
-      });
+      };
+      child.stdout.on('data', look);
+      look();
     });
     const port = JSON.parse(portLine).port;
     const got = await post(port, '/', JSON.stringify({
@@ -177,12 +190,30 @@ if (!chainProbe) describe('RPC bad input stays up', () => {
       params: { jobId: 'job', nonce: '1' },
     }));
     const code = await exited;
-    assert.equal(got.status, 500);
-    assert.equal(got.json.ok, false);
-    assert.equal(got.json.reason, 'internal');
-    assert.equal(code, 1, stderr);
-    assert.match(stderr, /SHEAR rpc chain-state/);
-    assert.match(stderr, /chain_state:book/);
-    assert.match(stderr, /SHEAR uncaughtException/);
+    return { got, code, stdout, stderr };
+  }
+
+  it('a request fault returns 500 and the process stays up', async () => {
+    const request = await faultChild('request');
+    assert.equal(request.got.status, 500);
+    assert.equal(request.got.json.ok, false);
+    assert.equal(request.got.json.reason, 'internal');
+    assert.equal(request.code, 0, request.stderr);
+    assert.match(request.stdout, /alive/);
+    assert.match(request.stderr, /SHEAR rpc request fault/);
+    assert.match(request.stderr, /chain_state:book/);
+    assert.doesNotMatch(request.stderr, /SHEAR uncaughtException/);
+  });
+
+  it('store corruption returns 500 and exits with its own code', async () => {
+    const corrupt = await faultChild('corrupt');
+    assert.equal(corrupt.got.status, 500);
+    assert.equal(corrupt.got.json.ok, false);
+    assert.equal(corrupt.got.json.reason, 'internal');
+    assert.equal(corrupt.code, STORE_CORRUPT_EXIT, corrupt.stderr);
+    assert.match(corrupt.stderr, /SHEAR rpc store-corrupt/);
+    assert.match(corrupt.stderr, /book bytes diverged/);
+    assert.match(corrupt.stderr, /SHEAR uncaughtException store-corrupt/);
+    assert.doesNotMatch(corrupt.stdout, /alive/);
   });
 });

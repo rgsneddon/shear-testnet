@@ -1,27 +1,57 @@
 /**
  * Last-resort logger for faults that escape a request handler.
- * Request-scoped errors are logged and the process stays up.
- * Anything else, including a chain-state fault, is logged and exits.
- * The handler must not swallow a chain-state error.
+ * A request fault is logged and the process stays up.
+ * The process exits only for an explicit store-corruption flag or code.
+ * Message text is not a signal.
  */
 
 let installed = false;
 
+/** sysexits EX_SOFTWARE. Distinct from a request-fault exit. */
+export const STORE_CORRUPT_EXIT = 70;
+
+const CHAIN_STATE_CODES = new Set([
+  'chain_state',
+  'datadir_magic',
+  'spent_checkpoint',
+  'supply_state',
+  'book_seal',
+]);
+
+/** Flag or code only. Message text is not a chain-state signal. */
 export function isChainStateError(err) {
   if (!err || typeof err !== 'object') return false;
-  if (err.chainState === true || err.code === 'chain_state') return true;
-  if (err.shearScope === 'request') return false;
-  const msg = String(err.message || '');
-  return /^(?:datadir_magic:|spent_checkpoint|supply_state\b|chain_state:|book_seal\b)/.test(msg);
+  if (err.chainState === true) return true;
+  return CHAIN_STATE_CODES.has(String(err.code || ''));
+}
+
+export function chainStateError(message, code = 'chain_state') {
+  const err = new Error(message);
+  err.chainState = true;
+  err.code = code;
+  return err;
+}
+
+/** Flag or code only. Message text is not store corruption. */
+export function isStoreCorruptError(err) {
+  if (!err || typeof err !== 'object') return false;
+  if (err.storeCorrupt === true) return true;
+  return String(err.code || '') === 'store_corrupt';
+}
+
+export function storeCorruptError(message, code = 'store_corrupt') {
+  const err = new Error(message);
+  err.storeCorrupt = true;
+  err.code = code;
+  return err;
 }
 
 function onProcessFault(kind, err) {
-  const chain = isChainStateError(err);
-  const request = !!(err && typeof err === 'object' && err.shearScope === 'request' && !chain);
+  const corrupt = isStoreCorruptError(err);
   const stack = err?.stack || err?.message || err;
-  console.error(`SHEAR ${kind}${chain ? ' chain-state' : request ? ' request' : ''}\n${stack}`);
-  if (request) return;
-  process.exit(1);
+  console.error(`SHEAR ${kind}${corrupt ? ' store-corrupt' : ''}\n${stack}`);
+  if (!corrupt) return;
+  process.exit(STORE_CORRUPT_EXIT);
 }
 
 /** Install once. Safe to call from the node entry only. */

@@ -55,6 +55,7 @@ async function connectPeer(port) {
     sock.once('error', reject);
   });
   await readJsonLines(sock, 2, 2000);
+  sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
   return sock;
 }
 

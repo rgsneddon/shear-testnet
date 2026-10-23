@@ -198,7 +198,7 @@ function p2pTx(port, magic, tx) {
   const line = `${JSON.stringify({ type: 'tx', magic, tx })}\n`;
   return new Promise((resolve, reject) => {
     const sock = net.connect({ host: '127.0.0.1', port }, () => {
-      sock.write(line);
+      sock.write(`${JSON.stringify({ type: 'hello', magic })}\n${line}`);
       setTimeout(() => {
         sock.destroy();
         resolve();

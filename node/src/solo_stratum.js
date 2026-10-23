@@ -11,13 +11,19 @@ import { isInitialBlockDownload } from './status.js';
 import { shearHash, meetsTarget, hashBackendKind } from '../../crypto/shear_hash.js';
 import { setNonce, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
-import { HTTP_BODY_MAX, STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
+import { STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const SOLO_STRATUM_PORT = 1111;
 export const SOLO_STRATUM_BIND = '127.0.0.1';
 export const SOLO_JOB_RESTAMP_MS = 10_000;
 /** Logins accepted on one solo socket. The next one is refused before the leaf probe. */
 export const SOLO_LOGINS_PER_SOCKET = Math.max(1, Number(process.env.SHEAR_SOLO_LOGINS_PER_SOCKET || 4) || 4);
+/** A line, or a buffer with no newline yet, stops at 64 KiB. */
+export const SOLO_LINE_MAX = STRATUM_LINE_MAX;
+/** Close a socket that never logs in. */
+export const SOLO_LOGIN_MS = 15_000;
+/** Connections accepted from one remote address. */
+export const SOLO_MAX_CONN_PER_IP = 8;
 
 function line(obj) {
   return `${JSON.stringify(obj)}\n`;
@@ -260,8 +266,25 @@ export function createSoloStratum({
   restampMs = SOLO_JOB_RESTAMP_MS,
   peers = null,
   followPublic = false,
+  loginMs = SOLO_LOGIN_MS,
+  maxPerIp = SOLO_MAX_CONN_PER_IP,
 } = {}) {
   const sockets = new Set();
+  const authed = new Set();
+  const loginLimit = Number(loginMs);
+  const perIp = Math.max(1, Number(maxPerIp) || SOLO_MAX_CONN_PER_IP);
+
+  function ipOf(sock) {
+    let ip = String(sock.remoteAddress || '');
+    if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+    return ip;
+  }
+
+  function countIp(ip) {
+    let n = 0;
+    for (const sock of sockets) if (ipOf(sock) === ip) n += 1;
+    return n;
+  }
   let lastJob = null;
   let lastMiner = '';
   let restamp = null;
@@ -301,22 +324,39 @@ export function createSoloStratum({
   function pushJob(job, shareBits) {
     const payload = line({ method: 'job', params: soloWireJob(job, shareBits) });
     for (const sock of sockets) {
+      if (!authed.has(sock)) continue;
       try { sock.write(payload); } catch { /* ignore */ }
     }
   }
 
   const server = net.createServer((sock) => {
     try { sock.setNoDelay(true); } catch { /* ignore */ }
+    if (countIp(ipOf(sock)) >= perIp) {
+      try { sock.destroy(); } catch { /* ignore */ }
+      return;
+    }
     sockets.add(sock);
     let buf = '';
     let session = null;
     let logins = 0;
     let refused = false;
+    let loginTimer = null;
+    if (Number.isFinite(loginLimit) && loginLimit > 0) {
+      loginTimer = setTimeout(() => {
+        try { sock.destroy(); } catch { /* ignore */ }
+      }, loginLimit);
+      if (typeof loginTimer.unref === 'function') loginTimer.unref();
+    }
+    function clearLoginTimer() {
+      if (!loginTimer) return;
+      clearTimeout(loginTimer);
+      loginTimer = null;
+    }
     sock.on('data', (chunk) => {
       try {
       if (refused) return;
       buf += chunk.toString('utf8');
-      if (buf.length > HTTP_BODY_MAX) {
+      if (buf.length > SOLO_LINE_MAX) {
         try { sock.destroy(); } catch { /* ignore */ }
         return;
       }
@@ -325,7 +365,7 @@ export function createSoloStratum({
         const raw = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!raw) continue;
-        if (raw.length > STRATUM_LINE_MAX) {
+        if (raw.length > SOLO_LINE_MAX) {
           try { sock.destroy(); } catch { /* ignore */ }
           return;
         }
@@ -361,6 +401,8 @@ export function createSoloStratum({
             return;
           }
           session = { dest: adm.dest, worker: adm.worker, login: adm.login };
+          authed.add(sock);
+          clearLoginTimer();
           const shareBits = Number(params.shareBits) || SHARE_FLOOR_BITS;
           const job = issueJob(adm.dest, shareBits);
           if (!job) {
@@ -426,8 +468,8 @@ export function createSoloStratum({
         try { sock.destroy(); } catch { /* ignore */ }
       }
     });
-    sock.on('close', () => { sockets.delete(sock); });
-    sock.on('error', () => { sockets.delete(sock); });
+    sock.on('close', () => { clearLoginTimer(); authed.delete(sock); sockets.delete(sock); });
+    sock.on('error', () => { clearLoginTimer(); authed.delete(sock); sockets.delete(sock); });
   });
 
   function listen() {
@@ -465,6 +507,7 @@ export function createSoloStratum({
     for (const sock of sockets) {
       try { sock.destroy(); } catch { /* ignore */ }
     }
+    authed.clear();
     sockets.clear();
     try { server.close(); } catch { /* ignore */ }
   }

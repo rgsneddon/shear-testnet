@@ -49,6 +49,19 @@ export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierB
 import { bookSealKeyFor } from './book_seal_key.js';
 import { ensureDatadir } from './datadir_acl.js';
 import { acquireDatadirLock } from './datadir_lock.js';
+import { chainStateError } from './process_guard.js';
+
+function throwBookFault(message) {
+  const msg = String(message || '');
+  let code = '';
+  if (msg.startsWith('datadir_magic')) code = 'datadir_magic';
+  else if (msg.startsWith('spent_checkpoint')) code = 'spent_checkpoint';
+  else if (msg.startsWith('supply_state')) code = 'supply_state';
+  else if (msg.startsWith('chain_state')) code = 'chain_state';
+  else if (msg.startsWith('book_seal')) code = 'book_seal';
+  if (!code) throw new Error(msg);
+  throw chainStateError(msg, code);
+}
 import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
@@ -421,11 +434,11 @@ export function createStore(dir, {
     const stamped = String(row?.magic || '').trim();
     if (!stamped) continue;
     if (!chainMagic) chainMagic = stamped;
-    else if (stamped !== chainMagic) throw new Error(`datadir_magic:${stamped}`);
+    else if (stamped !== chainMagic) throwBookFault(`datadir_magic:${stamped}`);
   }
-  if (fileMagic && chainMagic && fileMagic !== chainMagic) throw new Error(`datadir_magic:${fileMagic}`);
+  if (fileMagic && chainMagic && fileMagic !== chainMagic) throwBookFault(`datadir_magic:${fileMagic}`);
   const book = fileMagic || chainMagic;
-  if (book && configuredMagic && book !== configuredMagic) throw new Error(`datadir_magic:${book}`);
+  if (book && configuredMagic && book !== configuredMagic) throwBookFault(`datadir_magic:${book}`);
   // One network for this book. The datadir check, the fingerprint, the
   // book.magic writes, and every block stamp below all use bookMagic.
   const bookMagic = book || configuredMagic;
@@ -494,8 +507,8 @@ export function createStore(dir, {
           anchors: anchorsFromPlan(plan),
         },
       });
-      if (!checked.ok) throw new Error(checked.reason || 'pow');
-      if (!checked.supply) throw new Error('supply_state');
+      if (!checked.ok) throwBookFault(checked.reason || 'pow');
+      if (!checked.supply) throwBookFault('supply_state');
       supplyTip = checked.supply;
       supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
       anchorAt = Array.isArray(checked.anchors) ? checked.anchors : [];
@@ -523,7 +536,7 @@ export function createStore(dir, {
         magic: bookMagic,
         oracleActivationHeight,
       }).then((checked) => {
-        if (!checked.ok) throw new Error(checked.reason || 'pow');
+        if (!checked.ok) throwBookFault(checked.reason || 'pow');
         return createStore(dir, {
           pruneAfter,
           reorgHaltDepth,
@@ -557,8 +570,8 @@ export function createStore(dir, {
         magic: bookMagic,
         oracleActivationHeight,
       });
-      if (!checked.ok) throw new Error(checked.reason || 'pow');
-      if (!checked.supply) throw new Error('supply_state');
+      if (!checked.ok) throwBookFault(checked.reason || 'pow');
+      if (!checked.supply) throwBookFault('supply_state');
       supplyTip = checked.supply;
       supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
       anchorAt = Array.isArray(checked.anchors) ? checked.anchors : [];
@@ -2393,7 +2406,7 @@ export function createStore(dir, {
   function restoreSpentB() {
     for (let i = 0; i < blocks.length; i += 1) {
       const got = matchedSpendIds(blocks[i]);
-      if (!got.ok) throw new Error(got.reason || 'spent_checkpoint_missing');
+      if (!got.ok) throwBookFault(got.reason || 'spent_checkpoint_missing');
       for (const id of got.ids) {
         if (spentB.has(id)) throw new Error('double_open');
         spentB.add(id);

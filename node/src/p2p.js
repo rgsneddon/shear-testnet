@@ -406,10 +406,28 @@ export const PENDING_WATCH_MS = 50;
 export const P2P_HELLO_MS = 20_000;
 /**
  * Census keepalive is broadcastCensus every 2s. Idle sits far above that
- * so a peer that only exchanges census is not evicted. A syncing peer is
- * never evicted for quiet time while its catch-up queues are busy.
+ * so a peer that only exchanges census is not evicted. Busy means this
+ * peer recently delivered a block or header that validated, and that
+ * credit expires with the idle window.
  */
 export const P2P_IDLE_MS = 180_000;
+/** Env overrides cannot go under these. Explicit createP2p options can. */
+export const P2P_HELLO_FLOOR_MS = 5_000;
+export const P2P_IDLE_FLOOR_MS = 60_000;
+/** Slots kept for our own dials so inbound /24s cannot fill the table. */
+export const P2P_OUTBOUND_RESERVE = 8;
+
+export function p2pOutboundReserve(maxPeers, override) {
+  const max = Math.max(1, Number(maxPeers) || 1);
+  const raw = override == null ? P2P_OUTBOUND_RESERVE : Number(override);
+  const n = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : P2P_OUTBOUND_RESERVE;
+  return Math.min(n, Math.max(0, max - 1));
+}
+
+export function p2pInboundCap(maxPeers, override) {
+  const max = Math.max(1, Number(maxPeers) || 1);
+  return Math.max(1, max - p2pOutboundReserve(max, override));
+}
 
 function p2pMs(value, fallback) {
   const n = Number(value);
@@ -417,40 +435,58 @@ function p2pMs(value, fallback) {
   return Math.floor(n);
 }
 
+function p2pEnvMs(raw, fallback, floor) {
+  if (raw == null || String(raw).trim() === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(floor, Math.floor(n));
+}
+
 export function p2pHelloMs(override) {
   if (override != null) return p2pMs(override, P2P_HELLO_MS);
-  return p2pMs(process.env.SHEAR_P2P_HELLO_MS, P2P_HELLO_MS);
+  return p2pEnvMs(process.env.SHEAR_P2P_HELLO_MS, P2P_HELLO_MS, P2P_HELLO_FLOOR_MS);
 }
 
 export function p2pIdleMs(override) {
   if (override != null) return p2pMs(override, P2P_IDLE_MS);
-  return p2pMs(process.env.SHEAR_P2P_IDLE_MS, P2P_IDLE_MS);
-}
-
-/** Catch-up work in flight. Idle eviction must leave this peer alone. */
-export function peerIsBusy(rec) {
-  if (!rec) return false;
-  if (rec.syncing) return true;
-  if (rec.pending instanceof Set && rec.pending.size) return true;
-  if (rec.verifying instanceof Set && rec.verifying.size) return true;
-  if (Array.isArray(rec.want) && rec.want.length) return true;
-  if (Array.isArray(rec.retryPrev) && rec.retryPrev.length) return true;
-  return false;
+  return p2pEnvMs(process.env.SHEAR_P2P_IDLE_MS, P2P_IDLE_MS, P2P_IDLE_FLOOR_MS);
 }
 
 /**
- * Silent sockets miss the hello deadline. A completed hello with no
- * traffic past the idle window is dropped. Busy catch-up is kept.
+ * Accepted blocks or headers from this peer, still inside the idle window.
+ * A tip advertisement, a want list, or an in-flight verify is not progress.
+ */
+export function peerHasRecentProgress(rec, now = Date.now(), windowMs = P2P_IDLE_MS) {
+  const at = Number(rec?.progressAt) || 0;
+  if (!at) return false;
+  const t = Number(now) || Date.now();
+  const window = Number(windowMs) > 0 ? Number(windowMs) : P2P_IDLE_MS;
+  return t - at < window;
+}
+
+/** Busy only after recent validated progress. The credit matches the idle window. */
+export function peerIsBusy(rec, now = Date.now(), windowMs = P2P_IDLE_MS) {
+  return peerHasRecentProgress(rec, now, windowMs);
+}
+
+/**
+ * Hello deadline first. A peer that never says hello is dropped even if it
+ * advertises work. Unparsed bytes that arrived inside the hello window stay,
+ * so a loaded node does not drop a hello sitting in the buffer. After hello,
+ * idle traffic drops the peer unless it has recent accepted progress.
  */
 export function peerShouldEvict(rec, now = Date.now(), { helloMs = P2P_HELLO_MS, idleMs = P2P_IDLE_MS } = {}) {
   if (!rec) return false;
   const t = Number(now) || Date.now();
-  if (peerIsBusy(rec)) return false;
   const helloAt = Number(rec.helloAt) || 0;
   if (!helloAt) {
-    const born = Number(rec.attachedAt) || t;
+    const born = Number.isFinite(Number(rec.attachedAt)) ? Number(rec.attachedAt) : t;
+    const bufAt = Number(rec.bufAt) || 0;
+    const unreadHello = bufAt && (bufAt - born) < helloMs && (t - bufAt) < helloMs;
+    if (unreadHello) return false;
     return t - born >= helloMs;
   }
+  if (peerHasRecentProgress(rec, t, idleMs)) return false;
   const last = Number(rec.lastRx) || helloAt;
   return t - last >= idleMs;
 }
@@ -1081,7 +1117,10 @@ export function createP2p({
   maxPeers = p2pMaxPeers(),
   helloMs = undefined,
   idleMs = undefined,
+  outboundReserve = undefined,
 } = {}) {
+  const reserveSlots = p2pOutboundReserve(maxPeers, outboundReserve);
+  const inboundCap = p2pInboundCap(maxPeers, outboundReserve);
   const helloLimit = p2pHelloMs(helloMs);
   const idleLimit = p2pIdleMs(idleMs);
   const sockets = new Set();
@@ -1831,7 +1870,8 @@ export function createP2p({
   function handle(sock, msg) {
     if (!msg || typeof msg !== 'object') return;
     const heard = peers.get(sock);
-    if (heard) heard.lastRx = Date.now();
+    const welcomed = Number(heard?.helloAt) > 0;
+    if (msg.type !== 'hello' && !welcomed) return;
     if (msg.type === 'hello') {
       if (msg.magic !== magic) {
         sock.destroy();
@@ -1842,15 +1882,17 @@ export function createP2p({
       return;
     }
     if (msg.type === 'hello') {
-      const rec = peers.get(sock) || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
+      const rec = heard || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
       rec.remote = peerRemoteKey(sock) || rec.remote;
       const advertised = Number(msg.port);
       if (Number.isFinite(advertised) && advertised > 0) rec.listenPort = advertised;
       rec.ua = String(msg.ua || rec.ua || '');
       const nid = String(msg.nodeId || '').trim().toLowerCase();
       if (/^[0-9a-f]{8,32}$/.test(nid)) rec.nodeId = nid;
-      rec.helloAt = rec.lastRx || Date.now();
-      if (!rec.attachedAt) rec.attachedAt = rec.helloAt;
+      const arrived = Number(rec.bufAt) || Date.now();
+      rec.helloAt = arrived;
+      if (!rec.attachedAt) rec.attachedAt = arrived;
+      if (!Number(rec.lastRx)) rec.lastRx = arrived;
       peers.set(sock, rec);
       send(sock, tipMsg());
       send(sock, { type: 'addr', magic, peers: advertisedPeers(sock) });
@@ -1971,6 +2013,7 @@ export function createP2p({
       }
       // A new header extends the run. The parked body can be fetched again.
       // The same page does not: retrying it would spin on samples_pruned.
+      if (offered?.accepted > 0) rec.progressAt = Date.now();
       if (rec.burialWait instanceof Set && rec.burialWait.size && offered?.accepted > 0) {
         rec.burialWait.clear();
         rec.burialAskHeight = 0;
@@ -2256,6 +2299,7 @@ export function createP2p({
             if (rec.remote) peerBans.set(rec.remote, until);
             try { sock.destroy(); } catch { /* ignore */ }
           } else if (got?.ok) {
+            rec.progressAt = Date.now();
             const tipNow = store.tip();
             const tipH = Number(tipNow?.height || last?.height || 0);
             const servedHash = last?.hash ? hexHash(last.hash) : '';
@@ -2337,6 +2381,32 @@ export function createP2p({
     }
   }
 
+  function evictIdleInbound(now = Date.now()) {
+    let best = null;
+    let bestAt = Infinity;
+    for (const [sock, rec] of peers) {
+      if (!rec?.inbound || !Number(rec.helloAt)) continue;
+      if (peerHasRecentProgress(rec, now, idleLimit)) continue;
+      const last = Number(rec.lastRx) || Number(rec.helloAt) || 0;
+      if (last < bestAt) {
+        best = sock;
+        bestAt = last;
+      }
+    }
+    if (!best) return false;
+    const rec = peers.get(best);
+    try {
+      console.error(JSON.stringify({
+        event: 'p2p_evict',
+        reason: 'reserve',
+        remote: rec?.remote || '',
+      }));
+    } catch { /* ignore */ }
+    drop(best);
+    try { best.destroy(); } catch { /* ignore */ }
+    return true;
+  }
+
   function attach(sock, extra = {}) {
     const remote = peerRemoteKey(sock);
     const until = peerBans.get(remote) || 0;
@@ -2345,16 +2415,22 @@ export function createP2p({
       return;
     }
     const inbound = !extra.dialHost;
-    if (peers.size >= maxPeers) {
-      try { sock.destroy(); } catch { /* ignore */ }
-      return;
-    }
     if (inbound) {
       const subnet = ipv4Subnet24(remote);
       if (inboundCountForSubnet(peers, subnet) >= P2P_INBOUND_PER24) {
         try { sock.destroy(); } catch { /* ignore */ }
         return;
       }
+      let inboundNow = 0;
+      for (const rec of peers.values()) if (rec?.inbound) inboundNow += 1;
+      if (inboundNow >= inboundCap) {
+        try { sock.destroy(); } catch { /* ignore */ }
+        return;
+      }
+    }
+    if (peers.size >= maxPeers && !evictIdleInbound()) {
+      try { sock.destroy(); } catch { /* ignore */ }
+      return;
     }
     sockets.add(sock);
     peers.set(sock, {
@@ -2372,6 +2448,10 @@ export function createP2p({
     });
     let buf = '';
     sock.on('data', (chunk) => {
+      const recIn = peers.get(sock);
+      const arrived = Date.now();
+      if (recIn && !buf) recIn.bufAt = arrived;
+      if (recIn && Number(recIn.helloAt) > 0) recIn.lastRx = arrived;
       buf += chunk.toString('utf8');
       if (buf.length > P2P_MAX_FRAME) {
         sock.destroy();
@@ -2395,6 +2475,11 @@ export function createP2p({
           }
         }
       }
+      const recOut = peers.get(sock);
+      if (recOut && Number(recOut.helloAt) > 0 && !Number(recOut.lastRx)) {
+        recOut.lastRx = Number(recOut.bufAt) || arrived;
+      }
+      if (recOut && !buf) recOut.bufAt = 0;
     });
     sock.on('close', () => drop(sock));
     sock.on('error', () => drop(sock));
@@ -2413,10 +2498,6 @@ export function createP2p({
       const doomed = [];
       for (const [sock, rec] of peers) {
         if (!rec) continue;
-        if (peerIsBusy(rec)) {
-          rec.lastRx = now;
-          continue;
-        }
         if (peerShouldEvict(rec, now, { helloMs: helloLimit, idleMs: idleLimit })) doomed.push([sock, rec]);
       }
       for (const [sock, rec] of doomed) {

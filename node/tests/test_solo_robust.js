@@ -10,6 +10,7 @@ import { startNode } from '../src/node.js';
 import {
   createSoloStratum,
   evaluateSoloSubmit,
+  SOLO_LINE_MAX,
   soloShareLogFields,
 } from '../src/solo_stratum.js';
 
@@ -141,6 +142,101 @@ describe('solo stratum bad input', () => {
       }),
       (err) => err?.code === 'native_missing' && /missing/.test(String(err.message)),
     );
+  });
+
+  it('caps the line, the login wait, jobs before login, and connections per address', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-cap-'));
+    const store = createStore(dir);
+    const tips = [];
+    store.on = (event, fn) => {
+      if (event === 'tip') tips.push(fn);
+      return () => {};
+    };
+    const stratum = createSoloStratum({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      restampMs: 0,
+      loginMs: 200,
+      maxPerIp: 2,
+    });
+    const bound = await stratum.listen();
+    const dest = encodeDest(Buffer.alloc(20, 5));
+    try {
+      const fat = net.connect(bound.port, '127.0.0.1');
+      fat.on('error', () => {});
+      const fatClosed = await new Promise((resolve) => {
+        fat.once('connect', () => fat.write(`${'x'.repeat(SOLO_LINE_MAX + 1024)}`));
+        fat.once('close', () => resolve(true));
+        setTimeout(() => resolve(false), 1000);
+      });
+      assert.equal(fatClosed, true);
+
+      const quiet = net.connect(bound.port, '127.0.0.1');
+      quiet.on('data', () => {});
+      quiet.on('error', () => {});
+      const quietClosed = await new Promise((resolve) => {
+        quiet.once('close', () => resolve(true));
+        setTimeout(() => resolve(false), 1000);
+      });
+      assert.equal(quietClosed, true);
+
+      const logged = net.connect(bound.port, '127.0.0.1');
+      const loggedLines = [];
+      let buf = '';
+      logged.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const raw = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!raw) continue;
+          try { loggedLines.push(JSON.parse(raw)); } catch { /* ignore */ }
+        }
+      });
+      logged.on('error', () => {});
+      await new Promise((resolve, reject) => {
+        logged.once('connect', resolve);
+        logged.once('error', reject);
+      });
+      logged.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: `${dest}.solo` } })}\n`);
+      const silent = net.connect(bound.port, '127.0.0.1');
+      const silentLines = [];
+      silent.on('data', (chunk) => {
+        const text = chunk.toString('utf8');
+        for (const raw of text.split('\n')) {
+          if (!raw.trim()) continue;
+          try { silentLines.push(JSON.parse(raw)); } catch { silentLines.push({ raw }); }
+        }
+      });
+      silent.on('error', () => {});
+      await new Promise((resolve, reject) => {
+        silent.once('connect', resolve);
+        silent.once('error', reject);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.ok(loggedLines.some((row) => row.job || row.result), 'login returns a job to that socket');
+      for (const fn of tips) fn();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(silentLines.some((row) => row.method === 'job' || row.job), false);
+      logged.destroy();
+      silent.destroy();
+
+      const extra = [];
+      for (let i = 0; i < 3; i += 1) {
+        const sock = net.connect(bound.port, '127.0.0.1');
+        sock.on('data', () => {});
+        sock.on('error', () => {});
+        extra.push(sock);
+        await new Promise((resolve) => sock.once('connect', resolve));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const closed = extra.filter((sock) => sock.destroyed).length;
+      assert.equal(closed >= 1, true);
+      for (const sock of extra) sock.destroy();
+    } finally {
+      stratum.close();
+    }
   });
 
   it('solo_share truncates dest and nonce', () => {

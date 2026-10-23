@@ -313,7 +313,11 @@ bool _isAmountToken(String s) {
   return RegExp(r'^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$').hasMatch(t);
 }
 
-/// Null when [raw] is a positive SHE amount with at most 11 decimal places.
+/// 2^63-1 nanos. The int nanos path cannot name a larger exact amount.
+final BigInt kMaxCliNanos = BigInt.parse('9223372036854775807');
+
+/// Null when [raw] is a positive SHE amount with at most 11 decimal places,
+/// at or below [kMaxCliNanos].
 String? sheAmountError(String? raw, {required String missing}) {
   if (raw == null) return missing;
   final s = raw.trim();
@@ -334,15 +338,31 @@ String? sheAmountError(String? raw, {required String missing}) {
   }
   final n = BigInt.parse(parsed);
   if (n <= BigInt.zero) return 'amount must be greater than zero';
-  final asDouble = double.parse(s);
-  if (!asDouble.isFinite || asDouble <= 0) return 'amount is too large';
+  if (n > kMaxCliNanos) return 'amount is too large';
   return null;
 }
 
-double _sheAmount(String? raw, {required String missing}) {
+/// Exact nanos digit string. Null when [sheAmountError] would reject [raw].
+String? sheAmountNanos(String? raw) {
+  if (sheAmountError(raw, missing: 'amount') != null) return null;
+  return parseSheDecimalToNanos(raw!.trim());
+}
+
+BigInt _sheNanos(String? raw, {required String missing}) {
   final bad = sheAmountError(raw, missing: missing);
   if (bad != null) throw FormatException(bad);
-  return double.parse(raw!.trim());
+  return BigInt.parse(parseSheDecimalToNanos(raw!.trim())!);
+}
+
+/// Companion SHE double for ledger calls that still require one.
+/// [nanosWire] is the amount that is spent.
+double _sheCompanion(BigInt nanos) {
+  final scale = BigInt.from(kUnitsPerShe);
+  final whole = nanos ~/ scale;
+  final frac = nanos.remainder(scale);
+  final shown = whole.toDouble() + frac.toDouble() / kUnitsPerShe;
+  if (shown.isFinite && shown > 0) return shown;
+  return 1;
 }
 
 String _commandHelp(String cmd) {
@@ -757,7 +777,7 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
     err.writeln(kErrShortSsa1);
     return 2;
   }
-  final amount = _sheAmount(amtRaw, missing: 'send needs --amount');
+  final nanos = _sheNanos(amtRaw, missing: 'send needs --amount');
   final session = _session(flags);
   final id = await _needId(session, flags, env);
   final dry = flags['dry-run'] == '1';
@@ -778,7 +798,8 @@ Future<int> _send(IOSink out, IOSink err, _Flags flags, Map<String, String> env)
     tx = await ledger.sendSpendableSum(
       from: from,
       to: to,
-      amount: amount,
+      amount: _sheCompanion(nanos),
+      nanosWire: nanos.toString(),
       memo: flags['memo'],
       local: dry,
       publicConsent: _cliConsent(flags, rpc, dry: dry),
@@ -948,10 +969,9 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
     err.writeln('reserve subcommand: ${kCliReserveSubs.join(' | ')}');
     return 2;
   }
-  if (sub == 'lock') {
-    final bad = sheAmountError(flags['amount'], missing: 'reserve lock needs --amount');
-    if (bad != null) throw FormatException(bad);
-  }
+  final BigInt? lockNanos = sub == 'lock'
+      ? _sheNanos(flags['amount'], missing: 'reserve lock needs --amount')
+      : null;
   final session = _session(flags);
   final id = await _needId(session, flags, env);
   final ledger = ShearLedger();
@@ -967,7 +987,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       out.writeln(flags.json ? reserve.publicJson(now) : reserve.publicJson(now));
       return 0;
     case 'lock':
-      final she = _sheAmount(flags['amount'], missing: 'reserve lock needs --amount');
+      final sheNanos = lockNanos!;
       final rpc = _rpc(flags, env);
       final dry = flags['dry-run'] == '1';
       final blocked = _needPublicOk(err, flags, rpc, dry: dry);
@@ -978,7 +998,8 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
       final tx = await ledger.sendSpendableSum(
         from: from,
         to: dest,
-        amount: she,
+        amount: _sheCompanion(sheNanos),
+        nanosWire: sheNanos.toString(),
         kind: 'lock',
         programId: 'shear-reserve-v1',
         local: dry,
@@ -991,7 +1012,7 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
         lockEpoch: clock == null ? null : reserve.currentEpoch,
         unlockAtMs: clock == null ? null : clock + kReserveEpochMs,
       );
-      reserve.deposit(dest: dest, she: she, nowMs: now);
+      reserve.deposit(dest: dest, she: _sheCompanion(sheNanos), nowMs: now);
       session.rememberedReserve = _portalSnap(reserve, dest, now);
       await session.persist();
       out.writeln(flags.json ? jsonEncode({'ok': true, 'id': tx.id, 'kind': 'lock'}) : 'lock  id=${tx.id}');
@@ -1179,14 +1200,11 @@ Future<int> _signPull(IOSink out, IOSink err, _Flags flags, Map<String, String> 
   final dest = flags['dest'];
   final amtRaw = flags['amount'];
   if (dest == null || dest.isEmpty) throw const FormatException('sign pull needs --dest ssa1…');
-  final amount = _sheAmount(amtRaw, missing: 'sign pull needs --amount');
-  if (!amount.isFinite || amount <= 0) throw const FormatException('amount must be greater than zero');
+  final nanos = _sheNanos(amtRaw, missing: 'sign pull needs --amount').toInt();
   final session = _session(flags);
   final id = await _needId(session, flags, env);
   final dry = flags['dry-run'] == '1';
   final seed = hexToBytes(id.seedHex);
-  final nanos = (amount * kUnitsPerShe).round();
-  if (nanos <= 0) throw const FormatException('amount must be greater than zero');
   final sig = signPoolWithdraw(seed: seed, login: id.paymentCode, dest: dest, nanos: nanos);
   if (dry) {
     out.writeln(flags.json

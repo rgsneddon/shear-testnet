@@ -12,7 +12,7 @@ import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { HTTP_BODY_MAX, HTTP_TX_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { keyedFetchRejected, syncVerdict, witnessRouteBanned } from './fs1_sync.js';
-import { isChainStateError } from './process_guard.js';
+import { isStoreCorruptError } from './process_guard.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -187,44 +187,28 @@ export function nonceToU64(value) {
   return b;
 }
 
-function rpcFaultReason(err) {
-  const code = String(err?.code || err?.message || '');
-  if (code === 'body_cap') return 'body_cap';
-  if (code === 'json_cap') return 'json_cap';
-  if (code === 'bad_json' || code === 'bad_body' || code === 'bad_tx' || code === 'bad_nonce') return code;
-  return 'internal';
-}
-
-function rpcFaultStatus(reason) {
-  if (reason === 'body_cap') return 413;
-  if (reason === 'internal') return 500;
-  return 400;
-}
-
-function raiseChainState(err) {
-  if (err && typeof err === 'object') err.chainState = true;
+function raiseStoreCorrupt(err) {
   // The 500 is already queued. A short turn lets that write land, then the
-  // process guard sees a real uncaught exception and exits.
+  // process guard sees the store-corruption flag and exits with its own code.
   setTimeout(() => { throw err; }, 25);
 }
 
 function finishRpcFault(res, err) {
-  const chain = isChainStateError(err);
-  console.error(`SHEAR rpc ${chain ? 'chain-state' : 'request'} fault\n${err?.stack || err}`);
+  const corrupt = isStoreCorruptError(err);
+  console.error(`SHEAR rpc ${corrupt ? 'store-corrupt' : 'request'} fault\n${err?.stack || err}`);
   if (res && !res.headersSent && !res.writableEnded) {
-    const reason = chain ? 'internal' : rpcFaultReason(err);
-    try { json(res, rpcFaultStatus(reason), { ok: false, reason }); } catch { /* ignore */ }
+    try { json(res, 500, { ok: false, reason: 'internal' }); } catch { /* ignore */ }
   }
-  if (!chain) return;
+  if (!corrupt) return;
   if (!res || typeof res.once !== 'function' || res.writableFinished || res.destroyed) {
-    raiseChainState(err);
+    raiseStoreCorrupt(err);
     return;
   }
   let armed = false;
   const once = () => {
     if (armed) return;
     armed = true;
-    raiseChainState(err);
+    raiseStoreCorrupt(err);
   };
   res.once('finish', once);
   res.once('close', once);

@@ -91,19 +91,21 @@ function bookPresent(dir, exists) {
     || exists(path.join(dir, 'segments', 'seg-000000.bin'));
 }
 
-/** Datadir folder stays testnet-v11. Display is Shear Sentinel v19. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming). A testnet-v10 directory is not this book. */
+/** Datadir folder stays testnet-v11. Display is Shear Sentinel v19. Windows: %APPDATA%\\Shear\\testnet-v11 (Roaming). A testnet-v10 directory is not this book. [leaf] is the folder name under that root; the pool passes its own. */
 export function defaultDataDir({
   env = process.env,
   homedir = os.homedir(),
   platform = process.platform,
   exists = (p) => fs.existsSync(p),
+  leaf = BOOK_LEAF,
 } = {}) {
   const forced = String(env.SHEAR_DATA || '').trim();
   if (forced) return forced;
-  const posix = path.join(homedir, '.shear', BOOK_LEAF);
+  const name = String(leaf || BOOK_LEAF);
+  const posix = path.join(homedir, '.shear', name);
   if (platform !== 'win32') return posix;
   const app = String(env.APPDATA || '').trim() || path.join(homedir, 'AppData', 'Roaming');
-  const roaming = path.join(app, 'Shear', BOOK_LEAF);
+  const roaming = path.join(app, 'Shear', name);
   if (!bookPresent(roaming, exists) && bookPresent(posix, exists)) return posix;
   return roaming;
 }

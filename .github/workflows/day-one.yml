@@ -1,0 +1,39 @@
+# Day-one robustness. Request faults, the datadir lock, solo caps, and CLI amounts.
+name: day-one
+on:
+  push:
+  pull_request:
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install node deps
+        run: npm ci --ignore-scripts
+      - name: RPC, solo, datadir lock, process guard, mine worker, p2p idle
+        run: >
+          node --test --test-concurrency=1 --test-timeout=180000
+          node/tests/test_rpc_fuzz.js
+          node/tests/test_solo_robust.js
+          node/tests/test_datadir_lock.js
+          node/tests/test_process_guard.js
+          node/tests/test_mine_worker_fault.js
+          node/tests/test_p2p_idle.js
+  cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+      - name: CLI amount parsing
+        working-directory: wallet
+        run: |
+          flutter pub get
+          flutter test test/cli_amount_test.dart
