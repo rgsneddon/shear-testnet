@@ -38,10 +38,12 @@ const waiters = [];
  * one header in milliseconds, so this only trips on a stuck child.
  */
 export const HASH_WORKER_TIMEOUT_MS = 120_000;
+export const HASH_WORKER_TIMEOUT_MIN_MS = 5_000;
 
 function workerTimeoutMs(env = process.env) {
   const n = Number(env?.SHEAR_HASH_WORKER_TIMEOUT_MS);
-  return Number.isFinite(n) && n > 0 ? n : HASH_WORKER_TIMEOUT_MS;
+  if (!Number.isFinite(n) || n <= 0) return HASH_WORKER_TIMEOUT_MS;
+  return Math.max(HASH_WORKER_TIMEOUT_MIN_MS, n);
 }
 
 export function p2pHashCap() {

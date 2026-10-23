@@ -23,7 +23,7 @@ const faultUrl = pathToFileURL(path.join(here, 'fixtures', 'hash_lane_fault.mjs'
 
 function runDriver(fault) {
   const env = { ...process.env, NODE_OPTIONS: `--import=${faultUrl}`, SHEAR_TEST_LANE_FAULT: fault };
-  if (fault === 'hang') env.SHEAR_HASH_WORKER_TIMEOUT_MS = '1500';
+  if (fault === 'hang') env.SHEAR_HASH_WORKER_TIMEOUT_MS = '5000';
   const out = spawnSync(process.execPath, [driver], { cwd: repo, env, encoding: 'utf8', timeout: 300_000 });
   assert.equal(out.status, 0, `${fault}: ${out.stderr}`);
   const line = out.stdout.trim().split('\n').pop();
