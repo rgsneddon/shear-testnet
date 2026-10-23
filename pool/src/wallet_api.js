@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, withdrawTx, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, lockTx, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -385,7 +385,7 @@ export function mempoolReservePaint(store) {
   const rows = [];
   for (const m of store?.mempool || []) {
     const kind = String(m.kind || m.vout?.[0]?.kind || '');
-    if (kind !== 'lock' && kind !== 'vote') continue;
+    if (kind !== 'lock' && kind !== 'vote' && kind !== 'leaf-vote') continue;
     const to = publicPaintDest(m.to || m.vout?.[0]?.address || '');
     const from = publicPaintDest(m.from || m.vin?.[0]?.address || '');
     const nanos = Math.floor(Number(m.nanos || m.vout?.[0]?.nanos || 0));
@@ -1344,6 +1344,41 @@ function sealedSendOnly(body, { queueSend }) {
 }
 
 /**
+ * The pool is not an authority for a wallet tx. Queue the posted object
+ * itself. Do not copy fields, drop fields, or stamp a pool decision onto it.
+ * The node accepts or rejects that same body.
+ */
+function relayPostedTx(body, queueSend) {
+  const tx = typeof queueSend === 'function' ? queueSend(body, { paintedOwedNanos: 0 }) : null;
+  if (!tx || (typeof tx === 'object' && tx.ok === false)) {
+    return { status: 400, json: { ok: false, reason: tx?.reason || 'queue_failed' } };
+  }
+  const submitLine = walletSubmitLog({ connId: newConnId(), ok: true });
+  if (lineJoinsIpToIdentity(submitLine)) return { status: 500, json: { ok: false, reason: 'log' } };
+  return {
+    status: 200,
+    json: {
+      ok: true,
+      tx: { id: tx.id, kind: body.kind, confirmed: false, memo: !!body.memoCt },
+      log: submitLine,
+    },
+  };
+}
+
+/** 20-byte lock dest on the tx or on its lock output. Recognition only. The body is not rewritten. */
+function postedLockDest20(body) {
+  const top = postedPayoutDest20(body?.dest20);
+  if (top) return top;
+  const rows = Array.isArray(body?.vout) ? body.vout : [];
+  for (const row of rows) {
+    if (!row || String(row.kind || '') !== 'lock') continue;
+    const one = postedPayoutDest20(row.dest20);
+    if (one) return one;
+  }
+  return null;
+}
+
+/**
  * A reward claim is a user tx. The posted fee is the same bid a sealed send
  * carries: required, at least the weight levy, and at most the levy cap.
  * The mempool orders it by fee rate. The whole fee is paid to miners.
@@ -1406,6 +1441,21 @@ function clientPostedSpendBody(body) {
 
 function clientHasSpendSig(body) {
   return !!(body && (body.sig || body.signature) && body.spendPub);
+}
+
+/** FS-1 blob. The first byte is 0xF1. Hex or raw bytes. */
+function postedFs1(body) {
+  const raw = body?.fs1;
+  if (raw == null || raw === '') return false;
+  try {
+    if (Buffer.isBuffer(raw) || raw instanceof Uint8Array) {
+      return raw.length > 0 && raw[0] === 0xf1;
+    }
+    const hex = String(raw).replace(/^0x/i, '');
+    return /^f1[0-9a-f]*$/i.test(hex) && hex.length >= 2;
+  } catch {
+    return false;
+  }
 }
 
 const SHE_SCALE = 100_000_000_000n;
@@ -1627,6 +1677,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (isShearAddress(body.from) || isShearAddress(body.to)) {
       return { status: 400, json: { ok: false, reason: 'rest_frame' } };
     }
+    if (body.lockedLeaves != null || body.planDir != null) {
+      return { status: 400, json: { ok: false, reason: 'vote_plan_local' } };
+    }
     if (String(body.kind || 'send') === 'send') {
       return sealedSendOnly(body, { queueSend });
     }
@@ -1647,6 +1700,26 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const kindIn = String(body.kind || 'send');
     const programIn = String(body.programId || '');
     const isLock = kindIn === 'lock' && programIn === RESERVE_PROGRAM;
+    if (isLock && String(body.to || '').trim() !== '') {
+      return { status: 400, json: { ok: false, reason: 'vote_leak' } };
+    }
+    const portalHex = String(body.portalId || '').replace(/^0x/i, '').toLowerCase();
+    const hiddenLock = isLock
+      && String(body.from || '').trim() === ''
+      && String(body.to || '').trim() === ''
+      && /^[0-9a-f]{64}$/.test(portalHex)
+      && !!postedLockDest20(body)
+      && postedFs1(body)
+      && Array.isArray(body.vout) && body.vout.some((o) => o && o.commit);
+    if (isLock && body.payoutPortalId != null && String(body.payoutPortalId) !== '') {
+      return { status: 400, json: { ok: false, reason: 'vote_leak' } };
+    }
+    // A hidden lock is the wallet's signed tx. Relay it unchanged.
+    if (hiddenLock) return relayPostedTx(body, queueSend);
+    if (isLock) {
+      const lockOuts = (Array.isArray(body.vout) ? body.vout : []).filter((row) => row && String(row.kind || '') === 'lock');
+      if (lockOuts.length > 1) return { status: 400, json: { ok: false, reason: 'portal_exists' } };
+    }
     const isVote = kindIn === 'vote' && programIn === RESERVE_PROGRAM;
     const isWithdraw = kindIn === 'withdraw' && programIn === RESERVE_PROGRAM;
     const multiProofsEarly = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
@@ -1656,11 +1729,19 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && Array.isArray(body.vout) && body.vout.length
       && (body.sig || body.signature)
       && body.spendPub;
-    if ((!sealedSendEarly && !isDestAddress(from)) || !isDestAddress(to)) {
+    const fundedWithdraw = isWithdraw
+      && body.fs1
+      && Array.isArray(body.vin) && body.vin.length > 0
+      && (body.retireProof || (Array.isArray(body.retireProofs) && body.retireProofs.length))
+      && (body.principalProof || (Array.isArray(body.principalProofs) && body.principalProofs.length));
+    // A proved withdraw with a one-time dest20 has no address on the wire.
+    const hiddenWithdraw = fundedWithdraw && !isDestAddress(to) && !!postedPayoutDest20(body.dest20);
+    if ((!sealedSendEarly && !fundedWithdraw && !hiddenLock && !isDestAddress(from)) || (!isDestAddress(to) && !hiddenWithdraw && !hiddenLock)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     const nanosBi = isVote ? 0n : parsed.nanos;
-    if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly) {
+    // A hidden lock publishes no amount. nanos 0 is the π leaf, not an empty send.
+    if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly && !hiddenLock) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     if (kindIn !== 'send' && !isLock && !isVote && !isWithdraw) {
@@ -1670,7 +1751,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (poolPay && from === poolPay) {
       return { status: 403, json: { ok: false, reason: 'pool_dest' } };
     }
-    const rec = (sealedSendEarly && !isDestAddress(from))
+    const rec = ((sealedSendEarly || fundedWithdraw || hiddenLock) && !isDestAddress(from))
       ? { spendableNanos: 0 }
       : reconstructOwner(store, from);
     const nanos = nanosBi == null ? 0 : wireNanos(nanosBi);
@@ -1684,10 +1765,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && (body.sig || body.signature)
       && body.spendPub;
     // A posted body with no signature is unsigned, including when the book is short.
-    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && (kindIn === 'send' || isLock || isVote || isWithdraw)) {
+    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && !hiddenLock && (kindIn === 'send' || isLock || isVote || isWithdraw)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
-    if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos) {
+    if (!isVote && !isWithdraw && !sealedSend && !hiddenLock && chainNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     if (Array.isArray(body.vout)) body.vout = stripHiddenValueOpen(kindIn, body.vout);
@@ -1704,7 +1785,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     let fee = postedFee != null
       ? wireNanos(postedFee)
       : (taxed ? levyNanos(0) : 0);
-    if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos + fee) {
+    if (!isVote && !isWithdraw && !sealedSend && !hiddenLock && chainNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const rawChange = String(body.change || '').trim();
@@ -1735,14 +1816,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     const draft = isLock
       ? {
-        ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
-        fee,
-        memoCt,
-        sig: body.sig || body.signature,
-        spendPub: body.spendPub,
-        amount,
-        ...(postedVout.length ? { vout: postedVout } : {}),
-      }
+          ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
+          fee,
+          memoCt,
+          sig: body.sig || body.signature,
+          spendPub: body.spendPub,
+          amount,
+          ...(postedVout.length ? { vout: postedVout } : {}),
+        }
       : isVote
         ? {
           ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }),
@@ -1754,20 +1835,29 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           ...(postedVout.length ? { vout: postedVout } : {}),
         }
         : isWithdraw
-        ? {
-          ...withdrawTx({
-            from,
-            to,
-            nanos,
-            id: typeof body.id === 'string' && body.id ? body.id : `withdraw-${Date.now()}`,
-            nonce: withdrawNonce,
-          }),
+        ? buildFundedWithdraw({
+          nanos,
+          id: typeof body.id === 'string' && body.id ? body.id : `withdraw-${Date.now()}`,
+          withdrawNonce,
+          portalId: body.portalId,
+          vin: body.vin,
+          vout: postedVout.length ? postedVout : body.vout,
+          fs1: body.fs1,
+          anchor: body.anchor,
+          excess: body.excess,
           fee,
+          admit_proof: body.admit_proof,
+          admit_proofs: body.admit_proofs,
+          retireProof: body.retireProof,
+          retireProofs: body.retireProofs,
+          principalProof: body.principalProof,
+          principalProofs: body.principalProofs,
           sig: body.sig || body.signature,
           spendPub: body.spendPub,
-          amount,
-          ...(postedVout.length ? { vout: postedVout } : {}),
-        }
+          rewardSig: body.rewardSig,
+          ownerPub: body.ownerPub,
+          dest20: body.dest20,
+        })
         : {
           kind, from, to, nanos, amount, fee, maxLevy: fee, memoCt, sig: body.sig || body.signature, spendPub: body.spendPub, ephPub,
           vin: Array.isArray(body.vin) && body.vin.length ? body.vin : [{ address: from }],
@@ -1777,6 +1867,22 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           ...(multiProofs ? { admit_proofs: body.admit_proofs } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
+    if ((isLock || isVote) && draft) {
+      const carriedPortal = String(body.portalId || '').replace(/^0x/i, '').toLowerCase();
+      const carriedPayout = String(body.payoutPortalId || '').replace(/^0x/i, '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(carriedPortal)) {
+        draft.portalId = carriedPortal;
+        if (!postedVout.length && Array.isArray(draft.vout)) {
+          for (const row of draft.vout) {
+            if (row && (row.kind === 'lock' || row.kind === 'vote')) row.portalId = carriedPortal;
+          }
+        }
+      }
+      if (/^[0-9a-f]{64}$/.test(carriedPayout)) draft.payoutPortalId = carriedPayout;
+    }
+    if (isWithdraw && !draft) {
+      return { status: 400, json: { ok: false, reason: 'withdraw_funding' } };
+    }
     if (taxed && postedFee == null) bindWeightFee(draft);
     if (taxed) {
       const need = levyNeed(draft);
@@ -1801,10 +1907,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         return { status: 400, json: { ok: false, reason: 'admit_membership' } };
       }
     }
-    if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
+    if (flowSendNeedsOpen(draft) && !hiddenLock && !verifySpendSig(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
-    if (reserveNeedsPortalOpen(draft) && !verifyReservePortalOpen(draft)) {
+    // An FS-1 lock has no seed signature. The SAL is checked when the node queues it.
+    if (reserveNeedsPortalOpen(draft) && !hiddenLock && !verifyReservePortalOpen(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
     const tx = queueSend(draft, { paintedOwedNanos: 0 });
@@ -1830,6 +1937,24 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     };
   }
   if (path === '/api/vault/reserve' && verb === 'GET') {
+    if (url.searchParams.get('view') === 'tranches') {
+      const vault = store?.reserveVault;
+      if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
+      return { status: 200, json: { ok: true, tranches: publicTrancheBook(vault) } };
+    }
+    const portalQ = String(url.searchParams.get('portal') || '').replace(/^0x/i, '').toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(portalQ)) {
+      const vault = store?.reserveVault;
+      if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          portalId: portalQ,
+          tranches: publicTrancheRows(vault.portals?.[portalQ] || null),
+        },
+      };
+    }
     const dest = url.searchParams.get('dest') || '';
     if (!isDestAddress(dest)) return { status: 400, json: { ok: false, reason: 'bad_dest' } };
     const vault = store?.reserveVault;

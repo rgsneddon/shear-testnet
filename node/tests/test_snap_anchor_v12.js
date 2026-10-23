@@ -408,4 +408,26 @@ describe('v12 snap reload anchor rows', () => {
       }
     }
   });
+
+  // PR 116: a bucket proof (byte 3) is not an FS-1 vault lock. It is refused
+  // before a snap reload, on the same reason the four vault paths use.
+  it('a byte-3 lock is vault_unavailable before a snap reload', { timeout: 30_000 }, async () => {
+    const commit = Buffer.alloc(32, 4);
+    const blob = Buffer.alloc(129, 0);
+    blob[0] = 3;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-snap-anchor-'));
+    try {
+      const store = createStore(dir);
+      const queued = store.queueTx({
+        id: 'byte3-lock',
+        kind: 'lock',
+        vin: [{ commit }],
+        admit_proofs: [{ blob, cTilde: commit }],
+      });
+      assert.equal(queued.reason, 'vault_unavailable');
+    } finally {
+      try { fs.rmSync(bookSealKeyPath(dir), { force: true }); } catch { /* key already gone */ }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

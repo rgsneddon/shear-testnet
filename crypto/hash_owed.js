@@ -22,7 +22,10 @@
  * samplesPruned flag alone is not burial. The hash-bonus unit
  * is the one live at that height (HASH_OWED_UNIT_HISTORY=per-height).
  * hashAcceptedUnits is required and must match settlement
- * (HASH_ACCEPTED_UNITS=validated). Slot-1 expiring shares that missed a seat,
+ * (HASH_ACCEPTED_UNITS=validated). A voted unit of 0 is bonus off
+ * (HASH_BONUS_MINE=0): fresh credits are empty, the nanos budget is 0,
+ * parent owed rows are carried, and the coinbase still stamps unit 0.
+ * Slot-1 expiring shares that missed a seat,
  * up to one batch of MAX_SHARES_PER_BLOCK, are hashSpill
  * (HASH_OWED_SPILL=witness-v1). Their full credit is owed at this height and
  * is not spent from this block's budget, so seated pay does not change. Owe
@@ -377,7 +380,9 @@ function explicitDest20(share) {
  */
 function shareWitnessAgrees(shares, recorded, unit) {
   const u = BigInt(hashBonusUnitNanos(unit));
-  if (u <= 0n) return false;
+  // Bonus off prices no credit. A non-empty record at unit 0 is a lie.
+  if (u === 0n) return recorded.length === 0;
+  if (u < 0n) return false;
   let list = [];
   try {
     list = unpackShareBatch(shares || []);
@@ -509,6 +514,8 @@ function emptyBase(buf) {
  */
 export function freshCreditsFromShares(shares, unit = HASH_BONUS_NANOS) {
   const u = BigInt(hashBonusUnitNanos(unit));
+  // A zero unit is not a zero-nanos row. Those rows fail the credit parser.
+  if (u === 0n) return [];
   const by = new Map();
   let list = [];
   try {
@@ -686,7 +693,8 @@ export function hashOwedDigestSuffix(tx) {
   const credit = rootBytes(tx?.hashCreditRoot);
   const unitN = asBi(tx?.hashBonusUnit);
   const accepted = asBi(tx?.hashAcceptedUnits);
-  if (!credit || unitN == null || unitN < 1n || unitN > BigInt(MAX_U32) || accepted == null || accepted > MAX_U64) {
+  // Unit 0 is bonus off and stays in the digest. A missing unit is still null.
+  if (!credit || unitN == null || unitN < 0n || unitN > BigInt(MAX_U32) || accepted == null || accepted > MAX_U64) {
     return null;
   }
   const parts = [
@@ -782,7 +790,8 @@ function takeFifo(rows, budget, floor) {
       left -= row.nanos;
       continue;
     }
-    if (left >= floor && row.nanos - left >= floor) {
+    // left > 0 keeps a zero floor (bonus off, budget 0) from peeling a 0 pay.
+    if (left > 0n && left >= floor && row.nanos - left >= floor) {
       paid.push({ row, nanos: left });
       unpaid.push(copyRow(row, row.nanos - left, row.sinceHeight));
       left = 0n;
@@ -819,7 +828,11 @@ export function settleHashOwed({
   const unitBi = BigInt(hashBonusUnitNanos(unit));
   const limit = budget == null ? BigInt(MAX_HASH_UNITS_PER_BLOCK) * unitBi : asBi(budget);
   const h = asBi(height);
-  if (floor == null || floor <= 0n || limit == null || limit < 0n || h == null || h > BigInt(MAX_U32)) return fail();
+  // Bonus off has a zero dust floor and a zero nanos budget. A positive
+  // budget at unit 0 would mint hash notes the unit does not price.
+  if (floor == null || floor < 0n || limit == null || limit < 0n || h == null || h > BigInt(MAX_U32)) return fail();
+  if (floor === 0n && unitBi !== 0n) return fail();
+  if (unitBi === 0n && limit !== 0n) return fail();
   if (!Number.isInteger(cap) || cap < 0) return fail();
   const blockHeight = Number(h);
   const dustAcc = asBi(dustIn);
@@ -1017,8 +1030,11 @@ export function settleHashOwed({
   if (owed.length > cap) return fail();
   const freshNanos = freshRows.reduce((n, row) => n + row.nanos, 0n);
   const spillNanos = spillRows.reduce((n, row) => n + row.nanos, 0n);
-  if (unitBi <= 0n || freshNanos % unitBi !== 0n || spillNanos % unitBi !== 0n) return fail();
-  const acceptedUnits = freshNanos / unitBi;
+  if (unitBi < 0n) return fail();
+  if (unitBi === 0n) {
+    if (freshNanos !== 0n || spillNanos !== 0n) return fail();
+  } else if (freshNanos % unitBi !== 0n || spillNanos % unitBi !== 0n) return fail();
+  const acceptedUnits = unitBi === 0n ? 0n : freshNanos / unitBi;
   return {
     ok: true,
     reason: '',
@@ -1038,7 +1054,16 @@ export function acceptedUnitsOfBlock(block, unit = HASH_BONUS_NANOS, tipHeight =
   const got = freshForBlock(block, unit, tipHeight);
   if (!got.ok) return null;
   const u = BigInt(hashBonusUnitNanos(unit));
-  if (u <= 0n) return null;
+  if (u < 0n) return null;
+  if (u === 0n) {
+    for (const row of got.fresh) {
+      if (row.nanos !== 0n) return null;
+    }
+    const offCb = Array.isArray(block?.txs) ? block.txs[0] : null;
+    const off = offCb ? asBi(offCb.hashAcceptedUnits) : null;
+    if (off == null || off !== 0n) return null;
+    return 0n;
+  }
   let n = 0n;
   for (const row of got.fresh) {
     if (row.nanos % u !== 0n) return null;
@@ -1205,7 +1230,8 @@ export function compactHashLedger(tx, row) {
   if (credit) row.hashCreditRoot = credit;
   else delete row.hashCreditRoot;
   const unitN = asBi(tx.hashBonusUnit);
-  if (unitN != null && unitN >= 1n && unitN <= BigInt(MAX_U32)) row.hashBonusUnit = Number(unitN);
+  // Keep a stamped 0. Dropping it makes a reload clamp the unit back to 1.
+  if (unitN != null && unitN >= 0n && unitN <= BigInt(MAX_U32)) row.hashBonusUnit = Number(unitN);
   else delete row.hashBonusUnit;
   if (tx.hashAcceptedUnits != null && tx.hashAcceptedUnits !== '') {
     const n = asBi(tx.hashAcceptedUnits);

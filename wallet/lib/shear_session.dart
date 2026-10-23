@@ -557,7 +557,6 @@ ShearIdentity importShewall(
   ledger.viewSecret = id.viewKey;
   ledger.spendPub = decodePaymentCode(id.paymentCode)?['spendPub'];
   final spend = shewallU64(u['spendableNanos']!) / kUnitsPerShe;
-  final pend = shewallU64(u['pendingNanos']!) / kUnitsPerShe;
   final archive = unpackShewallArchive(packed);
   if (archive != null) {
     applyUserArchive(ledger, archive);
@@ -580,10 +579,11 @@ ShearIdentity importShewall(
   }
   ledger.replaceFromBackup(
     address: id.address,
-    spendable: spend,
-    pending: pend,
+    spendable: 0,
+    pending: 0,
     txs: const [],
   );
+  if (spend > 0) ledger.rememberSpendable(id.address, spend);
   return id;
 }
 

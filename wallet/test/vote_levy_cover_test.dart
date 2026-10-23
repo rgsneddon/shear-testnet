@@ -69,13 +69,13 @@ void main() {
       txs: const [],
     );
     expect(shortBook.spendableOwned(dest), closeTo((voteL - 1) / kUnitsPerShe, 1e-18));
-    final short = await commandReserveVote(
+    final short = await castPlannedLeafVotes(
       ledger: shortBook,
       reserve: reserve,
+      planDir: '',
       restFrame: dest,
       dest: dest,
       choice: kVoteHold,
-      depth: 0,
       local: true,
     );
     expect(short.enacted, isFalse);
@@ -89,19 +89,22 @@ void main() {
       txs: const [],
     );
     expect(dustBook.spendableOwned(dest), closeTo(need - 1e-13, 1e-18));
-    final dust = await commandReserveVote(
+    // Current law: a book that covers the levy and has no census fails closed
+    // as not_voter. It does not fall through to a portal vote.
+    final dust = await castPlannedLeafVotes(
       ledger: dustBook,
       reserve: reserve,
+      planDir: '',
       restFrame: dest,
       dest: dest,
       choice: kVoteHold,
-      depth: 0,
       local: true,
     );
     expect(dust.remark, isNot(contains('Not enough Continuum spendable for vote tx fee')));
+    expect(dust.remark, 'You’re not eligible to vote from this portal this epoch');
 
     final reserveSrc = File('lib/shear_reserve.dart').readAsStringSync();
-    final commandStart = reserveSrc.indexOf('Future<ReserveVoteResult> commandReserveVote');
+    final commandStart = reserveSrc.indexOf('Future<ReserveVoteResult> castPlannedLeafVotes');
     final commandEnd = reserveSrc.indexOf('class ReserveVoteTower');
     final command = reserveSrc.substring(commandStart, commandEnd);
     expect(command, contains('spendableCoversLevy('));

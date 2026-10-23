@@ -257,17 +257,20 @@ function sameFlags(got, want) {
   return got.every((flag, i) => flag === right[i]);
 }
 
-function isExactTrustSet(aces, sid) {
-  const want = [sid, SYSTEM_SID, ADMINISTRATORS_SID]
-    .map((trustee) => `A|FA|${normalizeSid(trustee)}`)
-    .sort();
-  if (aces.length !== want.length) return false;
-  const got = aces.map((ace) => `${ace.type}|${ace.rights}|${ace.sid}`).sort();
-  return got.every((row, i) => row === want[i]);
-}
-
 function ownerOk(row, sid) {
   return row.owner === normalizeSid(sid) && ownerFromSddl(row.sddl) === normalizeSid(sid);
+}
+
+function closedTrust(aces, sid) {
+  const want = [sid, SYSTEM_SID, ADMINISTRATORS_SID].map((trustee) => normalizeSid(trustee));
+  const seen = new Set();
+  for (const ace of aces) {
+    if (ace.type !== 'A' || ace.rights !== 'FA') return false;
+    const who = normalizeSid(ace.sid);
+    if (!want.includes(who)) return false;
+    seen.add(who);
+  }
+  return seen.size === want.length;
 }
 
 function rootMatches(row, sid) {
@@ -278,8 +281,13 @@ function rootMatches(row, sid) {
   } catch {
     return false;
   }
-  if (!dacl.protected || !isExactTrustSet(dacl.aces, sid)) return false;
-  return dacl.aces.every((ace) => sameFlags(ace.flags, ['CI', 'OI']));
+  if (!dacl.protected || !closedTrust(dacl.aces, sid)) return false;
+  const trustees = [sid, SYSTEM_SID, ADMINISTRATORS_SID].map((trustee) => normalizeSid(trustee));
+  return trustees.every((who) => dacl.aces.some((ace) => (
+    normalizeSid(ace.sid) === who && sameFlags(ace.flags, ['CI', 'OI'])
+  ))) && dacl.aces.every((ace) => (
+    sameFlags(ace.flags, ['CI', 'OI']) || sameFlags(ace.flags, [])
+  ));
 }
 
 function childMatches(row, sid, kind) {
@@ -290,14 +298,17 @@ function childMatches(row, sid, kind) {
   } catch {
     return false;
   }
-  // Inherited ACEs are the folder DACL propagated (ID). An explicit ACE is
-  // accepted only when it is that same set and nothing more.
-  if (!isExactTrustSet(dacl.aces, sid)) return false;
+  // /grant:r writes a direct :F ACE (no flags) and an (OI)(CI) ACE on each
+  // directory, so a subdirectory has six ACEs, not three. A file keeps the
+  // three :F ACEs. A child created later carries the inherited (ID) form.
+  // A fourth SID, or any right other than full control, still fails.
+  if (!closedTrust(dacl.aces, sid)) return false;
   const inherited = kind === 'dir' ? ['CI', 'ID', 'OI'] : ['ID'];
   const explicit = kind === 'dir' ? ['CI', 'OI'] : [];
   return dacl.aces.every((ace) => (
     sameFlags(ace.flags, inherited)
     || sameFlags(ace.flags, explicit)
+    || sameFlags(ace.flags, [])
     || (kind === 'file' && sameFlags(ace.flags, ['CI', 'OI']))
   ));
 }
@@ -342,9 +353,20 @@ function applyWindows(dir, sid, execFileSync, systemDir, systemRoot, realpathSyn
   const user = `*${sid}:(OI)(CI)F`;
   const system = `*${SYSTEM_SID}:(OI)(CI)F`;
   const admins = `*${ADMINISTRATORS_SID}:(OI)(CI)F`;
-  // One call. /L does not follow a link. /T rewrites the files already there.
+  // (OI)(CI) is inherit-only on a file. /grant:r then leaves that file with
+  // no ACE, and /setowner is denied. :F is the ACE on the file itself.
+  // icacls rejects /setowner in the same invocation as /grant (error 87).
+  // /L does not follow a link. /T rewrites the files already there.
+  const direct = (trustee) => `*${trustee}:F`;
   runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [
-    dir, '/inheritance:r', '/grant:r', user, system, admins, '/setowner', `*${sid}`, '/T', '/L',
+    dir, '/inheritance:r', '/grant:r',
+    user, direct(sid),
+    system, direct(SYSTEM_SID),
+    admins, direct(ADMINISTRATORS_SID),
+    '/T', '/L',
+  ]);
+  runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [
+    dir, '/setowner', `*${sid}`, '/T', '/L',
   ]);
 }
 

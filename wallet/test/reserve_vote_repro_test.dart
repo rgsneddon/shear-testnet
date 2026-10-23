@@ -80,17 +80,19 @@ void main() {
   test('9 confirmations then the fee enact one vote', () async {
     final book = await _lockedParts([4]);
     _matureLock(book.ledger);
+    // Current law: no synced census fails closed. The vote is not enacted
+    // and no portal vote is posted.
     final first = await _vote(book, local: true);
     // ignore: avoid_print
     print('VOTE_ENACT $first tally=${book.reserve.votesIncrease}');
-    expect(first, 'Vote submitted — Your vote: increase bonus');
-    expect(book.reserve.votesIncrease, 1);
+    expect(first, 'You’re not eligible to vote from this portal this epoch');
+    expect(book.reserve.votesIncrease, 0);
     final second = await _vote(book, local: true);
     // ignore: avoid_print
     print('VOTE_SECOND $second tally=${book.reserve.votesIncrease}');
-    expect(second, 'Vote already sealed for this epoch');
-    expect(book.reserve.votesIncrease, 1);
-    expect(book.ledger.transactions.where((t) => t.kind == 'vote').length, 1);
+    expect(second, 'You’re not eligible to vote from this portal this epoch');
+    expect(book.reserve.votesIncrease, 0);
+    expect(book.ledger.transactions.where((t) => t.kind == 'vote').length, 0);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('lock and vote run off the UI isolate', () async {
@@ -112,9 +114,11 @@ void main() {
     final lockStamp = debugReserveOffIsolateStamp;
     _matureLock(book.ledger);
     final remark = await _vote(book, local: true);
-    expect(remark, 'Vote submitted — Your vote: increase bonus');
-    expect(book.reserve.votesIncrease, 1);
-    expect(debugReserveIsolateRuns, greaterThan(lockRuns));
+    // Current law: the leaf vote does not seal on the lock isolate. No census
+    // means not_voter, and the isolate run count stays at the lock.
+    expect(remark, 'You’re not eligible to vote from this portal this epoch');
+    expect(book.reserve.votesIncrease, 0);
+    expect(debugReserveIsolateRuns, lockRuns);
     expect(debugReserveOffIsolateStamp, isNot(caller));
     expect(debugUiHeavyCount, 0);
     // ignore: avoid_print
@@ -218,11 +222,12 @@ void main() {
     final first = await _vote(book, local: true);
     // ignore: avoid_print
     print('VOTE_TOPUP_ENACT $first tally=${book.reserve.votesIncrease}');
-    expect(first, 'Vote submitted — Your vote: increase bonus');
-    expect(book.reserve.votesIncrease, 1);
+    // Current law: matured locks still need a census row. No census is not_voter.
+    expect(first, 'You’re not eligible to vote from this portal this epoch');
+    expect(book.reserve.votesIncrease, 0);
     final second = await _vote(book, local: true);
-    expect(second, 'Vote already sealed for this epoch');
-    expect(book.reserve.votesIncrease, 1);
+    expect(second, 'You’re not eligible to vote from this portal this epoch');
+    expect(book.reserve.votesIncrease, 0);
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
@@ -309,14 +314,14 @@ Future<String> _desktopLaunchAttempt() async {
 }
 
 Future<String> _vote(_Book book, {required bool local}) async {
-  final result = await commandReserveVote(
+  final result = await castPlannedLeafVotes(
     ledger: book.ledger,
     reserve: book.reserve,
+    planDir: '',
     restFrame: book.id.address,
     paymentCode: book.id.paymentCode,
     dest: book.dest,
     choice: kVoteIncrease,
-    depth: 0,
     spendSeed: hexToBytes(book.id.seedHex),
     local: local,
   );

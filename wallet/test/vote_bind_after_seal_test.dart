@@ -158,6 +158,11 @@ class _VotePool extends ShearPoolClient {
     String? nanosWire,
     String? id,
     String? withdrawNonce,
+    String? portalId,
+    String? payoutPortalId,
+    String? lockAuth,
+    String? ownerPub,
+    String? vaultLockNote,
     String? fs1,
     int? anchor,
   }) async {

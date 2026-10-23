@@ -75,6 +75,18 @@ export function publicReserveReceipt(tx) {
  * a funded note. Block, mempool, and funded-body checks share this reason.
  * There is no height carve-out and no caller flag.
  */
+/** Nanos a public reserve receipt publishes. Supply reads this so it does not touch valueProof. */
+export function publicReceiptNanos(tx) {
+  const kind = String(tx?.kind || '');
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const row = outs.find((item) => String(item?.kind || '') === kind) || outs[0] || null;
+  const raw = row?.valueProof?.v;
+  if (typeof raw === 'bigint') return raw > 0n ? raw : 0n;
+  const n = Math.floor(Number(raw) || 0);
+  if (!Number.isSafeInteger(n) || n <= 0) return 0n;
+  return BigInt(n);
+}
+
 export function publicReserveReceiptRejected(tx) {
   if (!publicReserveReceipt(tx)) return null;
   return { ok: false, reason: 'public_receipt' };

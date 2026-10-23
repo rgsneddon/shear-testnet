@@ -83,7 +83,8 @@ test('the FS-1 vendor matches the monero-oxide pin and is wired only through the
   assert.equal(readFileSync(path.join(vendor, 'fcmps', 'circuit-abstraction', 'LICENSE'), 'utf8').includes('Copyright (c) 2024-2025 Luke Parker'), true);
   assert.equal(readFileSync(path.join(vendor, 'fcmps', 'ec-gadgets', 'LICENSE'), 'utf8').includes('Copyright (c) 2024-2025 Luke Parker'), true);
   const admitToml = readFileSync(path.join(here, 'native', 'admit', 'Cargo.toml'), 'utf8');
-  const admitLock = readFileSync(path.join(here, 'native', 'admit', 'Cargo.lock'), 'utf8');
+  // Git stores LF. A Windows checkout may be CRLF. The pin is the package row.
+  const admitLock = readFileSync(path.join(here, 'native', 'admit', 'Cargo.lock'), 'utf8').replace(/\r\n/g, '\n');
   const deny = readFileSync(path.join(here, 'native', 'deny.toml'), 'utf8');
   assert.match(admitToml, /shear-fs1 = \{ path = "\.\.\/vendor\/monero-oxide-77788c3\/shear-fs1" \}/);
   for (const banned of ['monero-fcmp-plus-plus', 'monero-fcmp-plus-plus-generators']) {

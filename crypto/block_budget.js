@@ -4,8 +4,12 @@
  * levy.js blockWeight is the fee retarget weight and is a different number.
  */
 import { performance } from 'node:perf_hooks';
+import { MAX_BLOCK_VAULT_CLAIMS } from './asert.js';
+import { MAX_BLOCK_LEAF_VOTES } from './leaf_vote.js';
 import { txIsCoinbase } from './note.js';
 import { txIsReserveAction } from './reserve_vault.js';
+
+export { MAX_BLOCK_VAULT_CLAIMS };
 
 export const W_IN = 40;
 export const W_OUT = 23;
@@ -23,6 +27,9 @@ export const R_BYTES = 854_592;
  */
 export const W_FS1_BASE = 25;
 export const W_FS1_PER_INPUT = 25;
+/** One π leaf on a lock, withdraw, or retire. The claim no longer carries remainder proofs. */
+export const W_VAULT_LEAF = 4;
+export const W_VAULT_EXTRA = 0;
 export const R_SEND_INPUTS = 2;
 export const R_WEIGHT = 2_336;
 export const K_VW = 8;
@@ -178,11 +185,43 @@ export function txVerifyWeight(tx) {
   }
   const nIn = Array.isArray(tx.vin) ? tx.vin.length : 0;
   const nOut = Array.isArray(tx.vout) ? tx.vout.length : 0;
+  const leaves = vaultLeafWeightCount(tx);
+  if (tx.vaultProof != null && tx.vaultProof !== '') {
+    const one = fs1VerifyWeight(1);
+    let claim = W_TX + (one || 0) + W_OUT * nOut + W_VAULT_EXTRA + W_VAULT_LEAF * Math.max(1, leaves);
+    if (txIsReserveAction(tx)) claim += W_SEAL;
+    return claim;
+  }
   const fs1 = tx.fs1 != null && tx.fs1 !== '' ? fs1VerifyWeight(nIn) : null;
   if (fs1 != null) return W_TX + fs1 + W_OUT * nOut;
   let w = W_TX + W_IN * nIn + W_OUT * nOut;
   if (txIsReserveAction(tx)) w += W_SEAL;
+  if (leaves) w += W_VAULT_LEAF * leaves;
   return w;
+}
+
+function vaultLeafWeightCount(tx) {
+  if (!tx || typeof tx !== 'object') return 0;
+  if (tx.vaultProof != null && tx.vaultProof !== '') return 1;
+  const proofs = Array.isArray(tx.retireProofs) ? tx.retireProofs.length : (tx.retireProof ? 1 : 0);
+  if (proofs) return proofs;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  const locks = outs.filter((row) => String(row?.kind || tx.kind || '') === 'lock').length;
+  return locks;
+}
+
+function txIsLeafVote(tx) {
+  if (!tx || txIsCoinbase(tx)) return false;
+  if (String(tx.kind || '') === 'leaf-vote') return true;
+  if (tx.voteProof) return true;
+  return Array.isArray(tx.voteProofs) && tx.voteProofs.length > 0;
+}
+
+function txIsVaultClaim(tx) {
+  if (!tx || txIsCoinbase(tx)) return false;
+  if (String(tx.kind || '') === 'reward-claim') return true;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  return outs.some((row) => String(row?.kind || '') === 'reward-claim');
 }
 
 /** Raw public payload. Proof bytes count as length only. */
@@ -255,6 +294,8 @@ export function txBudget(tx) {
 export function blockBudget(txs) {
   const list = Array.isArray(txs) ? txs : [];
   let reserve = 0;
+  let claims = 0;
+  let leafVotes = 0;
   let vw = 0;
   let payees = 0;
   let weight = 0;
@@ -272,9 +313,13 @@ export function blockBudget(txs) {
     } else if (txIsReserveAction(tx)) {
       reserve += 1;
     }
+    if (txIsVaultClaim(tx)) claims += 1;
+    if (txIsLeafVote(tx)) leafVotes += 1;
   }
   if (vw > K_VW) return reject('k_vw');
   if (reserve > MAX_BLOCK_RESERVE_TXS) return reject('reserve_txs');
+  if (claims > MAX_BLOCK_VAULT_CLAIMS) return reject('claim_cap');
+  if (leafVotes > MAX_BLOCK_LEAF_VOTES) return reject('vote_cap');
   if (payees > payeeCapLive()) return reject('payee_cap');
   if (coinbase > C_MAX) return reject('coinbase_bytes');
   if (block > B_MAX) return reject('block_bytes');
@@ -305,6 +350,8 @@ export function selectBodyIndexes(txs, {
       bytes: publicBytes(tx),
       fee,
       reserve: txIsReserveAction(tx),
+      claim: txIsVaultClaim(tx),
+      leafVote: txIsLeafVote(tx),
     };
   }
   const order = rows.slice().sort((a, b) => {
@@ -318,18 +365,24 @@ export function selectBodyIndexes(txs, {
   let accW = Math.max(0, Math.floor(Number(coinbaseWeight) || 0));
   let accB = Math.max(0, Math.floor(Number(coinbaseBytes) || 0));
   let accR = 0;
+  let accC = 0;
+  let accV = 0;
   for (let n = 0; n < order.length; n += 1) {
     const row = order[n];
     if (row.reserve) {
       if (accR >= MAX_BLOCK_RESERVE_TXS) continue;
       if (nowMs() - started >= TEMPLATE_BUDGET_MS) continue;
     }
+    if (row.claim && accC >= MAX_BLOCK_VAULT_CLAIMS) continue;
+    if (row.leafVote && accV >= MAX_BLOCK_LEAF_VOTES) continue;
     if (accW + row.w > MAX_BLOCK_VERIFY_WEIGHT) continue;
     if (accB + row.bytes > B_MAX) continue;
     chosen.push(row.i);
     accW += row.w;
     accB += row.bytes;
     if (row.reserve) accR += 1;
+    if (row.claim) accC += 1;
+    if (row.leafVote) accV += 1;
   }
   return chosen;
 }

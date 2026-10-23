@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { createP2p, GETBLOCK_MISS_LIMIT } from '../src/p2p.js';
+import { createP2p, fingerprintHelloHash, GETBLOCK_MISS_LIMIT } from '../src/p2p.js';
 import { nodeStatus } from '../src/status.js';
 
 function listenSeed(onLine) {
@@ -82,7 +82,7 @@ describe('multi-seed body-proven failover', () => {
     const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET });
     const hollow = await listenSeed((sock, msg) => {
       if (msg.type === 'hello' && !hollowAsked) {
-        sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
+        sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`);
         sock.write(`${JSON.stringify({
           type: 'tip', magic: MAGIC_TESTNET, height: 30, hash: '11'.repeat(32), work: '0x80',
         })}\n`);
@@ -113,7 +113,7 @@ describe('multi-seed body-proven failover', () => {
     });
     const body = await listenSeed((sock, msg) => {
       if (msg.type === 'hello') {
-        sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
+        sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`);
         setTimeout(() => {
           try {
             sock.write(`${JSON.stringify({

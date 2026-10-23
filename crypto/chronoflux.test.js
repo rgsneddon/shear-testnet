@@ -20,10 +20,17 @@ import {
   compactTx,
   sealedVinLinkField,
 } from './chronoflux.js';
-import { lockTx, voteTx, portalIdFromDest } from './reserve_vault.js';
+import {
+  lockTx,
+  voteTx,
+  portalIdFromDest,
+  signWithdrawReward,
+  withdrawOwnerMessage,
+  verifyRewardAuth,
+} from './reserve_vault.js';
 import { newIdentity, hash20FromAddress, admitBaseFromAddress, freshStealthDest, spendDestOf, encodeDest } from './address.js';
 import { vaultDest, destForLogin } from './flow_sheet.js';
-import { verifySealedNote, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
+import { verifyRange, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from './note.js';
 import { attachAdmitPub } from './admit.js';
 import { PI_SHE_NANOS, GENESIS_BITS_PACKED, NANOS_PER_SHE, POOL_FEE_BPS, HASH_BONUS_NANOS } from './asert.js';
 import { digestTx, buildTemplate, verifyBlock, GENESIS_PREV } from '../node/src/chain.js';
@@ -232,32 +239,42 @@ describe('chronoflux prune + collate', () => {
     assert.equal(levy.nanos, 5);
   });
 
-  it('compact lock drops the opening and still proves the amount after JSON', () => {
+  it('compact lock keeps the commitment and the range proof, not the amount', () => {
     const id = newIdentity();
     const continuum = destForLogin(id.address, { viewKey: id.viewKey });
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
     const tx = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-json' });
-    assert.equal(verifySealedNote(tx.vout[0], PI_SHE_NANOS), true);
+    assert.equal(tx.nanos, 0);
+    assert.equal(tx.vout[0].valueProof, undefined);
+    assert.equal(tx.vout[0].nanos, undefined);
+    assert.equal(verifyRange(tx.vout[0].commit, tx.vout[0].rangeProof), true);
     const sealed = compactTx(tx);
     assert.equal(sealed.vout[0].r, undefined);
     assert.equal(sealed.kind, 'lock');
+    // Current law: a compact lock does not carry the address. The portal id is already stamped.
     assert.equal(sealed.to, undefined);
     assert.equal(sealed.from, undefined);
     assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.nanos, undefined);
     assert.equal(sealed.vout[0].nanos, undefined);
+    assert.equal(sealed.vout[0].valueProof, undefined);
     assert.ok(sealed.vout[0].commit);
-    assert.ok(sealed.vout[0].rangeProof || sealed.vout[0].valueProof);
-    if (sealed.vout[0].rangeProof) {
-      assert.equal(sealed.vout[0].rangeProof === true, false);
-    }
+    assert.ok(sealed.vout[0].rangeProof);
+    assert.equal(sealed.vout[0].rangeProof === true, false);
     const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
     assert.equal(Buffer.isBuffer(wire.vout[0].commit), true);
-    assert.equal(verifySealedNote(wire.vout[0], PI_SHE_NANOS), true);
+    assert.equal(wire.vout[0].valueProof, undefined);
+    assert.equal(verifyRange(wire.vout[0].commit, wire.vout[0].rangeProof), true);
     assert.equal(wire.vout[0].r, undefined);
-    assert.ok(sealed.vout[0].dest20);
+    // The address binding moved onto dest20. `to` stays off the sealed body.
+    const want20 = Buffer.from(hash20FromAddress(vault));
+    assert.ok(Buffer.from(sealed.vout[0].dest20).equals(want20), 'lock dest20');
     assert.ok(sealed.vout[0].portalId);
     assert.equal(digestTx(sealed).equals(digestTx(tx)), true);
+    const bent20 = Buffer.from(sealed.vout[0].dest20);
+    bent20[0] ^= 1;
+    const bent = { ...sealed, vout: [{ ...sealed.vout[0], dest20: bent20 }] };
+    assert.equal(digestTx(bent).equals(digestTx(sealed)), false, 'dest20 tamper');
   });
 
   it('compact address-only lock keeps dest20/portalId/valueProof.v so digestTx matches the fat body', () => {
@@ -276,17 +293,25 @@ describe('chronoflux prune + collate', () => {
     };
     const sealed = compactTx(fat);
     const blob = JSON.stringify(sealed);
-    assert.doesNotMatch(blob, /ssa1/);
-    assert.doesNotMatch(blob, /she1/);
+    assert.doesNotMatch(blob, /"from"/);
     assert.doesNotMatch(blob, /"nanos"/);
     assert.doesNotMatch(blob, /"address"/);
     assert.equal(sealed.from, undefined);
+    // Current law: a compact lock does not carry the address. dest20 and the carried portal id stay.
     assert.equal(sealed.to, undefined);
     assert.equal(sealed.vout[0].address, undefined);
     assert.equal(sealed.vout[0].nanos, undefined);
-    assert.ok(sealed.vout[0].dest20);
-    assert.equal(Buffer.from(sealed.vout[0].dest20).length, 20);
-    assert.equal(sealed.vout[0].portalId, portalIdFromDest(vault));
+    // The address binding moved onto dest20. Compact does not rebuild portalId from it.
+    const want20 = Buffer.from(hash20FromAddress(vault));
+    assert.ok(Buffer.from(sealed.vout[0].dest20).equals(want20), 'address-only dest20');
+    const bent20 = Buffer.from(sealed.vout[0].dest20);
+    bent20[0] ^= 1;
+    const bent = { ...sealed, vout: [{ ...sealed.vout[0], dest20: bent20 }] };
+    assert.equal(digestTx(bent).equals(digestTx(sealed)), false, 'dest20 tamper');
+    // Current law: compact does not derive portalId from the address.
+    // An address-only output carries dest20 and no portal id.
+    assert.equal(sealed.vout[0].portalId, undefined);
+    assert.equal(sealed.portalId, undefined);
     assert.equal(Number(sealed.vout[0].valueProof.v), PI_SHE_NANOS);
     assert.equal(digestTx(sealed).equals(digestTx(fat)), true);
     const wire = JSON.parse(JSON.stringify(sealed), reviveBytes);
@@ -309,6 +334,97 @@ describe('chronoflux prune + collate', () => {
     assert.equal(voteSealed.payer, undefined);
     assert.ok(voteSealed.vout[0].dest20);
     assert.equal(digestTx(voteSealed).equals(digestTx(voteFat)), true);
+  });
+
+  it('sealed withdraw keeps the payout and the retire and principal proofs', () => {
+    const payout = 'shear1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqexample';
+    const payout20 = Buffer.alloc(20, 9);
+    const payoutHex = payout20.toString('hex');
+    const owner = newIdentity();
+    const portalId = 'ab'.repeat(32);
+    const retire = Buffer.alloc(40, 7);
+    const principal = { R: Buffer.alloc(32, 3), z: Buffer.alloc(32, 4), opened: 1 };
+    const magic = Buffer.alloc(32, 1);
+    const trancheSet = Buffer.alloc(32, 2);
+    const fat = {
+      id: 'wd-seal',
+      programId: 'shear-reserve-v1',
+      kind: 'withdraw',
+      from: payout,
+      to: payout,
+      nanos: 5,
+      fee: 1,
+      portalId,
+      dest20: payout20,
+      retireProof: retire,
+      principalProof: principal,
+      vin: [{ commit: Buffer.alloc(32, 9) }],
+      vout: [{
+        kind: 'withdraw',
+        commit: Buffer.alloc(32, 8),
+        dest20: Buffer.from(payout20),
+        valueProof: { v: 5, R: Buffer.alloc(32, 1), z: Buffer.alloc(32, 2) },
+      }],
+    };
+    // The owner signs the one-time dest20. `to` is stripped and is not the signed dest.
+    signWithdrawReward(fat, owner.privateKey, {
+      portalId,
+      nanos: 5,
+      dest: payoutHex,
+      magic,
+      chainId: 1,
+      epoch: 1,
+      trancheSet,
+      txBind: retire,
+    });
+    const sealed = compactTx(fat);
+    assert.equal(sealed.from, undefined);
+    assert.equal(sealed.nanos, undefined);
+    assert.equal(sealed.to, undefined);
+    assert.equal(sealed.payoutPortalId, undefined);
+    assert.ok(Buffer.from(sealed.dest20).equals(payout20), 'withdraw dest20');
+    assert.ok(Buffer.from(sealed.vout[0].dest20).equals(payout20), 'withdraw out dest20');
+    const ownerBind = {
+      nullifier: portalId,
+      nanos: 5,
+      magic,
+      chainId: 1,
+      epoch: 1,
+      trancheSet,
+      txBind: retire.subarray(retire.length - 32),
+    };
+    const message = withdrawOwnerMessage({ ...ownerBind, dest: payoutHex });
+    assert.equal(verifyRewardAuth(message, sealed.ownerPub, sealed.rewardSig), true);
+    const moved = withdrawOwnerMessage({
+      ...ownerBind,
+      dest: Buffer.alloc(20, 8).toString('hex'),
+    });
+    assert.equal(verifyRewardAuth(moved, sealed.ownerPub, sealed.rewardSig), false);
+    assert.ok(Buffer.from(sealed.retireProof).equals(retire));
+    assert.ok(Buffer.from(sealed.principalProof.R).equals(principal.R));
+    assert.ok(Buffer.from(sealed.principalProof.z).equals(principal.z));
+    assert.equal(sealed.rewardSig, fat.rewardSig);
+    const vote = compactTx({
+      id: 'lv-seal',
+      kind: 'leaf-vote',
+      programId: 'shear-reserve-v1',
+      to: payout,
+      from: payout,
+      voteProof: Buffer.alloc(8, 5),
+      voteParam: 'hb',
+      voteSeq: 2,
+      choice: 1,
+      earnEpoch: 4,
+      fee: 1,
+      vin: [{ commit: Buffer.alloc(32, 1) }],
+      vout: [],
+    });
+    assert.equal(vote.to, undefined);
+    assert.equal(vote.from, undefined);
+    assert.ok(Buffer.from(vote.voteProof).equals(Buffer.alloc(8, 5)));
+    assert.equal(vote.voteParam, 'hb');
+    assert.equal(vote.voteSeq, 2);
+    assert.equal(vote.earnEpoch, 4);
   });
 
   it('compact pool-withdraw keeps dest20+value so header merkle still matches after lean/wire', () => {
@@ -415,8 +531,21 @@ describe('chronoflux prune + collate', () => {
     const admit = admitBaseFromAddress(dest);
     const nanos = 620544;
     const fat = attachAdmitPub(sealCoinbaseNote(nanos, { dest20: d20, kind: 'hash' }), { admitBase: admit });
-    const tx = { coinbase: true, height: 7, vin: [{ coinbase: true, height: 7 }], vout: [fat] };
+    const tx = {
+      coinbase: true,
+      height: 7,
+      vin: [{ coinbase: true, height: 7 }],
+      vout: [fat],
+      epochStartRoot: 'ab'.repeat(32),
+      epochStartCommits: [{ epoch: 1, root: 'ab'.repeat(32) }],
+      epochCensusCommit: [{ epoch: 1, leafCount: 1, openHeight: 240 }],
+      vaultLockRoot: 'cd'.repeat(32),
+    };
     const sealed = compactTx(tx);
+    assert.equal(sealed.epochStartRoot, 'ab'.repeat(32));
+    assert.deepEqual(sealed.epochStartCommits, [{ epoch: 1, root: 'ab'.repeat(32) }]);
+    assert.deepEqual(sealed.epochCensusCommit, [{ epoch: 1, leafCount: 1, openHeight: 240 }]);
+    assert.equal(sealed.vaultLockRoot, 'cd'.repeat(32));
     const o = sealed.vout[0];
     assert.equal(o.kind, 'hash');
     assert.equal(o.r, undefined);

@@ -82,7 +82,7 @@ import { chainNoteRuleRejected, txNoteRuleRejected } from '../../crypto/n1.js';
 import { fs1LeafFor, fs1OutputNote } from '../../crypto/fs1_leaf.js';
 import { collateSamples, shouldPruneSamples, flowSkipAllowed, sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from '../../crypto/chronoflux.js';
 import { verifyFundedBody, verifyPoolWithdrawBound, boundReserveWithdraw, typedCommitRejected, typedCommitSum, reserveAuth, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, typedClockRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from '../../crypto/spend.js';
-import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, trialReserveApply, reserveDigestSuffix, rewardClaimDigestSuffix, blockRewardRoot, stakeRewardRejected, lockNoteSpendRejected, coinbaseRewardRoot, rewardClaimRejected, withdrawRewardRejected, rollRewardRejected, leafVoteFundingRejected, leafVoteLeakRejected, compactLockLeakRejected, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   GENESIS_BPS,
   ORACLE_ACTIVATION_HEIGHT,
@@ -1537,7 +1537,10 @@ export function buildTemplate({
     hashAcceptedSeries: series,
     hashSpill: spillBatch,
   });
+  // A leaf-vote fee is the note it spends. A declared number with no spend
+  // is not minted into the finder or reserve fee notes.
   const fees = (txs || []).reduce((a, t) => {
+    if (String(t?.kind || '') === 'leaf-vote' && leafVoteFundingRejected(t)) return a;
     const n = postedFeeNanos(t);
     return a + (n == null || n < 0 ? 0 : n);
   }, 0);
@@ -2375,6 +2378,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   if (gated) return gated;
   const bodyTxs = Array.isArray(block?.txs) ? block.txs : [];
   for (let i = 0; i < bodyTxs.length; i += 1) {
+    const leakedVote = leafVoteLeakRejected(bodyTxs[i]);
+    if (leakedVote) return leakedVote;
+    const leakedLock = compactLockLeakRejected(bodyTxs[i]);
+    if (leakedLock) return leakedLock;
+    const leakedWithdraw = withdrawLeakRejected(bodyTxs[i]);
+    if (leakedWithdraw) return leakedWithdraw;
     const unsignedField = unsignedBodyField(bodyTxs[i]);
     if (unsignedField) return unsignedField;
   }
@@ -2842,6 +2851,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   const pubs = (live.pubs || []).slice();
   const commits = (live.commits || []).slice();
   const spentTags = parentSpendView(live.spendTags);
+  // The body loop records this block's tags. Funded-body checks the same
+  // rules against the parent set, then its own additions, so a tag this
+  // tx just recorded is not a double spend of itself.
+  const parentTags = parentSpendView(live.spendTags);
   const pushPub = (tx, o) => {
     if (!outputJoinsAdmitSet(tx, o)) return null;
     const note = fs1OutputNote(o);
@@ -2952,7 +2965,19 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         if (!r.ok) return { ok: false, reason: r.reason };
       }
     }
-    const unfunded = !Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint;
+    // A vote with no input, no fee, and no opened value mints nothing.
+    // The empty vin is the owner signature, not an unfunded mint.
+    const voteKind = String(tx?.kind || '');
+    let bareVote = voteKind === 'vote' && !tx?.mint && Math.floor(Number(tx?.fee || 0)) === 0;
+    if (bareVote) {
+      for (const o of (tx.vout || [])) {
+        const raw = o?.valueProof?.v != null ? o.valueProof.v : o?.nanos;
+        if (raw == null || raw === '') continue;
+        const n = Math.floor(Number(raw));
+        if (n > 0) bareVote = false;
+      }
+    }
+    const unfunded = !bareVote && (!Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint);
     if (wrapMintForbidden(tx)) {
       return { ok: false, reason: 'mint_forbidden' };
     }
@@ -3007,16 +3032,23 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     if (Array.isArray(noteFund.tags)) {
       for (const th of noteFund.tags) spentTags.add(th);
     }
-    const summed = typedCommitSum(tx);
+    const summed = typedCommitSum(tx, {
+      height,
+      magic,
+      state: reserveState,
+      nowMs: Number(decoded.timestamp) || 0,
+    });
     if (!summed.ok) return summed;
     const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws, Number(decoded.timestamp) || 0);
     if (!stake.ok) return stake;
     const auth = reserveAuth(tx, reserveState, seenOwners);
     if (!auth.ok) return auth;
-    const claimAuth = rewardClaimRejected(tx, reserveState);
+    const claimAuth = rewardClaimRejected(tx, reserveState, height);
     if (claimAuth) return claimAuth;
     const withdrawAuth = withdrawRewardRejected(reserveState, tx, Number(decoded.timestamp) || 0);
     if (withdrawAuth) return withdrawAuth;
+    const rollAuth = rollRewardRejected(reserveState, tx, Number(decoded.timestamp) || 0, height);
+    if (rollAuth) return rollAuth;
     if (containsShe1(tx)) return { ok: false, reason: 'she1_on_chain' };
     const bound = verifyPoolWithdrawBound(tx);
     if (!bound.ok) return bound;
@@ -3057,6 +3089,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       seenDigests,
       reserveState,
       nowMs: Number(decoded.timestamp) || 0,
+      height,
+      spentTags: parentTags,
+      magic,
+      noteAtAnchor: typeof opts.noteAtAnchor === 'function' ? opts.noteAtAnchor : null,
     });
     if (!funded.ok) return funded;
   }
@@ -3124,7 +3160,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     },
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
-  return { ok: true, hash, decoded, aLeaves, bLeaves, jroot: wantRoot, supplyState: stepped.state };
+  return { ok: true, hash, decoded, height, aLeaves, bLeaves, jroot: wantRoot, supplyState: stepped.state };
 }
 
 /**
@@ -3195,6 +3231,31 @@ function evmClockGenesis(consensus, block, opts) {
   return 0;
 }
 
+/** The frozen root and census a claim or leaf vote must carry on the coinbase. */
+function vaultCoinbaseBind(state, txs) {
+  if (!state) return undefined;
+  const roots = Object.create(null);
+  const census = Object.create(null);
+  let need = false;
+  for (const tx of Array.isArray(txs) ? txs : []) {
+    if (!tx || tx.coinbase) continue;
+    const kind = String(tx.kind || '');
+    if (kind !== 'reward-claim' && kind !== 'leaf-vote') continue;
+    if (kind === 'reward-claim' && !tx.vaultProof) continue;
+    if (kind === 'leaf-vote' && !tx.voteProof) continue;
+    need = true;
+    const earn = String(Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0));
+    const start = String(state.epochStartRoots?.[earn] || '').toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(start)) roots[earn] = start;
+    if (kind !== 'leaf-vote') continue;
+    const row = state.epochCensus?.[earn];
+    const leaves = Math.floor(Number(row?.leafCount) || 0);
+    const openH = Math.floor(Number(row?.openHeight) || 0);
+    if (row?.known && leaves >= 1 && openH >= 0) census[earn] = { leafCount: leaves, openHeight: openH };
+  }
+  return need ? { roots, census } : undefined;
+}
+
 async function verifyBlockEvm(consensus, block, opts = {}) {
   let session = opts.evmSession;
   let fresh = false;
@@ -3210,7 +3271,10 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   if (fresh && Array.isArray(opts.evmHistory)) {
     for (const b of opts.evmHistory) {
       if (!blockNeedsEvm(b?.txs || [])) continue;
-      const replayed = await executeBlockEvm(session, b.txs, headerTimeMs(b), genesisMs);
+      const replayed = await executeBlockEvm(session, b.txs, headerTimeMs(b), genesisMs, undefined, undefined, {
+        height: Math.floor(Number(b?.height) || 0),
+        magic: opts.magic || MAGIC_TESTNET,
+      });
       if (!replayed.ok) {
         return { ok: false, reason: 'evm', error: `replay:${replayed.reason}` };
       }
@@ -3220,7 +3284,12 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
     ? Number(consensus.decoded.timestamp)
     : headerTimeMs(block);
   const owedRoot = opts.reserveState ? coinbaseRewardRoot(opts.reserveState, headerMs) : undefined;
-  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot);
+  const vaultBind = vaultCoinbaseBind(opts.reserveState, block.txs || []);
+  const structural = Math.floor(Number(consensus?.height) || 0);
+  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot, vaultBind, {
+    height: structural > 0 ? structural : Math.floor(Number(block?.height) || 0),
+    magic: opts.magic || MAGIC_TESTNET,
+  });
   if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
   return {
     ...consensus,
@@ -3585,6 +3654,9 @@ function stepLoaded(state, list, i) {
   if (state.oracleActivationHeight !== undefined) {
     oracle.activationHeight = state.oracleActivationHeight;
   }
+  // The block paid the unit that was already live. Enact in this block
+  // changes the next one. A voted 0 must not be rechecked as 1.
+  const unitNow = hashBonusUnitNanos(state.vault?.liveHashBonusNanos);
   const body = verifyBlockConsensus(block, prevBlock, {
     trustedPowHash: link,
     loadReplay: true,
@@ -3602,7 +3674,7 @@ function stepLoaded(state, list, i) {
     hashAcceptedSeries: state.acceptedSeries,
     spentB: state.spentB,
     magic: state.magic || MAGIC_TESTNET,
-    hashBonusNanos: HASH_BONUS_NANOS,
+    hashBonusNanos: unitNow,
     grandparentHeader: i >= 2 ? list[i - 2].header : null,
     parentFluxset: state.flux,
     parentSpendTags: state.flux.spendTags,
@@ -3627,7 +3699,7 @@ function stepLoaded(state, list, i) {
     owedIn: state.owedIn,
     acceptedSeries: state.acceptedSeries,
     block,
-    unit: HASH_BONUS_NANOS,
+    unit: unitNow,
     tipHeight: burial,
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'hash_owed' };

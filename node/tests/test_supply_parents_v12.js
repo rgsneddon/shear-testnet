@@ -389,7 +389,7 @@ describe('v12 supply parents fail closed', () => {
     assert.equal(bonusUnitsBefore([voteBlock]), null);
     const walked = unitsAlongChain({ fork: [voteBlock] });
     assert.equal(walked.ok, false);
-    assert.equal(walked.reason, 'not_voter');
+    assert.equal(walked.reason, 'vote_retired');
     assert.equal(walked.at, 0);
     assert.equal(walked.units.length, 1);
 

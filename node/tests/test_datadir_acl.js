@@ -171,7 +171,8 @@ describe('datadir DACL', () => {
     const { calls } = recordWindows(dir);
     const owner = icaclsCalls(calls).find((call) => call.args.includes('/setowner'));
     assert.ok(owner, 'setowner was not called');
-    assert.equal(icaclsCalls(calls).length, 1);
+    // icacls rejects /setowner beside /grant, so the owner is a second call.
+    assert.equal(icaclsCalls(calls).length, 2);
     assert.equal(owner.args[0], dir);
     assert.equal(owner.args.includes('/setowner'), true);
     assert.equal(owner.args.includes(`*${USER_SID}`), true);
@@ -190,7 +191,7 @@ describe('datadir DACL', () => {
     fs.writeFileSync(path.join(dir, 'chain.bin'), 'already there');
     const { calls } = recordWindows(dir);
     const walked = icaclsCalls(calls).filter((call) => call.args[0] === dir);
-    assert.equal(walked.length, 1);
+    assert.equal(walked.length, 2);
     for (const call of walked) {
       assert.equal(call.args.includes('/T'), true, call.args.join(' '));
       assert.equal(call.args.includes('/L'), true, call.args.join(' '));
@@ -203,9 +204,10 @@ describe('datadir DACL', () => {
     fs.writeFileSync(shewall, 'sealed');
     fs.chmodSync(shewall, 0o644);
     const { calls, aclReads } = recordWindows(dir);
-    assert.equal(icaclsCalls(calls).length, 1);
+    assert.equal(icaclsCalls(calls).length, 2);
     assert.ok(aclReads >= 2);
-    const named = icaclsCalls(calls)[0];
+    const named = icaclsCalls(calls).find((call) => call.args.includes('/grant:r'));
+    assert.ok(named, 'grant was not called');
     assert.equal(named.args[0], dir);
     assert.equal(named.args.includes('/T'), true);
     assert.equal(named.args.includes('/L'), true);
@@ -414,11 +416,12 @@ describe('datadir DACL', () => {
     assert.ok(reads.includes(child));
     assert.ok(reads.includes(deep));
     assert.ok(reads.includes(nest));
-    assert.equal(icaclsCalls(calls).length, 1);
-    const named = icaclsCalls(calls)[0];
-    assert.equal(named.args[0], dir);
-    assert.equal(named.args.includes('/T'), true);
-    assert.equal(named.args.includes('/L'), true);
+    assert.equal(icaclsCalls(calls).length, 2);
+    for (const named of icaclsCalls(calls)) {
+      assert.equal(named.args[0], dir);
+      assert.equal(named.args.includes('/T'), true);
+      assert.equal(named.args.includes('/L'), true);
+    }
     assert.equal(calls.some((call) => call.args[0] === child), false);
     const extra = {
       owner: USER_SID,
@@ -492,7 +495,8 @@ describe('datadir DACL', () => {
   it('a file created after setup triggers zero icacls runs', () => {
     const dir = tempDatadir();
     const setup = recordWindows(dir);
-    assert.equal(icaclsCalls(setup.calls).length, 1);
+    // Grant and owner are separate icacls invocations. A later file adds none.
+    assert.equal(icaclsCalls(setup.calls).length, 2);
     const created = path.join(dir, 'chain.bin');
     fs.writeFileSync(created, 'later');
     const again = recordWindows(dir, {

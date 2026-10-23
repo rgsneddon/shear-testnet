@@ -5,6 +5,7 @@ use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::Identity;
+use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha512};
 use zeroize::Zeroize;
 
@@ -80,16 +81,52 @@ fn decompress(b: &[u8]) -> Option<RistrettoPoint> {
     CompressedRistretto(a).decompress()
 }
 
-fn nonce(tag: &[u8], r: &[u8; 32], i: u64) -> Scalar {
-    Scalar::from_bytes_mod_order_wide(&wide(&[tag, r, &i.to_le_bytes()]))
+/// Hedged nonce. Fresh CSPRNG output, the blind, the value, the commitment,
+/// and the statement transcript. A second proof on the same blind draws a
+/// new hedge, so the nonces cannot match.
+fn nonce(
+    tag: &[u8],
+    hedge: &[u8; 32],
+    r: &[u8; 32],
+    value: &[u8; 8],
+    commit: &[u8; 32],
+    transcript: &[u8],
+    i: u64,
+) -> Scalar {
+    Scalar::from_bytes_mod_order_wide(&wide(&[
+        tag,
+        hedge,
+        r,
+        value,
+        commit,
+        transcript,
+        &i.to_le_bytes(),
+    ]))
+}
+
+fn fill_hedge() -> [u8; 32] {
+    let mut hedge = [0u8; 32];
+    OsRng.fill_bytes(&mut hedge);
+    hedge
 }
 
 /// Prove C = v·G + r·H and each bit of v is 0 or 1, packed (not v3 bit-OR).
+/// The hedge is CSPRNG output. Two calls on one blind do not reuse nonces.
 pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
+    let mut hedge = fill_hedge();
+    let proof = prove_range_hedged(v, r_bytes, &hedge);
+    hedge.zeroize();
+    proof
+}
+
+/// Same proof with a caller-supplied hedge. Tests use this to check parity.
+/// Production calls [prove_range], which draws the hedge.
+pub fn prove_range_hedged(v: u64, r_bytes: &[u8; 32], hedge: &[u8; 32]) -> Option<Vec<u8>> {
     let r = SecretScalar::from_scalar(Scalar::from_bytes_mod_order(*r_bytes));
     let h = h_note();
     let c = G * Scalar::from(v) + h * r.as_scalar();
     let c_b = compress(&c);
+    let mut value = v.to_le_bytes();
 
     let mut bits = [0u8; RANGE_BITS];
     let mut s = Vec::with_capacity(RANGE_BITS);
@@ -98,7 +135,15 @@ pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
     for i in 0..RANGE_BITS {
         bits[i] = (n & 1) as u8;
         n >>= 1;
-        let si = SecretScalar::from_scalar(nonce(b"sbit", r_bytes, i as u64));
+        let si = SecretScalar::from_scalar(nonce(
+            b"sbit",
+            hedge,
+            r_bytes,
+            &value,
+            &c_b,
+            b"",
+            i as u64,
+        ));
         b_pts[i] = G * Scalar::from(bits[i] as u64) + h * si.as_scalar();
         s.push(si);
     }
@@ -118,6 +163,10 @@ pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
         chal_parts.push(&b_bytes[i]);
     }
     let e_all = chal(&chal_parts);
+    let mut transcript = Vec::with_capacity(RANGE_BITS * 32);
+    for row in &b_bytes {
+        transcript.extend_from_slice(row);
+    }
 
     let mut s_sum = SecretScalar::from_scalar(Scalar::ZERO);
     let mut two = Scalar::ONE;
@@ -129,10 +178,16 @@ pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
         let p1 = bi - G;
         let real = if b { p1 } else { p0 };
         let fake = if b { p0 } else { p1 };
-        let e_fake = SecretScalar::from_scalar(nonce(b"efake", r_bytes, i as u64));
-        let z_fake = SecretScalar::from_scalar(nonce(b"zfake", r_bytes, i as u64));
+        let e_fake = SecretScalar::from_scalar(nonce(
+            b"efake", hedge, r_bytes, &value, &c_b, &transcript, i as u64,
+        ));
+        let z_fake = SecretScalar::from_scalar(nonce(
+            b"zfake", hedge, r_bytes, &value, &c_b, &transcript, i as u64,
+        ));
         let r_fake = h * z_fake.as_scalar() - fake * e_fake.as_scalar();
-        let k = SecretScalar::from_scalar(nonce(b"kbit", r_bytes, i as u64));
+        let k = SecretScalar::from_scalar(nonce(
+            b"kbit", hedge, r_bytes, &value, &c_b, &transcript, i as u64,
+        ));
         let r_real = h * k.as_scalar();
         let r0 = if b { r_fake } else { r_real };
         let r1 = if b { r_real } else { r_fake };
@@ -169,13 +224,16 @@ pub fn prove_range(v: u64, r_bytes: &[u8; 32]) -> Option<Vec<u8>> {
         a
     };
     let p = c - acc;
-    let k = SecretScalar::from_scalar(nonce(b"cons", r_bytes, 0));
+    let k = SecretScalar::from_scalar(nonce(
+        b"cons", hedge, r_bytes, &value, &c_b, &transcript, 0,
+    ));
     let r_pt = h * k.as_scalar();
     let e = chal(&[b"cons", &c_b, &compress(&p), &compress(&r_pt)]);
     let z = SecretScalar::from_scalar(k.as_scalar() + e * r_delta.as_scalar());
     out.extend_from_slice(&compress(&r_pt));
     out.extend_from_slice(&z.as_scalar().to_bytes());
     bits.zeroize();
+    value.zeroize();
     Some(out)
 }
 
@@ -315,8 +373,9 @@ mod tests {
             let c = G * Scalar::from(v) + h * r;
             let p = prove_range(v, &r.to_bytes()).unwrap();
             let again = prove_range(v, &r.to_bytes()).unwrap();
-            assert_eq!(p, again, "range bytes are a function of v and r");
+            assert_ne!(p, again, "a fresh hedge makes a second proof differ");
             assert!(verify_range(&c.compress().to_bytes(), &p), "v={v}");
+            assert!(verify_range(&c.compress().to_bytes(), &again), "v={v}");
         }
         let c = G * Scalar::from(3u64) + h * r;
         let p = prove_range(4, &r.to_bytes()).unwrap();
@@ -329,6 +388,33 @@ mod tests {
             *b = 0;
         }
         assert!(!verify_range(&cb, &z), "zero Fiat–Shamir e0/e1 rejected");
+    }
+
+    fn bit_r0(proof: &[u8], bit: usize) -> &[u8] {
+        let off = 1 + 32 + RANGE_BITS * 32 + bit * 192;
+        &proof[off..off + 32]
+    }
+
+    #[test]
+    fn two_proofs_on_one_blind_do_not_reuse_nonces() {
+        let r = Scalar::from(7u64);
+        let rb = r.to_bytes();
+        let hedge = [9u8; 32];
+        let h = h_note();
+        let zero = prove_range_hedged(0, &rb, &hedge).unwrap();
+        let one = prove_range_hedged(1, &rb, &hedge).unwrap();
+        let again = prove_range_hedged(0, &rb, &hedge).unwrap();
+        assert_eq!(zero, again, "the same hedge is the same proof");
+        assert_ne!(bit_r0(&zero, 0), bit_r0(&one, 0), "bit 0 nonce");
+        assert_ne!(bit_r0(&zero, 3), bit_r0(&one, 3), "shared bit nonce");
+        let c0 = (G * Scalar::from(0u64) + h * r).compress().to_bytes();
+        let c1 = (G * Scalar::from(1u64) + h * r).compress().to_bytes();
+        assert!(verify_range(&c0, &zero));
+        assert!(verify_range(&c1, &one));
+        let fresh = prove_range(0, &rb).unwrap();
+        let other = prove_range(0, &rb).unwrap();
+        assert_ne!(fresh, other, "CSPRNG hedge");
+        assert_ne!(bit_r0(&fresh, 0), bit_r0(&other, 0));
     }
 
     /// L = 2^252 + 27742317777372353535851937790883648493

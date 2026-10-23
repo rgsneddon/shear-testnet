@@ -46,10 +46,12 @@ function addL(bytes) {
   return out;
 }
 
+const FIXED_HEDGE = Buffer.alloc(32, 9);
+
 function assertNativeBytes(v, r, label) {
-  const js = provePackedRange(v, r);
+  const js = provePackedRange(v, r, FIXED_HEDGE);
   assert.ok(js && js.length === 14433 && js[0] === 2, `js ${label}`);
-  const native = nativeProveRange(typeof v === 'bigint' ? v.toString() : v, r);
+  const native = nativeProveRange(typeof v === 'bigint' ? v.toString() : v, r, FIXED_HEDGE);
   assert.ok(native, `native ${label}`);
   assert.equal(Buffer.from(native).equals(js), true, `bytes ${label}`);
   const c = commitReduced(v, r);
@@ -109,6 +111,21 @@ describe('packed range proof matches bpplus.rs', () => {
       const r = randomBytes(32);
       assertNativeBytes(v, r, `random ${i}`);
     }
+  });
+
+  it('production proofs of the same input differ', () => {
+    assert.equal(nativeLoaded(), true, 'shearadmit.node must be loaded; the byte comparison does not skip');
+    const r = scalarBytes(randomScalar());
+    const first = proveRange(7, r);
+    const second = proveRange(7, r);
+    assert.equal(first.length, 14433);
+    assert.equal(second.length, 14433);
+    assert.equal(Buffer.from(first).equals(second), false);
+    const nativeA = nativeProveRange(7, r);
+    const nativeB = nativeProveRange(7, r);
+    assert.ok(nativeA && nativeB);
+    assert.equal(Buffer.from(nativeA).equals(Buffer.from(nativeB)), false);
+    assert.equal(Buffer.from(nativeA).equals(provePackedRange(7, r, FIXED_HEDGE)), false);
   });
 
   it('rejects a short, trailing, or non-canonical proof', () => {

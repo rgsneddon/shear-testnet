@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { createP2p } from '../src/p2p.js';
+import { createP2p, fingerprintHelloHash } from '../src/p2p.js';
 
 function fakeHash(n) {
   const hash = Buffer.alloc(32);
@@ -54,7 +54,7 @@ async function connectPeer(port) {
     sock.once('error', reject);
   });
   await readJsonLines(sock, 2, 2000);
-  sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
+  sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`);
   return sock;
 }
 

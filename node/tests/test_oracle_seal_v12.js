@@ -15,7 +15,6 @@ import { merkleRoot } from '../../crypto/merkle.js';
 import {
   GENESIS_BPS,
   RESERVE_ORACLE_ID,
-  interestNanos,
   observeRate as observeOracle,
 } from '../../crypto/reserve_oracle.js';
 import {
@@ -86,7 +85,9 @@ describe('oracle observe is not a rate', () => {
         held.portals[portalIdFromDest(holder)],
         T0 + RESERVE_EPOCH_MS,
       ), due);
-      assert.equal(due, interestNanos(PI_SHE_NANOS, GENESIS_BPS));
+      // Hidden locks keep the amount inside the commitment. A withdraw pays
+      // principal only; the stake reward is a later claim. This reading stays 0.
+      assert.equal(due, 0);
     }
   });
 
@@ -107,6 +108,10 @@ describe('oracle observe is not a rate', () => {
   it('createStore ignores a reserve.json oracle', () => {
     for (const bps of RATES) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-oracle-'));
+      // Lock the empty datadir down first. icacls /setowner denies a file
+      // planted before that ACL exists, so the bad oracle is written after
+      // the warm open and read on the reload.
+      createStore(dir);
       fs.writeFileSync(path.join(dir, 'reserve.json'), JSON.stringify({
         oracle: {
           id: RESERVE_ORACLE_ID,

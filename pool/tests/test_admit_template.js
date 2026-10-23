@@ -81,26 +81,27 @@ describe('admitted txs enter the live miner template', () => {
       const lock = publicReceipt(who, 'lock', 'lock-job');
       const lockAt = Date.now();
       const queued = pool.store.queueTx(lock);
-      assert.equal(queued.ok, true, queued.reason);
+      assert.equal(queued.ok, false);
+      assert.equal(queued.reason, 'public_receipt');
       const packed = pool.issueJob();
       const lockMs = Date.now() - lockAt;
       assert.ok(lockMs < 2000, `lock rebuild ${lockMs}ms`);
-      assert.notEqual(packed.jobId, empty.jobId);
       assert.equal(pool.store.tip()?.height || 0, tipH);
-      assert.ok(userIds(pool.store, packed).includes('lock-job'), userIds(pool.store, packed).join(','));
+      assert.equal(userIds(pool.store, packed).includes('lock-job'), false);
       const restamp = pool.issueJob(9);
       assert.equal(restamp.jobId, packed.jobId, 'unchanged mempool must keep the job id');
 
       const vote = publicReceipt(who, 'vote', 'vote-job');
       const qv = pool.store.queueTx(vote);
-      assert.equal(qv.ok, true, qv.reason);
+      assert.equal(qv.ok, false);
+      assert.equal(qv.reason, 'vote_retired');
       await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));
       let newest = null;
       for (const rec of pool.store.jobs.values()) newest = rec;
       const ids = (newest?.tpl?.txs || []).filter((t) => t && !t.coinbase).map((t) => String(t.id));
-      assert.ok(ids.includes('lock-job'), ids.join(','));
-      assert.ok(ids.includes('vote-job'), ids.join(','));
+      assert.equal(ids.includes('lock-job'), false);
+      assert.equal(ids.includes('vote-job'), false);
       assert.equal(pool.store.tip()?.height || 0, tipH);
       const held = pool.issueJob();
       assert.equal(held.jobId, newest.job.jobId);
@@ -122,12 +123,12 @@ describe('admitted txs enter the live miner template', () => {
       });
       const port = pool.httpServer.address().port;
       const shown = await fetch(`http://127.0.0.1:${port}/api/mempool`).then((r) => r.json());
-      assert.equal(shown.pending.some((t) => t.id === 'lock-job'), true);
-      assert.equal(shown.pending.some((t) => t.id === 'vote-job'), true);
+      assert.equal(shown.pending.some((t) => t.id === 'lock-job'), false);
+      assert.equal(shown.pending.some((t) => t.id === 'vote-job'), false);
       assert.equal(shown.pending.some((t) => t.id === 'lock-rejected'), false);
       assert.equal(shown.pending.some((t) => t.id === 'pool-private'), false);
-      assert.equal(shown.pendingBlock.txs.some((t) => t.id === 'lock-job' && t.kind === 'lock'), true);
-      assert.equal(shown.pendingBlock.txs.some((t) => t.id === 'vote-job' && t.kind === 'vote'), true);
+      assert.equal(shown.pendingBlock.txs.some((t) => t.id === 'lock-job'), false);
+      assert.equal(shown.pendingBlock.txs.some((t) => t.id === 'vote-job'), false);
       assert.equal(JSON.stringify(shown).includes(who.dest), false);
       assert.doesNotMatch(JSON.stringify(shown), /ssa1/);
     } finally {
@@ -157,17 +158,16 @@ describe('admitted txs enter the live miner template', () => {
       const lock = publicReceipt(who, 'lock', 'lock-ipc');
       const t0send = Date.now();
       const queued = side.queueTx(lock);
-      assert.equal(queued.ok, true, queued.reason);
+      assert.equal(queued.ok, false);
+      assert.equal(queued.reason, 'public_receipt');
       const arrived = await waitFor(
         () => pool.store.mempool.some((m) => String(m.id) === 'lock-ipc'),
-        2000,
+        400,
       );
-      assert.equal(arrived, true, `ipc miss ${Date.now() - t0send}ms`);
-      assert.ok(Date.now() - t0send < 2000);
+      assert.equal(arrived, false, `public receipt forwarded in ${Date.now() - t0send}ms`);
       const job = pool.issueJob();
       assert.equal(pool.store.tip()?.height || 0, tipH);
-      assert.notEqual(job.jobId, before.jobId);
-      assert.ok(userIds(pool.store, job).includes('lock-ipc'), userIds(pool.store, job).join(','));
+      assert.equal(userIds(pool.store, job).includes('lock-ipc'), false);
     } finally {
       try { sideIpc?.close(); } catch { /* ignore */ }
       try { ipc?.close(); } catch { /* ignore */ }

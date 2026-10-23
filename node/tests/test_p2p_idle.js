@@ -9,6 +9,7 @@ import {
   P2P_IDLE_MS,
   P2P_OUTBOUND_RESERVE,
   createP2p,
+  fingerprintHelloHash,
   p2pHelloMs,
   p2pIdleMs,
   p2pInboundCap,
@@ -44,7 +45,7 @@ function closedWithin(sock, ms) {
 }
 
 function helloLine() {
-  return `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`;
+  return `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`;
 }
 
 function ageInbound(p2p, ms = 120_000) {

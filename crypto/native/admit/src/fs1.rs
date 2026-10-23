@@ -9,8 +9,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use curve25519_dalek::Scalar;
 use shear_fs1::{
-    prove_spend, spend_blob_len, spend_params, tree_of_notes, verify_spend, ChainNote, ChainTree, SpendIn,
-    RECORD_BYTES,
+    prove_spend, prove_spend_unlinked, spend_blob_len, spend_params, tree_of_notes, verify_spend,
+    verify_spend_unlinked, ChainNote, ChainTree, SpendIn, RECORD_BYTES,
 };
 use zeroize::Zeroizing;
 
@@ -275,6 +275,125 @@ pub extern "C" fn shear_fs1_prove(
         }
         unsafe { *out_fs1_len = out.fs1.len() };
         OK
+    }))
+    .unwrap_or(BAD)
+}
+
+/// Prove a claim spend. `null_bases` is `n` 32-byte epoch bases. `out_link` receives
+/// `n` records of 96 bytes: announcement || tag-blind response || nullifier point.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn shear_fs1_prove_unlinked(
+    handle: *const Fs1Handle,
+    indices: *const u64,
+    xs: *const u8,
+    n: u32,
+    digest: *const u8,
+    anchor: u64,
+    threads: u32,
+    null_bases: *const u8,
+    out_fs1: *mut u8,
+    fs1_cap: usize,
+    out_fs1_len: *mut usize,
+    out_records: *mut u8,
+    out_t: *mut u8,
+    out_link: *mut u8,
+) -> i32 {
+    if handle.is_null() || out_fs1_len.is_null() || indices.is_null() {
+        return BAD;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let n = n as usize;
+        if n == 0 || n > INPUT_MAX {
+            return BAD;
+        }
+        let idx = unsafe { std::slice::from_raw_parts(indices, n) };
+        let Some(xs) = slice(xs, 32 * n) else { return BAD };
+        let Some(bases) = slice(null_bases, 32 * n) else { return BAD };
+        let Some(digest) = arr32(digest) else { return BAD };
+        let threads = if threads == 0 {
+            std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1)
+        } else {
+            threads as usize
+        };
+        let mut inputs = Vec::with_capacity(n);
+        for (k, &index) in idx.iter().enumerate() {
+            let mut repr = Zeroizing::new([0u8; 32]);
+            repr.copy_from_slice(&xs[32 * k .. 32 * (k + 1)]);
+            let x: Option<Scalar> = Scalar::from_canonical_bytes(*repr).into();
+            let Some(x) = x else { return BAD };
+            inputs.push(SpendIn { index, x });
+        }
+        let mut base_list = Vec::with_capacity(n);
+        for chunk in bases.chunks_exact(32) {
+            let mut one = [0u8; 32];
+            one.copy_from_slice(chunk);
+            base_list.push(one);
+        }
+        let handle = unsafe { &*handle };
+        let Ok((out, links)) =
+            prove_spend_unlinked(&handle.tree, &handle.notes, &inputs, &digest, anchor, threads, &base_list)
+        else {
+            return BAD;
+        };
+        let mut records = Vec::with_capacity(n * RECORD_BYTES);
+        for record in &out.records {
+            records.extend_from_slice(record);
+        }
+        let mut t_bytes = Vec::with_capacity(32 * n);
+        for scalar in &out.t {
+            t_bytes.extend_from_slice(&scalar[..]);
+        }
+        if links.len() != n || !put(out_fs1, fs1_cap, &out.fs1) || !put(out_records, records.len(), &records) {
+            return BAD;
+        }
+        let mut link_bytes = Vec::with_capacity(96 * n);
+        for link in &links {
+            link_bytes.extend_from_slice(link);
+        }
+        if !put(out_link, link_bytes.len(), &link_bytes) || !put(out_t, t_bytes.len(), &t_bytes) {
+            return BAD;
+        }
+        unsafe { *out_fs1_len = out.fs1.len() };
+        OK
+    }))
+    .unwrap_or(BAD)
+}
+
+/// 1 when an unlinked claim spend verifies. `link` is `n * 96` bytes and
+/// `null_bases` is `n * 32` bytes.
+#[no_mangle]
+pub extern "C" fn shear_fs1_verify_unlinked(
+    fs1: *const u8,
+    fs1_len: usize,
+    records: *const u8,
+    n: u32,
+    link: *const u8,
+    root: *const u8,
+    digest: *const u8,
+    anchor: u64,
+    null_bases: *const u8,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let n = n as usize;
+        if n == 0 || n > INPUT_MAX {
+            return BAD;
+        }
+        let (Some(fs1), Some(records), Some(link), Some(root), Some(digest), Some(bases)) = (
+            slice(fs1, fs1_len),
+            slice(records, n * RECORD_BYTES),
+            slice(link, n * 96),
+            arr32(root),
+            arr32(digest),
+            slice(null_bases, n * 32),
+        ) else {
+            return BAD;
+        };
+        let list: Vec<[u8; RECORD_BYTES]> =
+            records.chunks_exact(RECORD_BYTES).map(|c| c.try_into().expect("record bytes")).collect();
+        let links: Vec<[u8; 96]> = link.chunks_exact(96).map(|c| c.try_into().expect("link bytes")).collect();
+        let base_list: Vec<[u8; 32]> = bases.chunks_exact(32).map(|c| c.try_into().expect("base")).collect();
+        if verify_spend_unlinked(&fs1, &list, &links, &root, &digest, anchor, &base_list).is_ok() { OK } else { BAD }
     }))
     .unwrap_or(BAD)
 }

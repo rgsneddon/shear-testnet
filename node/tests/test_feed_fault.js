@@ -21,7 +21,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
 import { startHttpFollow } from '../src/http_follow.js';
-import { createP2p } from '../src/p2p.js';
+import { createP2p, fingerprintHelloHash } from '../src/p2p.js';
 import { attachPoolIpc } from '../src/p2p_ipc.js';
 import { STORE_CORRUPT_EXIT, installNodeGuards } from '../src/process_guard.js';
 import { createStore } from '../src/store.js';
@@ -242,7 +242,7 @@ async function runFeed(via, phase) {
     sock.once('connect', resolve);
     sock.once('error', reject);
   });
-  sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
+  sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`);
   let rec = null;
   for (let i = 0; i < 25 && !rec?.helloAt; i += 1) {
     await delay(20);

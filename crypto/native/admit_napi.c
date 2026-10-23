@@ -24,6 +24,7 @@ int32_t shear_admit_verify_v3(
     const uint8_t *c_tilde, const uint8_t *spend_tag,
     const uint8_t *ctx, uint32_t ctx_len);
 int32_t shear_range_prove(uint64_t v, const uint8_t *r, uint8_t *out, uint32_t out_cap, uint32_t *out_len);
+int32_t shear_range_prove_hedged(uint64_t v, const uint8_t *r, const uint8_t *hedge, uint8_t *out, uint32_t out_cap, uint32_t *out_len);
 int32_t shear_range_verify(const uint8_t *c, const uint8_t *proof, uint32_t proof_len);
 typedef struct Fs1Handle Fs1Handle;
 uint32_t shear_fs1_blob_cap(uint32_t n);
@@ -43,6 +44,15 @@ int32_t shear_fs1_prove(
 int32_t shear_fs1_verify(
     const uint8_t *fs1, size_t fs1_len, const uint8_t *records, uint32_t n,
     const uint8_t *root, const uint8_t *digest, uint64_t anchor);
+int32_t shear_fs1_prove_unlinked(
+    const Fs1Handle *h, const uint64_t *indices, const uint8_t *xs, uint32_t n,
+    const uint8_t *digest, uint64_t anchor, uint32_t threads, const uint8_t *null_bases,
+    uint8_t *out_fs1, size_t fs1_cap, size_t *out_fs1_len,
+    uint8_t *out_records, uint8_t *out_t, uint8_t *out_link);
+int32_t shear_fs1_verify_unlinked(
+    const uint8_t *fs1, size_t fs1_len, const uint8_t *records, uint32_t n,
+    const uint8_t *link, const uint8_t *root, const uint8_t *digest, uint64_t anchor,
+    const uint8_t *null_bases);
 
 static int buf32(napi_env env, napi_value v, uint8_t out[32]) {
   void *data = NULL;
@@ -296,23 +306,31 @@ static int read_range_v(napi_env env, napi_value arg, uint64_t *out) {
 }
 
 static napi_value prove_range_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value argv[2];
+  size_t argc = 3;
+  napi_value argv[3];
   napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
   uint64_t v = 0;
   uint8_t r[32];
+  uint8_t hedge[32];
   if (argc < 2 || read_range_v(env, argv[0], &v) != 0 || buf32(env, argv[1], r)) {
     napi_value f;
     napi_get_boolean(env, 0, &f);
     return f;
   }
+  const int hedged = argc >= 3 && buf32(env, argv[2], hedge) == 0;
   uint32_t maxp = (uint32_t)shear_admit_max_proof() + 16384;
   uint8_t *out = (uint8_t *)malloc(maxp);
   uint32_t olen = 0;
   int32_t ok = 0;
-  if (out) ok = shear_range_prove(v, r, out, maxp, &olen);
+  if (out) {
+    ok = hedged
+      ? shear_range_prove_hedged(v, r, hedge, out, maxp, &olen)
+      : shear_range_prove(v, r, out, maxp, &olen);
+  }
   volatile uint8_t *wipe = r;
   for (size_t i = 0; i < sizeof r; i++) wipe[i] = 0;
+  volatile uint8_t *wipe_h = hedge;
+  for (size_t i = 0; i < sizeof hedge; i++) wipe_h[i] = 0;
   if (!out || ok != 1) {
     free(out);
     napi_value f;
@@ -594,6 +612,97 @@ static napi_value fs1_prove_fn(napi_env env, napi_callback_info info) {
   return obj;
 }
 
+/* fs1ProveUnlinked(handle, indices[], xs, digest32, anchor, threads, nullBases) */
+static napi_value fs1_prove_unlinked_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 7;
+  napi_value argv[7];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  Fs1Handle *h = argc < 7 ? NULL : fs1_handle(env, argv[0]);
+  bool is_arr = 0;
+  uint32_t n = 0;
+  if (h) napi_is_array(env, argv[1], &is_arr);
+  if (is_arr) napi_get_array_length(env, argv[1], &n);
+  uint8_t *xs = NULL;
+  size_t xs_len = 0;
+  uint8_t *bases = NULL;
+  size_t bases_len = 0;
+  uint8_t digest[32];
+  uint64_t anchor = 0;
+  uint32_t threads = 0;
+  if (!h || !is_arr || n < 1 || n > 8 || buf_any(env, argv[2], &xs, &xs_len) != 0 || xs_len != (size_t)n * 32
+      || buf32(env, argv[3], digest) != 0 || u64_arg(env, argv[4], &anchor) != 0
+      || napi_get_value_uint32(env, argv[5], &threads) != napi_ok
+      || buf_any(env, argv[6], &bases, &bases_len) != 0 || bases_len != (size_t)n * 32) {
+    napi_throw_error(env, NULL, "fs1ProveUnlinked args");
+    return NULL;
+  }
+  uint64_t indices[8];
+  for (uint32_t i = 0; i < n; i++) {
+    napi_value el;
+    napi_get_element(env, argv[1], i, &el);
+    if (u64_arg(env, el, &indices[i]) != 0) {
+      napi_throw_error(env, NULL, "fs1ProveUnlinked index");
+      return NULL;
+    }
+  }
+  uint32_t cap = shear_fs1_blob_cap(n);
+  uint32_t rec = shear_fs1_record_bytes();
+  uint8_t *fs1 = (uint8_t *)malloc(cap);
+  uint8_t *records = (uint8_t *)malloc((size_t)rec * n);
+  uint8_t *link = (uint8_t *)malloc((size_t)96 * n);
+  uint8_t t[8 * 32];
+  size_t fs1_len = 0;
+  if (!fs1 || !records || !link) {
+    free(fs1);
+    free(records);
+    free(link);
+    napi_throw_error(env, NULL, "fs1ProveUnlinked alloc");
+    return NULL;
+  }
+  int32_t ok = shear_fs1_prove_unlinked(
+      h, indices, xs, n, digest, anchor, threads, bases, fs1, cap, &fs1_len, records, t, link);
+  if (ok != 1) {
+    free(fs1);
+    free(records);
+    free(link);
+    memset(t, 0, sizeof(t));
+    return false_v(env);
+  }
+  napi_value obj;
+  napi_create_object(env, &obj);
+  napi_set_named_property(env, obj, "fs1", buf_from(env, fs1, fs1_len));
+  napi_set_named_property(env, obj, "records", buf_from(env, records, (size_t)rec * n));
+  napi_set_named_property(env, obj, "t", buf_from(env, t, (size_t)32 * n));
+  napi_set_named_property(env, obj, "link", buf_from(env, link, (size_t)96 * n));
+  memset(t, 0, sizeof(t));
+  free(fs1);
+  free(records);
+  free(link);
+  return obj;
+}
+
+/* fs1VerifyUnlinked(fs1, records, link, root32, digest32, anchor, nullBases) */
+static napi_value fs1_verify_unlinked_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 7;
+  napi_value argv[7];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  uint8_t *fs1 = NULL, *records = NULL, *link = NULL, *bases = NULL;
+  size_t fs1_len = 0, rec_len = 0, link_len = 0, bases_len = 0;
+  uint8_t root[32], digest[32];
+  uint64_t anchor = 0;
+  if (argc < 7 || buf_any(env, argv[0], &fs1, &fs1_len) != 0 || buf_any(env, argv[1], &records, &rec_len) != 0
+      || buf_any(env, argv[2], &link, &link_len) != 0 || buf32(env, argv[3], root) != 0
+      || buf32(env, argv[4], digest) != 0 || u64_arg(env, argv[5], &anchor) != 0
+      || buf_any(env, argv[6], &bases, &bases_len) != 0) {
+    return false_v(env);
+  }
+  uint32_t rec = shear_fs1_record_bytes();
+  if (rec_len == 0 || rec_len % rec != 0 || rec_len / rec > 8) return false_v(env);
+  uint32_t n = (uint32_t)(rec_len / rec);
+  if (link_len != (size_t)n * 96 || bases_len != (size_t)n * 32) return false_v(env);
+  return bool_v(env, shear_fs1_verify_unlinked(fs1, fs1_len, records, n, link, root, digest, anchor, bases) == 1);
+}
+
 /* fs1Verify(fs1, records (321n), root32, digest32, anchor) */
 static napi_value fs1_verify_fn(napi_env env, napi_callback_info info) {
   size_t argc = 5;
@@ -638,6 +747,8 @@ static napi_value init(napi_env env, napi_value exports) {
   EX("fs1TreeRoot", fs1_tree_root_fn);
   EX("fs1Prove", fs1_prove_fn);
   EX("fs1Verify", fs1_verify_fn);
+  EX("fs1ProveUnlinked", fs1_prove_unlinked_fn);
+  EX("fs1VerifyUnlinked", fs1_verify_unlinked_fn);
 #undef EX
   return exports;
 }

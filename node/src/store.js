@@ -86,7 +86,7 @@ import { rememberStoredJob } from './job_cap.js';
 import { bLeafId, bindBSpend, canonicalBLeaf, bLeafAskRejected } from '../../crypto/clearing.js';
 import { setNonce } from '../../crypto/header.js';
 import { requiredJobFields } from '../../crypto/header.js';
-import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot } from '../../crypto/reserve_vault.js';
+import { emptyVault, cloneVault, applyReserveBlock, unitsAlongChain, verifyReservePayout, portalPrincipalNanos, trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, coinbaseRewardRoot, txRetireDleqs, retireCapHit, leafVoteLeakRejected, compactLockLeakRejected, withdrawLeakRejected, commitVaultLockRoot } from '../../crypto/reserve_vault.js';
 import {
   vaultCommitment,
   makeVaultSeal,
@@ -266,6 +266,23 @@ function potIdsOf(block) {
   return ids;
 }
 
+/** Windows can refuse the replace while a scanner still holds the new file. */
+function replaceFileSync(tmp, dest) {
+  let last;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      fs.renameSync(tmp, dest);
+      return;
+    } catch (err) {
+      last = err;
+      const code = err && err.code;
+      if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+    }
+  }
+  throw last;
+}
+
 /** Wallet-readable tip. Stop saves this height; Start reads it and syncs forward. */
 export function writeTipFile(dir, tip) {
   const height = Math.max(0, Math.floor(Number(tip?.height || 0)));
@@ -278,7 +295,7 @@ export function writeTipFile(dir, tip) {
   const tipPath = path.join(dir, 'tip.json');
   const tmp = `${tipPath}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify({ height, hash })}\n`);
-  fs.renameSync(tmp, tipPath);
+  replaceFileSync(tmp, tipPath);
   return { height, hash };
 }
 
@@ -323,6 +340,10 @@ export function createStore(dir, {
   oracleActivationHeight = undefined,
   magic: magicIn = null,
   regtestPermit = null,
+  snapEvery = BOOK_SNAP_EVERY,
+  // In-memory suites still verify and append. They do not rewrite the book,
+  // the vault file, or the load seal on every block.
+  diskJournal = true,
   lock = true,
   // Ignored unless this process is node:test or the book is regtest.
   bookFault = null,
@@ -333,6 +354,7 @@ export function createStore(dir, {
   // magic wins when a caller sets it. network stays the node and datadir path.
   // The check runs before the datadir is created or locked down, so a refused
   // regtest open does not touch the directory.
+  const journalDisk = diskJournal !== false;
   const configuredMagic = String(magicIn || network || MAGIC_TESTNET);
   const faultHooks = faultHooksOpen(configuredMagic);
   const injectedFault = faultHooks ? (bookFault || null) : null;
@@ -1093,6 +1115,7 @@ export function createStore(dir, {
   reserveVault.magic = bookMagic;
 
   function saveReserve() {
+    if (!journalDisk) return;
     const raw = JSON.parse(JSON.stringify(reserveVault, (_, v) => (typeof v === 'bigint' ? v.toString() : v)));
     delete raw.blankFork;
     delete raw.vaultSeal;
@@ -1332,12 +1355,12 @@ export function createStore(dir, {
 
   function destSpendableNanos(addr, tipH, chain = blocks, _rows = explorer) {
     void _rows;
-    // The note walk still holds a pot a v3 lock spent, because that spend
-    // hides the leaf. Subtract the vault principal once so the same value
-    // is not spendable again. A lock note covers that principal once its
-    // unlock has passed, and it keeps covering it after the note is spent.
-    // Spent principal must not freeze a later inbound. Lock receipts are
-    // already omitted by kind.
+    // A lock tranche is not a send input. The note walk omits lock outputs.
+    // A hidden funding leaf can still sit in the walk, so subtract the vault
+    // principal once. A hidden Vault lock does not cover that subtraction,
+    // before or after unlock. A non-Vault lock that has passed its unlock
+    // covers it, including after the output is spent. The tranche itself
+    // stays out of this sum.
     // The live book and a fork book each keep their own suffix index.
     // A request does not open notes that belong to someone else.
     if (chain === blocks) spendChecks += 1;
@@ -1395,6 +1418,7 @@ export function createStore(dir, {
   }
 
   function writeLoadSeal(rows) {
+    if (!journalDisk) return;
     if (rows !== blocks) {
       fs.writeFileSync(sealFile, `${chainLoadSeal(rows, sealKey, bookMagic)}\n`);
       return;
@@ -1543,11 +1567,12 @@ export function createStore(dir, {
     return foldTags('stable');
   }
 
+  const snapGap = Math.floor(Number(snapEvery));
   function shouldSnap(height) {
     const h = Number(height) || 0;
-    if (h < 1) return false;
-    if (h <= BOOK_SNAP_EVERY) return true;
-    return h % BOOK_SNAP_EVERY === 0;
+    if (h < 1 || !Number.isInteger(snapGap) || snapGap <= 0) return false;
+    if (h <= snapGap) return true;
+    return h % snapGap === 0;
   }
 
   function maybeSnap(height) {
@@ -1638,7 +1663,7 @@ export function createStore(dir, {
       });
     }
     if (!rows.length) return rows;
-    const walked = fillSnapInterest(rows, blocks.slice(0, rows.length));
+    const walked = fillSnapInterest(rows, blocks.slice(0, rows.length), { magic: bookMagic });
     if (!walked.ok) return null;
     return rows;
   }
@@ -1720,6 +1745,7 @@ export function createStore(dir, {
   }
 
   function persistBookSnap() {
+    if (!journalDisk) return;
     if (!blocks.length) return;
     if (acceptedSeries.length !== blocks.length || unitAt.length !== blocks.length) return;
     try {
@@ -1861,6 +1887,7 @@ export function createStore(dir, {
   }
 
   function persist(block) {
+    if (!journalDisk) return;
     fs.writeFileSync(magicFile, bookMagic);
     const tipH = Number(block?.height || 0);
     // The block being written is the tip. Fast-sync must not mark it pruned.
@@ -2798,7 +2825,7 @@ export function createStore(dir, {
     } : null, {
       spentB,
       tipHeight,
-      hashBonusNanos: Number(reserveVault.liveHashBonusNanos || 1),
+      hashBonusNanos: hashBonusUnitNanos(reserveVault.liveHashBonusNanos),
       evmSession,
       evmHistory: blocks,
       spendableOf: (addr) => Math.max(0, destSpendableNanos(addr, parentH)),
@@ -3708,13 +3735,17 @@ export function createStore(dir, {
     if (mempoolVault) return mempoolVault;
     let carried = cloneVault(reserveVault);
     let n = 0;
+    let retireUsed = 0;
     for (const row of mempool) {
       if (!txIsReserveAction(row)) continue;
       if (n >= RESERVE_ACTION_CAP) break;
+      const adding = txRetireDleqs(row);
+      if (retireCapHit(retireUsed, row)) continue;
       const tried = trialReserveApply({ state: carried, txs: [row], nowMs, inPlace: true });
       if (!tried.ok) continue;
       carried = tried.state;
       n += 1;
+      if (adding != null) retireUsed += adding;
     }
     mempoolVault = carried;
     return mempoolVault;
@@ -3762,6 +3793,13 @@ export function createStore(dir, {
     if (bucket) return bucket;
     const noteRule = txNoteRuleRejected(tx, 1);
     if (noteRule) return noteRule;
+    // The fee note stays in the wallet. Naming it is vote_leak, not an unknown field.
+    const leakedVote = leafVoteLeakRejected(tx);
+    if (leakedVote) return leakedVote;
+    const leakedLock = compactLockLeakRejected(tx);
+    if (leakedLock) return leakedLock;
+    const leakedWithdraw = withdrawLeakRejected(tx);
+    if (leakedWithdraw) return leakedWithdraw;
     const unsignedField = unsignedBodyField(tx);
     if (unsignedField) return unsignedField;
     // Name a disabled pool-withdraw before the kind gate. That kind is not a
@@ -3898,6 +3936,9 @@ export function createStore(dir, {
     if (clockField) return clockField;
     const receiptPub = receiptAdmitRejected(tx);
     if (receiptPub) return receiptPub;
+    // Membership already named a commit vin. A portal vote that got this far
+    // is retired and must not enter the pool or a template.
+    if (String(tx?.kind || '') === 'vote') return { ok: false, reason: 'vote_retired' };
     const publicReceipt = publicReserveReceiptRejected(tx);
     if (publicReceipt) return publicReceipt;
     if (txIsReserveAction(tx) && mempool.filter(txIsReserveAction).length >= RESERVE_ACTION_CAP) {
@@ -3911,14 +3952,19 @@ export function createStore(dir, {
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     });
     if (!noteFund.ok) return noteFund;
-    const summed = typedCommitSum(tx);
+    const stamp = headerStamp(opts.nowMs);
+    const summed = typedCommitSum(tx, {
+      height: Number(t?.height || 0) + 1,
+      magic: bookMagic,
+      state: reserveVault,
+      nowMs: stamp,
+    });
     if (!summed.ok) return summed;
     const drawn = new Set();
     for (const m of mempool) {
       const id = reserveWithdrawMintId(m, reserveVault);
       if (id) drawn.add(id);
     }
-    const stamp = headerStamp(opts.nowMs);
     const stake = boundReserveWithdraw(tx, reserveVault, drawn, stamp);
     if (!stake.ok) return stake;
     const noteBound = Array.isArray(tx.vin) && tx.vin.some((v) => v && (v.commit || v.prev));
@@ -4073,7 +4119,7 @@ export function createStore(dir, {
     const owedWalk = verifyOpts.owedWalk || { owedIn: [], hashAcceptedSeries: [] };
     const owedUnit = verifyOpts.unitAt != null
       ? hashBonusUnitNanos(verifyOpts.unitAt)
-      : hashBonusUnitNanos(vault?.liveHashBonusNanos || 1);
+      : hashBonusUnitNanos(vault?.liveHashBonusNanos);
     const chainTip = Number.isInteger(verifyOpts.burialTip)
       ? verifyOpts.burialTip
       : forkBurial(fork);
@@ -4184,39 +4230,51 @@ export function createStore(dir, {
     const { trialVault, noVault } = trialVaultForFork(fork);
     const forkRun = forkRunState(fork);
     const burialTip = forkBurial(fork);
-    const step = (i) => {
-      if (i >= at) return null;
-      const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
-        ...verifyOpts,
-        noVault: !!noVault,
-        owedWalk,
-        unitAt: units[i],
-        burialTip,
-        ...forkRun.opts(),
+    // A long prefix is a loop. Recursing once per block overflows on a
+    // multi-thousand-block adopt, which hid the earlier body fault.
+    const takeOne = (i, c) => {
+      if (!c?.ok) return { ok: false, reason: c.reason, at: i };
+      const lean = leanBlock({
+        ...fork[i],
+        magic: bookMagic,
+        hash: c.hash,
+        height: i + 1,
+        weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
+        bSpendIds: Array.isArray(c.bSpendIds) ? c.bSpendIds : [],
       });
-      const take = (c) => {
-        if (!c?.ok) return { ok: false, reason: c.reason, at: i };
-        const lean = leanBlock({
-          ...fork[i],
-          magic: bookMagic,
-          hash: c.hash,
-          height: i + 1,
-          weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
-          bSpendIds: Array.isArray(c.bSpendIds) ? c.bSpendIds : [],
-        });
-        accepted.push(lean);
-        const stepped = forkRun.take(c, lean);
-        if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply_state', at: i };
-        if (!noVault && trialVault) {
-          const applied = applyReserveBlock(vaultArgs(trialVault, lean, accepted.slice(0, -1)));
-          if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
-        }
-        return step(i + 1);
-      };
-      if (check && typeof check.then === 'function') return check.then(take);
-      return take(check);
+      accepted.push(lean);
+      const stepped = forkRun.take(c, lean);
+      if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply_state', at: i };
+      if (!noVault && trialVault) {
+        const applied = applyReserveBlock(vaultArgs(trialVault, lean, accepted.slice(0, -1)));
+        if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open', at: i };
+      }
+      return null;
     };
-    const fault = step(0);
+    const runFrom = (start) => {
+      for (let i = start; i < at; i += 1) {
+        const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
+          ...verifyOpts,
+          noVault: !!noVault,
+          owedWalk,
+          unitAt: units[i],
+          burialTip,
+          ...forkRun.opts(),
+        });
+        if (check && typeof check.then === 'function') {
+          const index = i;
+          return check.then((c) => {
+            const found = takeOne(index, c);
+            if (found) return found;
+            return runFrom(index + 1);
+          });
+        }
+        const found = takeOne(i, check);
+        if (found) return found;
+      }
+      return null;
+    };
+    const fault = runFrom(0);
     if (fault && typeof fault.then === 'function') return fault.then((found) => found || gated);
     return fault || gated;
   }
@@ -4456,19 +4514,35 @@ export function createStore(dir, {
     return finish(assessHeader(block, prev, opts));
   }
 
-  /** Header proof-of-work and the cheap header rules, before any owed walk. */
+  /**
+   * Header proof-of-work and the cheap header rules, before any owed walk.
+   * The sync path is a loop: a few thousand blocks (a voted unit change)
+   * overflowed the old per-block recursion inside adopt.
+   */
   function gateForkHeaders(fork, parent, history, verifyOpts) {
-    const step = (i, prev) => {
-      if (i >= fork.length) return { ok: true };
-      const got = gateOneHeader(fork[i], prev, history, verifyOpts);
-      const take = (assessed) => {
-        if (!assessed?.ok) return { ok: false, reason: assessed?.reason || 'pow', at: i };
-        return step(i + 1, gatePrevFrom(fork[i], assessed.hash, prev));
-      };
-      if (got && typeof got.then === 'function') return got.then(take);
-      return take(got);
+    const resume = async (start, assessed, prev) => {
+      if (!assessed?.ok) return { ok: false, reason: assessed?.reason || 'pow', at: start };
+      let p = gatePrevFrom(fork[start], assessed.hash, prev);
+      for (let i = start + 1; i < fork.length; i += 1) {
+        const got = gateOneHeader(fork[i], p, history, verifyOpts);
+        const next = got && typeof got.then === 'function' ? await got : got;
+        if (!next?.ok) return { ok: false, reason: next?.reason || 'pow', at: i };
+        p = gatePrevFrom(fork[i], next.hash, p);
+      }
+      return { ok: true };
     };
-    return step(0, parent);
+    let prev = parent;
+    for (let i = 0; i < fork.length; i += 1) {
+      const got = gateOneHeader(fork[i], prev, history, verifyOpts);
+      if (got && typeof got.then === 'function') {
+        const at = i;
+        const parentHere = prev;
+        return got.then((assessed) => resume(at, assessed, parentHere));
+      }
+      if (!got?.ok) return { ok: false, reason: got?.reason || 'pow', at: i };
+      prev = gatePrevFrom(fork[i], got.hash, prev);
+    }
+    return { ok: true };
   }
 
   /** Same gate for a chain that does not share this store's prefix. */
@@ -4865,91 +4939,104 @@ export function createStore(dir, {
     const trialVault = resumedVault.vault;
     const owedWalk = { owedIn: seeded.rows, hashAcceptedSeries: seeded.series.slice() };
     const suffixSnaps = [];
-    const step = (i) => {
-      if (i >= fork.length) {
-        return {
-          ok: true,
-          blocks: out,
-          owedRows: owedWalk.owedIn,
-          owedSeries: owedWalk.hashAcceptedSeries.slice(),
-          owedSnaps: seeded.snaps.concat(suffixSnaps),
-          supply,
-          units: allUnits,
-          burialTip: tipH,
-        };
+    const done = () => ({
+      ok: true,
+      blocks: out,
+      owedRows: owedWalk.owedIn,
+      owedSeries: owedWalk.hashAcceptedSeries.slice(),
+      owedSnaps: seeded.snaps.concat(suffixSnaps),
+      supply,
+      units: allUnits,
+      burialTip: tipH,
+    });
+    // Same rule as the header gate: a long suffix must not recurse per block.
+    const takeOne = (i, c, beforeSpent, structuralH, blockTip) => {
+      if (!c?.ok) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return c;
       }
-      const beforeSpent = new Set(trialSpent);
-      const structuralH = (Number(prev?.height) || 0) + 1;
-      const blockTip = headerRunTip(fork[i], structuralH, tipH, verifyOpts.provenBurialAt);
-      const check = verifyBlock(fork[i], parentView(prev), {
-        ...verifyOpts,
-        hashBonusNanos: allUnits[rows.length + i],
+      const owedUnit = allUnits[rows.length + i];
+      const owedNext = advanceHashOwed({
         owedIn: owedWalk.owedIn,
-        hashAcceptedSeries: owedWalk.hashAcceptedSeries,
-        spentB: trialSpent,
-        trustedPowHash: trustedHashFor(fork[i], verifyOpts),
-        tipHeight: structuralH,
-        burialTip: blockTip,
-        evmHistory: rows.concat(out),
-        parentSupply: supply,
-        parentFluxset: flux,
-        noteAtAnchor: (anchor) => noteFromAnchor(flux, anchors, anchor),
-        grandparentHeader: grandparentHeader(rows.concat(out)),
-        sealedIntervalsMs: headerGapsMs(rows.concat(out)),
-        nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
-        genesisMs: genesisHeaderMs(rows) || Number(verifyOpts.genesisMs) || 0,
-        reserveState: trialVault,
-        committedBps: Number(trialVault.epochBps ?? GENESIS_BPS),
-        ...oracleVerifyFields(rows.concat(out), (Number(prev?.height) || 0) + 1),
-        magic: bookMagic,
+        acceptedSeries: owedWalk.hashAcceptedSeries,
+        block: fork[i],
+        unit: owedUnit,
+        height: structuralH,
+        tipHeight: blockTip,
       });
-      const take = (c) => {
-        if (!c?.ok) {
-          rollbackSpent(trialSpent, beforeSpent);
-          return c;
-        }
-        const owedUnit = allUnits[rows.length + i];
-        const owedNext = advanceHashOwed({
-          owedIn: owedWalk.owedIn,
-          acceptedSeries: owedWalk.hashAcceptedSeries,
-          block: fork[i],
-          unit: owedUnit,
-          height: structuralH,
-          tipHeight: blockTip,
+      if (!owedNext.ok) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return { ok: false, reason: owedNext.reason || 'hash_owed' };
+      }
+      stampCredits(fork[i], owedUnit);
+      owedWalk.owedIn = owedNext.rows;
+      owedWalk.hashAcceptedSeries = owedNext.acceptedSeries;
+      owedSeed.suffixAdvances += 1;
+      const at = rows.length + i;
+      if (keepOwedIndex(at, tipAt)) {
+        suffixSnaps.push({
+          at,
+          rows: copyOwedRows(owedNext.rows),
+          seriesEnd: owedNext.acceptedSeries.length,
         });
-        if (!owedNext.ok) {
-          rollbackSpent(trialSpent, beforeSpent);
-          return { ok: false, reason: owedNext.reason || 'hash_owed' };
-        }
-        stampCredits(fork[i], owedUnit);
-        owedWalk.owedIn = owedNext.rows;
-        owedWalk.hashAcceptedSeries = owedNext.acceptedSeries;
-        owedSeed.suffixAdvances += 1;
-        const at = rows.length + i;
-        if (keepOwedIndex(at, tipAt)) {
-          suffixSnaps.push({
-            at,
-            rows: copyOwedRows(owedNext.rows),
-            seriesEnd: owedNext.acceptedSeries.length,
+      }
+      const lean = leanVerified(fork[i], c, prev);
+      lean.bSpendIds = spentDelta(beforeSpent, trialSpent);
+      const applied = applyReserveBlock(vaultArgs(trialVault, lean, rows.concat(out)));
+      if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
+      if (!c.supplyState) return { ok: false, reason: 'supply_state' };
+      supply = c.supplyState;
+      appendFluxBlock(flux, lean);
+      const ah = Number(lean.height) || 0;
+      anchors[ah] = anchorRecord(flux, false);
+      out.push(lean);
+      prev = lean;
+      return null;
+    };
+    const runFrom = (start) => {
+      for (let i = start; i < fork.length; i += 1) {
+        const beforeSpent = new Set(trialSpent);
+        const structuralH = (Number(prev?.height) || 0) + 1;
+        const blockTip = headerRunTip(fork[i], structuralH, tipH, verifyOpts.provenBurialAt);
+        const check = verifyBlock(fork[i], parentView(prev), {
+          ...verifyOpts,
+          hashBonusNanos: allUnits[rows.length + i],
+          owedIn: owedWalk.owedIn,
+          hashAcceptedSeries: owedWalk.hashAcceptedSeries,
+          spentB: trialSpent,
+          trustedPowHash: trustedHashFor(fork[i], verifyOpts),
+          tipHeight: structuralH,
+          burialTip: blockTip,
+          evmHistory: rows.concat(out),
+          parentSupply: supply,
+          parentFluxset: flux,
+          noteAtAnchor: (anchor) => noteFromAnchor(flux, anchors, anchor),
+          grandparentHeader: grandparentHeader(rows.concat(out)),
+          sealedIntervalsMs: headerGapsMs(rows.concat(out)),
+          nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
+          genesisMs: genesisHeaderMs(rows) || Number(verifyOpts.genesisMs) || 0,
+          reserveState: trialVault,
+          committedBps: Number(trialVault.epochBps ?? GENESIS_BPS),
+          ...oracleVerifyFields(rows.concat(out), (Number(prev?.height) || 0) + 1),
+          magic: bookMagic,
+        });
+        if (check && typeof check.then === 'function') {
+          const index = i;
+          const spentSnap = beforeSpent;
+          const heightHere = structuralH;
+          const tipHere = blockTip;
+          return check.then((c) => {
+            const failed = takeOne(index, c, spentSnap, heightHere, tipHere);
+            if (failed) return failed;
+            return runFrom(index + 1);
           });
         }
-        const lean = leanVerified(fork[i], c, prev);
-        lean.bSpendIds = spentDelta(beforeSpent, trialSpent);
-        const applied = applyReserveBlock(vaultArgs(trialVault, lean, rows.concat(out)));
-        if (applied && applied.ok === false) return { ok: false, reason: applied.reason || 'epoch_open' };
-        if (!c.supplyState) return { ok: false, reason: 'supply_state' };
-        supply = c.supplyState;
-        appendFluxBlock(flux, lean);
-        const ah = Number(lean.height) || 0;
-        anchors[ah] = anchorRecord(flux, false);
-        out.push(lean);
-        prev = lean;
-        return step(i + 1);
-      };
-      if (check && typeof check.then === 'function') return check.then(take);
-      return take(check);
+        const failed = takeOne(i, check, beforeSpent, structuralH, blockTip);
+        if (failed) return failed;
+      }
+      return done();
     };
-    return step(0);
+    return runFrom(0);
   }
 
   /** Keep a competing branch until it has more work, then adopt it in place. */
@@ -5740,6 +5827,7 @@ export function createStore(dir, {
     // clone. A miss undoes itself and does not clone the portal map again.
     let carried = cloneVault(reserveVault);
     let reserveIncluded = 0;
+    let retireIncluded = 0;
     let reserveDropped = false;
     const budgetStarted = performance.now();
     const announced = Array.isArray(shareBatch) ? shareBatch.length
@@ -5843,6 +5931,14 @@ export function createStore(dir, {
         keep.push(m);
         continue;
       }
+      const retireAdding = txIsReserveAction(tx) ? txRetireDleqs(tx) : 0;
+      if (retireCapHit(retireIncluded, tx)) {
+        keep.push(m);
+        try {
+          console.error(JSON.stringify({ event: 'mempool_skip', id: m.id, reason: 'retire_cap' }));
+        } catch { /* ignore */ }
+        continue;
+      }
       // Chain notes do not cover a painted spend, so it stays queued and out of the block.
       if (paintedSpendSig(tx)) {
         const held = fundedDebit(tx);
@@ -5877,6 +5973,8 @@ export function createStore(dir, {
         }
         admitOpts.reserveCarried = carried;
         admitOpts.verifiedFund = fundVerdictFor(tx);
+        // Mark the leaf now. One tree rebuild, after this walk, covers the body.
+        admitOpts.deferVaultRoot = true;
       }
       const got = admitMempool(book, tx, admitOpts);
       if (got.ok) {
@@ -5885,6 +5983,7 @@ export function createStore(dir, {
         if (got.vaultState) {
           carried = got.vaultState;
           reserveIncluded += 1;
+          if (retireAdding != null) retireIncluded += retireAdding;
         }
         for (const tag of txSpendTags(got.tx).tags) spendSeen.add(tag.toString('hex'));
         if (Array.isArray(got.tags)) {
@@ -5908,6 +6007,10 @@ export function createStore(dir, {
           || got.reason === 'admit_link_tag';
         if (!got.vault && !permanent) keep.push(m);
       }
+    }
+    if (carried && carried.vaultLockDirty) {
+      const rooted = commitVaultLockRoot(carried);
+      if (!rooted) reserveDropped = true;
     }
     mempool.length = 0;
     mempool.push(...keep);
@@ -5940,6 +6043,34 @@ export function createStore(dir, {
       prepareCoinbase: (cb) => {
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
+        // The contract reads the frozen period root and the census from this
+        // coinbase. A claim looks the root up by its earn epoch, and a leaf
+        // vote is NotVoter until both are stored.
+        const starts = new Map();
+        const censusRows = new Map();
+        for (const tx of pendingTxs) {
+          if (!tx) continue;
+          const kind = String(tx.kind || '');
+          if (kind !== 'reward-claim' && kind !== 'leaf-vote') continue;
+          if (kind === 'reward-claim' && !tx.vaultProof) continue;
+          if (kind === 'leaf-vote' && !tx.voteProof) continue;
+          const earn = Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0);
+          if (!Number.isInteger(earn) || earn < 0) continue;
+          const start = String(reserveVault.epochStartRoots?.[String(earn)] || '').toLowerCase();
+          if (/^[0-9a-f]{64}$/.test(start)) starts.set(earn, start);
+          if (kind !== 'leaf-vote') continue;
+          const census = reserveVault.epochCensus?.[String(earn)];
+          const leaves = Math.floor(Number(census?.leafCount) || 0);
+          const openH = Math.floor(Number(census?.openHeight) || 0);
+          if (census?.known && leaves >= 1 && openH >= 0) {
+            censusRows.set(earn, { epoch: earn, leafCount: leaves, openHeight: openH });
+          }
+        }
+        if (starts.size) {
+          cb.epochStartCommits = [...starts.entries()].map(([epoch, rootHex]) => ({ epoch, root: rootHex }));
+          cb.epochStartRoot = cb.epochStartCommits[0].root;
+        }
+        if (censusRows.size) cb.epochCensusCommit = [...censusRows.values()];
       },
     });
     const jobId = `shear-${height}-${jobSeq++}`;

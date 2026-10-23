@@ -114,6 +114,12 @@ export function reviveTx(tx) {
   }
   if (out.spendTag != null && !Buffer.isBuffer(out.spendTag)) out.spendTag = reviveField(out.spendTag);
   if (out.excess != null) out.excess = reviveField(out.excess);
+  // P2P posts the lock's carried dest20 as {$hex}. The spend check binds that
+  // field with Buffer.from, which does not read {$hex}.
+  if (out.dest20 != null) {
+    const back = reviveBytes('dest20', out.dest20);
+    if (Buffer.isBuffer(back)) out.dest20 = back;
+  }
   if (Array.isArray(out.hashOwed)) {
     out.hashOwed = out.hashOwed.map((row) => {
       if (!row || typeof row !== 'object') return row;
@@ -202,11 +208,26 @@ export function proveValue(v, r) {
   return { C: pointBytes(C), ...schnorrProveH(P, r, Buffer.from('shear-note-val-v1')) };
 }
 
+/** Same opening, same commit, same v. A repeat in queue and the template is not a second multiply. */
+const valueOpenCache = new Map();
+const VALUE_OPEN_MAX = 4096;
+
 export function verifyValue(Cbytes, v, proof) {
   try {
-    const C = pointFrom(Cbytes);
+    const Cbuf = Buffer.from(asU8(Cbytes));
+    const R = proof?.R ? Buffer.from(asU8(proof.R)) : null;
+    const z = proof?.z ? Buffer.from(asU8(proof.z)) : null;
+    if (!R || !z) return false;
+    const key = createHash('sha256').update(Cbuf).update(Buffer.from(String(v))).update(R).update(z).digest('hex');
+    if (valueOpenCache.has(key)) return valueOpenCache.get(key);
+    const C = pointFrom(Cbuf);
     const P = C.subtract(mulG(v));
-    return schnorrVerifyH(P, proof, Buffer.from('shear-note-val-v1'));
+    const ok = schnorrVerifyH(P, { R, z }, Buffer.from('shear-note-val-v1'));
+    if (ok) {
+      if (valueOpenCache.size >= VALUE_OPEN_MAX) valueOpenCache.delete(valueOpenCache.keys().next().value);
+      valueOpenCache.set(key, true);
+    }
+    return ok;
   } catch {
     return false;
   }
@@ -268,10 +289,18 @@ function rangeChal(parts) {
   return Fn.create(bytesToNumberLE(wide));
 }
 
-function rangeNonce(tag, rBytes, i) {
+function rangeNonce(tag, hedge, rBytes, value, commit, transcript, i) {
   const ib = Buffer.alloc(8);
   ib.writeBigUInt64LE(BigInt(i));
-  return rangeChal([Buffer.from(tag), rBytes, ib]);
+  return rangeChal([
+    Buffer.from(tag),
+    hedge,
+    rBytes,
+    value,
+    commit,
+    transcript,
+    ib,
+  ]);
 }
 
 function mulP(P, s) {
@@ -301,22 +330,28 @@ function weightedBits(points) {
  * Consensus verify does not call this unless SHEAR_RANGE_JS=1.
  * proveRange calls it only for { public: true } or that same flag.
  */
-export function provePackedRange(v, rBytes) {
+export function provePackedRange(v, rBytes, hedgeBytes = null) {
   const n = noteU64(v);
   if (n == null || !rBytes || rBytes.length !== 32) return null;
+  const hedge = hedgeBytes && hedgeBytes.length === 32
+    ? Buffer.from(hedgeBytes)
+    : randomBytes(32);
   const rb = Buffer.from(rBytes);
   const r = Fn.create(bytesToNumberLE(rb));
   const c = mulP(G, n).add(mulP(H, r));
   const cB = pointBytes(c);
+  const value = Buffer.alloc(8);
+  value.writeBigUInt64LE(n);
   const bits = new Array(RANGE_BITS);
   const s = new Array(RANGE_BITS);
   const bPts = new Array(RANGE_BITS);
   const bBytes = new Array(RANGE_BITS);
+  const empty = Buffer.alloc(0);
   let vv = n;
   for (let i = 0; i < RANGE_BITS; i += 1) {
     bits[i] = Number(vv & 1n);
     vv >>= 1n;
-    s[i] = rangeNonce('sbit', rb, i);
+    s[i] = rangeNonce('sbit', hedge, rb, value, cB, empty, i);
     const bitG = bits[i] ? G : Point.ZERO;
     bPts[i] = bitG.add(mulP(H, s[i]));
     bBytes[i] = pointBytes(bPts[i]);
@@ -324,6 +359,7 @@ export function provePackedRange(v, rBytes) {
   const out = [Buffer.from([2]), cB, ...bBytes];
   const eAll = rangeChal([Buffer.from('bits'), cB, ...bBytes]);
   const eAllB = scalarBytes(eAll);
+  const transcript = Buffer.concat(bBytes);
   let sSum = 0n;
   let two = 1n;
   for (let i = 0; i < RANGE_BITS; i += 1) {
@@ -332,10 +368,10 @@ export function provePackedRange(v, rBytes) {
     const si = s[i];
     const p1 = bi.subtract(G);
     const fake = on ? bi : p1;
-    const eFake = rangeNonce('efake', rb, i);
-    const zFake = rangeNonce('zfake', rb, i);
+    const eFake = rangeNonce('efake', hedge, rb, value, cB, transcript, i);
+    const zFake = rangeNonce('zfake', hedge, rb, value, cB, transcript, i);
     const rFake = mulP(H, zFake).subtract(mulP(fake, eFake));
-    const k = rangeNonce('kbit', rb, i);
+    const k = rangeNonce('kbit', hedge, rb, value, cB, transcript, i);
     const rReal = mulP(H, k);
     const r0 = on ? rFake : rReal;
     const r1 = on ? rReal : rFake;
@@ -357,7 +393,7 @@ export function provePackedRange(v, rBytes) {
   }
   const rDelta = Fn.sub(r, sSum);
   const p = c.subtract(weightedBits(bPts));
-  const k = rangeNonce('cons', rb, 0);
+  const k = rangeNonce('cons', hedge, rb, value, cB, transcript, 0);
   const rPt = mulP(H, k);
   const rPtB = pointBytes(rPt);
   const e = rangeChal([Buffer.from('cons'), cB, pointBytes(p), rPtB]);
@@ -487,17 +523,32 @@ export function proveRange(v, r, opts = {}) {
   return Buffer.alloc(0);
 }
 
+/**
+ * A range proof that already opened does not open again. False is not stored:
+ * a process with no verifier returns false for every proof, and that is not
+ * a verdict on the bytes.
+ */
+const rangeOpenCache = new Set();
+const RANGE_OPEN_MAX = 4096;
+
 export function verifyRange(Cbytes, proof) {
   try {
     if (proof && typeof proof === 'object' && !Buffer.isBuffer(proof) && proof.bits) return false;
     const c = Buffer.from(asU8(Cbytes));
     const pr = Buffer.isBuffer(proof) ? proof : Buffer.from(asU8(proof));
-    if (nativeLoaded()) return nativeVerifyRange(c, pr);
-    if (rangeJsOptIn()) {
+    const key = createHash('sha256').update(c).update(pr).digest('hex');
+    if (rangeOpenCache.has(key)) return true;
+    let ok = false;
+    if (nativeLoaded()) ok = nativeVerifyRange(c, pr);
+    else if (rangeJsOptIn()) {
       warnJsVerifyOnce();
-      return verifyPackedRange(c, pr);
+      ok = verifyPackedRange(c, pr);
     }
-    return false;
+    if (ok) {
+      if (rangeOpenCache.size >= RANGE_OPEN_MAX) rangeOpenCache.delete(rangeOpenCache.values().next().value);
+      rangeOpenCache.add(key);
+    }
+    return ok;
   } catch {
     return false;
   }
@@ -1341,6 +1392,39 @@ export function verifyFlowConservation(tx, _spentOf, vaultPayout = 0) {
     const lhs = lhsAdd !== 0n ? outC.add(mulG(lhsAdd)) : outC;
     let rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
     if (payout) rhs = rhs.add(mulG(payout));
+    return lhs.equals(rhs);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A leaf vote spends one note. The fee is that note minus a hidden change
+ * output, or the whole note when there is no change. A declared fee with
+ * no balancing input is not a fee.
+ */
+export function leafVoteConserved(tx) {
+  try {
+    if (tx?.from != null && String(tx.from) !== '') return false;
+    if (tx?.payer != null && String(tx.payer) !== '') return false;
+    const vins = (Array.isArray(tx?.vin) ? tx.vin : []).filter((v) => v && !v.coinbase);
+    if (vins.length !== 1 || !vins[0].commit || vins[0].address || vins[0].dest20) return false;
+    const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+    if (outs.length > 1) return false;
+    if (outs.length === 1) {
+      const o = outs[0];
+      const kind = String(o?.kind || '');
+      if (kind === 'leaf-vote' || kind === 'vote' || kind === 'lock' || kind === 'withdraw') return false;
+      if (!o?.commit || !o?.rangeProof || o.rangeProof === true || o.valueProof) return false;
+    }
+    if (!tx?.excess) return false;
+    const fee = Math.floor(Number(tx?.fee || 0));
+    if (!Number.isInteger(fee) || fee <= 0) return false;
+    const inC = mintTotal(vins);
+    const outC = outs.length ? mintTotal(outs) : Point.ZERO;
+    if (!inC || outC == null) return false;
+    const lhs = outC.add(mulG(BigInt(fee)));
+    const rhs = inC.add(H.multiply(scalarFrom(tx.excess)));
     return lhs.equals(rhs);
   } catch {
     return false;

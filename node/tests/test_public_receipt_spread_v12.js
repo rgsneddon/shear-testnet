@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeDest } from '../../crypto/address.js';
-import { PI_SHE_NANOS, RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { PI_SHE_NANOS, RESERVE_PROGRAM, hashBonusUnitNanos } from '../../crypto/asert.js';
 import { publicReserveReceipt, publicReserveReceiptRejected } from '../../crypto/dummy.js';
 import { levyNeed } from '../../crypto/levy.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
@@ -147,7 +147,7 @@ describe('public receipt spread', () => {
         txs,
         parentBlocks: store.blocks,
         parentFluxset: store.fluxset().pubs,
-        hashBonusNanos: Number(store.reserveVault.liveHashBonusNanos || 1),
+        hashBonusNanos: hashBonusUnitNanos(store.reserveVault.liveHashBonusNanos),
       });
       const found = await mineHeaderParallel(built.header, built.bits, MAX_TRIES, os.cpus().length);
       assert.ok(found && found.block);

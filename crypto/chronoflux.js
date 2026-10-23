@@ -361,13 +361,19 @@ const RESERVE_TX_KINDS = new Set(['lock', 'vote', 'withdraw', 'reward-claim']);
  * Top-level keys a sealed body tx may carry, from the signed body list in
  * spend.js. Anything else, including nanos, amount, and changeNanos, is not
  * copied. A key outside the signed list is already `unsigned` at admission.
+ * Retire and principal proofs are not in txDigestV3. They still have to
+ * ride on the sealed withdraw: the owner signature binds the retire blob,
+ * and the vault opens the leaf from that same blob.
  */
 export const COMPACT_TX_KEYS = Object.freeze([
   'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
-  'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig', 'ownerPub',
+  'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig', 'ownerPub', 'piProof',
+  'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
+  'retireProof', 'retireProofs', 'principalProof', 'principalProofs',
+  'voteProof', 'voteProofs', 'voteSeq', 'voteParam', 'voteOutput',
   'admit_proof', 'admit_proofs', 'spendTag', 'members', 'fs1',
-  'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs',
+  'excess', 'jroot', 'height', 'mint', 'version', 'anchor', 'maxLevy', 'nowMs', 'withdrawNonce',
   'weight', 'payer', 'sponsor',
   'commitHeight', 'index', 'leaf', 'proof', 'commitHeader', 'commitRootA', 'commitRootB',
   'nullifier',
@@ -391,10 +397,10 @@ function dest20FromOpen(o) {
 }
 
 function portalIdFromOpen(o) {
-  if (o?.portalId) return o.portalId;
-  const dest = String(o?.address || '');
-  if (!dest) return '';
-  return createHash('sha256').update('shear-portal-v1').update(dest).digest('hex');
+  // The carried id only. An address is not an input, so compact cannot
+  // recompute portalId from dest20 or from the public address.
+  const pid = String(o?.portalId || '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(pid) ? pid : '';
 }
 
 function claimedReserveV(o) {
@@ -541,6 +547,7 @@ function compactVout(o, tx) {
     };
     if (keepOpen && o.valueProof) row.valueProof = o.valueProof;
     if (o.rangeProof) row.rangeProof = o.rangeProof;
+    if (o.fundProof) row.fundProof = compactValue(o.fundProof);
     if (o.viewTag) row.viewTag = o.viewTag;
     if (o.admitPub) row.admitPub = o.admitPub;
     if (o.rEph) row.rEph = o.rEph;
@@ -695,6 +702,38 @@ function unsealedBSpendVin(v) {
   return row;
 }
 
+function hex32Field(value) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/i.test(value)) return '';
+  return value.toLowerCase();
+}
+
+function compactEpochStarts(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const item of list) {
+    const epoch = Math.floor(Number(item?.epoch));
+    const root = hex32Field(item?.root);
+    if (!Number.isInteger(epoch) || epoch < 0 || !root) continue;
+    out.push({ epoch, root });
+  }
+  return out;
+}
+
+function compactEpochCensus(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const item of list) {
+    const epoch = Math.floor(Number(item?.epoch));
+    const leafCount = Math.floor(Number(item?.leafCount));
+    const openHeight = Math.floor(Number(item?.openHeight));
+    if (!Number.isInteger(epoch) || epoch < 0) continue;
+    if (!Number.isInteger(leafCount) || leafCount < 1) continue;
+    if (!Number.isInteger(openHeight) || openHeight < 0) continue;
+    out.push({ epoch, leafCount, openHeight });
+  }
+  return out;
+}
+
 /** Strip a tx down to the sealed fields. No openings, view material, IP, or memo plaintext. */
 export function compactTx(tx) {
   if (!tx) return tx;
@@ -720,6 +759,16 @@ export function compactTx(tx) {
     if (typeof tx.rewardRoot === 'string' && /^[0-9a-f]{64}$/i.test(tx.rewardRoot)) {
       row.rewardRoot = tx.rewardRoot.toLowerCase();
     }
+    // A claim and a leaf vote read the frozen root and the census from the
+    // coinbase. dest20 cannot rebuild either, so compact keeps them.
+    const startRoot = hex32Field(tx.epochStartRoot);
+    if (startRoot) row.epochStartRoot = startRoot;
+    const lockRoot = hex32Field(tx.vaultLockRoot);
+    if (lockRoot) row.vaultLockRoot = lockRoot;
+    const startCommits = compactEpochStarts(tx.epochStartCommits);
+    if (startCommits.length) row.epochStartCommits = startCommits;
+    const censusCommits = compactEpochCensus(tx.epochCensusCommit);
+    if (censusCommits.length) row.epochCensusCommit = censusCommits;
     const carry = Math.floor(Number(tx.carryNanos) || 0);
     if (Number.isSafeInteger(carry) && carry > 0) row.carryNanos = carry;
     if (Array.isArray(tx.issuedJobKeys) && tx.issuedJobKeys.length) {
@@ -742,6 +791,17 @@ export function compactTx(tx) {
     delete out.to;
     delete out.payer;
     delete out.sponsor;
+  }
+  // A compact lock carries portalId and dest20. The address is not on the
+  // wire. A withdraw payout is the one-time dest20 under the owner signature,
+  // so `to` stays off this body too. A leaf vote has no portal address.
+  // The reward integer is public. Compact still drops it from a hidden
+  // lock. A claim without it cannot match the proof.
+  if (kind === 'reward-claim') {
+    const raw = tx.nanos;
+    if (typeof raw === 'bigint' && raw >= 0n) out.nanos = raw <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(raw) : raw.toString();
+    else if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) out.nanos = raw;
+    else if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) out.nanos = raw.trim();
   }
   delete out.owner;
   delete out.payout;
@@ -771,7 +831,9 @@ export function compactTx(tx) {
   if (tx.sig) out.sig = tx.sig;
   if (tx.signature && !out.sig) out.sig = tx.signature;
   // The owner signature is checked on the sealed body. A b-spend keeps spendPub.
-  if ((keepDest || poolWithdraw || reserveTx || kind === 'b-spend') && tx.spendPub) out.spendPub = tx.spendPub;
+  // An FS-1 withdraw and an FS-1 lock do not publish the identity spend key.
+  const hideSpend = kind === 'withdraw' || kind === 'lock';
+  if (!hideSpend && (keepDest || poolWithdraw || reserveTx || kind === 'b-spend') && tx.spendPub) out.spendPub = tx.spendPub;
   if (tx.memoCt || tx.memo) out.memo = true;
   if (tx.admit_proof) {
     if (tx.admit_proof.blob || tx.admit_proof.v === 3) {
@@ -799,6 +861,12 @@ export function compactTx(tx) {
     }
     delete out.admit_proof.members;
     delete out.members;
+  }
+  // Rebuild before the tag canonicalization so a lying spendTag is still
+  // replaced, and compactValue's extra keys do not survive.
+  if (admitWireStrictTx(tx)) {
+    if (tx.admit_proof && typeof tx.admit_proof === 'object') out.admit_proof = admitThree(tx.admit_proof);
+    if (Array.isArray(tx.admit_proofs)) out.admit_proofs = tx.admit_proofs.filter(Boolean).map(admitThree);
   }
   if (tx.spendTag) out.spendTag = tx.spendTag;
   // A present JSON tag is replaced by the blob tag, so a lie does not survive.
@@ -832,11 +900,46 @@ export function compactTx(tx) {
   if (tx.excess) out.excess = tx.excess;
   if (reserveFields) {
     if (reserveFields.portalId) out.portalId = reserveFields.portalId;
-    if (reserveFields.payoutPortalId) out.payoutPortalId = reserveFields.payoutPortalId;
+    // A lock that carries payoutPortalId is refused later. Stripping it here would hide that.
+    if (kind !== 'withdraw' && reserveFields.payoutPortalId) out.payoutPortalId = reserveFields.payoutPortalId;
     if (reserveFields.programId) out.programId = reserveFields.programId;
     if (reserveFields.kind === 'vote') out.choice = reserveFields.choice;
   }
+  if (kind === 'withdraw') delete out.payoutPortalId;
+  // The EVM lock checks this signature. A compact body that drops it cannot replay.
+  if (kind === 'lock' && tx.lockAuth) out.lockAuth = compactValue(tx.lockAuth);
   return out;
+}
+
+function blobIsFs1Wire(value) {
+  try {
+    const raw = Buffer.from(asU8(value));
+    return raw.length > 0 && raw[0] === 0xf1;
+  } catch {
+    return false;
+  }
+}
+
+function admitWireStrictTx(tx) {
+  const kind = String(tx?.kind || '');
+  if (kind === 'leaf-vote' || kind === 'withdraw' || kind === 'lock') return true;
+  if (blobIsFs1Wire(tx?.fs1)) return true;
+  if (tx?.admit_proof && blobIsFs1Wire(tx.admit_proof.blob)) return true;
+  if (Array.isArray(tx?.admit_proofs)) {
+    for (const proof of tx.admit_proofs) {
+      if (proof && blobIsFs1Wire(proof.blob)) return true;
+    }
+  }
+  return false;
+}
+
+function admitThree(proof) {
+  if (!proof || typeof proof !== 'object') return {};
+  const row = {};
+  if (proof.blob != null && proof.blob !== '') row.blob = proof.blob;
+  if (proof.cTilde != null && proof.cTilde !== '') row.cTilde = proof.cTilde;
+  if (proof.spendTag != null && proof.spendTag !== '') row.spendTag = proof.spendTag;
+  return row;
 }
 
 /**
@@ -846,7 +949,8 @@ export function compactTx(tx) {
 export function admitWireTx(tx) {
   const wire = compactTx(tx);
   if (!wire || typeof wire !== 'object' || wire.coinbase) return wire;
-  if (tx?.spendPub && !wire.spendPub) {
+  const wireKind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
+  if (tx?.spendPub && !wire.spendPub && wireKind !== 'withdraw' && wireKind !== 'lock') {
     wire.spendPub = typeof tx.spendPub === 'string'
       ? tx.spendPub
       : Buffer.from(tx.spendPub).toString('hex');

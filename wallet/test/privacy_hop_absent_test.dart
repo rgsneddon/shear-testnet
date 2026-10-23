@@ -118,14 +118,16 @@ void main() {
     );
 
     reserve.portal(dest).staked = kPiSheNanos;
-    final vote = await commandReserveVote(
+    // Current law: the public vote is a leaf vote. Consent is refused before
+    // the census, and this path does not write a legacy kind=vote tx.
+    final vote = await castPlannedLeafVotes(
       ledger: blocked.ledger,
       reserve: reserve,
-      restFrame: blocked.id.address,
-      paymentCode: blocked.id.paymentCode,
+      planDir: '',
       dest: dest,
       choice: kVoteHold,
-      depth: 0,
+      restFrame: blocked.id.address,
+      paymentCode: blocked.id.paymentCode,
       spendSeed: hexToBytes(blocked.id.seedHex),
       local: false,
     );
@@ -210,21 +212,23 @@ void main() {
       ..currentEpoch = 1
       ..bonusEnacted = false;
     voteReserve.portal(voteDest).staked = kPiSheNanos;
-    final consentedVote = await commandReserveVote(
+    // Current law: consent lets the leaf vote proceed. This book has no
+    // census, so it fails closed and still writes no legacy kind=vote tx.
+    final consentedVote = await castPlannedLeafVotes(
       ledger: voteBook.ledger,
       reserve: voteReserve,
-      restFrame: voteBook.id.address,
-      paymentCode: voteBook.id.paymentCode,
+      planDir: '',
       dest: voteDest,
       choice: kVoteHold,
-      depth: 0,
+      restFrame: voteBook.id.address,
+      paymentCode: voteBook.id.paymentCode,
       spendSeed: hexToBytes(voteBook.id.seedHex),
       local: false,
       publicIpConsent: true,
     );
     expect(consentedVote.remark, isNot(kPublicIpWaitCopy));
-    expect(consentedVote.enacted, isTrue, reason: consentedVote.remark);
-    expect(voteBook.ledger.transactions.where((t) => t.kind == 'vote'), isNotEmpty);
+    expect(consentedVote.enacted, isFalse);
+    expect(voteBook.ledger.transactions.where((t) => t.kind == 'vote'), isEmpty);
 
     final withdrawBook = _book();
     final withdrawDest = vaultDest(withdrawBook.id.address, viewKey: withdrawBook.id.viewKey)!;
@@ -237,6 +241,8 @@ void main() {
       ..staked = 100000000000
       ..idle = 0
       ..joined = true;
+    // Current law: consent allows the post, but a body with no lock leaves
+    // does not settle and does not send `from`.
     final withdrawn = await postReserveWithdraw(
       withdrawBook.ledger,
       reserve: withdrawReserve,
@@ -246,9 +252,9 @@ void main() {
       local: false,
       publicIpConsent: true,
     );
-    expect(withdrawn, isNotNull);
-    expect(withdrawn!.tx.kind, 'withdraw');
-    expect(withdrawReserve.portal(withdrawDest).staked, 0);
+    expect(withdrawn, isNull);
+    expect(withdrawReserve.portal(withdrawDest).staked, 100000000000);
+    expect(withdrawBook.ledger.transactions.where((t) => t.kind == 'withdraw'), isEmpty);
   });
 }
 

@@ -168,12 +168,14 @@ export function rangeAmountArg(v) {
   return null;
 }
 
-export function nativeProveRange(v, r) {
+export function nativeProveRange(v, r, hedge = null) {
   if (!native) return null;
   const arg = rangeAmountArg(v);
   if (arg == null) return null;
   try {
-    const o = native.proveRange(arg, as32(r));
+    const o = hedge && hedge.length === 32
+      ? native.proveRange(arg, as32(r), as32(hedge))
+      : native.proveRange(arg, as32(r));
     return o && o.length ? Buffer.from(o) : null;
   } catch {
     return null;
@@ -276,6 +278,53 @@ export function fs1Verify({ fs1, records, root, digest, anchor }) {
   if (!fs1NativeLoaded()) return false;
   try {
     return !!native.fs1Verify(Buffer.from(fs1), Buffer.from(records), as32(root), as32(digest), Number(anchor));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Claim spend. The published record tag is one-time. `nullBases` is one
+ * 32-byte epoch base per input. `link` is 96 bytes per input.
+ */
+export function fs1ProveUnlinked(h, { indices, xs, digest, anchor, threads = 0, nullBases }) {
+  if (!fs1NativeLoaded() || !h) return null;
+  try {
+    const bases = Buffer.isBuffer(nullBases) ? nullBases : Buffer.from(nullBases);
+    const o = native.fs1ProveUnlinked(
+      h,
+      indices.map(Number),
+      Buffer.concat(xs.map((x) => as32(x))),
+      as32(digest),
+      Number(anchor),
+      threads >>> 0,
+      bases,
+    );
+    if (!o || o === false) return null;
+    return {
+      fs1: Buffer.from(o.fs1),
+      records: Buffer.from(o.records),
+      t: Buffer.from(o.t),
+      link: Buffer.from(o.link),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Verify a claim spend whose tag is not the stable FS-1 spend tag. */
+export function fs1VerifyUnlinked({ fs1, records, link, root, digest, anchor, nullBases }) {
+  if (!fs1NativeLoaded()) return false;
+  try {
+    return !!native.fs1VerifyUnlinked(
+      Buffer.from(fs1),
+      Buffer.from(records),
+      Buffer.from(link),
+      as32(root),
+      as32(digest),
+      Number(anchor),
+      Buffer.isBuffer(nullBases) ? nullBases : Buffer.from(nullBases),
+    );
   } catch {
     return false;
   }

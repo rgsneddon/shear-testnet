@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
-import { encodeWireBlock } from '../src/p2p.js';
+import { encodeWireBlock, fingerprintHelloHash } from '../src/p2p.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixturePath = path.join(root, 'node/tests/fixtures/p2p-wedge-blocks.json');
@@ -204,7 +204,7 @@ function connectPeer(port, bucket) {
     });
     sock.once('error', reject);
     sock.once('connect', () => {
-      sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
+      sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`);
       resolve({ sock, lines });
     });
   });
@@ -340,7 +340,7 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
         assert.equal(payload.includes('trustedPowHash'), false);
         const parent = `${JSON.stringify({ type: 'block', magic: MAGIC_TESTNET, block: blocks[0] })}\n`;
         const fat = payload.slice(parent.length);
-        feeder.sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
+        feeder.sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`);
         feeder.sock.write(parent);
         await waitFor(async () => {
           const sample = await stats(poolBoot.http);
