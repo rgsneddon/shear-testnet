@@ -17,12 +17,13 @@ try {
   console.error(JSON.stringify({ event: 'hash_lane', backend: laneBackend }));
 } catch { /* ignore */ }
 
-const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on('line', (line) => {
-  const tab = line.indexOf('\t');
-  if (tab < 1) return;
-  const id = line.slice(0, tab);
-  const hex = line.slice(tab + 1).trim();
+const laneTest = process.env.SHEAR_HASH_LANE_TEST === '1';
+if (laneTest && process.env.SHEAR_TEST_CRASH_ON_START === '1') process.exit(1);
+const hangPrefix = laneTest ? (process.env.SHEAR_TEST_HANG_HEADER_PREFIX || '') : '';
+const delayPrefix = laneTest ? (process.env.SHEAR_TEST_DELAY_HEADER_PREFIX || '') : '';
+const delayMs = laneTest ? (Number(process.env.SHEAR_TEST_DELAY_MS) || 0) : 0;
+
+function answer(id, hex) {
   try {
     const raw = Buffer.from(hex, 'hex');
     const hash = shearHash(raw);
@@ -31,4 +32,18 @@ rl.on('line', (line) => {
     const msg = String(err?.message || err).replace(/\s+/g, ' ').slice(0, 180);
     process.stdout.write(`${id}\tERR\t${msg}\n`);
   }
+}
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on('line', (line) => {
+  const tab = line.indexOf('\t');
+  if (tab < 1) return;
+  const id = line.slice(0, tab);
+  const hex = line.slice(tab + 1).trim();
+  if (hangPrefix && hex.startsWith(hangPrefix)) return;
+  if (delayPrefix && delayMs > 0 && hex.startsWith(delayPrefix)) {
+    setTimeout(() => answer(id, hex), delayMs);
+    return;
+  }
+  answer(id, hex);
 });

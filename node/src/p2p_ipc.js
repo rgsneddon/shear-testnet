@@ -5,7 +5,14 @@
  * This encoding has no `trustedPowHash` field.
  */
 import net from 'node:net';
-import { MAGIC_TESTNET, SAMPLE_PRUNE_CONFIRMATIONS } from '../../crypto/asert.js';
+import {
+  BITS_FP_SCALE,
+  LIVE_MIN_BITS,
+  MAGIC_TESTNET,
+  MAX_BITS,
+  SAMPLE_PRUNE_CONFIRMATIONS,
+  isPackedBits,
+} from '../../crypto/asert.js';
 import { admitWireTx } from '../../crypto/chronoflux.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { txWeight } from '../../crypto/levy.js';
@@ -196,11 +203,24 @@ function parentKnown(store, prevHex) {
   return false;
 }
 
+/**
+ * Packed Q16.16 only, and the raw quotient must sit in [LIVE_MIN_BITS, MAX_BITS].
+ * unpackBits clamps, so it cannot be this floor. Integer bits and bits 0
+ * meet a digest without being live work, and must not open a parent repair.
+ */
+function declaredBitsAdmit(bits) {
+  const n = Number(bits);
+  if (!isPackedBits(n)) return false;
+  const fp = n / BITS_FP_SCALE;
+  return fp >= LIVE_MIN_BITS && fp <= MAX_BITS;
+}
+
 /** Header work against the bits the child declares. Not the ASERT check. */
 function childMeetsTarget(block) {
   try {
     const header = Buffer.from(block.header);
     const decoded = decodeHeader(header);
+    if (!declaredBitsAdmit(decoded.bits)) return false;
     return meetsTarget(shearHash(header), decoded.bits);
   } catch {
     return false;
