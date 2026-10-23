@@ -33,6 +33,10 @@ function childEnv(extra) {
     'SHEAR_RPC_PORT', 'SHEAR_MODE',
   ]) delete env[key];
   env.SHEAR_NETWORK = MAGIC_TESTNET;
+  // These sockets sit quiet for up to 90s and do not complete hello.
+  // The production hello deadline is 20s; this file only checks ingest.
+  env.SHEAR_P2P_HELLO_MS = '600000';
+  env.SHEAR_P2P_IDLE_MS = '600000';
   return { ...env, ...extra };
 }
 
@@ -199,7 +203,10 @@ function connectPeer(port, bucket) {
       }
     });
     sock.once('error', reject);
-    sock.once('connect', () => resolve({ sock, lines }));
+    sock.once('connect', () => {
+      sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
+      resolve({ sock, lines });
+    });
   });
 }
 
@@ -333,6 +340,7 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
         assert.equal(payload.includes('trustedPowHash'), false);
         const parent = `${JSON.stringify({ type: 'block', magic: MAGIC_TESTNET, block: blocks[0] })}\n`;
         const fat = payload.slice(parent.length);
+        feeder.sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
         feeder.sock.write(parent);
         await waitFor(async () => {
           const sample = await stats(poolBoot.http);

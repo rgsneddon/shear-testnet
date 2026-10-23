@@ -20,6 +20,7 @@ import { reviveBytes } from '../../crypto/note.js';
 import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
 import { decodeWireBlock, encodeWireBlock, headerPrevHash } from './p2p.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
+import { classifyByPhase, deliverProcessFault, staysUpOnFault } from './process_guard.js';
 
 export const P2P_IPC_HOST = '127.0.0.1';
 export const P2P_IPC_PORT = 30313;
@@ -626,6 +627,9 @@ function enqueueApply(store, skip, onApplied, onFail) {
       try {
         got = await Promise.resolve(applyVerifiedIpcBlock(store, msg));
       } catch (err) {
+        const fault = classifyByPhase(err, 'verify');
+        deliverProcessFault('ipc', fault);
+        if (!staysUpOnFault(fault)) return;
         got = { ok: false, reason: String(err?.message || err).slice(0, 80) };
       }
       if (!got?.ok && powHex) skip.delete(powHex);

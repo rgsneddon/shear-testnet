@@ -6,6 +6,7 @@ import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveR
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
+import { asCommitFault } from './process_guard.js';
 import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
   buildTemplate,
@@ -48,6 +49,20 @@ import {
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 import { bookSealKeyFor } from './book_seal_key.js';
 import { ensureDatadir } from './datadir_acl.js';
+import { acquireDatadirLock } from './datadir_lock.js';
+import { chainStateError } from './process_guard.js';
+
+function throwBookFault(message) {
+  const msg = String(message || '');
+  let code = '';
+  if (msg.startsWith('datadir_magic')) code = 'datadir_magic';
+  else if (msg.startsWith('spent_checkpoint')) code = 'spent_checkpoint';
+  else if (msg.startsWith('supply_state')) code = 'supply_state';
+  else if (msg.startsWith('chain_state')) code = 'chain_state';
+  else if (msg.startsWith('book_seal')) code = 'book_seal';
+  if (!code) throw new Error(msg);
+  throw chainStateError(msg, code);
+}
 import { emptySupplyState, foldSupply, supplyFromScalar, fillSnapInterest, supplyLinks, supplyStep, publishedSupply, vaultParent, vaultAfterBlock } from './supply.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import {
@@ -274,6 +289,13 @@ function grandparentHeader(chain) {
 }
 
 const loadResumeToken = Symbol('shear-load-resume');
+
+/** Fault injection is for node:test and regtest books. A production store ignores it. */
+function faultHooksOpen(magic) {
+  if (String(magic || '') === MAGIC_REGTEST) return true;
+  const ctx = String(process.env.NODE_TEST_CONTEXT || '');
+  return ctx === 'child' || ctx === 'child-v8';
+}
 /** Two headers pages per peer. A pruned block needs SAMPLE_PRUNE_CONFIRMATIONS of them. */
 export const OFFER_PEER_CAP = 4000;
 export const OFFER_PEER_SLOTS = 8;
@@ -301,6 +323,9 @@ export function createStore(dir, {
   oracleActivationHeight = undefined,
   magic: magicIn = null,
   regtestPermit = null,
+  lock = true,
+  // Ignored unless this process is node:test or the book is regtest.
+  bookFault = null,
 } = {}, resume = null) {
   // shear-regtest is not a public book. A genesis pin (the v12 hash, or any
   // caller pin) refuses it outright. An unpinned open still needs the permit
@@ -309,12 +334,15 @@ export function createStore(dir, {
   // The check runs before the datadir is created or locked down, so a refused
   // regtest open does not touch the directory.
   const configuredMagic = String(magicIn || network || MAGIC_TESTNET);
+  const faultHooks = faultHooksOpen(configuredMagic);
+  const injectedFault = faultHooks ? (bookFault || null) : null;
   if (configuredMagic === MAGIC_REGTEST) {
     const genesisPin = String(genesisHash || '');
     if (genesisPin) throw new Error('regtest_genesis_pin');
     if (!regtestPermitOk(regtestPermit)) throw new Error('regtest_magic');
   }
   ensureDatadir(dir);
+  if (lock !== false) acquireDatadirLock(dir);
   const file = path.join(dir, 'chain.jsonl');
   const binFile = path.join(dir, 'chain.bin');
   const segDir = path.join(dir, 'segments');
@@ -418,11 +446,11 @@ export function createStore(dir, {
     const stamped = String(row?.magic || '').trim();
     if (!stamped) continue;
     if (!chainMagic) chainMagic = stamped;
-    else if (stamped !== chainMagic) throw new Error(`datadir_magic:${stamped}`);
+    else if (stamped !== chainMagic) throwBookFault(`datadir_magic:${stamped}`);
   }
-  if (fileMagic && chainMagic && fileMagic !== chainMagic) throw new Error(`datadir_magic:${fileMagic}`);
+  if (fileMagic && chainMagic && fileMagic !== chainMagic) throwBookFault(`datadir_magic:${fileMagic}`);
   const book = fileMagic || chainMagic;
-  if (book && configuredMagic && book !== configuredMagic) throw new Error(`datadir_magic:${book}`);
+  if (book && configuredMagic && book !== configuredMagic) throwBookFault(`datadir_magic:${book}`);
   // One network for this book. The datadir check, the fingerprint, the
   // book.magic writes, and every block stamp below all use bookMagic.
   const bookMagic = book || configuredMagic;
@@ -491,8 +519,8 @@ export function createStore(dir, {
           anchors: anchorsFromPlan(plan),
         },
       });
-      if (!checked.ok) throw new Error(checked.reason || 'pow');
-      if (!checked.supply) throw new Error('supply_state');
+      if (!checked.ok) throwBookFault(checked.reason || 'pow');
+      if (!checked.supply) throwBookFault('supply_state');
       supplyTip = checked.supply;
       supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
       anchorAt = Array.isArray(checked.anchors) ? checked.anchors : [];
@@ -520,7 +548,7 @@ export function createStore(dir, {
         magic: bookMagic,
         oracleActivationHeight,
       }).then((checked) => {
-        if (!checked.ok) throw new Error(checked.reason || 'pow');
+        if (!checked.ok) throwBookFault(checked.reason || 'pow');
         return createStore(dir, {
           pruneAfter,
           reorgHaltDepth,
@@ -554,8 +582,8 @@ export function createStore(dir, {
         magic: bookMagic,
         oracleActivationHeight,
       });
-      if (!checked.ok) throw new Error(checked.reason || 'pow');
-      if (!checked.supply) throw new Error('supply_state');
+      if (!checked.ok) throwBookFault(checked.reason || 'pow');
+      if (!checked.supply) throwBookFault('supply_state');
       supplyTip = checked.supply;
       supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
       anchorAt = Array.isArray(checked.anchors) ? checked.anchors : [];
@@ -2390,7 +2418,7 @@ export function createStore(dir, {
   function restoreSpentB() {
     for (let i = 0; i < blocks.length; i += 1) {
       const got = matchedSpendIds(blocks[i]);
-      if (!got.ok) throw new Error(got.reason || 'spent_checkpoint_missing');
+      if (!got.ok) throwBookFault(got.reason || 'spent_checkpoint_missing');
       for (const id of got.ids) {
         if (spentB.has(id)) throw new Error('double_open');
         spentB.add(id);
@@ -3530,6 +3558,28 @@ export function createStore(dir, {
   }
 
   function completeAppend(check, block, burial = null) {
+    let staged;
+    try {
+      staged = stageAppend(check, block, burial);
+    } catch (err) {
+      // A throw here is local state, still before owedRows is replaced.
+      // Score the block and stay up. The log is its own event, not a peer ban line.
+      const reason = String(err?.message || 'apply').slice(0, 80);
+      try {
+        console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason }));
+      } catch { /* ignore */ }
+      return { ok: false, reason, tip: tip() };
+    }
+    if (!staged || staged.ready !== true) return staged;
+    try {
+      return commitStagedAppend(staged);
+    } catch (err) {
+      throw asCommitFault(err, 'mid-commit');
+    }
+  }
+
+  // Everything through the hash-owed check. Nothing here writes the book.
+  function stageAppend(check, block, burial = null) {
     if (!check.ok) return check;
     if (!check.supplyState) return { ok: false, reason: 'supply_state' };
     const prev = tip();
@@ -3551,7 +3601,14 @@ export function createStore(dir, {
       // Verify buried a pruned block under the proven header run. Commit uses that same tip.
       tipHeight: burial ? burial.top : full.height,
     });
-    if (!owedNext.ok) throw new Error(owedNext.reason || 'hash_owed');
+    if (!owedNext.ok) return { ok: false, reason: owedNext.reason || 'hash_owed', tip: tip() };
+    if (injectedFault === 'hash-owed') return { ok: false, reason: 'hash_owed', tip: tip() };
+    if (injectedFault === 'stage') throw new Error('stage_local');
+    return { ok: true, ready: true, stored, owedNext, unitNow, burial, check };
+  }
+
+  function commitStagedAppend({ stored, owedNext, unitNow, burial, check }) {
+    if (injectedFault === 'append') throw new Error('append_fault');
     owedRows = owedNext.rows;
     acceptedSeries = owedNext.acceptedSeries;
     owedSeriesAll = acceptedSeries;
@@ -3663,7 +3720,33 @@ export function createStore(dir, {
     return mempoolVault;
   }
 
+  function insertMempool(run) {
+    const snapTxs = mempool.slice();
+    const snapTags = new Map(mempoolTags);
+    const snapVault = mempoolVault;
+    try {
+      return run();
+    } catch (err) {
+      mempool.length = 0;
+      mempool.push(...snapTxs);
+      mempoolTags.clear();
+      for (const [key, val] of snapTags) mempoolTags.set(key, val);
+      mempoolVault = snapVault;
+      return {
+        ok: false,
+        reason: String(err?.message || 'mempool').slice(0, 80),
+        scorePeer: true,
+      };
+    }
+  }
+
   function queueTx(tx, opts = {}) {
+    if (injectedFault === 'mempool') {
+      return insertMempool(() => {
+        mempool.push({ id: 'partial' });
+        throw new Error('mempool_partial');
+      });
+    }
     const capped = txIoCap(tx);
     if (!capped.ok) return capped;
     const budget = txBudget(tx);
@@ -3888,33 +3971,35 @@ export function createStore(dir, {
       admitOpts.reserveCarried = mempoolVault;
       admitOpts.verifiedFund = fundVerdictFor(tx);
     }
-    const got = admitMempool(book, tx, admitOpts);
-    if (got && got.ok && got.vaultState) mempoolVault = got.vaultState;
-    if (got.ok && got.tx && !got.duplicate && txIsReserveAction(got.tx) && noteFund?.ok && noteFund.anchor != null) {
-      const rec = noteFromAnchor(liveFlux, anchorAt, noteFund.anchor);
-      const root = rootHex(rec?.jroot);
-      const own = txSpendTags(got.tx).tags.map((tag) => tag.toString('hex'));
-      if (root && own.length) rememberFundVerdict(got.tx, tip(), noteFund.anchor, root, own);
-    }
-    if (got.ok && got.tx && !got.duplicate) {
-      emit('tx', got.tx);
-      try {
-        console.error(JSON.stringify({
-          event: 'queue_ok',
-          id: String(got.tx.id || ''),
-          kind: String(got.tx.kind || ''),
-        }));
-      } catch { /* ignore */ }
-    } else if (got && got.ok === false) {
-      try {
-        console.error(JSON.stringify({
-          event: 'admit_fail',
-          id: String(tx?.id || ''),
-          reason: String(got.reason || 'admit'),
-        }));
-      } catch { /* ignore */ }
-    }
-    return got;
+    return insertMempool(() => {
+      const got = admitMempool(book, tx, admitOpts);
+      if (got && got.ok && got.vaultState) mempoolVault = got.vaultState;
+      if (got.ok && got.tx && !got.duplicate && txIsReserveAction(got.tx) && noteFund?.ok && noteFund.anchor != null) {
+        const rec = noteFromAnchor(liveFlux, anchorAt, noteFund.anchor);
+        const root = rootHex(rec?.jroot);
+        const own = txSpendTags(got.tx).tags.map((tag) => tag.toString('hex'));
+        if (root && own.length) rememberFundVerdict(got.tx, tip(), noteFund.anchor, root, own);
+      }
+      if (got.ok && got.tx && !got.duplicate) {
+        emit('tx', got.tx);
+        try {
+          console.error(JSON.stringify({
+            event: 'queue_ok',
+            id: String(got.tx.id || ''),
+            kind: String(got.tx.kind || ''),
+          }));
+        } catch { /* ignore */ }
+      } else if (got && got.ok === false) {
+        try {
+          console.error(JSON.stringify({
+            event: 'admit_fail',
+            id: String(tx?.id || ''),
+            reason: String(got.reason || 'admit'),
+          }));
+        } catch { /* ignore */ }
+      }
+      return got;
+    });
   }
 
   function trialVaultAtForkRoot() {
@@ -5233,6 +5318,7 @@ export function createStore(dir, {
         if (verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
       };
       try {
+        if (injectedFault === 'reorg' || injectedFault === 'reorg-restore') throw new Error('reorg_fault');
         for (const id of spentB) if (!nextSpent.has(id)) spentB.delete(id);
         for (const id of nextSpent) spentB.add(id);
         fault('spent');
@@ -5295,7 +5381,14 @@ export function createStore(dir, {
         clearReorgMarkers();
         return { ok: true, reorg: true, tip: tip(), event };
       } catch (err) {
-        try { restoreAdoptImage(image); } catch { clearReorgMarkers(); }
+        try {
+          if (injectedFault === 'reorg-restore' || (faultHooks && verifyOpts.failRestore === true)) {
+            throw new Error('restore failed');
+          }
+          restoreAdoptImage(image);
+        } catch (restoreErr) {
+          throw asCommitFault(restoreErr, 'post-commit');
+        }
         return { ok: false, reason: err?.message || 'adopt_aborted', tip: tip() };
       }
     };

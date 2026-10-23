@@ -530,6 +530,7 @@ describe('pruned p2p e2e', { timeout: 21_600_000 }, () => {
     const lines = collectSock(sock);
     try {
       await lines.until((m) => m.type === 'tip', 4000);
+      sock.write(line({ type: 'hello', magic: store.magic }));
       sock.write(line({
         type: 'tip',
         magic: store.magic,

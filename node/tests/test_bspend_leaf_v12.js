@@ -255,6 +255,7 @@ describe('v12 b-spend leaf is canonical', () => {
         tick();
       });
       await waitFor(() => lines.some((m) => m.type === 'hello' || m.type === 'tip'), 3000);
+      sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`);
       const bodies = [
         { id: 'p2p-zz', kind: 'b-spend', commitHeight: 1, fee: 0, leaf: { dest20: 'zz', unit: 1, nonce: 1, tag: 'b' }, vout: [{ kind: 'b-spend' }] },
         { id: 'p2p-unit', kind: 'b-spend', commitHeight: 1, fee: 0, leaf: { dest20: '11'.repeat(20), unit: '5.0', nonce: 1, tag: 'b' }, vout: [{ kind: 'b-spend' }] },

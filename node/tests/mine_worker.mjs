@@ -12,6 +12,16 @@ const GEN = 0;
 const STATUS = 1;
 const DONE = 2;
 const READY = 3;
+export const MINE_STATUS_FOUND = 1;
+export const MINE_STATUS_EXHAUSTED = 2;
+export const MINE_STATUS_WORKER = 3;
+
+function signalWorkerFault(view) {
+  if (Atomics.load(view, STATUS) === 0) {
+    Atomics.store(view, STATUS, MINE_STATUS_WORKER);
+    Atomics.notify(view, STATUS, 1);
+  }
+}
 const HEADER_AT = 24;
 const HASH_AT = 152;
 const HEADER_LEN = 128;
@@ -25,6 +35,7 @@ if (parentPort && workerData?.role === 'lane') {
   try { setHashBackend('jit'); } catch { /* interpreter still hashes */ }
   parentPort.on('message', (msg) => {
     if (!msg || msg.type !== 'mine') return;
+    try {
     const gen = msg.gen | 0;
     const lanes = msg.lanes | 0;
     const start = BigInt(msg.nonceStart);
@@ -41,14 +52,18 @@ if (parentPort && workerData?.role === 'lane') {
       nonce64[0] = n;
       bytes.set(header, HEADER_AT);
       bytes.set(hash, HASH_AT);
-      Atomics.store(i32, STATUS, 1);
+      Atomics.store(i32, STATUS, MINE_STATUS_FOUND);
       Atomics.notify(i32, STATUS, 1);
       return;
     }
     if (Atomics.load(i32, GEN) !== gen) return;
     const done = Atomics.add(i32, DONE, 1) + 1;
-    if (done === lanes) Atomics.compareExchange(i32, STATUS, 0, 2);
+    if (done === lanes) Atomics.compareExchange(i32, STATUS, 0, MINE_STATUS_EXHAUSTED);
     Atomics.notify(i32, STATUS, 1);
+    } catch (err) {
+      signalWorkerFault(i32);
+      throw err;
+    }
   });
   Atomics.add(i32, READY, 1);
   Atomics.notify(i32, READY, 1);
@@ -99,10 +114,7 @@ async function startLanes(count) {
   for (let i = 0; i < count; i += 1) {
     const worker = new Worker(url, { workerData: { role: 'lane', sab } });
     worker.on('error', () => {
-      if (Atomics.load(i32, STATUS) === 0) {
-        Atomics.store(i32, STATUS, 2);
-        Atomics.notify(i32, STATUS, 1);
-      }
+      signalWorkerFault(i32);
     });
     workers.push(worker);
   }
@@ -140,7 +152,12 @@ export async function mineHeaderParallel(header, bits, maxTries = 8_192, threads
   }
   const waitMs = Math.max(1_000, Math.floor(Number(timeoutMs) || 60_000));
   const finished = await waitUntil(STATUS, () => Atomics.load(i32, STATUS) !== 0, waitMs);
-  if (!finished || Atomics.load(i32, STATUS) !== 1) return null;
+  const status = Atomics.load(i32, STATUS);
+  if (status === MINE_STATUS_WORKER) {
+    await closeMineWorkers();
+    throw new Error('mine_worker');
+  }
+  if (!finished || status !== MINE_STATUS_FOUND) return null;
   const nonce64 = new BigUint64Array(sab, 16, 1);
   const bytes = new Uint8Array(sab);
   return {

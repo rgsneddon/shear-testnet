@@ -12,6 +12,7 @@ import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { HTTP_BODY_MAX, HTTP_TX_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { keyedFetchRejected, syncVerdict, witnessRouteBanned } from './fs1_sync.js';
+import { classifyByPhase, faultLabel, staysUpOnFault } from './process_guard.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -161,6 +162,57 @@ function json(res, status, obj) {
   res.setHeader('content-type', 'application/json');
   res.setHeader('Cache-Control', 'no-store');
   res.end(JSON.stringify(obj));
+}
+
+/** A JSON object, not null, an array, or a boxed primitive. */
+export function isRpcObject(v) {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+const U64_MAX = 18446744073709551615n;
+
+/** A submit nonce that fits in an unsigned 64-bit header field. */
+export function nonceToU64(value) {
+  let b;
+  if (typeof value === 'bigint') b = value;
+  else if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) return null;
+    b = BigInt(value);
+  } else if (typeof value === 'string') {
+    const s = value.trim();
+    if (!/^[0-9]+$/.test(s)) return null;
+    try { b = BigInt(s); } catch { return null; }
+  } else return null;
+  if (b < 0n || b > U64_MAX) return null;
+  return b;
+}
+
+function raiseForGuard(err) {
+  // The 500 is already queued. A short turn lets that write land, then the
+  // process guard logs the fault and exits. Request-tagged faults do not get here.
+  setTimeout(() => { throw err; }, 25);
+}
+
+function finishRpcFault(res, err) {
+  const fault = classifyByPhase(err, 'pre-commit');
+  const stay = staysUpOnFault(fault);
+  console.error(`SHEAR rpc ${faultLabel(fault)} fault\n${fault?.stack || fault}`);
+  if (res && !res.headersSent && !res.writableEnded) {
+    try { json(res, 500, { ok: false, reason: 'internal' }); } catch { /* ignore */ }
+  }
+  if (stay) return;
+  if (!res || typeof res.once !== 'function' || res.writableFinished || res.destroyed) {
+    raiseForGuard(fault);
+    return;
+  }
+  let armed = false;
+  const once = () => {
+    if (armed) return;
+    armed = true;
+    raiseForGuard(fault);
+  };
+  res.once('finish', once);
+  res.once('close', once);
 }
 
 function headerOne(value) {
@@ -371,7 +423,11 @@ export function createRpc({
       return { ok: true, fingerprint: fp, admit: 'ADMITv3', hashTxLive: store.hashTxLive };
     }
     if (m === 'queuetx' || m === 'queueTx') {
-      const wrapped = !!(params && params.tx && typeof params.tx === 'object');
+      if (!isRpcObject(params)) return { ok: false, reason: 'bad_tx' };
+      if (Object.prototype.hasOwnProperty.call(params, 'tx') && !isRpcObject(params.tx)) {
+        return { ok: false, reason: 'bad_tx' };
+      }
+      const wrapped = isRpcObject(params.tx);
       const tx = wrapped ? params.tx : params;
       if (typeof store.queueTx !== 'function') return { ok: false, reason: 'no_store' };
       // Painted owed is an option beside the tx. A body field is not spendable credit.
@@ -405,9 +461,13 @@ export function createRpc({
     if (m === 'submitblock' || m === 'submitHeader') {
       if (!minePinOk(store)) return { ok: false, reason: 'reserve_deploy' };
       if (typeof store.submitHeader !== 'function') return { ok: false, reason: 'no_store' };
+      if (!isRpcObject(params)) return { ok: false, reason: 'bad_nonce' };
+      const rawNonce = Object.prototype.hasOwnProperty.call(params, 'nonce') ? params.nonce : params[1];
+      const nonce = nonceToU64(rawNonce);
+      if (nonce == null) return { ok: false, reason: 'bad_nonce' };
       return store.submitHeader({
         jobId: params.jobId || params[0],
-        nonce: params.nonce || params[1],
+        nonce: nonce.toString(),
         miner: params.miner,
         powHash: params.powHash,
         skipSharePow: params.skipSharePow,
@@ -494,7 +554,8 @@ export function createRpc({
   }
 
   const gate = rpcLoopbackBind(bind) && String(token || '').trim() !== '';
-  const server = http.createServer(async (req, res) => {
+  const server = http.createServer((req, res) => {
+    const run = async () => {
     if (gate) {
       if (!rpcHostAllowed(req.headers.host)) {
         refuseRpc(req, res, 'rpc_host');
@@ -615,6 +676,10 @@ export function createRpc({
         json(res, reason === 'body_cap' ? 413 : 400, { ok: false, reason });
         return;
       }
+      if (!isRpcObject(posted)) {
+        json(res, 400, { ok: false, reason: 'bad_body' });
+        return;
+      }
       const clientRaw = Number(posted.paintedOwedNanos);
       const clientOwed = Number.isFinite(clientRaw) && clientRaw > 0 ? Math.floor(clientRaw) : 0;
       const clientFrom = String(posted.from || '').trim();
@@ -651,7 +716,17 @@ export function createRpc({
         json(res, reason === 'body_cap' ? 413 : 400, { ok: false, reason });
         return;
       }
-      const tx = posted.tx || posted.params?.tx || posted;
+      if (!isRpcObject(posted)) {
+        json(res, 400, { ok: false, reason: 'bad_body' });
+        return;
+      }
+      const namedTx = Object.prototype.hasOwnProperty.call(posted, 'tx')
+        || (isRpcObject(posted.params) && Object.prototype.hasOwnProperty.call(posted.params, 'tx'));
+      const tx = namedTx ? (posted.tx || posted.params?.tx) : posted;
+      if (!isRpcObject(tx)) {
+        json(res, 400, { ok: false, reason: 'bad_tx' });
+        return;
+      }
       const out = dispatch('queuetx', tx);
       const resolved = typeof out?.then === 'function' ? await out : out;
       json(res, resolved?.ok === false ? 400 : 200, resolved);
@@ -664,6 +739,10 @@ export function createRpc({
       } catch (err) {
         const reason = err?.code === 'body_cap' ? 'body_cap' : (err?.code === 'json_cap' ? 'json_cap' : 'bad_json');
         json(res, reason === 'body_cap' ? 413 : 400, { ok: false, reason });
+        return;
+      }
+      if (!isRpcObject(body)) {
+        json(res, 400, { ok: false, reason: 'bad_body' });
         return;
       }
     }
@@ -679,6 +758,8 @@ export function createRpc({
       return;
     }
     json(res, statusFor(out), out);
+    };
+    run().catch((err) => finishRpcFault(res, err));
   });
 
   function listen() {
