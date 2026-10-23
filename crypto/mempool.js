@@ -14,7 +14,7 @@ import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRej
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
-import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP } from './reserve_vault.js';
+import { trialReserveApply, txIsReserveAction, verifyReserveWithdraw, RESERVE_ACTION_CAP } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
 
 export const MEMPOOL_MAX = 4096;
@@ -296,6 +296,10 @@ export function admitMempool(pool, tx, opts = {}) {
       Number.isFinite(headerMs) && headerMs > 0 ? headerMs : null,
     );
     if (!stake.ok) return { ...stake, vault: true };
+    // The block's withdraw rule, on the same pre-block vault and header time.
+    // The trial below skips a withdraw that does not open, so it cannot be the gate.
+    const rule = verifyReserveWithdraw(opts.reserveState || null, tx, opts.nowMs);
+    if (!rule.ok) return { ...rule, vault: true };
     // A carried vault already includes every accepted reserve tx. Trial only
     // this one. A caller with no carried vault still trials the prefix once.
     const useCarried = Object.prototype.hasOwnProperty.call(opts, 'reserveCarried');
