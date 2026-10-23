@@ -1288,6 +1288,9 @@ describe('p2p hello deadline and idle eviction', () => {
       assert.ok(window > P2P_CLAIM_QUEUE, 'the window is wider than the unsolicited cap');
       const rows = [];
       for (let n = 0; n < window; n += 1) rows.push(matchingBlock(200 + n));
+      // The peer is ahead, as it is during IBD. Otherwise the first verified
+      // body releases the idle catch-up and clears pending.
+      rec.height = 1000;
       rec.pending = new Set(rows.map((row) => row.hash));
       rec.want = [];
       resetP2pHashStats();
