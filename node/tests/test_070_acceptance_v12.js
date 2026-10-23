@@ -23,7 +23,7 @@ import { MAGIC_TESTNET, MAX_SHARES_PER_BLOCK, SAMPLE_PRUNE_CONFIRMATIONS, SHARE_
 import { writeChainBin } from '../../crypto/chainbin.js';
 import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { decodeHeader } from '../../crypto/header.js';
+import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { meetsTarget } from '../../crypto/shear_hash.js';
 import {
   clearLiveSharePow,
@@ -462,6 +462,33 @@ function flipPrev(block, prevHash) {
   return withHeader(block, header);
 }
 
+function stampDeclaredBits(block, bits) {
+  const decoded = decodeHeader(Buffer.from(block.header));
+  return withHeader(block, encodeHeader({
+    version: decoded.version,
+    prevBlockHash: decoded.prevBlockHash,
+    merkleRoot: decoded.merkleRoot,
+    continuityRoot: decoded.continuityRoot,
+    timestamp: decoded.timestamp,
+    bits,
+    nonce: decoded.nonce,
+    baseFee: decoded.baseFee,
+  }));
+}
+
+function unknownParent(store) {
+  const prev = createHash('sha256').update(`shear-070-unknown-prev-${store.tip().height}`).digest();
+  const hex = prev.toString('hex');
+  assert.equal(/^0+$/.test(hex), false);
+  assert.equal((store.blocks || []).some((b) => Buffer.from(b.hash).equals(prev)), false);
+  const side = typeof store.sideHashes === 'function' ? store.sideHashes() : [];
+  assert.equal((side || []).some((h) => String(h || '').toLowerCase() === hex), false);
+  if (typeof store.sideTipHash === 'function') {
+    assert.notEqual(String(store.sideTipHash() || '').toLowerCase(), hex);
+  }
+  return prev;
+}
+
 function ipcMsg(block) {
   return {
     type: 'ipc_block',
@@ -895,11 +922,15 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
             assert.ok(ipcVer.wall < R2_WALL_MS);
             executed.cheapRules += 1;
 
+            // prev is the unknown-parent gate. A parent already in the book is
+            // ingested, and the tip-height field then fails as height. Zero
+            // declared bits meet any digest, so this gate is prev, not pow.
             const ipcPrevBefore = snapStats(store);
-            const ipcPrev = await timed(() => applyVerifiedIpcBlock(
-              store,
-              ipcMsg(flipPrev(tipTemplate(store, dest), store.blocks[0].hash)),
-            ));
+            const ipcPrevBlock = stampDeclaredBits(
+              flipPrev(tipTemplate(store, dest), unknownParent(store)),
+              0,
+            );
+            const ipcPrev = await timed(() => applyVerifiedIpcBlock(store, ipcMsg(ipcPrevBlock)));
             assert.equal(ipcPrev.result.reason, 'prev', ipcPrev.result.reason);
             assertOwedStill(ipcPrevBefore, snapStats(store), 'ipc prev');
             assert.ok(ipcPrev.wall < R2_WALL_MS);
