@@ -77,6 +77,9 @@ function frame(msg) {
   return `${JSON.stringify({ ...msg, magic: MAGIC_TESTNET })}\n`;
 }
 
+// headerHash is RandomX on the test thread, about 0.5 s per header on a slow
+// box. Build every row before a socket connects. Hashing inside a live test
+// stalls the node's own loop past its idle limit and it evicts the peer.
 const wireBlocks = new Map();
 function matchingBlock(fill) {
   const key = String(fill);
@@ -655,6 +658,7 @@ describe('p2p hello deadline and idle eviction', () => {
   });
 
   it('an accepted tx or a verified block refreshes cap idle', async () => {
+    const proven = matchingBlock(0x11);
     let ingested = 0;
     const store = {
       blocks: [],
@@ -712,7 +716,6 @@ describe('p2p hello deadline and idle eviction', () => {
         txs: [],
         work: [{ tag: 'mabcdef02', count: 5 }],
       }));
-      const proven = matchingBlock(0x11);
       blockSock.write(frame({
         type: 'block',
         block: { hash: proven.hash, height: 1, header: proven.header },
@@ -1218,6 +1221,9 @@ describe('p2p hello deadline and idle eviction', () => {
   });
 
   it('queued claim hashes are capped per peer', async () => {
+    const burst = P2P_CLAIM_QUEUE + 4;
+    const rows = [];
+    for (let n = 0; n < burst; n += 1) rows.push(matchingBlock(n + 1));
     let calls = 0;
     const store = {
       blocks: [],
@@ -1242,9 +1248,7 @@ describe('p2p hello deadline and idle eviction', () => {
       sock.write(helloLine());
       await delay(40);
       resetP2pHashStats();
-      const burst = P2P_CLAIM_QUEUE + 4;
-      for (let n = 0; n < burst; n += 1) {
-        const row = matchingBlock(n + 1);
+      for (const row of rows) {
         sock.write(frame({
           type: 'block',
           block: { hash: row.hash, height: 1, header: row.header },
@@ -1260,6 +1264,10 @@ describe('p2p hello deadline and idle eviction', () => {
   });
 
   it('a full getblock window of asked bodies is hashed, and an over-cap body goes back to want', async () => {
+    const window = getblockBatch();
+    const rows = [];
+    for (let n = 0; n < window; n += 1) rows.push(matchingBlock(200 + n));
+    const extra = matchingBlock(250);
     let calls = 0;
     const store = {
       blocks: [],
@@ -1285,10 +1293,7 @@ describe('p2p hello deadline and idle eviction', () => {
       await delay(40);
       const rec = recFor(p2p, sock);
       assert.ok(rec, 'peer record');
-      const window = getblockBatch();
       assert.ok(window > P2P_CLAIM_QUEUE, 'the window is wider than the unsolicited cap');
-      const rows = [];
-      for (let n = 0; n < window; n += 1) rows.push(matchingBlock(200 + n));
       // The peer is ahead, as it is during IBD. Otherwise the first verified
       // body releases the idle catch-up and clears pending.
       rec.height = 1000;
@@ -1305,7 +1310,6 @@ describe('p2p hello deadline and idle eviction', () => {
       assert.equal(p2pHashStats().started, window);
       assert.equal(calls, window);
 
-      const extra = matchingBlock(250);
       rec.pending = new Set([extra.hash]);
       rec.want = [];
       rec.claimQueued = window;
@@ -1348,6 +1352,7 @@ describe('p2p hello deadline and idle eviction', () => {
 
     const evil = matchingBlock(0x44);
     const honest = matchingBlock(0x55);
+    const other = matchingBlock(0x66);
     let calls = 0;
     const store = {
       blocks: [],
@@ -1402,7 +1407,6 @@ describe('p2p hello deadline and idle eviction', () => {
       assert.equal(calls, 1);
       assert.equal(Number(rec()?.expensiveFails), 1);
       assert.equal(rec()?.failed instanceof Set && rec().failed.has(honest.hash), false);
-      const other = matchingBlock(0x66);
       sock.write(frame({
         type: 'block',
         block: { hash: honest.hash, height: 1, header: other.header },
@@ -1706,6 +1710,7 @@ describe('p2p hello deadline and idle eviction', () => {
   });
 
   it('a repeatable stage throw does not ban honest peers', async () => {
+    const wire = matchingBlock(0x33);
     for (const peersN of [1, 4, 8, 16]) {
       for (const deliveries of [1, 4, 10]) {
         let calls = 0;
@@ -1741,7 +1746,6 @@ describe('p2p hello deadline and idle eviction', () => {
           }
           await delay(60);
           assert.equal([...p2p.peers.values()].filter((row) => row.helloAt).length, peersN);
-          const wire = matchingBlock(0x33);
           const body = frame({
             type: 'block',
             block: { hash: wire.hash, height: 1, header: wire.header },
