@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,5 +69,21 @@ describe('shear-node CLI help', () => {
     assert.equal(row.ibd, false);
     assert.equal(row.want, 0);
     assert.match(row.hashBackend, /native|miner|missing/);
+    assert.match(row.admitNative, /^(loaded|missing)$/);
+  });
+
+  it('--status and the bootstrap emptiness check call defaultDataDir()', () => {
+    const src = fs.readFileSync(new URL('../src/node.js', import.meta.url), 'utf8');
+    const statusAt = src.indexOf("argv.includes('--status')");
+    const bootAt = src.indexOf('const dataDirForBoot');
+    assert.ok(statusAt > 0 && bootAt > statusAt);
+    const status = src.slice(statusAt, bootAt);
+    assert.match(status, /const dataDir = defaultDataDir\(\)/);
+    assert.match(status, /lock:\s*false/);
+    assert.doesNotMatch(status, /\.shear/);
+    const boot = src.slice(bootAt, bootAt + 180);
+    assert.match(boot, /const dataDirForBoot = defaultDataDir\(\)/);
+    assert.match(boot, /datadirIsEmpty\(dataDirForBoot\)/);
+    assert.match(src, /admitNative:/);
   });
 });

@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { createPool, stratumDriftShouldRefuse, configuredFeeIdentity, stratumListenPlan } from './pool.js';
+import { defaultPoolDataDir } from './pool_datadir.js';
 import { isShearAddress } from '../../crypto/address.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { attachPoolIpc, parseIpcAddr, P2P_IPC_PORT } from '../../node/src/p2p_ipc.js';
@@ -22,7 +21,7 @@ try {
   process.exit(1);
 }
 
-const dataDir = process.env.SHEAR_DATA || path.join(os.homedir(), '.shear', 'testnet-v11');
+const dataDir = defaultPoolDataDir();
 fs.mkdirSync(dataDir, { recursive: true });
 const boot = bootPoolOperator({ dataDir });
 const miner = boot.miner

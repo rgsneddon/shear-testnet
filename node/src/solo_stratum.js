@@ -8,16 +8,26 @@ import { payeeFs1Ok } from '../../crypto/n1.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { isInitialBlockDownload } from './status.js';
-import { shearHash, meetsTarget } from '../../crypto/shear_hash.js';
+import { shearHash, meetsTarget, hashBackendKind } from '../../crypto/shear_hash.js';
 import { setNonce, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
-import { HTTP_BODY_MAX, STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
+import { STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const SOLO_STRATUM_PORT = 1111;
 export const SOLO_STRATUM_BIND = '127.0.0.1';
 export const SOLO_JOB_RESTAMP_MS = 10_000;
 /** Logins accepted on one solo socket. The next one is refused before the leaf probe. */
 export const SOLO_LOGINS_PER_SOCKET = Math.max(1, Number(process.env.SHEAR_SOLO_LOGINS_PER_SOCKET || 4) || 4);
+/** A line, or a buffer with no newline yet, stops at 64 KiB. */
+export const SOLO_LINE_MAX = STRATUM_LINE_MAX;
+/** Close a socket that never logs in. */
+export const SOLO_LOGIN_MS = 15_000;
+/** Connections accepted from one remote address. */
+export const SOLO_MAX_CONN_PER_IP = 8;
+/** Connections accepted in total, across every address. */
+export const SOLO_MAX_CONN = Math.max(1, Number(process.env.SHEAR_SOLO_MAX_CONN || 64) || 64);
+/** Close a logged-in socket that sends nothing for this long. */
+export const SOLO_IDLE_MS = 120_000;
 
 function line(obj) {
   return `${JSON.stringify(obj)}\n`;
@@ -56,7 +66,7 @@ function claimedDigest(claimed) {
 }
 
 /** Recompute header hash, then dest-bound share vs block bits. Never appends. */
-export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) {
+export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest, hashKind } = {}) {
   const payEarly = String(dest || '').trim();
   if (payEarly && !payeeFs1Ok(payEarly)) return { ok: false, reason: 'admit_note_point' };
   const rec = store?.jobs?.get(String(jobId || ''));
@@ -67,7 +77,19 @@ export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest } = {}) 
   } catch {
     return { ok: false, reason: 'bad_nonce' };
   }
-  const hash = shearHash(header);
+  if (hashKind === '' || (hashKind == null && !hashBackendKind())) {
+    return { ok: false, reason: 'native_missing' };
+  }
+  let hash;
+  try {
+    hash = shearHash(header);
+  } catch (err) {
+    const text = String(err?.message || err);
+    if (err?.code === 'native_missing' || /native addon missing|ShearK-Miner not built|native missing/i.test(text)) {
+      return { ok: false, reason: 'native_missing' };
+    }
+    return { ok: false, reason: 'hash_failed' };
+  }
   const hex = hash.toString('hex');
   const want = claimedDigest(claimed);
   if (claimed != null && String(claimed).trim() !== '' && !want) {
@@ -152,6 +174,24 @@ export function soloMaySeal({ height = 0, hash = '', peers, followPublic = false
   return true;
 }
 
+function clipLog(value, head, tail) {
+  const s = String(value ?? '');
+  if (String(process.env.SHEAR_DEBUG || '').trim() === '1') return s;
+  if (s.length <= head + tail + 1) return s;
+  return `${s.slice(0, head)}…${s.slice(-tail)}`;
+}
+
+/** Share log fields. Payout dest and nonce are truncated unless SHEAR_DEBUG=1. */
+export function soloShareLogFields({ dest, jobId, nonce, hash } = {}) {
+  return {
+    event: 'solo_share',
+    dest: clipLog(dest, 8, 4),
+    jobId: clipLog(jobId, 12, 4),
+    nonce: clipLog(nonce, 6, 4),
+    hash: String(hash || ''),
+  };
+}
+
 function tipHex(block) {
   if (!block?.hash) return '';
   try { return Buffer.from(block.hash).toString('hex').toLowerCase(); } catch { return ''; }
@@ -171,13 +211,12 @@ export function applySoloSubmit({ store, jobId, nonce, claimed, dest, peers, fol
   if (!judged.ok) return judged;
   if (!judged.block) {
     try {
-      console.error(JSON.stringify({
-        event: 'solo_share',
-        dest: String(dest || ''),
-        jobId: String(jobId || ''),
-        nonce: String(nonce),
+      console.error(JSON.stringify(soloShareLogFields({
+        dest,
+        jobId,
+        nonce,
         hash: judged.hash,
-      }));
+      })));
     } catch { /* ignore */ }
     return judged;
   }
@@ -231,11 +270,34 @@ export function createSoloStratum({
   restampMs = SOLO_JOB_RESTAMP_MS,
   peers = null,
   followPublic = false,
+  loginMs = SOLO_LOGIN_MS,
+  maxPerIp = SOLO_MAX_CONN_PER_IP,
+  maxConn = SOLO_MAX_CONN,
+  idleMs = SOLO_IDLE_MS,
 } = {}) {
   const sockets = new Set();
+  const authed = new Set();
+  const lastActive = new Map();
+  const loginLimit = Number(loginMs);
+  const perIp = Math.max(1, Number(maxPerIp) || SOLO_MAX_CONN_PER_IP);
+  const connCap = Math.max(1, Number(maxConn) || SOLO_MAX_CONN);
+  const idleLimit = idleMs == null ? SOLO_IDLE_MS : Number(idleMs);
+
+  function ipOf(sock) {
+    let ip = String(sock.remoteAddress || '');
+    if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+    return ip;
+  }
+
+  function countIp(ip) {
+    let n = 0;
+    for (const sock of sockets) if (ipOf(sock) === ip) n += 1;
+    return n;
+  }
   let lastJob = null;
   let lastMiner = '';
   let restamp = null;
+  let idleSweep = null;
   let unsubTip = null;
 
   function pushFreshJob() {
@@ -272,21 +334,41 @@ export function createSoloStratum({
   function pushJob(job, shareBits) {
     const payload = line({ method: 'job', params: soloWireJob(job, shareBits) });
     for (const sock of sockets) {
+      if (!authed.has(sock)) continue;
       try { sock.write(payload); } catch { /* ignore */ }
     }
   }
 
   const server = net.createServer((sock) => {
     try { sock.setNoDelay(true); } catch { /* ignore */ }
+    if (sockets.size >= connCap || countIp(ipOf(sock)) >= perIp) {
+      try { sock.destroy(); } catch { /* ignore */ }
+      return;
+    }
     sockets.add(sock);
+    lastActive.set(sock, Date.now());
     let buf = '';
     let session = null;
     let logins = 0;
     let refused = false;
+    let loginTimer = null;
+    if (Number.isFinite(loginLimit) && loginLimit > 0) {
+      loginTimer = setTimeout(() => {
+        try { sock.destroy(); } catch { /* ignore */ }
+      }, loginLimit);
+      if (typeof loginTimer.unref === 'function') loginTimer.unref();
+    }
+    function clearLoginTimer() {
+      if (!loginTimer) return;
+      clearTimeout(loginTimer);
+      loginTimer = null;
+    }
     sock.on('data', (chunk) => {
+      lastActive.set(sock, Date.now());
+      try {
       if (refused) return;
       buf += chunk.toString('utf8');
-      if (buf.length > HTTP_BODY_MAX) {
+      if (buf.length > SOLO_LINE_MAX) {
         try { sock.destroy(); } catch { /* ignore */ }
         return;
       }
@@ -295,12 +377,19 @@ export function createSoloStratum({
         const raw = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!raw) continue;
-        if (raw.length > STRATUM_LINE_MAX) {
+        if (raw.length > SOLO_LINE_MAX) {
           try { sock.destroy(); } catch { /* ignore */ }
           return;
         }
         let msg;
-        try { msg = parseBoundedJson(raw); } catch { continue; }
+        try { msg = parseBoundedJson(raw); } catch {
+          try { sock.write(line({ id: null, error: 'bad_json' })); } catch { /* ignore */ }
+          continue;
+        }
+        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+          try { sock.write(line({ id: null, error: 'bad_json' })); } catch { /* ignore */ }
+          continue;
+        }
         const method = msg.method || msg.id;
         const params = msg.params || msg;
         const isLogin = method === 'login'
@@ -324,6 +413,8 @@ export function createSoloStratum({
             return;
           }
           session = { dest: adm.dest, worker: adm.worker, login: adm.login };
+          authed.add(sock);
+          clearLoginTimer();
           const shareBits = Number(params.shareBits) || SHARE_FLOOR_BITS;
           const job = issueJob(adm.dest, shareBits);
           if (!job) {
@@ -378,9 +469,19 @@ export function createSoloStratum({
           continue;
         }
       }
+      } catch (err) {
+        try {
+          console.error(JSON.stringify({
+            event: 'solo_fault',
+            error: String(err?.message || err).slice(0, 200),
+          }));
+        } catch { /* ignore */ }
+        try { sock.write(line({ id: null, error: 'bad_message' })); } catch { /* ignore */ }
+        try { sock.destroy(); } catch { /* ignore */ }
+      }
     });
-    sock.on('close', () => { sockets.delete(sock); });
-    sock.on('error', () => { sockets.delete(sock); });
+    sock.on('close', () => { clearLoginTimer(); authed.delete(sock); lastActive.delete(sock); sockets.delete(sock); });
+    sock.on('error', () => { clearLoginTimer(); authed.delete(sock); lastActive.delete(sock); sockets.delete(sock); });
   });
 
   function listen() {
@@ -397,6 +498,19 @@ export function createSoloStratum({
         if (Number.isFinite(interval) && interval > 0) {
           restamp = setInterval(pushFreshJob, interval);
           if (typeof restamp.unref === 'function') restamp.unref();
+        }
+        if (Number.isFinite(idleLimit) && idleLimit > 0) {
+          const sweepMs = Math.min(1000, Math.max(50, Math.floor(idleLimit / 2)));
+          idleSweep = setInterval(() => {
+            const now = Date.now();
+            for (const sock of sockets) {
+              if (!authed.has(sock)) continue;
+              const at = lastActive.get(sock) || 0;
+              if (now - at < idleLimit) continue;
+              try { sock.destroy(); } catch { /* ignore */ }
+            }
+          }, sweepMs);
+          if (typeof idleSweep.unref === 'function') idleSweep.unref();
         }
         resolve({
           port: typeof addr === 'object' && addr ? addr.port : port,
@@ -415,9 +529,15 @@ export function createSoloStratum({
       clearInterval(restamp);
       restamp = null;
     }
+    if (idleSweep) {
+      clearInterval(idleSweep);
+      idleSweep = null;
+    }
     for (const sock of sockets) {
       try { sock.destroy(); } catch { /* ignore */ }
     }
+    authed.clear();
+    lastActive.clear();
     sockets.clear();
     try { server.close(); } catch { /* ignore */ }
   }

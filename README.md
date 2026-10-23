@@ -92,6 +92,8 @@ make -C crypto/native
 
 ### Run
 
+The datadir must be a local disk. A network filesystem (NFS, SMB, and the like) is unsupported: the lock is local to this host and cannot see a Shear process on another machine.
+
 ```bash
 sudo mkdir -p /var/lib/shear/testnet-v11
 sudo chown "$USER":"$USER" /var/lib/shear/testnet-v11

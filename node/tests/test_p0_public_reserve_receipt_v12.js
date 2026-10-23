@@ -35,7 +35,7 @@ import {
 } from '../../crypto/spend.js';
 import { typedKindNeedsAdmitV3 } from '../../crypto/admit_v3.js';
 import { jsonWire } from '../src/p2p.js';
-import { createP2p } from '../src/p2p.js';
+import { createP2p, fingerprintHelloHash } from '../src/p2p.js';
 import { createRpc } from '../src/rpc.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -198,7 +198,7 @@ function p2pTx(port, magic, tx) {
   const line = `${JSON.stringify({ type: 'tx', magic, tx })}\n`;
   return new Promise((resolve, reject) => {
     const sock = net.connect({ host: '127.0.0.1', port }, () => {
-      sock.write(line);
+      sock.write(`${JSON.stringify({ type: 'hello', magic, fingerprint: fingerprintHelloHash(magic) })}\n${line}`);
       setTimeout(() => {
         sock.destroy();
         resolve();

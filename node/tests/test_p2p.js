@@ -63,6 +63,7 @@ import {
   peerEventFields,
   isRoutablePeerAddr,
   createP2p,
+  fingerprintHelloHash,
   HEADERS_PAGE,
   GETBLOCK_BATCH,
   GETBLOCK_WAIT_MS,
@@ -1243,6 +1244,11 @@ function tipsEqual(a, b) {
   return ta.height === tb.height && Buffer.from(ta.hash).equals(Buffer.from(tb.hash));
 }
 
+async function greet(sock) {
+  sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET, fingerprint: fingerprintHelloHash(MAGIC_TESTNET) })}\n`);
+  await readJsonLines(sock, 3, 2000);
+}
+
 async function readJsonLines(sock, want, ms = 3000) {
   const lines = [];
   let buf = '';
@@ -1314,6 +1320,7 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
     const sock = net.connect(bound.port, '127.0.0.1');
     try {
       await readJsonLines(sock, 2, 2000);
+      await greet(sock);
       sock.write(`${JSON.stringify({
         type: 'tip',
         magic: MAGIC_TESTNET,
@@ -1353,6 +1360,7 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
     const sock = net.connect(bound.port, '127.0.0.1');
     try {
       await readJsonLines(sock, 2, 2000);
+      await greet(sock);
       sock.write(`${JSON.stringify({
         type: 'getheaders',
         magic: MAGIC_TESTNET,
@@ -1561,6 +1569,8 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
     try {
       await readJsonLines(announcer, 2, 2000);
       await readJsonLines(next, 2, 2000);
+      await greet(announcer);
+      await greet(next);
       const hash = fakeHash(11);
       const t0 = Date.now();
       announcer.write(`${JSON.stringify({
@@ -1602,6 +1612,8 @@ describe('p2p IBD catch-up', { timeout: fileCapMs(import.meta.url) }, () => {
     try {
       await readJsonLines(announcer, 2, 2000);
       await readJsonLines(next, 2, 2000);
+      await greet(announcer);
+      await greet(next);
       const foreign = fakeHash(99);
       announcer.write(`${JSON.stringify({
         type: 'tip',
