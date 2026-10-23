@@ -1693,6 +1693,7 @@ describe('p2p hello deadline and idle eviction', () => {
       remote.write(line({ type: 'serve_busy', what: 'getheaders' }));
       await delay(50);
       assert.ok(Number(rec.softHoldUntil) > Date.now(), 'soft retry armed');
+      assert.ok(Number(rec.softHoldUntil) <= Date.now() + P2P_SERVE_WINDOW_MS, 'held for one serve window');
       assert.ok(rec.softTimer, 'retry clears syncing');
     } finally {
       mesh.close();
