@@ -21,6 +21,7 @@ let children = [];
 let seq = 0;
 
 const pending = new Map();
+let spawned = 0;
 
 let active = 0;
 let maxActive = 0;
@@ -33,9 +34,11 @@ let workerMaxActive = 0;
 const waiters = [];
 
 /**
- * A lane that has not answered one header in this long is hung. Its jobs
- * fail as a local worker fault and the lanes restart. Light RandomX hashes
- * one header in milliseconds, so this only trips on a stuck child.
+ * A lane that has not answered one header in this long is hung. That lane's
+ * jobs fail as a local worker fault and only that child is replaced.
+ * A child that exits or errors is left down until the next post asks for a
+ * lane. Light RandomX hashes one header in milliseconds, so the timer only
+ * trips on a stuck child.
  */
 export const HASH_WORKER_TIMEOUT_MS = 120_000;
 export const HASH_WORKER_TIMEOUT_MIN_MS = 5_000;
@@ -48,6 +51,10 @@ function workerTimeoutMs(env = process.env) {
 
 export function p2pHashCap() {
   return P2P_VERIFY_CAP;
+}
+
+export function p2pHashSpawns() {
+  return spawned;
 }
 
 export function p2pHashStats() {
@@ -80,31 +87,43 @@ function touchChild(proc, live) {
   try { proc.stdin?.[fn](); } catch { /* ignore */ }
 }
 
-function failPending(err) {
-  const dead = children;
-  children = [];
-  for (const proc of dead) {
-    try { proc.kill(); } catch { /* ignore */ }
+function retireChild(proc, err, replace = false) {
+  const idx = children.indexOf(proc);
+  if (idx < 0) return;
+  children.splice(idx, 1);
+  const jobs = [];
+  for (const [id, job] of pending) {
+    if (job.proc !== proc || job.done) continue;
+    job.done = true;
+    pending.delete(id);
+    jobs.push(job);
   }
-  workerActive = 0;
-  if (!pending.size) return;
-  const jobs = [...pending.values()];
-  pending.clear();
+  proc._inflight = 0;
+  workerActive = Math.max(0, workerActive - jobs.length);
+  try { proc.kill(); } catch { /* ignore */ }
   for (const job of jobs) job.reject(err);
+  // A timeout replaces that one lane. An exit or error does not: the next
+  // post fills the cap, so a child that dies at startup cannot respawn itself.
+  if (replace) {
+    try { bootChild(); } catch { /* the next post boots a replacement */ }
+  }
 }
 
 function bootChild() {
+  spawned += 1;
   const proc = spawn(process.execPath, [childUrl], {
     stdio: ['pipe', 'pipe', 'inherit'],
     windowsHide: true,
   });
   proc._inflight = 0;
+  proc.stdin.on('error', () => { /* a dead lane's pipe closes on exit */ });
   const rl = createInterface({ input: proc.stdout });
   rl.on('line', (line) => {
     const parts = line.split('\t');
     const id = Number(parts[0]);
     const job = pending.get(id);
-    if (!job) return;
+    if (!job || job.done) return;
+    job.done = true;
     pending.delete(id);
     if (proc._inflight > 0) proc._inflight -= 1;
     if (workerActive > 0) workerActive -= 1;
@@ -112,10 +131,13 @@ function bootChild() {
     else job.resolve(Buffer.from(parts[1], 'hex'));
     if (proc._inflight === 0) touchChild(proc, false);
   });
-  proc.on('error', (err) => failPending(err instanceof Error ? err : new Error(String(err))));
+  proc.on('error', (err) => {
+    if (!children.includes(proc)) return;
+    retireChild(proc, err instanceof Error ? err : new Error(String(err)));
+  });
   proc.on('exit', () => {
     if (!children.includes(proc)) return;
-    failPending(new Error('hash_worker_exit'));
+    retireChild(proc, new Error('hash_worker_exit'));
   });
   touchChild(proc, false);
   children.push(proc);
@@ -136,15 +158,24 @@ function post(header) {
   const headerHex = Buffer.from(header).toString('hex');
   return new Promise((resolveJob, rejectJob) => {
     const timer = setTimeout(() => {
-      if (pending.get(id)?.timer === timer) failPending(new Error('hash_worker_timeout'));
+      const job = pending.get(id);
+      if (!job || job.timer !== timer) return;
+      if (!job.proc) {
+        pending.delete(id);
+        job.reject(new Error('hash_worker_timeout'));
+        return;
+      }
+      retireChild(job.proc, new Error('hash_worker_timeout'), true);
     }, workerTimeoutMs());
     timer.unref?.();
     const resolve = (v) => { clearTimeout(timer); resolveJob(v); };
     const reject = (e) => { clearTimeout(timer); rejectJob(e); };
-    pending.set(id, { resolve, reject, timer });
+    pending.set(id, { resolve, reject, timer, proc: null });
     let proc;
     try {
       proc = pickChild();
+      const job = pending.get(id);
+      if (job) job.proc = proc;
       proc._inflight = (proc._inflight || 0) + 1;
       touchChild(proc, true);
       workerActive += 1;

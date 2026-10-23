@@ -19,12 +19,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { newIdentity } from '../../crypto/address.js';
-import { MAGIC_TESTNET, MAX_SHARES_PER_BLOCK, SAMPLE_PRUNE_CONFIRMATIONS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { LIVE_MIN_BITS, MAGIC_TESTNET, MAX_SHARES_PER_BLOCK, SAMPLE_PRUNE_CONFIRMATIONS, SHARE_FLOOR_BITS, packBits } from '../../crypto/asert.js';
 import { writeChainBin } from '../../crypto/chainbin.js';
 import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { decodeHeader, encodeHeader } from '../../crypto/header.js';
-import { meetsTarget } from '../../crypto/shear_hash.js';
+import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
+import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
 import {
   clearLiveSharePow,
   nonceWithShareTarget,
@@ -476,6 +476,19 @@ function stampDeclaredBits(block, bits) {
   }));
 }
 
+function mineDeclaredBits(block, bitsFp) {
+  const bits = packBits(bitsFp);
+  const stamped = stampDeclaredBits(block, bits);
+  let header = Buffer.from(stamped.header);
+  let nonce = 0n;
+  while (nonce < 200000n) {
+    header = setNonce(header, nonce);
+    if (meetsTarget(shearHash(header), bits)) return withHeader(stamped, header);
+    nonce += 1n;
+  }
+  throw new Error('declared bits header missed its target');
+}
+
 function unknownParent(store) {
   const prev = createHash('sha256').update(`shear-070-unknown-prev-${store.tip().height}`).digest();
   const hex = prev.toString('hex');
@@ -922,18 +935,27 @@ describe('v12 070 acceptance spread', { concurrency: false }, () => {
             assert.ok(ipcVer.wall < R2_WALL_MS);
             executed.cheapRules += 1;
 
-            // prev is the unknown-parent gate. A parent already in the book is
-            // ingested, and the tip-height field then fails as height. Zero
-            // declared bits meet any digest, so this gate is prev, not pow.
+            // prev is the unknown-parent gate. Mine at the live floor outside
+            // the R2 timer: bits 0 meets any digest and must not open repair.
             const ipcPrevBefore = snapStats(store);
-            const ipcPrevBlock = stampDeclaredBits(
+            const ipcPrevBlock = mineDeclaredBits(
               flipPrev(tipTemplate(store, dest), unknownParent(store)),
-              0,
+              LIVE_MIN_BITS,
             );
             const ipcPrev = await timed(() => applyVerifiedIpcBlock(store, ipcMsg(ipcPrevBlock)));
             assert.equal(ipcPrev.result.reason, 'prev', ipcPrev.result.reason);
             assertOwedStill(ipcPrevBefore, snapStats(store), 'ipc prev');
             assert.ok(ipcPrev.wall < R2_WALL_MS);
+            executed.cheapRules += 1;
+
+            // A parent already in the book is ingested. Genesis is known, so
+            // the tip-height field fails as height and does not ask for a parent.
+            const ipcHeightBefore = snapStats(store);
+            const ipcHeightBlock = flipPrev(tipTemplate(store, dest), store.blocks[0].hash);
+            const ipcHeight = await timed(() => applyVerifiedIpcBlock(store, ipcMsg(ipcHeightBlock)));
+            assert.equal(ipcHeight.result.reason, 'height', ipcHeight.result.reason);
+            assertOwedStill(ipcHeightBefore, snapStats(store), 'ipc height');
+            assert.ok(ipcHeight.wall < R2_WALL_MS);
             executed.cheapRules += 1;
 
             await settleHeap();

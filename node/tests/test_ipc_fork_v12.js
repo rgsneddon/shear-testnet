@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { GENESIS_BITS_PACKED, MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS, nextBits } from '../../crypto/asert.js';
+import { GENESIS_BITS_PACKED, LIVE_MIN_BITS, MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS, nextBits, packBits } from '../../crypto/asert.js';
 import { VERSION, decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
 import { meetsTarget, setHashBackend, shearHash } from '../../crypto/shear_hash.js';
 
@@ -177,7 +177,7 @@ function easyChain(n, firstPrev) {
   for (let i = 0; i < n; i += 1) {
     const block = mineEasy({
       prev,
-      bits: 4,
+      bits: packBits(LIVE_MIN_BITS),
       timestamp: BigInt(1_700_000_000_000 + i),
     });
     block.height = i + 1;
@@ -289,7 +289,7 @@ describe('IPC stages a known-parent fork and repairs only an unknown parent', ()
   it('an unknown parent is asked once, and a second burst inside the retry gap is suppressed', async () => {
     const pool = freshStore('shear-ipc-unk-');
     appendReal(pool, winner);
-    const child = mineEasy({ prev: Buffer.alloc(32, 0xab), bits: 4 });
+    const child = mineEasy({ prev: Buffer.alloc(32, 0xab), bits: packBits(LIVE_MIN_BITS) });
     await withPool(pool, async ({ sock, lines }) => {
       sendBlock(sock, child);
       const first = await waitFor(() => asks(lines).length >= 1);
@@ -318,10 +318,27 @@ describe('IPC stages a known-parent fork and repairs only an unknown parent', ()
     });
     const hash = shearHash(header);
     assert.equal(meetsTarget(hash, 16), false);
+    const zero = encodeHeader({
+      version: VERSION,
+      prevBlockHash: Buffer.alloc(32, 0xce),
+      merkleRoot: Buffer.alloc(32, 1),
+      continuityRoot: Buffer.alloc(32, 2),
+      timestamp: 1_700_000_000_000n,
+      bits: 0,
+      nonce: 0n,
+      baseFee: 1n,
+    });
+    const zeroHash = shearHash(zero);
+    assert.equal(meetsTarget(zeroHash, 0), true);
     await withPool(pool, async ({ sock, lines, logs }) => {
       sendBlock(sock, { header, hash, height: 9, txs: [] });
       const saw = await waitFor(() => logs.some((line) => line.includes('"reason":"pow"')));
       assert.equal(saw, true, logs.join(' | '));
+      const powLogs = () => logs.filter((line) => line.includes('"reason":"pow"')).length;
+      const before = powLogs();
+      sendBlock(sock, { header: zero, hash: zeroHash, height: 9, txs: [] });
+      const sawZero = await waitFor(() => powLogs() > before);
+      assert.equal(sawZero, true, logs.join(' | '));
       await new Promise((r) => setTimeout(r, 200));
       assert.equal(asks(lines).length, 0);
       assert.equal(tipHex(pool), winnerHex);
