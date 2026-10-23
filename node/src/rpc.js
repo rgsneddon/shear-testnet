@@ -12,7 +12,7 @@ import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { HTTP_BODY_MAX, HTTP_TX_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { keyedFetchRejected, syncVerdict, witnessRouteBanned } from './fs1_sync.js';
-import { faultLabel, staysUpOnFault } from './process_guard.js';
+import { classifyByPhase, faultLabel, staysUpOnFault } from './process_guard.js';
 
 export const RPC_PORT = 18332;
 export const RPC_HOST = '127.0.0.1';
@@ -194,21 +194,22 @@ function raiseForGuard(err) {
 }
 
 function finishRpcFault(res, err) {
-  const stay = staysUpOnFault(err);
-  console.error(`SHEAR rpc ${faultLabel(err)} fault\n${err?.stack || err}`);
+  const fault = classifyByPhase(err, 'pre-commit');
+  const stay = staysUpOnFault(fault);
+  console.error(`SHEAR rpc ${faultLabel(fault)} fault\n${fault?.stack || fault}`);
   if (res && !res.headersSent && !res.writableEnded) {
     try { json(res, 500, { ok: false, reason: 'internal' }); } catch { /* ignore */ }
   }
   if (stay) return;
   if (!res || typeof res.once !== 'function' || res.writableFinished || res.destroyed) {
-    raiseForGuard(err);
+    raiseForGuard(fault);
     return;
   }
   let armed = false;
   const once = () => {
     if (armed) return;
     armed = true;
-    raiseForGuard(err);
+    raiseForGuard(fault);
   };
   res.once('finish', once);
   res.once('close', once);

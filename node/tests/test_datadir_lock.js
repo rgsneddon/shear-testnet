@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../src/store.js';
 import { defaultDataDir } from '../src/node.js';
-import { acquireDatadirLock, DATADIR_LOCK_NAME } from '../src/datadir_lock.js';
+import { acquireDatadirLock, DATADIR_CLAIM_NAME, DATADIR_LOCK_NAME } from '../src/datadir_lock.js';
 import { defaultPoolDataDir } from '../../pool/src/pool_datadir.js';
 
 const self = fileURLToPath(import.meta.url);
@@ -125,7 +125,9 @@ describe('datadir lock', () => {
     });
     assert.equal(child.status, 2, `${child.stdout}\n${child.stderr}`);
     assert.match(`${child.stderr}`, /datadir in use/);
-    assert.match(`${child.stderr}`, /pid /);
+    assert.match(`${child.stderr}`, new RegExp(`pid ${process.pid}`));
+    assert.match(`${child.stderr}`, new RegExp(os.hostname().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(`${child.stderr}`, /delete /);
     assert.match(`${child.stderr}`, /datadir\.lock/);
 
     const reused = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-reused-'));
@@ -158,6 +160,41 @@ describe('datadir lock', () => {
     assert.equal(loses.length, 1, JSON.stringify(results));
     assert.match(loses[0].stderr, /datadir\.lock/);
     assert.match(loses[0].stderr, /datadir_in_use|datadir in use/);
+  });
+
+  it('clears an abandoned claim and fails closed on a live one', () => {
+    const stalePid = 2_100_000_000;
+    const stat = fs.readFileSync('/proc/1/stat', 'utf8');
+    const start = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
+    assert.ok(start);
+
+    const foreign = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-claim-foreign-'));
+    const foreignClaim = path.join(foreign, DATADIR_CLAIM_NAME);
+    fs.writeFileSync(foreignClaim, `${JSON.stringify({ pid: stalePid, host: 'other-host', start: '9' })}\n`);
+    const foreignHeld = acquireDatadirLock(foreign);
+    assert.equal(foreignHeld.pid || JSON.parse(fs.readFileSync(foreignHeld.path, 'utf8')).pid, process.pid);
+    assert.equal(fs.existsSync(foreignClaim), false);
+
+    const reused = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-claim-reused-'));
+    const reusedClaim = path.join(reused, DATADIR_CLAIM_NAME);
+    fs.writeFileSync(reusedClaim, `${JSON.stringify({ pid: 1, host: os.hostname(), start: 'not-the-live-start' })}\n`);
+    const reusedHeld = acquireDatadirLock(reused);
+    assert.equal(JSON.parse(fs.readFileSync(reusedHeld.path, 'utf8')).pid, process.pid);
+    assert.equal(fs.existsSync(reusedClaim), false);
+
+    const live = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-claim-live-'));
+    const liveClaim = path.join(live, DATADIR_CLAIM_NAME);
+    const body = `${JSON.stringify({ pid: 1, host: os.hostname(), start })}\n`;
+    fs.writeFileSync(liveClaim, body);
+    assert.throws(() => acquireDatadirLock(live), (err) => {
+      assert.equal(err.code, 'datadir_in_use');
+      assert.match(err.message, /pid 1/);
+      assert.match(err.message, new RegExp(os.hostname().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(err.message, /datadir\.lock\.claim/);
+      assert.match(err.message, /delete /);
+      return true;
+    });
+    assert.equal(fs.readFileSync(liveClaim, 'utf8'), body);
   });
 
   it('a node and a pool on one host use different default folders', () => {

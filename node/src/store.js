@@ -6,6 +6,7 @@ import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveR
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { hashHex } from '../../crypto/shear_hash.js';
+import { asCommitFault } from './process_guard.js';
 import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
   buildTemplate,
@@ -3546,6 +3547,14 @@ export function createStore(dir, {
   }
 
   function completeAppend(check, block, burial = null) {
+    try {
+      return applyAppend(check, block, burial);
+    } catch (err) {
+      throw asCommitFault(err, 'mid-commit');
+    }
+  }
+
+  function applyAppend(check, block, burial = null) {
     if (!check.ok) return check;
     if (!check.supplyState) return { ok: false, reason: 'supply_state' };
     const prev = tip();

@@ -10,6 +10,8 @@ import { createRpc } from '../src/rpc.js';
 import {
   FAULT_EXIT,
   STORE_CORRUPT_EXIT,
+  classifyByPhase,
+  faultExitCode,
   installNodeGuards,
   isChainStateError,
   isStoreCorruptError,
@@ -18,6 +20,8 @@ import {
 const self = fileURLToPath(import.meta.url);
 const guardProbe = process.argv.includes('--guard-probe');
 const spread = process.argv.includes('--fault-spread');
+const phaseInject = process.argv.includes('--phase-inject');
+const BOOK = { tip: 7, supply: 11, spent: 3, jroot: 'cd'.repeat(32) };
 
 function makeFault(kind, detail) {
   const err = new Error(detail);
@@ -57,6 +61,13 @@ if (guardProbe) {
 
 if (spread) {
   runSpreadChild().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+if (phaseInject) {
+  runPhaseChild().catch((err) => {
     console.error(err);
     process.exit(1);
   });
@@ -147,6 +158,90 @@ async function runSpreadChild() {
   }
   console.error(`unknown source ${source}`);
   process.exit(1);
+}
+
+function phaseError(phase) {
+  const err = new Error(`inject ${phase}`);
+  err.shearPhase = phase;
+  return err;
+}
+
+async function runPhaseChild() {
+  const idx = process.argv.indexOf('--phase-inject');
+  const source = process.argv[idx + 1];
+  const phase = process.argv[idx + 2];
+  installNodeGuards();
+  const book = { ...BOOK };
+  const publish = () => console.log(JSON.stringify({ book: { ...book } }));
+  publish();
+  const aliveMs = source === 'rpc' ? 2500 : 800;
+  setTimeout(() => {
+    publish();
+    console.log('alive');
+    process.exit(0);
+  }, aliveMs);
+  const boom = () => {
+    throw phaseError(phase);
+  };
+  if (source === 'rpc') {
+    const store = {
+      tip() { return { height: book.tip, hash: book.jroot }; },
+      on() { return () => {}; },
+      reservePinOk() { return true; },
+      submitHeader() { boom(); },
+    };
+    const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
+    const bound = await rpc.listen();
+    console.log(JSON.stringify({ port: bound.port }));
+    return;
+  }
+  const store = {
+    blocks: [],
+    tip() { return { height: book.tip, hash: book.jroot }; },
+    on() { return () => {}; },
+    offerHeaders() {
+      if (source === 'message') boom();
+      return { accepted: 0 };
+    },
+    ingest() {
+      if (source === 'ingest') return Promise.reject(phaseError(phase));
+      return { ok: false, reason: 'skip' };
+    },
+  };
+  const p2p = createP2p({
+    store,
+    port: 0,
+    host: '127.0.0.1',
+    magic: MAGIC_TESTNET,
+    helloMs: 5000,
+    idleMs: 60000,
+  });
+  const bound = await p2p.listen();
+  const sock = net.connect(bound.port, '127.0.0.1');
+  sock.on('data', () => {});
+  sock.on('error', () => {});
+  await new Promise((resolve, reject) => {
+    sock.once('connect', resolve);
+    sock.once('error', reject);
+  });
+  const hello = `${JSON.stringify({ type: 'hello', magic: MAGIC_TESTNET })}\n`;
+  const line = source === 'message'
+    ? `${JSON.stringify({
+      type: 'headers',
+      magic: MAGIC_TESTNET,
+      headers: [{ hash: 'ab'.repeat(32), height: 1 }],
+    })}\n`
+    : `${JSON.stringify({
+      type: 'block',
+      magic: MAGIC_TESTNET,
+      block: {
+        header: '11'.repeat(128),
+        hash: '22'.repeat(32),
+        height: 1,
+        txs: [],
+      },
+    })}\n`;
+  sock.write(hello + line);
 }
 
 function runProbe(mode) {
@@ -242,7 +337,7 @@ function runSpread(source, timing, kind) {
   });
 }
 
-if (!guardProbe && !spread) describe('process guards', () => {
+if (!guardProbe && !spread && !phaseInject) describe('process guards', () => {
   it('classifies chain-state and store-corruption by flag or code only', () => {
     assert.equal(isChainStateError(Object.assign(new Error('chain_state:x'), { chainState: true })), true);
     assert.equal(isChainStateError(Object.assign(new Error('datadir_magic:shear-v1'), { code: 'datadir_magic' })), true);
@@ -257,6 +352,13 @@ if (!guardProbe && !spread) describe('process guards', () => {
     assert.equal(isStoreCorruptError(new Error('store_corrupt:book')), false);
     assert.equal(isStoreCorruptError(Object.assign(new Error('chain_state:book'), { chainState: true, code: 'chain_state' })), false);
     assert.equal(isStoreCorruptError(Object.assign(new Error('datadir_magic:shear-v1'), { code: 'datadir_magic' })), false);
+    const decoded = classifyByPhase(new Error('bad header'), 'decode');
+    assert.equal(decoded.shearScope, 'request');
+    assert.equal(faultExitCode(decoded), FAULT_EXIT);
+    const committed = classifyByPhase(new Error('half written'), 'post-commit');
+    assert.equal(committed.chainState, true);
+    assert.equal(faultExitCode(committed), STORE_CORRUPT_EXIT);
+    assert.equal(faultExitCode(new Error('untagged boom')), FAULT_EXIT);
   });
 
   it('stays up only on a request-tagged fault and exits on chain-state and untagged faults', async () => {
@@ -267,7 +369,7 @@ if (!guardProbe && !spread) describe('process guards', () => {
     assert.match(request.stderr, /request boom/);
     assert.doesNotMatch(request.stderr, /SHEAR exit/);
     const chain = await runProbe('chain');
-    assert.equal(chain.code, FAULT_EXIT, chain.stdout + chain.stderr);
+    assert.equal(chain.code, STORE_CORRUPT_EXIT, chain.stdout + chain.stderr);
     assert.match(chain.stderr, /SHEAR unhandledRejection chain-state/);
     assert.match(chain.stderr, /SHEAR exit chain-state/);
     assert.match(chain.stderr, /chain_state:book/);
@@ -287,7 +389,7 @@ if (!guardProbe && !spread) describe('process guards', () => {
     assert.doesNotMatch(corrupt.stdout, /alive/);
   });
 
-  it('exits from rpc, p2p, and timer faults unless the fault is request-tagged', async () => {
+  it('stays up on a pre-commit peer or rpc fault and exits on commit or an untagged timer', async () => {
     const sources = ['rpc', 'p2p', 'timer'];
     const timings = ['sync', 'async'];
     const kinds = ['request', 'chain', 'untagged'];
@@ -296,15 +398,19 @@ if (!guardProbe && !spread) describe('process guards', () => {
         for (const kind of kinds) {
           const got = await runSpread(source, timing, kind);
           const label = `${source} ${timing} ${kind}`;
-          if (kind === 'request') {
+          const preCommit = kind === 'untagged' && source !== 'timer';
+          if (kind === 'request' || preCommit) {
             assert.equal(got.code, 0, `${label}\n${got.stderr}`);
             assert.match(got.stdout, /alive/, label);
             assert.match(got.stderr, /SHEAR \S+ request/, label);
             assert.doesNotMatch(got.stderr, /SHEAR exit/, label);
+          } else if (kind === 'chain') {
+            assert.equal(got.code, STORE_CORRUPT_EXIT, `${label}\n${got.stdout}\n${got.stderr}`);
+            assert.match(got.stderr, /SHEAR exit chain-state/, label);
+            assert.doesNotMatch(got.stdout, /alive/, label);
           } else {
-            const exitLabel = kind === 'chain' ? 'chain-state' : 'untagged';
             assert.equal(got.code, FAULT_EXIT, `${label}\n${got.stdout}\n${got.stderr}`);
-            assert.match(got.stderr, new RegExp(`SHEAR exit ${exitLabel}`), label);
+            assert.match(got.stderr, /SHEAR exit untagged/, label);
             assert.doesNotMatch(got.stdout, /alive/, label);
           }
           if (source === 'rpc') {
@@ -314,4 +420,83 @@ if (!guardProbe && !spread) describe('process guards', () => {
       }
     }
   });
+
+  it('classifies decode, verify, and commit throws by phase for p2p and rpc', async () => {
+    const sources = ['message', 'ingest', 'rpc'];
+    const phases = ['decode', 'verify', 'pre-commit', 'mid-commit', 'post-commit'];
+    const stay = new Set(['decode', 'verify', 'pre-commit']);
+    for (const source of sources) {
+      for (const phase of phases) {
+        const got = await runPhase(source, phase);
+        const label = `${source} ${phase}`;
+        const books = got.stdout.split('\n').map((row) => {
+          try { return JSON.parse(row).book; } catch { return null; }
+        }).filter(Boolean);
+        if (stay.has(phase)) {
+          assert.equal(got.code, 0, `${label}\n${got.stderr}`);
+          assert.match(got.stdout, /alive/, label);
+          assert.match(got.stderr, /SHEAR \S+ request/, label);
+          assert.doesNotMatch(got.stderr, /SHEAR exit/, label);
+          assert.ok(books.length >= 2, `${label} book snapshots\n${got.stdout}`);
+          assert.deepEqual(books[0], books[books.length - 1], label);
+          assert.equal(books[0].tip, BOOK.tip, label);
+          assert.equal(books[0].supply, BOOK.supply, label);
+          assert.equal(books[0].spent, BOOK.spent, label);
+          assert.equal(books[0].jroot, BOOK.jroot, label);
+        } else {
+          assert.equal(got.code, STORE_CORRUPT_EXIT, `${label}\n${got.stdout}\n${got.stderr}`);
+          assert.match(got.stderr, /SHEAR exit chain-state/, label);
+          assert.doesNotMatch(got.stdout, /alive/, label);
+        }
+        if (source === 'rpc') {
+          assert.equal(got.httpResult?.status, 500, `${label} did not answer 500\n${JSON.stringify(got.httpResult)}`);
+        }
+      }
+    }
+  });
 });
+
+function runPhase(source, phase) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [self, '--phase-inject', source, phase], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c) => { stdout += c.toString('utf8'); });
+    child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`phase ${source} ${phase} hung\n${stdout}\n${stderr}`));
+    }, 8000);
+    let httpResult = null;
+    let exitCode = null;
+    let httpDone = source !== 'rpc';
+    const finish = () => {
+      if (exitCode == null || !httpDone) return;
+      clearTimeout(timer);
+      resolve({ code: exitCode, stdout, stderr, httpResult });
+    };
+    if (source === 'rpc') {
+      const look = () => {
+        const line = stdout.trim().split('\n').find((row) => row.includes('"port"'));
+        if (!line) return;
+        child.stdout.off('data', look);
+        const port = JSON.parse(line).port;
+        postRpc(port).then((got) => {
+          httpResult = got;
+          httpDone = true;
+          finish();
+        }).catch((err) => {
+          child.kill();
+          reject(err);
+        });
+      };
+      child.stdout.on('data', look);
+    }
+    child.on('close', (code) => {
+      exitCode = code;
+      finish();
+    });
+  });
+}

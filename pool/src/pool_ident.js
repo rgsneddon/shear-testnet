@@ -100,7 +100,10 @@ function dest20Equal(a, b) {
 export function bootPoolOperator({ dataDir, minerEnv, env = process.env, homedir, platform, exists } = {}) {
   const abandoned = abandonedPoolIdent({ dataDir, minerEnv, env, homedir, platform, exists });
   if (abandoned) {
-    const err = new Error(`pool-miner.json is at ${abandoned.legacyIdent}; refusing to start ${abandoned.fresh} with a new payout address`);
+    const found = [];
+    if (abandoned.legacyMiner) found.push(abandoned.legacyIdent);
+    if (abandoned.legacySpend) found.push(abandoned.legacySeed);
+    const err = new Error(`pool identity is at ${found.join(' and ')}; refusing to start ${abandoned.fresh} with a new payout address`);
     err.code = 'pool_ident_legacy';
     throw err;
   }

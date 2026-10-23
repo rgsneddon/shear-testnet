@@ -16,7 +16,7 @@ import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
 import { headerPowReason } from './chain.js';
-import { deliverProcessFault, staysUpOnFault } from './process_guard.js';
+import { classifyByPhase, deliverProcessFault, staysUpOnFault } from './process_guard.js';
 
 function reviveDeep(v) {
   if (v == null) return v;
@@ -417,6 +417,11 @@ export const P2P_HELLO_FLOOR_MS = 5_000;
 export const P2P_IDLE_FLOOR_MS = 60_000;
 /** Slots kept for our own dials so inbound /24s cannot fill the table. */
 export const P2P_OUTBOUND_RESERVE = 8;
+/**
+ * Minimum gap between inbound-cap evictions. A burst of new connections
+ * must not walk the idle inbound set. Our own dials are not limited by this.
+ */
+export const P2P_EVICT_COOLDOWN_MS = 10_000;
 
 export function p2pOutboundReserve(maxPeers, override) {
   const max = Math.max(1, Number(maxPeers) || 1);
@@ -1119,11 +1124,16 @@ export function createP2p({
   helloMs = undefined,
   idleMs = undefined,
   outboundReserve = undefined,
+  evictCooldownMs = undefined,
 } = {}) {
   const reserveSlots = p2pOutboundReserve(maxPeers, outboundReserve);
   const inboundCap = p2pInboundCap(maxPeers, outboundReserve);
   const helloLimit = p2pHelloMs(helloMs);
   const idleLimit = p2pIdleMs(idleMs);
+  const evictCooldown = evictCooldownMs == null
+    ? P2P_EVICT_COOLDOWN_MS
+    : Math.max(0, Number(evictCooldownMs) || 0);
+  let lastCapEvictAt = 0;
   const sockets = new Set();
   const peers = new Map();
   const linking = new Set();
@@ -2347,13 +2357,20 @@ export function createP2p({
           scheduleCatchup();
         }
       }).catch((err) => {
-        deliverProcessFault('p2p', err);
-        if (!staysUpOnFault(err)) return;
+        const fault = classifyByPhase(err, 'verify');
+        deliverProcessFault('p2p', fault);
+        if (!staysUpOnFault(fault)) return;
         const rec = peers.get(sock);
         if (rec) {
           rec.verifying?.delete(verifyKey);
           rec.syncing = false;
           rec.pending = null;
+          if (recordProofFail(rec)) {
+            const until = Date.now() + P2P_BAN_MS;
+            if (rec.remote) peerBans.set(rec.remote, until);
+            try { sock.destroy(); } catch { /* ignore */ }
+            return;
+          }
           pumpGetblocks(sock);
         }
         try {
@@ -2384,7 +2401,10 @@ export function createP2p({
     }
   }
 
-  function evictIdleInbound(now = Date.now()) {
+  function evictIdleInbound(now = Date.now(), { limit = false } = {}) {
+    if (limit && evictCooldown > 0 && lastCapEvictAt && now - lastCapEvictAt < evictCooldown) {
+      return false;
+    }
     let best = null;
     let bestAt = Infinity;
     for (const [sock, rec] of peers) {
@@ -2397,6 +2417,7 @@ export function createP2p({
       }
     }
     if (!best) return false;
+    if (limit) lastCapEvictAt = now;
     const rec = peers.get(best);
     try {
       console.error(JSON.stringify({
@@ -2426,7 +2447,7 @@ export function createP2p({
       }
       let inboundNow = 0;
       for (const rec of peers.values()) if (rec?.inbound) inboundNow += 1;
-      if (inboundNow >= inboundCap && !evictIdleInbound()) {
+      if (inboundNow >= inboundCap && !evictIdleInbound(Date.now(), { limit: true })) {
         try { sock.destroy(); } catch { /* ignore */ }
         return;
       }
@@ -2470,8 +2491,9 @@ export function createP2p({
         try {
           handle(sock, msg);
         } catch (err) {
-          deliverProcessFault('p2p', err);
-          if (!staysUpOnFault(err)) return;
+          const fault = classifyByPhase(err, 'decode');
+          deliverProcessFault('p2p', fault);
+          if (!staysUpOnFault(fault)) return;
           const rec = peers.get(sock);
           if (recordProofFail(rec)) {
             const until = Date.now() + P2P_BAN_MS;

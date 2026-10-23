@@ -2,7 +2,7 @@
  * Pool book folder. Distinct from the node's default so one host can run both.
  * An explicit SHEAR_DATA is shared with the node and still takes the one lock.
  * testnet-v11 is the legacy pool default. A fresh testnet-v12-pool must not
- * invent a payout identity while that file is still there.
+ * invent a payout identity while pool-miner.json or pool-spend.seed is still there.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,9 +26,10 @@ export function legacyPoolDataDir(opts = {}) {
 }
 
 /**
- * The new default folder has no pool-miner.json and the legacy folder does.
- * Null when the operator set SHEAR_DATA or SHEAR_POOL_MINER, or this dataDir
- * is not the new default. The caller refuses. Nothing is copied.
+ * The new default folder has neither identity file and the legacy folder has
+ * pool-miner.json or pool-spend.seed. Null when the operator set SHEAR_DATA
+ * or SHEAR_POOL_MINER, or this dataDir is not the new default. The caller
+ * refuses. Nothing is copied.
  */
 export function abandonedPoolIdent({
   dataDir,
@@ -45,7 +46,14 @@ export function abandonedPoolIdent({
   if (dataDir && path.resolve(String(dataDir)) !== path.resolve(fresh)) return null;
   const legacy = legacyPoolDataDir(place);
   const freshIdent = path.join(fresh, 'pool-miner.json');
+  const freshSeed = path.join(fresh, 'pool-spend.seed');
   const legacyIdent = path.join(legacy, 'pool-miner.json');
-  if (exists(freshIdent) || !exists(legacyIdent)) return null;
-  return { fresh, legacy, freshIdent, legacyIdent };
+  const legacySeed = path.join(legacy, 'pool-spend.seed');
+  if (exists(freshIdent) || exists(freshSeed)) return null;
+  const legacyMiner = exists(legacyIdent);
+  const legacySpend = exists(legacySeed);
+  if (!legacyMiner && !legacySpend) return null;
+  return {
+    fresh, legacy, freshIdent, legacyIdent, legacySeed, legacyMiner, legacySpend,
+  };
 }

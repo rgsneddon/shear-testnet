@@ -35,4 +35,25 @@ describe('pool default identity', () => {
     assert.equal(tagged.miner, 'ssa1qqqq');
     assert.equal(fs.existsSync(path.join(fresh, 'pool-miner.json')), false);
   });
+
+  it('refuses when the legacy folder has pool-spend.seed and no pool-miner.json', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pool-seed-'));
+    const place = { env: {}, homedir: home, platform: 'linux' };
+    const legacy = legacyPoolDataDir(place);
+    const fresh = defaultPoolDataDir(place);
+    fs.mkdirSync(legacy, { recursive: true });
+    const legacySeed = path.join(legacy, 'pool-spend.seed');
+    const seed = `${'ab'.repeat(32)}\n`;
+    fs.writeFileSync(legacySeed, seed);
+    assert.equal(fs.existsSync(path.join(legacy, 'pool-miner.json')), false);
+    assert.throws(() => bootPoolOperator({ dataDir: fresh, env: {}, homedir: home, platform: 'linux' }), (err) => {
+      assert.equal(err.code, 'pool_ident_legacy');
+      assert.match(err.message, /pool-spend\.seed/);
+      assert.match(err.message, /testnet-v12-pool/);
+      return true;
+    });
+    assert.equal(fs.existsSync(path.join(fresh, 'pool-miner.json')), false);
+    assert.equal(fs.existsSync(path.join(fresh, 'pool-spend.seed')), false);
+    assert.equal(fs.readFileSync(legacySeed, 'utf8'), seed);
+  });
 });

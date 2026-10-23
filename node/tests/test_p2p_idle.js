@@ -391,4 +391,91 @@ describe('p2p hello deadline and idle eviction', () => {
       p2p.close();
     }
   });
+
+  it('does not evict a second idle inbound while the cap cooldown holds', async () => {
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      maxPeers: 2,
+      outboundReserve: 0,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const first = await connect(bound.port);
+      const second = await connect(bound.port);
+      first.write(helloLine());
+      second.write(helloLine());
+      await delay(80);
+      const third = await connect(bound.port);
+      third.write(helloLine());
+      await delay(80);
+      assert.equal(third.destroyed, false);
+      const fourth = await connect(bound.port);
+      fourth.write(helloLine());
+      await delay(80);
+      assert.equal(fourth.destroyed, true);
+      const live = [first, second, third].filter((sock) => !sock.destroyed);
+      assert.equal(live.length, 2);
+      assert.equal([...p2p.peers.values()].filter((rec) => rec.inbound).length, 2);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('a malformed message penalises that peer and leaves the node up', async () => {
+    const tip = { height: 4, hash: Buffer.alloc(32, 7) };
+    let offers = 0;
+    const store = {
+      blocks: [],
+      tip() { return tip; },
+      on() { return () => {}; },
+      offerHeaders() {
+        offers += 1;
+        throw new Error('malformed header');
+      },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      sock.write(`${JSON.stringify({
+        type: 'headers',
+        magic: MAGIC_TESTNET,
+        headers: [{ hash: 'ab'.repeat(32), height: 1 }],
+      })}\n`);
+      let rec = null;
+      for (let i = 0; i < 30 && !(offers >= 1 && rec?.expensiveFails); i += 1) {
+        await delay(20);
+        rec = [...p2p.peers.values()].find((row) => row.helloAt) || null;
+      }
+      assert.equal(offers, 1);
+      assert.ok(rec);
+      assert.equal(rec.expensiveFails, 1);
+      assert.equal(sock.destroyed, false);
+      assert.equal(store.tip(), tip);
+      const again = await connect(bound.port);
+      assert.equal(again.destroyed, false);
+      again.destroy();
+      sock.destroy();
+    } finally {
+      p2p.close();
+    }
+  });
 });

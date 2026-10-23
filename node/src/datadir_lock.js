@@ -6,14 +6,17 @@
  * exclusively, and keeps it only when a re-read shows this pid. Restore uses
  * a hard link so it cannot overwrite a lock someone else already created.
  * An unreadable lock, a lock that is not JSON, and a lock from another host
- * fail closed. The same process may open the book again.
+ * fail closed. A claim whose pid was reused, or whose host is not this one,
+ * is removed. A live claim on this host is left in place. The same process
+ * may open the book again.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 export const DATADIR_LOCK_NAME = 'datadir.lock';
-const CLAIM_NAME = 'datadir.lock.claim';
+export const DATADIR_CLAIM_NAME = 'datadir.lock.claim';
+const CLAIM_NAME = DATADIR_CLAIM_NAME;
 
 const held = new Map();
 let exitArmed = false;
@@ -70,15 +73,16 @@ function readLock(lockPath) {
   if (pidAlive(pid)) {
     const recorded = String(info.start || '');
     const live = procStartId(pid);
-    if (recorded && live && recorded !== live) return { reused: true, pid };
-    return { busy: true, pid };
+    if (recorded && live && recorded !== live) return { reused: true, pid, host };
+    return { busy: true, pid, host };
   }
-  return { stale: true, pid };
+  return { stale: true, pid, host };
 }
 
-function inUse(lockPath, pid) {
-  const who = pid ? ` by pid ${pid}` : '';
-  const err = new Error(`datadir in use${who}: ${lockPath}`);
+function inUse(lockPath, pid, host) {
+  const who = Number.isInteger(Number(pid)) && Number(pid) > 0 ? `pid ${pid}` : 'pid unknown';
+  const where = host ? String(host) : 'unknown';
+  const err = new Error(`datadir in use by ${who} on host ${where}: delete ${lockPath}`);
   err.code = 'datadir_in_use';
   return err;
 }
@@ -214,7 +218,7 @@ function takeStale(lockPath, attempt) {
   }
   if (moved.busy) {
     restoreAside(aside, lockPath);
-    throw inUse(lockPath, moved.pid);
+    throw inUse(lockPath, moved.pid, moved.host);
   }
   if (moved.ours || moved.pending) {
     restoreAside(aside, lockPath);
@@ -233,9 +237,24 @@ function releaseClaim(rec) {
   try { fs.unlinkSync(rec.path); } catch { /* ignore */ }
 }
 
-/** One takeover at a time. A dead holder's claim is cleared. A live claim waits. */
+function clearClaimFile(claimPath) {
+  const aside = `${claimPath}.${process.pid}.aside`;
+  try {
+    fs.renameSync(claimPath, aside);
+    fs.unlinkSync(aside);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One takeover at a time. A dead, reused, or foreign claim is removed.
+ * A live claim on this host is left in place and the caller fails closed.
+ */
 function acquireClaim(dir) {
   const claimPath = path.join(dir, CLAIM_NAME);
+  let blocked = null;
   for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
       const fd = fs.openSync(claimPath, 'wx', 0o600);
@@ -245,22 +264,20 @@ function acquireClaim(dir) {
       if (err?.code !== 'EEXIST') throw err;
       const state = readLock(claimPath);
       if (state.missing) continue;
-      if (state.stale || state.corrupt) {
-        const aside = `${claimPath}.${process.pid}.aside`;
-        try {
-          fs.renameSync(claimPath, aside);
-          fs.unlinkSync(aside);
-        } catch { /* the other starter took it */ }
+      if (state.unreadable) throw unreadableLock(claimPath);
+      if (state.stale || state.corrupt || state.reused || state.foreign) {
+        clearClaimFile(claimPath);
         continue;
       }
       if (state.ours) {
         try { fs.unlinkSync(claimPath); } catch { /* ignore */ }
         continue;
       }
+      if (state.busy) blocked = state;
       pause(10);
     }
   }
-  throw inUse(claimPath);
+  throw inUse(claimPath, blocked?.pid, blocked?.host);
 }
 
 function armExit() {
@@ -286,7 +303,7 @@ function refuse(state, lockPath) {
   if (state.foreign) throw foreignHost(state.host, lockPath);
   if (state.corrupt) throw corruptLock(lockPath);
   if (state.unreadable) throw unreadableLock(lockPath);
-  if (state.busy) throw inUse(lockPath, state.pid);
+  if (state.busy) throw inUse(lockPath, state.pid, state.host);
   return false;
 }
 

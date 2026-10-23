@@ -1,7 +1,9 @@
 /**
  * Last-resort logger for faults that escape a handler.
- * A fault explicitly tagged request-scoped is logged and the process stays up.
- * Chain-state faults and anything untagged are logged and the process exits.
+ * A throw while parsing, decoding, or verifying input, before any book write,
+ * is request-scoped: the handler drops it and the process stays up.
+ * A throw during commit or apply is chain-state and the process exits 70,
+ * the same code as store corruption. An untagged fault still exits 1.
  * Message text is not a signal. There is no silent recovery.
  */
 
@@ -9,8 +11,13 @@ let installed = false;
 
 /** sysexits EX_SOFTWARE. Store corruption, distinct from a plain fault exit. */
 export const STORE_CORRUPT_EXIT = 70;
-/** Untagged faults and chain-state faults. */
+/** Untagged faults. Chain-state uses STORE_CORRUPT_EXIT. */
 export const FAULT_EXIT = 1;
+
+/** Before any book write. A throw here stays in process. */
+export const INPUT_PHASES = new Set(['decode', 'verify', 'pre-commit']);
+/** During commit or apply. A throw here is chain-state. */
+export const COMMIT_PHASES = new Set(['mid-commit', 'post-commit']);
 
 const CHAIN_STATE_CODES = new Set([
   'chain_state',
@@ -52,7 +59,55 @@ export function isRequestScoped(err) {
   return !!(err && typeof err === 'object' && err.shearScope === 'request');
 }
 
-/** Stay up only for an explicit request tag that is not chain-state or store corruption. */
+export function faultPhase(err) {
+  if (!err || typeof err !== 'object') return '';
+  return String(err.shearPhase || '');
+}
+
+/** A throw before any book write. Chain-state and store corruption are left alone. */
+export function asInputFault(err, phase = 'pre-commit') {
+  if (!err || typeof err !== 'object') {
+    const wrapped = new Error(String(err == null ? 'input' : err));
+    wrapped.shearScope = 'request';
+    wrapped.shearPhase = phase;
+    return wrapped;
+  }
+  if (isChainStateError(err) || isStoreCorruptError(err)) return err;
+  if (COMMIT_PHASES.has(faultPhase(err))) return asCommitFault(err, faultPhase(err));
+  err.shearScope = 'request';
+  if (!err.shearPhase) err.shearPhase = phase;
+  return err;
+}
+
+/** A throw during commit or apply. Store corruption keeps its own flag. */
+export function asCommitFault(err, phase = 'mid-commit') {
+  if (!err || typeof err !== 'object') {
+    const wrapped = chainStateError(String(err == null ? 'commit' : err));
+    wrapped.shearPhase = phase;
+    return wrapped;
+  }
+  if (isStoreCorruptError(err)) return err;
+  err.chainState = true;
+  if (!CHAIN_STATE_CODES.has(String(err.code || ''))) err.code = 'chain_state';
+  if (!err.shearPhase) err.shearPhase = phase;
+  return err;
+}
+
+/**
+ * Classify by when the throw happened. An explicit commit phase wins.
+ * An already-marked chain-state or store-corruption fault is not retagged
+ * as a request. An unknown phase is left untagged.
+ */
+export function classifyByPhase(err, fallbackPhase) {
+  const marked = faultPhase(err);
+  const phase = marked || fallbackPhase || '';
+  if (COMMIT_PHASES.has(phase)) return asCommitFault(err, phase);
+  if (isStoreCorruptError(err) || isChainStateError(err)) return err;
+  if (INPUT_PHASES.has(phase)) return asInputFault(err, phase);
+  return err;
+}
+
+/** Stay up only for a request-scoped fault that is not chain-state or store corruption. */
 export function staysUpOnFault(err) {
   if (isChainStateError(err) || isStoreCorruptError(err)) return false;
   return isRequestScoped(err);
@@ -66,7 +121,7 @@ export function faultLabel(err) {
 }
 
 export function faultExitCode(err) {
-  if (isStoreCorruptError(err)) return STORE_CORRUPT_EXIT;
+  if (isStoreCorruptError(err) || isChainStateError(err)) return STORE_CORRUPT_EXIT;
   return FAULT_EXIT;
 }
 
