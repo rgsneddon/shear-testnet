@@ -65,7 +65,7 @@ import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
 import { RESERVE_ORACLE_ID, RESERVE_ORACLE_DEFAULT_BPS, GENESIS_BPS, interestNanos } from './reserve_oracle.js';
 import { extraMint } from './mint.js';
-import { verifySealedNote, pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
+import { commit, verifySealedNote, pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
 import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
 import { txDigestV3 } from './admit_v3.js';
 
@@ -188,6 +188,61 @@ function bindRealPrincipal(state, dest, nowMs, tx) {
 }
 
 describe('Reserve vault protocol', () => {
+  it('a sub-π hidden lock is accepted and does not qualify', () => {
+    const state = emptyVault();
+    state.genesisMs = 1_700_000_000_000;
+    const dest = destOf(newIdentity());
+    const nowMs = state.genesisMs + 1000;
+    const stamp = lockUnlockOf(state, nowMs);
+    const unlock = consensusUnlockPeriod(stamp.epoch);
+    const blind = randomScalar();
+    const scalar = randomScalar();
+    const funding = pointBytes(commit(1000n, blind));
+    const got = deposit({
+      state,
+      dest,
+      nanos: 1000,
+      nowMs,
+      commit: funding,
+      rangeProof: proveRange(1000n, blind),
+      unlock,
+      rangeCommit: funding,
+    });
+    assert.equal(got.ok, true, got.reason);
+    assert.equal(got.portal.qualified, false);
+    assert.equal(Number(state.epochStartMs) || 0, 0);
+    const piState = emptyVault();
+    piState.genesisMs = state.genesisMs;
+    const piLeaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+    assert.ok(piLeaf);
+    const bare = deposit({
+      state: piState,
+      dest,
+      nanos: PI_SHE_NANOS,
+      nowMs,
+      commit: piLeaf.commit,
+      rangeProof: proveRange(BigInt(PI_SHE_NANOS), blind),
+      unlock,
+      rangeCommit: pointBytes(subtractUnlock(pointFrom(piLeaf.commit), unlock)),
+    });
+    assert.equal(bare.ok, true, bare.reason);
+    assert.equal(bare.portal.qualified, false);
+    const qualified = emptyVault();
+    qualified.genesisMs = state.genesisMs;
+    const opened = deposit({
+      state: qualified,
+      dest: destOf(newIdentity()),
+      nanos: PI_SHE_NANOS,
+      nowMs,
+      commit: piLeaf.commit,
+      rangeProof: proveRange(BigInt(PI_SHE_NANOS), blind),
+      unlock,
+      rangeCommit: pointBytes(subtractUnlock(pointFrom(piLeaf.commit), unlock)),
+      piProof: proveRange(0n, blind),
+    });
+    assert.equal(opened.ok, true, opened.reason);
+    assert.equal(opened.portal.qualified, true);
+  });
   it('stake rewards are minted in full; the fee bank is not a balance', () => {
     const state = emptyVault();
     assert.equal(creditFeeBank(state, 10), 0);

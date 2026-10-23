@@ -1344,6 +1344,41 @@ function sealedSendOnly(body, { queueSend }) {
 }
 
 /**
+ * The pool is not an authority for a wallet tx. Queue the posted object
+ * itself. Do not copy fields, drop fields, or stamp a pool decision onto it.
+ * The node accepts or rejects that same body.
+ */
+function relayPostedTx(body, queueSend) {
+  const tx = typeof queueSend === 'function' ? queueSend(body, { paintedOwedNanos: 0 }) : null;
+  if (!tx || (typeof tx === 'object' && tx.ok === false)) {
+    return { status: 400, json: { ok: false, reason: tx?.reason || 'queue_failed' } };
+  }
+  const submitLine = walletSubmitLog({ connId: newConnId(), ok: true });
+  if (lineJoinsIpToIdentity(submitLine)) return { status: 500, json: { ok: false, reason: 'log' } };
+  return {
+    status: 200,
+    json: {
+      ok: true,
+      tx: { id: tx.id, kind: body.kind, confirmed: false, memo: !!body.memoCt },
+      log: submitLine,
+    },
+  };
+}
+
+/** 20-byte lock dest on the tx or on its lock output. Recognition only. The body is not rewritten. */
+function postedLockDest20(body) {
+  const top = postedPayoutDest20(body?.dest20);
+  if (top) return top;
+  const rows = Array.isArray(body?.vout) ? body.vout : [];
+  for (const row of rows) {
+    if (!row || String(row.kind || '') !== 'lock') continue;
+    const one = postedPayoutDest20(row.dest20);
+    if (one) return one;
+  }
+  return null;
+}
+
+/**
  * A reward claim is a user tx. The posted fee is the same bid a sealed send
  * carries: required, at least the weight levy, and at most the levy cap.
  * The mempool orders it by fee rate. The whole fee is paid to miners.
@@ -1673,9 +1708,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && String(body.from || '').trim() === ''
       && String(body.to || '').trim() === ''
       && /^[0-9a-f]{64}$/.test(portalHex)
-      && !!postedPayoutDest20(body.dest20)
+      && !!postedLockDest20(body)
       && postedFs1(body)
       && Array.isArray(body.vout) && body.vout.some((o) => o && o.commit);
+    // A hidden lock is the wallet's signed tx. Relay it unchanged.
+    if (hiddenLock) return relayPostedTx(body, queueSend);
     if (isLock && body.payoutPortalId != null && String(body.payoutPortalId) !== '') {
       return { status: 400, json: { ok: false, reason: 'vote_leak' } };
     }
@@ -1778,28 +1815,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       }
     }
     const draft = isLock
-      ? (hiddenLock
-        ? {
-          kind: 'lock',
-          programId,
-          portalId: portalHex,
-          dest20: postedPayoutDest20(body.dest20),
-          nanos,
-          amount,
-          fee,
-          id: typeof body.id === 'string' && body.id ? body.id : `lock-${Date.now()}`,
-          ...(Array.isArray(body.vin) && body.vin.length ? { vin: body.vin } : {}),
-          ...(postedVout.length ? { vout: postedVout } : {}),
-          ...(body.fs1 ? { fs1: body.fs1 } : {}),
-          ...(body.anchor != null ? { anchor: body.anchor } : {}),
-          ...(body.excess ? { excess: body.excess } : {}),
-          ...(body.admit_proof ? { admit_proof: body.admit_proof } : {}),
-          ...(Array.isArray(body.admit_proofs) && body.admit_proofs.length ? { admit_proofs: body.admit_proofs } : {}),
-          ...(body.lockAuth ? { lockAuth: body.lockAuth } : {}),
-          ...(body.ownerPub ? { ownerPub: body.ownerPub } : {}),
-          ...(body.vaultLockNote ? { vaultLockNote: body.vaultLockNote } : {}),
-        }
-        : {
+      ? {
           ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
           fee,
           memoCt,
@@ -1807,7 +1823,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           spendPub: body.spendPub,
           amount,
           ...(postedVout.length ? { vout: postedVout } : {}),
-        })
+        }
       : isVote
         ? {
           ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }),

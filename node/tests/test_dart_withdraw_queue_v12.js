@@ -191,6 +191,11 @@ function liveCoins(store, coins, spent) {
   return { anchor, live, coins: out };
 }
 
+function wireHex(v) {
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return Buffer.from(v).toString('hex');
+  return String(v ?? '');
+}
+
 function asHexBuf(raw) {
   const hex = String(raw || '');
   if (!/^[0-9a-f]+$/i.test(hex) || hex.length % 2 !== 0) return null;
@@ -353,8 +358,22 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     assert.ok(lockOut && lockOut.fundProof && lockOut.fundProof.R && lockOut.fundProof.z, 'fund proof');
     assert.equal(lockNotePrincipal(tx, MAGIC_TESTNET), BigInt(PI_SHE_NANOS));
     resetFs1Tree();
-    const queuedLock = store.queueTx(tx, { nowMs: lastStamp(store) });
-    assert.equal(queuedLock.ok, true, `lock queue ${queuedLock.reason || ''} ${queuedLock.error || ''}`);
+    const relayed = [];
+    const lockApi = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', tx, {
+      store,
+      miners: new Map(),
+      queueSend(draft) {
+        relayed.push(draft);
+        assert.equal(draft, tx, 'pool relays the posted lock');
+        const got = store.queueTx(draft, { nowMs: lastStamp(store) });
+        if (!got || got.ok === false) return got;
+        return got.tx || draft;
+      },
+    });
+    assert.equal(lockApi.status, 200, `lock relay ${lockApi.json?.reason || ''}`);
+    assert.equal(relayed.length, 1);
+    assert.equal(relayed[0], tx);
+    assert.equal(relayed[0].piProof, tx.piProof);
     const sealed = await mine(store, who.dest);
     assert.ok(sealed.tpl.txs.some((row) => row.id === tx.id), 'lock mined');
     console.log(`e2e lock height=${sealed.tpl.height} id=${String(tx.id).slice(0, 12)}`);
@@ -406,6 +425,8 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
 
     const genesis = Number(store.reserveVault.genesisMs);
     assert.ok(genesis > 0, 'genesis');
+    const lockPortal = store.reserveVault.portals[String(built.portalId)];
+    assert.equal(lockPortal && lockPortal.qualified, true, 'lock qualifies');
     assert.ok(Number(store.reserveVault.epochStartMs) > 0, 'epoch opened');
     const portalId = String(built.portalId);
     await advanceClock(store, who.dest, genesis + RESERVE_EPOCH_MS);
@@ -584,53 +605,69 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     assert.equal(restored.ok, true, 'restored scan');
     assert.ok(restored.nextLockIndex >= 1, 'spent lock index is not reused');
     assert.equal(restored.receipt, receiptCommit.toString('hex'));
+    assert.ok(restored.openings?.receipt && restored.openings.withdrawChange && restored.openings.voteChange, 'three openings');
     console.log(`e2e restore index=${restored.nextLockIndex} receipt=${String(restored.receipt).slice(0, 12)}`);
-    const spendTo = payer();
-    const payNanos = 100000000000;
-    const spendFixture = {
-      seed: Buffer.from(who.spendSeed).toString('hex'),
-      to: spendTo.dest,
-      anchor: after.anchor,
-      notes: notesHex(after.live),
-      payNanos,
-      note: {
-        kind: 'withdraw',
-        commit: receiptCommit.toString('hex'),
-        noteCommit: Buffer.from(asU8(receiptOpen.noteCommit)).toString('hex'),
-        r: Buffer.from(asU8(receiptOpen.r)).toString('hex'),
-        admitPub: Buffer.from(asU8(after.live.pubs[receiptAt])).toString('hex'),
-        nanos: body.nanos,
-        payoutSeed: Buffer.from(asU8(receiptOpen.payoutSeed)).toString('hex'),
-      },
-    };
-    const spendPath = path.join(dir, 'spend.json');
-    fs.writeFileSync(spendPath, JSON.stringify(spendFixture));
-    resetFs1Tree();
-    const spentBody = runFlutter('test/emit_receipt_spend_test.dart', { SHEAR_SPEND_FIXTURE: spendPath });
-    assert.ok(spentBody.fs1, 'receipt spend proof');
-    assert.ok(Array.isArray(spentBody.vin) && spentBody.vin.length === 1, 'receipt spend vin');
-    assert.equal(spentBody.kind, undefined, 'sealed send posts no kind');
-    assert.equal(spentBody.from, undefined);
-    assert.equal(spentBody.to, undefined);
-    const posted = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', spentBody, {
-      store,
-      miners: new Map(),
-      queueSend(draft, meta) {
-        const id = draft.id || `send-${Date.now()}`;
-        const tx = { id, ...draft };
-        const got = store.queueTx(tx, { ...(meta || {}), nowMs: wall + 2000 });
-        if (!got || got.ok === false) return got;
-        return got.tx || tx;
-      },
-    });
-    assert.equal(posted.status, 200, `spend queue ${posted.json?.reason || ''} ${posted.json?.state || ''}`);
-    const spentId = String(posted.json?.tx?.id || '');
-    const spentBlock = await mine(store, who.dest, wall + 2000);
-    const spentMined = spentId
-      ? spentBlock.tpl.txs.some((row) => row.id === spentId)
-      : spentBlock.tpl.txs.length > 1;
-    assert.ok(spentMined, 'receipt spend mined');
-    console.log(`e2e spend height=${spentBlock.tpl.height} id=${spentId.slice(0, 12)}`);
     assert.ok(changeOpen && changeOpen.changeSeed, 'withdraw change recorded');
+    async function postRestored(label, opening, payNanos) {
+      const view = liveCoins(store, coins, spent);
+      const commit = Buffer.from(opening.commit, 'hex');
+      let at = -1;
+      for (let i = 0; i < view.live.n; i += 1) {
+        if (Buffer.from(asU8(view.live.commits[i])).equals(commit)) at = i;
+      }
+      assert.ok(at >= 0, `${label} in the anchor`);
+      const nanos = Number(opening.nanos);
+      assert.ok(nanos > payNanos + 100_000_000, `${label} covers pay and cap (${nanos})`);
+      const spendFixture = {
+        seed: Buffer.from(who.spendSeed).toString('hex'),
+        to: payer().dest,
+        anchor: view.anchor,
+        notes: notesHex(view.live),
+        payNanos,
+        note: {
+          kind: opening.kind || 'send',
+          commit: wireHex(opening.commit),
+          noteCommit: wireHex(opening.noteCommit),
+          r: wireHex(opening.r),
+          admitPub: Buffer.from(asU8(view.live.pubs[at])).toString('hex'),
+          nanos,
+          spendSeed: wireHex(opening.spendSeed),
+          ...(opening.payoutSeed ? { payoutSeed: wireHex(opening.payoutSeed) } : {}),
+          ...(opening.changeSeed ? { changeSeed: wireHex(opening.changeSeed) } : {}),
+        },
+      };
+      const spendPath = path.join(dir, `spend-${label.replace(/\s+/g, '-')}.json`);
+      fs.writeFileSync(spendPath, JSON.stringify(spendFixture));
+      resetFs1Tree();
+      const spentBody = runFlutter('test/emit_receipt_spend_test.dart', { SHEAR_SPEND_FIXTURE: spendPath });
+      assert.ok(spentBody.fs1, `${label} spend proof`);
+      assert.ok(Array.isArray(spentBody.vin) && spentBody.vin.length === 1, `${label} vin`);
+      assert.equal(spentBody.kind, undefined, `${label} posts no kind`);
+      assert.equal(spentBody.from, undefined);
+      assert.equal(spentBody.to, undefined);
+      const posted = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', spentBody, {
+        store,
+        miners: new Map(),
+        queueSend(draft, meta) {
+          const id = draft.id || `send-${Date.now()}`;
+          const queued = { id, ...draft };
+          const got = store.queueTx(queued, { ...(meta || {}), nowMs: wall + 2000 });
+          if (!got || got.ok === false) return got;
+          return got.tx || queued;
+        },
+      });
+      assert.equal(posted.status, 200, `${label} queue ${posted.json?.reason || ''} ${posted.json?.state || ''}`);
+      const spentId = String(posted.json?.tx?.id || '');
+      const spentBlock = await mine(store, who.dest, wall + 2000);
+      const spentMined = spentId
+        ? spentBlock.tpl.txs.some((row) => row.id === spentId)
+        : spentBlock.tpl.txs.length > 1;
+      assert.ok(spentMined, `${label} mined`);
+      console.log(`e2e ${label} height=${spentBlock.tpl.height} id=${spentId.slice(0, 12)}`);
+      spent.add(commit.toString('hex'));
+    }
+    await postRestored('receipt', restored.openings.receipt, 100_000_000_000);
+    await postRestored('withdraw change', restored.openings.withdrawChange, 1000);
+    await postRestored('vote change', restored.openings.voteChange, 1000);
   });
 });

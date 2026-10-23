@@ -58,6 +58,9 @@ Future<void> main() async {
   final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
   final nanos = note['nanos'] as int;
   final payNanos = raw['payNanos'] as int;
+  final keyHex = (note['spendSeed'] ?? note['payoutSeed'] ?? note['changeSeed'])?.toString() ?? '';
+  if (keyHex.isEmpty) throw StateError('seed');
+  final key = _unhex(keyHex);
   ledger.rememberNote({
     'address': home,
     'dest': home,
@@ -68,8 +71,9 @@ Future<void> main() async {
     'admitPub': _unhex(note['admitPub'].toString()),
     'nanos': nanos,
     'amount': nanos / kUnitsPerShe,
-    'payoutSeed': _unhex(note['payoutSeed'].toString()),
-    'spendSeed': _unhex(note['payoutSeed'].toString()),
+    'spendSeed': key,
+    if (note['payoutSeed'] != null) 'payoutSeed': _unhex(note['payoutSeed'].toString()),
+    if (note['changeSeed'] != null) 'changeSeed': _unhex(note['changeSeed'].toString()),
     'verified': true,
   });
   ledger.replaceFromBackup(

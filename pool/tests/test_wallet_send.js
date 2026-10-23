@@ -702,6 +702,54 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(posted[0].portalId, 'ab'.repeat(32));
   });
 
+  it('a hidden lock relayed by the pool is the tx posted to it', () => {
+    const store = storeWith({});
+    const dest20 = Buffer.alloc(20, 7);
+    const commit = Buffer.alloc(32, 3);
+    const piProof = Buffer.alloc(64, 9);
+    piProof[0] = 2;
+    const fundProof = { R: Buffer.alloc(32, 4), z: Buffer.alloc(32, 5), height: 25 };
+    const portalId = 'AB'.repeat(32);
+    const body = {
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      portalId,
+      nanos: 0,
+      fee: 12345,
+      fs1: Buffer.from([0xf1, 0x11, 0x22]),
+      fundMarker: 'wallet-sentinel',
+      piProof,
+      vin: [{ commit }],
+      vout: [{ kind: 'lock', dest20, commit, portalId, fundProof }],
+      admit_proofs: [{ blob: Buffer.from([1]), cTilde: commit, spendTag: Buffer.alloc(32, 2) }],
+      vaultLockNote: Buffer.alloc(64, 8),
+    };
+    const posted = [];
+    const direct = [];
+    const queueSend = (t) => {
+      posted.push(t);
+      return { id: 'lock-relay', ...t };
+    };
+    const ok = handleWalletApi(url('/api/wallet/send'), 'POST', body, {
+      store,
+      miners: new Map(),
+      queueSend,
+    });
+    assert.equal(ok.status, 200, ok.json?.reason);
+    direct.push(body);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0], body);
+    assert.equal(posted[0], direct[0]);
+    assert.equal(posted[0].fundMarker, 'wallet-sentinel');
+    assert.equal(posted[0].portalId, portalId);
+    assert.equal(posted[0].fee, 12345);
+    assert.equal(posted[0].nanos, 0);
+    assert.equal(posted[0].piProof, piProof);
+    assert.equal(posted[0].vout[0].fundProof, fundProof);
+    assert.equal(posted[0].vout[0].dest20, dest20);
+    assert.equal(JSON.stringify(posted[0]), JSON.stringify(direct[0]));
+  });
+
   it('painted Continuum lock and send post when chain notes do not cover', () => {
     const alice = newIdentity();
     const silent = spendDestOf(alice.spendPub);

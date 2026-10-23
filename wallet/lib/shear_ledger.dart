@@ -1413,6 +1413,54 @@ List<Uint8List> _feeCandidates(Map<String, dynamic> input, List<dynamic> vouts) 
   return out;
 }
 
+/// Floor of the lock-change index scan. Indices 0 through this one are always tried.
+const kLockIndexFloor = 63;
+
+/// Consecutive unused indices after the highest used lock index. The scan
+/// stops once it is past the floor and this many indices past that high-water mark.
+const kLockIndexGap = 8;
+
+/// Last lock-change index to try, inclusive. Always at least [kLockIndexFloor].
+/// Walks upward because indices are allocated in order. A hit resets the gap.
+int lockChangeIndexEnd({
+  Uint8List? spendSeed,
+  Iterable<int> noteIndices = const [],
+  Set<String> portalIds = const {},
+}) {
+  final used = <int>{for (final i in noteIndices) if (i >= 0) i};
+  final known = <String>{for (final id in portalIds) id.toLowerCase()};
+  var knownHigh = -1;
+  for (final n in used) {
+    if (n > knownHigh) knownHigh = n;
+  }
+  var highest = -1;
+  var misses = 0;
+  var i = 0;
+  while (true) {
+    var hit = used.contains(i);
+    if (!hit && spendSeed != null && spendSeed.length == 32) {
+      final id = reservePortalIdFromSeed('', spendSeed, i);
+      hit = id != null && known.contains(id.toLowerCase());
+    }
+    if (hit) {
+      highest = i;
+      misses = 0;
+    } else {
+      misses++;
+    }
+    // A saved note index past the floor is a hit we already know. The gap
+    // is counted after that index, not before the walk reaches it.
+    if (i >= kLockIndexFloor &&
+        i >= knownHigh &&
+        misses >= kLockIndexGap &&
+        (highest < 0 || i >= highest + kLockIndexGap)) {
+      return i;
+    }
+    i++;
+    if (i > 1000000) return highest < 0 ? kLockIndexFloor : highest + kLockIndexGap;
+  }
+}
+
 /// One-time key for a vout the wallet did not address to a known dest.
 /// Payout and withdraw-change need the portal id and the withdraw nonce,
 /// which the scan copies off the parent tx. A vote-change is tried against
@@ -1421,6 +1469,7 @@ List<Uint8List> _feeCandidates(Map<String, dynamic> input, List<dynamic> vouts) 
   Map<String, dynamic> o,
   Uint8List spendSeed, {
   List<Uint8List> feeCommits = const [],
+  int lockChangeEnd = kLockIndexFloor,
 }) {
   if (spendSeed.length != 32) return null;
   final row20 = _noteBytes(o['dest20']);
@@ -1452,7 +1501,8 @@ List<Uint8List> _feeCandidates(Map<String, dynamic> input, List<dynamic> vouts) 
     }
   }
   if (txKind == 'lock' && (o['kind'] ?? '').toString() != 'lock') {
-    for (var i = 0; i < 64; i++) {
+    final last = lockChangeEnd < kLockIndexFloor ? kLockIndexFloor : lockChangeEnd;
+    for (var i = 0; i <= last; i++) {
       final seed = lockChangeSeedOf(spendSeed, i);
       if (seed != null && hits(seed)) return (seed, 'change');
     }
@@ -1497,6 +1547,7 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     }
   }
   final feeCommits = voteHere ? _feeCandidates(input, vouts) : const <Uint8List>[];
+  final lockChangeEnd = (input['lockChangeEnd'] as num?)?.toInt() ?? kLockIndexFloor;
   final xBase = admitBaseScalar(spendSeed);
   final proofCache = proofCacheMap(input['openedProofs']);
   final notes = <Map<String, dynamic>>[];
@@ -1539,7 +1590,12 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
     Uint8List? trialSeed;
     String? trialRole;
     if (matched == null) {
-      final trial = _oneTimeSeedFor(o, spendSeed, feeCommits: feeCommits);
+      final trial = _oneTimeSeedFor(
+        o,
+        spendSeed,
+        feeCommits: feeCommits,
+        lockChangeEnd: lockChangeEnd,
+      );
       if (trial != null) {
         trialSeed = trial.$1;
         trialRole = trial.$2;
@@ -2403,11 +2459,12 @@ Map<String, Object?>? sealWalletLockTx({
   required int inputNanos,
   required Uint8List changeDest20,
   required String id,
-  Uint8List? changeSpendSeed,
+  required Uint8List changeSpendSeed,
   String magic = kBookMagic,
   int? fee,
 }) {
-  if (spendSeed.length != 32 || inputs.isEmpty || inputs.length > kFs1InputMax) return null;
+  if (spendSeed.length != 32 || changeSpendSeed.length != 32) return null;
+  if (inputs.isEmpty || inputs.length > kFs1InputMax) return null;
   if (changeDest20.length != 20 || id.isEmpty || proveHeight < 0 || anchor < 0) return null;
   Map<String, dynamic> sealed;
   try {
@@ -2463,9 +2520,7 @@ Map<String, Object?>? sealWalletLockTx({
     }
     if (same) return null;
   }
-  final changeKey = changeSpendSeed != null && changeSpendSeed.length == 32
-      ? changeSpendSeed
-      : spendSeed;
+  final changeKey = changeSpendSeed;
   final change = hiddenChangeNote(
     changeN,
     changeDest20,
@@ -3857,6 +3912,21 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
+  /// Inclusive end of the lock-change restore scan. Notes and chain portal ids
+  /// set the high-water mark. The floor stays 0 through 63.
+  int _lockChangeScanEnd() {
+    final indices = <int>[];
+    for (final note in _notes) {
+      final idx = note['lockIndex'];
+      if (idx is int && idx >= 0) indices.add(idx);
+    }
+    return lockChangeIndexEnd(
+      spendSeed: spendSeed,
+      noteIndices: indices,
+      portalIds: _chainPortalIds,
+    );
+  }
+
   /// Next unused lock index. Recovery scans the seed; a new lock must not reuse one.
   int _nextLockIndex() {
     var max = -1;
@@ -4170,6 +4240,7 @@ class ShearLedger implements ReadProofSink {
         'prev': prev,
         'startIndex': startIndex,
         'openedProofs': exportOpenedProofs(),
+        'lockChangeEnd': _lockChangeScanEnd(),
       };
 
   void _applySealedScan(Map<String, dynamic> out) {
@@ -4338,6 +4409,27 @@ class ShearLedger implements ReadProofSink {
     _chainOutputCommits.add(one);
   }
 
+  /// Vote-change fee candidates. Chain outputs seen so far, plus commits of
+  /// notes this wallet already holds. A fee note from before the rescan, or
+  /// one restored with the book, is still a candidate.
+  List<Uint8List> _voteFeeCommits() {
+    final out = <Uint8List>[];
+    final seen = <String>{};
+    void add(Uint8List? raw) {
+      if (raw == null || raw.length < 32) return;
+      final one = Uint8List.fromList(raw.sublist(0, 32));
+      if (!seen.add(_bytesHex(one))) return;
+      out.add(one);
+    }
+    for (final c in _chainOutputCommits) {
+      add(c);
+    }
+    for (final n in _notes) {
+      add(_noteBytes(n['commit']));
+    }
+    return out;
+  }
+
   /// Scan chain txs. portalId and withdrawNonce come from the tx. A vote
   /// change is recovered from output commits already seen, not from a new
   /// wire field. Lock portal ids stay noted after the tranche book drops them.
@@ -4374,7 +4466,7 @@ class ShearLedger implements ReadProofSink {
       stampChainScanVouts(interesting),
       spendSeed: seed,
       dest: home,
-      feeCommits: vote ? List<Uint8List>.from(_chainOutputCommits) : null,
+      feeCommits: vote ? _voteFeeCommits() : null,
     );
   }
 
@@ -6817,6 +6909,7 @@ class ShearLedger implements ReadProofSink {
       'nodeNotes': <Object?>[for (final b in _nodeNoteRows) _followEncode(b)],
       'openedProofs': exportOpenedProofs(),
       if (_listedCommits.isNotEmpty) 'listedCommits': List<String>.from(_listedCommits),
+      if (_chainOutputCommitHex.isNotEmpty) 'outputCommits': _chainOutputCommitHex.toList(),
     };
   }
 
@@ -6972,6 +7065,16 @@ class ShearLedger implements ReadProofSink {
     }
     if (spec.containsKey('openedProofs')) {
       restoreOpenedProofs(spec['openedProofs']);
+    }
+    if (spec.containsKey('outputCommits')) {
+      _chainOutputCommits.clear();
+      _chainOutputCommitHex.clear();
+      final raw = spec['outputCommits'];
+      if (raw is List) {
+        for (final item in raw) {
+          _rememberOutputCommit(item);
+        }
+      }
     }
   }
 

@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:shear_wallet/shear_admit_ffi.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_session.dart';
-import 'package:shear_wallet/shear_vault_reward.dart' show hiddenChangeNote;
 
 Uint8List _unhex(String hex) {
   final raw = hex.startsWith('0x') ? hex.substring(2) : hex;
@@ -28,8 +27,8 @@ int _nanos(Map<String, dynamic> note) {
 }
 
 /// Import a shewall taken before the vote and the withdraw, then rescan the
-/// mined txs. The receipt, the withdraw change, and the vote change must
-/// each spend.
+/// mined txs. The receipt, the withdraw change, and the vote change openings
+/// are returned so each can be posted and mined.
 Future<void> main() async {
   final path = Platform.environment['SHEAR_RESTORE_FIXTURE'];
   if (path == null || path.isEmpty) throw StateError('fixture');
@@ -77,34 +76,36 @@ Future<void> main() async {
   if (receipt == null || withdrawChange == null || voteChange == null) {
     throw StateError('found receipt=${receipt != null} withdraw=${withdrawChange != null} vote=${voteChange != null} notes=${ledger.notes.length}');
   }
-  Future<void> spend(Map<String, dynamic> note) async {
-    final nanos = _nanos(note);
-    final fee = 100;
-    if (nanos <= fee) throw StateError('short');
-    final seed = note['spendSeed'];
-    if (seed is! Uint8List) throw StateError('seed');
-    final out = hiddenChangeNote(nanos - fee, Uint8List(20)..[0] = 4);
-    if (out == null) throw StateError('change');
-    final spent = await ledger.spendFs1Notes(
-      notes: [note],
-      sealed: [out],
-      fee: fee,
-      spendSeed: seed,
-      kind: 'send',
-    );
-    if (spent.fs1.isEmpty || spent.fs1.first != 0xf1 || spent.vin.length != 1) {
-      throw StateError('unspendable');
+  Map<String, Object> opening(Map<String, dynamic> note, String seedKey) {
+    final seed = note[seedKey];
+    final commit = note['commit'];
+    final noteCommit = note['noteCommit'];
+    final r = note['r'];
+    if (seed is! Uint8List || commit is! List<int> || noteCommit is! List<int> || r is! List<int>) {
+      throw StateError('opening');
     }
+    return {
+      'kind': (note['kind'] ?? 'send').toString(),
+      'commit': _hex(commit),
+      'noteCommit': _hex(noteCommit),
+      'r': _hex(r),
+      'nanos': _nanos(note),
+      'spendSeed': _hex(seed),
+      if (note['payoutSeed'] is Uint8List) 'payoutSeed': _hex(note['payoutSeed'] as List<int>),
+      if (note['changeSeed'] is Uint8List) 'changeSeed': _hex(note['changeSeed'] as List<int>),
+    };
   }
-  await spend(receipt);
-  await spend(withdrawChange);
-  await spend(voteChange);
   stdout.writeln(jsonEncode({
     'ok': true,
     'nextLockIndex': ledger.nextLockIndex,
     'receipt': _hex(receipt['commit'] as List<int>),
     'withdrawChange': _hex(withdrawChange['commit'] as List<int>),
     'voteChange': _hex(voteChange['commit'] as List<int>),
+    'openings': {
+      'receipt': opening(receipt, 'payoutSeed'),
+      'withdrawChange': opening(withdrawChange, 'changeSeed'),
+      'voteChange': opening(voteChange, 'changeSeed'),
+    },
   }));
   pool.close();
 }

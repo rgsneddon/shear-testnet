@@ -289,10 +289,18 @@ function rangeChal(parts) {
   return Fn.create(bytesToNumberLE(wide));
 }
 
-function rangeNonce(tag, rBytes, i) {
+function rangeNonce(tag, hedge, rBytes, value, commit, transcript, i) {
   const ib = Buffer.alloc(8);
   ib.writeBigUInt64LE(BigInt(i));
-  return rangeChal([Buffer.from(tag), rBytes, ib]);
+  return rangeChal([
+    Buffer.from(tag),
+    hedge,
+    rBytes,
+    value,
+    commit,
+    transcript,
+    ib,
+  ]);
 }
 
 function mulP(P, s) {
@@ -322,22 +330,28 @@ function weightedBits(points) {
  * Consensus verify does not call this unless SHEAR_RANGE_JS=1.
  * proveRange calls it only for { public: true } or that same flag.
  */
-export function provePackedRange(v, rBytes) {
+export function provePackedRange(v, rBytes, hedgeBytes = null) {
   const n = noteU64(v);
   if (n == null || !rBytes || rBytes.length !== 32) return null;
+  const hedge = hedgeBytes && hedgeBytes.length === 32
+    ? Buffer.from(hedgeBytes)
+    : randomBytes(32);
   const rb = Buffer.from(rBytes);
   const r = Fn.create(bytesToNumberLE(rb));
   const c = mulP(G, n).add(mulP(H, r));
   const cB = pointBytes(c);
+  const value = Buffer.alloc(8);
+  value.writeBigUInt64LE(n);
   const bits = new Array(RANGE_BITS);
   const s = new Array(RANGE_BITS);
   const bPts = new Array(RANGE_BITS);
   const bBytes = new Array(RANGE_BITS);
+  const empty = Buffer.alloc(0);
   let vv = n;
   for (let i = 0; i < RANGE_BITS; i += 1) {
     bits[i] = Number(vv & 1n);
     vv >>= 1n;
-    s[i] = rangeNonce('sbit', rb, i);
+    s[i] = rangeNonce('sbit', hedge, rb, value, cB, empty, i);
     const bitG = bits[i] ? G : Point.ZERO;
     bPts[i] = bitG.add(mulP(H, s[i]));
     bBytes[i] = pointBytes(bPts[i]);
@@ -345,6 +359,7 @@ export function provePackedRange(v, rBytes) {
   const out = [Buffer.from([2]), cB, ...bBytes];
   const eAll = rangeChal([Buffer.from('bits'), cB, ...bBytes]);
   const eAllB = scalarBytes(eAll);
+  const transcript = Buffer.concat(bBytes);
   let sSum = 0n;
   let two = 1n;
   for (let i = 0; i < RANGE_BITS; i += 1) {
@@ -353,10 +368,10 @@ export function provePackedRange(v, rBytes) {
     const si = s[i];
     const p1 = bi.subtract(G);
     const fake = on ? bi : p1;
-    const eFake = rangeNonce('efake', rb, i);
-    const zFake = rangeNonce('zfake', rb, i);
+    const eFake = rangeNonce('efake', hedge, rb, value, cB, transcript, i);
+    const zFake = rangeNonce('zfake', hedge, rb, value, cB, transcript, i);
     const rFake = mulP(H, zFake).subtract(mulP(fake, eFake));
-    const k = rangeNonce('kbit', rb, i);
+    const k = rangeNonce('kbit', hedge, rb, value, cB, transcript, i);
     const rReal = mulP(H, k);
     const r0 = on ? rFake : rReal;
     const r1 = on ? rReal : rFake;
@@ -378,7 +393,7 @@ export function provePackedRange(v, rBytes) {
   }
   const rDelta = Fn.sub(r, sSum);
   const p = c.subtract(weightedBits(bPts));
-  const k = rangeNonce('cons', rb, 0);
+  const k = rangeNonce('cons', hedge, rb, value, cB, transcript, 0);
   const rPt = mulP(H, k);
   const rPtB = pointBytes(rPt);
   const e = rangeChal([Buffer.from('cons'), cB, pointBytes(p), rPtB]);

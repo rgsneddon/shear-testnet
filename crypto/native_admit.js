@@ -168,12 +168,14 @@ export function rangeAmountArg(v) {
   return null;
 }
 
-export function nativeProveRange(v, r) {
+export function nativeProveRange(v, r, hedge = null) {
   if (!native) return null;
   const arg = rangeAmountArg(v);
   if (arg == null) return null;
   try {
-    const o = native.proveRange(arg, as32(r));
+    const o = hedge && hedge.length === 32
+      ? native.proveRange(arg, as32(r), as32(hedge))
+      : native.proveRange(arg, as32(r));
     return o && o.length ? Buffer.from(o) : null;
   } catch {
     return null;

@@ -2797,16 +2797,16 @@ function portalCommitPoint(portal, extra) {
 }
 
 /**
- * True when `piProof` shows this commitment, or the portal sum including it,
- * is at least π. The integer is not returned.
+ * True when `piProof` shows this commitment is exactly π.
+ * The integer is not returned. A second tranche never reaches this:
+ * deposit refuses portal_exists before it asks, so a portal sum is the
+ * same point as the one commitment and is not a second chance.
  */
 export function lockQualifies(commit, piProof, portal = null) {
+  void portal;
   if (!piProof) return false;
   const one = commitBytes(commit);
-  if (!one || !verifyRange(piShift(one), piProof)) {
-    const sum = portal ? portalCommitPoint(portal, one) : null;
-    if (!sum || !verifyRange(shiftByPi(sum), piProof)) return false;
-  }
+  if (!one || !verifyRange(piShift(one), piProof)) return false;
   return true;
 }
 

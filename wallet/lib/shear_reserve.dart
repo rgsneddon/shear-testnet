@@ -76,7 +76,9 @@ String reservePostWaitCopy({String remark = '', int? waitMs}) {
   return reserveEpochStillOpenCopy();
 }
 
-/// A lock leaf whose own epoch is already over. An open-epoch lock is not one.
+/// A lock leaf whose latest epoch is already over. A rolled leaf is still
+/// open while currentEpoch is that leaf's newest epoch. An older epoch on
+/// the same leaf does not finish it.
 bool reserveLeafEpochEnded(List<Map<String, dynamic>> notes, int currentEpoch) {
   if (currentEpoch <= 0) return false;
   final leaves = reserveLockLeaves(notes);
@@ -84,10 +86,13 @@ bool reserveLeafEpochEnded(List<Map<String, dynamic>> notes, int currentEpoch) {
   for (final leaf in leaves) {
     final epochs = leaf['epochs'];
     if (epochs is! List) continue;
+    int? latest;
     for (final raw in epochs) {
       final epoch = raw is int ? raw : (raw is num ? raw.toInt() : null);
-      if (epoch != null && currentEpoch > epoch) return true;
+      if (epoch == null) continue;
+      if (latest == null || epoch > latest) latest = epoch;
     }
+    if (latest != null && currentEpoch > latest) return true;
   }
   return false;
 }

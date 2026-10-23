@@ -48,6 +48,85 @@ void main() {
     expect(reserveLeafEpochEnded([
       {...open, 'epochs': [0]},
     ], 1), isTrue);
+    expect(reserveLeafEpochEnded([
+      {...open, 'epochs': [0, 1]},
+    ], 1), isFalse);
+    expect(reserveLeafEpochEnded([
+      {...open, 'epochs': [0, 1]},
+    ], 2), isTrue);
+  });
+
+  test('lock change scan keeps the floor and a gap past the highest index', () {
+    expect(lockChangeIndexEnd(), kLockIndexFloor);
+    expect(lockChangeIndexEnd(noteIndices: [10]), kLockIndexFloor);
+    expect(lockChangeIndexEnd(noteIndices: [80]), 88);
+    final seed = hexToBytes(createIdentity().seedHex);
+    final portals = <String>{};
+    for (var i = 0; i <= 70; i++) {
+      final id = reservePortalIdFromSeed('', seed, i);
+      expect(id, isNotNull);
+      portals.add(id!);
+    }
+    expect(lockChangeIndexEnd(spendSeed: seed, portalIds: portals), 78);
+  });
+
+  test('a saved output commit recovers a vote change the rescan does not contain', () async {
+    expect(Fs1Native.tryLoad(), isNotNull, reason: 'fs1_prover_unavailable');
+    final id = createIdentity();
+    final seed = hexToBytes(id.seedHex);
+    const changeNanos = 100000;
+    final fee = attachAdmitPub(
+      nativeSealNote(200000, dest20: Uint8List(20)..[0] = 3, kind: 'pot'),
+      spendSeed: seed,
+    );
+    final voteSeed = voteChangeSeedOf(seed, fee['commit'] as Uint8List);
+    if (voteSeed == null) fail('vote seed');
+    final voteChange = hiddenChangeNote(
+      changeNanos,
+      destCommitOf(voteSeed),
+      spendSeed: voteSeed,
+      admitBase: admitPub(admitBaseScalar(seed)),
+    );
+    expect(voteChange, isNotNull);
+    final flux = <String, dynamic>{
+      'pubs': <Object>[],
+      'commits': <Object>[],
+      'anchors': [
+        {'height': 32, 'n': 0},
+      ],
+      'spendTags': <Object>[],
+    };
+    final pool = _RestorePool(flux);
+    addTearDown(pool.close);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.ingestChainTxs([
+      {
+        'kind': 'pot',
+        'coinbase': true,
+        'vout': [compactSealedVout(fee)],
+      },
+    ]);
+    final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final spec = ledger.exportCreditFollow(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      full: true,
+    );
+    final saved = spec['outputCommits'];
+    expect(saved, isA<List>());
+    expect((saved as List).isNotEmpty, isTrue);
+    spec['notes'] = <Object?>[];
+    final again = ShearLedger(pool: pool)..installCreditFollow(spec);
+    again.ingestChainTxs([
+      {
+        'kind': 'leaf-vote',
+        'vout': [compactSealedVout(voteChange!)],
+      },
+    ], dest: home);
+    final found = again.notes.where(
+      (n) => n['changeSeed'] is Uint8List && n['withdrawNonce'] == null && n['portalId'] == null,
+    );
+    expect(found, hasLength(1));
   });
 
   test('a wait is local time and a later remark clears it', () {

@@ -24,6 +24,7 @@ int32_t shear_admit_verify_v3(
     const uint8_t *c_tilde, const uint8_t *spend_tag,
     const uint8_t *ctx, uint32_t ctx_len);
 int32_t shear_range_prove(uint64_t v, const uint8_t *r, uint8_t *out, uint32_t out_cap, uint32_t *out_len);
+int32_t shear_range_prove_hedged(uint64_t v, const uint8_t *r, const uint8_t *hedge, uint8_t *out, uint32_t out_cap, uint32_t *out_len);
 int32_t shear_range_verify(const uint8_t *c, const uint8_t *proof, uint32_t proof_len);
 typedef struct Fs1Handle Fs1Handle;
 uint32_t shear_fs1_blob_cap(uint32_t n);
@@ -305,23 +306,31 @@ static int read_range_v(napi_env env, napi_value arg, uint64_t *out) {
 }
 
 static napi_value prove_range_fn(napi_env env, napi_callback_info info) {
-  size_t argc = 2;
-  napi_value argv[2];
+  size_t argc = 3;
+  napi_value argv[3];
   napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
   uint64_t v = 0;
   uint8_t r[32];
+  uint8_t hedge[32];
   if (argc < 2 || read_range_v(env, argv[0], &v) != 0 || buf32(env, argv[1], r)) {
     napi_value f;
     napi_get_boolean(env, 0, &f);
     return f;
   }
+  const int hedged = argc >= 3 && buf32(env, argv[2], hedge) == 0;
   uint32_t maxp = (uint32_t)shear_admit_max_proof() + 16384;
   uint8_t *out = (uint8_t *)malloc(maxp);
   uint32_t olen = 0;
   int32_t ok = 0;
-  if (out) ok = shear_range_prove(v, r, out, maxp, &olen);
+  if (out) {
+    ok = hedged
+      ? shear_range_prove_hedged(v, r, hedge, out, maxp, &olen)
+      : shear_range_prove(v, r, out, maxp, &olen);
+  }
   volatile uint8_t *wipe = r;
   for (size_t i = 0; i < sizeof r; i++) wipe[i] = 0;
+  volatile uint8_t *wipe_h = hedge;
+  for (size_t i = 0; i < sizeof hedge; i++) wipe_h[i] = 0;
   if (!out || ok != 1) {
     free(out);
     napi_value f;

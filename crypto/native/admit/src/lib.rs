@@ -16,7 +16,7 @@ mod r1cs;
 mod select;
 mod tree;
 
-pub use bpplus::{prove_range, verify_range, RANGE_BITS};
+pub use bpplus::{prove_range, prove_range_hedged, verify_range, RANGE_BITS};
 pub use leaf::{c_leaf_scalar, dest_leaf_fp, DST_LEAF};
 pub use prove::{admit_prove_v3, admit_verify_v3, max_fs1_blob, MAX_PROOF};
 pub use tree::{c_root, jroot, jroot_point, pasta_root, CTree, PastaTree, ARITY, HEIGHT_MAX, K_REF};
@@ -311,6 +311,41 @@ pub extern "C" fn shear_range_prove(
             return BAD;
         }
         match prove_range(v, &r_b) {
+            Some(p) => {
+                if p.len() > out_cap as usize {
+                    return BAD;
+                }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(p.as_ptr(), out, p.len());
+                    *out_len = p.len() as u32;
+                }
+                OK
+            }
+            None => BAD,
+        }
+    }))
+    .unwrap_or(BAD)
+}
+
+#[no_mangle]
+pub extern "C" fn shear_range_prove_hedged(
+    v: u64,
+    r: *const u8,
+    hedge: *const u8,
+    out: *mut u8,
+    out_cap: u32,
+    out_len: *mut u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let mut r_b = Zeroizing::new([0u8; 32]);
+        let mut hedge_b = Zeroizing::new([0u8; 32]);
+        if !fill_secret(r, &mut r_b) || !fill_secret(hedge, &mut hedge_b) {
+            return BAD;
+        }
+        if out.is_null() || out_len.is_null() {
+            return BAD;
+        }
+        match prove_range_hedged(v, &r_b, &hedge_b) {
             Some(p) => {
                 if p.len() > out_cap as usize {
                     return BAD;
