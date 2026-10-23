@@ -12,7 +12,7 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote, leafVoteConserved } from './note.js';
-import { consensusUnlockPeriod, hiddenPrincipalOpens, indexedWithdrawQuote, lockFundingRejected, lockUnlockOf, maturedHiddenCount, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { consensusUnlockPeriod, hiddenPrincipalOpens, indexedWithdrawQuote, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest20, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
 import { attachLockAuth, verifyLockAuth } from './reserve_evm.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
@@ -961,28 +961,24 @@ function voutDest20(o) {
  * `seenOwners` is a Map of portal id → spendPub hex for the block being checked.
  */
 /**
- * A fresh portal is the funder's spend address. The vault stores that dest,
- * so the portal links to the funder. A derived portal address is allowed
- * when this same spend key owns it: the portal id is that dest's id either
- * way. A stranger's key cannot take the owner slot.
+ * A fresh portal's dest20 is the lockAuth key, and the portal id is
+ * H(tag, dest20). A carried id, or a dest20 from another key, is a squat.
  */
 function freshLockBound(tx, pubRaw) {
-  const dest = reservePortalDest(tx);
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   const o = outs.find((row) => String(row?.kind || 'lock') === 'lock') || outs[0] || {};
-  // The carried portal id is not a hash of the address. A peer does not rebuild it.
   const pid = String(tx?.portalId || o?.portalId || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(pid)) return false;
-  // Identity-address lock: dest20 is the signer's hash.
-  if (dest && destMatchesSpendPub(dest, pubRaw)) return true;
-  if (o?.dest20 && dest20MatchesSpendPub(o.dest20, pubRaw)) return true;
-  // One portal per lock. dest20 is the one-time subaddress, not the identity hash.
-  // The signer is the owner. A later lock on this portal id is a different check.
+  let d20 = null;
   try {
-    const b = o?.dest20 ? Buffer.from(asU8(o.dest20)) : null;
-    if (b && b.length >= 20) return true;
-  } catch { /* not a dest20 */ }
-  return false;
+    if (o?.dest20) {
+      const b = Buffer.from(asU8(o.dest20));
+      if (b.length >= 20) d20 = Buffer.from(b.subarray(0, 20));
+    }
+  } catch { d20 = null; }
+  if (!d20 || !dest20MatchesSpendPub(d20, pubRaw)) return false;
+  const want = portalIdFromDest20(d20);
+  return want === pid;
 }
 
 export function reserveAuth(tx, reserveState = null, seenOwners = null) {

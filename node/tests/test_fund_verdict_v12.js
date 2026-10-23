@@ -23,7 +23,7 @@ import {
   PI_SHE_NANOS,
 } from '../../crypto/asert.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
-import { newIdentity, encodeDest, hash20FromAddress, ed25519RawPub } from '../../crypto/address.js';
+import { newIdentity, encodeDest, hash20FromAddress, ed25519PrivateFromSeed, ed25519RawPub } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   outputJoinsAdmitSet,
@@ -52,7 +52,6 @@ import {
   lockTx,
   portalIdFromDest,
   portalsFromSeed,
-  portalOwnerKey,
   proveLockEquality,
   consensusUnlockPeriod,
 } from '../../crypto/reserve_vault.js';
@@ -633,7 +632,8 @@ function fs1LockOf(store, who, saved) {
   }
   assert.ok(total > PI_SHE_NANOS + LEVY_FLOOR_UNITS, `pots ${total}`);
   const portal = portalsFromSeed(who.spendSeed, 1)[0];
-  const ownerKey = portalOwnerKey(who.spendSeed, portal.portalId);
+  // dest20 is this key, and the portal id is H(dest20). portalOwnerKey is a different key.
+  const ownerKey = ed25519PrivateFromSeed(portal.spendSeed);
   const ownerPub = ed25519RawPub(ownerKey).toString('hex');
   const blind = randomScalar();
   const scalar = randomScalar();
@@ -670,7 +670,6 @@ function fs1LockOf(store, who, saved) {
       nanos: 0,
       programId: RESERVE_PROGRAM,
       portalId: portal.portalId,
-      payoutPortalId: portal.portalId,
       ownerPub,
       vaultLockNote: leaf.note,
       vin: ph.vin,

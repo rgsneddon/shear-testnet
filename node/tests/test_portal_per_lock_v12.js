@@ -6,7 +6,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ed25519RawPub, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
+import { ed25519PrivateFromSeed, ed25519RawPub, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
 import { RESERVE_EPOCH_MS } from '../../crypto/asert.js';
 import {
   deposit,
@@ -14,6 +14,7 @@ import {
   lockTx,
   portalDest20FromSeed,
   portalIdFromDest,
+  portalIdFromDest20,
   portalsFromSeed,
   signWithdrawReward,
   withdrawRewardRejected,
@@ -36,9 +37,12 @@ describe('one portal per lock', () => {
     const seed = alice.spendSeed;
     const vault = destOf(bob);
     const payer = destOf(alice);
-    const ownerPub = Buffer.from(alice.spendPub).toString('hex');
+    const rows = portalsFromSeed(seed, 2);
+    const ownerKey = ed25519PrivateFromSeed(rows[0].spendSeed);
+    const ownerPub = ed25519RawPub(ownerKey).toString('hex');
     const first = lockTx({ from: payer, to: vault, nanos: 1000, id: 'lock-0', spendSeed: seed, lockIndex: 0, ownerPub });
-    const second = lockTx({ from: payer, to: vault, nanos: 1000, id: 'lock-1', spendSeed: seed, lockIndex: 1, ownerPub });
+    const secondPub = ed25519RawPub(ed25519PrivateFromSeed(rows[1].spendSeed)).toString('hex');
+    const second = lockTx({ from: payer, to: vault, nanos: 1000, id: 'lock-1', spendSeed: seed, lockIndex: 1, ownerPub: secondPub });
     assert.equal(first.portalId.length, 64);
     assert.notEqual(first.portalId, second.portalId);
     assert.notEqual(hex20(first.vout[0].dest20), hex20(second.vout[0].dest20));
@@ -48,6 +52,8 @@ describe('one portal per lock', () => {
     assert.notEqual(first.portalId, portalIdFromDest(vault));
     assert.equal(hex20(first.vout[0].dest20), portalDest20FromSeed(seed, 0).toString('hex'));
     assert.equal(hex20(second.vout[0].dest20), portalDest20FromSeed(seed, 1).toString('hex'));
+    assert.equal(first.portalId, portalIdFromDest20(first.vout[0].dest20));
+    assert.equal(second.portalId, portalIdFromDest20(second.vout[0].dest20));
 
     const found = portalsFromSeed(seed, 2);
     assert.equal(found.length, 2);
@@ -59,7 +65,10 @@ describe('one portal per lock', () => {
     assert.equal(again[0].portalId, found[0].portalId);
     assert.equal(again[1].portalId, found[1].portalId);
 
-    signSpendTx(first, alice.privateKey);
+    // The spend sig binds the lockAuth key. The identity `from` is a different dest.
+    first.from = spendDestOf(ed25519RawPub(ownerKey));
+    first.vin = [{ dest20: Buffer.from(rows[0].dest20) }];
+    signSpendTx(first, ownerKey);
     const auth = reserveAuth(first, emptyVault());
     assert.equal(auth.ok, true, auth.reason);
   });

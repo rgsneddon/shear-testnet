@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, lockTx, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, publicTrancheRows, lockTx, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1676,6 +1676,13 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && !!postedPayoutDest20(body.dest20)
       && postedFs1(body)
       && Array.isArray(body.vout) && body.vout.some((o) => o && o.commit);
+    if (isLock && body.payoutPortalId != null && String(body.payoutPortalId) !== '') {
+      return { status: 400, json: { ok: false, reason: 'vote_leak' } };
+    }
+    if (isLock) {
+      const lockOuts = (Array.isArray(body.vout) ? body.vout : []).filter((row) => row && String(row.kind || '') === 'lock');
+      if (lockOuts.length > 1) return { status: 400, json: { ok: false, reason: 'portal_exists' } };
+    }
     const isVote = kindIn === 'vote' && programIn === RESERVE_PROGRAM;
     const isWithdraw = kindIn === 'withdraw' && programIn === RESERVE_PROGRAM;
     const multiProofsEarly = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
@@ -1787,6 +1794,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           ...(body.excess ? { excess: body.excess } : {}),
           ...(body.admit_proof ? { admit_proof: body.admit_proof } : {}),
           ...(Array.isArray(body.admit_proofs) && body.admit_proofs.length ? { admit_proofs: body.admit_proofs } : {}),
+          ...(body.lockAuth ? { lockAuth: body.lockAuth } : {}),
+          ...(body.ownerPub ? { ownerPub: body.ownerPub } : {}),
+          ...(body.vaultLockNote ? { vaultLockNote: body.vaultLockNote } : {}),
         }
         : {
           ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
@@ -1910,6 +1920,19 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     };
   }
   if (path === '/api/vault/reserve' && verb === 'GET') {
+    const portalQ = String(url.searchParams.get('portal') || '').replace(/^0x/i, '').toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(portalQ)) {
+      const vault = store?.reserveVault;
+      if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault' } };
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          portalId: portalQ,
+          tranches: publicTrancheRows(vault.portals?.[portalQ] || null),
+        },
+      };
+    }
     const dest = url.searchParams.get('dest') || '';
     if (!isDestAddress(dest)) return { status: 400, json: { ok: false, reason: 'bad_dest' } };
     const vault = store?.reserveVault;

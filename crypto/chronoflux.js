@@ -900,6 +900,7 @@ export function compactTx(tx) {
   if (tx.excess) out.excess = tx.excess;
   if (reserveFields) {
     if (reserveFields.portalId) out.portalId = reserveFields.portalId;
+    // A lock that carries payoutPortalId is refused later. Stripping it here would hide that.
     if (kind !== 'withdraw' && reserveFields.payoutPortalId) out.payoutPortalId = reserveFields.payoutPortalId;
     if (reserveFields.programId) out.programId = reserveFields.programId;
     if (reserveFields.kind === 'vote') out.choice = reserveFields.choice;

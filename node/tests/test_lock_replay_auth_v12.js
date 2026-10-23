@@ -4,8 +4,9 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity } from '../../crypto/address.js';
+import { destCommitFromSpendPub, newIdentity } from '../../crypto/address.js';
 import { compactTx } from '../../crypto/chronoflux.js';
+import { portalIdFromDest20 } from '../../crypto/reserve_vault.js';
 import { reserveAuth, signSpendTx } from '../../crypto/spend.js';
 import { RESERVE_PROGRAM } from '../../crypto/asert.js';
 
@@ -15,7 +16,8 @@ describe('compact FS-1 lock replay', { timeout: 20000 }, () => {
     const ownerPub = Buffer.from(who.spendPub).toString('hex');
     const note = Buffer.alloc(64, 7);
     const commit = Buffer.from(note.subarray(32, 64));
-    const portalId = 'cd'.repeat(32);
+    const d20 = destCommitFromSpendPub(who.spendPub);
+    const portalId = portalIdFromDest20(d20);
     const tx = {
       id: 'replay-lock',
       kind: 'lock',
@@ -28,7 +30,7 @@ describe('compact FS-1 lock replay', { timeout: 20000 }, () => {
       vout: [{
         kind: 'lock',
         commit,
-        dest20: Buffer.alloc(20, 4),
+        dest20: Buffer.from(d20),
         portalId,
       }],
       admit_proofs: [{

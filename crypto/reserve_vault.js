@@ -272,23 +272,23 @@ export function portalDest20FromSeed(spendSeed, lockIndex = 0) {
 }
 
 /**
- * portalId = H(domain, dest20, r). r is not on the wire.
- * The full address is not an input, so a peer cannot recompute this.
+ * portalId = H(tag, dest20). A peer recomputes it. r is not an input:
+ * a carried id that is not this hash is a squat, and books that stored
+ * the old blinded id do not match. Testnet datadirs wipe together.
  */
-export function portalIdFromDest20(dest20, r) {
+export function portalIdFromDest20(dest20, r = null) {
+  void r;
   let d20;
-  let blind;
   try {
     d20 = Buffer.from(asU8(dest20));
-    blind = Buffer.from(asU8(r));
   } catch {
     return null;
   }
-  if (d20.length !== 20 || blind.length !== 32) return null;
+  if (d20.length < 20) return null;
+  if (d20.length > 20) d20 = d20.subarray(0, 20);
   return createHash('sha256')
     .update(Buffer.from(PORTAL_ID_TAG))
     .update(d20)
-    .update(blind)
     .digest('hex');
 }
 
@@ -2150,6 +2150,24 @@ function votesView(state) {
   return { ...state.votes };
 }
 
+/** Matured-tranche rows a wallet can hash. No amount, no blind, no owner. */
+export function publicTrancheRows(portal) {
+  const rows = Array.isArray(portal?.tranches) ? portal.tranches : [];
+  return rows.map((row) => {
+    let commit = '';
+    if (typeof row?.commit === 'string') commit = row.commit.replace(/^0x/i, '').toLowerCase();
+    else if (row?.commit) {
+      try { commit = Buffer.from(asU8(row.commit)).toString('hex'); } catch { commit = ''; }
+    }
+    return {
+      commit,
+      epoch: Math.floor(Number(row?.epoch) || 0),
+      remainMs: Math.max(0, Math.floor(Number(row?.remainMs) || 0)),
+      noteIsPrincipal: row?.noteIsPrincipal === true || row?.notePrincipal === true,
+    };
+  });
+}
+
 export function publicVaultView(state, nowMs) {
   let totalStaked = 0n;
   let totalIdle = 0n;
@@ -2900,7 +2918,7 @@ export function sealEpochLocks(state, epoch) {
 
 export function deposit({
   state, dest, portalId, nanos, nowMs, payout, payoutPortalId, ownerPub, spendPub,
-  commit, blind, rangeProof, piProof, unlock, rangeCommit, sameLock = false,
+  commit, blind, rangeProof, piProof, unlock, rangeCommit,
 } = {}) {
   const id = portalKey(portalId || dest);
   if (!id) return { ok: false, reason: 'bad_dest' };
@@ -2926,8 +2944,8 @@ export function deposit({
     return { ok: false, reason: 'unsigned' };
   }
   if (have && given && p.ownerPub !== pub) return { ok: false, reason: 'unsigned' };
-  // A second credit of this same lock is not a second portal. Another tx is.
-  if ((priorTranches > 0 || priorOwner) && !sameLock) return { ok: false, reason: 'portal_exists' };
+  // One credit per portal. A second output in this tx is not a second portal.
+  if (priorTranches > 0 || priorOwner) return { ok: false, reason: 'portal_exists' };
   if (!have && given) p.ownerPub = pub;
   else if (!have && signed) p.ownerPub = signer;
   if (payoutPortalId && isPortalId(payoutPortalId) && !p.payoutPortalId) {
@@ -3573,7 +3591,6 @@ export function lockTx({
     to,
     nanos: 0,
     portalId: portalIdFor(to, spendSeed, lockIndex),
-    payoutPortalId: portalIdFor(from, spendSeed),
     vin: [vinDest20(from)],
     vout,
   };
@@ -4424,7 +4441,7 @@ function valueHasAddrLeak(value, seen) {
 /**
  * A compact lock carries portalId and dest20. `to` and any ssa1 string are
  * the address, which a peer must not need. Same shape as a leaked vote.
- * The EVM keys the owner on the carried 32-byte portal id.
+ * payoutPortalId on a lock is that leak. More than one lock output is a second portal.
  */
 export function compactLockLeakRejected(tx) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
@@ -4432,6 +4449,9 @@ export function compactLockLeakRejected(tx) {
   if (tx?.to != null && String(tx.to) !== '') return { ok: false, reason: 'vote_leak' };
   if (tx?.from != null && String(tx.from) !== '') return { ok: false, reason: 'vote_leak' };
   if (tx?.payer != null && String(tx.payer) !== '') return { ok: false, reason: 'vote_leak' };
+  if (tx?.payoutPortalId != null && String(tx.payoutPortalId) !== '') return { ok: false, reason: 'vote_leak' };
+  const lockOuts = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === KIND_LOCK);
+  if (lockOuts.length > 1) return { ok: false, reason: 'portal_exists' };
   if (valueHasAddrLeak(tx, new Set())) return { ok: false, reason: 'vote_leak' };
   return null;
 }
@@ -4768,6 +4788,16 @@ export function applyReserveBlock({
         }
       }
       const fundedOut = tx?.vaultLockNote ? consumedLockOutput(tx) : null;
+      if (lockOuts.length > 1) {
+        results.push({ action: KIND_LOCK, ok: false, reason: 'portal_exists' });
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
+      if (tx?.payoutPortalId != null && String(tx.payoutPortalId) !== '') {
+        results.push({ action: KIND_LOCK, ok: false, reason: 'vote_leak' });
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
       const credits = tx?.vaultLockNote
         ? [{
           commit: noteCommit || act.commit,
@@ -4781,8 +4811,8 @@ export function applyReserveBlock({
           rangeProof: out?.rangeProof || null,
           piProof: out?.piProof || act.piProof,
         }));
-      if (!credits.length) {
-        results.push({ action: KIND_LOCK, ok: false, reason: 'stake_reward' });
+      if (credits.length !== 1) {
+        results.push({ action: KIND_LOCK, ok: false, reason: credits.length ? 'portal_exists' : 'stake_reward' });
         state.deferEpochRoll = false;
         return finishReserveApply(results);
       }
@@ -4792,30 +4822,25 @@ export function applyReserveBlock({
         state.deferEpochRoll = false;
         return finishReserveApply(results);
       }
-      let openedHere = false;
-      for (const credit of credits) {
-        const got = deposit({
-          state,
-          portalId: act.portalId,
-          dest: act.dest,
-          commit: credit.commit,
-          rangeProof: credit.rangeProof,
-          rangeCommit: credit.rangeCommit,
-          unlock: credit.unlock,
-          piProof: credit.piProof,
-          nowMs,
-          payout: act.payout,
-          payoutPortalId: act.payoutPortalId,
-          ownerPub: tx.ownerPub || tx.spendPub,
-          spendPub: tx.spendPub,
-          sameLock: openedHere,
-        });
-        if (got.ok) openedHere = true;
-        results.push({ action: KIND_LOCK, ...got });
-        if (!got.ok) {
-          state.deferEpochRoll = false;
-          return finishReserveApply(results);
-        }
+      const credit = credits[0];
+      const got = deposit({
+        state,
+        portalId: act.portalId,
+        dest: act.dest,
+        commit: credit.commit,
+        rangeProof: credit.rangeProof,
+        rangeCommit: credit.rangeCommit,
+        unlock: credit.unlock,
+        piProof: credit.piProof,
+        nowMs,
+        payout: act.payout,
+        ownerPub: tx.ownerPub || tx.spendPub,
+        spendPub: tx.spendPub,
+      });
+      results.push({ action: KIND_LOCK, ...got });
+      if (!got.ok) {
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
       }
       bindLockNote(state, act.portalId, tx, nowMs);
       if (tx?.remainCommit) {

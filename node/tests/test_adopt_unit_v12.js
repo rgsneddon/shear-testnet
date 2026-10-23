@@ -565,7 +565,6 @@ describe('v12 adopt keeps the walked hash-bonus unit', { timeout: fileCapMs(impo
           nanos: 0,
           programId: RESERVE_PROGRAM,
           portalId: who.portalId,
-          payoutPortalId: who.portalId,
           ownerPub: who.pub,
           vaultLockNote: leaf.note,
           vin: ph.vin,

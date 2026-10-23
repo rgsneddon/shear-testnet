@@ -29,7 +29,7 @@ import {
 } from '../../crypto/asert.js';
 import { SAMPLE_PRUNE_CONFIRMATIONS, shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
-import { newIdentity, encodeDest, hash20FromAddress, ed25519RawPub } from '../../crypto/address.js';
+import { newIdentity, encodeDest, hash20FromAddress, ed25519PrivateFromSeed, ed25519RawPub } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import {
   nonceWithShareTarget,
@@ -65,7 +65,6 @@ import {
 import {
   lockTx,
   portalsFromSeed,
-  portalOwnerKey,
   proveLockEquality,
   consensusUnlockPeriod,
   lockUnlockOf,
@@ -428,7 +427,8 @@ function sideLock(store, who, saved, anchor, proveHeight, nowMs) {
   }
   assert.ok(total > PI_SHE_NANOS + LEVY_FLOOR_UNITS, `pots ${total}`);
   const portal = portalsFromSeed(who.spendSeed, 1)[0];
-  const ownerKey = portalOwnerKey(who.spendSeed, portal.portalId);
+  // dest20 is this key, and the portal id is H(dest20). portalOwnerKey is a different key.
+  const ownerKey = ed25519PrivateFromSeed(portal.spendSeed);
   const ownerPub = ed25519RawPub(ownerKey).toString('hex');
   const stamp = lockUnlockOf(store.reserveVault, nowMs);
   const blind = randomScalar();
@@ -486,7 +486,6 @@ function sideLock(store, who, saved, anchor, proveHeight, nowMs) {
       nanos: 0,
       programId: RESERVE_PROGRAM,
       portalId: portal.portalId,
-      payoutPortalId: portal.portalId,
       ownerPub,
       vaultLockNote: leaf.note,
       vin: proofs.map(() => ({ commit: Buffer.alloc(32, 255) })),

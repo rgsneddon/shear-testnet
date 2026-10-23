@@ -1,12 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { newIdentity, destOpeningFromView, spendDestOf, hash20FromAddress, encodeDest } from '../../crypto/address.js';
 import { noteCommitOfDest20, sealCoinbaseNote, sealHiddenNote } from '../../crypto/note.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { levyNanos, poolFeeDest } from '../../crypto/levy.js';
+import { levyNanos, levyNeed, poolFeeDest } from '../../crypto/levy.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { lockTx, voteTx } from '../../crypto/reserve_vault.js';
@@ -1012,5 +1014,52 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(out.status, 200);
     assert.equal(out.json.vortices.some((v) => v.id === RESERVE_PROGRAM), false);
     assert.equal(out.json.vortices.some((v) => v.id === JOIN_PROGRAM), false);
+  });
+
+  it('a wallet-built lock keeps lockAuth, ownerPub, and vaultLockNote on the draft', () => {
+    const wallet = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../wallet');
+    const ran = process.platform === 'win32'
+      ? spawnSync('cmd.exe', ['/d', '/s', '/c', 'flutter', 'test', 'test/emit_wallet_lock_test.dart'], {
+        cwd: wallet,
+        encoding: 'utf8',
+        timeout: 600_000,
+      })
+      : spawnSync('flutter', ['test', 'test/emit_wallet_lock_test.dart'], {
+        cwd: wallet,
+        encoding: 'utf8',
+        timeout: 600_000,
+      });
+    const dartErr = ran.error ? String(ran.error.message || ran.error) : '';
+    assert.equal(ran.status, 0, dartErr || ran.stderr || ran.stdout || 'dart lock');
+    const line = String(ran.stdout || '').split(/\r?\n/).map((row) => row.trim()).filter((row) => row.startsWith('{')).pop();
+    assert.ok(line, ran.stdout || ran.stderr || 'no lock json');
+    const emitted = JSON.parse(line);
+    const body = emitted.body;
+    assert.notEqual(emitted.ownerPub, emitted.identityPub);
+    assert.equal(body.ownerPub, emitted.ownerPub);
+    assert.equal(typeof body.lockAuth, 'string');
+    assert.equal(body.lockAuth.length, 192);
+    assert.equal(typeof body.vaultLockNote, 'string');
+    assert.equal(body.kind, 'lock');
+    assert.equal(body.from, undefined);
+    assert.equal(body.to, undefined);
+    body.fee = levyNeed(body);
+    const posted = [];
+    const ok = handleWalletApi(url('/api/wallet/send'), 'POST', body, {
+      store: storeWith({}),
+      miners: new Map(),
+      queueSend: (t) => {
+        posted.push(t);
+        return { id: 'wallet-lock', ...t };
+      },
+    });
+    assert.equal(ok.status, 200, ok.json?.reason);
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].lockAuth, body.lockAuth);
+    assert.equal(posted[0].ownerPub, emitted.ownerPub);
+    assert.notEqual(posted[0].ownerPub, emitted.identityPub);
+    assert.equal(posted[0].vaultLockNote, body.vaultLockNote);
+    assert.equal(posted[0].from, undefined);
+    assert.equal(posted[0].to, undefined);
   });
 });

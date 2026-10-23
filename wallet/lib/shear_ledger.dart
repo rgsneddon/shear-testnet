@@ -2007,8 +2007,10 @@ void _stampLockNote(List<Map<String, dynamic>> sealed, Map<String, dynamic> inpu
     if ((note['kind'] ?? '').toString() != 'lock') continue;
     note['lockEpoch'] = epoch;
     note['unlockAtMs'] = unlock;
-    if (spendSeed != null && spendSeed.length == 32 && note['commit'] is Uint8List) {
-      sealed[i] = attachAdmitPub(note, spendSeed: spendSeed);
+    final lockIndex = input['lockIndex'] is int ? input['lockIndex'] as int : 0;
+    final ownerSeed = spendSeed == null ? null : reservePortalSpendSeed(spendSeed, lockIndex);
+    if (ownerSeed != null && note['commit'] is Uint8List) {
+      sealed[i] = attachAdmitPub(note, spendSeed: ownerSeed);
     }
   }
 }
@@ -2140,6 +2142,18 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     }
   }
   final postedVin = List<dynamic>.from(_hexify(signVin) as List? ?? const []);
+  String? lockAuthHex;
+  String? ownerPubHex;
+  String? vaultLockNoteHex;
+  if (kind == 'lock' && spendSeed != null && spendSeed.length == 32 && commit != null && commit.length == 32) {
+    final ownerSeed = reservePortalSpendSeed(spendSeed, lockIndex);
+    final auth = ownerSeed == null ? null : _reserveLockAuth(ownerSeed, portalId, Uint8List.fromList(commit));
+    if (auth != null && auth.length == 96) {
+      lockAuthHex = _bytesHex(auth);
+      ownerPubHex = _bytesHex(auth.sublist(0, 32));
+      vaultLockNoteHex = _bytesHex(Uint8List.fromList([...auth.sublist(0, 32), ...commit]));
+    }
+  }
   return {
     'vouts': sealed,
     'postedVin': postedVin,
@@ -2148,11 +2162,41 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     'pub': pub,
     'fee': taxed ? fee : 0,
     'portalId': portalId,
-    'payoutPortalId': payoutPortalId,
+    if (kind != 'lock') 'payoutPortalId': payoutPortalId,
     'isolateStamp': reserveIsolateStamp,
     if (withdrawId != null) 'id': withdrawId,
     if (withdrawNonceHex != null) 'withdrawNonce': withdrawNonceHex,
+    if (lockAuthHex != null) 'lockAuth': lockAuthHex,
+    if (ownerPubHex != null) 'ownerPub': ownerPubHex,
+    if (vaultLockNoteHex != null) 'vaultLockNote': vaultLockNoteHex,
   };
+}
+
+/// ownerPub || sig over shear-lock-owner-v1 || portalId || commit || magic || chain.
+/// The key is the per-portal spend seed, never the identity seed.
+Uint8List? _reserveLockAuth(Uint8List ownerSeed, String portalId, Uint8List commit) {
+  if (ownerSeed.length != 32 || commit.length != 32) return null;
+  final hex = portalId.startsWith('0x') ? portalId.substring(2) : portalId;
+  if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(hex)) return null;
+  final id = Uint8List(32);
+  for (var i = 0; i < 32; i++) {
+    id[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+  }
+  final chain = Uint8List(8);
+  const chainId = 2701;
+  for (var i = 0; i < 8; i++) {
+    chain[i] = (chainId >> (8 * i)) & 0xff;
+  }
+  final message = Uint8List.fromList([
+    ...utf8.encode('shear-lock-owner-v1'),
+    ...id,
+    ...commit,
+    ...keccak256(Uint8List.fromList(utf8.encode(kBookMagic))),
+    ...chain,
+  ]);
+  final pub = ed25519PublicFromSeed(ownerSeed);
+  final sig = ed25519Sign(ownerSeed, message);
+  return Uint8List.fromList([...pub, ...sig]);
 }
 
 /// JSON the pool's vote/lock/withdraw draft stringifies for [levyNeed].
@@ -8641,6 +8685,9 @@ class ShearLedger implements ReadProofSink {
     String? postedWithdrawNonce;
     String? postedPortalId;
     String? postedPayoutPortalId;
+    String? postedLockAuth;
+    String? postedOwnerPub;
+    String? postedVaultLockNote;
     if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw' || sendKind == 'roll') {
       if (spendSeed != null && spendSeed.length == 32) {
         if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
@@ -8701,9 +8748,12 @@ class ShearLedger implements ReadProofSink {
       if (built['portalId'] is String && (built['portalId'] as String).isNotEmpty) {
         postedPortalId = built['portalId'] as String;
       }
-      if (sendKind != 'withdraw' && built['payoutPortalId'] is String && (built['payoutPortalId'] as String).isNotEmpty) {
+      if (sendKind != 'withdraw' && sendKind != 'lock' && built['payoutPortalId'] is String && (built['payoutPortalId'] as String).isNotEmpty) {
         postedPayoutPortalId = built['payoutPortalId'] as String;
       }
+      if (sendKind == 'lock' && built['lockAuth'] is String) postedLockAuth = built['lockAuth'] as String;
+      if (sendKind == 'lock' && built['ownerPub'] is String) postedOwnerPub = built['ownerPub'] as String;
+      if (sendKind == 'lock' && built['vaultLockNote'] is String) postedVaultLockNote = built['vaultLockNote'] as String;
     } else {
       postedVin = _postedVin(vin);
       postedVout = _postedVout(vouts);
@@ -8765,6 +8815,9 @@ class ShearLedger implements ReadProofSink {
           payoutPortalId: postedPayoutPortalId,
           fs1: fs1Hex,
           anchor: fs1Anchor,
+          lockAuth: postedLockAuth,
+          ownerPub: postedOwnerPub,
+          vaultLockNote: postedVaultLockNote,
         );
       }
 
@@ -9516,6 +9569,9 @@ class ShearPoolClient {
     String? payoutPortalId,
     String? fs1,
     int? anchor,
+    String? lockAuth,
+    String? ownerPub,
+    String? vaultLockNote,
   }) {
     return _post('/api/wallet/send', walletSendBody(
       from: from,
@@ -9548,6 +9604,9 @@ class ShearPoolClient {
       payoutPortalId: payoutPortalId,
       fs1: fs1,
       anchor: anchor,
+      lockAuth: lockAuth,
+      ownerPub: ownerPub,
+      vaultLockNote: vaultLockNote,
     ), legacyPoolSend: legacyPoolSend, publicConsent: publicConsent);
   }
 
@@ -9612,6 +9671,10 @@ class ShearPoolClient {
   /// Per-portal Reserve stake/idle/accrued. Not a public vortice.
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
+
+  /// Matured-tranche rows for one portal. commit, epoch, remainMs, noteIsPrincipal.
+  Future<Map<String, dynamic>> reserveTranches(String portalId) =>
+      _get('/api/vault/reserve?portal=${Uri.encodeQueryComponent(portalId)}');
 }
 
 /// Tip lines the Windows binary prints for `--print-tip`.
@@ -9699,6 +9762,9 @@ Map<String, dynamic> walletSendBody({
   String? payoutPortalId,
   String? fs1,
   int? anchor,
+  String? lockAuth,
+  String? ownerPub,
+  String? vaultLockNote,
 }) {
   final flow = kind == null || kind.isEmpty || kind == 'send';
   if (flow) {
@@ -9759,6 +9825,9 @@ Map<String, dynamic> walletSendBody({
       if (fs1 != null && fs1.isNotEmpty) 'fs1': fs1,
       if (anchor != null && anchor > 0) 'anchor': anchor,
       if (id != null && id.isNotEmpty) 'id': id,
+      if (lockAuth != null && lockAuth.isNotEmpty) 'lockAuth': lockAuth,
+      if (ownerPub != null && ownerPub.isNotEmpty) 'ownerPub': ownerPub,
+      if (vaultLockNote != null && vaultLockNote.isNotEmpty) 'vaultLockNote': vaultLockNote,
     };
   }
   return {

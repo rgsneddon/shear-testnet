@@ -279,13 +279,20 @@ contract Reserve {
         return keccak256(abi.encodePacked("shear-portal-v1", dest));
     }
 
-    /// A 32-byte dest is the portal id the lock carried. That word is the
-    /// storage key and the id the owner signs. It is not a hash of an address.
-    /// A longer dest is the legacy address encoding, still hashed.
+    /// A 20-byte dest is the lockAuth key's dest20. The storage id is
+    /// sha256("shear-portal-id-v1" || dest), the same hash consensus uses.
+    /// A 32-byte word names that id. A lock refuses it; a withdraw uses it.
+    /// A longer dest is the legacy address encoding.
     function _portalKey(bytes calldata dest) internal pure returns (bytes32 id, bytes32 shaId) {
         if (dest.length == 0) revert BadDest();
         if (dest.length == 32) {
             id = bytes32(dest);
+            if (id == bytes32(0)) revert BadDest();
+            shaId = id;
+            return (id, shaId);
+        }
+        if (dest.length == 20) {
+            id = sha256(abi.encodePacked("shear-portal-id-v1", dest));
             if (id == bytes32(0)) revert BadDest();
             shaId = id;
             return (id, shaId);
@@ -641,11 +648,18 @@ contract Reserve {
     function _lock(bytes calldata dest, bytes32 commit, uint256 nowTs, bool notePrincipal, bytes calldata auth, bool qualifies) internal {
         if (commit == bytes32(0)) revert BadAmount();
         if (dest.length == 0) revert BadDest();
+        // A raw portal id cannot open a portal. The id is H(dest20).
+        if (dest.length == 32) revert Unsigned();
         if (clockGenesis == 0) revert ClockUnpinned();
         if (epochStart != 0 && !bonusEnacted && remainingMs(nowTs) == 0) revert NeedEnact();
         if (bonusEnacted && !deferEpochRoll) _syncEpoch(nowTs);
         (bytes32 id, bytes32 shaId) = _portalKey(dest);
         bytes32 ownerCommit = _lockAuthOk(id, commit, auth);
+        // dest20 is the lockAuth key. Another key on this dest is a front-run.
+        if (dest.length == 20) {
+            bytes32 silent = sha256(abi.encodePacked("shear-silent-v1", _authPub(auth)));
+            if (bytes20(silent) != bytes20(dest)) revert Unsigned();
+        }
         if (!portalListed[id]) {
             portalListed[id] = true;
             portalKeys.push(id);
@@ -1820,7 +1834,10 @@ contract Reserve {
         view
         returns (uint256 active, uint256 idle, Vote vote, bool joined, uint256 voteEpoch)
     {
-        bytes32 id = dest.length == 32 ? bytes32(dest) : portalId(dest);
+        bytes32 id;
+        if (dest.length == 20) id = sha256(abi.encodePacked("shear-portal-id-v1", dest));
+        else if (dest.length == 32) id = bytes32(dest);
+        else id = portalId(dest);
         Portal storage p = portals[id];
         return (p.active, p.idle, p.vote, p.joined, p.voteEpoch);
     }

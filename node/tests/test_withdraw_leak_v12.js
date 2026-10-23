@@ -19,6 +19,7 @@ import { compactTx } from '../../crypto/chronoflux.js';
 import { boundReserveWithdraw } from '../../crypto/spend.js';
 import {
   buildFundedWithdraw,
+  compactLockLeakRejected,
   emptyVault,
   withdrawRewardRejected,
 } from '../../crypto/reserve_vault.js';
@@ -151,6 +152,55 @@ describe('withdraw leak gate', () => {
       principalProof: { R: Buffer.alloc(32, 1), z: Buffer.alloc(32, 2) },
     });
     assert.equal(got, null);
+  });
+
+  it('refuses a second lock output and a lock payoutPortalId, and accepts one lock output', () => {
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-lock-shape-'));
+    const book = createStore(dir2);
+    const oneOut = [{ kind: 'lock', dest20: Buffer.alloc(20, 3) }];
+    const twoOut = [
+      { kind: 'lock', dest20: Buffer.alloc(20, 1) },
+      { kind: 'lock', dest20: Buffer.alloc(20, 2) },
+    ];
+    function lockBody(extra = {}, vout = oneOut) {
+      return {
+        id: 'lock-shape',
+        kind: 'lock',
+        programId: RESERVE_PROGRAM,
+        portalId: PORTAL,
+        nanos: 0,
+        fee: 0,
+        vin: [],
+        vout,
+        ...extra,
+      };
+    }
+    function shape(tx) {
+      const pooled = admitMempool(emptyMempool(), tx, { height: 2, reserveState: emptyVault() });
+      const queued = book.queueTx(structuredClone(tx));
+      const block = verifyBlock(carry(who, tx), null, { probeBody: true, magic: 'shear-testnet-v12' });
+      return { pooled, queued, block };
+    }
+    try {
+      const two = shape(lockBody({}, twoOut));
+      assert.equal(two.pooled.reason, 'portal_exists', two.pooled.reason);
+      assert.equal(two.queued.reason, 'portal_exists', two.queued.reason);
+      assert.equal(two.block.reason, 'portal_exists', two.block.reason);
+      const pay = shape(lockBody({ payoutPortalId: PORTAL }));
+      assert.equal(pay.pooled.reason, 'vote_leak', pay.pooled.reason);
+      assert.equal(pay.queued.reason, 'vote_leak', pay.queued.reason);
+      assert.equal(pay.block.reason, 'vote_leak', pay.block.reason);
+      const one = lockBody();
+      assert.equal(compactLockLeakRejected(one), null);
+      const accepted = shape(one);
+      for (const [name, got] of [['mempool', accepted.pooled], ['queue', accepted.queued], ['block', accepted.block]]) {
+        if (got.ok) continue;
+        assert.notEqual(got.reason, 'vote_leak', `${name} ${got.reason}`);
+        assert.notEqual(got.reason, 'portal_exists', `${name} ${got.reason}`);
+      }
+    } finally {
+      fs.rmSync(dir2, { recursive: true, force: true });
+    }
   });
 
   it('a principal of 0 pays nothing', () => {

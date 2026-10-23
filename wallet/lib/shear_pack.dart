@@ -262,37 +262,45 @@ Uint8List _portalIndexBytes(int lockIndex) {
   return b;
 }
 
-/// One-time subaddress for this lock. The address is not an input.
-Uint8List? reservePortalDest20FromSeed(List<int> spendSeed, [int lockIndex = 0]) {
+/// One-time spend seed for this lock. The lockAuth key is this seed, never the identity seed.
+Uint8List? reservePortalSpendSeed(List<int> spendSeed, [int lockIndex = 0]) {
   if (spendSeed.length != 32) return null;
   final seed = Uint8List.fromList(spendSeed);
   final idx = _portalIndexBytes(lockIndex);
-  final one = sha256.convert(<int>[...utf8.encode('shear-portal-spend-v1'), ...seed, ...idx]).bytes;
-  return destCommitFromSpendPub(ed25519PublicFromSeed(Uint8List.fromList(one)));
+  return Uint8List.fromList(
+    sha256.convert(<int>[...utf8.encode('shear-portal-spend-v1'), ...seed, ...idx]).bytes,
+  );
 }
 
-/// portalId = H(tag, one-time dest20, r). r = H(tag, seed, lockIndex).
-/// [dest] is not hashed. Null when the seed is missing.
+/// One-time subaddress for this lock. The address is not an input.
+Uint8List? reservePortalDest20FromSeed(List<int> spendSeed, [int lockIndex = 0]) {
+  final one = reservePortalSpendSeed(spendSeed, lockIndex);
+  if (one == null) return null;
+  return destCommitFromSpendPub(ed25519PublicFromSeed(one));
+}
+
+/// portalId = H(tag, dest20). r is not an input. A peer recomputes this.
+String? reservePortalIdFromDest20(List<int> dest20) {
+  if (dest20.length < 20) return null;
+  final d20 = dest20.length == 20 ? dest20 : dest20.sublist(0, 20);
+  return sha256.convert(<int>[...utf8.encode('shear-portal-id-v1'), ...d20]).toString();
+}
+
+/// portalId = H(tag, one-time dest20). [dest] is not hashed. Null when the seed is missing.
 String? reservePortalIdFromSeed(String dest, List<int> spendSeed, [int lockIndex = 0]) {
+  dest;
   if (spendSeed.length != 32) return null;
   final d20 = reservePortalDest20FromSeed(spendSeed, lockIndex);
   if (d20 == null) return null;
-  final seed = Uint8List.fromList(spendSeed);
-  final idx = _portalIndexBytes(lockIndex);
-  final blind = sha256.convert(<int>[...utf8.encode('shear-portal-r-v1'), ...seed, ...idx]).bytes;
-  return sha256.convert(<int>[...utf8.encode('shear-portal-id-v1'), ...d20, ...blind]).toString();
+  return reservePortalIdFromDest20(d20);
 }
 
-/// Payout portal. dest20 is the address hash and r uses lock index 0.
-/// A lock portal is [reservePortalIdFromSeed], which does not use the address.
+/// Payout portal. dest20 is the address hash. A lock portal is [reservePortalIdFromSeed].
 String? reserveAddressPortalId(String dest, List<int> spendSeed) {
   if (spendSeed.length != 32) return null;
   final d20 = hash20FromAddress(dest);
   if (d20 == null) return null;
-  final seed = Uint8List.fromList(spendSeed);
-  final idx = _portalIndexBytes(0);
-  final blind = sha256.convert(<int>[...utf8.encode('shear-portal-r-v1'), ...seed, ...idx]).bytes;
-  return sha256.convert(<int>[...utf8.encode('shear-portal-id-v1'), ...d20, ...blind]).toString();
+  return reservePortalIdFromDest20(d20);
 }
 
 Uint8List _dest20Bytes(dynamic v) {

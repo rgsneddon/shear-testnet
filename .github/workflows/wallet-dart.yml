@@ -28,12 +28,12 @@ jobs:
         working-directory: wallet
         run: |
           flutter pub get
-          flutter test test/shear_vote_plan_test.dart test/shear_portal_id_test.dart test/wallet_send_body_al_test.dart
+          flutter test test/shear_vote_plan_test.dart test/shear_portal_id_test.dart test/wallet_send_body_al_test.dart test/emit_wallet_lock_test.dart
       - name: Admit library the withdraw prover loads
         run: cargo build --release --manifest-path crypto/native/admit/Cargo.toml
       - name: UI leaf vote posts a real proof
         working-directory: wallet
-        run: flutter test test/leaf_vote_wire_test.dart
+        run: flutter test test/leaf_vote_wire_test.dart test/vault_fix_v12_test.dart
       - name: Install node deps
         run: npm ci --ignore-scripts
       - name: Build shearadmit.node

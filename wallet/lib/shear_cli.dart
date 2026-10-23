@@ -1063,19 +1063,22 @@ Future<int> _claimRewards(
   final blocked = _needPublicOk(err, flags, rpc, dry: false);
   if (blocked != null) return blocked;
   _warnPublicIp(err, rpc);
-  final posted = await postReserveWithdraw(
+  final postedAll = await postMaturedWithdraws(
     ledger,
     reserve: reserve,
     dest: dest,
     payout: payout,
     nowMs: now,
+    spendSeed: hexToBytes(id.seedHex),
+    leaves: reserveLockLeaves(ledger.notes),
     local: ledger.pool == null,
     publicIpConsent: cliAllowsPublicPost(rpc: rpc, publicOk: flags['public-ok'] == '1'),
   );
-  if (posted == null) {
+  if (postedAll.isEmpty) {
     err.writeln('nothing to claim — no staked principal or accrued rewards');
     return 1;
   }
+  final posted = postedAll.last;
   final got = posted.settled;
   session.rememberedReserve = _portalSnap(reserve, dest, now);
   await session.persist();

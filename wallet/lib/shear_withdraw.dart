@@ -405,6 +405,20 @@ Uint8List _u256be(int n) {
 String _hexOf(List<int> raw) =>
     raw.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
+/// The lock's portal spend key when the leaf names its lockIndex.
+/// A leaf with no index keeps the portal-owner tag key.
+Uint8List? _withdrawOwnerSeed(Uint8List spendSeed, String portalId, List<Map<String, Object?>> leaves) {
+  int? index;
+  for (final leaf in leaves) {
+    final named = leaf['lockIndex'];
+    if (named is! int) continue;
+    if (index == null) index = named;
+    else if (index != named) return null;
+  }
+  if (index != null) return reservePortalSpendSeed(spendSeed, index);
+  return _portalOwnerSeed(spendSeed, portalId);
+}
+
 /// sha256(portal-owner tag || spend seed || portal id). One key per portal.
 Uint8List? _portalOwnerSeed(Uint8List spendSeed, String portalId) {
   final hex = portalId.startsWith('0x') ? portalId.substring(2) : portalId;
@@ -545,7 +559,7 @@ Map<String, Object?>? buildProvedWithdraw({
     body['retireProofs'] = retires;
     body['principalProofs'] = opens;
   }
-  final ownerSeed = _portalOwnerSeed(seed, portalId);
+  final ownerSeed = _withdrawOwnerSeed(seed, portalId, leaves);
   if (ownerSeed == null) return null;
   final message = _withdrawOwnerMessage(
     portalId: portalId,

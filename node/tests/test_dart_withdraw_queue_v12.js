@@ -53,7 +53,7 @@ import {
   leafEpochsToBurn,
   leafStubNanos,
   portalsFromSeed,
-  portalOwnerKey,
+  publicTrancheRows,
   proveLockEquality,
 } from '../../crypto/reserve_vault.js';
 import { vaultLockNote } from '../../crypto/vault_reward_fs1.js';
@@ -282,9 +282,9 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () 
 
     const portal = portalsFromSeed(who.spendSeed, 1)[0];
     assert.ok(portal && portal.portalId && portal.dest20.length === 20, 'portal');
-    const ownerKey = portalOwnerKey(who.spendSeed, portal.portalId);
+    // The lock owner is the portal spend key. The identity key is not it.
+    const ownerKey = ed25519PrivateFromSeed(portal.spendSeed);
     const ownerPub = ed25519RawPub(ownerKey).toString('hex');
-    const ownerDest20 = destCommitFromSpendPub(ed25519RawPub(ownerKey));
     const view = liveCoins(store, coins, spent);
     const use = view.coins.filter((c) => c.who === who).slice(0, 4);
     assert.equal(use.length, 4, 'lock inputs');
@@ -326,7 +326,6 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () 
         nanos: 0,
         programId: RESERVE_PROGRAM,
         portalId: portal.portalId,
-        payoutPortalId: portal.portalId,
         ownerPub,
         vaultLockNote: leaf.note,
         vin: ph.vin,
@@ -345,9 +344,12 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () 
       fee = next;
     }
     assert.ok(tx, 'lock fee');
-    tx.dest20 = Buffer.from(ownerDest20);
     tx.ownerPub = ownerPub;
+    // The coins sit at the identity dest. A compact FS-1 lock authorises with
+    // lockAuth, not that spendPub. The portal key would fail the coin dest.
     signSpendTx(tx, ownerKey);
+    delete tx.spendPub;
+    delete tx.sig;
     const fund = proveLockEquality(funded, PI_SHE_NANOS, blind, tx, MAGIC_TESTNET, 0);
     assert.ok(fund, 'fund');
     const lockOut = tx.vout.find((row) => String(row?.kind || '') === 'lock');
@@ -414,14 +416,15 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 1_800_000 }, () 
         amount: PI_SHE_NANOS,
         epochs: burn,
         withdrawPeriod: period,
+        lockIndex: 0,
       },
       releaseEpoch: Math.floor(period / VAULT_PERIODS_PER_EPOCH),
-      tranches: (store.reserveVault.portals[portal.portalId]?.tranches || []).map((row) => ({
-        commit: String(row.commit || ''),
-        epoch: Math.floor(Number(row.epoch) || 0),
-        remainMs: Math.max(0, Math.floor(Number(row.remainMs) || 0)),
-        noteIsPrincipal: row.noteIsPrincipal === true,
-      })),
+      // The wallet reads the node serializer. The test does not copy the rows.
+      nodePortal: {
+        ok: true,
+        portalId: portal.portalId,
+        tranches: publicTrancheRows(store.reserveVault.portals[portal.portalId]),
+      },
     };
     assert.ok(fixture.inputValue > fixture.fee, 'change covers the fee');
     const fixturePath = path.join(dir, 'fixture.json');

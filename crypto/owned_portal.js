@@ -34,7 +34,7 @@ function givenOwner(value) {
   return /^[0-9a-f]{64}$/i.test(pub) ? pub.toLowerCase() : '';
 }
 
-/** H(tag, dest20, r) from this wallet seed. Null when dest20 or r is missing. */
+/** portalId = H(tag, dest20). r is not an input. Null when dest20 is missing. */
 function hiddenPortalId(dest, seed = portalOwner.privateKey) {
   const d20 = hash20FromAddress(dest);
   const blind = portalBlindFromSeed(seed);

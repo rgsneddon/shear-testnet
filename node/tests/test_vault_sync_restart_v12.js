@@ -97,7 +97,7 @@ function payer() {
     base: id.admitBase,
     pub: Buffer.from(id.spendPub).toString('hex'),
     key: id.privateKey,
-    // portalId = H(tag, dest20, r). r comes from the seed. The address hash does not match.
+    // portalId = H(tag, dest20). r is not an input. The address hash does not match.
     portalId: portalIdFromDest20(hash20FromAddress(dest), portalBlindFromSeed(id.spendSeed)),
   };
 }
@@ -317,7 +317,6 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
         nanos: 0,
         programId: RESERVE_PROGRAM,
         portalId: person.portalId,
-        payoutPortalId: person.portalId,
         ownerPub: person.pub,
         vaultLockNote: leaf.note,
         vin: ph.vin,

@@ -3,13 +3,18 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_ed25519.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_reserve.dart';
+import 'package:shear_wallet/shear_ristretto.dart';
+
+String _hex(List<int> raw) => raw.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
 void main() {
-  test('a portal id is not recomputed from the public address', () {
+  test('a portal id is H(tag, dest20) and r is not an input', () {
     final seed = Uint8List(32);
     final dest20 = Uint8List(20);
     for (var i = 0; i < 32; i++) seed[i] = i + 1;
@@ -22,8 +27,10 @@ void main() {
     const address = 'ssa1qqexamplepublicaddress';
     expect(pid, isNot(portalIdFromDest(address)));
     final publicOnly = sha256.convert(<int>[...utf8.encode(kPortalIdTag), ...dest20]).toString();
-    expect(pid, isNot(publicOnly));
-    expect(portalIdFromDest20(dest20, Uint8List(32)), isNot(pid));
+    // A peer recomputes this from dest20 alone. The blind does not change it.
+    expect(pid, publicOnly);
+    expect(portalIdFromDest20(dest20, Uint8List(32)), pid);
+    expect(portalIdFromDest20(dest20), pid);
   });
 
   test('two locks from one seed are two portals and two dest20s', () {
@@ -67,7 +74,18 @@ void main() {
     expect(first['portalId'], isNot(second['portalId']));
     expect(first['portalId'], isNot(portalIdFromDest(id.address)));
     expect(first['portalId'], isNot(reservePortalId(id.address)));
-    expect(first['payoutPortalId'], isNot(first['portalId']));
+    // A lock does not carry payoutPortalId. Consensus refuses that field.
+    expect(first.containsKey('payoutPortalId'), isFalse);
+    final ownerSeed = reservePortalSpendSeed(seed, 0);
+    expect(ownerSeed, isNotNull);
+    final ownerPub = _hex(ed25519PublicFromSeed(ownerSeed!));
+    final identityPub = _hex(ed25519PublicFromSeed(seed));
+    expect(first['ownerPub'], ownerPub);
+    expect(first['ownerPub'], isNot(identityPub));
+    expect(first['lockAuth'], isA<String>());
+    expect((first['lockAuth'] as String).startsWith(ownerPub), isTrue);
+    expect(first['vaultLockNote'], isA<String>());
+    expect((first['vaultLockNote'] as String).startsWith(ownerPub), isTrue);
     final note0 = (first['vouts'] as List).first as Map;
     final note1 = (second['vouts'] as List).first as Map;
     expect(note0['portalId'], recovered[0]['portalId']);
@@ -92,5 +110,50 @@ void main() {
     final wrong = Uint8List.fromList(dest!);
     wrong[0] = wrong[0] ^ 0xff;
     expect(recognisesWithdrawPayout({'dest20': wrong}, seed, portalId, nonce), isFalse);
+  });
+
+  test('a lock leaf admit base is the portal spend seed, not the identity seed', () {
+    final id = createIdentity();
+    final seed = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      seed[i] = int.parse(id.seedHex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    final payer = createIdentity();
+    final built = sealSignReserveWire(<String, dynamic>{
+      'to': id.address,
+      'from': payer.address,
+      'kind': 'lock',
+      'nanos': 1000,
+      'spendSeed': seed,
+      'lockIndex': 0,
+      'lockEpoch': 0,
+      'unlockAtMs': 1700000000000,
+      'vouts': <Map<String, dynamic>>[
+        {'address': id.address, 'nanos': 1000, 'kind': 'lock'},
+      ],
+    });
+    final note = (built['vouts'] as List).first as Map<String, dynamic>;
+    final ownerSeed = reservePortalSpendSeed(seed, 0);
+    expect(ownerSeed, isNotNull);
+    final stamped = <String, dynamic>{
+      'commit': note['commit'],
+      'noteCommit': note['noteCommit'],
+      'kind': 'lock',
+    };
+    final want = pointBytes(admitPub(admitScalarFromSeed(ownerSeed!, stamped)));
+    expect(note['admitPub'], orderedEquals(want));
+    expect(admitBaseBytes(ownerSeed), isNot(orderedEquals(admitBaseBytes(seed))));
+  });
+
+  test('deposit keeps a later lockIndex for the claim', () {
+    final dest = encodeHrp('ssa', Uint8List.fromList(List.filled(20, 7)));
+    final reserve = ShearReserve();
+    const t0 = 1700000000000;
+    expect(reserve.deposit(dest: dest, she: 0.001, nowMs: t0, lockIndex: 1), isNull);
+    final seed = Uint8List(32)..[0] = 4;
+    final input = vaultRewardProveInput(reserve: reserve, dest: dest, payout: dest, seed: seed);
+    expect(input, isNotNull);
+    final locks = input!['locks'] as List;
+    expect((locks.first as Map)['index'], 1);
   });
 }

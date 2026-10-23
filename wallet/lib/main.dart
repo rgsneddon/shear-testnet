@@ -4049,7 +4049,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         );
       } else {
         final leaves = reserveLockLeaves(ledger.notes);
-        posted = await postReserveWithdraw(
+        final postedAll = await postMaturedWithdraws(
           ledger,
           reserve: reserve,
           dest: dest,
@@ -4062,6 +4062,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
           publicIpConsent: !local && _reserveUnprivateOk,
           leaves: leaves,
         );
+        posted = postedAll.isEmpty ? null : postedAll.last;
       }
     } on StateError catch (err) {
       if (context.mounted) {

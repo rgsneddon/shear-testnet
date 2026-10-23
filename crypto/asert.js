@@ -144,9 +144,8 @@ export const HASH_BONUS_NANOS = 1;
 /** Vote moves the per-hash bonus by one protocol unit (±10⁻¹¹ SHE). The pot does not move. */
 export const HASH_BONUS_VOTE_DELTA_NANOS = 1;
 /**
- * Garbage, negative, and missing units clamp to 1. A voted 0 is bonus off
- * (Russell 21:34 17 Oct): one rho per passed hash-bonus vote, a down vote
- * at 1 sets 0, a down vote at 0 stays 0, and an up vote at 0 sets 1.
+ * 1 clamps a malformed unit only. A governance-set 0 stays 0 (bonus off).
+ * The unit moves only by passed votes, 1 rho per vote, floor 0, no ceiling.
  */
 export const HASH_BONUS_NANOS_FLOOR = 1;
 
@@ -261,15 +260,16 @@ export const VAULT_ACCRUAL_LAW = 'epoch-total-bps';
  * and a claim's public nanos. The coinbase commitment sum is pot + hash +
  * levy; reward.minted is a claim output and is not part of that sum. An
  * unindexed hidden withdraw fails closed as stake_reward. portalId is
- * H(tag, one-time dest20, r) and r is H(tag, seed, lockIndex). One lock,
- * one portal. Compact lock and withdraw bodies do not carry `to`. The gap
- * opening is A1 and zGap once; the claim header does not repeat them.
+ * H(tag, dest20). dest20 is the lockAuth key. One lock output per lock.
+ * A lock that carries payoutPortalId is refused. Compact lock and withdraw
+ * bodies do not carry `to`. The gap opening is A1 and zGap once; the claim
+ * header does not repeat them. A fingerprint change wipes testnet together.
  */
 export const DIGEST_LOCK_STAMP = 'unlockAtMs+lockEpoch';
 export const COMPACT_VAULT_WIRE = 'roots+census+claimNanos';
 export const COINBASE_PUBLIC_TOTAL = 'pot+hash+levy';
 export const UNINDEXED_WITHDRAW = 'stake_reward';
-export const PORTAL_ID_LAW = 'H(tag,oneTimeDest20,r(seed,lockIndex))';
+export const PORTAL_ID_LAW = 'H(tag,dest20)';
 export const COMPACT_TO = 'dropped';
 export const VAULT_GAP_LAW = 'A1-once';
 /**
@@ -456,6 +456,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `MEMO_NOT_DEST_KEYED=1`,
     `RESERVE_REWARD=${REWARD_LAW}`,
     `ORACLE=${ORACLE_LAW}`,
+    // 1 is only the malformed-unit clamp. A governance-set 0 stays 0.
     `HASH_UNIT_FLOOR=${HASH_BONUS_NANOS_FLOOR}`,
     'HASH_BONUS_STEP=1rho',
     'HASH_BONUS_OFF=0',
@@ -472,6 +473,8 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'WITHDRAW_SPENDPUB=refuse',
     'ADMIT_KEYS=strict3',
     'LOCK_OWNER=signer',
+    'LOCK_OUTPUTS=1',
+    'LOCK_PAYOUT=refuse',
     'HASH_BONUS_CEIL=none',
     'P2P_HELLO=fingerprint',
     `COMPACT_TO=${COMPACT_TO}`,

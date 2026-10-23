@@ -235,15 +235,20 @@ describe('Reserve vault protocol', () => {
     assert.equal(dust.ok, true);
     assert.equal(state.epochStartMs, 0);
     assert.equal(canVote(dust.portal.staked), false);
-    const rest = PI_SHE_NANOS - NANOS_PER_SHE;
-    // One lock, second credit. A second tx without sameLock is portal_exists.
-    const ok = deposit({ state, dest: a, nanos: rest, nowMs: t0 + 1000, sameLock: true });
+    // A second credit of the same portal is portal_exists. The same-tx bypass is gone.
+    const rest = deposit({ state, dest: a, nanos: PI_SHE_NANOS - NANOS_PER_SHE, nowMs: t0 + 1000 });
+    assert.equal(rest.ok, false);
+    assert.equal(rest.reason, 'portal_exists');
+    assert.equal(state.epochStartMs, 0);
+    const opened = emptyVault();
+    opened.genesisMs = t0;
+    const ok = deposit({ state: opened, dest: a, nanos: PI_SHE_NANOS, nowMs: t0 });
     assert.equal(ok.ok, true);
     assert.equal(ok.portal.joined, true);
     assert.equal(ok.portal.qualified, true);
-    assert.equal(state.epochStartMs, t0);
-    assert.equal(state.currentEpoch, 0);
-    assert.notEqual(state.epochStartMs, 0);
+    assert.equal(opened.epochStartMs, t0);
+    assert.equal(opened.currentEpoch, 0);
+    assert.notEqual(opened.epochStartMs, 0);
   });
 
   it('after the stake cutoff, deposits are idle, earn no stake reward, and can vote once', () => {
@@ -274,9 +279,10 @@ describe('Reserve vault protocol', () => {
     assert.equal(changeLate.reason, 'vote_retired');
     assert.equal(state.votes.increase, 0);
     assert.equal(state.votes.hold, 0);
-    const more = deposit({ state, dest: a, nanos: 100, nowMs: late, sameLock: true });
-    assert.equal(more.ok, true);
-    assert.equal(more.idle, true);
+    // A top-up of a portal that already locked is portal_exists.
+    const more = deposit({ state, dest: a, nanos: 100, nowMs: late });
+    assert.equal(more.ok, false);
+    assert.equal(more.reason, 'portal_exists');
     const done = hiddenWithdraw(state, a, t0 + RESERVE_EPOCH_MS, { id: 'cutoff-alice', planted: aliceLock.planted });
     assert.equal(done.ok, true);
     assert.equal(done.idle, 0);
@@ -354,9 +360,10 @@ describe('Reserve vault protocol', () => {
       dest: who,
       nanos: added,
       nowMs: t0 + RESERVE_EPOCH_MS + 1,
-      sameLock: true,
     });
-    assert.equal(more.ok, true, more.reason);
+    // A second credit is portal_exists. Accrued stays the first lock's 0.
+    assert.equal(more.ok, false);
+    assert.equal(more.reason, 'portal_exists');
     const id = portalIdFromDest(who);
     assert.equal(typeof rolled.portals[id].accruedReward, 'bigint');
     assert.equal(rolled.portals[id].accruedReward, 0n);
@@ -368,8 +375,9 @@ describe('Reserve vault protocol', () => {
     assert.equal(deposit({ state: zero, dest: zDest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     zero.epochBps = 0;
     assert.equal(enact({ state: zero, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
-    const zMore = deposit({ state: zero, dest: zDest, nanos: 1, nowMs: t0 + RESERVE_EPOCH_MS + 1, sameLock: true });
-    assert.equal(zMore.ok, true, zMore.reason);
+    const zMore = deposit({ state: zero, dest: zDest, nanos: 1, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
+    assert.equal(zMore.ok, false);
+    assert.equal(zMore.reason, 'portal_exists');
     assert.equal(zero.portals[portalIdFromDest(zDest)].accruedReward, 0n);
     assert.equal(supplyIdentity(zero).ok, true);
 
@@ -380,8 +388,9 @@ describe('Reserve vault protocol', () => {
     assert.equal(deposit({ state: near, dest: nDest, nanos: stake, nowMs: t0 }).ok, true);
     near.epochBps = 10000;
     assert.equal(enact({ state: near, nowMs: t0 + RESERVE_EPOCH_MS }).ok, true);
-    const nMore = deposit({ state: near, dest: nDest, nanos: 1n, nowMs: t0 + RESERVE_EPOCH_MS + 1, sameLock: true });
-    assert.equal(nMore.ok, true, nMore.reason);
+    const nMore = deposit({ state: near, dest: nDest, nanos: 1n, nowMs: t0 + RESERVE_EPOCH_MS + 1 });
+    assert.equal(nMore.ok, false);
+    assert.equal(nMore.reason, 'portal_exists');
     const nearId = portalIdFromDest(nDest);
     assert.equal(near.portals[nearId].accruedReward, 0n);
     const copied = cloneVault(near);
@@ -399,9 +408,9 @@ describe('Reserve vault protocol', () => {
       dest: cDest,
       nanos: 1n,
       nowMs: t0 + 2 * RESERVE_EPOCH_MS,
-      sameLock: true,
     });
-    assert.equal(cMore.ok, true, cMore.reason);
+    assert.equal(cMore.ok, false);
+    assert.equal(cMore.reason, 'portal_exists');
     assert.equal(capped.portals[portalIdFromDest(cDest)].accruedReward, 0n);
     assert.equal(supplyIdentity(capped).ok, true);
 
@@ -419,9 +428,9 @@ describe('Reserve vault protocol', () => {
       dest: alice,
       nanos: 10,
       nowMs: t0 + RESERVE_EPOCH_MS + 1,
-      sameLock: true,
     });
-    assert.equal(settled.ok, true, settled.reason);
+    assert.equal(settled.ok, false);
+    assert.equal(settled.reason, 'portal_exists');
     assert.equal(fork.portals[aliceId].accruedReward, 0n);
     const undone = trialReserveApply({
       state: live,
@@ -886,6 +895,16 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const named = compactLockLeakRejected({ kind: 'lock', portalId: pid, memo: 'pay ssa1qq' });
     assert.equal(named.reason, 'vote_leak');
     assert.equal(compactLockLeakRejected({ kind: 'lock', portalId: pid, dest20: Buffer.from(d20) }), null);
+    // payoutPortalId on a lock is the leak. Two lock outputs are a second portal.
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock', portalId: pid, payoutPortalId: pid, vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+    }).reason, 'vote_leak');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock', portalId: pid, vout: [{ kind: 'lock', dest20: Buffer.from(d20) }, { kind: 'lock', dest20: Buffer.from(d20) }],
+    }).reason, 'portal_exists');
+    assert.equal(compactLockLeakRejected({
+      kind: 'lock', portalId: pid, vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
+    }), null);
   });
 
   it('lockTx with a spend seed carries a portal id the address does not recompute', () => {
@@ -902,9 +921,10 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     assert.notEqual(tx.portalId, portalIdFromDest(vault));
     assert.equal(tx.portalId, want);
     assert.equal(tx.vout[0].portalId, want);
-    assert.notEqual(tx.payoutPortalId, portalIdFromDest(payer));
-    assert.equal(tx.payoutPortalId, pay);
+    // A lock does not carry payoutPortalId. Consensus refuses that field.
+    assert.equal(tx.payoutPortalId, undefined);
     const wrapped = lockTx({ from: payer, to: vault, nanos: 1000, id: 'lock-seeded-wrapped', spendSeed: seed });
+    assert.equal(wrapped.payoutPortalId, undefined);
     assert.equal(wrapped.portalId, want);
     assert.equal(wrapped.vout[0].portalId, want);
     const wd = withdrawTxRaw({ from: vault, to: payer, nanos: 1000, id: 'wd-seeded-portal', spendSeed: seed });

@@ -11,7 +11,7 @@ import { EMPTY_ROOT } from './merkle.js';
 import {
   reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth,
   lockQualifies, lockFundingRejected, lockUnlockOf, consensusUnlockPeriod,
-  portalIdFromDest, withdrawSignedDest, signRewardAuth, verifyRewardAuth,
+  portalIdFromDest, portalIdFromDest20, withdrawSignedDest, signRewardAuth, verifyRewardAuth,
 } from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { ED25519_SPKI_PREFIX, ed25519RawPub } from './address.js';
@@ -99,15 +99,18 @@ function u64le(n) {
   return b;
 }
 
-/** Storage id lock() will use. A 32-byte dest is that word. A longer dest is keccak. */
+/** Storage id lock() will use. A 20-byte dest20 is H(tag, dest20). A raw 32-byte id is unbound. */
 export function evmPortalId(dest) {
   let raw;
   if (typeof dest === 'string') raw = Buffer.from(dest, 'utf8');
   else {
     try { raw = Buffer.from(asU8(dest)); } catch { return null; }
   }
-  if (raw.length === 0) return null;
-  if (raw.length === 32) return raw.equals(Buffer.alloc(32)) ? null : raw;
+  if (raw.length === 0 || raw.length === 32) return null;
+  if (raw.length === 20) {
+    const hex = portalIdFromDest20(raw);
+    return hex ? Buffer.from(hex, 'hex') : null;
+  }
   return Buffer.from(keccak256(Buffer.concat([Buffer.from('shear-portal-v1'), raw])));
 }
 
@@ -968,14 +971,28 @@ export function attachLockAuth(tx, privateKey) {
   return tx;
 }
 
+function lockDest20Bytes(tx) {
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  const lock = outs.find((row) => String(row?.kind || 'lock') === 'lock') || null;
+  const raw = lock?.dest20 || tx?.dest20;
+  if (!raw) return null;
+  try {
+    const b = Buffer.from(asU8(raw));
+    if (b.length >= 20) return Buffer.from(b.subarray(0, 20));
+  } catch { /* not bytes */ }
+  return null;
+}
+
 function destBytesForEvm(tx, act) {
-  // A compact lock carries H(tag, dest20, r). That 32-byte id is the EVM key.
-  // lockTx and withdrawTx stamp that id when a spend seed is present. A
-  // seed-less call still stamps portalIdFromDest(address). An address
-  // deposit lives under the address.
+  const kind = String(tx?.kind || tx?.vout?.[0]?.kind || act?.kind || '');
+  // A lock's EVM key is the vout dest20. The payout dest20 on a withdraw is not a portal.
+  if (kind === 'lock') {
+    const d20 = lockDest20Bytes(tx);
+    if (d20) return d20;
+  }
   const carried = carriedPortalBytes(tx);
   const address = txDestOf(tx) || txFromOf(tx) || '';
-  if (carried) {
+  if (carried && kind !== 'lock') {
     const legacy = address ? portalIdFromDest(address).toLowerCase() : '';
     if (!legacy || carried.toString('hex') !== legacy) return carried;
   }
@@ -998,6 +1015,11 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
   }
   if (kind === 'lock') {
     if (!dest) return { ok: true };
+    if (tx?.payoutPortalId != null && String(tx.payoutPortalId) !== '') {
+      return { ok: false, reason: 'vote_leak' };
+    }
+    const lockOuts = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === 'lock');
+    if (lockOuts.length > 1) return { ok: false, reason: 'portal_exists' };
     // The owner is the signature, not a copied hash of ownerPub.
     const owner = tx?.lockAuth || null;
     // The retire proof opens the leaf commitment, the same one the JS vault
@@ -1030,8 +1052,7 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
       if (!valueCommit || valueCommit.length !== 32) valueCommit = leafCommit;
       return callReserve(session, encodeDeposit(dest, leafCommit, nowMs, owner, lockQualifies(valueCommit, proof)));
     }
-    const outs = (Array.isArray(tx?.vout) ? tx.vout : []).filter((row) => String(row?.kind || '') === 'lock');
-    const credits = outs.length ? outs : (act?.commit ? [{ commit: act.commit, piProof: act?.piProof }] : []);
+    const credits = lockOuts.length ? lockOuts : (act?.commit ? [{ commit: act.commit, piProof: act?.piProof }] : []);
     if (!credits.length) return { ok: false, reason: 'stake_reward' };
     let locked = { ok: true };
     for (const out of credits) {

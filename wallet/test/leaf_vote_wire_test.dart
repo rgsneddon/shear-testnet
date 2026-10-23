@@ -144,6 +144,102 @@ void main() {
     expect(saved['openHeight'], open);
     expect(saved['closeHeight'], close);
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  test('vote change pays a fresh one-time address, not the fee note dest20', () async {
+    expect(Fs1Native.tryLoad(), isNotNull, reason: 'fs1_prover_unavailable');
+    final id = createIdentity();
+    final dest = id.address;
+    final seed = hexToBytes(id.seedHex);
+    final voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
+    final feeNanos = voteL + 100000;
+    final reserve = ShearReserve()..currentEpoch = 1;
+    reserve.portal(dest).staked = kPiSheNanos;
+    const open = 100;
+    final close = voteCloseHeightOf(open);
+    expect(close, isNotNull);
+    final feeDest = Uint8List(20)..[0] = 4;
+    final fee = attachAdmitPub(
+      sealCoinbaseNote(feeNanos, dest20: feeDest, kind: 'pot'),
+      spendSeed: seed,
+    );
+    fee['nanos'] = feeNanos;
+    final feeHex = _hex(fee['commit'] as Uint8List);
+    const height = 200;
+    final posts = <Map<String, dynamic>>[];
+    final pool = _LeafPool(posts, {
+      'pubs': [fee['admitPub']],
+      'commits': [fee['commit']],
+      'anchors': [
+        {'height': 32, 'n': 1},
+      ],
+      'spendTags': <Object>[],
+    });
+    addTearDown(pool.close);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.replaceFromBackup(
+      address: dest,
+      spendable: 1,
+      pending: 0,
+      txs: const [],
+    );
+    ledger.rememberNodeChain(bodies: [
+      {
+        'height': open,
+        'txs': [
+          {
+            'coinbase': true,
+            'epochCensusCommit': [
+              {'epoch': 1, 'leafCount': 1, 'openHeight': open},
+            ],
+          },
+        ],
+      },
+    ]);
+    ledger.rememberNote(fee);
+    ledger.rememberNote({
+      'kind': 'lock',
+      'scalar': scalarBytes(randomScalar()),
+      'blind': scalarBytes(randomScalar()),
+      'note': Uint8List(64),
+      'amount': kPiSheNanos,
+      'epochs': [1],
+      'unlock': 0,
+    });
+    final dir = Directory.systemTemp.createTempSync('shear-vote-change-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
+    File('${dir.path}${Platform.pathSeparator}vote-plan.json').writeAsStringSync(jsonEncode({
+      'epoch': 1,
+      'openHeight': open,
+      'closeHeight': close,
+      'txs': [
+        {'leaf': 0, 'height': height, 'feeInput': feeHex},
+      ],
+    }));
+    final result = await castPlannedLeafVotes(
+      ledger: ledger,
+      reserve: reserve,
+      planDir: dir.path,
+      restFrame: dest,
+      dest: dest,
+      choice: kVoteIncrease,
+      spendSeed: seed,
+      local: false,
+      publicIpConsent: true,
+    );
+    expect(result.enacted, isTrue, reason: result.remark);
+    expect(posts, hasLength(1));
+    final vout = posts.single['vout'];
+    expect(vout, isA<List>());
+    expect((vout as List), hasLength(1));
+    final row = vout.single as Map;
+    final got = (row['dest20'] as List).cast<int>();
+    final want = voteChangeDest20(seed, fee['commit'] as Uint8List);
+    expect(want, isNotNull);
+    expect(got, orderedEquals(want!));
+    expect(got, isNot(orderedEquals(feeDest)));
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }
 
 String _hex(List<int> raw) =>

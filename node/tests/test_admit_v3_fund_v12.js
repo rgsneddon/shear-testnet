@@ -17,8 +17,8 @@ import { auditCirculatingSupply } from '../src/supply.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM, TARGET_BLOCK_INTERVAL_MS, MTP_FUTURE_MS, MTP_WINDOW } from '../../crypto/asert.js';
 import { epochMs } from '../../crypto/pot_sched.js';
-import { newIdentity, encodeDest, hash20FromAddress, admitBaseFromAddress, destCommitFromSpendPub, ed25519RawPub } from '../../crypto/address.js';
-import { lockTx, voteTx, withdrawTx, VOTE_HOLD, previewWithdraw, withdrawMintId, portalIdFromDest, portalBlindFromSeed, portalIdFromDest20, portalsFromSeed, portalOwnerKey } from '../../crypto/reserve_vault.js';
+import { newIdentity, encodeDest, hash20FromAddress, admitBaseFromAddress, destCommitFromSpendPub, ed25519PrivateFromSeed, ed25519RawPub } from '../../crypto/address.js';
+import { lockTx, voteTx, withdrawTx, VOTE_HOLD, previewWithdraw, withdrawMintId, portalIdFromDest, portalBlindFromSeed, portalIdFromDest20, portalsFromSeed } from '../../crypto/reserve_vault.js';
 import { signSpendTx, typedCommitSum, verifySpendSig } from '../../crypto/spend.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { levyNeed, splitLevy, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
@@ -448,7 +448,7 @@ function lifePayer() {
   const commit20 = destCommitFromSpendPub(id.spendPub);
   const dest = encodeDest(commit20, id.admitBase);
   const portal = portalsFromSeed(id.spendSeed, 1)[0];
-  const ownerKey = portalOwnerKey(id.spendSeed, portal.portalId);
+  const ownerKey = ed25519PrivateFromSeed(portal.spendSeed);
   const ownerPub = ed25519RawPub(ownerKey);
   return {
     id,
@@ -619,7 +619,6 @@ async function lifeLock(store, person, coins, spent, id) {
       nanos: 0,
       programId: RESERVE_PROGRAM,
       portalId: person.portalId,
-      payoutPortalId: person.portalId,
       ownerPub: person.pub,
       vaultLockNote: leaf.note,
       vin: ph.vin,

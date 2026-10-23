@@ -141,6 +141,7 @@ void _emitFixture(String path) {
           'amount': leaf['amount'] as int,
           'epochs': _ints(leaf['epochs']),
           'withdrawPeriod': leaf['withdrawPeriod'] as int,
+          if (leaf['lockIndex'] is int) 'lockIndex': leaf['lockIndex'] as int,
         },
       ],
       spendSeed: seed,
@@ -148,16 +149,8 @@ void _emitFixture(String path) {
       fee: fee,
       withdrawNonce: nonce,
       vout: vout,
-      tranches: [
-        for (final row in (raw['tranches'] as List? ?? const []))
-          if (row is Map<String, dynamic>)
-            {
-              'commit': row['commit'].toString(),
-              'epoch': row['epoch'] is int ? row['epoch'] as int : int.parse(row['epoch'].toString()),
-              'remainMs': row['remainMs'] is int ? row['remainMs'] as int : int.parse(row['remainMs'].toString()),
-              if (row['noteIsPrincipal'] == true) 'noteIsPrincipal': true,
-            },
-      ],
+      // The node response, not a hand-mapped tranche list.
+      tranches: tranchesFromNode(raw['nodePortal'] ?? raw),
     );
     if (built == null) throw StateError('null');
     print(jsonEncode(_json(built)));

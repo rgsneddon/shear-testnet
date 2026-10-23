@@ -12,7 +12,7 @@ Network: `shear-testnet-v12` (privacy-class). Previous book `shear-testnet-v11`.
 | `BLOCK_SUBSIDY_NANOS` | `100_000_000_000` (1 SHE, 11 decimals) |
 | `HASH_BONUS_NANOS` | `1` (10⁻¹¹ SHE). Kill every 10⁻¹⁰ line. |
 | `HASH_BONUS_VOTE_DELTA_NANOS` | `1` |
-| `HASH_BONUS_NANOS_FLOOR` | `1` — **the per-hash unit is never 0**. Votes, vault load, coinbase, and verify all clamp through `hashBonusUnitNanos`. A book that pays 0 per proven hash is a different book. |
+| `HASH_BONUS_NANOS_FLOOR` | `1` — FLOOR 1 is the clamp for a malformed unit only; a governance-set 0 (bonus off) stays 0; the unit moves only by passed votes, 1 rho per vote, floor 0, no ceiling. |
 | `SHE_PUBLIC_DIGITS` | `8` (sealed book still holds 11) |
 | `SPENDABLE_CONFIRMATIONS` | `9` |
 | `SAMPLE_PRUNE_CONFIRMATIONS` | `1000` |

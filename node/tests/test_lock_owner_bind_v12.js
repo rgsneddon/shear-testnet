@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { destCommitFromSpendPub, newIdentity, spendDestOf } from '../../crypto/address.js';
 import { RESERVE_PROGRAM } from '../../crypto/asert.js';
-import { emptyVault, portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { emptyVault, portalIdFromDest, portalIdFromDest20 } from '../../crypto/reserve_vault.js';
 import { reserveAuth, signSpendTx } from '../../crypto/spend.js';
 import { bootReserveEvm, callReserve, encodeDeposit, encodePinClock } from '../../crypto/reserve_evm.js';
 
@@ -51,33 +51,56 @@ describe('later lock owner binding', () => {
     assert.equal(reserveAuth(honest, state).ok, true, reserveAuth(honest, state).reason);
   });
 
-  it('a fresh lock requires ownerPub == spendPub', () => {
+  it('a fresh lock requires ownerPub == spendPub and portalId from dest20', () => {
     const owner = who();
     const stranger = who();
-    const portalId = portalIdFromDest(stranger.dest);
+    const d20 = destCommitFromSpendPub(stranger.id.spendPub);
+    const portalId = portalIdFromDest20(d20);
     const state = emptyVault();
     const spoof = signedLock(stranger, portalId, owner.pub);
     const got = reserveAuth(spoof, state);
     assert.equal(got.ok, false, 'fresh lock took a foreign ownerPub');
     assert.equal(got.reason, 'unsigned');
+    // An address-hash portal id is not H(dest20). That squat is unsigned.
+    const squat = signedLock(stranger, portalIdFromDest(stranger.dest), stranger.pub);
+    assert.equal(reserveAuth(squat, state).reason, 'unsigned');
     const honest = signedLock(stranger, portalId, stranger.pub);
     assert.equal(reserveAuth(honest, state).ok, true, reserveAuth(honest, state).reason);
   });
 
-  it('the EVM refuses a later lock signed by another key', async () => {
+  it('a front-run that puts another key on this dest20 is unsigned', () => {
+    const victim = who();
+    const attacker = who();
+    const d20 = destCommitFromSpendPub(victim.id.spendPub);
+    const portalId = portalIdFromDest20(d20);
+    const state = emptyVault();
+    const honest = signedLock(victim, portalId, victim.pub);
+    assert.equal(reserveAuth(honest, state).ok, true, reserveAuth(honest, state).reason);
+    const stolen = signedLock(attacker, portalId, attacker.pub);
+    stolen.vout[0].dest20 = Buffer.from(d20);
+    stolen.portalId = portalId;
+    const got = reserveAuth(stolen, state);
+    assert.equal(got.ok, false, 'front-run was accepted');
+    assert.equal(got.reason, 'unsigned');
+  });
+
+  it('the EVM refuses a front-run and a raw 32-byte portal id', async () => {
     const owner = who();
     const stranger = who();
     const session = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
-    const id = Buffer.alloc(32, 4);
-    const first = await callReserve(session, encodeDeposit(id, Buffer.alloc(32, 9), t0, { key: owner.id.privateKey }, false));
+    const dest20 = destCommitFromSpendPub(owner.id.spendPub);
+    const first = await callReserve(session, encodeDeposit(dest20, Buffer.alloc(32, 9), t0, { key: owner.id.privateKey }, false));
     assert.equal(first.ok, true, first.reason);
-    const copied = await callReserve(session, encodeDeposit(id, Buffer.alloc(32, 8), t0 + 1, { key: stranger.id.privateKey }, false));
+    const copied = await callReserve(session, encodeDeposit(dest20, Buffer.alloc(32, 8), t0 + 1, { key: stranger.id.privateKey }, false));
     assert.equal(copied.ok, false, 'EVM accepted a later lock from another key');
     assert.equal(copied.reason, 'unsigned');
-    const again = await callReserve(session, encodeDeposit(id, Buffer.alloc(32, 7), t0 + 2, { key: owner.id.privateKey }, false));
+    const again = await callReserve(session, encodeDeposit(dest20, Buffer.alloc(32, 7), t0 + 2, { key: owner.id.privateKey }, false));
     assert.equal(again.ok, false);
     assert.equal(again.reason, 'portal_exists');
+    const raw = await callReserve(session, encodeDeposit(Buffer.alloc(32, 4), Buffer.alloc(32, 3), t0 + 3, { key: owner.id.privateKey }, false));
+    assert.equal(raw.ok, false, 'EVM accepted a raw 32-byte portal id');
+    assert.equal(raw.reason, 'unsigned');
   });
 });

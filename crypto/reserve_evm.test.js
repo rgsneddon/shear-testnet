@@ -36,7 +36,7 @@ import {
 } from './reserve_evm.js';
 import { GENESIS_BPS } from './reserve_oracle.js';
 import { txDigestV3 } from './admit_v3.js';
-import { ed25519RawPub, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from './address.js';
+import { destCommitFromSpendPub, ed25519RawPub, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from './address.js';
 import { pointBytes, pointFrom, proveRange, randomScalar, sealCoinbaseNote } from './note.js';
 import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
 import { boundReserveWithdraw, reserveAuth, signSpendTx } from './spend.js';
@@ -298,22 +298,25 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(code.includes(stranger), false);
   });
 
-  it('a carried 32-byte portal id keeps the first owner and refuses another', async () => {
+  it('a 20-byte dest20 binds the lockAuth key and a raw 32-byte id is unsigned', async () => {
     const s = await bootReserveEvm();
     const t0 = 1_700_000_000_000;
     assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
-    const id = Buffer.alloc(32, 7);
     const ownerA = newIdentity();
     const ownerB = newIdentity();
-    const first = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 9), t0, { key: ownerA.privateKey }, false));
+    const dest20 = destCommitFromSpendPub(ownerA.spendPub);
+    const first = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 9), t0, { key: ownerA.privateKey }, false));
     assert.equal(first.ok, true, first.reason);
-    const again = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 8), t0 + 1, { key: ownerB.privateKey }, false));
-    assert.equal(again.ok, false);
-    assert.equal(again.reason, 'unsigned');
-    const same = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 6), t0 + 2, { key: ownerA.privateKey }, false));
+    const front = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 8), t0 + 1, { key: ownerB.privateKey }, false));
+    assert.equal(front.ok, false, 'front-run was accepted');
+    assert.equal(front.reason, 'unsigned');
+    const same = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 6), t0 + 2, { key: ownerA.privateKey }, false));
     assert.equal(same.ok, false);
     assert.equal(same.reason, 'portal_exists');
-    const copied = await callReserve(s, encodeDepositRaw(id, Buffer.alloc(32, 5), t0 + 3, Buffer.alloc(32, 1), false));
+    const raw = await callReserve(s, encodeDepositRaw(Buffer.alloc(32, 7), Buffer.alloc(32, 4), t0 + 3, { key: ownerA.privateKey }, false));
+    assert.equal(raw.ok, false, 'raw 32-byte id was accepted');
+    assert.equal(raw.reason, 'unsigned');
+    const copied = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 5), t0 + 4, Buffer.alloc(32, 1), false));
     assert.equal(copied.ok, false);
     assert.equal(copied.reason, 'owner_missing');
   });
@@ -1195,7 +1198,8 @@ describe('Reserve bytecode on the Shear EVM', () => {
         // receipt gate. The unfunded dest20 is still a public receipt.
         nanos: PI_SHE_NANOS,
         portalId: portalIdFromDest(portalDest),
-        payoutPortalId: portalIdFromDest(fundDest),
+        // A lock that carries payoutPortalId is vote_leak. This receipt test
+        // omits it so the public-receipt gate is what refuses the body.
         ownerPub: owner,
         vin: [{ dest20: fund20 }],
         vout: [{

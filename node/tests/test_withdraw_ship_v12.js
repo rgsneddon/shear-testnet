@@ -51,7 +51,7 @@ import {
   consensusUnlockPeriod,
   leafEpochsToBurn,
   leafStubNanos,
-  portalIdFromDest,
+  portalIdFromDest20,
   proveLockEquality,
   provePrincipalOpen,
   signWithdrawReward,
@@ -76,7 +76,7 @@ function payer() {
     base: id.admitBase,
     pub: Buffer.from(id.spendPub).toString('hex'),
     key: id.privateKey,
-    portalId: portalIdFromDest(dest),
+    portalId: portalIdFromDest20(hash20FromAddress(dest)),
   };
 }
 
@@ -293,7 +293,6 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
         nanos: 0,
         programId: RESERVE_PROGRAM,
         portalId: who.portalId,
-        payoutPortalId: who.portalId,
         ownerPub: who.pub,
         vaultLockNote: leaf.note,
         vin: ph.vin,

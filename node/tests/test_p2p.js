@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { destCommitFromSpendPub, ed25519RawPub, encodeDest, hash20FromAddress, newIdentity } from '../../crypto/address.js';
+import { destCommitFromSpendPub, ed25519PrivateFromSeed, ed25519RawPub, encodeDest, hash20FromAddress, newIdentity } from '../../crypto/address.js';
 import { spendBox } from '../../tests/spend_box.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import {
@@ -13,7 +13,6 @@ import {
   lockUnlockOf,
   portalBlindFromSeed,
   portalIdFromDest20,
-  portalOwnerKey,
   portalsFromSeed,
   proveLockEquality,
 } from '../../crypto/reserve_vault.js';
@@ -919,7 +918,8 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     const portals = portalsFromSeed(id.spendSeed, 2);
     assert.equal(portals.length, 2, 'two portals');
     assert.notEqual(portals[0].portalId, portals[1].portalId, 'one portal per lock');
-    const ownerKey = portalOwnerKey(id.spendSeed, portals[0].portalId);
+    // dest20 is the portal spend key. portalOwnerKey does not match that dest20.
+    const ownerKey = ed25519PrivateFromSeed(portals[0].spendSeed);
     const ownerPub = ed25519RawPub(ownerKey).toString('hex');
     const genesis = seeded.blocks.find((b) => Number(b.height) === 1) || seeded.blocks[0];
     const genesisMs = Number(decodeHeader(Buffer.from(genesis.header)).timestamp);
@@ -1000,7 +1000,7 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       x: admitScalarFromSeed(id.spendSeed, row.pot),
     })));
     assert.ok(late.coins.length >= 5, `late coins ${late.coins.length}`);
-    const pendingKey = portalOwnerKey(id.spendSeed, portals[1].portalId);
+    const pendingKey = ed25519PrivateFromSeed(portals[1].spendSeed);
     const pendingPub = ed25519RawPub(pendingKey).toString('hex');
     const lateStamp = lockUnlockOf(seeded.reserveVault, tipMs(seeded));
     resetFs1Tree();

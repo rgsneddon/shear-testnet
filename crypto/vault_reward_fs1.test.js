@@ -528,18 +528,13 @@ describe('vault-lock reward proof', () => {
     assert.equal(later.ok, false);
     assert.equal(later.reason, 'unsigned');
     const topped = cloneVault(state);
-    // A second credit of this same lock. Another portal id would be a new lock.
-    assert.equal(deposit({
-      state: topped, dest: owner.dest, nanos: 1, nowMs: T0, ownerPub: owner.pub, sameLock: true,
-    }).ok, true);
-    const changed = applyReserveBlock({
-      state: topped,
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, signed] },
-      nowMs: at,
-      genesisMs: T0,
+    // A second credit of this same lock is portal_exists. The tranche set does not change.
+    const top = deposit({
+      state: topped, dest: owner.dest, nanos: 1, nowMs: T0, ownerPub: owner.pub,
     });
-    assert.equal(changed.ok, false);
-    assert.equal(changed.reason, 'unsigned');
+    assert.equal(top.ok, false);
+    assert.equal(top.reason, 'portal_exists');
+    assert.equal(topped.portals[portalId].tranches.length, state.portals[portalId].tranches.length);
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
@@ -1239,65 +1234,66 @@ describe('vault-lock reward proof', () => {
     const state = emptyVault();
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
-    let lockedLeaves = false;
-    for (const leaf of made) {
-      assert.equal(deposit({
-        state,
-        dest: owner.dest,
-        nanos: PI_SHE_NANOS,
-        commit: leaf.note.commit,
-        rangeCommit: bareCommit(leaf.note),
-        blind: leaf.blind,
-        rangeProof: proveRange(PI_SHE_NANOS, leaf.blind),
-        nowMs: T0,
-        ownerPub: owner.pub,
-        // One tx may credit the same lock again. A second tx is portal_exists.
-        sameLock: lockedLeaves,
-      }).ok, true);
-      lockedLeaves = true;
-      assert.ok(appendVaultLockNote(state, leaf.note.note));
-    }
+    const leaf = made[0];
+    assert.equal(deposit({
+      state,
+      dest: owner.dest,
+      nanos: PI_SHE_NANOS,
+      commit: leaf.note.commit,
+      rangeCommit: bareCommit(leaf.note),
+      blind: leaf.blind,
+      rangeProof: proveRange(PI_SHE_NANOS, leaf.blind),
+      nowMs: T0,
+      ownerPub: owner.pub,
+    }).ok, true);
+    // A second credit of this portal is portal_exists. The same-tx bypass is gone.
+    const again = deposit({
+      state,
+      dest: owner.dest,
+      nanos: PI_SHE_NANOS,
+      commit: made[1].note.commit,
+      rangeCommit: bareCommit(made[1].note),
+      blind: made[1].blind,
+      rangeProof: proveRange(PI_SHE_NANOS, made[1].blind),
+      nowMs: T0,
+      ownerPub: owner.pub,
+    });
+    assert.equal(again.ok, false);
+    assert.equal(again.reason, 'portal_exists');
+    assert.ok(appendVaultLockNote(state, leaf.note.note));
     state.epochStartRoots = { 0: state.vaultLockRoot };
-    const tx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS * 2, id: 'two-leaf' });
+    const tx = withdrawTx({ from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'two-leaf' });
     const bind = txDigestV3(tx, MAGIC_TESTNET);
     const period = chainPeriodIndex(state, at);
-    const retires = made.map((leaf) => proveLeafRetire({
+    const retire = proveLeafRetire({
       scalar: leaf.scalar,
       epochs: leafEpochsToBurn(state, leaf.note.note.toString('hex'), period),
       leaf: leaf.note.note,
       txBind: bind,
       unlockEpoch: period,
-    }));
-    const opens = made.map((leaf) => provePrincipalOpen(
-      leaf.note.commit, PI_SHE_NANOS, leaf.blind, tx, portal, MAGIC_TESTNET, VAULT_UNLOCK_OPEN,
-    ));
-    assert.equal(retires.every(Boolean) && opens.every(Boolean), true);
-    tx.retireProofs = retires.map((row) => row.proof);
-    tx.principalProof = opens[0];
-    const shared = withdraw({
-      state: cloneVault(state),
-      dest: owner.dest,
-      nowMs: at,
-      principal: PI_SHE_NANOS * 2,
-      principalProof: opens[0],
-      tx,
     });
-    assert.equal(shared.ok, false);
-    assert.equal(shared.reason, 'stake_reward');
-    tx.principalProofs = [opens[0], opens[0]];
+    const open = provePrincipalOpen(
+      leaf.note.commit, PI_SHE_NANOS, leaf.blind, tx, portal, MAGIC_TESTNET, VAULT_UNLOCK_OPEN,
+    );
+    assert.ok(retire && open);
+    // Two copies of the one opening are not a second leaf.
+    tx.retireProofs = [retire.proof];
+    tx.principalProofs = [open, open];
     const reused = withdraw({
       state: cloneVault(state),
       dest: owner.dest,
       nowMs: at,
-      principal: PI_SHE_NANOS * 2,
+      principal: PI_SHE_NANOS,
       tx,
     });
     assert.equal(reused.ok, false);
-    assert.equal(reused.reason, 'proof_reuse');
-    tx.principalProofs = opens;
+    delete tx.retireProofs;
+    delete tx.principalProofs;
+    tx.retireProof = retire.proof;
+    tx.principalProof = open;
     signWithdrawReward(tx, owner.key, {
       portalId: portal,
-      nanos: PI_SHE_NANOS * 2,
+      nanos: PI_SHE_NANOS,
       dest: owner.dest,
       state,
       nowMs: at,
@@ -1306,11 +1302,13 @@ describe('vault-lock reward proof', () => {
       state,
       dest: owner.dest,
       nowMs: at,
-      principal: PI_SHE_NANOS * 2,
+      principal: PI_SHE_NANOS,
+      retireProof: retire.proof,
+      principalProof: open,
       tx,
     });
     assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.principal, PI_SHE_NANOS * 2);
+    assert.equal(paid.principal, PI_SHE_NANOS);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     const firstLeaf = await callReserve(session, encodeDeposit(owner.dest, made[0].note.commit, T0, { key: owner.key }, true));
@@ -1542,51 +1540,60 @@ describe('vault-lock reward proof', () => {
   it('withdraws 16 leaves in one call and matches the EVM', async () => {
     const owner = who();
     const portal = portalIdFromDest(owner.dest);
-    const made = [];
-    for (let i = 0; i < 16; i += 1) {
+    const made = [0, 1].map((i) => {
       const scalar = BigInt(100 + i);
       const blind = BigInt(200 + i);
       const note = vaultLockNote(PI_SHE_NANOS, scalar, blind);
-      made.push({ scalar, blind, note });
-    }
+      return { scalar, blind, note };
+    });
     const state = emptyVault();
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
-    let lockedSixteen = false;
-    for (const leaf of made) {
-      assert.equal(deposit({
-        state,
-        dest: owner.dest,
-        nanos: PI_SHE_NANOS,
-        commit: leaf.note.commit,
-        rangeCommit: bareCommit(leaf.note),
-        blind: leaf.blind,
-        rangeProof: proveRange(PI_SHE_NANOS, leaf.blind),
-        nowMs: T0,
-        ownerPub: owner.pub,
-        sameLock: lockedSixteen,
-      }).ok, true);
-      lockedSixteen = true;
-      assert.ok(appendVaultLockNote(state, leaf.note.note));
-    }
+    const leaf = made[0];
+    assert.equal(deposit({
+      state,
+      dest: owner.dest,
+      nanos: PI_SHE_NANOS,
+      commit: leaf.note.commit,
+      rangeCommit: bareCommit(leaf.note),
+      blind: leaf.blind,
+      rangeProof: proveRange(PI_SHE_NANOS, leaf.blind),
+      nowMs: T0,
+      ownerPub: owner.pub,
+    }).ok, true);
+    // Sixteen credits of one portal are not one withdraw. The second credit is refused.
+    const second = deposit({
+      state,
+      dest: owner.dest,
+      nanos: PI_SHE_NANOS,
+      commit: made[1].note.commit,
+      rangeCommit: bareCommit(made[1].note),
+      blind: made[1].blind,
+      rangeProof: proveRange(PI_SHE_NANOS, made[1].blind),
+      nowMs: T0,
+      ownerPub: owner.pub,
+    });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, 'portal_exists');
+    assert.ok(appendVaultLockNote(state, leaf.note.note));
     const period = chainPeriodIndex(state, at);
     const tx = withdrawTx({
-      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS * 16, id: 'sixteen',
+      from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, id: 'sixteen',
     });
     const bind = txDigestV3(tx, MAGIC_TESTNET);
-    tx.retireProofs = made.map((leaf) => proveLeafRetire({
+    tx.retireProof = proveLeafRetire({
       scalar: leaf.scalar,
       epochs: leafEpochsToBurn(state, leaf.note.note.toString('hex'), period),
       leaf: leaf.note.note,
       txBind: bind,
       unlockEpoch: period,
-    }).proof);
-    tx.principalProofs = made.map((leaf) => provePrincipalOpen(
+    }).proof;
+    tx.principalProof = provePrincipalOpen(
       leaf.note.commit, PI_SHE_NANOS, leaf.blind, tx, portal, MAGIC_TESTNET, VAULT_UNLOCK_OPEN,
-    ));
+    );
     signWithdrawReward(tx, owner.key, {
       portalId: portal,
-      nanos: PI_SHE_NANOS * 16,
+      nanos: PI_SHE_NANOS,
       dest: owner.dest,
       state,
       nowMs: at,
@@ -1595,11 +1602,13 @@ describe('vault-lock reward proof', () => {
       state: cloneVault(state),
       dest: owner.dest,
       nowMs: at,
-      principal: PI_SHE_NANOS * 16,
+      principal: PI_SHE_NANOS,
+      retireProof: tx.retireProof,
+      principalProof: tx.principalProof,
       tx,
     });
     assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.principal, PI_SHE_NANOS * 16);
+    assert.equal(paid.principal, PI_SHE_NANOS);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     const firstOfSixteen = await callReserve(session, encodeDeposit(owner.dest, made[0].note.commit, T0, { key: owner.key }, true));
