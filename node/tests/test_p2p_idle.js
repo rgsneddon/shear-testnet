@@ -5,12 +5,16 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from '../../crypto/asert.js';
+import { p2pHashStats, resetP2pHashStats } from '../../crypto/hash_offloop.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { assessHeader, GENESIS_PREV, headerHash } from '../src/chain.js';
 import { OPEN_ROUND_PEER_RATE, createStore } from '../src/store.js';
 import {
+  HEADERS_PAGE,
   P2P_ASK_BLOCKS,
   P2P_ASK_WINDOW_MS,
+  P2P_BUSY_LIMIT,
+  P2P_CLAIM_QUEUE,
   P2P_HELLO_FLOOR_MS,
   P2P_HELLO_MS,
   P2P_IDLE_FLOOR_MS,
@@ -724,12 +728,15 @@ describe('p2p hello deadline and idle eviction', () => {
     }
   });
 
-  it('a served getheaders, getblocks, or getblock refreshes cap idle', async () => {
-    const hash = Buffer.alloc(32, 0x11);
-    const header = Buffer.alloc(80, 0x22);
-    const hex = hash.toString('hex');
+  it('a full header page refreshes cap idle and one new header does not', async () => {
+    const short = [];
+    for (let h = 1; h <= 3; h += 1) {
+      const hash = Buffer.alloc(32);
+      hash.writeUInt32BE(h, 0);
+      short.push({ hash, header: Buffer.alloc(80), height: h, txs: [] });
+    }
     const store = {
-      blocks: [{ hash, header, height: 1, txs: [] }],
+      blocks: short,
       mempool: [],
       tip: () => store.blocks[store.blocks.length - 1],
       on() { return () => {}; },
@@ -773,13 +780,24 @@ describe('p2p hello deadline and idle eviction', () => {
         assert.equal(sock.destroyed, false);
         sock.destroy();
       };
-      await hit({ type: 'getheaders', locator: [] });
-      await miss({ type: 'getheaders', locator: [hex] });
-      await hit({ type: 'getblocks', locator: [] });
-      await miss({ type: 'getblocks', locator: [hex] });
-      await miss({ type: 'getblock', hash: hex });
+      const tipHex = short[short.length - 1].hash.toString('hex');
+      await miss({ type: 'getheaders', locator: [] });
+      await miss({ type: 'getheaders', locator: [tipHex] });
+      await miss({ type: 'getblocks', locator: [] });
+      await miss({ type: 'getblocks', locator: [tipHex] });
+      await miss({ type: 'getblock', hash: tipHex });
       await miss({ type: 'getblock', hash: '00'.repeat(32) });
+      const full = [];
+      for (let h = 1; h <= HEADERS_PAGE; h += 1) {
+        const hash = Buffer.alloc(32);
+        hash.writeUInt32BE(h, 28);
+        full.push({ hash, header: Buffer.alloc(80), height: h, txs: [] });
+      }
+      store.blocks = full;
+      await hit({ type: 'getheaders', locator: [] });
+      await hit({ type: 'getblocks', locator: [] });
 
+      store.blocks = short;
       const again = await connect(bound.port);
       again.write(helloLine());
       await delay(40);
@@ -787,23 +805,31 @@ describe('p2p hello deadline and idle eviction', () => {
       await delay(40);
       ageInbound(p2p);
       const stuck = recFor(p2p, again)?.capIdleAt;
+      assert.equal(recFor(p2p, again)?.servedHeight, short.length);
       again.write(frame({ type: 'getheaders', locator: [] }));
       again.write(frame({ type: 'getblocks', locator: [] }));
-      again.write(frame({ type: 'getblock', hash: hex }));
+      again.write(frame({ type: 'getblock', hash: tipHex }));
       await delay(40);
       assert.equal(recFor(p2p, again)?.capIdleAt, stuck);
-      const higher = Buffer.alloc(32, 0x44);
-      store.blocks.push({ hash: higher, header: Buffer.alloc(80, 0x44), height: 2, txs: [] });
-      again.write(frame({ type: 'getblock', hash: higher.toString('hex') }));
+      const one = Buffer.alloc(32);
+      const nextHeight = store.blocks.length + 1;
+      one.writeUInt32BE(nextHeight, 0);
+      store.blocks.push({ hash: one, header: Buffer.alloc(80), height: nextHeight, txs: [] });
+      again.write(frame({ type: 'getblock', hash: one.toString('hex') }));
       await delay(40);
       assert.equal(recFor(p2p, again)?.capIdleAt, stuck);
-      assert.equal(recFor(p2p, again)?.servedHeight, 2);
-      const further = Buffer.alloc(32, 0x45);
-      store.blocks.push({ hash: further, header: Buffer.alloc(80, 0x45), height: 3, txs: [] });
-      again.write(frame({ type: 'getheaders', locator: [] }));
+      assert.equal(recFor(p2p, again)?.servedHeight, nextHeight);
+      const anchor = store.blocks[store.blocks.length - 1].hash.toString('hex');
+      const base = store.blocks.length;
+      for (let n = 1; n <= HEADERS_PAGE; n += 1) {
+        const hash = Buffer.alloc(32);
+        hash.writeUInt32BE(base + n, 8);
+        store.blocks.push({ hash, header: Buffer.alloc(80), height: base + n, txs: [] });
+      }
+      again.write(frame({ type: 'getheaders', locator: [anchor] }));
       await delay(40);
       assert.notEqual(recFor(p2p, again)?.capIdleAt, stuck);
-      assert.equal(recFor(p2p, again)?.servedHeight, 3);
+      assert.equal(recFor(p2p, again)?.servedHeight, base + HEADERS_PAGE);
       assert.equal(again.destroyed, false);
     } finally {
       p2p.close();
@@ -882,9 +908,8 @@ describe('p2p hello deadline and idle eviction', () => {
       squatter.write(helloLine());
       forward.write(helloLine());
       await delay(40);
-      // Empty locator serves the whole page (tip height 3). Later repeats of
-      // that locator, and getblock of a hash already inside it, must not move
-      // the clock. A later height does.
+      // A short page records the height and does not move the clock. Repeats
+      // of that locator, and one new block, do not either. A full page does.
       squatter.write(frame({ type: 'getheaders', locator: [] }));
       forward.write(frame({ type: 'getheaders', locator: [] }));
       await delay(40);
@@ -928,12 +953,18 @@ describe('p2p hello deadline and idle eviction', () => {
       await delay(40);
       assert.equal(recFor(p2p, squatter)?.capIdleAt, squatAt);
       assert.equal(recFor(p2p, forward)?.capIdleAt, forwardAged);
+      assert.equal(recFor(p2p, forward)?.servedHeight, 4);
       blocks.push(past);
-      forward.write(frame({ type: 'getheaders', locator: [] }));
-      await delay(40);
+      for (let n = blocks.length + 1; n <= 3 + HEADERS_PAGE; n += 1) {
+        const hash = Buffer.alloc(32);
+        hash.writeUInt32BE(n, 12);
+        blocks.push({ hash, header: Buffer.alloc(80), height: n, txs: [] });
+      }
+      forward.write(frame({ type: 'getheaders', locator: [tipHash] }));
+      await delay(80);
       assert.equal(recFor(p2p, squatter)?.capIdleAt, squatAt);
       assert.notEqual(recFor(p2p, forward)?.capIdleAt, forwardAged);
-      assert.equal(recFor(p2p, forward)?.servedHeight, 5);
+      assert.equal(recFor(p2p, forward)?.servedHeight, 3 + HEADERS_PAGE);
       const next = await connect(bound.port);
       await delay(40);
       assert.equal(squatter.destroyed, true);
@@ -1112,9 +1143,11 @@ describe('p2p hello deadline and idle eviction', () => {
       for (let i = 0; i < 40 && calls < 1; i += 1) await delay(25);
       assert.equal(calls, 1);
       for (let i = 0; i < 40 && rec()?.verifying?.size; i += 1) await delay(25);
+      resetP2pHashStats();
       sock.write(body);
       await delay(80);
       assert.equal(calls, 1);
+      assert.equal(p2pHashStats().started, 0);
       assert.equal(Number(rec()?.expensiveFails) || 0, 0);
       assert.equal(rec()?.failed instanceof Set && rec().failed.has(hash), false);
       assert.equal(sock.destroyed, false);
@@ -1124,6 +1157,101 @@ describe('p2p hello deadline and idle eviction', () => {
       assert.equal(calls, 2);
       assert.equal(Number(rec()?.expensiveFails) || 0, 0);
       assert.equal(sock.destroyed, false);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('a replay of our own blocks hashes nothing', async () => {
+    const owned = [0x61, 0x62, 0x63].map((fill) => matchingBlock(fill));
+    const store = {
+      blocks: owned.map((row, i) => ({
+        hash: Buffer.from(row.hash, 'hex'),
+        header: Buffer.from(row.header, 'hex'),
+        height: i + 1,
+        txs: [],
+      })),
+      tip: () => store.blocks[store.blocks.length - 1],
+      on() { return () => {}; },
+      ingest() { throw new Error('replay must not ingest'); },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      resetP2pHashStats();
+      for (const row of owned) {
+        sock.write(frame({
+          type: 'block',
+          block: { hash: row.hash, height: 1, header: row.header },
+        }));
+      }
+      await delay(80);
+      assert.equal(p2pHashStats().started, 0);
+      const rec = () => [...p2p.peers.values()].find((row) => row.helloAt);
+      assert.equal(Number(rec()?.expensiveFails) || 0, 0);
+      assert.equal(sock.destroyed, false);
+      resetP2pHashStats();
+      sock.write(frame({
+        type: 'block',
+        block: { hash: owned[0].hash, height: 1, header: owned[1].header },
+      }));
+      for (let i = 0; i < 20 && !(Number(rec()?.expensiveFails) > 0); i += 1) await delay(20);
+      assert.equal(p2pHashStats().started, 0);
+      assert.equal(Number(rec()?.expensiveFails), 1);
+      assert.equal(rec()?.failed instanceof Set && rec().failed.has(owned[0].hash), false);
+      assert.equal(sock.destroyed, false);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('queued claim hashes are capped per peer', async () => {
+    let calls = 0;
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest() {
+        calls += 1;
+        return { ok: true };
+      },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      resetP2pHashStats();
+      const burst = P2P_CLAIM_QUEUE + 4;
+      for (let n = 0; n < burst; n += 1) {
+        const row = matchingBlock(n + 1);
+        sock.write(frame({
+          type: 'block',
+          block: { hash: row.hash, height: 1, header: row.header },
+        }));
+      }
+      for (let i = 0; i < 80 && calls < P2P_CLAIM_QUEUE; i += 1) await delay(25);
+      await delay(80);
+      assert.equal(p2pHashStats().started, P2P_CLAIM_QUEUE);
+      assert.equal(calls, P2P_CLAIM_QUEUE);
     } finally {
       p2p.close();
     }
@@ -1202,7 +1330,17 @@ describe('p2p hello deadline and idle eviction', () => {
       sock.write(evilBody);
       await delay(80);
       assert.equal(calls, 1);
+      // A held header is dropped before the claim check, so this lie is free.
       sock.write(lie);
+      await delay(80);
+      assert.equal(calls, 1);
+      assert.equal(Number(rec()?.expensiveFails), 1);
+      assert.equal(rec()?.failed instanceof Set && rec().failed.has(honest.hash), false);
+      const other = matchingBlock(0x66);
+      sock.write(frame({
+        type: 'block',
+        block: { hash: honest.hash, height: 1, header: other.header },
+      }));
       for (let i = 0; i < 40 && Number(rec()?.expensiveFails) < 2; i += 1) await delay(25);
       assert.equal(calls, 1);
       assert.equal(Number(rec()?.expensiveFails), 2);
@@ -1369,6 +1507,67 @@ describe('p2p hello deadline and idle eviction', () => {
       client.close();
       remote?.destroy();
       listener.close();
+    }
+
+    const heard = [[], []];
+    const remotes = [null, null];
+    const servers = await Promise.all([0, 1].map((i) => new Promise((resolve, reject) => {
+      const server = net.createServer((sock) => {
+        remotes[i] = sock;
+        sock.on('data', (buf) => {
+          const text = buf.toString();
+          if (text.includes('"type":"hello"')) sock.write(helloLine());
+          if (text.includes('"type":"getblock"')) heard[i].push(text);
+        });
+        sock.on('error', () => {});
+      });
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve(server));
+    })));
+    const mesh = createP2p({
+      store: { blocks: [], mempool: [], tip: () => null, on() { return () => {}; } },
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    try {
+      await mesh.connect('127.0.0.1', servers[0].address().port);
+      await mesh.connect('127.0.0.1', servers[1].address().port);
+      for (let i = 0; i < 40 && (!remotes[0] || !remotes[1]); i += 1) await delay(25);
+      await delay(40);
+      const peerAt = (port) => [...mesh.peers.entries()].find(([sock]) => sock.remotePort === port);
+      const asker = peerAt(servers[0].address().port)?.[1];
+      const other = peerAt(servers[1].address().port)?.[1];
+      assert.ok(asker?.helloAt);
+      assert.ok(other?.helloAt);
+      const id = 'cd'.repeat(32);
+      const busy = (hash) => `${JSON.stringify({ type: 'serve_busy', magic: MAGIC_TESTNET, what: 'getblock', hash })}\n`;
+      asker.pending = new Set([id]);
+      other.want = [];
+      remotes[1].write(busy(id));
+      await delay(50);
+      assert.equal(asker.pending.has(id), true);
+      assert.equal(other.want.includes(id), false);
+      for (let n = 1; n < P2P_BUSY_LIMIT; n += 1) {
+        asker.pending = new Set([id]);
+        remotes[0].write(busy(id));
+        await delay(50);
+        assert.equal(asker.pending.has(id), false);
+        assert.ok(asker.want.includes(id));
+      }
+      heard[1].length = 0;
+      asker.pending = new Set([id]);
+      remotes[0].write(busy(id));
+      await delay(40);
+      assert.equal(asker.pending.has(id), false);
+      assert.equal(asker.want.includes(id), false);
+      assert.equal(other.pending.has(id), true);
+      assert.ok(heard[1].some((line) => line.includes('"type":"getblock"') && line.includes(id)));
+    } finally {
+      mesh.close();
+      for (const server of servers) server.close();
     }
   });
 

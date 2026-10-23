@@ -20,9 +20,11 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
-import { startHttpFollow } from '../src/http_follow.js';
+import { pullNextHttpBlock, startHttpFollow } from '../src/http_follow.js';
 import { createP2p } from '../src/p2p.js';
-import { attachPoolIpc } from '../src/p2p_ipc.js';
+import { applyVerifiedIpcBlock, attachPoolIpc } from '../src/p2p_ipc.js';
+import { createRpc } from '../src/rpc.js';
+import { applySoloSubmit } from '../src/solo_stratum.js';
 import { STORE_CORRUPT_EXIT, installNodeGuards } from '../src/process_guard.js';
 import {
   OPEN_ROUND_CAP,
@@ -558,6 +560,108 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       assert.equal(row.ok, true);
       assert.equal(row.height, 1);
       assert.notEqual(row.reason, 'hash_owed');
+    });
+
+    it('a lied block hash is hash_claim for append, ipc, http, rpc, solo, and pool seal', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hash-claim-'));
+      const dest = minerDest();
+      const store = createStore(dir, { pruneAfter: 1_000_000 });
+      const easy = Buffer.alloc(32);
+      easy.writeUInt32LE(11, 4);
+      const lie = Buffer.alloc(32, 0xab);
+      const { tpl, job } = store.template({ miner: dest, now: T0 });
+      const body = {
+        header: tpl.header,
+        txs: tpl.txs,
+        samples: tpl.samples,
+        shareBatch: tpl.shareBatch || [],
+        miner: dest,
+        aLeaves: tpl.aLeaves,
+        bLeaves: tpl.bLeaves,
+        rootA: tpl.rootA,
+        rootB: tpl.rootB,
+        weight: tpl.weight,
+      };
+      const lied = store.append({ ...body, hash: lie, height: 1 }, {
+        trustedPowHash: easy,
+        skipSharePow: true,
+      });
+      assert.equal(lied.ok, false);
+      assert.equal(lied.reason, 'hash_claim');
+      assert.equal(store.blocks.length, 0);
+
+      const ipc = await Promise.resolve(applyVerifiedIpcBlock(store, {
+        type: 'ipc_block',
+        magic: MAGIC_TESTNET,
+        powHash: lie.toString('hex'),
+        block: { ...body, hash: lie, height: 1 },
+      }));
+      assert.equal(ipc.ok, false);
+      assert.equal(ipc.reason, 'hash_claim');
+      assert.equal(store.blocks.length, 0);
+
+      const headerHex = Buffer.from(tpl.header).toString('hex');
+      const followed = await pullNextHttpBlock({
+        store,
+        seeds: ['http://follow.invalid'],
+        magic: MAGIC_TESTNET,
+        fetchImpl: async (url) => ({
+          ok: true,
+          text: async () => JSON.stringify(String(url).includes('/block')
+            ? { ok: true, header: headerHex, hash: lie.toString('hex'), height: 1 }
+            : { ok: true, magic: MAGIC_TESTNET, height: 2 }),
+        }),
+      });
+      assert.equal(followed, false);
+      assert.equal(store.blocks.length, 0);
+
+      const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
+      const submitted = rpc.dispatch('submitblock', {
+        jobId: job.jobId,
+        nonce: '1',
+        miner: dest,
+        powHash: lie.toString('hex'),
+      });
+      assert.equal(submitted.ok, false);
+      assert.equal(submitted.reason, 'hash_claim');
+      assert.equal(store.blocks.length, 0);
+
+      const solo = applySoloSubmit({
+        store,
+        jobId: job.jobId,
+        nonce: '1',
+        claimed: lie.toString('hex'),
+        dest,
+      });
+      assert.equal(solo.ok, false);
+      assert.equal(solo.reason, 'bad_hash');
+      const soloAppend = store.submitHeader({
+        jobId: job.jobId,
+        nonce: '1',
+        miner: dest,
+        powHash: lie.toString('hex'),
+      });
+      assert.equal(soloAppend.ok, false);
+      assert.equal(soloAppend.reason, 'hash_claim');
+      assert.equal(store.blocks.length, 0);
+
+      const pooled = store.submitHeader({
+        jobId: job.jobId,
+        nonce: '0',
+        miner: dest,
+        powHash: easy.toString('hex'),
+      }, { trusted: true });
+      assert.equal(pooled.ok, true, pooled.reason);
+      assert.equal(store.blocks.length, 1);
+      const dup = store.submitHeader({
+        jobId: job.jobId,
+        nonce: '0',
+        miner: dest,
+        powHash: easy.toString('hex'),
+      }, { trusted: true });
+      assert.equal(dup.ok, false);
+      assert.equal(dup.reason, 'not_heavier');
+      assert.equal(store.blocks.length, 1);
     });
 
     it('a reorg restore fault exits 70 and the restarted book matches disk', async () => {

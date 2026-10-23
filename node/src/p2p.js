@@ -423,9 +423,10 @@ export const P2P_HELLO_MS = 20_000;
  * the idle sweep reads, so a peer that only exchanges census is not idle-evicted.
  * Cap and reserve eviction use capIdleAt. That clock starts at the first hello
  * and moves when a block from this peer verifies, a tx from this peer is
- * accepted, or a serve is real catch-up: one header page of new height, or
- * about 64 new blocks, inside the idle window. A peer already at our tip
- * gets no further credit. One block every few minutes does not either.
+ * accepted, or a serve is real catch-up: a header page of about HEADERS_PAGE
+ * new heights, or about 64 new blocks, inside the idle window. One new header
+ * does not. A peer already at our tip gets no further credit. One block every
+ * few minutes does not either.
  * A repeated locator or the same block does not move it. Work rows, header
  * offers, empty replies, and not-found replies do not either. Cheap requests,
  * advertisements, census, junk, and unknown types do not either. Only a peer
@@ -449,11 +450,15 @@ export const P2P_SERVE_WINDOW_MS = 10_000;
 export const P2P_SERVE_HEADERS_PER_WINDOW = 8;
 export const P2P_SERVE_BLOCK_PER_WINDOW = 256;
 /**
- * Our own getblock asks. 16 per 4s is 40 per 10s, under the serve cap,
+ * Our own getblock asks. 64 per 4s is 160 per 10s, under the 256 serve cap,
  * so a fast IBD does not trip an honest peer's limit.
  */
-export const P2P_ASK_BLOCKS = 16;
+export const P2P_ASK_BLOCKS = 64;
 export const P2P_ASK_WINDOW_MS = 4_000;
+/** ShearHash claim checks waiting on one peer. Further blocks wait for a resend. */
+export const P2P_CLAIM_QUEUE = 8;
+/** serve_busy answers in a row from one peer before that hash is asked of someone else. */
+export const P2P_BUSY_LIMIT = 3;
 /** Blocks of new height that count as catch-up inside one idle window. */
 export const P2P_SERVE_CREDIT_BLOCKS = 64;
 /**
@@ -2041,6 +2046,7 @@ export function createP2p({
       sock.destroy();
       return;
     }
+    if (welcomed && msg.type !== 'serve_busy' && heard) heard.busyStreak = 0;
     if (msg.type === 'hello') {
       const rec = heard || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
       rec.remote = peerRemoteKey(sock) || rec.remote;
@@ -2154,7 +2160,10 @@ export function createP2p({
         return;
       }
       const top = pageTop(hdrs);
-      noteCatchupServe(sock, { page: top > Number(asker?.servedHeight || 0), height: top });
+      noteCatchupServe(sock, {
+        page: hdrs.length >= HEADERS_PAGE && top > Number(asker?.servedHeight || 0),
+        height: top,
+      });
       send(sock, { type: 'headers', magic, headers: hdrs });
       return;
     }
@@ -2300,14 +2309,20 @@ export function createP2p({
     if (msg.type === 'serve_busy') {
       const recBusy = peers.get(sock);
       const busyHash = wireHash(msg.hash);
-      if (recBusy && busyHash) {
-        inflightBlocks.delete(busyHash);
-        recBusy.pending?.delete(busyHash);
-        if (!recBusy.pending || recBusy.pending.size === 0) recBusy.pendingAt = 0;
-        if (!Array.isArray(recBusy.want)) recBusy.want = [];
-        if (!recBusy.want.includes(busyHash)) recBusy.want.unshift(busyHash);
-        recBusy.askPaused = true;
+      // Only the peer we asked may answer. An unsolicited busy must not
+      // clear the shared in-flight entry or the asker's pending set.
+      if (!recBusy || !busyHash || !(recBusy.pending instanceof Set) || !recBusy.pending.has(busyHash)) return;
+      recBusy.busyStreak = (Number(recBusy.busyStreak) || 0) + 1;
+      if (recBusy.busyStreak >= P2P_BUSY_LIMIT) {
+        reassignBusyHash(sock, recBusy, busyHash);
+        return;
       }
+      inflightBlocks.delete(busyHash);
+      recBusy.pending.delete(busyHash);
+      if (recBusy.pending.size === 0) recBusy.pendingAt = 0;
+      if (!Array.isArray(recBusy.want)) recBusy.want = [];
+      if (!recBusy.want.includes(busyHash)) recBusy.want.unshift(busyHash);
+      recBusy.askPaused = true;
       return;
     }
     if (msg.type === 'getblock_nak' || msg.type === 'block_not_found') {
@@ -2381,9 +2396,136 @@ export function createP2p({
       }
       const recNow = peers.get(sock);
       const lastHash = last ? wireHash(last.hash) : '';
-      checkBlockClaims(sock, fork, () => ingestDecodedFork(sock, fork, last, lastHash, recNow));
+      const fate = replayFate(fork);
+      if (fate === 'score') {
+        scoreHashClaim(sock);
+        return;
+      }
+      if (fate === 'drop') {
+        releaseKnownFork(sock, fork, lastHash, recNow);
+        return;
+      }
+      const earlyKeys = fork.map((block) => blockHeaderHex(block)).filter(Boolean);
+      if (earlyKeys.some((key) => stageHoldActive(stageHolds.get(key)))) {
+        for (const block of fork) {
+          const id = wireHash(block?.hash);
+          if (id) inflightBlocks.delete(id);
+        }
+        if (recNow) {
+          recNow.pending?.delete(lastHash);
+          for (const key of earlyKeys) recNow.verifying?.delete(key);
+          recNow.syncing = false;
+        }
+        return;
+      }
+      if (fork.some((block) => {
+        const claimed = wireHash(block?.hash);
+        if (headerIndexByHash(store.blocks, claimed) >= 0) return false;
+        const header = headerBufOf(block);
+        return !header || header.length !== HEADER_LEN || claimed.length !== 64;
+      })) {
+        scoreHashClaim(sock);
+        return;
+      }
+      const jobs = freshClaimJobs(fork);
+      if (recNow && (Number(recNow.claimQueued) || 0) + jobs > P2P_CLAIM_QUEUE) return;
+      checkBlockClaims(sock, fork, (rows) => {
+        const proven = rows?.find((row) => row?.computed)?.computed || '';
+        ingestDecodedFork(sock, fork, last, lastHash, recNow, proven);
+      });
       return;
     }
+  }
+
+  function reassignBusyHash(sock, rec, hash) {
+    rec.busyStreak = 0;
+    rec.askPaused = true;
+    inflightBlocks.delete(hash);
+    rec.pending?.delete(hash);
+    if (!rec.pending || rec.pending.size === 0) rec.pendingAt = 0;
+    if (Array.isArray(rec.want)) rec.want = rec.want.filter((h) => h !== hash);
+    let destSock = null;
+    for (const [other, orec] of peers) {
+      if (other === sock || other.destroyed || !orec) continue;
+      if (!(Number(orec.helloAt) > 0)) continue;
+      destSock = other;
+      break;
+    }
+    if (!destSock) {
+      if (!Array.isArray(rec.want)) rec.want = [];
+      if (!rec.want.includes(hash)) rec.want.unshift(hash);
+      return;
+    }
+    const dest = peers.get(destSock);
+    if (!dest.pending) dest.pending = new Set();
+    if (!Array.isArray(dest.want)) dest.want = [];
+    if (dest.pending.has(hash) || dest.want.includes(hash)) return;
+    if (!takeBlockAsk(dest)) {
+      dest.askPaused = true;
+      dest.want.unshift(hash);
+      return;
+    }
+    dest.pending.add(hash);
+    inflightBlocks.add(hash);
+    dest.pendingAt = Date.now();
+    dest.syncing = true;
+    send(destSock, { type: 'getblock', magic, hash });
+  }
+
+  function headerBufOf(block) {
+    try {
+      if (!block?.header) return null;
+      return Buffer.from(block.header);
+    } catch {
+      return null;
+    }
+  }
+
+  function replayFate(fork) {
+    let unknown = 0;
+    for (const block of fork) {
+      const claimed = wireHash(block?.hash);
+      if (claimed.length !== 64) return 'score';
+      const idx = headerIndexByHash(store.blocks, claimed);
+      if (idx < 0) {
+        unknown += 1;
+        continue;
+      }
+      const header = headerBufOf(block);
+      const stored = headerBufOf(store.blocks[idx]);
+      if (header && stored && header.length === stored.length && header.equals(stored)) continue;
+      return 'score';
+    }
+    return unknown === 0 && fork.length ? 'drop' : 'hash';
+  }
+
+  function releaseKnownFork(sock, fork, lastHash, recNow) {
+    for (const block of fork) {
+      const id = wireHash(block?.hash);
+      if (id) inflightBlocks.delete(id);
+    }
+    if (!recNow) return;
+    recNow.pending?.delete(lastHash);
+    for (const key of fork.map((block) => blockHeaderHex(block)).filter(Boolean)) {
+      recNow.verifying?.delete(key);
+    }
+    recNow.syncing = false;
+    pumpGetblocks(sock);
+  }
+
+  function freshClaimJobs(fork) {
+    let n = 0;
+    for (const block of fork) {
+      const claimed = wireHash(block?.hash);
+      if (headerIndexByHash(store.blocks, claimed) >= 0) continue;
+      const header = headerBufOf(block);
+      if (!header || header.length !== HEADER_LEN || claimed.length !== 64) continue;
+      const known = headerClaims.get(header.toString('hex').toLowerCase());
+      if (typeof known === 'string') continue;
+      if (known && typeof known.then === 'function') continue;
+      n += 1;
+    }
+    return n;
   }
 
   function blockHeaderHex(block) {
@@ -2429,12 +2571,19 @@ export function createP2p({
     }
   }
 
-  function claimVerdict(block) {
+  function claimVerdict(sock, block) {
+    const claimed = wireHash(block?.hash);
+    const storedAt = headerIndexByHash(store.blocks, claimed);
+    if (storedAt >= 0) {
+      const header = headerBufOf(block);
+      const stored = headerBufOf(store.blocks[storedAt]);
+      const match = !!(header && stored && header.length === stored.length && header.equals(stored));
+      return Promise.resolve({ ok: match });
+    }
     let header = null;
     try {
       if (block?.header) header = Buffer.from(block.header);
     } catch { header = null; }
-    const claimed = wireHash(block?.hash);
     const headerHex = header ? header.toString('hex').toLowerCase() : '';
     if (!header || header.length !== HEADER_LEN || claimed.length !== 64) {
       return Promise.resolve({ ok: false });
@@ -2443,6 +2592,12 @@ export function createP2p({
     const finish = (computed) => ({ ok: computed === claimed, computed });
     if (typeof known === 'string') return Promise.resolve(finish(known));
     if (known && typeof known.then === 'function') return known.then(finish);
+    const rec = peers.get(sock);
+    if (rec) rec.claimQueued = (Number(rec.claimQueued) || 0) + 1;
+    const release = () => {
+      const live = peers.get(sock);
+      if (live && Number(live.claimQueued) > 0) live.claimQueued -= 1;
+    };
     const job = hashHeaderOffLoop(header).then((buf) => {
       const computed = Buffer.from(buf).toString('hex');
       rememberHeaderClaim(headerHex, computed);
@@ -2453,23 +2608,23 @@ export function createP2p({
       throw err;
     });
     headerClaims.set(headerHex, job);
-    return job.then(finish);
+    return job.then(finish, (err) => { throw err; }).finally(release);
   }
 
   function checkBlockClaims(sock, fork, next) {
-    Promise.all(fork.map((block) => claimVerdict(block))).then((rows) => {
+    Promise.all(fork.map((block) => claimVerdict(sock, block))).then((rows) => {
       if (rows.some((row) => !row.ok)) {
         scoreHashClaim(sock);
         return;
       }
-      next();
+      next(rows);
     }, (err) => {
       const fault = classifyByPhase(err, 'verify');
       deliverProcessFault('p2p', fault);
     });
   }
 
-  function ingestDecodedFork(sock, fork, last, lastHash, recNow) {
+  function ingestDecodedFork(sock, fork, last, lastHash, recNow, provenHeaderHash = '') {
       if (process.env.SHEAR_P2P_FOLLOW_IPC === '1') {
         const tip = store.tip();
         const tipHash = tip?.hash ? Buffer.from(tip.hash).toString('hex') : '';
@@ -2530,6 +2685,7 @@ export function createP2p({
         // claimed hash meets the book. A synchronous ingest throw rejects.
         const go = () => Promise.resolve().then(() => store.ingest(fork, {
           offLoopPow: true,
+          ...(provenHeaderHash ? { provenHeaderHash } : {}),
         })).then((got) => ({ got, before }));
         return go();
       });
