@@ -5510,9 +5510,11 @@ class ShearLedger implements ReadProofSink {
   /// nothing: fork choice fetches the whole branch and runs only after every
   /// header on it has passed [_proveHeader].
   bool _acceptHeader(Uint8List header, int height) {
-    if (_headerPowOk(header, sealedHeight: height)) return true;
-    if (_knownHeader(header, height)) return true;
-    return false;
+    final ok =
+        _headerPowOk(header, sealedHeight: height) ||
+        _knownHeader(header, height);
+    if (ok) _expireForkBans(_forkHostKey, height);
+    return ok;
   }
 
   Future<Uint8List?> _hashHeader(Uint8List header) async {
@@ -5651,6 +5653,46 @@ class ShearLedger implements ReadProofSink {
     if (at == null || hostTip <= at) return;
     _forkBanned.remove(host);
     _forkBannedAtTip.remove(host);
+  }
+
+  /// A higher host tip clears bans only after a header at that height has
+  /// passed the cheap checks. A bare tip number does not.
+  void _maybeExpireForkBans(
+    String host,
+    int hostTip,
+    List<({int height, Uint8List header})> ordered,
+  ) {
+    final at = _forkBannedAtTip[host];
+    if (at == null || hostTip <= at) return;
+    ({int height, Uint8List header})? tip;
+    for (final row in ordered) {
+      if (row.height == hostTip) tip = row;
+    }
+    if (tip == null) return;
+    int? parentTime;
+    for (final row in ordered) {
+      if (row.height != hostTip - 1) continue;
+      parentTime = headerTimestampMs(row.header);
+      break;
+    }
+    parentTime ??= _timeAt(hostTip - 1);
+    if (parentTime == null) return;
+    final times = <int, int>{};
+    for (final row in ordered) {
+      final ts = headerTimestampMs(row.header);
+      if (ts != null) times[row.height] = ts;
+    }
+    int? timeAt(int height) => times[height] ?? _timeAt(height);
+    if (_headerLinkCheap(
+          tip.header,
+          height: hostTip,
+          parentTimeMs: parentTime,
+          timeAt: timeAt,
+        ) !=
+        _WalkCheap.ok) {
+      return;
+    }
+    _expireForkBans(host, hostTip);
   }
 
   /// True when every link from the branch tip down to [target] is cached.
@@ -5906,7 +5948,7 @@ class ShearLedger implements ReadProofSink {
     final ordered = List<({int height, Uint8List header})>.from(have)
       ..sort((a, b) => a.height.compareTo(b.height));
     _forkHostTipSeen = hostTip;
-    _expireForkBans(host, hostTip);
+    _maybeExpireForkBans(host, hostTip, ordered);
     _dropForkResumeIfBehind();
     if (_forkIsBanned(host, ordered)) {
       _noteForkStall();
@@ -5926,8 +5968,9 @@ class ShearLedger implements ReadProofSink {
       ({int height, Uint8List hash, int timeMs, String headerHex}) ancestor,
     ) async {
       if (_forkClaimCannotWin(branch)) {
+        // Not a proved-bad header. A light branch must not clear the
+        // backoff a fake already armed.
         _clearForkResume();
-        _clearForkBackoff(host);
         return false;
       }
       if (steps < cap && !expired()) {
@@ -6030,7 +6073,7 @@ class ShearLedger implements ReadProofSink {
         0,
         (height: lower.height, header: Uint8List.fromList(lower.header)),
       );
-      _protectForkDigests(branch);
+      _forkPinnedDigests.add(_bytesHex(lower.header));
       if (cheap == _WalkCheap.wait) continue;
       final lowerDigest = await _hashHeader(lower.header);
       final bottomDigest = await _hashHeader(bottom.header);
@@ -6080,7 +6123,6 @@ class ShearLedger implements ReadProofSink {
     required bool Function() expired,
   }) async {
     if (budget < 1 || branch.isEmpty || expired()) return 0;
-    _protectForkDigests(branch);
     var used = 0;
     final extra = List<({int height, Uint8List header})>.from(have)
       ..sort((a, b) => a.height.compareTo(b.height));
@@ -6106,7 +6148,6 @@ class ShearLedger implements ReadProofSink {
       if (cheap != _WalkCheap.ok) break;
       final prev = await _hashHeader(branch.last.header);
       if (prev == null || !_prevEquals(row.header, prev)) break;
-      _keepForkDigest(branch.last.header, prev);
       if (expired() || used >= budget) break;
       used += 1;
       final digest = await _hashHeader(row.header);
@@ -6118,7 +6159,7 @@ class ShearLedger implements ReadProofSink {
         height: row.height,
         header: Uint8List.fromList(row.header),
       ));
-      _protectForkDigests(branch);
+      _forkPinnedDigests.add(_bytesHex(row.header));
       _keepForkDigest(row.header, digest);
     }
     return used;
