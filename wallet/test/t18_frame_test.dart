@@ -59,6 +59,7 @@ void main() {
     ledger.viewSecret = ident.viewKey;
     ledger.confirmRound(address: ident.address, pot: 2, height: 2);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations);
+    _rememberSealedCoin(ledger, ident);
     final bobId = createIdentity();
     final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(bobId.address, paymentCode: bobId.paymentCode);
 
@@ -155,6 +156,7 @@ void main() {
       final rssNotes = ProcessInfo.currentRss;
       ledger.confirmRound(address: ident.address, pot: 2, height: 2);
       ledger.settleTo(2 + ShearLedger.spendableConfirmations);
+      _rememberSealedCoin(ledger, ident);
       final memo = count.isOdd;
 
       final cold = Stopwatch()..start();
@@ -319,6 +321,24 @@ String _nanosFor(int i) {
   if (i % 11 == 0) return '9007199254740993';
   if (i % 7 == 0) return '1';
   return (BigInt.from(i + 1) * BigInt.from(100000000000)).toString();
+}
+
+/// One coin a send can actually spend, so the frame hold reaches the pool
+/// post. Amount-only rows stay out of that sum.
+void _rememberSealedCoin(ShearLedger ledger, ShearIdentity ident) {
+  final dest = ledger.currentDest(ident.address, paymentCode: ident.paymentCode);
+  ledger.rememberNote(<String, dynamic>{
+    'address': dest,
+    'dest': dest,
+    'kind': 'pool-fee',
+    'height': 1,
+    'amount': 1.0,
+    'nanos': kUnitsPerShe,
+    'verified': true,
+    'commit': List<int>.filled(32, 4),
+    'noteCommit': List<int>.filled(32, 6),
+    'r': List<int>.filled(32, 5),
+  });
 }
 
 void _rememberUnsealed(ShearLedger ledger, ShearIdentity ident, int count) {

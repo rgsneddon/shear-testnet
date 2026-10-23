@@ -36,6 +36,12 @@ jobs:
           $env:CL = "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
           flutter config --enable-windows-desktop
           flutter pub get
+          dart run tool/checkpoint_guard.dart --release
+          if (-not (Test-Path 'C:\msys64\mingw64\bin\gcc.exe') -and -not (Test-Path 'C:\tools\msys64\mingw64\bin\gcc.exe')) {
+            choco install msys2 -y --no-progress
+            $bash = @('C:\msys64\usr\bin\bash.exe', 'C:\tools\msys64\usr\bin\bash.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+            & $bash -lc 'pacman --noconfirm -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake'
+          }
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
           $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/shear_admit.dll).Trim()
           flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $define
@@ -43,6 +49,8 @@ jobs:
           cmd /c "dart compile exe bin/shear.dart -o dist-cli/shear.exe & exit /b 0"
       - name: Zip GUI
         run: python wallet/pack/zip_windows.py
+      - name: Refuse a Windows zip without shear_v3.dll
+        run: python wallet/pack/check_shear_v3_bundled.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip
       - name: Attach
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,6 +78,7 @@ jobs:
           sudo apt-get install -y "libstdc++-${gcc_major}-dev"
           flutter config --enable-linux-desktop
           flutter pub get
+          dart run tool/checkpoint_guard.dart --release
           bash ../crypto/native/build-linux-admit-so.sh
           DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
           flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
@@ -145,6 +154,10 @@ jobs:
           PIN: ${{ inputs.pin }}
       - name: Refuse a release APK that is not the pinned Continuum cert
         run: python3 wallet/pack/check_android_release.py dist/shear-wallet-${{ inputs.pin }}-android.apk
+      - name: Refuse a release artifact without libshear_v3
+        run: |
+          python3 wallet/pack/check_shear_v3_bundled.py dist/shear-wallet-${{ inputs.pin }}-linux.zip
+          python3 wallet/pack/check_shear_v3_bundled.py dist/shear-wallet-${{ inputs.pin }}-android.apk
       - name: Attach
         env:
           GH_TOKEN: ${{ github.token }}
@@ -189,10 +202,15 @@ jobs:
         run: |
           flutter config --enable-macos-desktop
           flutter pub get
+          dart run tool/checkpoint_guard.dart --release
+          bash ../native/build-shear-v3.sh
           flutter build macos --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }} --dart-define=SHEAR_ADMIT_SIGN_ID="Developer ID Application: Russell Sneddon (SFCBP95595)"
+          mkdir -p build/macos/Build/Products/Release/Shear.app/Contents/Frameworks
+          cp ../native/libshear_v3.dylib build/macos/Build/Products/Release/Shear.app/Contents/Frameworks/libshear_v3.dylib
           dart compile exe bin/shear.dart -o dist-cli/shear
           mkdir -p ../dist
           ditto -c -k --keepParent build/macos/Build/Products/Release/Shear.app ../dist/shear-wallet-${{ inputs.pin }}-macos.zip
+          python3 pack/check_shear_v3_bundled.py ../dist/shear-wallet-${{ inputs.pin }}-macos.zip
       - name: Attach
         env:
           GH_TOKEN: ${{ github.token }}

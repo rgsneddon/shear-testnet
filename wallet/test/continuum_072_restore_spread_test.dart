@@ -104,7 +104,7 @@ void main() {
           'notes': fresh.notes,
           'needNanos': '1',
           'tip': 40,
-          'confs': 9,
+          'confs': 9, 'allowBare': true,
         });
         expect(plan['spendableNanos'], expectSum.toString(), reason: 'count=$count wire=$wire');
         final picked = (plan['batches'] as List)
