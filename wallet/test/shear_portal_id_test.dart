@@ -98,6 +98,10 @@ void main() {
     expect(note0['dest20'], orderedEquals(recovered[0]['dest20'] as List<int>));
     expect(note1['dest20'], orderedEquals(recovered[1]['dest20'] as List<int>));
     expect(note0['dest20'], isNot(orderedEquals(identity)));
+    expect(note0['nanos'], 0);
+    expect(note0.containsKey('valueProof'), isFalse);
+    expect(note0['rangeProof'], isA<Uint8List>());
+    expect((first['vaultLockNote'] as String).substring(64), isNot(_hex(note0['commit'] as List<int>)));
   });
 
   test('the wallet recognises its one-time withdraw payout', () {

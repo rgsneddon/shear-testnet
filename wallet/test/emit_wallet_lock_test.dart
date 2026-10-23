@@ -52,7 +52,16 @@ void main() {
     expect(built['ownerPub'], isNot(identityPub));
     expect(built.containsKey('payoutPortalId'), isFalse);
     expect(built['lockAuth'], isA<String>());
-    expect(built['vaultLockNote'], isA<String>());
+    final leafHex = built['vaultLockNote'] as String;
+    expect(leafHex.length, 128);
+    expect(leafHex.startsWith(ownerPub), isFalse);
+    final sealed = (built['vouts'] as List).first as Map;
+    expect(sealed['nanos'], 0);
+    expect(sealed.containsKey('valueProof'), isFalse);
+    expect(sealed['rangeProof'], isA<Uint8List>());
+    final commit = sealed['commit'];
+    expect(commit, isA<Uint8List>());
+    expect(leafHex.substring(64), isNot(_hex(commit as Uint8List)));
     final body = walletSendBody(
       from: '',
       to: '',
@@ -72,13 +81,19 @@ void main() {
       ],
       lockAuth: built['lockAuth'] as String,
       ownerPub: built['ownerPub'] as String,
-      vaultLockNote: built['vaultLockNote'] as String,
+      vaultLockNote: leafHex,
       id: 'wallet-lock',
     );
     expect(body.containsKey('from'), isFalse);
     expect(body.containsKey('to'), isFalse);
+    expect(body.containsKey('amount'), isFalse);
+    expect(body['nanos'], 0);
     expect(body['lockAuth'], built['lockAuth']);
     expect(body['ownerPub'], ownerPub);
+    expect(body['vaultLockNote'], leafHex);
+    final posted = (body['vout'] as List).first as Map;
+    expect(posted.containsKey('valueProof'), isFalse);
+    expect(posted['nanos'] == 0 || posted['nanos'] == '0', isTrue);
     print(jsonEncode({
       'body': body,
       'ownerPub': ownerPub,

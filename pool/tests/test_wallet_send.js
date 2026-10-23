@@ -21,8 +21,10 @@ import {
   PI_SHE_NANOS,
   POOL_FEE_BPS,
   SPENDABLE_CONFIRMATIONS,
+  MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { emptyVault } from '../../crypto/reserve_vault.js';
+import { emptyVault, applyReserveBlock, consensusUnlockPeriod, lockFundingRejected } from '../../crypto/reserve_vault.js';
+import { verifyLockAuth } from '../../crypto/reserve_evm.js';
 import { isPinnedProgram, listPublicVortices, mintVorticeDeployKey } from '../../crypto/vortex.js';
 import { handleWalletApi, paintedSpendableNanos, reconstructOwner } from '../src/wallet_api.js';
 import { sealedExplorerRows, compactChainBlock } from '../../crypto/chronoflux.js';
@@ -1016,6 +1018,37 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(out.json.vortices.some((v) => v.id === JOIN_PROGRAM), false);
   });
 
+  function assertWalletLockFunds(body, label) {
+    assert.equal(Math.floor(Number(body?.nanos) || 0), 0, label);
+    assert.equal(body?.amount == null || Math.floor(Number(body.amount) || 0) === 0, true, label);
+    const rows = Array.isArray(body?.vout) ? body.vout : [];
+    for (const row of rows) {
+      const v = row?.valueProof?.v;
+      assert.ok(v == null || Math.floor(Number(v) || 0) <= 0, label);
+    }
+    assert.match(String(body?.vaultLockNote || ''), /^[0-9a-fA-F]{128}$/, label);
+    const owner = verifyLockAuth(body, null);
+    assert.equal(owner, String(body.ownerPub || '').toLowerCase(), label);
+    const ctx = { height: 1, magic: MAGIC_TESTNET, unlock: consensusUnlockPeriod(0) };
+    const funded = lockFundingRejected(body, ctx);
+    assert.equal(funded, null, `${label} ${funded?.reason || ''}`);
+    const leaked = { ...body, nanos: 1 };
+    assert.equal(lockFundingRejected(leaked, ctx)?.reason, 'stake_reward', label);
+    const t0 = 1_700_000_000_000;
+    const state = emptyVault();
+    const applied = applyReserveBlock({
+      state,
+      block: { height: 1, txs: [{ coinbase: true, vout: [] }, body] },
+      nowMs: t0,
+      genesisMs: t0,
+      height: 1,
+    });
+    assert.equal(applied.ok, true, `${label} ${applied.reason || ''}`);
+    const id = String(body.portalId || '').toLowerCase();
+    assert.ok(state.portals[id], label);
+    assert.ok(state.portals[id].tranches.length >= 1, label);
+  }
+
   it('a wallet-built lock keeps lockAuth, ownerPub, and vaultLockNote on the draft', () => {
     const wallet = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../wallet');
     const ran = process.platform === 'win32'
@@ -1043,6 +1076,8 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(body.kind, 'lock');
     assert.equal(body.from, undefined);
     assert.equal(body.to, undefined);
+    assert.equal(body.nanos, 0);
+    assertWalletLockFunds(body, 'emitted');
     body.fee = levyNeed(body);
     const posted = [];
     const ok = handleWalletApi(url('/api/wallet/send'), 'POST', body, {
@@ -1061,5 +1096,7 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(posted[0].vaultLockNote, body.vaultLockNote);
     assert.equal(posted[0].from, undefined);
     assert.equal(posted[0].to, undefined);
+    assert.equal(posted[0].nanos, 0);
+    assertWalletLockFunds(posted[0], 'queued');
   });
 });

@@ -1703,7 +1703,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     const nanosBi = isVote ? 0n : parsed.nanos;
-    if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly) {
+    // A hidden lock publishes no amount. nanos 0 is the π leaf, not an empty send.
+    if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly && !hiddenLock) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     if (kindIn !== 'send' && !isLock && !isVote && !isWithdraw) {

@@ -15,6 +15,7 @@ import 'shear_ed25519.dart';
 import 'shear_pack.dart';
 import 'shear_public_confirm.dart';
 import 'shear_admit.dart';
+import 'shear_admit_ffi.dart';
 import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
@@ -1996,6 +1997,30 @@ Map<String, dynamic> sealedReserveVout(String to, Object nanos, String kind, {St
   return note;
 }
 
+/// One lock output. The leaf is vaultLockNote(π, owner scalar, blind, unlock).
+/// The output commit is commit(π, blind) with no unlock point. nanos stay 0
+/// and the coinbase value proof is not posted. lockAuth signs the leaf commit.
+void _fundLockOutput(List<Map<String, dynamic>> sealed, {required Uint8List blind}) {
+  var locks = 0;
+  for (final note in sealed) {
+    if ((note['kind'] ?? 'lock').toString() == 'lock') locks += 1;
+  }
+  if (locks != 1) throw StateError('stake_reward');
+  final funded = commitBytes(kPiSheNanos, blind);
+  final range = AdmitNative.tryLoad()?.proveRange(BigInt.from(kPiSheNanos), blind);
+  if (range == null || range.length < 2 || range[0] != 2) {
+    throw StateError('admit_native_required');
+  }
+  for (final note in sealed) {
+    if ((note['kind'] ?? 'lock').toString() != 'lock') continue;
+    note['commit'] = funded;
+    note['nanos'] = 0;
+    note.remove('valueProof');
+    note.remove('r');
+    note['rangeProof'] = range;
+  }
+}
+
 /// A lock note carries the epoch end and the user's admit pub.
 /// No clock leaves the older receipt. A random pub would not be the user's key.
 void _stampLockNote(List<Map<String, dynamic>> sealed, Map<String, dynamic> input) {
@@ -2043,7 +2068,6 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
         lockIndex: lockIndex,
       ),
   ];
-  if (kind == 'lock') _stampLockNote(sealed, input);
   String? withdrawId;
   String? withdrawNonceHex;
   Uint8List? withdrawNonceRaw;
@@ -2080,6 +2104,40 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     for (final note in sealed) {
       note['portalId'] = payoutPortalId;
     }
+  }
+  String? lockAuthHex;
+  String? ownerPubHex;
+  String? vaultLockNoteHex;
+  Uint8List? lockScalar;
+  Uint8List? lockBlind;
+  var lockUnlock = 0;
+  if (kind == 'lock' && spendSeed != null && spendSeed.length == 32) {
+    final ownerSeed = reservePortalSpendSeed(spendSeed, lockIndex);
+    final epoch = input['lockEpoch'];
+    lockUnlock = consensusUnlockPeriod(epoch is int ? epoch : 0);
+    if (ownerSeed == null || lockUnlock <= 0 || lockUnlock == kVaultUnlockOpen) {
+      throw StateError('stake_reward');
+    }
+    lockScalar = vaultLockOwnerBytes(ownerSeed, lockIndex);
+    lockBlind = vaultLockBlindBytes(ownerSeed, lockIndex, kPiSheNanos, 0);
+    final note = vaultLeafNote(
+      amount: kPiSheNanos,
+      scalar: lockScalar,
+      blind: lockBlind,
+      unlock: lockUnlock,
+    );
+    if (note.length != 64) throw StateError('stake_reward');
+    // The funded commit is bound before the clock stamp, so admitPub opens it.
+    _fundLockOutput(sealed, blind: lockBlind);
+    final leafCommit = Uint8List.sublistView(note, 32, 64);
+    final auth = reserveLockAuth(ownerSeed, portalId, leafCommit);
+    if (auth == null || auth.length != 96) throw StateError('stake_reward');
+    lockAuthHex = _bytesHex(auth);
+    ownerPubHex = _bytesHex(auth.sublist(0, 32));
+    vaultLockNoteHex = _bytesHex(note);
+    _stampLockNote(sealed, input);
+  } else if (kind == 'lock') {
+    _stampLockNote(sealed, input);
   }
   final postedVout = _postedVout(sealed);
   final wire = flowPostHex(<String, dynamic>{'vin': const <Map<String, dynamic>>[], 'vout': postedVout});
@@ -2144,34 +2202,6 @@ Map<String, dynamic> sealSignReserveWire(Map<String, dynamic> input) {
     }
   }
   final postedVin = List<dynamic>.from(_hexify(signVin) as List? ?? const []);
-  String? lockAuthHex;
-  String? ownerPubHex;
-  String? vaultLockNoteHex;
-  Uint8List? lockScalar;
-  Uint8List? lockBlind;
-  var lockUnlock = 0;
-  if (kind == 'lock' && spendSeed != null && spendSeed.length == 32) {
-    final ownerSeed = reservePortalSpendSeed(spendSeed, lockIndex);
-    final epoch = input['lockEpoch'];
-    lockUnlock = epoch is int ? consensusUnlockPeriod(epoch) : 0;
-    if (ownerSeed != null && lockUnlock != kVaultUnlockOpen) {
-      lockScalar = vaultLockOwnerBytes(ownerSeed, lockIndex);
-      lockBlind = vaultLockBlindBytes(ownerSeed, lockIndex, kPiSheNanos, 0);
-      final note = vaultLeafNote(
-        amount: kPiSheNanos,
-        scalar: lockScalar,
-        blind: lockBlind,
-        unlock: lockUnlock,
-      );
-      final leafCommit = Uint8List.sublistView(note, 32, 64);
-      final auth = reserveLockAuth(ownerSeed, portalId, leafCommit);
-      if (auth != null && auth.length == 96 && note.length == 64) {
-        lockAuthHex = _bytesHex(auth);
-        ownerPubHex = _bytesHex(auth.sublist(0, 32));
-        vaultLockNoteHex = _bytesHex(note);
-      }
-    }
-  }
   return {
     'vouts': sealed,
     'postedVin': postedVin,
@@ -9718,7 +9748,7 @@ Map<String, dynamic> _lockPostRow(Map<dynamic, dynamic> raw) {
   final out = <String, dynamic>{};
   for (final e in raw.entries) {
     final key = e.key.toString();
-    if (key == 'address' || key == 'from' || key == 'to' || key == 'spendPub' || key == 'sig') continue;
+    if (key == 'address' || key == 'from' || key == 'to' || key == 'spendPub' || key == 'sig' || key == 'valueProof' || key == 'r') continue;
     final v = e.value;
     if (v is String && (v.contains('ssa1') || v.contains('she1') || v.contains('shear1'))) continue;
     out[key] = v;
@@ -9814,8 +9844,8 @@ Map<String, dynamic> walletSendBody({
       if (programId != null && programId.isNotEmpty) 'programId': programId,
       if (portalId != null && portalId.isNotEmpty) 'portalId': portalId,
       if (_lockDest20Hex(rows) != null) 'dest20': _lockDest20Hex(rows),
-      if (nanosWire != null && nanosWire.isNotEmpty) 'nanos': nanosWire,
-      if (nanosWire == null || nanosWire.isEmpty) 'amount': amount,
+      // A hidden lock publishes no amount. nanos 0 is the π leaf, not the coinbase.
+      'nanos': 0,
       if (fee != null) 'fee': fee,
       if (vin != null) 'vin': vin,
       if (rows != null) 'vout': rows,
