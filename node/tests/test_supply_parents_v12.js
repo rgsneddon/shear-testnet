@@ -307,8 +307,8 @@ describe('v12 supply parents fail closed', () => {
         }
 
         if (n === LENGTHS[LENGTHS.length - 1]) {
-          const shortFold = foldSupply(blocks.slice(0, 1));
-          const tallFold = foldSupply(blocks.slice(0, n - 1));
+          const shortFold = foldSupply(blocks.slice(0, 1), { magic: MAGIC_TESTNET });
+          const tallFold = foldSupply(blocks.slice(0, n - 1), { magic: MAGIC_TESTNET });
           assert.equal(shortFold.ok, true, shortFold.reason);
           assert.equal(tallFold.ok, true, tallFold.reason);
           const rounds = 40;
@@ -321,6 +321,7 @@ describe('v12 supply parents fail closed', () => {
                 tipHeight: height,
                 blockHash: block.hash,
                 genesisMs: T0,
+                magic: MAGIC_TESTNET,
               });
             }
             return { ms: performance.now() - t0, last };

@@ -10,6 +10,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import { openedCoinbaseNanos } from '../../crypto/note.js';
 import { POT_START_NANOS, POT_STEP_NANOS, potSubsidyAt } from '../../crypto/pot_sched.js';
 import { createStore } from '../src/node.js';
+import { auditCirculatingSupply, foldSupply } from '../src/supply.js';
 
 function easyPowHash(tag) {
   const h = Buffer.alloc(32);
@@ -60,7 +61,7 @@ describe('shear-dev S2 epoch', () => {
       const header = decodeHeader(Buffer.from(tip.header));
       assert.equal(Number(header.timestamp), stamp);
       assert.equal(header.bits, seed);
-      const want = potSubsidyAt({ nowMs: stamp, genesisMs: genesis, magic: 'shear-dev', height: h });
+      const want = potSubsidyAt({ nowMs: stamp, genesisMs: genesis, magic: 'shear-dev' });
       const expect = h <= 32 ? POT_START_NANOS : POT_START_NANOS - POT_STEP_NANOS;
       assert.equal(want, expect, `schedule ${h}`);
       const gotPot = potOf(tip);
@@ -79,5 +80,65 @@ describe('shear-dev S2 epoch', () => {
     const lateBits = decodeHeader(Buffer.from(lateTpl.header)).bits;
     assert.ok(lateBits < seed, `late bits ${lateBits}`);
     assert.ok(lateBits > seed - 2 * 65536, `late bits ${lateBits}`);
+  });
+
+  function mineGap(label, gapMs, count, flipAt, resume) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `shear-dev-${label}-`));
+    const store = createStore(dir, { network: 'shear-dev' });
+    const dest = encodeDest(Buffer.alloc(20, 5));
+    const genesis = 1_700_000_000_000;
+    const epochMs = chainParams('shear-dev').epochMs;
+    for (let h = 1; h <= count; h += 1) {
+      const stamp = genesis + (h - 1) * gapMs;
+      const { tpl } = store.template({ miner: dest, shareBits: 4, now: stamp });
+      assert.equal(Number(decodeHeader(Buffer.from(tpl.header)).timestamp), stamp, `${label} template ${h}`);
+      const got = store.append({
+        header: tpl.header,
+        txs: tpl.txs,
+        samples: tpl.samples,
+        miner: dest,
+        shareBatch: tpl.shareBatch || [],
+        aLeaves: tpl.aLeaves,
+        bLeaves: tpl.bLeaves,
+        rootA: tpl.rootA,
+        rootB: tpl.rootB,
+        weight: tpl.weight,
+      }, { trustedPowHash: easyPowHash(h), skipSharePow: true });
+      assert.equal(got.ok, true, `${label} ${got.reason || ''} height ${h}`);
+      const tip = store.tip();
+      const header = decodeHeader(Buffer.from(tip.header));
+      assert.equal(Number(header.timestamp), stamp, `${label} tip ${h}`);
+      const want = potSubsidyAt({ nowMs: stamp, genesisMs: genesis, magic: 'shear-dev' });
+      const epoch = Math.floor((stamp - genesis) / epochMs);
+      const expect = POT_START_NANOS - epoch * POT_STEP_NANOS;
+      assert.equal(want, expect, `${label} schedule ${h}`);
+      assert.equal(potOf(tip), expect, `${label} coinbase ${h}`);
+      if (h === flipAt - 1) assert.equal(epoch, 0, `${label} still epoch 0 at ${h}`);
+      if (h === flipAt) assert.equal(epoch, 1, `${label} epoch 1 at ${h}`);
+    }
+    assert.equal(store.tip().height, count);
+    const folded = foldSupply(store.blocks, { magic: 'shear-dev' });
+    assert.equal(folded.ok, true, `${label} fold ${folded.reason}`);
+    const audit = auditCirculatingSupply(store.blocks, { magic: 'shear-dev' });
+    assert.equal(audit.status, 'verified', `${label} ${audit.reason}`);
+    const v12 = foldSupply(store.blocks, { magic: 'shear-testnet-v12' });
+    assert.equal(v12.ok, false, `${label} v12 clock must disagree`);
+    assert.throws(() => foldSupply(store.blocks, {}), /unknown_magic/);
+    assert.throws(() => foldSupply(store.blocks, { magic: '' }), /unknown_magic/);
+    if (resume) {
+      const again = createStore(dir, { network: 'shear-dev' });
+      assert.equal(again.magic, 'shear-dev');
+      assert.equal(again.tip().height, count);
+      const reloaded = foldSupply(again.blocks, { magic: 'shear-dev' });
+      assert.equal(reloaded.ok, true, `${label} resume ${reloaded.reason}`);
+      const reaudit = auditCirculatingSupply(again.blocks, { magic: 'shear-dev' });
+      assert.equal(reaudit.status, 'verified', `${label} resume audit ${reaudit.reason}`);
+    }
+  }
+
+  it('validates off a 9s cadence, including gaps that cross an epoch', () => {
+    mineGap('12s', 12_000, 28, 25, true);
+    mineGap('30s', 30_000, 14, 11, false);
+    mineGap('5s', 5_000, 62, 59, false);
   });
 });

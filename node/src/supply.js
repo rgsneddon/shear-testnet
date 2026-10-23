@@ -643,7 +643,12 @@ function accountBlock(prev, block, opts = {}) {
     ? ts
     : (Number(state.genesisMs) > 0 ? Number(state.genesisMs) : (Number(opts.genesisMs) || ts));
   state.genesisMs = genesisMs;
-  const permitted = potSubsidyAt({ nowMs: ts, genesisMs, magic: opts.magic || MAGIC_TESTNET });
+  if (opts.magic == null || opts.magic === '') {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
+  const permitted = potSubsidyAt({ nowMs: ts, genesisMs, magic: opts.magic });
   if (!Number.isSafeInteger(permitted) || permitted < 0) return { reason: 'pot_sched', state };
   const permittedBi = BigInt(permitted);
   state.schedulePot += permittedBi;

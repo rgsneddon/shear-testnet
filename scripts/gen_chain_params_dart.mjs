@@ -1,6 +1,8 @@
 /**
  * Write wallet/lib/shear_chain_params.dart from crypto/chain_params.js.
  * Fingerprint shas are the sha256 of consensusFingerprint for each table key.
+ * A key missing on a row is nullable. Extra keys that exist only on some
+ * rows are appended after the v12 key list.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,6 +22,7 @@ const fp = {
 };
 
 function dartValue(value) {
+  if (value == null) return 'null';
   if (typeof value === 'string') return `'${value}'`;
   if (typeof value === 'number') return String(value);
   if (Array.isArray(value)) {
@@ -29,21 +32,45 @@ function dartValue(value) {
   throw new Error(`unsupported ${typeof value}`);
 }
 
-const sample = CHAIN_PARAMS['shear-testnet-v12'];
-const fields = Object.keys(sample);
-const stringFields = new Set(fields.filter((k) => typeof sample[k] === 'string'));
-const listFields = new Set(fields.filter((k) => Array.isArray(sample[k])));
+const v12Keys = Object.keys(CHAIN_PARAMS['shear-testnet-v12']);
+const extra = [];
+for (const magic of order) {
+  for (const key of Object.keys(CHAIN_PARAMS[magic])) {
+    if (!v12Keys.includes(key) && !extra.includes(key)) extra.push(key);
+  }
+}
+extra.sort();
+const fields = [...v12Keys, ...extra];
 
-const classFields = fields.map((name) => {
-  const type = listFields.has(name) ? 'List<String>' : (stringFields.has(name) ? 'String' : 'int');
-  return `  final ${type} ${name};`;
-}).join('\n');
+function presentValue(name) {
+  for (const magic of order) {
+    if (CHAIN_PARAMS[magic][name] !== undefined) return CHAIN_PARAMS[magic][name];
+  }
+  return undefined;
+}
 
-const ctorArgs = fields.map((name) => `    required this.${name},`).join('\n');
+function isNullable(name) {
+  return order.some((magic) => CHAIN_PARAMS[magic][name] === undefined);
+}
+
+function fieldType(name) {
+  const sampleVal = presentValue(name);
+  const base = Array.isArray(sampleVal) ? 'List<String>' : (typeof sampleVal === 'string' ? 'String' : 'int');
+  return isNullable(name) ? `${base}?` : base;
+}
+
+const classFields = fields.map((name) => `  final ${fieldType(name)} ${name};`).join('\n');
+
+const ctorArgs = fields.map((name) => (
+  isNullable(name) ? `    this.${name},` : `    required this.${name},`
+)).join('\n');
 
 function rowLiteral(magic) {
   const spec = CHAIN_PARAMS[magic];
-  const args = fields.map((name) => `      ${name}: ${dartValue(spec[name])},`).join('\n');
+  const args = fields.map((name) => {
+    const value = Object.prototype.hasOwnProperty.call(spec, name) ? spec[name] : null;
+    return `      ${name}: ${dartValue(value)},`;
+  }).join('\n');
   return `  '${magic}': ShearChainRow(\n${args}\n  )`;
 }
 

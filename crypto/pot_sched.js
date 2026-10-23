@@ -2,7 +2,7 @@
  * Epoch-indexed block pot. Testnet 4-day / mainnet 400-day clocks.
  * Votes and the Reserve oracle cannot move this schedule.
  */
-import { MAGIC_DEV, chainParams, clockFor, devSchedule } from './chain_params.js';
+import { MAGIC_DEV, chainParams, clockFor } from './chain_params.js';
 export const MS_PER_DAY = 86_400_000;
 export const EPOCH_DAYS_TESTNET = 4;
 export const EPOCH_DAYS_MAINNET = 400;
@@ -71,11 +71,8 @@ export function nextPotNanos(epoch) {
   return potSubsidyNanos(Math.floor(Number(epoch) || 0) + 1);
 }
 
-export function potSubsidyAt({ nowMs, genesisMs, magic, height } = {}) {
+export function potSubsidyAt({ nowMs, genesisMs, magic } = {}) {
   const days = epochDays(magic);
-  if (String(magic) === MAGIC_DEV && Number.isFinite(Number(height))) {
-    return potSubsidyNanos(devSchedule(height).epoch);
-  }
   return potSubsidyNanos(vortexEpochIndex({
     nowMs,
     genesisMs,

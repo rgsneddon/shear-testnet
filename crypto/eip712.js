@@ -16,7 +16,7 @@ export const EIP712_PRIMARY = 'PoolWithdraw';
 export const EIP712_CHAIN_MAGIC = MAGIC_TESTNET;
 
 /** Domain chain id is the book magic. A dev signature does not verify on v12. */
-export function poolWithdrawMagic(magic = MAGIC_TESTNET) {
+export function poolWithdrawMagic(magic) {
   if (magic == null || magic === '') {
     const err = new Error('unknown_magic');
     err.code = 'unknown_magic';
@@ -60,7 +60,7 @@ export function poolWithdrawDigest({
   nonce = 0,
   deadline = 0,
   verifyingContract = Buffer.alloc(20),
-  chainId = EIP712_CHAIN_MAGIC,
+  chainId,
 } = {}) {
   const she = String(minerShe1 || login || '');
   const payout = String(payoutSsa1 || dest || '');

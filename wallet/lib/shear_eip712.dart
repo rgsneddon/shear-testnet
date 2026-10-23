@@ -28,7 +28,7 @@ Uint8List poolWithdrawDigest({
   required String login,
   required String dest,
   required int nanos,
-  String magic = 'shear-testnet-v12',
+  required String magic,
 }) {
   final chainId = magic == 'shear-dev' ? 2799 : kEip712ChainId;
   final domainType = _hashString('EIP712Domain(string name,string version,uint256 chainId)');
@@ -84,7 +84,7 @@ String signPoolWithdraw({
   required String login,
   required String dest,
   required int nanos,
-  String magic = 'shear-testnet-v12',
+  required String magic,
 }) {
   final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos, magic: magic);
   final privRaw = evmPrivFromSeed(seed);
@@ -112,7 +112,7 @@ bool verifyPoolWithdrawSig({
   required String dest,
   required int nanos,
   required String sig,
-  String magic = 'shear-testnet-v12',
+  required String magic,
 }) {
   final raw = sig.trim();
   final hex = raw.startsWith('0x') ? raw.substring(2) : raw;

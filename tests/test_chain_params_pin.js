@@ -32,8 +32,7 @@ import { feeTauMs, verifyPoolWithdrawOffchain } from '../crypto/levy.js';
 import { confirmPolicy } from '../crypto/confirm_policy.js';
 import { bootReserveEvm, callReserve, selector } from '../crypto/reserve_evm.js';
 import {
-  devSchedule,
-  devScheduleFromRow,
+  devClockFromRow,
   withdrawSlotOpen,
   statedMagic,
 } from '../crypto/chain_params.js';
@@ -44,9 +43,11 @@ import {
 } from '../crypto/asert.js';
 import { potSubsidyAt } from '../crypto/pot_sched.js';
 import { buildTemplate } from '../node/src/chain.js';
-import { encodeDest, newIdentity, ed25519PrivateFromSeed, ed25519RawPub } from '../crypto/address.js';
+import { encodeDest, newIdentity, ed25519PrivateFromSeed, ed25519RawPub, hash20FromAddress } from '../crypto/address.js';
 import { destForLogin } from '../crypto/flow_sheet.js';
-import { signPoolWithdraw, verifyPoolWithdrawSig, poolWithdrawMagic, EIP712_CHAIN_ID } from '../crypto/eip712.js';
+import { signPoolWithdraw, verifyPoolWithdrawSig, poolWithdrawMagic, poolWithdrawDigest, EIP712_CHAIN_ID } from '../crypto/eip712.js';
+import { verifyWalletPoolWithdraw } from '../pool/src/wallet_api.js';
+import { packShewall, sealShewallBin, openShewallBin, unpackShewall } from '../crypto/shewall_bin.js';
 import {
   withdraw,
   withdrawChainId,
@@ -132,7 +133,8 @@ describe('chain param table', () => {
     assert.deepEqual(dev.defaultSeeds, []);
     assert.equal(dev.datadirLeaf, 'shear-dev');
     assert.equal(dev.rpcPort, 18432);
-    assert.equal(dev.ipcPort, 31313);
+    assert.equal(Object.hasOwn(dev, 'ipcPort'), false);
+    assert.equal(canonicalParamsJson('shear-dev').includes('ipcPort'), false);
     assert.equal(Object.hasOwn(dev, 'p2pPort'), false);
     assert.equal(Object.hasOwn(dev, 'stratumPort'), false);
     assert.equal(canonicalParamsJson('shear-dev').includes('p2pPort'), false);
@@ -214,6 +216,10 @@ describe('chain param table', () => {
     assert.notEqual(dev, v12);
     assert.equal(dev.includes('NETWORK=shear-dev'), true);
     assert.match(dev, /PARAMS=[0-9a-f]{64}$/);
+    assert.equal(dev.split(':')[4], '12');
+    assert.equal(v12.split(':')[4], '17');
+    assert.equal(consensusFingerprint().split(':')[4], '17');
+    assert.equal(mainnetFingerprint().split(':')[4], '17');
     assert.equal(dev.includes('HISTORICAL_TIP='), false);
     assert.equal(consensusFingerprint('shear-testnet-v11').includes('HISTORICAL_TIP='), true);
     const pot0 = POT_START_NANOS;
@@ -236,6 +242,11 @@ describe('chain param table', () => {
     assert.match(dart, new RegExp(V12_FINGERPRINT_SHA));
     assert.match(dart, new RegExp(MAINNET_FINGERPRINT_SHA));
     assert.equal(/nextBits|ASERT_|bitsForBlock|asertHarden|asertEase|SHEAR_BITS/.test(dart), false);
+    assert.match(dart, /final int\? ipcPort;/);
+    assert.match(dart, /final int\? poolIpcPort;/);
+    assert.match(dart, /ipcPort: null/);
+    assert.match(dart, /poolIpcPort: 31314/);
+    assert.match(dart, /poolIpcPort: null/);
   });
 
   it('keeps dev literals out of the v12 sources', () => {
@@ -381,7 +392,8 @@ describe('chain param table', () => {
     const book = fs.readFileSync(path.join(root, 'wallet/lib/shear_book_dev.dart'), 'utf8');
     assert.equal(book.includes("'SHEAR_P2P_PORT'"), false);
     assert.equal(book.includes("'SHEAR_STRATUM'"), false);
-    assert.match(book, /127\.0\.0\.1:31314/);
+    assert.match(book, /127\.0\.0\.1:\$\{row\.poolIpcPort\}/);
+    assert.equal(book.includes('31314'), false);
     const poolDev = fs.readFileSync(path.join(root, 'pool/src/main_dev.js'), 'utf8');
     assert.match(poolDev, /SHEAR_STRATUM \|\| process\.env\.SHEAR_STRATUM_PORT \|\| DEV_STRATUM_PORT/);
     assert.match(poolDev, /defaultSidecarIpc\(MAGIC_DEV\)/);
@@ -416,45 +428,49 @@ describe('chain param table', () => {
     assert.equal(devTpl.bits, seed);
     assert.equal(v12Tpl.bits, GENESIS_BITS_PACKED);
     const genesis = 1_700_000_000_000;
+    const target = row.targetBlockMs;
     assert.equal(
-      potSubsidyAt({ nowMs: genesis, genesisMs: genesis, magic: 'shear-dev', height: 33 }),
+      potSubsidyAt({ nowMs: genesis + row.epochMs, genesisMs: genesis, magic: 'shear-dev' }),
       POT_START_NANOS - POT_STEP_NANOS,
     );
     assert.equal(
-      potSubsidyAt({ nowMs: genesis, genesisMs: genesis, magic: 'shear-dev', height: 32 }),
+      potSubsidyAt({ nowMs: genesis + row.epochMs - 1, genesisMs: genesis, magic: 'shear-dev' }),
       POT_START_NANOS,
     );
     assert.equal(
-      potSubsidyAt({ nowMs: genesis, genesisMs: genesis, magic: 'shear-testnet-v12', height: 33 }),
+      potSubsidyAt({ nowMs: genesis + row.epochMs, genesisMs: genesis, magic: 'shear-testnet-v12' }),
       POT_START_NANOS,
     );
-    assert.equal(devSchedule(33).epoch, 1);
-    assert.equal(devSchedule(32).epoch, 0);
-    assert.equal(devScheduleFromRow(17, row).epoch, 0);
-    assert.equal(devScheduleFromRow(17, { ...row, epochBlocks: 16 }).epoch, 1);
-    assert.equal(devScheduleFromRow(9, row).day, 1);
-    assert.equal(devScheduleFromRow(9, { ...row, dayBlocks: 16 }).day, 0);
-    assert.equal(devScheduleFromRow(9, row).voteOpen, false);
-    assert.equal(devScheduleFromRow(9, { ...row, dayBlocks: 16 }).voteOpen, true);
-    assert.equal(devScheduleFromRow(2, row).voteOpen, true);
-    assert.equal(devScheduleFromRow(2, { ...row, stubBlocks: 2 }).voteOpen, false);
-    assert.equal(devScheduleFromRow(2, { ...row, voteEdge: 5 }).voteOpen, false);
-    assert.equal(devScheduleFromRow(3, row).voteOpen, true);
-    assert.equal(devScheduleFromRow(3, { ...row, voteSep: 3 }).voteOpen, false);
-    assert.equal(devScheduleFromRow(3, { ...row, voteGap: 3 }).voteOpen, false);
-    assert.equal(devScheduleFromRow(26, row).voteOpen, false);
-    assert.equal(devScheduleFromRow(26, { ...row, voteCloseBlock: 30 }).voteOpen, true);
+    assert.equal(devClockFromRow(row.epochMs, row).epoch, 1);
+    assert.equal(devClockFromRow(row.epochMs - 1, row).epoch, 0);
+    assert.equal(devClockFromRow(row.epochMs, { ...row, epochMs: row.epochMs * 2 }).epoch, 0);
+    assert.equal(devClockFromRow(target, { ...row, epochBlocks: 1 }).epoch, 0);
+    assert.equal(devClockFromRow(row.dayMs, row).day, 1);
+    assert.equal(devClockFromRow(row.dayMs, row).voteOpen, false);
+    assert.equal(devClockFromRow(row.dayMs, { ...row, dayMs: row.dayMs * 2 }).day, 0);
+    assert.equal(devClockFromRow(row.dayMs, { ...row, dayMs: row.dayMs * 2 }).voteOpen, true);
+    assert.equal(devClockFromRow(target, { ...row, dayBlocks: 1 }).voteOpen, true);
+    assert.equal(devClockFromRow(target, row).voteOpen, true);
+    assert.equal(devClockFromRow(target, { ...row, stubBlocks: 2 }).voteOpen, false);
+    assert.equal(devClockFromRow(target, { ...row, voteEdge: 5 }).voteOpen, false);
+    assert.equal(devClockFromRow(2 * target, row).voteOpen, true);
+    assert.equal(devClockFromRow(2 * target, { ...row, voteSep: 3 }).voteOpen, false);
+    assert.equal(devClockFromRow(2 * target, { ...row, voteGap: 3 }).voteOpen, false);
+    assert.equal(devClockFromRow(25 * target, row).voteOpen, false);
+    assert.equal(devClockFromRow(25 * target, { ...row, voteCloseBlock: 30 }).voteOpen, true);
     const lateVote = { ...row, voteCloseBlock: 40 };
-    assert.equal(devScheduleFromRow(31, lateVote).voteOpen, true);
-    assert.equal(devScheduleFromRow(31, { ...lateVote, voteFinality: 3 }).voteOpen, false);
-    assert.equal(devScheduleFromRow(129, row).withdrawOpen, false);
-    assert.equal(devScheduleFromRow(129, { ...row, periodBlocks: 4 }).withdrawOpen, true);
-    assert.equal(devScheduleFromRow(129, { ...row, withdrawSlots: 65 }).withdrawOpen, true);
+    assert.equal(devClockFromRow(30 * target, lateVote).voteOpen, true);
+    assert.equal(devClockFromRow(30 * target, { ...lateVote, voteFinality: 3 }).voteOpen, false);
+    const closedMs = 128 * target;
+    assert.equal(devClockFromRow(closedMs, row).withdrawOpen, false);
+    assert.equal(devClockFromRow(closedMs, { ...row, periodMs: row.periodMs * 2 }).withdrawOpen, true);
+    assert.equal(devClockFromRow(closedMs, { ...row, periodBlocks: 4 }).withdrawOpen, false);
+    assert.equal(devClockFromRow(closedMs, { ...row, withdrawSlots: 65 }).withdrawOpen, true);
     assert.equal(withdrawSlotOpen(64 * row.withdrawSlotMs, row), false);
     assert.equal(withdrawSlotOpen(63 * row.withdrawSlotMs, row), true);
     assert.equal(withdrawSlotOpen(64 * row.withdrawSlotMs, { ...row, withdrawSlots: 65 }), true);
-    assert.equal(devScheduleFromRow(1, row).genesisBits, 12);
-    assert.equal(devScheduleFromRow(1, { ...row, genesisBits: 10 }).genesisBits, 10);
+    assert.equal(devClockFromRow(0, row).genesisBits, 12);
+    assert.equal(devClockFromRow(0, { ...row, genesisBits: 10 }).genesisBits, 10);
     assert.notEqual(packBits(10), seed);
     const start = 1_700_000_000_000;
     const closed = withdraw({
@@ -496,20 +512,57 @@ describe('chain param table', () => {
     assert.equal(verifyPoolWithdrawSig({ ...fields, sig: devSig, chainId: 'shear-testnet-v12' }), false);
     assert.equal(verifyPoolWithdrawSig({ ...fields, sig: devSig }), false);
     assert.equal(verifyPoolWithdrawSig({ ...fields, sig: v12Sig, chainId: 'shear-dev' }), false);
-    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: v12Sig }), true);
+    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: v12Sig, chainId: 'shear-testnet-v12' }), true);
+    assert.equal(verifyPoolWithdrawSig({ ...fields, sig: v12Sig }), false);
+    assert.throws(() => poolWithdrawDigest({ login: id.paymentCode, dest, nanos }), /unknown_magic/);
     const devOff = verifyPoolWithdrawOffchain({
       login: id.paymentCode, dest, nanos, sig: devSig, magic: 'shear-dev',
     });
     assert.equal(devOff.ok, true, devOff.reason);
-    assert.equal(verifyPoolWithdrawOffchain({
+    const omitted = verifyPoolWithdrawOffchain({
       login: id.paymentCode, dest, nanos, sig: devSig,
-    }).ok, false);
+    });
+    assert.equal(omitted.ok, false);
+    assert.equal(omitted.reason, 'unknown_magic');
+    assert.equal(verifyPoolWithdrawOffchain({
+      login: id.paymentCode, dest, nanos, sig: v12Sig,
+    }).reason, 'unknown_magic');
     assert.equal(verifyPoolWithdrawOffchain({
       login: id.paymentCode, dest, nanos, sig: devSig, magic: 'shear-testnet-v12',
     }).ok, false);
     assert.equal(verifyPoolWithdrawOffchain({
       login: id.paymentCode, dest, nanos, sig: v12Sig, magic: 'shear-dev',
     }).ok, false);
+    const seed32 = Buffer.alloc(32, 9);
+    const packed = packShewall({ seed32, dest20: hash20FromAddress(dest) });
+    const sealed = sealShewallBin(packed, 'v12-import');
+    const opened = unpackShewall(openShewallBin(sealed, 'v12-import'));
+    assert.equal(Buffer.from(opened.seed32).equals(seed32), true);
+    const body = { login: id.paymentCode, dest, nanos };
+    const importedDev = signPoolWithdraw({ ...body, seed: opened.seed32, chainId: 'shear-dev' });
+    const importedV12 = signPoolWithdraw({ ...body, seed: opened.seed32, chainId: 'shear-testnet-v12' });
+    const onDev = verifyWalletPoolWithdraw({ magic: 'shear-dev' }, { ...body, sig: importedDev });
+    assert.equal(onDev.ok, true, onDev.reason);
+    assert.equal(verifyWalletPoolWithdraw({ magic: 'shear-testnet-v12' }, { ...body, sig: importedDev }).ok, false);
+    assert.equal(verifyWalletPoolWithdraw({ magic: 'shear-dev' }, { ...body, sig: importedV12 }).ok, false);
+    const walletApi = fs.readFileSync(path.join(root, 'pool/src/wallet_api.js'), 'utf8');
+    const helper = walletApi.slice(
+      walletApi.indexOf('export function verifyWalletPoolWithdraw'),
+      walletApi.indexOf('export function handleWalletApi'),
+    );
+    assert.match(helper, /magic:\s*store\?\.magic/);
+    assert.equal(helper.includes('MAGIC_TESTNET'), false);
+    const eip = fs.readFileSync(path.join(root, 'wallet/lib/shear_eip712.dart'), 'utf8');
+    assert.equal(eip.includes("magic = 'shear-testnet-v12'"), false);
+    assert.equal(eip.includes('shear-testnet-v12'), false);
+    assert.match(eip, /required String magic/);
+    const cli = fs.readFileSync(path.join(root, 'wallet/lib/shear_cli.dart'), 'utf8');
+    assert.equal(cli.includes('signPoolWithdraw(seed: seed, login: id.paymentCode, dest: dest, nanos: nanos, magic: _cliBookMagic)'), true);
+    assert.equal(cli.includes('magic: _cliBookMagic'), true);
+    const ledger = fs.readFileSync(path.join(root, 'wallet/lib/shear_ledger.dart'), 'utf8');
+    assert.equal(ledger.includes('signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos, magic: magic)'), true);
+    assert.equal(ledger.includes('required String magic'), true);
+    assert.equal(ledger.includes("magic = 'shear-testnet-v12'"), false);
     const nullifier = 'ab'.repeat(32);
     const tranche = 'cd'.repeat(32);
     const key = ed25519PrivateFromSeed(seed);

@@ -328,8 +328,9 @@ export const ADMIT_LEAF_ID = `fs1-ed25519-OIC${FS1_LEAF_LEN}-Hp-${FS1_LEAF_HP_DS
 
 /**
  * Day-0 packed seed. The dev row reads genesisBits from its row.
- * Every other book stays on GENESIS_BITS_PACKED, including the positional
- * fingerprint slot, which is the constant GENESIS_BITS and not the row.
+ * Every other book stays on GENESIS_BITS_PACKED. The positional fingerprint
+ * slot is that same integer: the dev row's genesisBits, or GENESIS_BITS
+ * on every other book.
  */
 export function genesisSeedPacked(magic = MAGIC_TESTNET) {
   clockFor(magic);
@@ -355,7 +356,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     MAGIC_MAINNET,
     targetMs,
     LIVE_MIN_BITS,
-    GENESIS_BITS,
+    dev ? devRow.genesisBits : GENESIS_BITS,
     HASH_BONUS_NANOS,
     NANOS_PER_SHE,
     BLOCK_SUBSIDY_NANOS,

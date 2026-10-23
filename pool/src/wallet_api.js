@@ -1465,6 +1465,38 @@ export function parseSendNanos(body) {
   return { ok: true, nanos: null };
 }
 
+/** Same verifier the retired pool-withdraw route calls. Magic is the store book. */
+export function verifyWalletPoolWithdraw(store, body, extras = {}) {
+  const login = body?.login || body?.she1;
+  const rawDest = String(body?.dest || body?.to || '').trim();
+  const nanos = body?.nanos != null ? body.nanos : Math.round(Number(body?.amount || 0) * NANOS_PER_SHE);
+  const sig = body?.sig || body?.signature;
+  const dests = [...new Set([rawDest, payoutDest(rawDest) || ''].filter(Boolean))];
+  let off = { ok: false, reason: 'unsigned' };
+  for (const dest of dests) {
+    off = verifyPoolWithdrawOffchain({
+      login,
+      dest,
+      nanos,
+      sig,
+      minerShe1: login,
+      payoutSsa1: dest,
+      height: body?.height,
+      nonce: body?.nonce,
+      deadline: body?.deadline,
+      nonceStore: extras.nonceStore,
+      seenDigests: extras.seenDigests,
+      open: body?.open,
+      spendSig: body?.spendSig,
+      ownerPub: ownerPubFromOpening(body?.open),
+      requireOwner: extras.requireOwner === true,
+      magic: store?.magic,
+    });
+    if (off.ok) break;
+  }
+  return off;
+}
+
 export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
@@ -1889,32 +1921,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     };
   }
   if (false && path === '/api/pool/withdraw' && verb === 'POST') {
-    const login = body.login || body.she1;
-    const rawDest = String(body.dest || body.to || '').trim();
-    const nanos = body.nanos != null ? body.nanos : Math.round(Number(body.amount || 0) * NANOS_PER_SHE);
-    const sig = body.sig || body.signature;
-    const dests = [...new Set([rawDest, payoutDest(rawDest) || ''].filter(Boolean))];
-    let off = { ok: false, reason: 'unsigned' };
-    for (const dest of dests) {
-      off = verifyPoolWithdrawOffchain({
-        login,
-        dest,
-        nanos,
-        sig,
-        minerShe1: login,
-        payoutSsa1: dest,
-        height: body.height,
-        nonce: body.nonce,
-        deadline: body.deadline,
-        nonceStore: withdrawNonces,
-        seenDigests: withdrawDigests,
-        open: body.open,
-        spendSig: body.spendSig,
-        ownerPub: ownerPubFromOpening(body.open),
-        requireOwner: true,
-      });
-      if (off.ok) break;
-    }
+    const off = verifyWalletPoolWithdraw(store, body, {
+      nonceStore: withdrawNonces,
+      seenDigests: withdrawDigests,
+      requireOwner: true,
+    });
     if (!off.ok) return { status: 400, json: { ...off, public: false } };
     const from = payoutDest(String(poolDest || '')) || poolPayoutDest();
     if (!isDestAddress(from)) return { status: 503, json: { ok: false, reason: 'no_pool_dest' } };

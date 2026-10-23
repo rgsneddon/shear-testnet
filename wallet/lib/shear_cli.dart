@@ -1179,7 +1179,7 @@ Future<int> _signPull(IOSink out, IOSink err, _Flags flags, Map<String, String> 
   final dry = flags['dry-run'] == '1';
   final seed = hexToBytes(id.seedHex);
   final nanos = (amount * kUnitsPerShe).round();
-  final sig = signPoolWithdraw(seed: seed, login: id.paymentCode, dest: dest, nanos: nanos);
+  final sig = signPoolWithdraw(seed: seed, login: id.paymentCode, dest: dest, nanos: nanos, magic: _cliBookMagic);
   if (dry) {
     out.writeln(flags.json
         ? jsonEncode({'ok': true, 'signed': true, 'kind': 'pool-withdraw', 'dest': dest, 'nanos': nanos, 'sig': sig})
@@ -1199,6 +1199,7 @@ Future<int> _signPull(IOSink out, IOSink err, _Flags flags, Map<String, String> 
     dest: dest,
     nanos: nanos,
     seed: seed,
+    magic: _cliBookMagic,
   );
   out.writeln(flags.json ? jsonEncode({'ok': true, 'id': tx.id, 'kind': tx.kind}) : 'signed pull  id=${tx.id}');
   return 0;

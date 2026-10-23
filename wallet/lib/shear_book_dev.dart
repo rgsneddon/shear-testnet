@@ -18,7 +18,7 @@ Map<String, String> devNodeEnv({required String dataDir, String rpcToken = ''}) 
     'SHEAR_RPC_PORT': '${row.rpcPort}',
     'SHEAR_P2P_BIND': '127.0.0.1',
     'SHEAR_STRATUM_BIND': '127.0.0.1',
-    'SHEAR_P2P_IPC': '127.0.0.1:31314',
+    'SHEAR_P2P_IPC': '127.0.0.1:${row.poolIpcPort}',
     'SHEAR_SEEDS': '',
     'SHEAR_RPC_TOKEN': rpcToken,
   };

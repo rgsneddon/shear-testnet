@@ -33,7 +33,7 @@ import {
   bundleObservationRoot,
 } from './reserve_oracle.js';
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
-import { clockFor, statedMagic, chainParams, MAGIC_DEV, devScheduleFromRow, withdrawSlotOpen } from './chain_params.js';
+import { clockFor, statedMagic, chainParams, MAGIC_DEV, devClockFromRow, withdrawSlotOpen } from './chain_params.js';
 import { extraMint } from './mint.js';
 import { reserveFeeDest, levyNanos } from './levy.js';
 import { decodeHeader } from './header.js';
@@ -1608,8 +1608,7 @@ export function vote({ state, dest, portalId, choice, nowMs }) {
   if (String(state.magic) === MAGIC_DEV && state.epochStartMs) {
     const row = chainParams(MAGIC_DEV);
     const elapsedMs = Math.max(0, Number(nowMs) - Number(state.epochStartMs));
-    const heightInEpoch = Math.floor(elapsedMs / Math.max(1, row.targetBlockMs)) + 1;
-    if (!devScheduleFromRow(heightInEpoch, row).voteOpen) return { ok: false, reason: 'vote_closed' };
+    if (!devClockFromRow(elapsedMs, row).voteOpen) return { ok: false, reason: 'vote_closed' };
   }
   const allowed = [VOTE_INCREASE, VOTE_DECREASE, VOTE_HOLD];
   if (!allowed.includes(choice)) return { ok: false, reason: 'bad_vote' };
@@ -3057,8 +3056,7 @@ export function withdraw({ state, dest, portalId, nowMs, payout, payoutPortalId 
   if (String(state.magic) === MAGIC_DEV) {
     const row = chainParams(MAGIC_DEV);
     const elapsedMs = Math.max(0, Number(nowMs) - Number(state.epochStartMs || nowMs || 0));
-    const heightInEpoch = Math.floor(elapsedMs / Math.max(1, row.targetBlockMs)) + 1;
-    if (!withdrawSlotOpen(elapsedMs, row) || !devScheduleFromRow(heightInEpoch, row).withdrawOpen) {
+    if (!withdrawSlotOpen(elapsedMs, row) || !devClockFromRow(elapsedMs, row).withdrawOpen) {
       return { ok: false, reason: 'withdraw_closed' };
     }
   }

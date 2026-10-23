@@ -632,6 +632,7 @@ describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import
     const shortFold = foldSupply(store.blocks.slice(0, credited.height), {
       tipHeight: credited.height + PRUNE - 1,
       genesisMs,
+      magic: MAGIC_TESTNET,
     });
     assert.equal(shortFold.ok, false);
     assert.equal(shortFold.reason, 'hash_owed', shortFold.reason);
@@ -657,7 +658,7 @@ describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import
     });
     assert.equal(loaded.ok, true, loaded.reason || 'reload');
     assert.equal(loaded.supplyAt.length, chain.length);
-    const folded = foldSupply(chain, { tipHeight: TIP, genesisMs });
+    const folded = foldSupply(chain, { tipHeight: TIP, genesisMs, magic: MAGIC_TESTNET });
     assert.equal(folded.ok, true, folded.reason || 'fold');
     assert.equal(sameSupply(folded.state, loaded.supplyAt[chain.length - 1]), '');
     let stepped = emptySupplyState(genesisMs);

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity } from './address.js';
 import { destForLogin } from './flow_sheet.js';
-import { NANOS_PER_SHE } from './asert.js';
+import { NANOS_PER_SHE, MAGIC_TESTNET } from './asert.js';
 import { levyNanos, LEVY_FLOOR_UNITS } from './levy.js';
 import { verifyPoolWithdrawOffchain } from './levy.js';
 import {
@@ -24,12 +24,12 @@ describe('EIP-712 PoolWithdraw', () => {
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     const seed = Buffer.alloc(32, 7);
     const nanos = Math.floor(0.05 * NANOS_PER_SHE);
-    const digest = poolWithdrawDigest({ login: id.paymentCode, dest, nanos });
+    const digest = poolWithdrawDigest({ login: id.paymentCode, dest, nanos, chainId: MAGIC_TESTNET });
     assert.equal(digest.length, 32);
-    const sig = signPoolWithdraw({ seed, login: id.paymentCode, dest, nanos });
+    const sig = signPoolWithdraw({ seed, login: id.paymentCode, dest, nanos, chainId: MAGIC_TESTNET });
     assert.match(sig, /^[0-9a-f]{196}$/);
-    assert.equal(verifyPoolWithdrawSig({ login: id.paymentCode, dest, nanos, sig }), true);
-    const ok = verifyPoolWithdrawOffchain({ login: id.paymentCode, dest, nanos, sig });
+    assert.equal(verifyPoolWithdrawSig({ login: id.paymentCode, dest, nanos, sig, chainId: MAGIC_TESTNET }), true);
+    const ok = verifyPoolWithdrawOffchain({ login: id.paymentCode, dest, nanos, sig, magic: MAGIC_TESTNET });
     assert.equal(ok.ok, true, ok.reason);
     assert.equal(verifyPoolWithdrawOffchain({ login: id.paymentCode, dest, nanos, sig: '' }).reason, 'unsigned');
     assert.equal(verifyPoolWithdrawOffchain({ login: '', dest, nanos, sig }).reason, 'need_she1');
@@ -38,10 +38,11 @@ describe('EIP-712 PoolWithdraw', () => {
       dest,
       nanos: nanos + 1,
       sig,
+      magic: MAGIC_TESTNET,
     });
     assert.equal(tampered.ok, false);
     const other = destForLogin(newIdentity().address, { viewKey: newIdentity().viewKey, height: 1 });
-    assert.equal(verifyPoolWithdrawOffchain({ login: id.paymentCode, dest: other, nanos, sig }).ok, false);
+    assert.equal(verifyPoolWithdrawOffchain({ login: id.paymentCode, dest: other, nanos, sig, magic: MAGIC_TESTNET }).ok, false);
     assert.equal(verifyPoolWithdrawOffchain({ login: id.paymentCode, dest: id.paymentCode, nanos, sig: 'ab' }).reason, 'she1');
   });
 });

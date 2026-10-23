@@ -312,7 +312,7 @@ export function verifyPoolWithdrawOffchain({
   open = '',
   spendSig = '',
   requireOwner = false,
-  magic = MAGIC_TESTNET,
+  magic,
 } = {}) {
   const she = String(minerShe1 || login || '').trim().split('.')[0];
   if (!she.startsWith('she1')) return { ok: false, reason: 'need_she1' };
@@ -332,6 +332,7 @@ export function verifyPoolWithdrawOffchain({
     if (dl < now || dl > now + POOL_WITHDRAW_DEADLINE_MS) return { ok: false, reason: 'deadline' };
   }
   if (!sig) return { ok: false, reason: 'unsigned' };
+  if (magic == null || magic === '') return { ok: false, reason: 'unknown_magic' };
   const fields = {
     login: she,
     dest: payout,

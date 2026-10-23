@@ -4,7 +4,7 @@
  * the portal id. The wallet spend key is not the owner key.
  */
 import { ed25519RawPub, newIdentity } from './address.js';
-import { MAGIC_TESTNET, PI_SHE_NANOS } from './asert.js';
+import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
 import { epochMs } from './pot_sched.js';
 import { clockFor } from './chain_params.js';
 import {

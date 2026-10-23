@@ -6,9 +6,9 @@ The dev pool process is backend only: stratum, share accounting, payouts, and IP
 
 ## Clock
 
-Profile S2. Target block time is 9 seconds. ASERT half-life is 720,000 ms. A header may sit at most 5,000 ms ahead of the verifier. One epoch is 32 blocks, 288,000 ms. The withdraw window is 64 slots of 9 seconds. Vote close is block 24. The dev P2P ban is 60 seconds.
+Profile S2. Target block time is 9 seconds. ASERT half-life is 720,000 ms. A header may sit at most 5,000 ms ahead of the verifier. One epoch is 288,000 ms of chain time, read from the block timestamp on the same vortex clock v12 uses. It is not 32 blocks. Vote close is 24 target intervals (24 × 9,000 ms) into the epoch. The withdraw window is 64 slots of 9 seconds, measured in time. The dev P2P ban is 60 seconds.
 
-Genesis difficulty for this book is bits 12. A RandomX-light bench on one 4-vCPU host (huge pages unavailable, JIT) measured 45.65 H/s at 1 thread, 94.53 H/s at 2 threads, and 246.53 H/s at 4 threads. Three cache rebuilds averaged 0.108 s. Steal was 0 during each window. Two hosts at the 4-thread rate are about 494 H/s, and 2^12 / 494 is about 8.3 s. That is the closest integer at or above 10 to a 9 s block. ASERT moves the target after genesis. v12 and mainnet stay at bits 17.
+Genesis difficulty for this book is bits 12. A RandomX-light bench on one 4-vCPU host (huge pages unavailable, JIT) measured 45.65 H/s at 1 thread, 94.53 H/s at 2 threads, and 246.53 H/s at 4 threads. Three cache rebuilds averaged 0.108 s. Steal was 0 during each window. Two hosts at the 4-thread rate are 246.53 × 2 ≈ 493 H/s, and 2^12 / 493 ≈ 8.3 s. The floor is 10. The chosen seed is 12. ASERT moves the target after genesis. v12 and mainnet stay at bits 17. The dev fingerprint's positional GENESIS_BITS slot is 12. The v12 slot stays 17.
 
 NTP is required. Keep clocks within 500 ms. The header-ahead cap is 5 seconds, so a node that is minutes off will orphan every header it sees.
 
@@ -34,14 +34,13 @@ The hosting firewall already allows 22, 80, 443, 1111, 8080, and 30303. Deployme
 | P2P | 31303 | 30303 | `SHEAR_P2P_PORT` |
 | stratum | 11211 | 1111 | `SHEAR_STRATUM` |
 | RPC | 18432 | 18432 | `SHEAR_RPC_PORT` |
-| node IPC | 31313 | loopback only | not the pool dial |
 | pool IPC | 31314 | loopback only | `SHEAR_P2P_IPC` |
 
 Each book has its own host. Deployment binds P2P 30303 and stratum 1111. The book magic and the IPC handshake refuse a peer from the other network.
 
-Loopback stays off the public firewall. RPC is 18432. The node `ipcPort` stays 31313. The sidecar default is `127.0.0.1:31314`, the dev row's `poolIpcPort`, and that is the port the dev pool listens on when `SHEAR_P2P_IPC` is unset. v12 pool IPC stays `30313` and attaches only when `SHEAR_P2P_IPC` is set. Pool HTTP stays on loopback `18188`. The pool stratum code default is 11211. The unit sets 1111.
+Loopback stays off the public firewall. RPC is 18432. The dev row does not carry a node `ipcPort`. The sidecar dial is the dev row's `poolIpcPort`, 31314 (`127.0.0.1:31314`), and that is the port the dev pool listens on when `SHEAR_P2P_IPC` is unset. v12 pool IPC stays `30313` and attaches only when `SHEAR_P2P_IPC` is set. Pool HTTP stays on loopback `18188`. The pool stratum code default is 11211. The unit sets 1111. The legacy `shear-pool.service` on 77.42.91.84 stays disabled. The dev pool must never run alongside it.
 
-Do not open 18432, 31313, or 31314. Continuum’s datadir, session file, and magic stay untouched. Continuum’s public ports are 30303 and 1111; the unit sets those explicitly, and this book still runs on its own machine.
+Do not open 18432 or 31314. Continuum’s datadir, session file, and magic stay untouched. Continuum’s public ports are 30303 and 1111; the unit sets those explicitly, and this book still runs on its own machine.
 
 ## Seeds
 
@@ -60,6 +59,6 @@ EVM chain id is 2799. The dev Reserve artifact is `contracts/dev/ReserveDev.json
 
 ## Dev pool
 
-Paper only. Do not deploy it. A separate host and a subdomain (not a path on the v12 pool) would be the place for it. The entry is `pool/src/main_dev.js`. It refuses to start unless the book magic is `shear-dev`, refuses the live v12 fee and admin destination, and refuses an operator seed file outside its own datadir. Payout sweep is 120 seconds. The one-hour env floor does not apply. The minimum payout stays π.
+Paper only. Do not deploy it. A separate host and a subdomain (not a path on the v12 pool) would be the place for it. The entry is `pool/src/main_dev.js`. It refuses to start unless the book magic is `shear-dev`, refuses the live v12 fee and admin destination, and refuses an operator seed file outside its own datadir. Payout sweep is 120 seconds. The one-hour env floor does not apply. The minimum payout stays π. It must never run alongside the legacy `shear-pool.service` on 77.42.91.84, which stays disabled.
 
 The existing pool web UI is unchanged. Do not serve a dev banner from this tree.

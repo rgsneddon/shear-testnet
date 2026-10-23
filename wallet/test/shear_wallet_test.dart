@@ -3610,16 +3610,16 @@ void main() {
     const login = 'she1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
     const dest = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
     const nanos = 5000000000;
-    final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos);
+    final digest = poolWithdrawDigest(login: login, dest: dest, nanos: nanos, magic: 'shear-testnet-v12');
     expect(
       digest.map((e) => e.toRadixString(16).padLeft(2, '0')).join(),
       'd1ffd589655cb0f2b443c32b8c6fdefad1afa5ed81910a4a6c9c4636c78ab6a9',
     );
     final seed = Uint8List.fromList(List<int>.filled(32, 7));
-    final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
-    expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: sig), isTrue);
-    expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: ''), isFalse);
-    expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos + 1, sig: sig), isFalse);
+    final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos, magic: 'shear-testnet-v12');
+    expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: sig, magic: 'shear-testnet-v12'), isTrue);
+    expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: '', magic: 'shear-testnet-v12'), isFalse);
+    expect(verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos + 1, sig: sig, magic: 'shear-testnet-v12'), isFalse);
     final dartMain = File('lib/main.dart').readAsStringSync();
     expect(dartMain.contains("Key('pull-sign')"), isFalse);
     expect(dartMain.contains('Pull from pool'), isFalse);
@@ -3643,7 +3643,7 @@ void main() {
     final dartLedger = File('lib/shear_ledger.dart').readAsStringSync();
     expect(dartLedger.contains('SHE (circulation)'), isTrue);
     expect(dartLedger.contains('localSendReady(pool!.baseUrl)'), isTrue);
-    expect(dartLedger.contains('signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos)'), isTrue);
+    expect(dartLedger.contains('signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos, magic: magic)'), isTrue);
     expect(dartLedger.contains('fetchPendingPull'), isTrue);
     const origin = 'https://dapp.example/stake-pool-a.json';
     const source = '{"id":"stake-pool-a"}';
@@ -9553,7 +9553,7 @@ Future<HttpServer> _fakePool({
       final dest = body['dest']?.toString() ?? '';
       final nanos = (body['nanos'] as num?)?.round() ?? 0;
       final sig = body['sig']?.toString() ?? '';
-      if (!verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: sig)) {
+      if (!verifyPoolWithdrawSig(login: login, dest: dest, nanos: nanos, sig: sig, magic: 'shear-testnet-v12')) {
         req.response.statusCode = 400;
         req.response.write(jsonEncode({'ok': false, 'reason': 'unsigned'}));
       } else {

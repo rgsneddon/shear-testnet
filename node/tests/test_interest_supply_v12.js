@@ -193,7 +193,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
           ];
           const rewarded = auditCirculatingSupply(withReward);
           assert.equal(rewarded.status, 'mismatch', `${label} reward receipt`);
-          const folded = foldSupply(chain, { genesisMs: GENESIS });
+          const folded = foldSupply(chain, { genesisMs: GENESIS, magic: MAGIC_TESTNET });
           assert.equal(folded.ok, true, `${label} fold ${folded.reason}`);
           assert.equal(folded.state.mintedInterest, 0n, label);
         }
@@ -206,7 +206,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const miner = minerDest();
     const portal = portalDest();
     const lock = lockBlock(GENESIS, miner, [portal], stake);
-    const folded = foldSupply([lock], { genesisMs: GENESIS });
+    const folded = foldSupply([lock], { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(folded.ok, true, folded.reason);
     assert.equal(folded.state.vaultPrincipal, BigInt(stake));
     const report = supplyReport(folded.state);
@@ -222,7 +222,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     sticker.vin = [stickerVin];
     const stickerFold = foldSupply([
       blockAt(GENESIS, miner, [{ nanos: potAt(GENESIS), kind: 'pot' }], [sticker]),
-    ], { genesisMs: GENESIS });
+    ], { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(stickerFold.ok, false, stickerFold.reason);
     assert.equal(stickerFold.reason, 'supply');
     const shortNote = sealCoinbaseNote(1, { dest20: Buffer.alloc(20, 3), kind: 'pot' });
@@ -234,7 +234,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     }];
     const shortFold = foldSupply([
       blockAt(GENESIS, miner, [{ nanos: potAt(GENESIS), kind: 'pot' }], [short]),
-    ], { genesisMs: GENESIS });
+    ], { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(shortFold.ok, false, shortFold.reason);
     assert.equal(shortFold.reason, 'supply');
     assert.equal(lockedAudit.totalNanos, lockedAudit.circulatingNanos + stake);
@@ -245,7 +245,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     assert.equal(paid.totalNanos, paid.circulatingNanos);
     const edge = Number.MAX_SAFE_INTEGER;
     const edgeChain = [lockBlock(GENESIS, minerDest(), [portalDest()], edge)];
-    const edgeFold = foldSupply(edgeChain, { genesisMs: GENESIS });
+    const edgeFold = foldSupply(edgeChain, { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     const edgeAudit = auditCirculatingSupply(edgeChain);
     assert.equal(edgeFold.ok, false, edgeFold.reason);
     assert.equal(edgeFold.reason, 'supply');
@@ -290,6 +290,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const locked = supplyStep(state, honest[0], {
       height: 1,
       genesisMs: GENESIS,
+      magic: MAGIC_TESTNET,
       tipHeight: 2,
     });
     assert.equal(locked.ok, true, locked.reason);
@@ -297,6 +298,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const bare = supplyStep(state, honest[1], {
       height: 2,
       genesisMs: GENESIS,
+      magic: MAGIC_TESTNET,
       tipHeight: 2,
     });
     assert.equal(bare.ok, false);
@@ -331,7 +333,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const high = auditCirculatingSupply([lock, openedHigh]);
     assert.equal(high.status, 'mismatch', high.reason);
     assert.equal(high.reason, 'supply');
-    const highFold = foldSupply([lock, openedHigh], { genesisMs: GENESIS });
+    const highFold = foldSupply([lock, openedHigh], { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(highFold.ok, false);
     assert.equal(highFold.reason, 'supply');
 
@@ -340,7 +342,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
     assert.equal(fatAct.opened, true, 'the inflated receipt does open to its public amount');
     assert.equal(fatAct.nanos, honestPay + 1);
     const inflated = [lock, inflatedBlock];
-    const refused = foldSupply(inflated, { genesisMs: GENESIS });
+    const refused = foldSupply(inflated, { genesisMs: GENESIS, magic: MAGIC_TESTNET });
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'supply');
     assert.equal(refused.state, null);

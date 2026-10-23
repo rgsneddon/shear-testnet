@@ -5,7 +5,7 @@
  * This module reads no environment and no CLI. There is no override.
  * P2P and stratum listen ports are process config (SHEAR_P2P_PORT, SHEAR_STRATUM).
  * They are not row fields and they are not in the dev PARAMS digest.
- * The dev pool sidecar port is poolIpcPort. It is not the node ipcPort.
+ * The dev pool sidecar port is poolIpcPort. The dev row has no node ipcPort.
  */
 import { createHash } from 'node:crypto';
 import { RESERVE_BOOKS, MAGIC_TESTNET_V12, MAGIC_MAINNET } from './reserve_books.js';
@@ -75,7 +75,6 @@ const DEV = row({
   datadirLeaf: 'shear-dev',
   p2pBanMs: 60000,
   rpcPort: 18432,
-  ipcPort: 31313,
   poolIpcPort: 31314,
   reserveArtifact: 'ReserveDev.json',
   jobRestampMs: 2000,
@@ -303,34 +302,38 @@ export function statedMagic(magic) {
 }
 
 /**
- * Dev schedule read from a row object. Consensus calls this with the
- * shear-dev row. A different row value is a different epoch, vote window,
- * or withdraw window.
+ * Dev vote and withdraw windows on the vortex clock. elapsedMs is chain
+ * time since the epoch opened. Epoch, day, and period read epochMs, dayMs,
+ * and periodMs. Block-count fields scale by targetBlockMs. epochBlocks,
+ * dayBlocks, and periodBlocks are not a second clock.
  */
-export function devScheduleFromRow(height, row) {
-  const elapsed = Math.max(0, Math.floor(Number(height) || 1) - 1);
-  const epochBlocks = Math.max(1, Math.floor(Number(row.epochBlocks)));
-  const dayBlocks = Math.max(1, Math.floor(Number(row.dayBlocks)));
-  const periodBlocks = Math.max(1, Math.floor(Number(row.periodBlocks)));
-  const stubBlocks = Math.max(0, Math.floor(Number(row.stubBlocks)));
-  const voteCloseBlock = Math.floor(Number(row.voteCloseBlock));
-  const voteEdge = Math.floor(Number(row.voteEdge));
+export function devClockFromRow(elapsedMs, row) {
+  const elapsed = Math.max(0, Math.floor(Number(elapsedMs) || 0));
+  const target = Math.max(1, Math.floor(Number(row.targetBlockMs)));
+  const epochSpan = Math.max(1, Math.floor(Number(row.epochMs)));
+  const daySpan = Math.max(1, Math.floor(Number(row.dayMs)));
+  const periodSpan = Math.max(1, Math.floor(Number(row.periodMs)));
+  const stubMs = Math.max(0, Math.floor(Number(row.stubBlocks))) * target;
+  const voteCloseMs = Math.floor(Number(row.voteCloseBlock)) * target;
+  const voteEdgeMs = Math.floor(Number(row.voteEdge)) * target;
   const voteSep = Math.max(1, Math.floor(Number(row.voteSep)));
   const voteGap = Math.max(1, Math.floor(Number(row.voteGap)));
-  const voteFinality = Math.max(0, Math.floor(Number(row.voteFinality)));
+  const voteSepMs = voteSep * target;
+  const voteGapMs = voteGap * target;
+  const voteFinalityMs = Math.max(0, Math.floor(Number(row.voteFinality))) * target;
   const withdrawSlots = Math.floor(Number(row.withdrawSlots));
-  const epoch = Math.floor(elapsed / epochBlocks);
-  const day = Math.floor(elapsed / dayBlocks);
-  const period = Math.floor(elapsed / periodBlocks);
-  const into = elapsed - epoch * epochBlocks;
-  const onDayBoundary = elapsed !== 0 && (elapsed % dayBlocks) === 0;
-  const periodSlot = Math.floor(elapsed / periodBlocks);
-  const voteOpen = into >= stubBlocks
-    && into >= voteEdge
-    && into < voteCloseBlock
-    && (voteSep <= 1 || (into % voteSep) === 0)
-    && (voteGap <= 1 || (into % voteGap) === 0)
-    && into + voteFinality <= epochBlocks
+  const epoch = Math.floor(elapsed / epochSpan);
+  const day = Math.floor(elapsed / daySpan);
+  const period = Math.floor(elapsed / periodSpan);
+  const into = elapsed - epoch * epochSpan;
+  const onDayBoundary = elapsed !== 0 && (elapsed % daySpan) === 0;
+  const periodSlot = Math.floor(elapsed / periodSpan);
+  const voteOpen = into >= stubMs
+    && into >= voteEdgeMs
+    && into < voteCloseMs
+    && (voteSep <= 1 || (into % voteSepMs) === 0)
+    && (voteGap <= 1 || (into % voteGapMs) === 0)
+    && into + voteFinalityMs <= epochSpan
     && !onDayBoundary
     && periodSlot < Math.max(0, withdrawSlots);
   const withdrawOpen = periodSlot < Math.max(0, withdrawSlots);
@@ -343,10 +346,6 @@ export function devScheduleFromRow(height, row) {
     withdrawOpen,
     genesisBits: Math.floor(Number(row.genesisBits)),
   };
-}
-
-export function devSchedule(height) {
-  return devScheduleFromRow(height, chainParams(MAGIC_DEV));
 }
 
 /** True while the elapsed time is still inside the row's withdraw slots. */

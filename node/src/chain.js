@@ -491,7 +491,6 @@ export function wantPotNanos(block, opts = {}) {
     nowMs,
     genesisMs,
     magic: statedMagic(opts.magic),
-    height: opts.height,
   });
 }
 
@@ -1510,7 +1509,6 @@ export function buildTemplate({
     nowMs: now,
     genesisMs: genesisMs > 0 ? genesisMs : Number(now) || 0,
     magic,
-    height,
   });
   // Parent carry is unminted miner pot. Explicit shares mint what they name.
   // Anything still unpaid, including an empty list, stays carried. Solo
@@ -2486,7 +2484,6 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     nowMs: Number(decoded.timestamp) || Number(nowMs) || 0,
     genesisMs: resolvedGenesisMs,
     magic,
-    height: Number(block?.height) || (Number(prev?.height) || 0) + 1,
   });
   // Empty rounds carry the unminted pot. The next block's outputs plus its
   // own carry must equal this subsidy plus the parent carry. Paying the pot
@@ -3123,7 +3120,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     genesisMs: resolvedGenesisMs || genesisMs || 0,
   });
   if (!vaultTry.ok) return { ok: false, reason: vaultTry.reason || 'epoch_open' };
-  const parentSupply = parentSupplyState(prev, block, opts, height, burialTip);
+  const parentSupply = parentSupplyState(prev, block, { ...opts, magic }, height, burialTip);
   if (!parentSupply.ok) return parentSupply;
   const stepped = supplyStep(parentSupply.state, block, {
     magic,

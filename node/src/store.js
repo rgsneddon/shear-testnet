@@ -576,7 +576,7 @@ export function createStore(dir, {
     }
   } else if (resumed) {
     writeLoadSeal(blocks);
-    const folded = foldSupply(blocks, { burialOf: provenTipOf });
+    const folded = foldSupply(blocks, { burialOf: provenTipOf, magic: bookMagic });
     if (!folded.ok) throw new Error(folded.reason || 'supply');
     supplyTip = folded.state;
   }

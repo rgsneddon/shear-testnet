@@ -13,7 +13,7 @@ import {
   containsShe1,
 } from '../../crypto/levy.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
-import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED, bitsForBlock, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { buildAutoPayoutTx } from '../../pool/src/auto_payout.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
@@ -72,12 +72,14 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       login: id.paymentCode,
       dest,
       nanos: 2_000_000_000,
+      chainId: MAGIC_TESTNET,
     });
     const off = verifyPoolWithdrawOffchain({
       login: id.paymentCode,
       dest,
       nanos: 2_000_000_000,
       sig,
+      magic: MAGIC_TESTNET,
     });
     assert.equal(off.ok, true, off.reason);
     const poolBox = spendBox(newIdentity());
@@ -196,6 +198,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
         login: hasher.paymentCode,
         dest,
         nanos,
+        chainId: MAGIC_TESTNET,
       });
       const open = destOpeningFromView(hasher.viewKey, hasher.spendPub, 0);
       const digest = poolWithdrawDigest({
@@ -204,6 +207,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
         minerShe1: hasher.paymentCode,
         payoutSsa1: dest,
         nanos,
+        chainId: MAGIC_TESTNET,
       });
       const spendSig = sign(null, digest, hasher.privateKey).toString('hex');
       const got = handleWalletApi(new URL('http://127.0.0.1/api/pool/withdraw'), 'POST', {

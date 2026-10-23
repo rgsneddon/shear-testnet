@@ -8754,6 +8754,7 @@ class ShearLedger implements ReadProofSink {
     required String dest,
     required double amount,
     required Uint8List seed,
+    required String magic,
   }) async {
     throw StateError('auto_payout');
     if (isShearAddress(dest) || dest.startsWith('she1')) {
@@ -8762,7 +8763,7 @@ class ShearLedger implements ReadProofSink {
     if (!isDestAddress(dest)) throw ArgumentError('dest');
     if (!login.startsWith('she1')) throw ArgumentError('need_she1');
     final nanos = (amount * kUnitsPerShe).round();
-    final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
+    final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos, magic: magic);
     if (pool == null) throw StateError('no_pool');
     final json = await pool!.poolWithdraw(login: login, dest: dest, nanos: nanos, sig: sig);
     if (json['ok'] != true) {
@@ -8797,6 +8798,7 @@ class ShearLedger implements ReadProofSink {
     required String dest,
     required int nanos,
     required Uint8List seed,
+    required String magic,
   }) async {
     throw StateError('auto_payout');
     if (isShearAddress(dest) || dest.startsWith('she1')) {
@@ -8804,7 +8806,7 @@ class ShearLedger implements ReadProofSink {
     }
     if (!isDestAddress(dest)) throw ArgumentError('dest');
     if (!login.startsWith('she1')) throw ArgumentError('need_she1');
-    final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos);
+    final sig = signPoolWithdraw(seed: seed, login: login, dest: dest, nanos: nanos, magic: magic);
     if (pool == null) throw StateError('no_pool');
     final json = await pool!.poolWithdraw(login: login, dest: dest, nanos: nanos, sig: sig);
     if (json['ok'] != true) {
