@@ -87,11 +87,13 @@ describe('public receipt spread', () => {
           const label = `${kind} portal ${portal} ${amount}`;
           assert.equal(publicReserveReceipt(tx), true, label);
           assert.equal(publicReserveReceiptRejected(tx).reason, 'public_receipt', label);
+          // The mempool refuses a portal vote outright (d3e47dac) before the
+          // receipt check. The funded-body check below still names the receipt.
           assert.equal(reasonOf(admitMempool(emptyMempool(), tx, {
             reserveState: vault,
             nowMs: vault.genesisMs,
             height: 2,
-          })), 'public_receipt', label);
+          })), kind === 'vote' ? 'vote_retired' : 'public_receipt', label);
           assert.equal(reasonOf(verifyFundedBody([tx], () => 0, { reserveState: vault })), 'public_receipt', label);
         }
       }
