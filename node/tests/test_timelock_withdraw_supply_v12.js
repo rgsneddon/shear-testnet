@@ -11,7 +11,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity, spendDestOf, admitBaseFromAddress } from '../../crypto/address.js';
+import { newIdentity, spendDestOf, admitBaseFromAddress, hash20FromAddress } from '../../crypto/address.js';
 import {
   GENESIS_BPS,
   MAGIC_TESTNET,
@@ -53,6 +53,7 @@ import {
 } from '../../crypto/reserve_vault.js';
 import { lockTx, ownerFor, portalOwnerPub, withdrawTx } from '../../crypto/owned_portal.js';
 import {
+  attachLockAuth,
   bootReserveEvm,
   callReserve,
   decodePublicView,
@@ -134,6 +135,35 @@ function withdrawRow(applied) {
   return (applied || []).find((row) => row && row.action === 'withdraw') || null;
 }
 
+function lockRow(applied) {
+  return (applied || []).find((row) => row && row.action === 'lock') || null;
+}
+
+/**
+ * One credit per portal (cb733226). A second lock into a portal that
+ * already has an owner is portal_exists, before or after a withdraw, and
+ * leaves that portal's tranches as they were.
+ */
+function assertSecondLockRefused(state, dest, tx, when, height, label) {
+  const portal = state.portals[portalIdFromDest(dest)];
+  const before = portal.tranches.map((row) => String(row.commit));
+  const locked = String(state.totalLockedNanos);
+  const got = applyLock(state, tx, when, height);
+  assert.equal(got.ok, false, label);
+  assert.equal(lockRow(got)?.reason, 'portal_exists', label);
+  assert.deepEqual(portal.tranches.map((row) => String(row.commit)), before, label);
+  assert.equal(String(state.totalLockedNanos), locked, label);
+}
+
+/**
+ * The owner signs the withdraw note's dest20 hex. Since 325b50f5 `to` is
+ * vote_leak on the wire, so withdrawSignedDest no longer prefers it.
+ */
+function signedDestOf(tx) {
+  const note = (tx.vout || []).find((row) => String(row?.kind || '') === 'withdraw');
+  return Buffer.from(note.dest20).toString('hex');
+}
+
 /** A withdraw that publishes one matured lock's principal, bound to this tx. */
 function openedPrincipalTx(state, dest, when, locks, id, { admit = false } = {}) {
   const list = (Array.isArray(locks) ? locks : [locks]).filter(Boolean);
@@ -169,10 +199,11 @@ function openedPrincipalTx(state, dest, when, locks, id, { admit = false } = {})
   });
   if (!retire) return null;
   tx.retireProof = retire.proof;
+  assert.equal(signedDestOf(tx), Buffer.from(hash20FromAddress(dest)).toString('hex'), id);
   signWithdrawReward(tx, ownerFor(dest).key, {
     portalId,
     nanos: PI_SHE_NANOS,
-    dest,
+    dest: signedDestOf(tx),
     state,
     nowMs: when,
   });
@@ -360,17 +391,16 @@ describe('time-locked withdraw supply', () => {
     assert.equal(permitted.ok, true, permitted.reason);
   });
 
-  it('pays both matured tranches once and refuses a second withdraw', () => {
+  it('pays the one matured tranche once, refuses a second lock, and refuses a second withdraw', () => {
     const dest = destOf();
     const state = freshVault();
     const legacy = plainLock(dest, T0, 'mixed-legacy', PI_SHE_NANOS);
     const note = timeLock(dest, T0, 'mixed-note', PI_SHE_NANOS);
     assert.equal(applyLock(state, legacy, T0).ok, true);
-    assert.equal(applyLock(state, note, T0, 2).ok, true);
+    assertSecondLockRefused(state, dest, note, T0, 2, 'mixed-note');
     const portal = state.portals[portalIdFromDest(dest)];
-    assert.equal(portal.tranches.length, 2);
+    assert.equal(portal.tranches.length, 1);
     assert.notEqual(portal.tranches[0].noteIsPrincipal, true);
-    assert.notEqual(portal.tranches[1].noteIsPrincipal, true);
     const preview = previewWithdraw(state, dest, DRAW);
     assert.equal(preview.principal, 0);
     assert.equal(preview.notePrincipal, 0);
@@ -388,44 +418,50 @@ describe('time-locked withdraw supply', () => {
       );
       assert.equal(off.ok, false, String(delta));
     }
+    // The refused note lock has no tranche, so it cannot open one.
+    assert.equal(openedPrincipalTx(state, dest, DRAW, note, 'mixed-refused'), null);
     const paid = payOpened(state, dest, DRAW, [legacy, note], 'mixed-pay');
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
     assert.equal(paid.interest, 0);
     assert.equal(paid.payout, PI_SHE_NANOS);
-    assert.equal(portal.tranches.length, 1);
+    assert.equal(portal.tranches.length, 0);
     const again = withdraw({ state, dest, nowMs: DRAW });
     assert.equal(again.ok, false);
     assert.equal(again.reason, 'double_mint');
     const later = DRAW + RESERVE_EPOCH_MS;
-    const second = payOpened(state, dest, later, [legacy, note], 'mixed-second');
-    assert.equal(second.ok, true, second.reason);
-    assert.equal(second.principal, PI_SHE_NANOS);
-    assert.equal(portal.tranches.length, 0);
+    assert.equal(openedPrincipalTx(state, dest, later, [legacy, note], 'mixed-second'), null);
     assert.equal(withdraw({ state, dest, nowMs: later }).ok, false);
     assert.equal(Number(state.totalLockedNanos), 0);
   });
 
-  it('keeps an open top-up when the earlier legacy tranche withdraws', () => {
+  it('refuses a top-up into a locked portal; a fresh portal takes the new lock', () => {
     const dest = destOf();
     const state = freshVault();
     const first = plainLock(dest, T0, 'top-legacy');
     assert.equal(applyLock(state, first, T0).ok, true);
     const later = DRAW + 1_000;
-    const top = timeLock(dest, later, 'top-note');
-    const topped = applyLock(state, top, later, 2);
-    assert.equal(topped.ok, true, topped.reason);
+    // The first tranche has matured and is not withdrawn. A top-up is still refused.
+    assertSecondLockRefused(state, dest, timeLock(dest, later, 'top-note'), later, 2, 'top-note');
     const portal = state.portals[portalIdFromDest(dest)];
-    assert.equal(portal.tranches.length, 2);
-    assert.notEqual(portal.tranches[1].noteIsPrincipal, true);
+    assert.equal(portal.tranches.length, 1);
     const paid = payOpened(state, dest, later, first, 'top-pay');
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
-    assert.equal(portal.tranches.length, 1);
-    assert.notEqual(portal.tranches[0].noteIsPrincipal, true);
-    assert.equal(portal.tranches[0].amount, undefined);
-    assert.equal(String(portal.tranches[0].commit).length, 64);
+    assert.equal(portal.tranches.length, 0);
     assert.equal(Number(portal.staked) + Number(portal.idle), 0);
+    // A withdrawn portal keeps its owner, so it is still not a fresh portal.
+    assertSecondLockRefused(state, dest, timeLock(dest, later, 'top-after'), later, 2, 'top-after');
+    // New principal goes to a new portal, as its own tranche.
+    const fresh = destOf();
+    const topped = applyLock(state, timeLock(fresh, later, 'top-fresh'), later, 2);
+    assert.equal(topped.ok, true, lockRow(topped)?.reason);
+    const freshPortal = state.portals[portalIdFromDest(fresh)];
+    assert.equal(freshPortal.tranches.length, 1);
+    assert.notEqual(freshPortal.tranches[0].noteIsPrincipal, true);
+    assert.equal(freshPortal.tranches[0].amount, undefined);
+    assert.equal(String(freshPortal.tranches[0].commit).length, 64);
+    assert.equal(Number(freshPortal.staked) + Number(freshPortal.idle), 0);
   });
 
   it('does not release another portal when one portal withdraws', () => {
@@ -499,9 +535,30 @@ describe('time-locked withdraw supply', () => {
   it('a 3-arg EVM withdraw refuses a matured hidden lock and leaves it locked', async () => {
     const sol = readFileSync(new URL('../../contracts/Reserve.sol', import.meta.url), 'utf8');
     assert.equal(sol.includes('function _releaseMatured'), false);
-    const dest = destOf();
+    // The EVM owner is lockAuth, and dest20 is H(that key) (325b50f5,
+    // Reserve.sol deposit). The owner here is the identity whose spendPub is dest20.
+    const who = newIdentity();
+    const dest = spendDestOf(who.spendPub);
     const session = await bootReserveEvm();
-    const lock = timeLock(dest, T0, 'evm-note');
+    const stamp = lockUnlockOf({ genesisMs: T0, magic: MAGIC_TESTNET }, T0);
+    const lock = attachPiNote(lockTx({
+      from: dest,
+      to: dest,
+      nanos: PI_SHE_NANOS,
+      id: 'evm-note',
+      timeLock: true,
+      lockEpoch: stamp.epoch,
+      unlockAtMs: stamp.unlockAtMs,
+      ownerPub: Buffer.from(who.spendPub).toString('hex'),
+    }), T0);
+    // A lock with no lockAuth has no owner on the EVM.
+    const bare = { ...lock };
+    delete bare.lockAuth;
+    const unauthed = await executeBlockEvm(await bootReserveEvm(), [{ coinbase: true, vout: [] }, bare], T0, T0);
+    assert.equal(unauthed.ok, false);
+    assert.equal(unauthed.reason, 'owner_missing');
+    attachLockAuth(lock, who.privateKey);
+    assert.ok(lock.lockAuth, 'lockAuth');
     const locked = await executeBlockEvm(session, [{ coinbase: true, vout: [] }, lock], T0, T0);
     assert.equal(locked.ok, true, locked.reason);
     const open = decodePublicView(
@@ -518,10 +575,12 @@ describe('time-locked withdraw supply', () => {
     assert.equal(still.totalLockedNanos, 0);
     const owed = rewardCommitment(js, DRAW).root;
     const draw = withdrawTx({ from: dest, to: dest, nanos: 0, id: 'evm-withdraw' });
-    signWithdrawReward(draw, ownerFor(dest).key, {
+    // Signed by the real owner. The 3-arg call has no retire blob, so a
+    // matured hidden leaf is still refused as unsigned (Reserve.sol _withdraw).
+    signWithdrawReward(draw, who.privateKey, {
       portalId: portalIdFromDest(dest),
       nanos: 0,
-      dest,
+      dest: Buffer.from(hash20FromAddress(dest)).toString('hex'),
       state: js,
       nowMs: DRAW,
     });
@@ -547,10 +606,10 @@ describe('time-locked withdraw supply', () => {
     const dest = destOf();
     const state = freshVault();
     assert.equal(applyLock(state, plainLock(dest, T0, 'clock-legacy'), T0).ok, true);
-    assert.equal(applyLock(state, timeLock(dest, T0, 'clock-note'), T0, 2).ok, true);
-    // Both principals. A missing header time pays none of that. With the
+    assertSecondLockRefused(state, dest, timeLock(dest, T0, 'clock-note'), T0, 2, 'clock-note');
+    // The one principal. A missing header time pays none of that. With the
     // clock, the receipt is exactly the matured principal.
-    const loose = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS * 2, id: 'no-clock' });
+    const loose = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'no-clock' });
     for (const clock of [undefined, null, 0, Number.NaN]) {
       const got = boundReserveWithdraw(loose, state, new Set(), clock);
       assert.equal(got.ok, false, String(clock));
@@ -566,7 +625,7 @@ describe('time-locked withdraw supply', () => {
     // a proof that does not open the leaf.
     assert.equal(boundReserveWithdraw(loose, state, new Set(), DRAW).reason, 'mint_amount');
     const over = boundReserveWithdraw(
-      withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS * 2 + 1, id: 'clock-over' }),
+      withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS + 1, id: 'clock-over' }),
       state,
       new Set(),
       DRAW,
@@ -582,6 +641,8 @@ describe('time-locked withdraw supply', () => {
       ['last-minute', RESERVE_EPOCH_MS - 60_000],
     ];
     for (const [label, offset] of offsets) {
+      // mixed: a note lock into the same portal is refused (one credit per
+      // portal, cb733226), so the withdraw is the legacy tranche alone.
       for (const mixed of [false, true]) {
         const dest = destOf();
         const state = freshVault();
@@ -590,13 +651,11 @@ describe('time-locked withdraw supply', () => {
         const legacy = plainLock(dest, when, `${name}-legacy`);
         const note = mixed ? timeLock(dest, when, `${name}-note`) : null;
         assert.equal(applyLock(state, legacy, when).ok, true, name);
-        if (mixed) {
-          assert.equal(applyLock(state, note, when, 2).ok, true, name);
-        }
+        if (mixed) assertSecondLockRefused(state, dest, note, when, 2, name);
         const preview = previewWithdraw(state, dest, DRAW);
         assert.equal(preview.principal, 0, name);
         assert.equal(preview.notePrincipal, 0, name);
-        const full = interestNanos(mixed ? PI_SHE_NANOS * 2 : PI_SHE_NANOS, GENESIS_BPS);
+        const full = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
         assert.ok(preview.interest < full, `${name} interest ${preview.interest} full ${full}`);
         assert.equal(preview.payout, 0, name);
         const exact = withdrawTx({ from: dest, to: dest, nanos: preview.payout, id: `${name}-exact` });
