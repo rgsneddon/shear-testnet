@@ -5601,6 +5601,11 @@ export function withdraw({
     }
   }
   state.totalLockedNanos = asBig(state.totalLockedNanos) - release;
+  // totalLockedNanos is the legacy public-lock counter. A v12 hidden lock books
+  // its principal in openedLockNanos and never adds here, so a hidden withdraw
+  // takes this below zero and the clamp holds it at 0. Over-release is refused
+  // by the note-book checks in walkWithdrawInterest. PR 2 makes this counter
+  // count hidden locks or retires it, and removes the clamp.
   if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
   if (release > 0n) state.openedWithdrawNanos = asBig(state.openedWithdrawNanos) + release;
   p.redeemedNanos = asBig(p.redeemedNanos) + release;
@@ -5739,9 +5744,6 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   const clock = Number(nowMs) || 0;
   const noteBook = () => asBig(state.openedLockNanos) - asBig(state.openedWithdrawNanos);
-  const startNote = noteBook();
-  let locksIn = 0n;
-  let principalOut = 0n;
   let minted = 0n;
   let permittedSum = 0n;
   let from = 0;
@@ -5761,7 +5763,6 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     if (!applied || applied.ok !== true) return false;
     const added = asBig(state.openedLockNanos) - beforeOpen;
     if (added < 0n) return false;
-    locksIn += added;
     return true;
   };
   for (let i = 0; i < txs.length; i += 1) {
@@ -5781,6 +5782,9 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     if (principal == null || opened == null) return fail();
     // The receipt is the principal. The reward is not minted here.
     if (opened !== principal) return fail();
+    // The note book before this withdraw: principal locked by hidden notes,
+    // less principal already released. A withdraw may release at most this.
+    const bookBefore = noteBook();
     // The first slice is the start of this block. Later slices, including a
     // second withdraw, stay on the epoch that slice enacted.
     const applied = applyReserveBlock({
@@ -5807,15 +5811,19 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     if (interest !== 0n || vaultPrincipal + arrival !== opened) return fail();
     const mintedHere = got[0].mint && got[0].mint.ok === true ? exactBi(got[0].mint.nanos) : 0n;
     if (mintedHere == null || mintedHere !== 0n) return fail();
+    // Conservation: no withdraw releases more principal than the book holds.
+    if (vaultPrincipal > bookBefore) return fail();
     minted += arrival;
     permittedSum += arrival;
-    principalOut += vaultPrincipal;
     if (minted > REWARD_U64 || permittedSum > REWARD_U64) return fail();
     counted += 1;
   }
   if (!applySlice(txs.slice(from), started)) return fail();
   if (counted !== rows.length) return fail();
-  if (startNote + locksIn !== noteBook() + principalOut) return fail();
+  // The book never ends below zero. (A check of book in plus locks against
+  // book out plus released principal always holds: withdraw() moves
+  // openedWithdrawNanos by exactly the principal it reports.)
+  if (noteBook() < 0n) return fail();
   if (minted !== permittedSum) return fail();
   return { ok: true, minted, permitted: permittedSum };
 }
