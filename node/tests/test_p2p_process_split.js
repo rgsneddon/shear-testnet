@@ -64,7 +64,7 @@ function killChild(child) {
   if (!child || child.exitCode != null) return;
   try { child.kill(); } catch { /* ignore */ }
   if (child.pid && process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { timeout: 600_000, stdio: 'ignore', windowsHide: true });
   }
 }
 
@@ -129,7 +129,7 @@ function bootChild(args, env) {
 }
 
 function owningPidWindows(port) {
-  const out = spawnSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', windowsHide: true });
+  const out = spawnSync('netstat', ['-ano', '-p', 'TCP'], { timeout: 600_000, encoding: 'utf8', windowsHide: true });
   const text = `${out.stdout || ''}\n${out.stderr || ''}`;
   for (const line of text.split(/\r?\n/)) {
     if (!/LISTENING/i.test(line)) continue;
@@ -179,14 +179,14 @@ function pidForSocketInodes(inodes) {
 }
 
 function owningPidSs(port) {
-  const out = spawnSync('ss', ['-H', '-lptn', `sport = :${port}`], { encoding: 'utf8' });
+  const out = spawnSync('ss', ['-H', '-lptn', `sport = :${port}`], { timeout: 600_000, encoding: 'utf8' });
   if (out.error) return 0;
   const hit = /pid=(\d+)/.exec(`${out.stdout || ''}\n${out.stderr || ''}`);
   return hit ? Number(hit[1]) : 0;
 }
 
 function owningPidLsof(port) {
-  const out = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+  const out = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { timeout: 600_000, encoding: 'utf8' });
   if (out.error || out.status !== 0) return 0;
   for (const line of String(out.stdout || '').split(/\r?\n/)) {
     const pid = Number(line.trim());

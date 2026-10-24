@@ -62,11 +62,11 @@ try {
   env.PATH = `${path.join(sysroot, 'System32')};${sysroot}`;
   const out = path.join(dir, 'ShearK-Miner.exe');
   for (const backend of ['interpreter', 'jit']) {
-    const st = spawnSync(out, ['--backend', backend, '--selftest'], { encoding: 'utf8', cwd: dir, env });
+    const st = spawnSync(out, ['--backend', backend, '--selftest'], { timeout: 600_000, encoding: 'utf8', cwd: dir, env });
     assert.equal(st.status, 0, `selftest ${backend} from the unpacked zip: ${st.error || ''}${st.stdout}${st.stderr}`);
     assert.ok(st.stdout.includes(SELFTEST), st.stdout);
   }
-  const cfg = spawnSync(out, ['--backend', 'interpreter', '--print-config'], { encoding: 'utf8', cwd: dir, env });
+  const cfg = spawnSync(out, ['--backend', 'interpreter', '--print-config'], { timeout: 600_000, encoding: 'utf8', cwd: dir, env });
   assert.equal(cfg.status, 0, cfg.stdout + cfg.stderr);
   const j = JSON.parse(cfg.stdout.replace(/\x1b\[[0-9;]*m/g, '').match(/\{[\s\S]*\}/)[0]);
   assert.equal(j.version, ver);

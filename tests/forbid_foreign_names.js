@@ -28,7 +28,7 @@ describe('foreign names', () => {
       const r = spawnSync(
         'grep',
         ['-RIn', '--exclude-dir=.git', '--exclude-dir=node_modules', '-E', word, '.'],
-        { cwd: root, encoding: 'utf8' },
+        { timeout: 600_000, cwd: root, encoding: 'utf8' },
       );
       const lines = (r.stdout || '')
         .split('\n')

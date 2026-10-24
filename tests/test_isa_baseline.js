@@ -20,7 +20,7 @@ const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
 const BASE = '-march=x86-64 -mtune=generic';
 
 function has(bin) {
-  return spawnSync(bin, ['--version'], { encoding: 'utf8' }).status === 0;
+  return spawnSync(bin, ['--version'], { timeout: 600_000, encoding: 'utf8' }).status === 0;
 }
 const python = ['python3', 'python'].find(has);
 const PROBE_SKIP = process.platform === 'linux' && process.arch === 'x64' && has('gcc') && has('objdump') && python
@@ -28,14 +28,14 @@ const PROBE_SKIP = process.platform === 'linux' && process.arch === 'x64' && has
   : 'the scanner probes compile x86_64 ELF objects with gcc and read them with objdump (Linux x64, as CI runs)';
 
 function scan(...files) {
-  return spawnSync(python, [path.join(root, 'scripts/isa_scan.py'), ...files], { encoding: 'utf8' });
+  return spawnSync(python, [path.join(root, 'scripts/isa_scan.py'), ...files], { timeout: 600_000, encoding: 'utf8' });
 }
 
 function cc(dir, name, src, flags, extra = []) {
   const c = path.join(dir, `${name}.c`);
   fs.writeFileSync(c, src);
   const out = path.join(dir, name.endsWith('.so') ? name : `${name}.o`);
-  const r = spawnSync('gcc', [...flags.split(' ').filter(Boolean), '-O3', '-fPIC', ...extra, ...(name.endsWith('.so') ? ['-shared'] : ['-c']), '-o', out, c], { encoding: 'utf8' });
+  const r = spawnSync('gcc', [...flags.split(' ').filter(Boolean), '-O3', '-fPIC', ...extra, ...(name.endsWith('.so') ? ['-shared'] : ['-c']), '-o', out, c], { timeout: 600_000, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   return out;
 }

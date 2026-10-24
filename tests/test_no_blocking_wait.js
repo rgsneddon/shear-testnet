@@ -1,5 +1,6 @@
 /**
- * No test or test helper waits with a synchronous Atomics.wait loop.
+ * No test or test helper waits with a synchronous Atomics.wait loop, and no
+ * spawnSync runs without its own explicit bound.
  *
  * A synchronous wait blocks the event loop, so the test runner's own timeout
  * for that file cannot fire. test_admit_consensus ran four hours past its cap
@@ -63,4 +64,47 @@ describe('tests keep their event loop free', () => {
       assert.match(src, /\bAtomics\.wait\s*\(/, `${rel} no longer needs its entry`);
     }
   });
+
+  // spawnSync blocks the event loop for as long as its child runs, so the
+  // file's own test timeout cannot fire meanwhile. test_burial_offers_v12's
+  // jit-full child had no bound and ran for hours inside a full-suite shard.
+  // Every spawnSync in a test carries its own explicit bound.
+  it('every spawnSync in a test or helper has an explicit timeout of at most 15 minutes', () => {
+    const MAX_MS = 900_000;
+    const self = path.relative(root, fileURLToPath(import.meta.url)).split(path.sep).join('/');
+    const bad = [];
+    for (const file of testFiles()) {
+      const rel = path.relative(root, file).split(path.sep).join('/');
+      if (rel === self) continue;
+      const src = fs.readFileSync(file, 'utf8');
+      for (const m of src.matchAll(/\bspawnSync\s*\(/g)) {
+        const args = callArgs(src, m.index + m[0].length - 1);
+        const line = src.slice(0, m.index).split('\n').length;
+        const t = /\btimeout\s*:\s*([0-9_]+)\b/.exec(args || '');
+        const ms = t ? Number(t[1].replace(/_/g, '')) : NaN;
+        if (!(ms > 0 && ms <= MAX_MS)) bad.push(`${rel}:${line} timeout=${t ? t[1] : 'none'}`);
+      }
+    }
+    assert.deepEqual(bad, [], `spawnSync without a bounded timeout: ${bad.join(', ')}`);
+  });
 });
+
+/** The text between a call's parentheses, from the index of its "(". */
+function callArgs(src, open) {
+  let depth = 0;
+  let quote = null;
+  for (let i = open; i < src.length; i += 1) {
+    const c = src[i];
+    if (quote) {
+      if (c === quote && src[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (c === '\'' || c === '"' || c === '`') { quote = c; continue; }
+    if (c === '(') depth += 1;
+    else if (c === ')') {
+      depth -= 1;
+      if (depth === 0) return src.slice(open + 1, i);
+    }
+  }
+  return null;
+}

@@ -13,7 +13,7 @@ const bin = process.platform === 'win32'
 describe('C miner', () => {
   it('selftest and print-config are ShearHash', () => {
     assert.equal(fs.existsSync(bin), true, `missing miner binary at ${bin}`);
-    const st = spawnSync(bin, ['--selftest'], { encoding: 'utf8' });
+    const st = spawnSync(bin, ['--selftest'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(st.status, 0, st.stderr + st.stdout);
     assert.match(
       st.stdout,
@@ -24,11 +24,11 @@ describe('C miner', () => {
     assert.match(st.stdout, /x8-independent ok/);
     assert.match(st.stdout, /backend=(scalar-x8|sha-ni|avx2-x8)/);
     assert.equal(st.stdout.includes('1.0.6-max-autotune'), false);
-    const sc = spawnSync(bin, ['--backend', 'scalar', '--selftest'], { encoding: 'utf8' });
+    const sc = spawnSync(bin, ['--backend', 'scalar', '--selftest'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(sc.status, 0, sc.stderr + sc.stdout);
     assert.match(sc.stdout, /selftest ok 5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066/);
     assert.match(sc.stdout, /backend=scalar-x8/);
-    const cfg = spawnSync(bin, ['--print-config'], { encoding: 'utf8' });
+    const cfg = spawnSync(bin, ['--print-config'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(cfg.status, 0, cfg.stderr);
     const j = JSON.parse(cfg.stdout);
     assert.equal(j.name, 'Shear-Miner');
@@ -53,7 +53,7 @@ describe('C miner', () => {
     const src = fs.readFileSync(path.join(root, 'src/shear_miner.c'), 'utf8');
     assert.equal(/MAX_THREADS/.test(src), false);
     assert.equal(/g_threads > MAX_THREADS/.test(src), false);
-    const thr = spawnSync(bin, ['--threads', '300', '--print-config'], { encoding: 'utf8' });
+    const thr = spawnSync(bin, ['--threads', '300', '--print-config'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(thr.status, 0, thr.stderr);
     const jt = JSON.parse(thr.stdout);
     assert.equal(jt.threads, 300);
@@ -68,7 +68,7 @@ describe('C miner', () => {
     assert.equal(/g_fee_offset/.test(minerSrc), false);
     assert.equal(/FEE_EVERY/.test(minerSrc), false);
     assert.equal(/FEE_PCT/.test(minerSrc), false);
-    const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
+    const help = spawnSync(bin, ['--help'], { timeout: 600_000, encoding: 'utf8' });
     assert.match(help.stdout, /free to use, no miner fee/);
     assert.equal(help.stdout.includes('she1qlrll'), false);
     assert.equal(help.stdout.includes('declared'), false);
@@ -83,10 +83,10 @@ describe('C miner', () => {
 
   it('admits --user she1 and ssa1, refuses rest-frame shear1', () => {
     assert.equal(fs.existsSync(bin), true, `missing miner binary at ${bin}: build it with make -C miner`);
-    const usage = spawnSync(bin, [], { encoding: 'utf8' });
+    const usage = spawnSync(bin, [], { timeout: 600_000, encoding: 'utf8' });
     assert.match(usage.stderr + usage.stdout, /ssa1/);
     assert.match(usage.stderr + usage.stdout, /she1/);
-    const refuse = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'shear1abc.worker'], {
+    const refuse = spawnSync(bin, ['--pool', '127.0.0.1:1', '--user', 'shear1abc.worker'], { timeout: 600_000,
       encoding: 'utf8',
     });
     assert.equal(refuse.status, 2);

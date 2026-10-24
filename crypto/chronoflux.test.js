@@ -80,7 +80,7 @@ describe('chronoflux prune + collate', () => {
       shareBatch: [{ nonce: '1' }],
       txs: [{ coinbase: true, vout: [{ kind: 'pot' }] }],
     })}\n`);
-    const watch = spawnSync(process.execPath, [path.join(root, 'node/scripts/watch_prune.mjs')], {
+    const watch = spawnSync(process.execPath, [path.join(root, 'node/scripts/watch_prune.mjs')], { timeout: 600_000,
       env: { ...process.env, SHEAR_DATA: watchDir },
       encoding: 'utf8',
     });

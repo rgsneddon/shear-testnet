@@ -95,7 +95,7 @@ if bad:
 if 'crypto/regtest_bits.js' not in paths:
     raise SystemExit('missing inert regtest hook')
 print(len(paths))
-`], { cwd: repo, encoding: 'utf8' });
+`], { timeout: 600_000, cwd: repo, encoding: 'utf8' });
     assert.equal(walk.status, 0, walk.stderr || walk.stdout);
   });
 });

@@ -235,7 +235,7 @@ if (!MODE) {
       it(`junk ratio x peers in ${mode} mode`, { timeout: 3_600_000 }, () => {
         const env = { ...process.env, BURIAL_OFFERS_MODE: mode, BURIAL_OFFERS_SOURCE: net.dir, SHEAR_HASH_BACKEND: backend };
         delete env.NODE_TEST_CONTEXT;
-        const run = spawnSync(process.execPath, [self], {
+        const run = spawnSync(process.execPath, [self], { timeout: 600_000,
           env,
           encoding: 'utf8',
           maxBuffer: 64 * 1024 * 1024,

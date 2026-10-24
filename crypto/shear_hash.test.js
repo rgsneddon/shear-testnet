@@ -31,7 +31,7 @@ function selftestHeader() {
 
 function minerVerify(header, backend = 'interpreter') {
   assert.equal(fs.existsSync(miner), true, `missing ShearK-Miner at ${miner}: build it with make -C sheark-miner`);
-  const got = spawnSync(miner, ['--backend', backend, '--verify', header.toString('hex')], {
+  const got = spawnSync(miner, ['--backend', backend, '--verify', header.toString('hex')], { timeout: 600_000,
     encoding: 'utf8',
   });
   assert.equal(got.status, 0, got.stderr + got.stdout);

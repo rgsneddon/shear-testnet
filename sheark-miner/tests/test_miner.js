@@ -42,10 +42,10 @@ function jsonFromProc(s) {
 describe('ShearK-Miner', () => {
   it('selftest and print-config are ShearHash-v3 light', () => {
     assert.equal(fs.existsSync(bin), true, `missing ${bin}`);
-    const st = spawnSync(bin, ['--backend', 'interpreter', '--selftest'], { encoding: 'utf8' });
+    const st = spawnSync(bin, ['--backend', 'interpreter', '--selftest'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(st.status, 0, st.stderr + st.stdout);
     assert.match(st.stdout, /selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
-    const stJit = spawnSync(bin, ['--backend', 'jit', '--selftest'], { encoding: 'utf8' });
+    const stJit = spawnSync(bin, ['--backend', 'jit', '--selftest'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(stJit.status, 0, stJit.stderr + stJit.stdout);
     assert.match(stJit.stdout, /selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
     assert.match(stJit.stdout, /backend=(jit|interpreter)/);
@@ -58,7 +58,7 @@ describe('ShearK-Miner', () => {
     assert.match(st.stdout, /personalisation=ShearHash-v3/);
     assert.equal(st.stdout.includes('5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066'), false);
     assert.equal(st.stdout.toLowerCase().includes('feeless'), false);
-    const cfg = spawnSync(bin, ['--backend', 'interpreter', '--print-config'], { encoding: 'utf8' });
+    const cfg = spawnSync(bin, ['--backend', 'interpreter', '--print-config'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(cfg.status, 0, cfg.stderr);
     const j = jsonFromProc(cfg.stdout);
     assert.equal(j.name, 'ShearK-Miner');
@@ -79,7 +79,7 @@ describe('ShearK-Miner', () => {
     const longCfg = spawnSync(bin, [
       '--backend', 'interpreter', '--print-config',
       '--user', `${longDest}.P7`,
-    ], { encoding: 'utf8' });
+    ], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(longCfg.status, 0, longCfg.stderr);
     const lj = jsonFromProc(longCfg.stdout);
     assert.equal(lj.destBound, true, longCfg.stdout);
@@ -92,7 +92,7 @@ describe('ShearK-Miner', () => {
     assert.ok(j.backend === 'interpreter' || j.backend === 'jit' || j.backend === 'jit-full', j.backend);
     assert.equal(j.backend, 'interpreter');
     assert.equal(typeof j.hugePages, 'boolean');
-    const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
+    const help = spawnSync(bin, ['--help'], { timeout: 600_000, encoding: 'utf8' });
     assert.match(help.stdout, /ShearK-Miner 2\.9 \(ShearHash-v3 light\)/);
     assert.match(help.stdout, /stratum\+ssl:\/\//);
     assert.match(help.stdout, /ShearHash-v3 light/);
@@ -382,19 +382,19 @@ describe('ShearK-Miner', () => {
     const first = spawnSync(bin, [
       '--require-tls', '--pool', 'stratum+tcp://127.0.0.1:1111',
       '--user', user, '--print-config',
-    ], { encoding: 'utf8' });
+    ], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(first.status, 2, first.stdout + first.stderr);
     assert.match(first.stderr, /requireTls: refusing cleartext/);
     const second = spawnSync(bin, [
       '--pool', 'stratum+tcp://127.0.0.1:1111', '--require-tls',
       '--user', user, '--print-config',
-    ], { encoding: 'utf8' });
+    ], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(second.status, 2, second.stdout + second.stderr);
     assert.match(second.stderr, /requireTls: refusing cleartext/);
     const bare = spawnSync(bin, [
       '--require-tls', '--pool', '127.0.0.1:1111', '--notls',
       '--user', user, '--print-config',
-    ], { encoding: 'utf8' });
+    ], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(bare.status, 2, bare.stdout + bare.stderr);
     assert.match(bare.stderr, /requireTls: refusing cleartext/);
   });

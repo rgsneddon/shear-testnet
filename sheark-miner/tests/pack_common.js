@@ -22,14 +22,14 @@ export function version() {
 export function python() {
   const candidates = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
   for (const c of candidates) {
-    const r = spawnSync(c, ['-c', 'import zipfile,sys; sys.stdout.write("ok")'], { encoding: 'utf8' });
+    const r = spawnSync(c, ['-c', 'import zipfile,sys; sys.stdout.write("ok")'], { timeout: 600_000, encoding: 'utf8' });
     if (r.status === 0 && r.stdout.includes('ok')) return c;
   }
   throw new Error('python with zipfile not found');
 }
 
 export function runPacker(script, args = []) {
-  const r = spawnSync(python(), [path.join(root, 'pack', script), ...args], { encoding: 'utf8', cwd: root });
+  const r = spawnSync(python(), [path.join(root, 'pack', script), ...args], { timeout: 600_000, encoding: 'utf8', cwd: root });
   assert.equal(r.status, 0, `${script} ${args.join(' ')} failed:\n${r.stdout}${r.stderr}`);
   return r.stdout;
 }
@@ -41,7 +41,7 @@ export function zipEntries(zipPath) {
     + 'z=zipfile.ZipFile(sys.argv[1])\n'
     + 'print(json.dumps({i.filename: {"mode": (i.external_attr >> 16) & 0o777,'
     + ' "head": z.read(i.filename)[:4].hex()} for i in z.infolist() if not i.is_dir()}))',
-    zipPath], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    zipPath], { timeout: 600_000, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   assert.equal(r.status, 0, r.stderr);
   return new Map(Object.entries(JSON.parse(r.stdout)));
 }
@@ -51,13 +51,13 @@ export function zipEntries(zipPath) {
 export function zipText(zipPath, member) {
   const r = spawnSync(python(), ['-I', '-c',
     'import sys,zipfile; sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]))',
-    zipPath, member]);
+    zipPath, member], { timeout: 600_000 });
   assert.equal(r.status, 0, String(r.stderr));
   return new TextDecoder('utf-8', { fatal: true }).decode(r.stdout);
 }
 
 export function unzipTo(zipPath, dir) {
-  const r = spawnSync(python(), ['-I', '-m', 'zipfile', '-e', zipPath, dir], { encoding: 'utf8' });
+  const r = spawnSync(python(), ['-I', '-m', 'zipfile', '-e', zipPath, dir], { timeout: 600_000, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
 }
 

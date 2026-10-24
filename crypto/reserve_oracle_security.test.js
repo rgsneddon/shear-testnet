@@ -91,7 +91,7 @@ for vec in json.load(sys.stdin):
     out.append(None if got is None else int(got))
 json.dump(out, sys.stdout)
 `;
-  const res = spawnSync('python3', ['-c', script], {
+  const res = spawnSync('python3', ['-c', script], { timeout: 600_000,
     input: JSON.stringify(vectors),
     cwd: fileURLToPath(new URL('..', import.meta.url)),
     encoding: 'utf8',

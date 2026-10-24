@@ -169,7 +169,7 @@ describe('stratum TLS job to share', () => {
       'req', '-x509', '-newkey', 'rsa:2048', '-keyout', key, '-out', cert,
       '-days', '2', '-nodes', '-subj', '/CN=127.0.0.1',
       '-addext', 'subjectAltName=IP:127.0.0.1',
-    ], { encoding: 'utf8' });
+    ], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(made.status, 0, made.stderr);
     const pool = createPool({
       dataDir: dir,
@@ -227,7 +227,7 @@ describe('stratum TLS job to share', () => {
       pool.close();
       return;
     }
-    const cfg = spawnSync(miner, ['--backend', 'interpreter', '--print-config'], { encoding: 'utf8' });
+    const cfg = spawnSync(miner, ['--backend', 'interpreter', '--print-config'], { timeout: 600_000, encoding: 'utf8' });
     const version = (String(cfg.stdout || '').match(/"version":"([^"]+)"/) || [])[1] || '';
     const magic = fs.readFileSync(miner).subarray(0, 2).toString('latin1');
     console.log(JSON.stringify({

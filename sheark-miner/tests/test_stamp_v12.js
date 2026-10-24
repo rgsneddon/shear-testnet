@@ -36,7 +36,7 @@ function clampBits(bits) {
 
 function compileStamp() {
   const out = path.join(os.tmpdir(), 'shear-stamp-v12.exe');
-  const cc = spawnSync('gcc', ['-O2', '-std=c11', '-Wall', '-Wextra', '-o', out, stampSrc], {
+  const cc = spawnSync('gcc', ['-O2', '-std=c11', '-Wall', '-Wextra', '-o', out, stampSrc], { timeout: 600_000,
     encoding: 'utf8',
   });
   assert.equal(cc.status, 0, `gcc stamp harness failed: ${cc.stderr || cc.stdout || cc.error}`);
@@ -44,7 +44,7 @@ function compileStamp() {
 }
 
 function runStamp(bin, bits, low) {
-  const got = spawnSync(bin, [String(bits), String(low)], { encoding: 'utf8' });
+  const got = spawnSync(bin, [String(bits), String(low)], { timeout: 600_000, encoding: 'utf8' });
   assert.equal(got.status, 0, got.stderr || got.stdout || String(got.error));
   const [nonce, credit] = String(got.stdout).trim().split(/\s+/);
   return { nonce: BigInt(nonce), credit: Number(credit) };

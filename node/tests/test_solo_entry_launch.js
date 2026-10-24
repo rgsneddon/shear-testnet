@@ -15,7 +15,7 @@ function killChild(child) {
   if (!child || child.exitCode != null) return;
   try { child.kill(); } catch { /* ignore */ }
   if (child.pid && process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { timeout: 600_000, stdio: 'ignore', windowsHide: true });
   }
 }
 

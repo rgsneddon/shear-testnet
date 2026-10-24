@@ -17,9 +17,9 @@ describe('ShearK job widths', () => {
     assert.equal(apply.includes('sb > 0 ? sb : 8'), false);
     assert.equal(apply.includes('bits > 0 ? bits : 16'), false);
     const out = path.join(os.tmpdir(), 'shear-job-bits-v12.exe');
-    const cc = spawnSync('gcc', ['-O2', '-std=c11', '-Wall', '-Wextra', '-o', out, src], { encoding: 'utf8' });
+    const cc = spawnSync('gcc', ['-O2', '-std=c11', '-Wall', '-Wextra', '-o', out, src], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(cc.status, 0, cc.stderr || cc.stdout);
-    const run = spawnSync(out, [], { encoding: 'utf8' });
+    const run = spawnSync(out, [], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(run.status, 0, run.stderr || run.stdout);
     assert.match(run.stdout, /job widths ok/);
   });

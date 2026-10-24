@@ -21,7 +21,7 @@ function mingwCompiler() {
   ].filter(Boolean);
   for (const bin of [...bins, ...paths]) {
     if ((bin.includes('/') || bin.includes('\\')) && !fs.existsSync(bin)) continue;
-    const r = spawnSync(bin, ['-dumpmachine'], { encoding: 'utf8', windowsHide: true });
+    const r = spawnSync(bin, ['-dumpmachine'], { timeout: 600_000, encoding: 'utf8', windowsHide: true });
     if (r.status === 0 && /mingw/i.test(`${r.stdout || ''}${r.stderr || ''}`)) return bin;
   }
   return '';
