@@ -1793,7 +1793,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
-    if (Array.isArray(body.vout)) body.vout = stripHiddenValueOpen(kindIn, body.vout);
+    if (Array.isArray(body.vout)) {
+      const stripped = stripHiddenValueOpen(kindIn, body.vout);
+      // A withdraw is relayed as posted, so an opened hidden value is refused, not stripped.
+      if (isWithdraw && stripped.some((o, i) => o !== body.vout[i])) {
+        return { status: 400, json: { ok: false, reason: 'value_open' } };
+      }
+      body.vout = stripped;
+    }
     const postedOpen = valueOpenRejected({ kind: kindIn, vout: body.vout });
     if (postedOpen) return { status: 400, json: { ok: false, reason: 'value_open' } };
     const memoCt = body.memoCt || null;
@@ -1898,6 +1905,19 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     // Same leak rule the node applies. Do not relay a withdraw it will refuse.
     const wdLeak = isWithdraw ? withdrawLeakRejected(draft) : null;
     if (wdLeak) return { status: 400, json: { ok: false, reason: wdLeak.reason } };
+    // The FS-1 withdraw is relayed as posted, like the hidden lock: the draft
+    // above is only the shape check. The pool does not stamp an id or a fee,
+    // or drop a field, since the proofs and the rewardSig are bound to them.
+    // The node verifies the rewardSig and everything else.
+    if (isWithdraw) {
+      const postedLeak = withdrawLeakRejected(body);
+      if (postedLeak) return { status: 400, json: { ok: false, reason: postedLeak.reason } };
+      const paid = postedFee == null ? NaN : Number(postedFee);
+      if (!(paid >= levyNeed(body)) || paid > LEVY_CAP_NANOS) {
+        return { status: 400, json: { ok: false, reason: 'levy' } };
+      }
+      return relayPostedTx(body, queueSend);
+    }
     if (taxed && postedFee == null) bindWeightFee(draft);
     if (taxed) {
       const need = levyNeed(draft);

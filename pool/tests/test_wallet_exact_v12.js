@@ -4,6 +4,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { admitBaseFromAddress, encodeDest, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
 import { admitBaseScalar } from '../../crypto/admit.js';
 import { NANOS_PER_SHE, RESERVE_PROGRAM } from '../../crypto/asert.js';
@@ -50,9 +51,11 @@ function fundedWithdraw(alice, nanos, id, nonce) {
   const fs1 = Buffer.alloc(41, 1);
   fs1[0] = 0xf1;
   const commit = Buffer.alloc(32, 3);
-  const payer = spendDestOf(alice.spendPub);
-  const dest20 = Buffer.from(hash20FromAddress(payer));
-  const portalId = portalIdFromDest20(dest20);
+  // The payout is a one-time dest20, as the wallet derives it
+  // (withdrawPayoutDest20 from the spend seed, portal and a random nonce):
+  // never a hash of the identity address, which would link the withdraw.
+  const dest20 = randomBytes(20);
+  const portalId = portalIdFromDest20(randomBytes(20));
   const shown = nanos <= 9007199254740991n ? Number(nanos) : nanos.toString();
   let fee = levyNanos(0);
   let built = null;
@@ -122,12 +125,25 @@ function wirePost(built, nanos) {
 
 function queue() {
   const posted = [];
+  const raw = [];
   const queueSend = (t) => {
+    raw.push(t);
     const tx = { id: `tx-${posted.length + 1}`, ...t };
     posted.push(tx);
     return tx;
   };
-  return { posted, queueSend };
+  return { posted, raw, queueSend };
+}
+
+/** Canonical bytes of a posted body: sorted keys, Buffers as hex. */
+function bodyBytes(v) {
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return JSON.stringify({ $hex: Buffer.from(v).toString('hex') });
+  if (typeof v === 'bigint') return JSON.stringify({ $big: v.toString() });
+  if (Array.isArray(v)) return `[${v.map(bodyBytes).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${bodyBytes(v[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v === undefined ? null : v);
 }
 
 describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
@@ -297,6 +313,45 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     assert.equal(relayed.anchor, built.anchor);
   });
 
+  it('relays the posted FS-1 withdraw body itself, byte for byte, and stamps nothing', () => {
+    const alice = newIdentity();
+    const nanos = 5000n;
+    const built = fundedWithdraw(alice, nanos, 'wd-verbatim');
+    const body = { ...wirePost(built, nanos), memoH: Buffer.alloc(32, 0x5a), maxLevy: built.fee };
+    const before = bodyBytes(body);
+    const { raw, queueSend } = queue();
+    const got = handleWalletApi(url('/api/wallet/send'), 'POST', body, { store: store(), miners: new Map(), queueSend });
+    assert.equal(got.status, 200, got.json && got.json.reason);
+    assert.equal(raw.length, 1);
+    // The node gets the object the wallet posted, every byte as posted:
+    // bound fields the pool does not know (memoH, maxLevy) are kept, nothing
+    // is added. Old code rebuilt the body from a whitelist and failed this.
+    assert.equal(raw[0], body, 'the posted body is what is relayed');
+    assert.equal(bodyBytes(raw[0]), before, 'byte for byte');
+    assert.ok(Buffer.from(raw[0].memoH).equals(Buffer.alloc(32, 0x5a)), 'memoH kept');
+  });
+
+  it('refuses an FS-1 withdraw with no fee or an opened hidden value instead of stamping or stripping', () => {
+    const alice = newIdentity();
+    const built = fundedWithdraw(alice, 5000n, 'wd-no-stamp');
+    const noFee = { ...wirePost(built, 5000n) };
+    delete noFee.fee;
+    const a = queue();
+    const refusedFee = handleWalletApi(url('/api/wallet/send'), 'POST', noFee, { store: store(), miners: new Map(), queueSend: a.queueSend });
+    assert.equal(refusedFee.status, 400);
+    assert.equal(refusedFee.json.reason, 'levy');
+    assert.equal(a.raw.length, 0, 'nothing queued');
+    // A hidden output that carries its value opening: old code stripped the
+    // opening and relayed a changed body; now it is refused as posted.
+    const opened = { ...wirePost(built, 5000n) };
+    opened.vout = [...built.vout, { kind: 'send', commit: Buffer.alloc(32, 8), valueProof: { v: 1, R: Buffer.alloc(32, 1), z: Buffer.alloc(32, 2) } }];
+    const b = queue();
+    const refusedOpen = handleWalletApi(url('/api/wallet/send'), 'POST', opened, { store: store(), miners: new Map(), queueSend: b.queueSend });
+    assert.equal(refusedOpen.status, 400);
+    assert.equal(refusedOpen.json.reason, 'value_open');
+    assert.equal(b.raw.length, 0, 'nothing queued');
+  });
+
   it('opens the rewardSig path to an FS-1 withdraw only', () => {
     const alice = newIdentity();
     const built = fundedWithdraw(alice, 5000n, 'wd-only');
@@ -362,9 +417,9 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     }, { store: store(), miners: new Map(), queueSend });
     assert.equal(got.status, 200, got.json && got.json.reason);
     assert.equal(posted[0].id, ident);
-    // The pool parses the posted hex nonce to its 32 bytes. The bytes, and so
-    // the digest the proofs bind, are what the wallet signed.
-    assert.equal(Buffer.from(posted[0].withdrawNonce).toString('hex'), nonce);
+    // The posted hex nonce is relayed as posted. Its bytes, and so the digest
+    // the proofs bind, are what the wallet signed.
+    assert.equal(posted[0].withdrawNonce, nonce);
     assert.ok(Buffer.from(txDigestV3(posted[0])).equals(Buffer.from(txDigestV3(built))), 'txDigestV3 with nonce');
     assert.equal(posted[0].from, undefined);
     assert.equal(Buffer.from(posted[0].vout[0].commit).toString('hex'), Buffer.from(built.vout[0].commit).toString('hex'));
