@@ -55,4 +55,5 @@ jobs:
           echo "files: $(wc -l < shard.txt)"
           cat shard.txt
           test -s shard.txt
-          node --test --test-concurrency=1 --test-timeout=2700000 $(cat shard.txt)
+          # No --test-timeout: each file keeps its own cap.
+          node --test --test-concurrency=1 $(cat shard.txt)
