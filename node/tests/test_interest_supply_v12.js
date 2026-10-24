@@ -59,7 +59,11 @@ function potAt(ts) {
   return potSubsidyAt({ nowMs: ts, genesisMs: GENESIS, magic: MAGIC_TESTNET });
 }
 
-function blockAt(ts, miner, notes, moreTxs) {
+// Every block names its height, as a store or wire block does. The fold and
+// the supply step replay the vault at i+1 when a block omits it, but the
+// audit and snap fill replay it at 0 (see the report), so the arrival stub
+// would differ between them.
+function blockAt(ts, miner, notes, moreTxs, height = 1) {
   const potNotes = notes.filter((n) => n.kind !== 'finder-fee' && n.kind !== 'reserve-fee' && n.kind !== 'hash');
   const shares = potNotes.map((n) => ({
     address: n.address || miner,
@@ -87,6 +91,7 @@ function blockAt(ts, miner, notes, moreTxs) {
   }
   if (!tx.vout.length) tx.excess = excessOf([]);
   return {
+    height,
     header: header(ts),
     txs: [tx, ...(moreTxs || [])],
     shareBatch: [],
@@ -154,7 +159,7 @@ function lockOf(miner, portal, stake, id, { at = GENESIS, mark = 0x91, vin = nul
 
 function lockBlock(ts, miner, portals, stake) {
   const locks = portals.map((portal, i) => lockOf(miner, portal, stake, `lock-${i}-${stake}-${ts}`, { at: ts, mark: i + 1 }));
-  return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], locks);
+  return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], locks, 1);
 }
 
 /** Vault after `blocks`, replayed as the audit replays it. */
@@ -220,7 +225,7 @@ function drawOf(vault, portal, miner, nanos, id, nowMs) {
 function drawBlock(prefix, ts, miner, portals, pay, { prove = true } = {}) {
   const vault = vaultAfter(prefix);
   const draws = portals.map((portal, i) => drawOf(prove ? vault : null, portal, miner, pay(vault, portal), `draw-${i}-${ts}`, ts));
-  const block = blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], draws);
+  const block = blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], draws, prefix.length + 1);
   const plan = rewardCommitment(vault, ts);
   if (plan.rows.length) block.txs[0].rewardRoot = plan.root;
   let stubs = 0;
@@ -314,7 +319,7 @@ describe('v12 supply counts reserve interest from the chain', () => {
         locked,
         blockAt(GENESIS + EPOCH_MS + 1, miner, [{ nanos: potAt(GENESIS + EPOCH_MS + 1), kind: 'pot' }], [
           drawOf(null, portal, miner, stake, `non-pi-${stake}`, GENESIS + EPOCH_MS + 1),
-        ]),
+        ], 2),
       ];
       const paid = auditCirculatingSupply(chain);
       assert.equal(paid.status, 'mismatch', `non-pi ${stake} ${paid.reason}`);
@@ -405,12 +410,13 @@ describe('v12 supply counts reserve interest from the chain', () => {
     const twice = honest.concat([
       blockAt(againTs, miner, [{ nanos: potAt(againTs), kind: 'pot' }], [
         drawOf(vaultAfter(honest), portal, miner, dueFor(vaultAfter(honest), portal), 'draw-again', againTs),
-      ]),
+      ], 3),
     ]);
     const second = auditCirculatingSupply(twice);
     assert.notEqual(second.status, 'verified', second.reason);
-    // The portal paid once. A second receipt does not mint a second stub or the epoch interest.
-    assert.notEqual(second.extraMintNanos, draw.stubs * 2);
+    // The portal paid once. The second receipt mints nothing: the measured
+    // mint is still the first withdraw's stub, not a second stub or the epoch interest.
+    assert.equal(second.extraMintNanos, draw.stubs);
     assert.notEqual(second.extraMintNanos, draw.stubs + one);
 
     let state = emptySupplyState(GENESIS);
