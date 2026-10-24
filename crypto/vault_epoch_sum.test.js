@@ -5,6 +5,7 @@ import { hash20FromAddress, newIdentity } from './address.js';
 import { vaultDest } from './flow_sheet.js';
 import {
   appendVaultLockNote,
+  cloneVault,
   applyReserveBlock,
   consensusUnlockPeriod,
   emptyVault,
@@ -94,10 +95,11 @@ describe('epoch sums stay commitments', () => {
 
   for (const count of [1, 2, 5]) {
     it(`π with ${count} lock(s) passes close+4 without a halt`, () => {
-      const owner = who();
+      // One credit per portal (325b50f5): each lock is its own portal.
+      const owners = Array.from({ length: count }, () => who());
       const state = fresh();
       for (let i = 0; i < count; i += 1) {
-        const tx = notedPiLock(owner, `probe-pi-${count}-${i}`);
+        const tx = notedPiLock(owners[i], `probe-pi-${count}-${i}`);
         assert.ok(tx);
         assert.equal(tx.vout.length, 1);
         assert.equal(tx.vout[0].kind, 'lock');
@@ -105,6 +107,11 @@ describe('epoch sums stay commitments', () => {
         const applied = applyLock(state, tx, HEIGHT + i);
         assert.equal(applied.ok, true, applied.reason);
       }
+      const again = notedPiLock(owners[0], `probe-pi-${count}-again`);
+      assert.ok(again);
+      const dup = applyLock(cloneVault(state), again, HEIGHT + count);
+      assert.equal(dup.ok, false);
+      assert.equal(dup.reason, 'portal_exists');
       const closeHeight = HEIGHT + count + 1;
       const closed = applyReserveBlock({
         state,
@@ -123,11 +130,13 @@ describe('epoch sums stay commitments', () => {
       });
       assert.equal(past.ok, true, past.reason);
       assert.equal(Number(state.totalLockedNanos), 0);
-      const portal = state.portals[portalIdFromDest(owner.dest)];
-      assert.equal(Number(portal.staked) + Number(portal.idle), 0);
-      assert.equal(portal.tranches.length, count);
-      for (const tranche of portal.tranches) {
-        assert.equal(tranche.amount, undefined);
+      for (const owner of owners) {
+        const portal = state.portals[portalIdFromDest(owner.dest)];
+        assert.equal(Number(portal.staked) + Number(portal.idle), 0);
+        assert.equal(portal.tranches.length, 1);
+        for (const tranche of portal.tranches) {
+          assert.equal(tranche.amount, undefined);
+        }
       }
       const identity = supplyIdentity(state);
       assert.equal(identity.ok, true, identity.reason);
