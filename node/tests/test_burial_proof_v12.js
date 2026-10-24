@@ -35,6 +35,7 @@ import { readChainBin, writeChainBin } from '../../crypto/chainbin.js';
 import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
+import { shearHash } from '../../crypto/shear_hash.js';
 import {
   nonceWithShareTarget,
   noteCommitOfShare,
@@ -469,7 +470,12 @@ describe('v12 proven burial', () => {
         assert.equal(pool.offerHeaders(f.headers, { peer: 'ipc' }).accepted, PRUNE + 1);
         assert.equal(pool.burialView().offered, PRUNE + 1);
       } else {
-        got.push(await applyVerifiedIpcBlock(pool, JSON.parse(JSON.stringify(f))));
+        // The block claims its own ShearHash, so PR 130's claim check passes
+        // and the burial run is what the store judges.
+        const msg = JSON.parse(JSON.stringify(f));
+        msg.block.hash = shearHash(Buffer.from(msg.block.header, 'hex')).toString('hex');
+        msg.powHash = msg.block.hash;
+        got.push(await applyVerifiedIpcBlock(pool, msg));
       }
     }
     // IPC never trusts a hash. These test headers are not ShearHash work, so
