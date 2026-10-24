@@ -1,113 +1,51 @@
-import { spawn } from 'node:child_process';
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { newIdentity, freshStealthDest, ed25519SeedOf, stealthKey } from '../../crypto/address.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
-import { BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { fluxsetFromBlocks } from '../../crypto/admit.js';
 import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { setHashBackend } from '../../crypto/shear_hash.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { createStore } from '../src/store.js';
+import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
+import { createRegtestStore } from './regtest_store.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import {
   buildTemplate,
   verifyBlock,
   GENESIS_PREV,
 } from '../src/chain.js';
 
-// Genesis is 17 bits, so a hit is expected after 2^17 hashes. The old 32_768
-// cap was sized for a 12-bit header and misses about three searches in four.
-// Sixteen times the expectation, striped across every CPU, makes a miss rare.
-// The jit check below stays. Verify goes back to the interpreter before return.
-const MINE_TRIES = 2_097_152;
+// Regtest work (bits 4, about 16 hashes per block). Every block carries a
+// real nonce found by ShearHash and verifyBlock rehashes it under the
+// regtest book. Nothing here passes a trusted hash.
+let RT_BITS = null;
 
-function mine(tpl) {
-  const backend = setHashBackend('jit');
-  if (backend !== 'jit') {
-    setHashBackend('interpreter');
-    assert.fail(`admit miner needs jit, got ${backend}`);
-  }
-  try {
-    const found = mineAcrossCpus(tpl);
-    assert.ok(found && found.block, 'pow');
-    return {
-      header: found.header,
-      height: tpl.height,
-      txs: tpl.txs,
-      samples: tpl.samples,
-      miner: tpl.miner,
-      aLeaves: tpl.aLeaves,
-      bLeaves: tpl.bLeaves,
-      rootA: tpl.rootA,
-      rootB: tpl.rootB,
-      weight: tpl.weight,
-      hash: found.hash,
-    };
-  } finally {
-    setHashBackend('interpreter');
-  }
-}
-
-const sleepFlag = new Int32Array(new SharedArrayBuffer(4));
-
-function sleepMs(ms) {
-  Atomics.wait(sleepFlag, 0, 0, ms);
-}
-
-function mineAcrossCpus(tpl) {
-  const cpus = Math.max(1, os.availableParallelism());
-  const perWorker = Math.ceil(MINE_TRIES / cpus);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-mine-'));
-  const outPath = path.join(dir, 'hit.json');
-  const stopPath = path.join(dir, 'stop');
-  const workerPath = fileURLToPath(new URL('./admit_mine_worker.js', import.meta.url));
-  const headerHex = Buffer.from(tpl.header).toString('hex');
-  const children = [];
-  try {
-    for (let cpu = 0; cpu < cpus; cpu += 1) {
-      children.push(spawn(process.execPath, [
-        workerPath,
-        headerHex,
-        String(tpl.bits),
-        String(cpu),
-        String(cpus),
-        String(perWorker),
-        outPath,
-        stopPath,
-        path.join(dir, `done-${cpu}`),
-      ], { stdio: 'ignore' }));
-    }
-    const hitFile = () => fs.readdirSync(dir).find((name) => name.startsWith('hit.json.'));
-    while (!hitFile()) {
-      const finished = fs.readdirSync(dir).filter((name) => name.startsWith('done-')).length;
-      if (finished >= cpus) break;
-      sleepMs(200);
-    }
-    fs.writeFileSync(stopPath, '1');
-    for (const child of children) {
-      if (child.exitCode == null) child.kill('SIGTERM');
-    }
-    const name = hitFile();
-    if (!name) return null;
-    const hit = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
-    if (hit.error) assert.fail(hit.error);
-    return {
-      header: Buffer.from(hit.header, 'hex'),
-      hash: Buffer.from(hit.hash, 'hex'),
-      block: true,
-    };
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+async function mine(tpl) {
+  assert.equal(tpl.bits, RT_BITS, 'regtest template bits');
+  assert.equal(decodeHeader(Buffer.from(tpl.header)).bits, RT_BITS);
+  const found = await mineHeaderParallel(tpl.header, tpl.bits, 8_192, 1);
+  assert.ok(found && found.block, 'pow');
+  return {
+    header: found.header,
+    height: tpl.height,
+    txs: tpl.txs,
+    samples: tpl.samples,
+    miner: tpl.miner,
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
+    hash: found.hash,
+  };
 }
 
 function identityDest() {
@@ -123,37 +61,49 @@ function identityDest() {
 }
 
 describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeout: fileCapMs(import.meta.url) }, () => {
-  it('honest spent-note send with admit_proof against the real fluxset is ok; sampled / missing / reused tag fail; compact self-minted C_in is confidential', () => {
+  const sealDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-seal-'));
+  before(() => {
+    // Only the test factory seals the regtest seed. Testnet stays on genesis bits.
+    createRegtestStore(sealDir, { bits: 4 });
+    RT_BITS = regtestBitsOverride(MAGIC_REGTEST);
+    assert.ok(RT_BITS != null, 'regtest bits sealed');
+  });
+  after(async () => {
+    await closeMineWorkers();
+    fs.rmSync(sealDir, { recursive: true, force: true });
+  });
+
+  it('honest spent-note send with admit_proof against the real fluxset is ok; sampled / missing / reused tag fail; compact self-minted C_in is confidential', async () => {
     const { dest, spendSeed, key } = identityDest();
-    const genesis = mine(buildTemplate({
+    const genesis = await mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_000_000_000,
     }));
-    const okG = verifyBlock(genesis, null);
+    const okG = verifyBlock(genesis, null, { magic: MAGIC_REGTEST });
     assert.equal(okG.ok, true, okG.reason);
     genesis.hash = okG.hash;
-    const parent = mine(buildTemplate({
+    const parent = await mine(buildTemplate({
       prev: okG.hash,
       prevHeader: genesis.header,
       height: 2,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_000_090_000,
       prevBlock: genesis,
       parentFluxset: fluxsetFromBlocks([genesis]).pubs,
     }));
-    const okP = verifyBlock(parent, genesis);
+    const okP = verifyBlock(parent, genesis, { magic: MAGIC_REGTEST });
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
     const history = [genesis, parent];
     // A grandchild is not its own anchor. Pass the genesis stamp, and keep
-    // the height-3 time on the 90s grid so ASERT still accepts GENESIS_BITS_PACKED.
+    // the height-3 time on the 90s grid so ASERT still accepts the sealed regtest bits.
     const genesisMs = Number(decodeHeader(Buffer.from(genesis.header)).timestamp);
     const height3Now = genesisMs + 180_000;
-    const height3Opts = { evmHistory: history, genesisMs };
+    const height3Opts = { evmHistory: history, genesisMs, magic: MAGIC_REGTEST };
     const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
     assert.ok(spent?.commit && spent.admitPub, 'coinbase note enters J');
     const idx = parent.txs[0].vout.indexOf(spent);
@@ -190,14 +140,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       prevHeader: parent.header,
       height: 3,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: height3Now,
       txs: [compactTx(honest)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
-    const honestBlock = mine(honestTpl);
+    const honestBlock = await mine(honestTpl);
     const gotOk = verifyBlock(honestBlock, parent, height3Opts);
     assert.equal(honest.admit_proof.blob[0], 2);
     assert.equal(gotOk.ok, false);
@@ -210,14 +160,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       prevHeader: parent.header,
       height: 3,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: height3Now,
       txs: [compactTx(missing)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
-    const missingBlock = mine(missingTpl);
+    const missingBlock = await mine(missingTpl);
     const gotMissing = verifyBlock(missingBlock, parent, height3Opts);
     assert.equal(gotMissing.ok, false);
     assert.equal(gotMissing.reason, 'admit_membership');
@@ -230,14 +180,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       prevHeader: parent.header,
       height: 3,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: height3Now,
       txs: [compactTx(sampled)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
-    const sampledBlock = mine(sampledTpl);
+    const sampledBlock = await mine(sampledTpl);
     const gotSampled = verifyBlock(sampledBlock, parent, height3Opts);
     assert.equal(gotSampled.ok, false);
     assert.equal(gotSampled.reason, 'admit_version');
@@ -267,28 +217,28 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       prevHeader: parent.header,
       height: 3,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: height3Now,
       txs: [compactTx(attack)],
       prevBlock: parent,
       parentBlocks: history,
       parentFluxset: live.pubs,
     });
-    const attackBlock = mine(attackTpl);
+    const attackBlock = await mine(attackTpl);
     const gotBad = verifyBlock(attackBlock, parent, height3Opts);
     assert.equal(gotBad.ok, false);
     assert.equal(gotBad.reason, 'admit_version');
   });
 
-  it('queueTx admits an honest spent-note send and rejects missing proof, sampled subset, and reused spendTag', () => {
+  it('queueTx admits an honest spent-note send and rejects missing proof, sampled subset, and reused spendTag', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-'));
-    const store = createStore(dir);
+    const store = createRegtestStore(dir, { bits: 4 });
     const { dest, spendSeed, key } = identityDest();
-    const parent = mine(buildTemplate({
+    const parent = await mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_001_000_000,
     }));
     const appended = store.append({
@@ -363,16 +313,16 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     assert.equal(store.fluxset().spendTags.has(spentHex), false);
   });
 
-  it('hex-posted Flow send is in the next template and mined header with admit_proof', () => {
+  it('hex-posted Flow send is in the next template and mined header with admit_proof', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-job-'));
-    const store = createStore(dir);
+    const store = createRegtestStore(dir, { bits: 4 });
     const { dest, spendSeed, key } = identityDest();
     let now = 1_700_002_000_000;
-    const parent = mine(buildTemplate({
+    const parent = await mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now,
     }));
     let appended = store.append({
@@ -387,8 +337,8 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     const idx = parent.txs[0].vout.indexOf(spent);
     for (let h = 2; h <= 6; h += 1) {
       now += 90_000;
-      const { tpl } = store.template({ miner: dest, bits: GENESIS_BITS_PACKED, now });
-      const found = mine(tpl);
+      const { tpl } = store.template({ miner: dest, bits: RT_BITS, now });
+      const found = await mine(tpl);
       appended = store.append({
         header: found.header,
         txs: tpl.txs,
@@ -437,7 +387,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     const parentH = decodeHeader(Buffer.from(store.tip().header));
     const { tpl } = store.template({
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: Number(parentH.timestamp) + 90_000,
     });
     const user = (tpl.txs || []).slice(1);
@@ -446,16 +396,16 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     assert.equal(store.fluxset().spendTags.has(tag), false);
   });
 
-  it('named reject reasons: range stub, no members list, she1 silent_id', () => {
+  it('named reject reasons: range stub, no members list, she1 silent_id', async () => {
     const { dest, spendSeed, key } = identityDest();
-    const parent = mine(buildTemplate({
+    const parent = await mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_003_000_000,
     }));
-    const okP = verifyBlock(parent, null);
+    const okP = verifyBlock(parent, null, { magic: MAGIC_REGTEST });
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
     const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
@@ -488,15 +438,15 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_003_090_000,
       txs: [compactTx(body)],
       prevBlock: parent,
       parentBlocks: [parent],
       parentFluxset: live.pubs,
     });
-    const stubBlock = mine(stubTpl);
-    const gotStub = verifyBlock(stubBlock, parent, { evmHistory: [parent] });
+    const stubBlock = await mine(stubTpl);
+    const gotStub = verifyBlock(stubBlock, parent, { evmHistory: [parent], magic: MAGIC_REGTEST });
     assert.equal(gotStub.ok, false);
     assert.equal(gotStub.reason, 'admit_version');
 
@@ -536,12 +486,12 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_003_180_000,
       txs: [she],
     });
-    const sheBlock = mine(sheTpl);
-    const gotShe = verifyBlock(sheBlock, null);
+    const sheBlock = await mine(sheTpl);
+    const gotShe = verifyBlock(sheBlock, null, { magic: MAGIC_REGTEST });
     assert.equal(gotShe.ok, false);
     assert.equal(gotShe.reason, 'silent_id_on_chain');
   });
@@ -553,14 +503,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     const { lockTx } = await import('../../crypto/reserve_vault.js');
     const { PI_SHE_NANOS } = await import('../../crypto/asert.js');
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
-    const parent = mine(buildTemplate({
+    const parent = await mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_004_000_000,
     }));
-    const okP = verifyBlock(parent, null);
+    const okP = verifyBlock(parent, null, { magic: MAGIC_REGTEST });
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
 
@@ -578,14 +528,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_004_090_000,
       txs: [plain],
       prevBlock: parent,
       parentBlocks: [parent],
     });
-    const plainBlock = mine(plainTpl);
-    const gotPlain = verifyBlock(plainBlock, parent, { evmHistory: [parent] });
+    const plainBlock = await mine(plainTpl);
+    const gotPlain = verifyBlock(plainBlock, parent, { evmHistory: [parent], magic: MAGIC_REGTEST });
     assert.equal(gotPlain.ok, false);
     assert.equal(gotPlain.reason, 'range_proof');
 
@@ -609,14 +559,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_004_090_000,
       txs: [openSealed],
       prevBlock: parent,
       parentBlocks: [parent],
     });
-    const openBlock = mine(openTpl);
-    const gotOpen = await Promise.resolve(verifyBlock(openBlock, parent, { evmHistory: [parent] }));
+    const openBlock = await mine(openTpl);
+    const gotOpen = await Promise.resolve(verifyBlock(openBlock, parent, { evmHistory: [parent], magic: MAGIC_REGTEST }));
     assert.equal(gotOpen.ok, true, gotOpen.reason);
 
     const stub = lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'lock-stub' });
@@ -626,14 +576,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       prevHeader: parent.header,
       height: 2,
       miner: dest,
-      bits: GENESIS_BITS_PACKED,
+      bits: RT_BITS,
       now: 1_700_004_090_000,
       txs: [stub],
       prevBlock: parent,
       parentBlocks: [parent],
     });
-    const stubBlock = mine(stubTpl);
-    const gotStubLock = verifyBlock(stubBlock, parent, { evmHistory: [parent] });
+    const stubBlock = await mine(stubTpl);
+    const gotStubLock = verifyBlock(stubBlock, parent, { evmHistory: [parent], magic: MAGIC_REGTEST });
     assert.equal(gotStubLock.ok, false);
     assert.equal(gotStubLock.reason, 'range_proof');
 
