@@ -2,6 +2,8 @@
 /**
  * Full-suite CI shards. Every test file that `npm test` names is in exactly
  * one shard, unless tests/ci_pending.txt lists it with the PR that fixes it.
+ * A `track` row names a file a later PR must change but that still passes:
+ * it stays in its shard, and it may be a test helper as well as a test file.
  * Weights come from tests/ci_timings.json (seconds per file, measured on the
  * build servers). An unmeasured file counts as 60 s.
  *
@@ -27,6 +29,7 @@ const DIRS = [
 ];
 const EXTRA = ['tests/forbid_foreign_names.js', 'tests/forbid_privacy_regressions.js', 'tests/privacy.walk.js'];
 const PENDING_PRS = new Set(['PR2', 'PR3']);
+const TRACK_DIRS = ['crypto', 'node/tests', 'pool/tests', 'miner/tests', 'sheark-miner/tests', 'tests'];
 
 export function allTestFiles() {
   const out = [];
@@ -41,7 +44,7 @@ export function allTestFiles() {
   return out;
 }
 
-/** Rows of `path PRn reason`. Blank lines and # comments are ignored. */
+/** Rows of `path PRn [track] reason`. Blank lines and # comments are ignored. */
 export function readPending() {
   const file = path.join(root, 'tests/ci_pending.txt');
   if (!fs.existsSync(file)) return [];
@@ -49,8 +52,10 @@ export function readPending() {
   for (const [i, raw] of fs.readFileSync(file, 'utf8').split(/\r?\n/).entries()) {
     const line = raw.replace(/#.*$/, '').trim();
     if (!line) continue;
-    const [f, pr, ...why] = line.split(/\s+/);
-    rows.push({ line: i + 1, file: f, pr, reason: why.join(' ') });
+    const [f, pr, ...rest] = line.split(/\s+/);
+    const track = rest[0] === 'track';
+    const why = track ? rest.slice(1) : rest;
+    rows.push({ line: i + 1, file: f, pr, track, reason: why.join(' ') });
   }
   return rows;
 }
@@ -60,7 +65,13 @@ export function checkPending(files = allTestFiles(), rows = readPending()) {
   const known = new Set(files);
   const seen = new Set();
   for (const r of rows) {
-    if (!known.has(r.file)) errors.push(`line ${r.line}: ${r.file} is not a test file`);
+    if (r.track) {
+      if (!TRACK_DIRS.some((d) => r.file.startsWith(`${d}/`)) || !fs.existsSync(path.join(root, r.file))) {
+        errors.push(`line ${r.line}: ${r.file} is not a test file or helper`);
+      }
+    } else if (!known.has(r.file)) {
+      errors.push(`line ${r.line}: ${r.file} is not a test file`);
+    }
     if (!PENDING_PRS.has(r.pr)) errors.push(`line ${r.line}: ${r.file} needs PR2 or PR3, got ${r.pr || 'nothing'}`);
     if (!r.reason) errors.push(`line ${r.line}: ${r.file} needs a reason`);
     if (seen.has(r.file)) errors.push(`line ${r.line}: ${r.file} is listed twice`);
@@ -77,7 +88,7 @@ function timings() {
 
 /** Longest first into the lightest shard. Deterministic for a given input. */
 export function planShards(n, files = allTestFiles(), rows = readPending(), weight = timings()) {
-  const pending = new Set(rows.map((r) => r.file));
+  const pending = new Set(rows.filter((r) => !r.track).map((r) => r.file));
   const run = files.filter((f) => !pending.has(f));
   const cost = (f) => Number(weight[f]) > 0 ? Number(weight[f]) : 60;
   run.sort((a, b) => cost(b) - cost(a) || a.localeCompare(b));
@@ -104,8 +115,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
   if (process.argv.includes('--check')) {
     const rows = readPending();
-    console.log(`${allTestFiles().length} test files, ${rows.length} pending`);
-    for (const r of rows) console.log(`pending ${r.pr} ${r.file}: ${r.reason}`);
+    const held = rows.filter((r) => !r.track);
+    console.log(`${allTestFiles().length} test files, ${held.length} pending, ${rows.length - held.length} tracked (still run)`);
+    for (const r of rows) console.log(`${r.track ? 'tracked' : 'pending'} ${r.pr} ${r.file}: ${r.reason}`);
   } else if (arg('--count')) {
     const n = Number(arg('--count'));
     console.log(JSON.stringify(Array.from({ length: n }, (_, i) => i)));
