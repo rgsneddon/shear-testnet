@@ -56,7 +56,11 @@ function potAt(ts) {
   return potSubsidyAt({ nowMs: ts, genesisMs: GENESIS, magic: MAGIC_TESTNET });
 }
 
-function blockAt(ts, miner, notes, moreTxs) {
+// Every block names its height, as a store or wire block does. foldSupply
+// and supplyStep replay the vault at i+1 when a block omits it; vaultAfterBlock,
+// fillSnapInterest, and the audit replay it at 0, which records a different
+// arrival stub for the lock.
+function blockAt(ts, miner, notes, moreTxs, height = 1) {
   const potNotes = notes.filter((n) => n.kind === 'pot');
   const shares = potNotes.map((n) => ({
     address: n.address || miner,
@@ -75,14 +79,15 @@ function blockAt(ts, miner, notes, moreTxs) {
   tx.excess = excessOf(tx.vout);
   if (!tx.vout.length) tx.excess = excessOf([]);
   return {
+    height,
     header: header(ts),
     txs: [tx, ...(moreTxs || [])],
     shareBatch: [],
   };
 }
 
-function potBlock(ts, miner, more) {
-  return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], more);
+function potBlock(ts, miner, more, height = 1) {
+  return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], more, height);
 }
 
 // Since d5529d81 a lock with no vaultLockNote is stake_reward, and only a π
@@ -194,7 +199,7 @@ describe('VS-1 snap interest', () => {
     const first = potBlock(GENESIS, miner, [lock.tx]);
     const parent = vaultAfter([first]);
     const draw = drawOf(parent, lock.leaf, portal, miner, 'draw-snap');
-    const second = potBlock(DRAW, miner, [draw.tx]);
+    const second = potBlock(DRAW, miner, [draw.tx], 2);
     const plan = rewardCommitment(parent, DRAW);
     if (plan.rows.length) second.txs[0].rewardRoot = plan.root;
     const chain = [first, second];
