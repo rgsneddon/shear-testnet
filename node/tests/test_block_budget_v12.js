@@ -78,12 +78,24 @@ function outs(n, kind, nanos) {
   return rows;
 }
 
-function bodyTx(nIn, nOut, id, nanos) {
+// The v12 send wire: an FS-1 record (wire byte 0xF1), no plaintext amount.
+// Stage 0 (acc9570c) refuses a proofless send as send_unavailable before the
+// weight table, so a weight fixture carries the record. The caps reject before
+// any proof parse, so the record body is never read on a capped block.
+const FS1_WIRE_STUB = Buffer.concat([Buffer.from([0xf1]), Buffer.alloc(31)]);
+
+function bodyTx(nIn, nOut, id) {
   const vin = new Array(nIn);
   const vout = new Array(nOut);
   for (let i = 0; i < nIn; i += 1) vin[i] = {};
-  for (let i = 0; i < nOut; i += 1) vout[i] = { kind: 'send', nanos };
-  return { id, kind: 'send', fee: 1, nanos, vin, vout };
+  for (let i = 0; i < nOut; i += 1) vout[i] = { kind: 'send' };
+  return { id, kind: 'send', fee: 1, vin, vout, admit_proof: { blob: FS1_WIRE_STUB } };
+}
+
+function prooflessBodyTx(nIn, nOut, id) {
+  const tx = bodyTx(nIn, nOut, id);
+  delete tx.admit_proof;
+  return tx;
 }
 
 function reserveTx(i, kind, nanos, portal) {
@@ -93,7 +105,6 @@ function reserveTx(i, kind, nanos, portal) {
     nanos,
     fee: 1 + (i % 7),
     portalId: portal,
-    payoutPortalId: portal,
     vout: [{ kind, nanos }],
   };
   if (kind !== 'withdraw') tx.vin = [{}];
@@ -233,6 +244,12 @@ describe('v12 block budget', { concurrency: 1 }, () => {
         assert.equal(overBlock.proofs, 0);
         assert.equal(overBlock.got.proofChecked, false);
         assert.ok(overBlock.ms < 50, `weight reject ${overBlock.ms.toFixed(1)} ms`);
+        assert.equal(atBlock.got.ok, false, 'the stub FS-1 record never funds a block');
+        // The same over-weight body with no proof object is Stage 0 first.
+        const naked = over.body.map((tx) => prooflessBodyTx(tx.vin.length, tx.vout.length, tx.id));
+        const prooflessBlock = await blockResult(store, [over.cb, ...naked], t0);
+        assert.equal(prooflessBlock.got.reason, 'send_unavailable');
+        assert.equal(prooflessBlock.proofs, 0);
 
         const cap = live;
         const underCounts = [0, 1, cap - 1, cap];
@@ -321,9 +338,9 @@ describe('v12 block budget', { concurrency: 1 }, () => {
         };
         const cbNeed = C_MAX - publicBytes(bare);
         assert.ok(cbNeed > 0, `coinbase already ${publicBytes(bare)}`);
-        const atCb = { ...bare, pad: 'a'.repeat(cbNeed) };
+        const atCb = { ...bare, memo: 'a'.repeat(cbNeed) };
         assert.equal(publicBytes(atCb), C_MAX);
-        const overCb = { ...bare, pad: 'a'.repeat(cbNeed + 1) };
+        const overCb = { ...bare, memo: 'a'.repeat(cbNeed + 1) };
         const atCbGot = await blockResult(store, [atCb], t0);
         const overCbGot = await blockResult(store, [overCb], t0);
         console.log(`coinbase bytes ${nanos} at ${atCbGot.got.reason} ${atCbGot.ms.toFixed(1)} ms over ${overCbGot.got.reason} ${overCbGot.ms.toFixed(1)} ms`);
@@ -340,8 +357,8 @@ describe('v12 block budget', { concurrency: 1 }, () => {
         const used = publicBytes(bare) + publicBytes(host);
         const blockNeed = B_MAX - used;
         assert.ok(blockNeed > 0, `block already ${used}`);
-        const atBody = { ...host, pad: 'a'.repeat(blockNeed) };
-        const overBody = { ...host, pad: 'a'.repeat(blockNeed + 1) };
+        const atBody = { ...host, memo: 'a'.repeat(blockNeed) };
+        const overBody = { ...host, memo: 'a'.repeat(blockNeed + 1) };
         assert.equal(publicBytes(bare) + publicBytes(atBody), B_MAX);
         const atBytes = await blockResult(store, [bare, atBody], t0);
         const overBytes = await blockResult(store, [bare, overBody], t0);
@@ -352,17 +369,17 @@ describe('v12 block budget', { concurrency: 1 }, () => {
         assert.equal(overBytes.parsed, 0);
         assert.ok(overBytes.ms < 50, `block bytes ${overBytes.ms.toFixed(1)} ms`);
         const fatNeed = B_MAX - publicBytes(host) + 1;
-        const fatBody = { ...host, pad: 'a'.repeat(fatNeed) };
+        const fatBody = { ...host, memo: 'a'.repeat(fatNeed) };
         assert.ok(publicBytes(fatBody) > B_MAX);
         const queuedBody = store.queueTx(fatBody);
         const admittedBody = admitMempool(emptyMempool(), fatBody, { baseFee: 1 });
         assert.equal(queuedBody.reason, 'block_bytes');
         assert.equal(admittedBody.reason, 'block_bytes');
-        fatBody.pad = '';
-        atCb.pad = '';
-        overCb.pad = '';
-        atBody.pad = '';
-        overBody.pad = '';
+        fatBody.memo = '';
+        atCb.memo = '';
+        overCb.memo = '';
+        atBody.memo = '';
+        overBody.memo = '';
       }
 
       const queuedTimes = [];
