@@ -23,6 +23,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Pending list names a PR and a reason for every entry
+        run: node tests/ci_shard.js --check
+      - id: plan
+        run: echo "shards=$(node tests/ci_shard.js --count 16)" >> "$GITHUB_OUTPUT"
+  shard:
+    needs: pending
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.pending.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       # Plan first, so a shard installs only the toolchains its files need.
       - name: Plan shard ${{ matrix.shard }} of 16
         id: needs
