@@ -4,8 +4,14 @@
 # fixing it; the pending job fails on any other entry.
 name: full-suite
 on:
+  # A PR branch runs once, as its pull_request. Base branches run on push.
   push:
+    branches: [main, feat/shear-testnet-v12]
   pull_request:
+# A newer commit on the same ref replaces the run still going.
+concurrency:
+  group: full-suite-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   pending:
     runs-on: ubuntu-latest
