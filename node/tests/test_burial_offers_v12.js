@@ -31,6 +31,7 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { decodeWireBlock, encodeWireBlock, selectHeadersAfterLocator } from '../src/p2p.js';
 import { createStore, OFFER_PEER_CAP, OFFER_PEER_SLOTS } from '../src/store.js';
+import { DATADIR_CLAIM_NAME, DATADIR_LOCK_NAME } from '../src/datadir_lock.js';
 
 const PRUNE = SAMPLE_PRUNE_CONFIRMATIONS;
 const STEP = TARGET_BLOCK_INTERVAL_MS;
@@ -241,7 +242,14 @@ if (!MODE) {
   describe(`v12 burial header offers, ${MODE}`, () => {
     const net = {};
     before(() => {
-      net.S = createStore(SOURCE, { fastSync: true });
+      // The parent still holds SOURCE's datadir lock (d5e84bb4): one process
+      // per datadir. This child reads its own copy of the book, lock files left out.
+      const copy = tmp('copy');
+      fs.cpSync(SOURCE, copy, {
+        recursive: true,
+        filter: (src) => ![DATADIR_LOCK_NAME, DATADIR_CLAIM_NAME].includes(path.basename(src)),
+      });
+      net.S = createStore(copy, { fastSync: true });
       assert.equal(net.S.tip().height, TIP);
       net.page = selectHeadersAfterLocator(net.S.blocks, { locator: [] });
       net.trusted = new Set(net.page.map((r) => r.hash));
