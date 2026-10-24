@@ -32,7 +32,7 @@ function trust(block) {
 }
 
 describe('verifyBlock extra mint', () => {
-  it('rejects unfunded extra txs and accepts Reserve-only extra mint via append', async () => {
+  it('rejects unfunded extra txs; only the Reserve passes the extra-mint gate, and its withdraw still needs FS-1 funding', async () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
@@ -77,13 +77,32 @@ describe('verifyBlock extra mint', () => {
     wd.vout = wd.vout.map(({ address: _address, r: _r, ...row }) => row);
     assert.equal(withdrawLeakRejected(wd), null);
     const reserveTx = { ...wd, fee: 1 };
+    // The extra-mint gate (vin-less, mint:true) is Reserve-only. The same
+    // sealed withdraw under another program stops there as mint_forbidden.
+    assert.equal(extraMintAllowed(reserveTx.programId, { kind: reserveTx.kind }), true);
+    const foreignTx = { ...reserveTx, id: 'w-7-foreign', programId: 'third-party-stake' };
+    assert.equal(withdrawLeakRejected(foreignTx), null);
+    assert.equal(extraMintAllowed(foreignTx.programId, { kind: foreignTx.kind }), false);
+    const foreign = mine(buildTemplate({ ...base, txs: [foreignTx] }));
+    const foreignGot = await Promise.resolve(verifyBlock(foreign, null, trust(foreign)));
+    assert.equal(foreignGot.ok, false);
+    assert.equal(foreignGot.reason, 'mint_forbidden', foreignGot.reason);
+    const foreignStored = await Promise.resolve(store.append(foreign, trust(foreign)));
+    assert.equal(foreignStored.ok, false);
+    assert.equal(foreignStored.reason, 'mint_forbidden', foreignStored.reason);
+    // The Reserve passes that gate. A v12 withdraw is then an FS-1 spend
+    // (verifyTypedAdmitFunding, chain.js, before boundReserveWithdraw), so a
+    // withdraw with no FS-1 blob is admit_version and the amount check is not
+    // reached. The paid Reserve withdraw is covered by
+    // test_withdraw_ship_v12.js ('queues a funded withdraw into a block the EVM
+    // accepts') and test_interest_spread_v12.js ('principal-only withdraw receipts').
     const reserved = mine(buildTemplate({ ...base, txs: [reserveTx] }));
     const allowed = await Promise.resolve(verifyBlock(reserved, null, trust(reserved)));
     assert.equal(allowed.ok, false);
-    assert.equal(allowed.reason, 'mint_amount');
+    assert.equal(allowed.reason, 'admit_version', allowed.reason);
     const stored = await Promise.resolve(store.append(reserved, trust(reserved)));
     assert.equal(stored.ok, false);
-    assert.equal(stored.reason, 'mint_amount');
+    assert.equal(stored.reason, 'admit_version', stored.reason);
     assert.equal(wrapMintForbidden({ kind: 'wrap', programId: 'wrap-she-v1', ticker: 'wSHE' }), true);
     assert.equal(wrapMintForbidden({ programId: 'vort1.random-printer', mint: true }), false);
     assert.equal(extraMintAllowed('vort1.random-printer', { kind: 'mint' }), false);
