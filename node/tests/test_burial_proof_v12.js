@@ -463,29 +463,35 @@ describe('v12 proven burial', () => {
     assert.deepEqual(whole.map((f) => f.type), ['ipc_block']);
     assert.equal(whole[0].block.samplesPruned, false);
 
-    const pool = createStore(tmp('ipc'), { fastSync: true });
-    const got = [];
-    for (const f of frames.slice(0, 2)) {
-      if (f.type === 'ipc_headers') {
-        assert.equal(pool.offerHeaders(f.headers, { peer: 'ipc' }).accepted, PRUNE + 1);
-        assert.equal(pool.burialView().offered, PRUNE + 1);
-      } else {
-        // The block claims its own ShearHash, so PR 130's claim check passes
-        // and the burial run is what the store judges.
-        const msg = JSON.parse(JSON.stringify(f));
-        msg.block.hash = shearHash(Buffer.from(msg.block.header, 'hex')).toString('hex');
-        msg.powHash = msg.block.hash;
-        got.push(await applyVerifiedIpcBlock(pool, msg));
-      }
+    // Each case offers the run, then sends the pruned block, on its own store.
+    async function sendRun(name, headers, block) {
+      const pool = createStore(tmp(name), { fastSync: true });
+      assert.equal(pool.offerHeaders(headers, { peer: 'ipc' }).accepted, PRUNE + 1);
+      assert.equal(pool.burialView().offered, PRUNE + 1);
+      return { pool, got: await applyVerifiedIpcBlock(pool, block) };
     }
-    // IPC never trusts a hash. These test headers are not ShearHash work, so
-    // the store refuses the burial instead of the old flag check, and drops
-    // the peer that sent the bad link.
-    assert.equal(got[0].ok, false);
-    assert.equal(got[0].reason, 'samples_pruned');
-    assert.equal(pool.tip(), null);
-    assert.equal(pool.burialView().offered, 0);
-    assert.equal(pool.offerPeerDropped('ipc'), true);
+    const [runFrame, blockFrame] = frames.slice(0, 2).map((f) => JSON.parse(JSON.stringify(f)));
+
+    // As sent: the block's id is the run's first id, a stand-in that is not its
+    // ShearHash. PR 130's claim check refuses it before any burial work.
+    const sent = await sendRun('ipc-sent', runFrame.headers, blockFrame);
+    assert.equal(sent.got.ok, false);
+    assert.equal(sent.got.reason, 'hash_claim');
+    assert.equal(sent.pool.tip(), null);
+
+    // The block and the run's first header under the block's real ShearHash.
+    // The rest of the run is stand-ins that are not ShearHash work, so the
+    // store refuses the burial, clears the run, and drops the peer that sent
+    // the bad link. IPC never trusts a hash.
+    const real = shearHash(Buffer.from(blockFrame.block.header, 'hex')).toString('hex');
+    const headers = runFrame.headers.map((row, i) => (i === 0 ? { ...row, hash: real } : row));
+    const block = { ...blockFrame, powHash: real, block: { ...blockFrame.block, hash: real } };
+    const judged = await sendRun('ipc-judged', headers, block);
+    assert.equal(judged.got.ok, false);
+    assert.equal(judged.got.reason, 'samples_pruned');
+    assert.equal(judged.pool.tip(), null);
+    assert.equal(judged.pool.burialView().offered, 0);
+    assert.equal(judged.pool.offerPeerDropped('ipc'), true);
 
     const src = fs.readFileSync(new URL('../src/p2p_ipc.js', import.meta.url), 'utf8');
     assert.doesNotMatch(src, /shouldPruneSamples\(structuralH/);
