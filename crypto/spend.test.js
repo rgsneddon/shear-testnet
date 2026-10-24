@@ -60,7 +60,10 @@ describe('funded spend / no double-spend', () => {
       vin: [{ address: id.address, dest20: d20 }],
       vout: [{ ...note, kind: 'lock', address: id.address }],
     });
-    assert.equal(spendPubFromTx(unsigned)?.toString('hex'), id.spendPub.toString('hex'));
+    // A compact lock does not publish the identity spend key (325b50f5), and
+    // this body carries no FS-1 blob, so nothing authorises the portal.
+    assert.equal(spendPubFromTx(unsigned), null);
+    assert.equal(unsigned.fs1, undefined);
     assert.equal(verifyReservePortalOpen(unsigned), false);
     const fund = encodeDest(destCommitFromSpendPub(id.spendPub));
     const signed = {
