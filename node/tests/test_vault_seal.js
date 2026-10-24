@@ -70,14 +70,25 @@ describe('store.js vault-seal control flow', () => {
     assert.match(forkFn, /noVault: true/);
     assert.doesNotMatch(forkFn, /emptyVault\(/);
     assert.doesNotMatch(forkFn, /blankFork = true/);
-    assert.match(src, /cloneVault\(emptyVault\(\)\)/);
+    // d0de60e2 seeds every trial from bookVault(): emptyVault() plus the book
+    // magic. The fork root still starts empty, never from the tip reserveVault.
+    const bookFn = src.split('function bookVault()')[1]?.split('function unitsOnBook')[0] || '';
+    assert.match(bookFn, /const vault = emptyVault\(\);/);
+    assert.match(bookFn, /vault\.magic = bookMagic;/);
+    const rootFn = src.split('function trialVaultAtForkRoot')[1]?.split('function trialVaultForFork')[0] || '';
+    assert.match(rootFn, /cloneVault\(bookVault\(\)\)/);
+    assert.doesNotMatch(rootFn, /cloneVault\(reserveVault\)/);
     assert.match(src, /reorgBreaksVaultSeal\(/);
     assert.match(src, /reason: 'reorg_vault_seal'/);
     const adopt = src.split('function finishAdopt')[1]?.split('function ingest')[0] || '';
     assert.match(adopt, /reorg_vault_seal/);
-    const replayIdx = adopt.indexOf('replayVault()');
+    // 45ef3301 then 6ac0b45a replaced the adopt replayVault() with a vault
+    // staged from the LCA. The seal refusal still runs before any vault work.
     const sealIdx = adopt.indexOf('reorg_vault_seal');
-    assert.ok(sealIdx >= 0 && replayIdx > sealIdx, 'reorg_vault_seal must run before replayVault');
+    const parentIdx = adopt.indexOf('vaultParent(');
+    const stageIdx = adopt.indexOf('stageAdoptVault(');
+    assert.equal(adopt.includes('replayVault()'), false);
+    assert.ok(sealIdx >= 0 && parentIdx > sealIdx && stageIdx > sealIdx, 'reorg_vault_seal must run before the vault is staged');
     assert.match(src, /if \(vaultSeal && blocks\.length && !chainHasSealAncestry\(blocks, vaultSeal\)\)/);
     const dart = fs.readFileSync(new URL('../../wallet/lib/main.dart', import.meta.url), 'utf8');
     assert.match(dart, /continuum-vault-seal-banner/);
