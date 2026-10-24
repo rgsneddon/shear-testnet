@@ -236,7 +236,12 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
     const zero = withdrawTx({ from: dest, to: dest, nanos: 0, id: 'z' });
     assert.equal(zero.vout[0].commit, undefined);
     assert.equal(zeroWithdrawRejected(zero).reason, 'mint_amount');
-    assert.equal(boundReserveWithdraw(zero).reason, 'mint_amount');
+    // ac3951ea: a withdraw from a portal with no recorded owner is owner_missing
+    // before its amount is read. The zero amount is mint_amount on an owned portal.
+    assert.equal(boundReserveWithdraw(zero).reason, 'owner_missing');
+    const ownedKey = String(zero.portalId || '').toLowerCase() || dest;
+    const owned = { portals: { [ownedKey]: { ownerPub: 'ab'.repeat(32) } } };
+    assert.equal(boundReserveWithdraw(zero, owned).reason, 'mint_amount');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n1-wd-'));
     try {
       const store = createStore(dir);
