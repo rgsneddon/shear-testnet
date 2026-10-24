@@ -596,7 +596,10 @@ export function fillSnapInterest(rows, blocks, opts = {}) {
     if (interest !== permitted) return { ok: false, reason: 'supply' };
     row.mintedInterest = interest;
     row.permittedInterest = permitted;
-    const advanced = vaultAfterBlock(vault, list[i], priorForOracle(list, i, magic), replay);
+    // Same height foldSupply replays at. A block that omits height is i+1;
+    // replaying it at 0 records a different arrival stub than the fold.
+    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: i + 1 };
+    const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, i, magic), replay);
     if (!advanced.ok) return { ok: false, reason: 'supply' };
     vault = advanced.vault;
     const principal = replayedPrincipal(vault);
@@ -1215,7 +1218,10 @@ export function auditCirculatingSupply(blocks, opts = {}) {
       const withdrawn = openedWithdrawPrincipal(list[bi], vault, headerMs(list[bi]));
       // prior is the prefix this block was applied on. An empty prior
       // installs this header as genesis and skips the epoch boundary.
-      const advanced = vaultAfterBlock(vault, list[bi], priorForOracle(list, bi, magic), {
+      // Same height the step above stamped and foldSupply replays at.
+      // A block that omits height is bi+1, not 0.
+      const vaultBlock = Number.isInteger(h) && h > 0 ? list[bi] : { ...list[bi], height: bi + 1 };
+      const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, bi, magic), {
         requireStakeReward: true,
         magic,
       });
