@@ -23,7 +23,7 @@ import {
   trimmedMeanBps,
   windowBlocksFor,
 } from './reserve_oracle.js';
-import { appendVaultLockNote, applyReserveBlock, chainPeriodIndex, coinbaseRewardRoot, consensusUnlockPeriod, enact, emptyVault, leafEpochsToBurn, leafStubNanos, lockUnlockOf, lockWitnessOf, portalEpochInterest, portalIdFromDest, previewWithdraw, produceLockOpening, provePrincipalOpen, sealEpochLocks, trialReserveApply, VAULT_MINT_DELAY_BLOCKS, vote, VOTE_INCREASE, withdraw } from './reserve_vault.js';
+import { appendVaultLockNote, applyReserveBlock, chainPeriodIndex, coinbaseRewardRoot, consensusUnlockPeriod, enact, emptyVault, leafEpochsToBurn, leafStubNanos, lockUnlockOf, lockWitnessOf, portalEpochInterest, portalIdFromDest, portalIdFromDest20, previewWithdraw, produceLockOpening, provePrincipalOpen, sealEpochLocks, trialReserveApply, VAULT_MINT_DELAY_BLOCKS, vote, VOTE_INCREASE, withdraw } from './reserve_vault.js';
 import { deposit, lockTx, withdrawTx, encodeDeposit, encodeWithdraw, lockTranches } from './owned_portal.js';
 import { pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
 import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
@@ -65,9 +65,16 @@ const T0 = 1_700_000_000_000;
 
 /** These locks are applied. A π leaf is what consensus accepts.
  *  With a signer, lockAuth is that key over the leaf commit, so the EVM
- *  credits it. Reserve.sol refuses a lock with no lockAuth as owner_missing. */
+ *  credits it. Reserve.sol refuses a lock with no lockAuth as owner_missing.
+ *  The carried portal id is H(tag, dest20), the key JS stores the credit
+ *  under and the key Reserve.sol derives from the 20-byte dest. A withdraw
+ *  that carries it names the same portal on both sides. */
 function piLock(args, signer = null) {
   const tx = lockTx(args);
+  if (signer) {
+    tx.portalId = signer.portalId;
+    for (const out of tx.vout || []) if (out?.kind === 'lock') out.portalId = signer.portalId;
+  }
   const held = lockWitnessOf(tx);
   const leaf = held && vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
   if (leaf) tx.vaultLockNote = leaf.note;
@@ -82,7 +89,7 @@ function piLock(args, signer = null) {
 function lockSigner() {
   const id = newIdentity();
   const dest20 = Buffer.from(destCommitFromSpendPub(id.spendPub));
-  return { key: id.privateKey, dest20, dest: encodeDest(dest20) };
+  return { key: id.privateKey, dest20, dest: encodeDest(dest20), portalId: portalIdFromDest20(dest20) };
 }
 
 /** One indexed π leaf. An unindexed matured lock withdraws as stake_reward. */
@@ -214,15 +221,17 @@ function minerOf() {
   return vaultDest(id.address, { viewKey: id.viewKey });
 }
 
-/** Owner-signed withdraw of hidden principal 0, bound to the live tranche commitments. */
-function hiddenWithdrawTx(state, { from, to, id, nowMs }) {
-  const portal = state.portals[portalIdFromDest(from)];
+/** Owner-signed withdraw of hidden principal 0, bound to the live tranche commitments.
+ *  portalId is the carried id. It defaults to the address id. */
+function hiddenWithdrawTx(state, { from, to, id, nowMs, portalId = portalIdFromDest(from) }) {
+  const portal = state.portals[portalId];
   return withdrawTx({
     from,
     to: to || from,
     nanos: 0,
     id,
     nowMs,
+    portalId,
     authBind: {
       tranches: portal?.tranches || [],
       nowMs,
@@ -1410,7 +1419,7 @@ describe('the block path rolls before its transactions', () => {
     ]);
     const draw = withCoinbaseReward(state, drawAt, [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'block-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'block-draw', nowMs: drawAt, portalId: signer.portalId }),
     ]);
     const applied = applyReserveBlock({
       state,
@@ -1476,13 +1485,13 @@ describe('a ≥π withdraw in the second epoch', () => {
     const evmGap = await executeBlockEvm(session, gap, gapAt, T0);
     assert.equal(evmGap.ok, true, evmGap.reason);
     const drawAt = T0 + 2 * epoch;
-    const preview = previewWithdraw(state, who, drawAt);
+    const preview = previewWithdraw(state, signer.portalId, drawAt);
     const owed = coinbaseRewardRoot(state, drawAt);
     const cb = { coinbase: true, vout: [] };
     if (withRoot) cb.rewardRoot = owed;
     const draw = [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'pi-second-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'pi-second-draw', nowMs: drawAt, portalId: signer.portalId }),
     ];
     const applied = applyReserveBlock({
       state,
@@ -1607,7 +1616,7 @@ describe('a withdraw stays open after the enacting block', () => {
     const drawAt = at != null ? at : T0 + epoch + blocksAfter;
     const drawTxs = [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'open-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'open-draw', nowMs: drawAt, portalId: signer.portalId }),
     ];
     const owed = owedForEvm(state, drawAt, drawTxs);
     const body = withCoinbaseReward(state, drawAt, drawTxs);
@@ -1712,7 +1721,7 @@ describe('a no-commit gap keeps the last adopted rate', () => {
     const drawAt = T0 + 3 * epoch + Math.floor(epoch / 2);
     const drawTxs = [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'gap-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'gap-draw', nowMs: drawAt, portalId: signer.portalId }),
     ];
     const owed = owedForEvm(state, drawAt, drawTxs);
     const body = withCoinbaseReward(state, drawAt, drawTxs);
@@ -1795,7 +1804,7 @@ describe('a skipped commit carries forward', () => {
     const drawAt = T0 + 5 * epoch;
     const drawTxs = [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'carry-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'carry-draw', nowMs: drawAt, portalId: signer.portalId }),
     ];
     const owed = owedForEvm(state, drawAt, drawTxs);
     const body = withCoinbaseReward(state, drawAt, drawTxs);
