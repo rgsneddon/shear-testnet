@@ -1,9 +1,10 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createStore } from '../src/store.js';
+import { createRegtestStore } from './regtest_store.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
@@ -65,12 +66,20 @@ function flowTx({ kind, amount, length, lanes, anchor, id }) {
   return tx;
 }
 
+// Regtest work (bits 4, about 16 hashes). Every block carries a real nonce
+// and is stored under its own ShearHash, with no trusted hash.
+async function sealHeader(header, bits) {
+  const found = await mineHeaderParallel(header, bits, 8_192, 1);
+  assert.ok(found && found.block, 'regtest pow');
+  return found.header;
+}
+
 async function grow(store, dest, n) {
   for (let i = 0; i < n; i += 1) {
     const now = T0 + i * 90_000;
     const { tpl } = store.template({ miner: dest, shareBits: 4, now });
     const block = {
-      header: tpl.header,
+      header: await sealHeader(tpl.header, tpl.bits),
       height: tpl.height,
       txs: tpl.txs,
       samples: tpl.samples,
@@ -82,15 +91,12 @@ async function grow(store, dest, n) {
       rootB: tpl.rootB,
       weight: tpl.weight,
     };
-    const got = await Promise.resolve(store.append(block, {
-      trustedPowHash: Buffer.alloc(32),
-      skipSharePow: true,
-    }));
+    const got = await Promise.resolve(store.append(block));
     assert.equal(got.ok, true, `height ${i + 1} ${got.reason}`);
   }
 }
 
-function blockVerdict(store, dest, tx) {
+async function blockVerdict(store, dest, tx) {
   const tip = store.tip();
   const preview = store.template({ miner: dest, shareBits: 4, now: T0 + 16 * 90_000 });
   const stamp = Number(decodeHeader(Buffer.from(preview.tpl.header)).timestamp);
@@ -105,7 +111,7 @@ function blockVerdict(store, dest, tx) {
     txs: [tx],
   });
   return verifyBlock({
-    header: built.header,
+    header: await sealHeader(built.header, built.bits),
     height: built.height,
     txs: built.txs,
     samples: built.samples,
@@ -117,16 +123,17 @@ function blockVerdict(store, dest, tx) {
     rootB: built.rootB,
     weight: built.weight,
   }, tip, {
-    trustedPowHash: Buffer.alloc(32),
-    skipSharePow: true,
     noteAtAnchor: (anchor) => store.anchorNote(anchor),
+    magic: store.magic,
   });
 }
 
 describe('v12 flow byte 3 is rejected before the verifier', () => {
+  after(() => closeMineWorkers());
+
   it('a byte-3 flow proof is send_unavailable on queue, mempool, and verify', { timeout: 180_000 }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-flow-v3-'));
-    const store = createStore(dir);
+    const store = createRegtestStore(dir, { bits: 4 });
     const dest = minerDest();
     resetFlowProofVerifies();
     try {
@@ -134,6 +141,7 @@ describe('v12 flow byte 3 is rejected before the verifier', () => {
       const height = store.tip().height + 1;
       assert.equal(height, 17);
       const opts = {
+        magic: store.magic,
         height,
         noteAtAnchor: (anchor) => store.anchorNote(anchor),
       };
@@ -190,7 +198,7 @@ describe('v12 flow byte 3 is rejected before the verifier', () => {
           anchor: 8,
           id: `block-${spec.kind}-${spec.length}`,
         });
-        const got = blockVerdict(store, dest, tx);
+        const got = await blockVerdict(store, dest, tx);
         assert.equal(got.ok, false, got.reason);
         assert.equal(got.reason, spec.reason, `${tx.id} block ${got.reason}`);
       }
@@ -204,7 +212,7 @@ describe('v12 flow byte 3 is rejected before the verifier', () => {
       });
       assert.equal(store.queueTx(late).reason, 'send_unavailable');
       assert.equal(admitMempool(emptyMempool(), late, opts).reason, 'send_unavailable');
-      assert.equal(blockVerdict(store, dest, late).reason, 'send_unavailable');
+      assert.equal((await blockVerdict(store, dest, late)).reason, 'send_unavailable');
       const v2 = flowTx({
         kind: 'transfer',
         amount: AMOUNTS[2],
@@ -216,7 +224,7 @@ describe('v12 flow byte 3 is rejected before the verifier', () => {
       v2.admit_proof.blob[0] = 2;
       assert.equal(store.queueTx(v2).reason, 'admit_version');
       assert.equal(admitMempool(emptyMempool(), v2, opts).reason, 'admit_version');
-      assert.equal(blockVerdict(store, dest, v2).reason, 'admit_version');
+      assert.equal((await blockVerdict(store, dest, v2)).reason, 'admit_version');
       assert.equal(flowProofVerifyCount(), 0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
