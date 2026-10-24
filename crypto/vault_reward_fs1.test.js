@@ -885,7 +885,13 @@ describe('vault-lock reward proof', () => {
     assert.match(copy, /proveVaultLockRewardWire/);
     assert.match(copy, /'rootEpoch': p\.lockEpoch/);
     assert.match(copy, /'earnEpoch': p\.lockEpoch/);
-    assert.match(pack, /shear-reward-owner-v1/);
+    // The lock digest suffix carries the raw owner pub, as JS
+    // reserveDigestSuffix does (rewardOwnerPub). The owner commit
+    // sha256(shear-reward-owner-v1 || pub) lives in the reward leaf, not here.
+    assert.equal(pack.includes('shear-reward-owner-v1'), false);
+    assert.match(pack, /That owner word is the word JS `rewardOwnerPub` appends/);
+    assert.match(pack, /if \(kind == 'lock'\) \{\r?\n\s*final pub = Uint8List\(32\);/);
+    assert.match(pack, /chunks\.addAll\(pub\);\r?\n\s*chunks\.addAll\(sha256\.convert\(piProof \?\? Uint8List\(0\)\)\.bytes\);/);
   });
 
   it('refuses a proof moved onto another payout', () => {
