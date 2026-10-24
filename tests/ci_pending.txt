@@ -7,3 +7,18 @@ node/tests/test_070_acceptance_v12.js PR3 R5 replays an 8 h spread from stand-in
 node/tests/test_fork_vault.js PR2 Only an FS-1 funded lock credits the vault in v12, which needs real mining on regtest; supply.js lockNotePrincipal (148, 168) and vaultAfterBlock (271) default to testnet magic, so a regtest lock's fund proof does not verify.
 node/tests/test_vault_fs1_funding_v12.js PR2 Suite 2 mines with a zero trusted hash that PR 130 refuses; its regtest move needs supply.js lockNotePrincipal, chain.js buildTemplate potSubsidyAt and the verifyFlowAdmitFs1 default to take the book magic.
 node/tests/test_genesis_pool_seal.js PR3 Seals every block through submitHeader { trusted: true } with one stand-in id, which PR 130 refuses as not_heavier on the second block, and seeds its share with rememberLiveSharePow. Real data needs the shared regtest module to mine both the block and a share above SHARE_FLOOR_BITS while block bits stay higher than the share floor.
+
+# Tracked: files PR 3 must move to the shared regtest mining module. They pass
+# today and stay in the full suite; a track row only keeps them from being lost.
+node/tests/test_ibd_unsigned.js PR3 track Mines testnet-difficulty blocks with synchronous mineTemplate on the main thread (about 2^17 hashes each), which blocks the event loop and the file's own timeout.
+node/tests/test_levy_verify.js PR3 track Mines testnet-difficulty blocks with synchronous mineTemplate on the main thread, which blocks the event loop and the file's own timeout.
+node/tests/test_pot_prop.js PR3 track Its older subtests mine a testnet-difficulty block with synchronous mineTemplate on the main thread; the snapshot subtest already mines on regtest.
+node/tests/test_reserve.js PR3 track mineOne mines testnet-difficulty blocks with synchronous mineTemplate on the main thread, which blocks the event loop and the file's own timeout.
+node/tests/test_load_verify_v12.js PR3 track Mines testnet-difficulty blocks in a spawned child (event loop free, about 20 min); move to the shared module.
+node/tests/test_lock_does_not_stall.js PR3 track Mines with two spawned jit-full children under its own timer (event loop free); move to the shared module.
+node/tests/test_hash_bonus_cap.js PR3 track before() runs a synchronous findShare at SHARE_FLOOR_BITS (about 256 hashes); blocks now mine on mine_worker.mjs.
+node/tests/test_wire_sharebatch.js PR3 track Synchronous findShare at the share floor (about 256 hashes) on the main thread.
+pool/tests/test_seal_cache_v12.js PR3 track Synchronous findShare at the share floor, capped at 1600 tries, on the main thread.
+pool/tests/test_drop_idle.js PR3 track Its own synchronous share search (up to 6,000 nonces at 16 bits) on the main thread.
+pool/tests/test_stale_grace.js PR3 track Its own synchronous share search (up to 30,000 nonces) on the main thread.
+node/tests/share_lane.mjs PR3 track Helper: a synchronous findShare lane (up to 2,000,000 tries); fold into the shared mining module.
