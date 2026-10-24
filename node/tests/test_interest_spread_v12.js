@@ -96,11 +96,11 @@ function potAt(ts) {
   return potSubsidyAt({ nowMs: ts, genesisMs: GENESIS, magic: MAGIC_TESTNET });
 }
 
-// Every block names its height, as a store or wire block does. foldSupply
-// and supplyStep replay the vault at i+1 when a block omits it, while
-// vaultAfterBlock, fillSnapInterest, and the audit replay it at 0. A lock at
-// height 0 is on a period start (stub 0); at height 1 it earns an arrival
-// stub, so a height-less chain made the fold disagree with the other walks.
+// Every block names its height, as a store or wire block does. The fold, the
+// supply step, the snap fill and the audit all replay a block that omits it at
+// i+1 (test_supply_walk_heights_v12 pins that they agree).
+// A lock at height 0 is on a period start (stub 0); at height 1 it earns an
+// arrival stub.
 function blockAt(ts, miner, notes, moreTxs, observe, height = 1) {
   const potNotes = notes.filter((n) => n.kind !== 'finder-fee' && n.kind !== 'reserve-fee' && n.kind !== 'hash');
   const shares = potNotes.map((n) => ({
