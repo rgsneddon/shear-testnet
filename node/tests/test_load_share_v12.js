@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { hash20FromAddress, newIdentity } from '../../crypto/address.js';
+import { destCommitFromSpendPub, encodeDest, hash20FromAddress, isPayableDest, newIdentity } from '../../crypto/address.js';
 import {
   GENESIS_BITS_PACKED,
   MAGIC_TESTNET,
@@ -48,6 +48,17 @@ process.env.SHEAR_SEAL_KEY_DIR = keyDir;
 function minerDest() {
   const id = newIdentity();
   return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+}
+
+/**
+ * A pool-fee note pays a payable dest (dest20||B) and carries its wrap, or the
+ * short sink (63ae6767, poolFeeNoteBound). A flow login dest has no B.
+ */
+function payablePoolDest() {
+  const id = newIdentity();
+  const dest = encodeDest(destCommitFromSpendPub(id.spendPub), id.admitBase);
+  assert.equal(isPayableDest(dest), true);
+  return dest;
 }
 
 function tmp(tag) {
@@ -246,7 +257,10 @@ describe('v12 load applies the share rules', () => {
       const maxFee = Math.floor(probe.subsidy * POOL_FEE_MAX_BPS / 10000);
       assert.ok(probe.carry > 0);
       assert.ok(maxFee > 0);
-      const pool = minerDest();
+      const pool = payablePoolDest();
+      // A fee note to a dest with no admit base has no wrap. Load refuses it.
+      const unwrapped = bookAt(spread.dests, spread.count, Math.floor(probe.subsidy * 200 / 10000), minerDest());
+      expectFail(unwrapped.blocks, /pool_fee_dest/);
       const fees = [
         { name: '0', fee: 0, pool: null, ok: true },
         { name: '200', fee: Math.floor(probe.subsidy * 200 / 10000), pool, ok: true },
