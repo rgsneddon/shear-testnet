@@ -20,6 +20,7 @@ import {
   ASERT_EMERGENCY_GAP_FACTOR,
 } from './asert.js';
 import { decodeHeader, encodeHeader } from './header.js';
+import { nonceWithShareTarget } from './share_batch.js';
 import { createStore } from '../node/src/store.js';
 import { judgeShare, createPool } from '../pool/src/pool.js';
 
@@ -162,13 +163,35 @@ describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
     assert.equal(meetsTarget(miss, 8), true);
     assert.equal(meetsTarget(miss, want), false);
     assert.equal(meetsTarget(miss, Number(poolJob.blockBits)), false);
+    // Share credit is the nonce high byte (b0d0b030). The issued job header
+    // carries nonce 0, which names no legal share width, so it earns nothing.
+    const poolHdr = decodeHeader(Buffer.from(poolJob.header, 'hex'));
+    const shareHeader = (nonce) => encodeHeader({
+      version: poolHdr.version,
+      prevBlockHash: poolHdr.prevBlockHash,
+      merkleRoot: poolHdr.merkleRoot,
+      continuityRoot: poolHdr.continuityRoot,
+      timestamp: poolHdr.timestamp,
+      bits: poolHdr.bits,
+      nonce,
+      baseFee: poolHdr.baseFee,
+    });
+    const unnamed = judgeShare({
+      job: { ...poolJob, shareBits: 8 },
+      hash: miss,
+      header: shareHeader(0n),
+      dest: '',
+    });
+    assert.equal(unnamed.ok, false);
+    assert.equal(unnamed.reason, 'share_target');
     const judged = judgeShare({
       job: { ...poolJob, shareBits: 8 },
       hash: miss,
-      header: Buffer.from(poolJob.header, 'hex'),
+      header: shareHeader(nonceWithShareTarget(0n, 8)),
       dest: '',
     });
-    assert.equal(judged.ok, true);
+    assert.equal(judged.ok, true, judged.reason);
+    assert.equal(judged.creditedShareBits, 8);
     assert.equal(judged.block, false);
 
     const offered = store.template({
