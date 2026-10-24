@@ -11,6 +11,7 @@ import { sealNote, verifyRange } from '../../crypto/note.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
+import { compactLockLeakRejected } from '../../crypto/reserve_vault.js';
 
 const RANGE_BITS = 64;
 const NEED = 1 + 32 + RANGE_BITS * 32 + RANGE_BITS * 192 + 64;
@@ -50,7 +51,8 @@ describe('v12 range proofs are exact length and canonical', () => {
     const dest = who();
     const amounts = [0, 1, 2_000_000_000, 100_000_000_000];
     for (const amount of amounts) {
-      const note = sealNote(amount, { dest20: hash20FromAddress(dest), kind: 'lock' });
+      const d20 = Buffer.from(hash20FromAddress(dest));
+      const note = sealNote(amount, { dest20: d20, kind: 'lock' });
       const proof = Buffer.from(note.rangeProof);
       assert.equal(proof.length, NEED, String(amount));
       assert.equal(verifyRange(note.commit, proof), true, String(amount));
@@ -63,15 +65,16 @@ describe('v12 range proofs are exact length and canonical', () => {
       for (const pr of bad) {
         assert.equal(verifyRange(note.commit, pr), false, String(amount));
       }
+      // A lock names dest20 only. from, to, and an ssa1 address on a lock are
+      // vote_leak, which the mempool checks before the range proof.
       const tx = (rangeProof) => ({
         kind: 'lock',
-        from: dest,
-        to: dest,
         nanos: amount,
         fee: 0,
-        vin: [{ address: dest }],
-        vout: [{ ...note, kind: 'lock', address: dest, rangeProof }],
+        vin: [{ dest20: d20 }],
+        vout: [{ ...note, kind: 'lock', dest20: d20, rangeProof }],
       });
+      assert.equal(compactLockLeakRejected(tx(proof)), null, `${amount} leak`);
       const honest = admitMempool(emptyMempool(), tx(proof), { baseFee: 1 });
       assert.notEqual(honest.reason, 'range_proof', JSON.stringify(honest));
       for (const pr of bad) {
@@ -85,7 +88,8 @@ describe('v12 range proofs are exact length and canonical', () => {
   it('verifyBlock rejects a trailing-byte range proof', () => {
     const dest = who();
     const amount = 1;
-    const note = sealNote(amount, { dest20: hash20FromAddress(dest), kind: 'lock' });
+    const d20 = Buffer.from(hash20FromAddress(dest));
+    const note = sealNote(amount, { dest20: d20, kind: 'lock' });
     const proof = Buffer.from(note.rangeProof);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-range-'));
     const store = createStore(dir);
@@ -93,18 +97,17 @@ describe('v12 range proofs are exact length and canonical', () => {
     const tpl = store.template({ miner: dest, shareBits: 4, now: t0 }).tpl;
     const tx = {
       kind: 'lock',
-      from: dest,
-      to: dest,
       nanos: amount,
       fee: 0,
-      vin: [{ address: dest }],
+      vin: [{ dest20: d20 }],
       vout: [{
         ...note,
         kind: 'lock',
-        address: dest,
+        dest20: d20,
         rangeProof: Buffer.concat([proof, Buffer.from([1])]),
       }],
     };
+    assert.equal(compactLockLeakRejected(tx), null, 'leak');
     const txs = tpl.txs.concat([tx]);
     const decoded = decodeHeader(Buffer.from(tpl.header));
     decoded.merkleRoot = merkleRoot(txs.map(digestTx));
