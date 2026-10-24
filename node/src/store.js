@@ -334,6 +334,18 @@ const OFFER_DROPPED_CAP = 1024;
 const LOCAL_HEADER_INDEX = 4096;
 const PROOF_HASH_BATCH = 16;
 
+/** JSON with sorted object keys, so a digest does not depend on key order. */
+function canonicalJson(value) {
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v === undefined ? null : v)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).filter((k) => value[k] !== undefined).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
+  }
+  const out = JSON.stringify(value);
+  return out === undefined ? 'null' : out;
+}
+
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
   reorgHaltDepth = Number(process.env.SHEAR_REORG_HALT_DEPTH || 0),
@@ -427,6 +439,8 @@ export function createStore(dir, {
   let segLive = [];
   let unprunedLive = null;
   let snapVaultRaw = null;
+  // Body digest the accepted book.snap bound for reserve.json (exact snap only).
+  let snapVaultBind = '';
   let frameTags = [];
   let frameStream = null;
   let frameAt = 0;
@@ -751,14 +765,22 @@ export function createStore(dir, {
     return snap.diskDigest === legacyDiskDigest();
   }
 
-  function vaultCommitmentFromFile() {
+  // A snap boot installs reserve.json or vault.snap without a replay, so the
+  // snap binds every field of that body. vaultCommitment() covers only the seal
+  // fields (pot, stakes, epoch pins). mintedIds, votes, freezes, tranches, and
+  // the reward book sit outside it and must not ride in unbound.
+  function vaultBodyDigest(raw) {
+    if (!raw || typeof raw !== 'object' || !raw.portals) return '';
+    const body = { ...raw };
+    delete body.vaultSeal;
+    delete body.blankFork;
+    return createHash('sha256').update('shear-vault-body-v1').update(canonicalJson(body)).digest('hex');
+  }
+
+  function vaultBindFromFile() {
     if (!fs.existsSync(vaultFile)) return '';
     try {
-      const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
-      if (!raw || typeof raw !== 'object' || !raw.portals) return '';
-      delete raw.vaultSeal;
-      delete raw.blankFork;
-      return vaultCommitment(raw);
+      return vaultBodyDigest(JSON.parse(fs.readFileSync(vaultFile, 'utf8')));
     } catch {
       return '';
     }
@@ -848,7 +870,7 @@ export function createStore(dir, {
   function vaultSnapBody(snap) {
     const saved = readVaultSnap();
     if (!saved || saved.height !== snap.height) return null;
-    if (vaultCommitment(saved.body) !== snap.vaultCommitment) return null;
+    if (vaultBodyDigest(saved.body) !== snap.vaultCommitment) return null;
     return saved.body;
   }
 
@@ -865,10 +887,11 @@ export function createStore(dir, {
     const vaultBody = vaultSnapBody(snap);
     if (!vaultBody) return null;
     snapVaultRaw = vaultBody;
-    const vaultNow = vaultCommitmentFromFile();
+    const vaultNow = vaultBindFromFile();
     if (snap.height === blocks.length) {
       if (!diskDigestMatches(snap)) return null;
       if (!vaultNow || vaultNow !== snap.vaultCommitment) return null;
+      snapVaultBind = vaultNow;
       return snap;
     }
     const prefix = blocks.slice(0, snap.height);
@@ -1332,7 +1355,7 @@ export function createStore(dir, {
       } catch { /* rebuild from chain */ }
     }
     // An exact snap already committed this file. Replaying it would walk every block.
-    if (loadMode === 'snap' && loaded && vaultCommitmentFromFile()) {
+    if (loadMode === 'snap' && loaded && snapVaultBind && vaultBodyDigest(loaded) === snapVaultBind) {
       installVault(loaded);
       syncBlankFlag();
       return;
@@ -1340,8 +1363,10 @@ export function createStore(dir, {
     // A shorter snap committed the prefix vault. Apply only the unsealed suffix.
     // reserve.json may already be at the tip; vault.snap is the prefix vault.
     // The index is the prior height vaultArgs uses to pin the chain genesis.
-    if (loadMode === 'suffix' && (snapVaultRaw || (loaded && vaultCommitmentFromFile()))) {
-      installVault(snapVaultRaw || loaded);
+    // acceptBookSnap sets snapVaultRaw for every suffix plan. reserve.json may be
+    // at the tip, so it is never the prefix vault.
+    if (loadMode === 'suffix' && snapVaultRaw) {
+      installVault(snapVaultRaw);
       const suffix = blocks.slice(prefixHeight);
       for (let s = 0; s < suffix.length; s += 1) {
         const b = suffix[s];
@@ -1758,7 +1783,7 @@ export function createStore(dir, {
     if (!blocks.length) return;
     if (acceptedSeries.length !== blocks.length || unitAt.length !== blocks.length) return;
     try {
-      const commit = vaultCommitmentFromFile();
+      const commit = vaultBindFromFile();
       const gms = genesisHeaderMs(blocks);
       const tipHash = Buffer.from(blocks[blocks.length - 1].hash);
       if (!commit || !gms || tipHash.length !== 32) return;

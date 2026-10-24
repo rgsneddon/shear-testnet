@@ -1,6 +1,8 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import { newIdentity, freshStealthDest, hash20FromAddress, ed25519RawPub, encodeDest, destCommitFromSpendPub, isDestAddress } from '../../crypto/address.js';
 import { signSpendTx, verifySpendSig } from '../../crypto/spend.js';
@@ -31,6 +33,10 @@ import { merkleRoot } from '../../crypto/merkle.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { coinbaseSplit as mintSplit } from '../../crypto/mint.js';
 import { sealCoinbaseNote, excessOf, noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js';
+import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
+import { vaultCommitment } from '../../crypto/vault_seal.js';
+import { createRegtestStore } from './regtest_store.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 
 function destOf(id) {
   return freshStealthDest(id).dest;
@@ -356,10 +362,8 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
       }
       const chainSrc = fs.readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
       assert.match(chainSrc, /SHEAR_ALLOW_HASHBONUS_CUSTODY/);
-      const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
-      const boot = storeSrc.slice(storeSrc.indexOf('function bootVault'), storeSrc.indexOf('\n  bootVault();'));
-      assert.match(boot, /replayVault\(\);/);
-      assert.doesNotMatch(boot, /^\s*return;/m);
+      // The boot-vault half of 3128af2a ("vault boot always replays") is a
+      // behaviour test below. 3df6365c added the keyed snap boot on purpose.
     } finally {
       if (prev === undefined) delete process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY;
       else process.env.SHEAR_ALLOW_HASHBONUS_CUSTODY = prev;
@@ -555,5 +559,82 @@ describe('coinbase pot is PROP across shareBatch dests', () => {
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot, carry\)/);
     assert.doesNotMatch(src, /custodyPotShares\(/);
+  });
+});
+
+// 3128af2a: a vault boot never trusts reserve.json on its own. 3df6365c lets
+// an exact keyed book.snap skip the replay, so the snap must bind every field
+// the boot installs. Real regtest work, no trusted PoW.
+describe('boot vault and the keyed book snap', () => {
+  after(() => closeMineWorkers());
+
+  async function mineRegtest(store, miner, now) {
+    const want = regtestBitsOverride(MAGIC_REGTEST);
+    const { tpl } = store.template({ miner, bits: want, shareBits: 4, now });
+    assert.equal(tpl.bits, want, 'template seals the regtest bits');
+    const found = await mineHeaderParallel(tpl.header, tpl.bits, 8_192, 1);
+    assert.ok(found && found.block, 'regtest pow');
+    const got = await Promise.resolve(store.append({
+      header: found.header,
+      height: tpl.height,
+      txs: tpl.txs,
+      samples: tpl.samples,
+      shareBatch: tpl.shareBatch || [],
+      miner,
+      aLeaves: tpl.aLeaves,
+      bLeaves: tpl.bLeaves,
+      rootA: tpl.rootA,
+      rootB: tpl.rootB,
+      weight: tpl.weight,
+    }));
+    assert.equal(got.ok, true, `append ${got.reason || ''}`);
+  }
+
+  function bodyOf(bytes) {
+    const raw = JSON.parse(Buffer.from(bytes).toString('utf8'));
+    delete raw.vaultSeal;
+    delete raw.blankFork;
+    return raw;
+  }
+
+  it('installs reserve.json only when book.snap bound it; any other edit is replayed away', { timeout: 300_000 }, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-boot-vault-'));
+    const vaultPath = path.join(dir, 'reserve.json');
+    const miner = encodeDest(Buffer.alloc(20, 7));
+    const store = createRegtestStore(dir, { bits: 4 });
+    const t0 = 1_700_000_000_000;
+    for (let i = 0; i < 3; i += 1) await mineRegtest(store, miner, t0 + i * 90_000);
+    const honest = fs.readFileSync(vaultPath);
+    const want = bodyOf(honest);
+    const again = createRegtestStore(dir, { bits: 4 });
+    assert.equal(again.loadMode, 'snap', 'an untouched own book reloads from the snap');
+    assert.equal(vaultCommitment(again.reserveVault), vaultCommitment(want));
+    const fakeId = 'ab'.repeat(32);
+    const edits = [
+      // Inside vaultCommitment().
+      ['totalLockedNanos', (raw) => { raw.totalLockedNanos = '314159265359'; }],
+      // Outside vaultCommitment(): the snap boot used to install these as read.
+      ['mintedIds', (raw) => { raw.mintedIds = { ...(raw.mintedIds || {}), [fakeId]: 1 }; }],
+      ['votes', (raw) => { raw.votes = { increase: 7, decrease: 0, hold: 0 }; }],
+      ['freezes', (raw) => { raw.freezes = { ...(raw.freezes || {}), [fakeId]: { at: 1 } }; }],
+    ];
+    for (const [label, edit] of edits) {
+      // Edit the file the current book.snap binds (the last reload was a snap).
+      const raw = JSON.parse(fs.readFileSync(vaultPath, 'utf8'));
+      edit(raw);
+      fs.writeFileSync(vaultPath, JSON.stringify(raw));
+      const booted = createRegtestStore(dir, { bits: 4 });
+      assert.notEqual(booted.loadMode, 'snap', `${label}: book.snap did not bind this reserve.json`);
+      const v = booted.reserveVault;
+      assert.equal(vaultCommitment(v), vaultCommitment(want), label);
+      assert.equal(String(v.totalLockedNanos), String(want.totalLockedNanos), label);
+      assert.deepEqual(Object.keys(v.mintedIds || {}).sort(), Object.keys(want.mintedIds || {}).sort(), label);
+      assert.deepEqual({ ...v.votes }, { ...want.votes }, label);
+      assert.deepEqual(Object.keys(v.freezes || {}).sort(), Object.keys(want.freezes || {}).sort(), label);
+      // The replay rewrote reserve.json and a fresh snap binds it again.
+      const next = createRegtestStore(dir, { bits: 4 });
+      assert.equal(next.loadMode, 'snap', `${label}: the replayed book snaps again`);
+      assert.equal(vaultCommitment(next.reserveVault), vaultCommitment(want), label);
+    }
   });
 });
