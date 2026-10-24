@@ -378,6 +378,16 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
     const t0 = 1_700_000_000_000;
     const copied = b.append(cloneBlock(parentBlock));
     assert.equal(copied.ok, true, copied.reason);
+    // Each body's claim is hashed off-loop before its verify is scheduled,
+    // so verifies start one claim apart. Holding each ingest briefly makes
+    // them overlap on any host, so the cap and the queue are both exercised.
+    // The real ingest still runs and still refuses the missed target.
+    const realIngest = b.ingest.bind(b);
+    b.ingest = (fork, opts) => new Promise((resolve, reject) => {
+      setTimeout(() => {
+        Promise.resolve().then(() => realIngest(fork, opts)).then(resolve, reject);
+      }, 300);
+    });
     const { p2p, rpc, port } = await listenNode(b);
     const events = [];
     const orig = console.error;
@@ -403,9 +413,11 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
           baseFee: 1n,
         });
         header = missHeader(header, i * 30 + 1);
+        // The claim is the header's own ShearHash, so the p2p claim check
+        // passes and verify is what refuses the missed target as pow.
         lines.push(blockLine({
           header,
-          hash: Buffer.alloc(32, i + 3),
+          hash: shearHash(header),
           height: 2,
           txs: [],
           shareBatch: [{ nonce: 1 + i }, { nonce: 50 + i }],
@@ -521,12 +533,22 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
       badHeader.header = missHeader(second.header, 90);
       const goodHash = Buffer.from(second.hash).toString('hex');
       sock.write(blockLine(badShare));
+      // A missed header that claims the good block's id, with a
+      // trustedPowHash on the wire, is hash_claim: the claim is not its own
+      // ShearHash. The wire field does not change that.
       sock.write(blockLine(badHeader, { trustedPowHash: goodHash }));
       // The coinbase commits the share frame. A mutated nonce misses that
       // root before ShearHash runs, so the reject is share_slot.
       const sawShare = await waitFor(() => events.some((e) => e.reason === 'share_slot'), 60_000);
-      const sawPow = await waitFor(() => events.some((e) => e.reason === 'pow'), 60_000);
+      const sawClaim = await waitFor(() => events.some((e) => e.reason === 'hash_claim'), 60_000);
       assert.equal(sawShare, true, JSON.stringify(events));
+      assert.equal(sawClaim, true, JSON.stringify(events));
+      // The same missed header under its own ShearHash reaches verify, which
+      // refuses it as pow.
+      const ownId = cloneBlock(badHeader);
+      ownId.hash = shearHash(ownId.header);
+      sock.write(blockLine(ownId, { trustedPowHash: goodHash }));
+      const sawPow = await waitFor(() => events.some((e) => e.reason === 'pow'), 60_000);
       assert.equal(sawPow, true, JSON.stringify(events));
       assert.equal(store.tip().height, 1);
     } finally {
