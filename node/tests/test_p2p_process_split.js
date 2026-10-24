@@ -6,12 +6,59 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { decodeHeader, encodeHeader } from '../../crypto/header.js';
-import { encodeWireBlock, fingerprintHelloHash } from '../src/p2p.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from '../../crypto/asert.js';
+import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
+import { meetsTarget, setHashBackend, shearHash } from '../../crypto/shear_hash.js';
+import { decodeWireBlock, encodeWireBlock, fingerprintHelloHash } from '../src/p2p.js';
+
+try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const fixturePath = path.join(root, 'node/tests/fixtures/p2p-wedge-blocks.json');
+// The v12 wedge chain: sealed at GENESIS_BITS_PACKED with real ShearHash-v3
+// header nonces and floor-width share nonces (see test_p2p_wedge.js). The
+// older p2p-wedge-blocks.json was sealed at packed bits 786432 and a v12
+// book refuses its first block.
+const fixturePath = path.join(root, 'node/tests/fixtures/p2p-wedge-v12.json');
+
+/** Wire blocks for the v12 wedge chain, with the fixture's own share nonces. */
+function wedgeWireBlocks(fixture) {
+  return fixture.blocks.map((raw, i) => {
+    const block = decodeWireBlock(raw);
+    const header = Buffer.from(block.header);
+    const decoded = decodeHeader(header);
+    assert.equal(decoded.bits, GENESIS_BITS_PACKED, `wedge block ${i + 1} bits`);
+    assert.equal(decoded.nonce, BigInt(fixture.headerNonces[i]), `wedge block ${i + 1} nonce`);
+    const shareNonces = fixture.shareNonces[i];
+    const shareBatch = shareNonces
+      ? (block.shareBatch || []).map((row, j) => (shareNonces[j] == null ? row : { ...row, nonce: shareNonces[j] }))
+      : (block.shareBatch || []);
+    return encodeWireBlock({
+      header,
+      hash: block.hash,
+      height: block.height,
+      txs: block.txs,
+      samples: block.samples || [],
+      shareBatch,
+      hashCredits: block.hashCredits,
+      hashSpill: block.hashSpill || [],
+      miner: block.miner,
+      aLeaves: block.aLeaves,
+      bLeaves: block.bLeaves,
+      rootA: block.rootA,
+      rootB: block.rootB,
+    });
+  });
+}
+
+/** A header that misses its own bits, so verify refuses it as pow. */
+function missHeader(header, salt) {
+  const bits = decodeHeader(Buffer.from(header)).bits;
+  for (let n = BigInt(salt); n < BigInt(salt) + 80n; n += 1n) {
+    const h = setNonce(Buffer.from(header), n);
+    if (!meetsTarget(shearHash(h), bits)) return h;
+  }
+  throw new Error('nonce still hit target');
+}
 
 function killChild(child) {
   if (!child || child.exitCode != null) return;
@@ -168,7 +215,8 @@ async function waitFor(fn, ms, label) {
     if (got) return got;
     await delay(40);
   }
-  throw new Error(label || 'timeout');
+  // A function label reads child stderr when the wait ends, not when it starts.
+  throw new Error((typeof label === 'function' ? label() : label) || 'timeout');
 }
 
 function jsonEvents(text, event) {
@@ -274,9 +322,9 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
 
   it('two process launches: fat shareBatch ingest, stats 200, bad pow, best peer, serve cap', async () => {
     const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
-    const blocks = fixture.blocks;
-    assert.ok((blocks[1].shareBatch || []).length >= 1);
-    assert.ok((blocks[2].shareBatch || []).length >= 1);
+    const blocks = wedgeWireBlocks(fixture);
+    assert.ok((decodeWireBlock(blocks[1]).shareBatch || []).length >= 1);
+    assert.ok((decodeWireBlock(blocks[2]).shareBatch || []).length >= 1);
     const fatBytes = JSON.stringify(blocks[1]) + JSON.stringify(blocks[2]);
     assert.ok(fatBytes.length > 1500, `shareBatch blocks are ${fatBytes.length} bytes`);
 
@@ -320,7 +368,7 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
         assert.ok(sideBoot.p2p > 0);
         assert.notEqual(sideBoot.p2p, poolBoot.http);
 
-        await waitFor(() => side.stderr().includes('"event":"ipc_up"') && pool.stderr().includes('"event":"ipc_up"'), 10_000, `ipc did not come up\n${pool.stderr()}\n${side.stderr()}`);
+        await waitFor(() => side.stderr().includes('"event":"ipc_up"') && pool.stderr().includes('"event":"ipc_up"'), 10_000, () => `ipc did not come up\n${pool.stderr()}\n${side.stderr()}`);
         const p2pOwner = owningPid(sideBoot.p2p);
         assert.equal(p2pOwner, side.child.pid, `p2p port ${sideBoot.p2p} owner ${p2pOwner} sidecar ${side.child.pid} pool ${pool.child.pid}`);
         assert.notEqual(owningPid(sideBoot.p2p), pool.child.pid);
@@ -347,7 +395,7 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
           samples.push(sample);
           assertStats(sample);
           return Number(sample.body.height) >= 1;
-        }, 90_000, `parent block did not apply\n${side.stderr().slice(-2000)}\n${pool.stderr().slice(-2000)}`);
+        }, 90_000, () => `parent block did not apply\n${side.stderr().slice(-2000)}\n${pool.stderr().slice(-2000)}`);
 
         let sawDuringFat = false;
         const polling = (async () => {
@@ -371,7 +419,7 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
 
         const beforeBad = Number((await stats(poolBoot.http)).body.height);
         const tipDecoded = decodeHeader(Buffer.from(blocks[2].header, 'hex'));
-        const badHeader = encodeHeader({
+        const badHeader = missHeader(encodeHeader({
           version: tipDecoded.version,
           prevBlockHash: Buffer.from(blocks[2].hash, 'hex'),
           merkleRoot: tipDecoded.merkleRoot,
@@ -380,10 +428,13 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
           bits: tipDecoded.bits,
           nonce: tipDecoded.nonce + 99n,
           baseFee: tipDecoded.baseFee,
-        });
+        }), Number(tipDecoded.nonce % 1_000_000n) + 99);
         const bad = JSON.parse(JSON.stringify(blocks[2]));
         bad.header = badHeader.toString('hex');
-        bad.hash = 'ff'.repeat(32);
+        // The claim is the header's own ShearHash, so the sidecar's claim
+        // check passes and verify is what refuses the missed target as pow.
+        // A forged claim is refused earlier as hash_claim.
+        bad.hash = Buffer.from(shearHash(badHeader)).toString('hex');
         bad.height = beforeBad + 1;
         const badLine = `${JSON.stringify({ type: 'block', magic: MAGIC_TESTNET, block: bad })}\n`;
         assert.equal(badLine.includes('trustedPowHash'), false);
@@ -394,7 +445,7 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
         await waitFor(
           () => jsonEvents(side.stderr(), 'p2p_ingest').some((e) => e.ok === false && e.reason === 'pow'),
           60_000,
-          `bad pow not rejected\n${side.stderr().slice(-2500)}`,
+          () => `bad pow not rejected\n${side.stderr().slice(-2500)}`,
         );
         await delay(200);
         const afterBad = await stats(poolBoot.http);
@@ -468,7 +519,7 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
         peers.push(ask);
         await waitFor(() => ask.lines.length >= 1, 4000, 'serve peer');
         ask.sock.write(`${JSON.stringify({ type: 'getblock', magic: MAGIC_TESTNET, hash: blocks[0].hash })}\n${JSON.stringify({ type: 'getblock', magic: MAGIC_TESTNET, hash: blocks[1].hash })}\n`);
-        await waitFor(() => jsonEvents(side.stderr(), 'p2p_getblock_serve').some((e) => e.n <= 1 && e.left >= 1), 8000, `serve cap\n${side.stderr().slice(-1500)}`);
+        await waitFor(() => jsonEvents(side.stderr(), 'p2p_getblock_serve').some((e) => e.n <= 1 && e.left >= 1), 8000, () => `serve cap\n${side.stderr().slice(-1500)}`);
 
         const wireText = received.join('');
         assert.equal(wireText.includes('trustedPowHash'), false);

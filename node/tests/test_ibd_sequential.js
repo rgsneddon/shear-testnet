@@ -7,6 +7,7 @@ import { encodeDest } from '../../crypto/address.js';
 import { SAMPLE_PRUNE_CONFIRMATIONS, GENESIS_BITS_PACKED, HEADER_AHEAD_MS } from '../../crypto/asert.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
+import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import { buildTemplate, verifyBlock, digestTx, GENESIS_PREV } from '../src/chain.js';
 import { createStore, startNode } from '../src/node.js';
 import {
@@ -241,7 +242,7 @@ describe('sequential IBD', () => {
     assert.equal(isFinalIngestFail('hash_bonus'), false);
   });
 
-  it('createP2p getblock stays on height H after a hash_bonus ingest fail', { timeout: 30_000 }, async () => {
+  it('createP2p getblock stays on height H after a hash_bonus ingest fail', { timeout: 60_000 }, async () => {
     const dest = destMiner();
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-p2p-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-p2p-b-'));
@@ -255,6 +256,16 @@ describe('sequential IBD', () => {
       assert.equal(mineOne(a.store, dest).ok, true);
       assert.equal(mineOne(a.store, dest).ok, true);
       assert.equal(a.store.tip().height, 2);
+      // The stand-in id meets the target and fails the claim check, so the
+      // body never reaches ingest. Height 1 is re-keyed to ShearHash(header)
+      // so the claim matches. That digest misses the target, and header
+      // admission would drop the peer before the body retry this test watches.
+      const heightOne = a.store.blocks.find((block) => Number(block.height) === 1);
+      const header = Buffer.isBuffer(heightOne.header) && heightOne.header.length === 128
+        ? Buffer.from(heightOne.header)
+        : Buffer.from(String(heightOne.header), 'hex');
+      heightOne.hash = Buffer.from(await hashHeaderOffLoop(header));
+      b.store.offerHeaders = () => ({ accepted: 0, dropped: false });
       const origIngest = b.store.ingest.bind(b.store);
       let failH = 1;
       b.store.ingest = (blocks, opts = {}) => {

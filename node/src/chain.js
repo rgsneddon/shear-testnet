@@ -2978,12 +2978,21 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
     const unfunded = !bareVote && (!Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint);
+    // A wrapped-SHE programme never mints. Its programId arm is live for any
+    // v12 kind. Its kind arm (wrap, wshe, ...) and its ticker arm are refused
+    // first today, as kind (v12KindRejected) and unsigned (unsignedBodyField);
+    // they stay as a backstop if either gate moves.
     if (wrapMintForbidden(tx)) {
       return { ok: false, reason: 'mint_forbidden' };
     }
+    // The join programme is gone. Its programId arm is live for any v12 kind.
+    // The join-genesis kind is refused first as kind (v12KindRejected); that
+    // arm stays as a backstop if the kind gate moves.
     if (String(tx.programId || '') === JOIN_PROGRAM || String(tx.kind || '') === JOIN_KIND_GENESIS) {
       return { ok: false, reason: 'join_removed' };
     }
+    // Live: an unfunded body (no vin, or mint set) that is not the Reserve's
+    // own extra-mint, such as a fee-paying vote with no input.
     if ((unfunded || tx.mint) && !extraMintAllowed(tx.programId, { kind: tx.kind })) {
       return { ok: false, reason: 'mint_forbidden' };
     }

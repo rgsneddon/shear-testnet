@@ -5,7 +5,7 @@ import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HAS
 import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveRejected } from '../../crypto/reserve_oracle.js';
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
-import { hashHex } from '../../crypto/shear_hash.js';
+import { HEADER_LEN, hashHex } from '../../crypto/shear_hash.js';
 import { asCommitFault } from './process_guard.js';
 import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
@@ -313,6 +313,15 @@ function faultHooksOpen(magic) {
   const ctx = String(process.env.NODE_TEST_CONTEXT || '');
   return ctx === 'child' || ctx === 'child-v8';
 }
+/** Open-round rows are a format-checked advertisement, not a proof. */
+export const OPEN_ROUND_CAP = 1024;
+/** Distinct tags one peer address may land in the open-round map. */
+export const OPEN_ROUND_PEER_TAGS = 64;
+/** Updates one peer address may land per window. The rest are dropped. */
+export const OPEN_ROUND_PEER_RATE = 64;
+export const OPEN_ROUND_PEER_WINDOW_MS = 30_000;
+const OPEN_ROUND_PEER_BUDGETS = 4096;
+
 /** Two headers pages per peer. A pruned block needs SAMPLE_PRUNE_CONFIRMATIONS of them. */
 export const OFFER_PEER_CAP = 4000;
 export const OFFER_PEER_SLOTS = 8;
@@ -324,6 +333,18 @@ export const OFFER_RATE_PER_SEC = 2000;
 const OFFER_DROPPED_CAP = 1024;
 const LOCAL_HEADER_INDEX = 4096;
 const PROOF_HASH_BATCH = 16;
+
+/** JSON with sorted object keys, so a digest does not depend on key order. */
+function canonicalJson(value) {
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v === undefined ? null : v)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).filter((k) => value[k] !== undefined).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
+  }
+  const out = JSON.stringify(value);
+  return out === undefined ? 'null' : out;
+}
 
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
@@ -418,6 +439,8 @@ export function createStore(dir, {
   let segLive = [];
   let unprunedLive = null;
   let snapVaultRaw = null;
+  // Body digest the accepted book.snap bound for reserve.json (exact snap only).
+  let snapVaultBind = '';
   let frameTags = [];
   let frameStream = null;
   let frameAt = 0;
@@ -742,14 +765,22 @@ export function createStore(dir, {
     return snap.diskDigest === legacyDiskDigest();
   }
 
-  function vaultCommitmentFromFile() {
+  // A snap boot installs reserve.json or vault.snap without a replay, so the
+  // snap binds every field of that body. vaultCommitment() covers only the seal
+  // fields (pot, stakes, epoch pins). mintedIds, votes, freezes, tranches, and
+  // the reward book sit outside it and must not ride in unbound.
+  function vaultBodyDigest(raw) {
+    if (!raw || typeof raw !== 'object' || !raw.portals) return '';
+    const body = { ...raw };
+    delete body.vaultSeal;
+    delete body.blankFork;
+    return createHash('sha256').update('shear-vault-body-v1').update(canonicalJson(body)).digest('hex');
+  }
+
+  function vaultBindFromFile() {
     if (!fs.existsSync(vaultFile)) return '';
     try {
-      const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
-      if (!raw || typeof raw !== 'object' || !raw.portals) return '';
-      delete raw.vaultSeal;
-      delete raw.blankFork;
-      return vaultCommitment(raw);
+      return vaultBodyDigest(JSON.parse(fs.readFileSync(vaultFile, 'utf8')));
     } catch {
       return '';
     }
@@ -839,7 +870,7 @@ export function createStore(dir, {
   function vaultSnapBody(snap) {
     const saved = readVaultSnap();
     if (!saved || saved.height !== snap.height) return null;
-    if (vaultCommitment(saved.body) !== snap.vaultCommitment) return null;
+    if (vaultBodyDigest(saved.body) !== snap.vaultCommitment) return null;
     return saved.body;
   }
 
@@ -856,10 +887,11 @@ export function createStore(dir, {
     const vaultBody = vaultSnapBody(snap);
     if (!vaultBody) return null;
     snapVaultRaw = vaultBody;
-    const vaultNow = vaultCommitmentFromFile();
+    const vaultNow = vaultBindFromFile();
     if (snap.height === blocks.length) {
       if (!diskDigestMatches(snap)) return null;
       if (!vaultNow || vaultNow !== snap.vaultCommitment) return null;
+      snapVaultBind = vaultNow;
       return snap;
     }
     const prefix = blocks.slice(0, snap.height);
@@ -1323,7 +1355,7 @@ export function createStore(dir, {
       } catch { /* rebuild from chain */ }
     }
     // An exact snap already committed this file. Replaying it would walk every block.
-    if (loadMode === 'snap' && loaded && vaultCommitmentFromFile()) {
+    if (loadMode === 'snap' && loaded && snapVaultBind && vaultBodyDigest(loaded) === snapVaultBind) {
       installVault(loaded);
       syncBlankFlag();
       return;
@@ -1331,8 +1363,10 @@ export function createStore(dir, {
     // A shorter snap committed the prefix vault. Apply only the unsealed suffix.
     // reserve.json may already be at the tip; vault.snap is the prefix vault.
     // The index is the prior height vaultArgs uses to pin the chain genesis.
-    if (loadMode === 'suffix' && (snapVaultRaw || (loaded && vaultCommitmentFromFile()))) {
-      installVault(snapVaultRaw || loaded);
+    // acceptBookSnap sets snapVaultRaw for every suffix plan. reserve.json may be
+    // at the tip, so it is never the prefix vault.
+    if (loadMode === 'suffix' && snapVaultRaw) {
+      installVault(snapVaultRaw);
       const suffix = blocks.slice(prefixHeight);
       for (let s = 0; s < suffix.length; s += 1) {
         const b = suffix[s];
@@ -1749,7 +1783,7 @@ export function createStore(dir, {
     if (!blocks.length) return;
     if (acceptedSeries.length !== blocks.length || unitAt.length !== blocks.length) return;
     try {
-      const commit = vaultCommitmentFromFile();
+      const commit = vaultBindFromFile();
       const gms = genesisHeaderMs(blocks);
       const tipHash = Buffer.from(blocks[blocks.length - 1].hash);
       if (!commit || !gms || tipHash.length !== 32) return;
@@ -3415,6 +3449,25 @@ export function createStore(dir, {
       consumePrepared: false,
     });
     if (assessed?.ok) return null;
+    let claimed = null;
+    try {
+      if (block?.hash != null) {
+        const raw = Buffer.from(block.hash);
+        if (raw.length === 32) claimed = raw;
+      }
+    } catch { claimed = null; }
+    if (claimed && block?.header) {
+      try {
+        const header = Buffer.from(block.header);
+        if (header.length === HEADER_LEN) {
+          const got = Buffer.from(headerHash(header));
+          if (!claimed.equals(got)) {
+            discardPreparedHeader(block.header);
+            return 'hash_claim';
+          }
+        }
+      } catch { /* keep the assess reason */ }
+    }
     discardPreparedHeader(block?.header);
     return assessed?.reason || 'pow';
   }
@@ -3494,15 +3547,66 @@ export function createStore(dir, {
   }
 
   function appendProven(block, verifyOpts) {
-    const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
-    if (incoming && incoming.length === 32) {
-      for (const b of blocks) {
-        if (b.hash && Buffer.from(b.hash).equals(incoming)) {
-          discardPreparedHeader(block?.header);
-          return { ok: false, reason: 'not_heavier', tip: tip() };
+    const claimedHash = () => {
+      try {
+        if (block?.hash == null) return null;
+        const raw = Buffer.from(block.hash);
+        return raw.length === 32 ? raw : null;
+      } catch {
+        return null;
+      }
+    };
+    // The id is the hash we computed. A present block.hash that differs is a
+    // claim lie, before the book treats that claim as a duplicate.
+    const judged = (computed) => {
+      const claimed = claimedHash();
+      if (claimed && computed && computed.length === 32 && !claimed.equals(computed)) {
+        discardPreparedHeader(block?.header);
+        return { ok: false, reason: 'hash_claim', tip: tip() };
+      }
+      if (computed && computed.length === 32) {
+        for (const b of blocks) {
+          if (b.hash && Buffer.from(b.hash).equals(computed)) {
+            discardPreparedHeader(block?.header);
+            return { ok: false, reason: 'not_heavier', tip: tip() };
+          }
         }
       }
+      return null;
+    };
+    const trusted = trustedHashFor(block, verifyOpts);
+    if (trusted && trusted.length === 32) {
+      const stop = judged(Buffer.from(trusted));
+      if (stop) return stop;
+      return appendProvenBody(block, verifyOpts);
     }
+    const claimed = claimedHash();
+    if (claimed) {
+      const provenHex = String(verifyOpts?.provenHeaderHash || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(provenHex)) {
+        const stop = judged(Buffer.from(provenHex, 'hex'));
+        if (stop) return stop;
+        return appendProvenBody(block, verifyOpts);
+      }
+      let header = null;
+      try { if (block?.header) header = Buffer.from(block.header); } catch { header = null; }
+      if (!header || header.length !== HEADER_LEN) {
+        discardPreparedHeader(block?.header);
+        return { ok: false, reason: 'hash_claim', tip: tip() };
+      }
+      const finish = (buf) => {
+        try { holdPreparedHeader(header, buf); } catch { /* verify hashes again */ }
+        const stop = judged(Buffer.from(buf));
+        if (stop) return stop;
+        return appendProvenBody(block, verifyOpts);
+      };
+      if (verifyOpts.offLoopPow) return hashHeaderOffLoop(header).then(finish);
+      return finish(headerHash(header));
+    }
+    return appendProvenBody(block, verifyOpts);
+  }
+
+  function appendProvenBody(block, verifyOpts) {
     if (block?.samplesPruned === true) {
       // No proven run is samples_pruned before any header hash. A height field
       // that is not this tip plus one still answers height first.
@@ -3558,6 +3662,25 @@ export function createStore(dir, {
       ...(burial ? { burialTip: burial.top } : {}),
     });
     const after = (c) => {
+      let claimedNow = null;
+      try {
+        if (block?.hash != null) {
+          const raw = Buffer.from(block.hash);
+          if (raw.length === 32) claimedNow = raw;
+        }
+      } catch { claimedNow = null; }
+      let computedNow = null;
+      try {
+        if (c?.hash) {
+          const raw = Buffer.from(c.hash);
+          if (raw.length === 32) computedNow = raw;
+        }
+      } catch { computedNow = null; }
+      if (claimedNow && computedNow && !claimedNow.equals(computedNow)) {
+        rollbackSpent(spentB, spentBefore);
+        discardPreparedHeader(block?.header);
+        return { ok: false, reason: 'hash_claim', tip: tip() };
+      }
       // A failed consensus check keeps its own reason. The vault clock is a
       // second gate only after the block verifies.
       if (!c?.ok) {
@@ -3584,18 +3707,38 @@ export function createStore(dir, {
     return after(check);
   }
 
+  function stageFaultRow(i, block, verifyOpts) {
+    if (injectedFault !== 'stage') return null;
+    if (!Number.isInteger(verifyOpts?.stageAt) || verifyOpts.stageAt !== i) return null;
+    return {
+      ok: false,
+      reason: 'apply_stage',
+      at: i,
+      header: block?.header,
+      tip: tip(),
+    };
+  }
+
   function completeAppend(check, block, burial = null) {
     let staged;
     try {
       staged = stageAppend(check, block, burial);
     } catch (err) {
       // A throw here is local state, still before owedRows is replaced.
-      // Score the block and stay up. The log is its own event, not a peer ban line.
-      const reason = String(err?.message || 'apply').slice(0, 80);
+      // The block stays retryable and the node stays up. The peer is not
+      // scored: the same local bug would otherwise ban every relayer.
+      // The log is the ops signal. The reason the peer sees is stable.
+      const detail = String(err?.message || 'apply').slice(0, 80);
       try {
-        console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason }));
+        console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason: detail }));
       } catch { /* ignore */ }
-      return { ok: false, reason, tip: tip() };
+      return {
+        ok: false,
+        reason: 'apply_stage',
+        at: 0,
+        header: block?.header,
+        tip: tip(),
+      };
     }
     if (!staged || staged.ready !== true) return staged;
     try {
@@ -4001,6 +4144,8 @@ export function createStore(dir, {
       ensureMempoolVault(stamp);
     }
     const live = liveFlux;
+    // The book's own magic, as block verify uses. FS-1 binds it into the
+    // spend digest; the verifier's MAGIC_TESTNET default is wrong off testnet.
     const admitOpts = {
       baseFee: base,
       fluxset: live,
@@ -4011,6 +4156,7 @@ export function createStore(dir, {
       nowMs: stamp,
       height: Number(t?.height || 0) + 1,
       blocks,
+      magic: bookMagic,
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     };
     if (txIsReserveAction(tx)) {
@@ -4078,13 +4224,51 @@ export function createStore(dir, {
   }
 
   // A header run buries only the pruned block it stands above. The fork's
-  // own length stays the tip for every other block.
+  // own length stays the tip for every other block. The height also keeps
+  // the hash that run was proved against.
+  function burialAt(at, height) {
+    if (!at) return null;
+    const row = at[height];
+    if (row == null) return null;
+    if (typeof row === 'number') return Number.isInteger(row) ? { top: row, claimed: null } : null;
+    const top = Number(row.top);
+    if (!Number.isInteger(top)) return null;
+    let claimed = null;
+    try {
+      if (row.claimed != null) {
+        const raw = Buffer.from(row.claimed);
+        if (raw.length === 32) claimed = raw;
+      }
+    } catch { claimed = null; }
+    return { top, claimed };
+  }
+
   function headerRunTip(block, structuralH, chainTip, at) {
     if (block?.samplesPruned !== true || !at) return chainTip;
-    const own = Number(at[structuralH]);
+    const rec = burialAt(at, structuralH);
+    if (!rec) return chainTip;
+    const own = rec.top;
     if (!Number.isInteger(own) || !(own > chainTip)) return chainTip;
     if (!shouldPruneSamples(structuralH, own)) return chainTip;
     return own;
+  }
+
+  // The run was proved for the hash the block claimed. Verify's hash is the
+  // one the header produced. A borrowed burial is pow, on every entry.
+  // A failed verify that never produced a hash keeps its own reason.
+  function burialClaimPow(structuralH, computed, at, verifiedOk = true) {
+    const rec = burialAt(at, structuralH);
+    if (!rec?.claimed) return null;
+    let got = null;
+    try {
+      if (computed != null) {
+        const raw = Buffer.from(computed);
+        if (raw.length === 32) got = raw;
+      }
+    } catch { got = null; }
+    if (!got) return verifiedOk ? { ok: false, reason: 'pow' } : null;
+    if (!got.equals(rec.claimed)) return { ok: false, reason: 'pow' };
+    return null;
   }
 
   function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null, verifyOpts = {}) {
@@ -4152,6 +4336,11 @@ export function createStore(dir, {
       magic: bookMagic,
     });
     const stamp = (c) => {
+      const lie = burialClaimPow(parentH + 1, c?.hash, verifyOpts.provenBurialAt, c?.ok === true);
+      if (lie) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return lie;
+      }
       if (!c?.ok) {
         rollbackSpent(trialSpent, beforeSpent);
         return c;
@@ -4304,6 +4493,8 @@ export function createStore(dir, {
     const forkRun = forkRunState(fork);
     const burialTip = forkBurial(fork);
     for (let i = 0; i < fork.length; i += 1) {
+      const staged = stageFaultRow(i, fork[i], verifyOpts);
+      if (staged) return staged;
       const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
         ...verifyOpts,
         noVault: !!noVault,
@@ -4362,6 +4553,8 @@ export function createStore(dir, {
     const forkRun = forkRunState(fork);
     const burialTip = forkBurial(fork);
     for (let i = 0; i < fork.length; i += 1) {
+      const staged = stageFaultRow(i, fork[i], verifyOpts);
+      if (staged) return staged;
       const check = await Promise.resolve(
         verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault, {
           ...verifyOpts,
@@ -4520,13 +4713,22 @@ export function createStore(dir, {
    * overflowed the old per-block recursion inside adopt.
    */
   function gateForkHeaders(fork, parent, history, verifyOpts) {
+    const claimLie = (assessed, prev) => burialClaimPow(
+      (prev ? Number(prev.height || 0) : 0) + 1,
+      assessed.hash,
+      verifyOpts.provenBurialAt,
+    );
     const resume = async (start, assessed, prev) => {
       if (!assessed?.ok) return { ok: false, reason: assessed?.reason || 'pow', at: start };
+      const first = claimLie(assessed, prev);
+      if (first) return { ...first, at: start };
       let p = gatePrevFrom(fork[start], assessed.hash, prev);
       for (let i = start + 1; i < fork.length; i += 1) {
         const got = gateOneHeader(fork[i], p, history, verifyOpts);
         const next = got && typeof got.then === 'function' ? await got : got;
         if (!next?.ok) return { ok: false, reason: next?.reason || 'pow', at: i };
+        const lie = claimLie(next, p);
+        if (lie) return { ...lie, at: i };
         p = gatePrevFrom(fork[i], next.hash, p);
       }
       return { ok: true };
@@ -4540,6 +4742,8 @@ export function createStore(dir, {
         return got.then((assessed) => resume(at, assessed, parentHere));
       }
       if (!got?.ok) return { ok: false, reason: got?.reason || 'pow', at: i };
+      const lie = claimLie(got, prev);
+      if (lie) return { ...lie, at: i };
       prev = gatePrevFrom(fork[i], got.hash, prev);
     }
     return { ok: true };
@@ -4951,6 +5155,11 @@ export function createStore(dir, {
     });
     // Same rule as the header gate: a long suffix must not recurse per block.
     const takeOne = (i, c, beforeSpent, structuralH, blockTip) => {
+      const lie = burialClaimPow(structuralH, c?.hash, verifyOpts.provenBurialAt, c?.ok === true);
+      if (lie) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return lie;
+      }
       if (!c?.ok) {
         rollbackSpent(trialSpent, beforeSpent);
         return c;
@@ -4995,6 +5204,8 @@ export function createStore(dir, {
     };
     const runFrom = (start) => {
       for (let i = start; i < fork.length; i += 1) {
+        const staged = stageFaultRow(i, fork[i], verifyOpts);
+        if (staged) return staged;
         const beforeSpent = new Set(trialSpent);
         const structuralH = (Number(prev?.height) || 0) + 1;
         const blockTip = headerRunTip(fork[i], structuralH, tipH, verifyOpts.provenBurialAt);
@@ -5401,8 +5612,9 @@ export function createStore(dir, {
         return { ok: false, reason: 'share_credit_bind', tip: tip() };
       }
       const image = captureAdoptImage();
+      // Same gate as bookFault. A production book ignores the option.
       const fault = (stage) => {
-        if (verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
+        if (faultHooks && verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
       };
       try {
         if (injectedFault === 'reorg' || injectedFault === 'reorg-restore') throw new Error('reorg_fault');
@@ -5492,9 +5704,18 @@ export function createStore(dir, {
     let noted = false;
     for (const b of list || []) {
       const h = Number(b?.height) || 0;
-      const own = Number(at[h]);
-      if (b?.samplesPruned !== true) continue;
+      const rec = burialAt(at, h);
+      if (!rec || b?.samplesPruned !== true) continue;
+      const own = rec.top;
       if (!Number.isInteger(own) || !(own > floor) || !shouldPruneSamples(h, own)) continue;
+      if (rec.claimed) {
+        let got = null;
+        try {
+          const raw = Buffer.from(b.hash);
+          if (raw.length === 32) got = raw;
+        } catch { got = null; }
+        if (!got || !got.equals(rec.claimed)) continue;
+      }
       if (provenTipOf(b) != null) continue;
       burialProof.note(blockHex(b), h, own);
       noted = true;
@@ -5570,7 +5791,16 @@ export function createStore(dir, {
       const history = prefix.concat(fork.slice(0, item.index));
       const proved = proveBurial(item.block, verifyOpts, burialAnchor(item.block, item.structuralH, history));
       const take = (p) => {
-        const next = p?.ok ? { ...at, [item.structuralH]: p.top } : at;
+        let claimed = null;
+        try {
+          if (p?.ok && p.claimed != null) {
+            const raw = Buffer.from(p.claimed);
+            if (raw.length === 32) claimed = raw;
+          }
+        } catch { claimed = null; }
+        const next = claimed
+          ? { ...at, [item.structuralH]: { top: p.top, claimed } }
+          : at;
         return proveAt(n + 1, next);
       };
       if (proved && typeof proved.then === 'function') return proved.then(take);
@@ -5745,22 +5975,84 @@ export function createStore(dir, {
   let mempoolVault = null;
   const openRound = new Map();
   const OPEN_ROUND_TTL_MS = 180_000;
+  const peerRoundBudget = new Map();
 
-  function noteOpenRound(rows = [], { source = 'local' } = {}) {
-    const now = Date.now();
-    for (const r of rows || []) {
-      const tag = String(r.tag || '').trim().toLowerCase();
+  function dropOldestPeerRound() {
+    let oldestKey = '';
+    let oldestAt = Infinity;
+    for (const [key, row] of openRound) {
+      if (row.source === 'local') continue;
+      if (row.at < oldestAt) {
+        oldestAt = row.at;
+        oldestKey = key;
+      }
+    }
+    if (!oldestKey) return false;
+    openRound.delete(oldestKey);
+    return true;
+  }
+
+  function peerBudget(peer, now) {
+    const key = String(peer || '');
+    let row = peerRoundBudget.get(key);
+    if (row) peerRoundBudget.delete(key);
+    if (!row) {
+      while (peerRoundBudget.size >= OPEN_ROUND_PEER_BUDGETS) {
+        const oldest = peerRoundBudget.keys().next().value;
+        if (oldest == null) break;
+        peerRoundBudget.delete(oldest);
+      }
+      row = { windowStart: now, used: 0, tags: new Set() };
+    } else if (now - row.windowStart >= OPEN_ROUND_PEER_WINDOW_MS) {
+      row.windowStart = now;
+      row.used = 0;
+      row.tags.clear();
+    }
+    peerRoundBudget.set(key, row);
+    return row;
+  }
+
+  function noteOpenRound(rows = [], { source = 'local', peer = '', now = Date.now() } = {}) {
+    const local = source === 'local';
+    const inspect = local ? OPEN_ROUND_CAP : OPEN_ROUND_PEER_TAGS * 4;
+    const list = Array.isArray(rows) ? rows.slice(0, inspect) : [];
+    const budget = local ? null : peerBudget(peer, now);
+    const accepted = [];
+    for (const [key, row] of openRound) {
+      if (now - row.at > OPEN_ROUND_TTL_MS) {
+        openRound.delete(key);
+        const owner = peerRoundBudget.get(row.peer);
+        if (owner) owner.tags.delete(key);
+      }
+    }
+    for (const r of list) {
+      const tag = String(r?.tag || '').trim().toLowerCase();
       if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
       const count = Math.floor(Number(r.count) || 0);
       if (count < 1) continue;
-      const prev = openRound.get(tag);
-      if (!prev || source === 'local' || count >= prev.count || (now - prev.at) > 12_000) {
-        openRound.set(tag, { tag, count, at: now, source: String(source || 'peer') });
+      if (budget) {
+        const known = budget.tags.has(tag);
+        if (!known && budget.tags.size >= OPEN_ROUND_PEER_TAGS) continue;
+        if (budget.used >= OPEN_ROUND_PEER_RATE) continue;
       }
+      const prev = openRound.get(tag);
+      const take = !prev || local || count >= prev.count || (now - prev.at) > 12_000;
+      if (!take) continue;
+      if (!prev && openRound.size >= OPEN_ROUND_CAP && !(local && dropOldestPeerRound())) continue;
+      openRound.set(tag, {
+        tag,
+        count,
+        at: now,
+        source: local ? 'local' : 'peer',
+        peer: local ? '' : String(peer || ''),
+      });
+      if (budget) {
+        budget.used += 1;
+        budget.tags.add(tag);
+      }
+      if (!prev || count > prev.count) accepted.push({ tag, count });
     }
-    for (const [k, v] of openRound) {
-      if (now - v.at > OPEN_ROUND_TTL_MS) openRound.delete(k);
-    }
+    return accepted;
   }
 
   function clearOpenRound() {
@@ -5964,6 +6256,7 @@ export function createStore(dir, {
         nowMs: now,
         height,
         blocks,
+        magic: bookMagic,
         noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       };
       if (txIsReserveAction(tx)) {
@@ -6103,6 +6396,7 @@ export function createStore(dir, {
     const allowTrust = verifyOpts?.trusted === true;
     const claimed = powHash ? Buffer.from(String(powHash), 'hex') : null;
     const okHash = allowTrust && claimed && claimed.length === 32 ? claimed : null;
+    if (claimed && claimed.length === 32) block.hash = claimed;
     void skipSharePow;
     void trustedPowHash;
     return append(block, { trustedPowHash: okHash, skipSharePow: !!okHash });

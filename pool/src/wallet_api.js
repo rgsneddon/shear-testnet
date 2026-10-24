@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, lockTx, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1458,6 +1458,17 @@ function postedFs1(body) {
   }
 }
 
+/** A 64-byte Ed25519 signature, hex or raw bytes. */
+function postedSig64(raw) {
+  if (raw == null || raw === '') return false;
+  try {
+    if (Buffer.isBuffer(raw) || raw instanceof Uint8Array) return raw.length === 64;
+    return /^[0-9a-f]{128}$/i.test(String(raw).replace(/^0x/i, ''));
+  } catch {
+    return false;
+  }
+}
+
 const SHE_SCALE = 100_000_000_000n;
 const MAX_SAFE_NANOS = 9007199254740991n;
 
@@ -1716,9 +1727,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     }
     // A hidden lock is the wallet's signed tx. Relay it unchanged.
     if (hiddenLock) return relayPostedTx(body, queueSend);
+    // Every other lock is refused here. The node accepts only the compact FS-1
+    // lock (no from, to or address), so the pool never builds one itself.
     if (isLock) {
       const lockOuts = (Array.isArray(body.vout) ? body.vout : []).filter((row) => row && String(row.kind || '') === 'lock');
       if (lockOuts.length > 1) return { status: 400, json: { ok: false, reason: 'portal_exists' } };
+      return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     const isVote = kindIn === 'vote' && programIn === RESERVE_PROGRAM;
     const isWithdraw = kindIn === 'withdraw' && programIn === RESERVE_PROGRAM;
@@ -1734,24 +1748,32 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && Array.isArray(body.vin) && body.vin.length > 0
       && (body.retireProof || (Array.isArray(body.retireProofs) && body.retireProofs.length))
       && (body.principalProof || (Array.isArray(body.principalProofs) && body.principalProofs.length));
+    // An FS-1 withdraw carries no identity spendPub or spend sig (consensus
+    // refuses one as vote_leak). Its signature is the portal owner's rewardSig
+    // over ownerPub, and the node checks it with the SAL when it queues the tx.
+    const fs1Withdraw = fundedWithdraw
+      && postedFs1(body)
+      && (body.spendPub == null || body.spendPub === '')
+      && !body.sig && !body.signature
+      && postedSig64(body.rewardSig)
+      && /^[0-9a-f]{64}$/.test(String(body.ownerPub || '').replace(/^0x/i, '').toLowerCase());
     // A proved withdraw with a one-time dest20 has no address on the wire.
     const hiddenWithdraw = fundedWithdraw && !isDestAddress(to) && !!postedPayoutDest20(body.dest20);
-    if ((!sealedSendEarly && !fundedWithdraw && !hiddenLock && !isDestAddress(from)) || (!isDestAddress(to) && !hiddenWithdraw && !hiddenLock)) {
+    if ((!sealedSendEarly && !fundedWithdraw && !isDestAddress(from)) || (!isDestAddress(to) && !hiddenWithdraw)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
     const nanosBi = isVote ? 0n : parsed.nanos;
-    // A hidden lock publishes no amount. nanos 0 is the π leaf, not an empty send.
-    if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly && !hiddenLock) {
+    if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
-    if (kindIn !== 'send' && !isLock && !isVote && !isWithdraw) {
+    if (kindIn !== 'send' && !isVote && !isWithdraw) {
       return { status: 400, json: { ok: false, reason: 'bad_kind' } };
     }
     const poolPay = isDestAddress(String(poolDest || '')) ? String(poolDest) : '';
     if (poolPay && from === poolPay) {
       return { status: 403, json: { ok: false, reason: 'pool_dest' } };
     }
-    const rec = ((sealedSendEarly || fundedWithdraw || hiddenLock) && !isDestAddress(from))
+    const rec = ((sealedSendEarly || fundedWithdraw) && !isDestAddress(from))
       ? { spendableNanos: 0 }
       : reconstructOwner(store, from);
     const nanos = nanosBi == null ? 0 : wireNanos(nanosBi);
@@ -1765,18 +1787,18 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && (body.sig || body.signature)
       && body.spendPub;
     // A posted body with no signature is unsigned, including when the book is short.
-    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && !hiddenLock && (kindIn === 'send' || isLock || isVote || isWithdraw)) {
+    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && !fs1Withdraw && (kindIn === 'send' || isVote || isWithdraw)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
-    if (!isVote && !isWithdraw && !sealedSend && !hiddenLock && chainNanos < nanos) {
+    if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     if (Array.isArray(body.vout)) body.vout = stripHiddenValueOpen(kindIn, body.vout);
     const postedOpen = valueOpenRejected({ kind: kindIn, vout: body.vout });
     if (postedOpen) return { status: 400, json: { ok: false, reason: 'value_open' } };
     const memoCt = body.memoCt || null;
-    const kind = isLock ? 'lock' : isVote ? 'vote' : isWithdraw ? 'withdraw' : 'send';
-    const programId = (isLock || isVote || isWithdraw) ? RESERVE_PROGRAM : '';
+    const kind = isVote ? 'vote' : isWithdraw ? 'withdraw' : 'send';
+    const programId = (isVote || isWithdraw) ? RESERVE_PROGRAM : '';
     const taxed = levyTaxed({ kind, programId });
     const postedFee = (body.fee == null || body.fee === '') ? null : parseIntegerNanos(body.fee);
     if ((body.fee != null && body.fee !== '') && postedFee == null) {
@@ -1785,11 +1807,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     let fee = postedFee != null
       ? wireNanos(postedFee)
       : (taxed ? levyNanos(0) : 0);
-    if (!isVote && !isWithdraw && !sealedSend && !hiddenLock && chainNanos < nanos + fee) {
+    if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const rawChange = String(body.change || '').trim();
-    const changeDest = !isLock && !isVote && !isWithdraw
+    const changeDest = !isVote && !isWithdraw
       ? (isDestAddress(rawChange) ? rawChange : '')
       : '';
     if (changeDest && changeDest === from) {
@@ -1814,17 +1836,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         return { status: 400, json: { ok: false, reason: 'kt10_nonce' } };
       }
     }
-    const draft = isLock
-      ? {
-          ...lockTx({ from, to, nanos, id: `lock-${Date.now()}` }),
-          fee,
-          memoCt,
-          sig: body.sig || body.signature,
-          spendPub: body.spendPub,
-          amount,
-          ...(postedVout.length ? { vout: postedVout } : {}),
-        }
-      : isVote
+    const draft = isVote
         ? {
           ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }),
           fee,
@@ -1867,14 +1879,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           ...(multiProofs ? { admit_proofs: body.admit_proofs } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
-    if ((isLock || isVote) && draft) {
+    if (isVote && draft) {
       const carriedPortal = String(body.portalId || '').replace(/^0x/i, '').toLowerCase();
       const carriedPayout = String(body.payoutPortalId || '').replace(/^0x/i, '').toLowerCase();
       if (/^[0-9a-f]{64}$/.test(carriedPortal)) {
         draft.portalId = carriedPortal;
         if (!postedVout.length && Array.isArray(draft.vout)) {
           for (const row of draft.vout) {
-            if (row && (row.kind === 'lock' || row.kind === 'vote')) row.portalId = carriedPortal;
+            if (row && row.kind === 'vote') row.portalId = carriedPortal;
           }
         }
       }
@@ -1883,6 +1895,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (isWithdraw && !draft) {
       return { status: 400, json: { ok: false, reason: 'withdraw_funding' } };
     }
+    // Same leak rule the node applies. Do not relay a withdraw it will refuse.
+    const wdLeak = isWithdraw ? withdrawLeakRejected(draft) : null;
+    if (wdLeak) return { status: 400, json: { ok: false, reason: wdLeak.reason } };
     if (taxed && postedFee == null) bindWeightFee(draft);
     if (taxed) {
       const need = levyNeed(draft);
@@ -1907,11 +1922,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         return { status: 400, json: { ok: false, reason: 'admit_membership' } };
       }
     }
-    if (flowSendNeedsOpen(draft) && !hiddenLock && !verifySpendSig(draft)) {
+    if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
-    // An FS-1 lock has no seed signature. The SAL is checked when the node queues it.
-    if (reserveNeedsPortalOpen(draft) && !hiddenLock && !verifyReservePortalOpen(draft)) {
+    if (reserveNeedsPortalOpen(draft) && !verifyReservePortalOpen(draft)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
     const tx = queueSend(draft, { paintedOwedNanos: 0 });

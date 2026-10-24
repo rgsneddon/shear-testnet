@@ -13,9 +13,10 @@ import {
   unpackBits,
   consensusFingerprint,
   ASERT_STEP_ID,
-  medianIntervalMs,
+  asertNextBits,
 } from './asert.js';
 import { decodeHeader, encodeHeader } from './header.js';
+import { nonceWithShareTarget } from './share_batch.js';
 import { createStore } from '../node/src/store.js';
 import { judgeShare, createPool } from '../pool/src/pool.js';
 
@@ -41,13 +42,17 @@ function seal(store, { miner, now, bits, pow }) {
   }, { trusted: true });
 }
 
+// v12 work is genesis-anchored aserti3-2d (7b50960a, tau = 2 h). The v8/v11
+// median step and its lid are retired: testnet nextBits is 0-lidded and does
+// not move. Eight 2 s gaps put the chain 8 * 88 s ahead of the genesis
+// schedule, so the ASERT quote is harder than the genesis seed.
 describe('eight fast gaps raise work and the pool uses that target', () => {
   it('rejects a genesis-bits header after eight 2000ms gaps and does not seal a miss', () => {
+    // The retired median step is inert on testnet: a fast gap moves nothing.
     let packed = GENESIS_BITS_PACKED;
     for (let n = 0; n < 8; n += 1) packed = nextBits(packed, 2_000);
-    assert.ok(unpackBits(packed) >= GENESIS_BITS + 1, `eight gaps ${unpackBits(packed)}`);
-    assert.equal(nextBits(packed, TARGET_BLOCK_INTERVAL_MS), packed);
-    assert.equal(nextBits(GENESIS_BITS_PACKED, 90_000), GENESIS_BITS_PACKED);
+    assert.equal(packed, GENESIS_BITS_PACKED);
+    assert.equal(nextBits(GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS), GENESIS_BITS_PACKED);
 
     const fp = consensusFingerprint();
     assert.equal(fp.includes(`ASERT_STEP=${ASERT_STEP_ID}`), true);
@@ -56,7 +61,9 @@ describe('eight fast gaps raise work and the pool uses that target', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fast-gap-'));
     const store = createStore(dir);
     const miner = dest();
-    const t0 = 1_700_000_000_000;
+    // The pool stamps its job with the wall clock. Seat the chain a minute
+    // before that clock so the pool's job sits inside MTP + 2 h.
+    const t0 = Date.now() - 8 * 2_000 - 60_000;
     for (let i = 0; i < 9; i += 1) {
       const got = seal(store, { miner, now: t0 + i * 2_000, pow: powHex(i + 1) });
       assert.equal(got.ok, true, `seal ${i} ${got.reason}`);
@@ -65,17 +72,31 @@ describe('eight fast gaps raise work and the pool uses that target', () => {
     const prev = decodeHeader(Buffer.from(store.blocks[store.blocks.length - 2].header));
     const gap = Number(tip.timestamp) - Number(prev.timestamp);
     assert.equal(gap, 2_000);
-    const gaps = [];
+    const genesis = decodeHeader(Buffer.from(store.blocks[0].header));
+    assert.equal(genesis.bits, GENESIS_BITS_PACKED);
+    const quoteAt = (height, ts, parentTs) => asertNextBits({
+      anchorBits: genesis.bits,
+      anchorTimeMs: Number(genesis.timestamp),
+      anchorHeight: 1,
+      blockTimeMs: ts,
+      blockHeight: height,
+      parentTimeMs: parentTs,
+    });
     for (let i = 1; i < store.blocks.length; i += 1) {
       const a = decodeHeader(Buffer.from(store.blocks[i - 1].header));
       const b = decodeHeader(Buffer.from(store.blocks[i].header));
-      gaps.push(Number(b.timestamp) - Number(a.timestamp));
+      assert.equal(Number(b.timestamp) - Number(a.timestamp), 2_000);
+      const q = quoteAt(store.blocks[i].height, Number(b.timestamp), Number(a.timestamp));
+      assert.equal(q.ok, true);
+      assert.equal(q.easeBits, 0);
+      assert.equal(b.bits, q.packed, `height ${store.blocks[i].height} seals the ASERT quote`);
     }
-    const seen = medianIntervalMs(gaps);
-    const want = nextBits(tip.bits, seen);
-    assert.equal(seen, 2_000);
-    assert.ok(unpackBits(packed) >= GENESIS_BITS + 1);
-    assert.ok(unpackBits(want) > GENESIS_BITS, `median burst must harden, got ${unpackBits(want)}`);
+    assert.ok(unpackBits(tip.bits) > GENESIS_BITS, `fast gaps must harden, got ${unpackBits(tip.bits)}`);
+    const nextQuote = quoteAt(store.tip().height + 1, t0 + 9 * 2_000, Number(tip.timestamp));
+    assert.equal(nextQuote.ok, true);
+    assert.equal(nextQuote.easeBits, 0);
+    const want = nextQuote.packed;
+    assert.ok(unpackBits(want) > unpackBits(tip.bits), `a ninth fast gap hardens again, got ${unpackBits(want)}`);
 
     const under = store.template({
       miner,
@@ -118,18 +139,41 @@ describe('eight fast gaps raise work and the pool uses that target', () => {
     shareOnly[0] = 0;
     assert.equal(meetsTarget(shareOnly, 8), true);
     assert.equal(meetsTarget(shareOnly, want), false);
+    // Share credit is the nonce high byte (b0d0b030). The issued job header
+    // carries nonce 0, which names no legal share width, so it earns nothing.
+    const jobHdr = decodeHeader(Buffer.from(job.header, 'hex'));
+    const shareHeader = (nonce) => encodeHeader({
+      version: jobHdr.version,
+      prevBlockHash: jobHdr.prevBlockHash,
+      merkleRoot: jobHdr.merkleRoot,
+      continuityRoot: jobHdr.continuityRoot,
+      timestamp: jobHdr.timestamp,
+      bits: jobHdr.bits,
+      nonce,
+      baseFee: jobHdr.baseFee,
+    });
+    assert.equal(jobHdr.bits, want);
+    const unnamed = judgeShare({
+      job: { ...job, shareBits: 8 },
+      hash: shareOnly,
+      header: shareHeader(0n),
+      dest: '',
+    });
+    assert.equal(unnamed.ok, false);
+    assert.equal(unnamed.reason, 'share_target');
     const missed = judgeShare({
       job: { ...job, shareBits: 8 },
       hash: shareOnly,
-      header: Buffer.from(job.header, 'hex'),
+      header: shareHeader(nonceWithShareTarget(0n, 8)),
       dest: '',
     });
-    assert.equal(missed.ok, true);
+    assert.equal(missed.ok, true, missed.reason);
+    assert.equal(missed.creditedShareBits, 8);
     assert.equal(missed.block, false);
     const substituted = judgeShare({
       job: { ...job, bits: 8, blockBits: 8, shareBits: 8 },
       hash: shareOnly,
-      header: Buffer.from(job.header, 'hex'),
+      header: shareHeader(nonceWithShareTarget(0n, 8)),
       dest: '',
     });
     assert.equal(substituted.block, false);
@@ -152,7 +196,14 @@ describe('eight fast gaps raise work and the pool uses that target', () => {
     });
     try {
       const live = pool.issueJob();
-      assert.equal(Number(live.blockBits), want);
+      assert.ok(live, 'pool issues a job on this tip');
+      // Same rule at the pool's own stamp: the full quote, never genesis bits.
+      const liveTs = Number(decodeHeader(Buffer.from(live.header, 'hex')).timestamp);
+      const liveQuote = quoteAt(store.tip().height + 1, liveTs, Number(tip.timestamp));
+      assert.equal(liveQuote.ok, true);
+      assert.equal(liveQuote.easeBits, 0);
+      assert.equal(Number(live.blockBits), liveQuote.packed);
+      assert.notEqual(Number(live.blockBits), GENESIS_BITS_PACKED);
       assert.ok(unpackBits(live.blockBits) > GENESIS_BITS);
     } finally {
       pool.close();

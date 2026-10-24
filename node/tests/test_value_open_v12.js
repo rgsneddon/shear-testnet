@@ -17,6 +17,7 @@ import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { sealNote } from '../../crypto/note.js';
 import { freshStealthDest, newIdentity } from '../../crypto/address.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
+import { stubAdmitV2 } from './stub_admit_v2.js';
 
 const T0 = 1_700_000_000_000;
 const AMOUNTS = [1, 2 ** 20, 2 ** 40];
@@ -74,6 +75,19 @@ function hiddenTx(kind, amount) {
     kind: 'send',
     vout: [opening(amount, kind)],
   };
+}
+
+/**
+ * The same send as a block body carries it. Stage 0 refuses a proofless
+ * send (send_unavailable) before any body rule, so a block send presents a
+ * proof object. The byte-2 blob is not a bucket proof, so Stage 0 passes it,
+ * and value_open is classified before any proof byte is read.
+ */
+function provedHiddenTx(kind, amount) {
+  const tx = hiddenTx(kind, amount);
+  tx.admit_proof = stubAdmitV2({ cTilde: tx.vout[0].commit });
+  tx.spendTag = tx.admit_proof.spendTag;
+  return tx;
 }
 
 describe('v12 hidden outputs carry no value opening', () => {
@@ -171,13 +185,13 @@ describe('v12 hidden outputs carry no value opening', () => {
       const tipHeight = store.tip().height;
       const next = store.template({ miner: dest, shareBits: 4, now: T0 + 90_000 });
       const denied = await Promise.resolve(store.append(
-        withTxs(next.tpl, [...next.tpl.txs, hiddenTx('send', AMOUNTS[0])]),
+        withTxs(next.tpl, [...next.tpl.txs, provedHiddenTx('send', AMOUNTS[0])]),
         { trustedPowHash: easyPowHash(), skipSharePow: true },
       ));
       assert.equal(denied.ok, false);
       assert.equal(denied.reason, 'value_open');
       assert.equal(store.tip().height, tipHeight);
-      const sibling = withTxs(first.tpl, [...first.tpl.txs, hiddenTx('dummy', AMOUNTS[1])]);
+      const sibling = withTxs(first.tpl, [...first.tpl.txs, provedHiddenTx('dummy', AMOUNTS[1])]);
       sibling.hash = headerHash(sibling.header);
       const forked = await Promise.resolve(store.ingest([sibling], {
         trustedPowHash: easyPowHash(),
@@ -188,21 +202,34 @@ describe('v12 hidden outputs carry no value opening', () => {
       assert.equal(store.tip().height, tipHeight);
       const url = new URL('http://127.0.0.1/api/wallet/send');
       const note = opening(AMOUNTS[2], 'send');
-      const fat = handleWalletApi(url, 'POST', {
-        from: dest,
-        to: dest,
-        amount: 1,
+      // AL-3: a posted send is the sealed tx only, with a fee and no amount,
+      // from, or to hint (pool wallet_api sealedSendOnly).
+      const posted = (admitProof, hints = {}) => handleWalletApi(url, 'POST', {
+        ...hints,
         kind: 'send',
+        fee: 1000,
         sig: Buffer.alloc(64, 7).toString('hex'),
         spendPub: Buffer.alloc(32, 8).toString('hex'),
         vin: [{ commit: Buffer.alloc(32, 1) }],
         vout: [note],
-        admit_proof: {
-          blob: Buffer.from([3, 1]),
-          spendTag: Buffer.alloc(32, 2),
-          cTilde: Buffer.alloc(32, 3),
-        },
+        admit_proof: admitProof,
       }, { store, miners: new Map(), queueSend: () => { throw new Error('queued'); } });
+      // A byte-3 bucket proof is send_unavailable at the pool's FS-1 gate
+      // before any output check (acc9570c).
+      const bucket = posted({
+        blob: Buffer.from([3, 1]),
+        spendTag: Buffer.alloc(32, 2),
+        cTilde: Buffer.alloc(32, 3),
+      });
+      assert.equal(bucket.status, 400);
+      assert.equal(bucket.json.reason, 'send_unavailable');
+      // With the byte-2 stub the same body reaches the output check, and the
+      // posted opening is refused.
+      const stub = stubAdmitV2({ cTilde: note.commit });
+      const hinted = posted(stub, { from: dest, to: dest, amount: 1 });
+      assert.equal(hinted.status, 400);
+      assert.equal(hinted.json.reason, 'send_hint');
+      const fat = posted(stub);
       assert.equal(fat.status, 400);
       assert.equal(fat.json.reason, 'value_open');
       const row = { ...note };

@@ -32,6 +32,15 @@ function canon(byte) {
 
 function ensureBuilt() {
   assert.equal(nativeLoaded(), true, 'shearadmit.node must be built (npm run build:admit)');
+  // The wallet cdylib (no admit-v3) is a debug build that no CI step makes.
+  // Build it here, as admit_wallet_symbols.test.js does, so this file does not
+  // depend on which test ran first in its shard.
+  const cargo = spawnSync(
+    'cargo',
+    ['build', '--lib', '--manifest-path', path.join(root, 'crypto/native/admit/Cargo.toml')],
+    { encoding: 'utf8' },
+  );
+  assert.equal(cargo.status, 0, cargo.stderr || cargo.stdout);
   assert.equal(fs.existsSync(so), true, `missing ${so}`);
   const cc = spawnSync('cc', ['-O2', '-o', harness, harnessSrc, '-ldl'], { encoding: 'utf8' });
   assert.equal(cc.status, 0, cc.stderr || cc.stdout);

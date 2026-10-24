@@ -9,10 +9,12 @@ import { admitBaseScalar } from '../../crypto/admit.js';
 import { NANOS_PER_SHE, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { bindWeightFee, levyNeed, levyNanos, LEVY_CAP_NANOS } from '../../crypto/levy.js';
 import { noteU64, openNoteAmount, sealHiddenNote, sealNote } from '../../crypto/note.js';
-import { buildFundedWithdraw, emptyVault, portalIdFromDest, voteTx, vortexSums, withdrawTx } from '../../crypto/reserve_vault.js';
+import { buildFundedWithdraw, emptyVault, portalIdFromDest, portalIdFromDest20, portalOwnerKey, signWithdrawReward, voteTx, vortexSums, withdrawTx } from '../../crypto/reserve_vault.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { vaultDest } from '../../crypto/flow_sheet.js';
 import { handleWalletApi } from '../src/wallet_api.js';
+import { txDigestV3 } from '../../crypto/admit_v3.js';
+import { txBodyDigestFs1 } from '../../crypto/fs1_spend.js';
 
 const SCALE = BigInt(NANOS_PER_SHE);
 
@@ -39,23 +41,27 @@ function store() {
   };
 }
 
-function fundedWithdraw(alice, to, nanos, id, nonce) {
+// The Dart wallet's FS-1 withdraw (wallet/lib/shear_withdraw.dart): no from,
+// to, payoutPortalId, spendPub, or spend sig (325b50f5). It pays dest20 and is
+// authorised by the SAL plus the portal owner's rewardSig.
+function fundedWithdraw(alice, nanos, id, nonce) {
   const blob = Buffer.alloc(321, 7);
   blob[0] = 0xf1;
   const fs1 = Buffer.alloc(41, 1);
   fs1[0] = 0xf1;
   const commit = Buffer.alloc(32, 3);
   const payer = spendDestOf(alice.spendPub);
+  const dest20 = Buffer.from(hash20FromAddress(payer));
+  const portalId = portalIdFromDest20(dest20);
   const shown = nanos <= 9007199254740991n ? Number(nanos) : nanos.toString();
   let fee = levyNanos(0);
   let built = null;
   for (let i = 0; i < 4; i += 1) {
     built = buildFundedWithdraw({
-      to,
       nanos: nanos.toString(),
       id,
       withdrawNonce: nonce,
-      portalId: portalIdFromDest(to),
+      portalId,
       anchor: 16,
       excess: Buffer.alloc(32, 4),
       fs1,
@@ -64,8 +70,7 @@ function fundedWithdraw(alice, to, nanos, id, nonce) {
       admit_proofs: [{ blob, cTilde: commit, spendTag: Buffer.alloc(32, 5) }],
       retireProof: Buffer.alloc(12, 1),
       principalProof: { R: Buffer.alloc(32, 2), z: Buffer.alloc(32, 3) },
-      ownerPub: Buffer.from(alice.spendPub).toString('hex'),
-      dest20: Buffer.from(hash20FromAddress(payer)),
+      dest20,
       vout: [{
         kind: 'withdraw',
         commit,
@@ -73,12 +78,46 @@ function fundedWithdraw(alice, to, nanos, id, nonce) {
       }],
     });
     assert.ok(built, `${id} build`);
+    // Sign before weighing: the levy covers the posted rewardSig and ownerPub.
+    signWithdrawReward(built, portalOwnerKey(alice.spendSeed, portalId), {
+      portalId,
+      nanos,
+      dest: dest20.toString('hex'),
+      state: emptyVault(),
+      nowMs: 0,
+    });
     const need = levyNeed(built);
     if (fee >= need && fee <= LEVY_CAP_NANOS) break;
     fee = need;
   }
-  signSpendTx(built, alice.privateKey);
+  assert.ok(built.rewardSig && built.ownerPub, `${id} rewardSig`);
+  assert.equal(built.spendPub, undefined);
+  assert.equal(built.sig, undefined);
   return built;
+}
+
+/** The body the Dart wallet posts for an FS-1 withdraw. */
+function wirePost(built, nanos) {
+  return {
+    kind: 'withdraw',
+    programId: RESERVE_PROGRAM,
+    amount: sheString(nanos),
+    nanos: nanos.toString(),
+    id: built.id,
+    portalId: built.portalId,
+    anchor: built.anchor,
+    excess: built.excess,
+    fs1: built.fs1,
+    fee: built.fee,
+    vin: built.vin,
+    admit_proofs: built.admit_proofs,
+    retireProof: built.retireProof,
+    principalProof: built.principalProof,
+    ownerPub: built.ownerPub,
+    rewardSig: built.rewardSig,
+    dest20: built.dest20,
+    vout: built.vout,
+  };
 }
 
 function queue() {
@@ -193,35 +232,35 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
       assert.equal(posted.length, 0);
     }
     const big = (1n << 58n) + 9n;
-    const built = fundedWithdraw(alice, to, big, 'funded-wd');
+    const built = fundedWithdraw(alice, big, 'funded-wd');
+    // The same FS-1 withdraw with the identity spend key on it is vote_leak at
+    // the node (withdrawLeakRejected). The pool refuses it before relaying.
+    const leaked = queue();
+    const leakedGot = handleWalletApi(url('/api/wallet/send'), 'POST', {
+      ...wirePost(built, big),
+      spendPub: Buffer.from(alice.spendPub).toString('hex'),
+      sig: 'aa'.repeat(64),
+    }, { store: store(), miners: new Map(), queueSend: leaked.queueSend });
+    assert.equal(leakedGot.status, 400, leakedGot.json && leakedGot.json.reason);
+    assert.equal(leakedGot.json.reason, 'vote_leak');
+    assert.equal(leaked.posted.length, 0);
+    // No rewardSig is unsigned.
+    const bare = queue();
+    const bareBody = wirePost(built, big);
+    delete bareBody.rewardSig;
+    const bareGot = handleWalletApi(url('/api/wallet/send'), 'POST', bareBody, { store: store(), miners: new Map(), queueSend: bare.queueSend });
+    assert.equal(bareGot.status, 403, bareGot.json && bareGot.json.reason);
+    assert.equal(bareGot.json.reason, 'unsigned');
+    assert.equal(bare.posted.length, 0);
     const { posted, queueSend } = queue();
-    const got = handleWalletApi(url('/api/wallet/send'), 'POST', {
-      to,
-      kind: 'withdraw',
-      programId: RESERVE_PROGRAM,
-      amount: sheString(big),
-      nanos: big.toString(),
-      id: built.id,
-      portalId: built.portalId,
-      payoutPortalId: built.payoutPortalId,
-      anchor: built.anchor,
-      excess: built.excess,
-      fs1: built.fs1,
-      fee: built.fee,
-      vin: built.vin,
-      admit_proofs: built.admit_proofs,
-      retireProof: built.retireProof,
-      principalProof: built.principalProof,
-      ownerPub: built.ownerPub,
-      dest20: built.dest20,
-      sig: built.sig,
-      spendPub: built.spendPub,
-      vout: built.vout,
-    }, { store: store(), miners: new Map(), queueSend });
+    const got = handleWalletApi(url('/api/wallet/send'), 'POST', wirePost(built, big), { store: store(), miners: new Map(), queueSend });
     assert.equal(got.status, 200, got.json && got.json.reason);
     assert.equal(got.json.tx.kind, 'withdraw');
     assert.equal(posted[0].kind, 'withdraw');
     assert.equal(posted[0].from, undefined);
+    assert.equal(posted[0].to, undefined);
+    assert.equal(posted[0].spendPub, undefined);
+    assert.equal(posted[0].rewardSig, built.rewardSig);
     assert.equal(posted[0].programId, RESERVE_PROGRAM);
     assert.equal(String(posted[0].nanos), big.toString());
     assert.ok(posted[0].retireProof);
@@ -229,40 +268,104 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     assert.equal(posted[0].fs1[0], 0xf1);
   });
 
+  it('relays an FS-1 withdraw with every bound byte as the wallet signed it', () => {
+    const alice = newIdentity();
+    const nanos = 5000n;
+    const built = fundedWithdraw(alice, nanos, 'wd-untouched');
+    const { posted, queueSend } = queue();
+    const got = handleWalletApi(url('/api/wallet/send'), 'POST', wirePost(built, nanos), { store: store(), miners: new Map(), queueSend });
+    assert.equal(got.status, 200, got.json && got.json.reason);
+    assert.equal(posted.length, 1);
+    const relayed = posted[0];
+    // The proofs and the owner signature bind these digests. A pool that
+    // rebuilt any bound field would break them.
+    assert.ok(Buffer.from(txDigestV3(relayed)).equals(Buffer.from(txDigestV3(built))), 'txDigestV3');
+    assert.ok(Buffer.from(txBodyDigestFs1(relayed)).equals(Buffer.from(txBodyDigestFs1(built))), 'FS-1 body digest');
+    const hex = (v) => Buffer.from(v).toString('hex');
+    assert.equal(relayed.rewardSig, built.rewardSig);
+    assert.equal(relayed.ownerPub, built.ownerPub);
+    assert.equal(hex(relayed.fs1), hex(built.fs1));
+    assert.equal(hex(relayed.dest20), hex(built.dest20));
+    assert.equal(hex(relayed.retireProof), hex(built.retireProof));
+    assert.deepEqual(relayed.principalProof, built.principalProof);
+    assert.deepEqual(relayed.admit_proofs, built.admit_proofs);
+    assert.deepEqual(relayed.vin, built.vin);
+    assert.deepEqual(relayed.vout, built.vout);
+    assert.equal(String(relayed.fee), String(built.fee));
+    assert.equal(String(relayed.nanos), String(built.nanos));
+    assert.equal(relayed.portalId, built.portalId);
+    assert.equal(relayed.anchor, built.anchor);
+  });
+
+  it('opens the rewardSig path to an FS-1 withdraw only', () => {
+    const alice = newIdentity();
+    const built = fundedWithdraw(alice, 5000n, 'wd-only');
+    const base = wirePost(built, 5000n);
+    const post = (body) => {
+      const { posted, queueSend } = queue();
+      const got = handleWalletApi(url('/api/wallet/send'), 'POST', body, { store: store(), miners: new Map(), queueSend });
+      return { status: got.status, reason: got.json && got.json.reason, queued: posted.length };
+    };
+    const bare = (body) => {
+      const copy = { ...body };
+      delete copy.rewardSig;
+      delete copy.ownerPub;
+      return copy;
+    };
+    // The same shape under every other kind, and a withdraw that is not the
+    // Reserve program. A rewardSig and ownerPub change nothing for any of them,
+    // so the relaxed path opens for no kind but the FS-1 withdraw.
+    const others = [
+      { kind: 'send', programId: '' },
+      { kind: 'lock', programId: RESERVE_PROGRAM },
+      { kind: 'vote', programId: RESERVE_PROGRAM },
+      { kind: 'leaf-vote', programId: RESERVE_PROGRAM },
+      { kind: 'withdraw', programId: '' },
+    ];
+    for (const shape of others) {
+      const label = `${shape.kind}/${shape.programId || 'none'}`;
+      const signed = post({ ...base, ...shape });
+      assert.deepEqual(signed, post(bare({ ...base, ...shape })), `${label} rewardSig changed the verdict`);
+      if (shape.kind === 'lock') {
+        // A body with a portal, dest20, FS-1 blob and a sealed output is the
+        // wallet's compact lock. It is relayed unchanged for the node to judge,
+        // with or without a rewardSig; the pool is not its verifier.
+        assert.equal(signed.status, 200, label);
+        assert.equal(signed.queued, 1, label);
+        continue;
+      }
+      assert.notEqual(signed.status, 200, `${label} relayed`);
+      assert.equal(signed.queued, 0, `${label} queued`);
+    }
+    // The withdraw itself needs its rewardSig, and its FS-1 blob.
+    assert.equal(post(base).status, 200);
+    const unsigned = post(bare(base));
+    assert.equal(unsigned.status, 403);
+    assert.equal(unsigned.reason, 'unsigned');
+    assert.equal(unsigned.queued, 0);
+    const noBlob = { ...base };
+    delete noBlob.fs1;
+    const blobless = post(noBlob);
+    assert.notEqual(blobless.status, 200, 'withdraw without fs1 relayed');
+    assert.equal(blobless.queued, 0);
+  });
+
   it('keeps a posted withdraw id and nonce on the queued tx', () => {
     const alice = newIdentity();
-    const to = spendDestOf(newIdentity().spendPub);
     const nonce = Buffer.alloc(32, 9).toString('hex');
     const ident = 'wd-posted-nonce';
-    const built = fundedWithdraw(alice, to, 1000n, ident, nonce);
+    const built = fundedWithdraw(alice, 1000n, ident, nonce);
     const { posted, queueSend } = queue();
     const got = handleWalletApi(url('/api/wallet/send'), 'POST', {
-      to,
-      kind: 'withdraw',
-      programId: RESERVE_PROGRAM,
-      amount: sheString(1000n),
-      nanos: '1000',
-      id: ident,
-      portalId: built.portalId,
-      payoutPortalId: built.payoutPortalId,
+      ...wirePost(built, 1000n),
       withdrawNonce: nonce,
-      anchor: built.anchor,
-      excess: built.excess,
-      fs1: built.fs1,
-      fee: built.fee,
-      vin: built.vin,
-      admit_proofs: built.admit_proofs,
-      retireProof: built.retireProof,
-      principalProof: built.principalProof,
-      ownerPub: built.ownerPub,
-      dest20: built.dest20,
-      sig: built.sig,
-      spendPub: built.spendPub,
-      vout: built.vout,
     }, { store: store(), miners: new Map(), queueSend });
     assert.equal(got.status, 200, got.json && got.json.reason);
     assert.equal(posted[0].id, ident);
-    assert.equal(posted[0].withdrawNonce, nonce);
+    // The pool parses the posted hex nonce to its 32 bytes. The bytes, and so
+    // the digest the proofs bind, are what the wallet signed.
+    assert.equal(Buffer.from(posted[0].withdrawNonce).toString('hex'), nonce);
+    assert.ok(Buffer.from(txDigestV3(posted[0])).equals(Buffer.from(txDigestV3(built))), 'txDigestV3 with nonce');
     assert.equal(posted[0].from, undefined);
     assert.equal(Buffer.from(posted[0].vout[0].commit).toString('hex'), Buffer.from(built.vout[0].commit).toString('hex'));
   });

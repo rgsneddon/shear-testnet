@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, hash20FromAddress, admitBaseFromAddress } from '../../crypto/address.js';
 import { spendBox } from '../../tests/spend_box.js';
-import { attachDummyOuts } from '../../crypto/dummy.js';
+import { attachDummyOuts, viewTagOf } from '../../crypto/dummy.js';
+import { sealNote, kernelExcess } from '../../crypto/note.js';
+import { attachAdmitPub } from '../../crypto/admit.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import {
@@ -30,6 +32,21 @@ import {
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 try { setHashBackend('jit'); } catch { /* interpreter */ }
+
+/**
+ * A send output that carries its value opening (valueProof). Since e2bd74cf
+ * attachDummyOuts seals send outputs hidden, so the opening is built on purpose.
+ */
+function openedFlowVout(dest, nanos) {
+  const d20 = hash20FromAddress(dest);
+  let note = sealNote(nanos, { dest20: d20, kind: 'send' });
+  note.viewTag = viewTagOf(note.noteCommit);
+  note.dest20 = d20;
+  note.address = dest;
+  note = attachAdmitPub(note, { admitBase: admitBaseFromAddress(dest) });
+  assert.ok(note.valueProof && note.commit && note.admitPub);
+  return note;
+}
 
 function shareBitsOf(bits) {
   const n = Number(bits) || 0;
@@ -153,10 +170,30 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
     bindWeightFee(sendTx);
     signSpendTx(sendTx, box.key);
     assert.equal(verifySpendSig(sendTx), true);
+    // Send outputs are hidden (e2bd74cf), so the full body reaches the version
+    // gate and the byte-2 stub is admit_version.
     const queued = a.queueTx(sendTx);
     assert.equal(queued.ok, false);
-    assert.equal(queued.reason, 'value_open', queued.reason);
+    assert.equal(queued.reason, 'admit_version', queued.reason);
     assert.equal(a.mempool.some((m) => m.id === 'ibd-flow-send'), false);
+    // The same send with its pay output opened is value_open before that gate.
+    const openedTx = {
+      ...sendTx,
+      id: 'ibd-flow-send-opened',
+      vin: sendTx.vin.map((v) => ({ ...v })),
+      vout: sendTx.vout.map((o) => ({ ...o })),
+      admit_proof: { ...sendTx.admit_proof },
+    };
+    openedTx.vout[0] = openedFlowVout(dest, sendNanos);
+    openedTx.excess = kernelExcess(openedTx.vout, openedTx.vin);
+    assert.ok(openedTx.excess);
+    bindWeightFee(openedTx);
+    signSpendTx(openedTx, box.key);
+    assert.equal(verifySpendSig(openedTx), true);
+    const openedQ = a.queueTx(openedTx);
+    assert.equal(openedQ.ok, false);
+    assert.equal(openedQ.reason, 'value_open', openedQ.reason);
+    assert.equal(a.mempool.some((m) => m.id === 'ibd-flow-send-opened'), false);
     const wired = a.queueTx(compactTx(sendTx));
     assert.equal(wired.ok, false);
     assert.equal(wired.reason, 'admit_version', wired.reason);

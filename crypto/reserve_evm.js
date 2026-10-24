@@ -1024,7 +1024,10 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
     return transferEvmShe(session, { from: txFromOf(tx), to: dest, nanos });
   }
   if (kind === 'lock') {
-    if (!dest) return { ok: true };
+    // A lock is keyed by its dest20. One with no dest cannot be credited or
+    // owned, so it is refused, not passed. The block path refuses it first
+    // (reserveAuth needs freshLockBound, which needs that dest20).
+    if (!dest) return { ok: false, reason: 'lock_dest' };
     if (tx?.payoutPortalId != null && String(tx.payoutPortalId) !== '') {
       return { ok: false, reason: 'vote_leak' };
     }

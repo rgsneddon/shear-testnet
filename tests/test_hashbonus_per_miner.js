@@ -10,7 +10,8 @@ import {
   SHARE_FLOOR_BITS,
   GENESIS_BITS_PACKED,
 } from '../crypto/asert.js';
-import { dest20OfShare, unitsForShare, collateShareUnits, noteCommitOfShare } from '../crypto/share_batch.js';
+import { dest20OfShare, unitsForShare, collateShareUnits, noteCommitOfShare, nonceWithShareTarget, destBoundShareHash } from '../crypto/share_batch.js';
+import { meetsTarget, shearHash } from '../crypto/shear_hash.js';
 import { verifySealedNote, noteCommitOfDest20 } from '../crypto/note.js';
 import { poolFeeDest } from '../crypto/levy.js';
 import { coinbaseTx, hashBonusByMiner, buildTemplate, potSharesFromBatch, GENESIS_PREV } from '../node/src/chain.js';
@@ -22,8 +23,37 @@ function bindable(id) {
   return freshStealthDest(id).dest;
 }
 
+// Share credit is read from the nonce high byte (b0d0b030). A nonce whose high
+// byte is below SHARE_FLOOR_BITS is share_target and earns no unit.
+function floorNonce(low) {
+  return nonceWithShareTarget(BigInt(low), SHARE_FLOOR_BITS);
+}
+
 function share(dest, nonce) {
-  return { dest, dest20: dest20OfShare({ dest }), nonce: BigInt(nonce), lz: 8 };
+  return { dest, dest20: dest20OfShare({ dest }), nonce: floorNonce(nonce), lz: 8 };
+}
+
+/**
+ * A real lag-1 floor share: the dest-bound ShearHash of the parent job at a
+ * floor nonce meets SHARE_FLOOR_BITS. verifiedHeader is the parent job, so the
+ * template binds it to proof slot 0.
+ */
+function mineFloorShare(dest, parentHeader) {
+  const nc = noteCommitOfShare({ dest });
+  for (let n = 1n; n < 200_000n; n += 1n) {
+    const nonce = floorNonce(n);
+    const header = setNonce(parentHeader, nonce);
+    const rx = shearHash(header);
+    if (!meetsTarget(destBoundShareHash(rx, nc), SHARE_FLOOR_BITS)) continue;
+    return {
+      dest,
+      dest20: dest20OfShare({ dest }),
+      nonce,
+      lz: SHARE_FLOOR_BITS,
+      verifiedHeader: Buffer.from(header).toString('hex'),
+    };
+  }
+  return null;
 }
 
 describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
@@ -97,7 +127,10 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
     const empty = coinbaseTx({ height: 2, miner: a, shareBatch: [], samples: [{ miner: a, count: 50 }] });
     assert.equal(empty.vout.filter((o) => o.kind === 'hash').length, 0);
 
-    const tpl = buildTemplate({
+    // f8c2f103: a template packs a work row only in proof slot 0 or 1, bound
+    // from verifiedHeader to the parent (or prior) job. A genesis template has
+    // no parent job, so unproven rows earn nothing there.
+    const genesisTpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: a,
@@ -105,6 +138,29 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
       now: 1_700_000_000_000,
       shareBatch: batch,
       poolDest: pool,
+    });
+    assert.equal(genesisTpl.txs[0].vout.filter((o) => o.kind === 'hash').length, 0);
+    const parent = {
+      header: Buffer.from(genesisTpl.header),
+      hash: shearHash(Buffer.from(genesisTpl.header)),
+      height: 1,
+      txs: genesisTpl.txs,
+      weight: genesisTpl.weight,
+    };
+    const proven = [mineFloorShare(a, parent.header), mineFloorShare(b, parent.header)];
+    assert.ok(proven.every(Boolean), 'need a dest-bound floor share for each hasher');
+    const tpl = buildTemplate({
+      prev: parent.hash,
+      prevHeader: parent.header,
+      prevBlock: parent,
+      parentWeight: parent.weight,
+      height: 2,
+      miner: a,
+      bits: GENESIS_BITS_PACKED,
+      now: 1_700_000_090_000,
+      shareBatch: proven,
+      poolDest: pool,
+      parentBlocks: [parent],
     });
     const tplHash = tpl.txs[0].vout.filter((o) => o.kind === 'hash');
     assert.equal(tplHash.length, 2);
@@ -160,14 +216,14 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
       nonce: 0n,
       baseFee: 1n,
     });
-    const sealed = setNonce(job, 99n);
+    const sealed = setNonce(job, floorNonce(99n));
     const restamp = encodeHeader({
       prevBlockHash: Buffer.alloc(32, 1),
       merkleRoot: Buffer.alloc(32, 2),
       continuityRoot: Buffer.alloc(32, 3),
       timestamp: 1_700_000_010_000n,
       bits: 12,
-      nonce: 13n,
+      nonce: floorNonce(13n),
       baseFee: 1n,
     });
     const row = (dest, nonce, header) => ({
@@ -178,15 +234,15 @@ describe('hash bonus is per hasher dest, 1u per proven floor unit', () => {
       verifiedHeader: Buffer.from(header).toString('hex'),
     });
     const kept = provenLag1Shares(sealed, [
-      row(a, 11n, setNonce(job, 11n)),
-      row(b, 12n, setNonce(job, 12n)),
-      row(a, 99n, sealed),
-      row(b, 13n, restamp),
+      row(a, floorNonce(11n), setNonce(job, floorNonce(11n))),
+      row(b, floorNonce(12n), setNonce(job, floorNonce(12n))),
+      row(a, floorNonce(99n), sealed),
+      row(b, floorNonce(13n), restamp),
     ]);
     assert.equal(kept.length, 3, JSON.stringify(kept.map((s) => [s.dest === a ? 'a' : 'b', String(s.nonce)])));
     assert.equal(kept.filter((s) => s.dest === a).length, 2);
     assert.equal(kept.filter((s) => s.dest === b).length, 1);
-    assert.equal(kept.some((s) => String(s.nonce) === '13'), false);
+    assert.equal(kept.some((s) => String(s.nonce) === String(floorNonce(13n))), false);
 
     const cb = coinbaseTx({ height: 2, miner: a, shareBatch: kept, poolDest: poolFeeDest() });
     const hashes = cb.vout.filter((o) => o.kind === 'hash');

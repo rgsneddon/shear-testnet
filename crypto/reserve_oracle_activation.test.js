@@ -23,10 +23,11 @@ import {
   trimmedMeanBps,
   windowBlocksFor,
 } from './reserve_oracle.js';
-import { applyReserveBlock, coinbaseRewardRoot, consensusUnlockPeriod, enact, emptyVault, lockWitnessOf, portalEpochInterest, portalIdFromDest, previewWithdraw, produceLockOpening, sealEpochLocks, trialReserveApply, VAULT_MINT_DELAY_BLOCKS, vote, VOTE_INCREASE, withdraw } from './reserve_vault.js';
+import { appendVaultLockNote, applyReserveBlock, chainPeriodIndex, coinbaseRewardRoot, consensusUnlockPeriod, enact, emptyVault, leafEpochsToBurn, leafStubNanos, lockUnlockOf, lockWitnessOf, portalEpochInterest, portalIdFromDest, portalIdFromDest20, previewWithdraw, produceLockOpening, provePrincipalOpen, sealEpochLocks, trialReserveApply, VAULT_MINT_DELAY_BLOCKS, vote, VOTE_INCREASE, withdraw } from './reserve_vault.js';
 import { deposit, lockTx, withdrawTx, encodeDeposit, encodeWithdraw, lockTranches } from './owned_portal.js';
-import { randomScalar } from './note.js';
-import { vaultLockNote } from './vault_reward_fs1.js';
+import { pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
+import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
+import { txDigestV3 } from './admit_v3.js';
 import {
   GENESIS_PREV,
   buildTemplate,
@@ -38,9 +39,10 @@ import {
 import { bookSealKeyFor } from '../node/src/book_seal_key.js';
 import { createStore } from '../node/src/store.js';
 import { MAGIC_MAINNET, joinCutoffMs, STAKE_CUTOFF_DAYS_MAINNET, STAKE_CUTOFF_QUARTER_DEN } from './pot_sched.js';
-import { newIdentity } from './address.js';
+import { destCommitFromSpendPub, encodeDest, newIdentity } from './address.js';
 import { vaultDest } from './flow_sheet.js';
 import {
+  attachLockAuth,
   bootReserveEvm,
   callReserve,
   decodeNextEpochBps,
@@ -61,13 +63,103 @@ import {
 
 const T0 = 1_700_000_000_000;
 
-/** These locks are applied. A π leaf is what consensus accepts. */
-function piLock(args) {
+/** These locks are applied. A π leaf is what consensus accepts.
+ *  With a signer, lockAuth is that key over the leaf commit, so the EVM
+ *  credits it. Reserve.sol refuses a lock with no lockAuth as owner_missing.
+ *  The carried portal id is H(tag, dest20), the key JS stores the credit
+ *  under and the key Reserve.sol derives from the 20-byte dest. A withdraw
+ *  that carries it names the same portal on both sides. */
+function piLock(args, signer = null) {
   const tx = lockTx(args);
+  if (signer) {
+    tx.portalId = signer.portalId;
+    for (const out of tx.vout || []) if (out?.kind === 'lock') out.portalId = signer.portalId;
+  }
   const held = lockWitnessOf(tx);
   const leaf = held && vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
   if (leaf) tx.vaultLockNote = leaf.note;
+  if (signer) {
+    attachLockAuth(tx, signer.key);
+    assert.ok(tx.lockAuth, 'lockAuth');
+  }
   return tx;
+}
+
+/** A lock signer. dest20 is H(silent, spendPub), the key Reserve.sol binds lockAuth to. */
+function lockSigner() {
+  const id = newIdentity();
+  const dest20 = Buffer.from(destCommitFromSpendPub(id.spendPub));
+  return { key: id.privateKey, dest20, dest: encodeDest(dest20), portalId: portalIdFromDest20(dest20) };
+}
+
+/** One indexed π leaf. An unindexed matured lock withdraws as stake_reward. */
+function depositIndexed(state, dest, nowMs, lockHeight = 1) {
+  const magic = state.magic || MAGIC_TESTNET;
+  const stamp = lockUnlockOf({ genesisMs: state.genesisMs, magic }, nowMs);
+  const unlock = consensusUnlockPeriod(stamp.epoch);
+  const blind = randomScalar();
+  const scalar = randomScalar();
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+  assert.ok(leaf, 'leaf');
+  const got = deposit({
+    state,
+    dest,
+    nanos: PI_SHE_NANOS,
+    nowMs,
+    commit: leaf.commit,
+    rangeProof: proveRange(BigInt(PI_SHE_NANOS), blind),
+    unlock,
+    rangeCommit: pointBytes(subtractUnlock(pointFrom(leaf.commit), unlock)),
+    piProof: proveRange(0n, blind),
+  });
+  if (!got.ok) return got;
+  assert.ok(appendVaultLockNote(state, leaf.note, {
+    earnEpoch: Math.floor(Number(stamp.epoch) || 0),
+    bornEpoch: chainPeriodIndex(state, nowMs),
+    unlockEpoch: unlock,
+    lockHeight,
+  }), 'lock note index');
+  return { ...got, planted: { leaf, unlock } };
+}
+
+/** FS-1 hidden withdraw: the principal opening and the leaf retire, bound to this tx. */
+function indexedHiddenWithdraw(state, dest, nowMs, planted, id = `hidden-${nowMs}`) {
+  const stub = leafStubNanos(state, [planted.leaf.commit.toString('hex')]);
+  const nanos = PI_SHE_NANOS + Number(stub);
+  const tx = withdrawTx({ from: dest, to: dest, nanos, id });
+  const magic = state.magic || MAGIC_TESTNET;
+  const proof = provePrincipalOpen(
+    planted.leaf.commit, PI_SHE_NANOS, planted.leaf.blind, tx, portalIdFromDest(dest), magic, planted.leaf.unlock,
+  );
+  assert.ok(proof, `${id} proof`);
+  tx.principalProof = proof;
+  const retire = proveLeafRetire({
+    scalar: planted.leaf.scalar,
+    epochs: leafEpochsToBurn(state, planted.leaf.note.toString('hex'), chainPeriodIndex(state, nowMs)),
+    leaf: planted.leaf.note,
+    txBind: txDigestV3(tx, magic),
+    unlockEpoch: chainPeriodIndex(state, nowMs),
+    magic,
+  });
+  assert.ok(retire?.proof, `${id} retire`);
+  tx.retireProof = retire.proof;
+  return withdraw({
+    state,
+    dest,
+    nowMs,
+    principal: nanos,
+    principalProof: proof,
+    retireProof: tx.retireProof,
+    tx,
+  });
+}
+
+/** A paid FS-1 withdraw opens π. The public interest integer stays 0. */
+function assertPaidPi(paid, label = 'paid') {
+  assert.equal(paid.ok, true, `${label} ${paid.reason}`);
+  assert.equal(paid.principal, PI_SHE_NANOS, label);
+  assert.equal(paid.interest, 0, label);
+  assert.equal(paid.earned, 0, label);
 }
 const W = ORACLE_WINDOW_TESTNET;
 
@@ -129,15 +221,17 @@ function minerOf() {
   return vaultDest(id.address, { viewKey: id.viewKey });
 }
 
-/** Owner-signed withdraw of hidden principal 0, bound to the live tranche commitments. */
-function hiddenWithdrawTx(state, { from, to, id, nowMs }) {
-  const portal = state.portals[portalIdFromDest(from)];
+/** Owner-signed withdraw of hidden principal 0, bound to the live tranche commitments.
+ *  portalId is the carried id. It defaults to the address id. */
+function hiddenWithdrawTx(state, { from, to, id, nowMs, portalId = portalIdFromDest(from) }) {
+  const portal = state.portals[portalId];
   return withdrawTx({
     from,
     to: to || from,
     nanos: 0,
     id,
     nowMs,
+    portalId,
     authBind: {
       tranches: portal?.tranches || [],
       nowMs,
@@ -404,7 +498,7 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     assert.equal(secondBps, 500);
     const state = freshVault();
     const who = minerOf();
-    const opened = deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: T0 });
+    const opened = depositIndexed(state, who, T0);
     assert.equal(opened.ok, true, opened.reason);
     const first = applyBoundary(state, {
       height: W + 1,
@@ -446,11 +540,8 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     assert.notEqual(firstBps, secondBps);
     // The public interest integer does not carry either epoch's amount.
     assert.equal(portalEpochInterest(state, state.portals[portalIdFromDest(who)], at), 0);
-    const paid = withdraw({ state, dest: who, nowMs: at });
-    assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.interest, 0);
-    assert.equal(paid.principal, 0);
-    assert.equal(paid.earned, 0);
+    const paid = indexedHiddenWithdraw(state, who, at, opened.planted, 'two-boundaries');
+    assertPaidPi(paid);
     assert.notEqual(paid.earned, formula);
   });
 
@@ -617,7 +708,7 @@ async function satInterest(offset, holdEpochs, rates) {
   }
   assert.equal(state.genesisMs, T0);
   const who = minerOf();
-  const opened = deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lockAt });
+  const opened = depositIndexed(state, who, lockAt);
   assert.equal(opened.ok, true, opened.reason);
   const id = `portal-${offset}-${holdEpochs}`;
   const locked = await callReserve(session, encodeDeposit(id, PI_SHE_NANOS, lockAt));
@@ -625,10 +716,8 @@ async function satInterest(offset, holdEpochs, rates) {
   const enacted = await callReserve(session, encodeEnact(drawAt));
   assert.equal(enacted.ok, true, enacted.reason);
   const earned = portalEpochInterest(state, state.portals[portalIdFromDest(who)], drawAt);
-  const paid = withdraw({ state, dest: who, nowMs: drawAt });
-  assert.equal(paid.ok, true, paid.reason);
-  assert.equal(paid.interest, 0);
-  assert.equal(paid.principal, 0);
+  const paid = indexedHiddenWithdraw(state, who, drawAt, opened.planted, id);
+  assertPaidPi(paid, id);
   const drawn = await callReserve(session, encodeWithdraw(id, drawAt, undefined, 0, {
     locks: [{ nanos: PI_SHE_NANOS, at: lockAt }],
   }));
@@ -731,7 +820,13 @@ async function enactEvm(session, nowMs) {
   assert.equal(en.ok, true, en.reason);
 }
 
-/** One JS vault and one EVM session. `locks` run in order. Interest is exact. */
+/**
+ * One JS vault and one EVM session. `locks` run in order. Interest is exact.
+ * One credit per portal: a second lock for the same `who` is portal_exists on
+ * both sides, and its amount goes to a fresh portal. A π credit is an indexed
+ * leaf and is paid by an FS-1 withdraw. Any other amount is no π leaf, so its
+ * matured lock is not a receipt and the withdraw is stake_reward.
+ */
 async function jsEvmStake({ locks, drawOffset, rates = null }) {
   const epoch = RESERVE_EPOCH_MS;
   const drawAt = T0 + drawOffset * epoch;
@@ -749,40 +844,56 @@ async function jsEvmStake({ locks, drawOffset, rates = null }) {
     }
   }
   const rows = [];
+  const opened = new Set();
   for (const lock of locks) {
     const at = T0 + lock.offset * epoch;
     enactIfDue(state, at);
-    const got = deposit({ state, dest: lock.who, nanos: lock.nanos, nowMs: at });
-    assert.equal(got.ok, true, `${lock.who} ${got.reason}`);
-    if (lock.stake != null) assert.equal(got.idle, !lock.stake, `${lock.who} stake`);
     await enactEvm(session, at);
-    const evm = await callReserve(session, encodeDeposit(lock.who, lock.nanos, at));
-    assert.equal(evm.ok, true, `${lock.who} evm ${evm.reason}`);
-    if (lock.stake != null) {
-      const portal = decodePortal((await callReserve(session, encodePortalOf(lock.who), { staticCall: true })).returnValue);
-      assert.equal(portal.staked, 0, lock.who);
-      assert.equal(portal.idle, 0, lock.who);
-      assert.equal(portal.joined, lock.nanos >= PI_SHE_NANOS, lock.who);
+    let portal = lock.who;
+    if (opened.has(lock.who)) {
+      const again = deposit({ state, dest: lock.who, nanos: lock.nanos, nowMs: at });
+      assert.equal(again.ok, false, `${lock.who} top-up`);
+      assert.equal(again.reason, 'portal_exists', lock.who);
+      const evmAgain = await callReserve(session, encodeDeposit(lock.who, lock.nanos, at));
+      assert.equal(evmAgain.ok, false, `${lock.who} evm top-up`);
+      assert.equal(evmAgain.reason, 'portal_exists', lock.who);
+      portal = minerOf();
     }
-    rows.push({ who: lock.who });
+    opened.add(lock.who);
+    const indexed = lock.nanos === PI_SHE_NANOS;
+    const got = indexed
+      ? depositIndexed(state, portal, at)
+      : deposit({ state, dest: portal, nanos: lock.nanos, nowMs: at });
+    assert.equal(got.ok, true, `${portal} ${got.reason}`);
+    if (lock.stake != null) assert.equal(got.idle, !lock.stake, `${portal} stake`);
+    const evm = await callReserve(session, encodeDeposit(portal, lock.nanos, at));
+    assert.equal(evm.ok, true, `${portal} evm ${evm.reason}`);
+    if (lock.stake != null) {
+      const view = decodePortal((await callReserve(session, encodePortalOf(portal), { staticCall: true })).returnValue);
+      assert.equal(view.staked, 0, portal);
+      assert.equal(view.idle, 0, portal);
+      assert.equal(view.joined, lock.nanos >= PI_SHE_NANOS, portal);
+    }
+    rows.push({ who: lock.who, portal, planted: got.planted || null, nanos: lock.nanos, at });
   }
   const interest = {};
-  for (const lock of locks) {
-    if (interest[lock.who] != null) continue;
-    const earned = portalEpochInterest(state, state.portals[portalIdFromDest(lock.who)], drawAt);
-    const paid = withdraw({ state, dest: lock.who, nowMs: drawAt });
-    assert.equal(paid.ok, true, `${lock.who} ${paid.reason}`);
-    assert.equal(paid.interest, 0, `${lock.who} principal only`);
-    assert.equal(paid.principal, 0, lock.who);
+  for (const row of rows) {
+    const earned = portalEpochInterest(state, state.portals[portalIdFromDest(row.portal)], drawAt);
+    if (row.planted) {
+      assertPaidPi(indexedHiddenWithdraw(state, row.portal, drawAt, row.planted, `stake-${row.at}-${rows.indexOf(row)}`), row.portal);
+    } else {
+      const refused = withdraw({ state, dest: row.portal, nowMs: drawAt });
+      assert.equal(refused.ok, false, `${row.portal} unindexed`);
+      assert.equal(refused.reason, 'stake_reward', row.portal);
+    }
     await enactEvm(session, drawAt);
-    const mine = locks.filter((row) => row.who === lock.who);
-    const drawn = await callReserve(session, encodeWithdraw(lock.who, drawAt, undefined, 0, {
-      locks: mine.map((row) => ({ nanos: row.nanos, at: T0 + row.offset * epoch })),
+    const drawn = await callReserve(session, encodeWithdraw(row.portal, drawAt, undefined, 0, {
+      locks: [{ nanos: row.nanos, at: row.at }],
     }));
-    assert.equal(drawn.ok, false, lock.who);
-    assert.equal(drawn.reason, 'unsigned', lock.who);
-    assert.equal(earned, 0, lock.who);
-    interest[lock.who] = earned;
+    assert.equal(drawn.ok, false, row.portal);
+    assert.equal(drawn.reason, 'unsigned', row.portal);
+    assert.equal(earned, 0, row.portal);
+    interest[row.who] = (interest[row.who] || 0) + earned;
   }
   return interest;
 }
@@ -891,6 +1002,7 @@ describe('the stake-reward cutoff is per network', () => {
     const epoch = RESERVE_EPOCH_MS;
     const quarter = Math.floor(epoch / 4);
     const earlyWho = minerOf();
+    const addWho = minerOf();
     const lateWho = minerOf();
     const earlyAt = T0;
     const addAt = T0 + Math.floor(epoch / 2);
@@ -899,9 +1011,17 @@ describe('the stake-reward cutoff is per network', () => {
     const state = emptyVault();
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
-    assert.equal(deposit({ state, dest: earlyWho, nanos: PI_SHE_NANOS, nowMs: earlyAt }).ok, true);
-    assert.equal(deposit({ state, dest: earlyWho, nanos: PI_SHE_NANOS, nowMs: addAt }).ok, true);
-    const late = deposit({ state, dest: lateWho, nanos: PI_SHE_NANOS, nowMs: lateAt });
+    const early = depositIndexed(state, earlyWho, earlyAt);
+    assert.equal(early.ok, true, early.reason);
+    assert.equal(early.idle, false);
+    // One credit per portal. The pre-cutoff add is its own portal.
+    const topUp = deposit({ state, dest: earlyWho, nanos: PI_SHE_NANOS, nowMs: addAt });
+    assert.equal(topUp.ok, false);
+    assert.equal(topUp.reason, 'portal_exists');
+    const add = depositIndexed(state, addWho, addAt);
+    assert.equal(add.ok, true, add.reason);
+    assert.equal(add.idle, false);
+    const late = depositIndexed(state, lateWho, lateAt);
     assert.equal(late.ok, true, late.reason);
     assert.equal(late.idle, true);
     const cast = vote({ state, dest: lateWho, choice: VOTE_INCREASE, nowMs: lateAt });
@@ -910,35 +1030,36 @@ describe('the stake-reward cutoff is per network', () => {
     const addRemain = end - addAt;
     const want = interestNanos(PI_SHE_NANOS, GENESIS_BPS) + proRata(PI_SHE_NANOS, GENESIS_BPS, addRemain, epoch);
     assert.equal(enact({ state, nowMs: end }).ok, true);
-    const paid = withdraw({ state, dest: earlyWho, nowMs: end });
-    assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.principal, 0);
-    assert.equal(paid.interest, 0);
-    assert.equal(paid.earned, 0);
+    const paid = indexedHiddenWithdraw(state, earlyWho, end, early.planted, 'cutoff-early');
+    assertPaidPi(paid, 'early');
+    const added = indexedHiddenWithdraw(state, addWho, end, add.planted, 'cutoff-add');
+    assertPaidPi(added, 'add');
     assert.ok(want > 0);
-    const none = withdraw({ state, dest: lateWho, nowMs: end });
-    assert.equal(none.ok, true, none.reason);
-    assert.equal(none.principal, 0);
-    assert.equal(none.interest, 0);
-    assert.equal(none.earned, 0);
+    const none = indexedHiddenWithdraw(state, lateWho, end, late.planted, 'cutoff-late');
+    assertPaidPi(none, 'late');
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(earlyWho, PI_SHE_NANOS, earlyAt))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(earlyWho, PI_SHE_NANOS, addAt))).ok, true);
+    const evmTopUp = await callReserve(session, encodeDeposit(earlyWho, PI_SHE_NANOS, addAt));
+    assert.equal(evmTopUp.ok, false);
+    assert.equal(evmTopUp.reason, 'portal_exists');
+    assert.equal((await callReserve(session, encodeDeposit(addWho, PI_SHE_NANOS, addAt))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(lateWho, PI_SHE_NANOS, lateAt))).ok, true);
     const evmVote = await callReserve(session, encodeVote(lateWho, 1, lateAt));
     assert.equal(evmVote.ok, false);
     assert.equal(evmVote.reason, 'not_voter');
     assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
-    const evmEarly = await callReserve(session, encodeWithdraw(earlyWho, end, undefined, PI_SHE_NANOS * 2, {
-      locks: [
-        { nanos: PI_SHE_NANOS, at: earlyAt },
-        { nanos: PI_SHE_NANOS, at: addAt },
-      ],
+    const evmEarly = await callReserve(session, encodeWithdraw(earlyWho, end, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: earlyAt }],
     }));
     assert.equal(evmEarly.ok, false);
     assert.equal(evmEarly.reason, 'unsigned');
+    const evmAdd = await callReserve(session, encodeWithdraw(addWho, end, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: addAt }],
+    }));
+    assert.equal(evmAdd.ok, false);
+    assert.equal(evmAdd.reason, 'unsigned');
     assert.equal(paid.earned, 0);
     const evmLate = await callReserve(session, encodeWithdraw(lateWho, end, undefined, 0, {
       locks: [{ nanos: PI_SHE_NANOS, at: lateAt }],
@@ -972,25 +1093,40 @@ function word(ret) {
 describe('a pre-cutoff sum below pi earns no stake reward', () => {
   const epoch = RESERVE_EPOCH_MS;
 
+  /**
+   * Only a π leaf can be indexed. π is paid by an FS-1 withdraw. π-1 and π+1
+   * are no π leaf, so the matured lock is not a receipt: stake_reward.
+   */
   async function oneLock(nanos, lockAt, drawAt) {
     const who = minerOf();
     const state = emptyVault();
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
-    assert.equal(deposit({ state, dest: who, nanos, nowMs: lockAt }).ok, true);
-    const earned = portalEpochInterest(state, state.portals[portalIdFromDest(who)], drawAt);
-    const paid = withdraw({ state, dest: who, nowMs: drawAt });
-    assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.interest, 0);
+    const indexed = nanos === PI_SHE_NANOS;
+    const got = indexed
+      ? depositIndexed(state, who, lockAt)
+      : deposit({ state, dest: who, nanos, nowMs: lockAt });
+    assert.equal(got.ok, true, got.reason);
+    const portal = state.portals[portalIdFromDest(who)];
+    assert.equal(portal.qualified === true, nanos >= PI_SHE_NANOS, `qualified ${nanos}`);
+    const earned = portalEpochInterest(state, portal, drawAt);
+    let paid;
+    if (indexed) {
+      paid = indexedHiddenWithdraw(state, who, drawAt, got.planted, `one-${nanos}`);
+      assertPaidPi(paid, `one ${nanos}`);
+    } else {
+      paid = withdraw({ state, dest: who, nowMs: drawAt });
+      assert.equal(paid.ok, false, `one ${nanos}`);
+      assert.equal(paid.reason, 'stake_reward');
+    }
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, nanos, lockAt))).ok, true);
-    const evm = await callReserve(session, encodeWithdraw(who, drawAt, undefined, Number(paid.principal), {
+    const evm = await callReserve(session, encodeWithdraw(who, drawAt, undefined, indexed ? PI_SHE_NANOS : 0, {
       locks: [{ nanos, at: lockAt }],
     }));
     assert.equal(evm.ok, false);
     assert.equal(evm.reason, 'unsigned');
-    assert.equal(paid.interest, 0);
     return earned;
   }
 
@@ -1005,8 +1141,9 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     assert.ok(interestNanos(PI_SHE_NANOS, GENESIS_BPS) > 0);
   });
 
-  it('a later pre-cutoff top-up that crosses pi still pays the earlier credit', async () => {
+  it('a later pre-cutoff top-up is portal_exists, so a sum below pi never crosses pi', async () => {
     const who = minerOf();
+    const other = minerOf();
     const first = PI_SHE_NANOS - 1;
     const second = 2;
     const addAt = T0 + epoch;
@@ -1015,25 +1152,31 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: who, nanos: first, nowMs: T0 }).ok, true);
-    assert.equal(deposit({ state, dest: who, nanos: second, nowMs: addAt }).ok, true);
-    const paid = withdraw({ state, dest: who, nowMs: drawAt });
-    assert.equal(paid.ok, true, paid.reason);
+    const topUp = deposit({ state, dest: who, nanos: second, nowMs: addAt });
+    assert.equal(topUp.ok, false);
+    assert.equal(topUp.reason, 'portal_exists');
+    assert.equal(deposit({ state, dest: other, nanos: second, nowMs: addAt }).ok, true);
     const want = interestNanos(first, GENESIS_BPS) * 2 + interestNanos(second, GENESIS_BPS);
-    assert.equal(paid.interest, 0);
-    assert.equal(paid.earned, 0);
-    assert.equal(paid.principal, 0);
     assert.ok(want > 0);
-    assert.equal(state.portals[portalIdFromDest(who)].qualified, true);
+    // Neither credit is π, so neither portal qualifies and neither is a leaf.
+    assert.notEqual(state.portals[portalIdFromDest(who)].qualified, true);
+    assert.notEqual(state.portals[portalIdFromDest(other)].qualified, true);
+    const paid = withdraw({ state, dest: who, nowMs: drawAt });
+    assert.equal(paid.ok, false);
+    assert.equal(paid.reason, 'stake_reward');
+    const paidOther = withdraw({ state, dest: other, nowMs: drawAt });
+    assert.equal(paidOther.ok, false);
+    assert.equal(paidOther.reason, 'stake_reward');
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, first, T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(who, second, addAt))).ok, true);
+    const evmTopUp = await callReserve(session, encodeDeposit(who, second, addAt));
+    assert.equal(evmTopUp.ok, false);
+    assert.equal(evmTopUp.reason, 'portal_exists');
+    assert.equal((await callReserve(session, encodeDeposit(other, second, addAt))).ok, true);
     const evm = await callReserve(session, encodeWithdraw(who, drawAt, undefined, 0, {
-      locks: [
-        { nanos: first, at: T0 },
-        { nanos: second, at: addAt },
-      ],
+      locks: [{ nanos: first, at: T0 }],
     }));
     assert.equal(evm.ok, false);
     assert.equal(evm.reason, 'unsigned');
@@ -1041,6 +1184,7 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
 
   it('a post-cutoff add does not lift a pre-cutoff sum below pi, and the owner can vote', async () => {
     const who = minerOf();
+    const lateWho = minerOf();
     const quarter = Math.floor(epoch / STAKE_CUTOFF_QUARTER_DEN);
     const lateAt = T0 + epoch - quarter + 1000;
     const end = T0 + epoch;
@@ -1048,33 +1192,41 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
     assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS - 1, nowMs: T0 }).ok, true);
-    const late = deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lateAt });
+    const topUp = deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lateAt });
+    assert.equal(topUp.ok, false);
+    assert.equal(topUp.reason, 'portal_exists');
+    const late = depositIndexed(state, lateWho, lateAt);
     assert.equal(late.ok, true, late.reason);
     assert.equal(late.idle, true);
     const cast = vote({ state, dest: who, choice: VOTE_INCREASE, nowMs: lateAt });
     assert.equal(cast.ok, false);
     assert.equal(cast.reason, 'vote_retired');
+    assert.notEqual(state.portals[portalIdFromDest(who)].qualified, true);
     const paid = withdraw({ state, dest: who, nowMs: end });
-    assert.equal(paid.ok, true, paid.reason);
-    assert.equal(paid.interest, 0);
-    assert.equal(paid.principal, 0);
-    assert.equal(state.portals[portalIdFromDest(who)].qualified, true);
+    assert.equal(paid.ok, false);
+    assert.equal(paid.reason, 'stake_reward');
+    assertPaidPi(indexedHiddenWithdraw(state, lateWho, end, late.planted, 'post-cutoff'), 'late');
 
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS - 1, T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lateAt))).ok, true);
+    const evmTopUp = await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lateAt));
+    assert.equal(evmTopUp.ok, false);
+    assert.equal(evmTopUp.reason, 'portal_exists');
+    assert.equal((await callReserve(session, encodeDeposit(lateWho, PI_SHE_NANOS, lateAt))).ok, true);
     const evmVote = await callReserve(session, encodeVote(who, 1, lateAt));
     assert.equal(evmVote.ok, false);
     assert.equal(evmVote.reason, 'not_voter');
     const evm = await callReserve(session, encodeWithdraw(who, end, undefined, 0, {
-      locks: [
-        { nanos: PI_SHE_NANOS - 1, at: T0 },
-        { nanos: PI_SHE_NANOS, at: lateAt },
-      ],
+      locks: [{ nanos: PI_SHE_NANOS - 1, at: T0 }],
     }));
     assert.equal(evm.ok, false);
     assert.equal(evm.reason, 'unsigned');
+    const evmLate = await callReserve(session, encodeWithdraw(lateWho, end, undefined, PI_SHE_NANOS, {
+      locks: [{ nanos: PI_SHE_NANOS, at: lateAt }],
+    }));
+    assert.equal(evmLate.ok, false);
+    assert.equal(evmLate.reason, 'unsigned');
   });
 });
 
@@ -1085,7 +1237,10 @@ describe('pinClock runs before the first lock in a block', () => {
     const drawAt = T0 + 3.5 * epoch;
     const bps = 400;
     const session = await bootReserveEvm();
-    const pinLock = lockTx({ from: 'pin-first', to: 'pin-first', nanos: PI_SHE_NANOS, id: 'pin-lock' });
+    const pinner = lockSigner();
+    const pinLock = lockTx({ from: pinner.dest, to: pinner.dest, nanos: PI_SHE_NANOS, id: 'pin-lock' });
+    attachLockAuth(pinLock, pinner.key);
+    assert.ok(pinLock.lockAuth, 'pin lockAuth');
     const ran = await executeBlockEvm(session, [
       { coinbase: true, vout: [] },
       pinLock,
@@ -1095,7 +1250,7 @@ describe('pinClock runs before the first lock in a block', () => {
     assert.equal(commit.ok, true, commit.reason);
     const enacted = await callReserve(session, encodeEnact(drawAt));
     assert.equal(enacted.ok, true, enacted.reason);
-    const pinned = decodePortal((await callReserve(session, encodePortalOf('pin-first'), { staticCall: true })).returnValue);
+    const pinned = decodePortal((await callReserve(session, encodePortalOf(pinner.dest20), { staticCall: true })).returnValue);
     assert.equal(pinned.staked, 0);
     assert.equal(pinned.idle, 0);
     assert.equal(pinned.joined, true);
@@ -1108,12 +1263,10 @@ describe('pinClock runs before the first lock in a block', () => {
     state.genesisMs = T0;
     state.pendingRates[2] = bps;
     const who = minerOf();
-    assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
-    const jsPaid = withdraw({ state, dest: who, nowMs: drawAt });
-    assert.equal(jsPaid.ok, true, jsPaid.reason);
-    assert.equal(jsPaid.interest, 0);
-    assert.equal(jsPaid.principal, 0);
-    assert.equal(jsPaid.earned, 0);
+    const jsLock = depositIndexed(state, who, lockAt);
+    assert.equal(jsLock.ok, true, jsLock.reason);
+    const jsPaid = indexedHiddenWithdraw(state, who, drawAt, jsLock.planted, 'pin-draw');
+    assertPaidPi(jsPaid, 'pin');
     assert.notEqual(jsPaid.earned, want);
 
     const late = await bootReserveEvm();
@@ -1213,7 +1366,8 @@ describe('an unpinned clock rejects a lock', () => {
 describe('the block path rolls before its transactions', () => {
   it('JS and the EVM adopt each epoch rate and pay the same interest', async () => {
     const epoch = RESERVE_EPOCH_MS;
-    const who = minerOf();
+    const signer = lockSigner();
+    const who = signer.dest;
     const rates = { 1: 300, 2: 400, 3: 500 };
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
@@ -1228,7 +1382,7 @@ describe('the block path rolls before its transactions', () => {
     const steps = [
       {
         now: T0 + half,
-        txs: [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'block-lock' })],
+        txs: [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'block-lock' }, signer)],
         epoch: 0,
         bps: GENESIS_BPS,
       },
@@ -1265,7 +1419,7 @@ describe('the block path rolls before its transactions', () => {
     ]);
     const draw = withCoinbaseReward(state, drawAt, [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'block-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'block-draw', nowMs: drawAt, portalId: signer.portalId }),
     ]);
     const applied = applyReserveBlock({
       state,
@@ -1299,13 +1453,14 @@ describe('a ≥π withdraw in the second epoch', () => {
 
   async function secondEpochWithdraw(withRoot) {
     const epoch = RESERVE_EPOCH_MS;
-    const who = minerOf();
+    const signer = lockSigner();
+    const who = signer.dest;
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
     const session = await bootReserveEvm();
     const lock = [
       { coinbase: true, vout: [] },
-      piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'pi-second-lock' }),
+      piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'pi-second-lock' }, signer),
     ];
     const locked = applyReserveBlock({
       state,
@@ -1330,13 +1485,13 @@ describe('a ≥π withdraw in the second epoch', () => {
     const evmGap = await executeBlockEvm(session, gap, gapAt, T0);
     assert.equal(evmGap.ok, true, evmGap.reason);
     const drawAt = T0 + 2 * epoch;
-    const preview = previewWithdraw(state, who, drawAt);
+    const preview = previewWithdraw(state, signer.portalId, drawAt);
     const owed = coinbaseRewardRoot(state, drawAt);
     const cb = { coinbase: true, vout: [] };
     if (withRoot) cb.rewardRoot = owed;
     const draw = [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'pi-second-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'pi-second-draw', nowMs: drawAt, portalId: signer.portalId }),
     ];
     const applied = applyReserveBlock({
       state,
@@ -1416,7 +1571,8 @@ describe('a withdraw stays open after the enacting block', () => {
 
   async function exitLater({ blocksAfter = null, at = null, gapBps = null, laterBps = null } = {}) {
     const epoch = RESERVE_EPOCH_MS;
-    const who = minerOf();
+    const signer = lockSigner();
+    const who = signer.dest;
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
     const session = await bootReserveEvm();
@@ -1449,7 +1605,7 @@ describe('a withdraw stays open after the enacting block', () => {
     };
     await run(T0 + half, [
       cb,
-      piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'open-lock' }),
+      piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'open-lock' }, signer),
     ]);
     await run(T0 + epoch, [cb]);
     if (blocksAfter != null) {
@@ -1460,7 +1616,7 @@ describe('a withdraw stays open after the enacting block', () => {
     const drawAt = at != null ? at : T0 + epoch + blocksAfter;
     const drawTxs = [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'open-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'open-draw', nowMs: drawAt, portalId: signer.portalId }),
     ];
     const owed = owedForEvm(state, drawAt, drawTxs);
     const body = withCoinbaseReward(state, drawAt, drawTxs);
@@ -1528,7 +1684,8 @@ describe('a withdraw stays open after the enacting block', () => {
 describe('a no-commit gap keeps the last adopted rate', () => {
   it('JS and the EVM pay the gap at the last adopted rate, not the later one', async () => {
     const epoch = RESERVE_EPOCH_MS;
-    const who = minerOf();
+    const signer = lockSigner();
+    const who = signer.dest;
     const adopted = 350;
     const later = 900;
     const state = emptyVault();
@@ -1554,7 +1711,7 @@ describe('a no-commit gap keeps the last adopted rate', () => {
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };
-    await run(T0, [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'gap-lock' })]);
+    await run(T0, [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'gap-lock' }, signer)]);
     await run(T0 + epoch, [cb]);
     await run(T0 + epoch + 1, [cb]);
     assert.equal(state.epochBps, adopted);
@@ -1564,7 +1721,7 @@ describe('a no-commit gap keeps the last adopted rate', () => {
     const drawAt = T0 + 3 * epoch + Math.floor(epoch / 2);
     const drawTxs = [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'gap-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'gap-draw', nowMs: drawAt, portalId: signer.portalId }),
     ];
     const owed = owedForEvm(state, drawAt, drawTxs);
     const body = withCoinbaseReward(state, drawAt, drawTxs);
@@ -1601,7 +1758,8 @@ describe('a no-commit gap keeps the last adopted rate', () => {
 describe('a skipped commit carries forward', () => {
   it('JS and the EVM pay the next uncommitted epoch at the last gap commit', async () => {
     const epoch = RESERVE_EPOCH_MS;
-    const who = minerOf();
+    const signer = lockSigner();
+    const who = signer.dest;
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
     state.pendingRates[2] = 0;
@@ -1625,7 +1783,7 @@ describe('a skipped commit carries forward', () => {
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
       return { applied, evm };
     };
-    await run(T0, [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'carry-lock' })]);
+    await run(T0, [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'carry-lock' }, signer)]);
     await run(T0 + epoch, [cb]);
     await run(T0 + 4 * epoch + 1, [cb]);
     assert.equal(state.currentEpoch, 4);
@@ -1646,7 +1804,7 @@ describe('a skipped commit carries forward', () => {
     const drawAt = T0 + 5 * epoch;
     const drawTxs = [
       cb,
-      hiddenWithdrawTx(state, { from: who, to: who, id: 'carry-draw', nowMs: drawAt }),
+      hiddenWithdrawTx(state, { from: who, to: who, id: 'carry-draw', nowMs: drawAt, portalId: signer.portalId }),
     ];
     const owed = owedForEvm(state, drawAt, drawTxs);
     const body = withCoinbaseReward(state, drawAt, drawTxs);
@@ -1677,12 +1835,13 @@ describe('the rate lookback is load-bearing', () => {
     const state = emptyVault();
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
-    assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: T0 }).ok, true);
+    const locked = depositIndexed(state, who, T0);
+    assert.equal(locked.ok, true, locked.reason);
     assert.equal(enact({ state, nowMs: T0 + epoch }).ok, true);
     state.pendingRates[2] = 0;
     state.pendingRates[3] = 10000;
     const drawAt = T0 + 5 * epoch;
-    const paid = withdraw({ state, dest: who, nowMs: drawAt });
+    const paid = indexedHiddenWithdraw(state, who, drawAt, locked.planted, 'lookback-draw');
     assert.equal(paid.ok, true, paid.reason);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
@@ -1695,9 +1854,7 @@ describe('the rate lookback is load-bearing', () => {
     assert.equal(drawn.reason, 'unsigned');
     const full = (bps) => interestOf(PI_SHE_NANOS, bps);
     const want = full(GENESIS_BPS) * 2 + full(10000) * 2;
-    assert.equal(paid.interest, 0);
-    assert.equal(paid.principal, 0);
-    assert.equal(paid.earned, 0);
+    assertPaidPi(paid, 'lookback');
     assert.ok(want > 0);
     assert.notEqual(want, full(GENESIS_BPS) * 3 + full(10000));
     assert.equal(state.epochBps, GENESIS_BPS);
@@ -1713,16 +1870,17 @@ describe('a lock stays until its epoch ends', () => {
     const state = emptyVault();
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
-    assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
+    const locked = depositIndexed(state, who, lockAt);
+    assert.equal(locked.ok, true, locked.reason);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lockAt))).ok, true);
-    return { state, session, epoch, lockAt };
+    return { state, session, epoch, lockAt, planted: locked.planted };
   }
 
   it('JS and the EVM refuse a mid-epoch withdraw', async () => {
     const who = minerOf();
-    const { state, session, epoch, lockAt } = await lockEpochOne(who);
+    const { state, session, epoch, lockAt, planted } = await lockEpochOne(who);
     const mid = lockAt + Math.floor(epoch / 2);
     const paid = withdraw({ state, dest: who, nowMs: mid });
     assert.equal(paid.ok, false);
@@ -1731,11 +1889,8 @@ describe('a lock stays until its epoch ends', () => {
     assert.equal(early.ok, false);
     const end = lockAt + epoch;
     assert.equal(enact({ state, nowMs: end }).ok, true);
-    const later = withdraw({ state, dest: who, nowMs: end });
-    assert.equal(later.ok, true, later.reason);
-    assert.equal(later.principal, 0);
-    assert.equal(later.interest, 0);
-    assert.equal(later.earned, 0);
+    const later = indexedHiddenWithdraw(state, who, end, planted, 'end-draw');
+    assertPaidPi(later, 'end');
     assert.ok(full() > 0);
     assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
     const drawn = await callReserve(session, encodeWithdraw(who, end, undefined, 0, {
@@ -1755,27 +1910,24 @@ describe('a lock stays until its epoch ends', () => {
     const state = emptyVault();
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
-    assert.equal(deposit({ state, dest: boundary, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
-    assert.equal(deposit({ state, dest: after, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
+    const atLock = depositIndexed(state, boundary, lockAt);
+    assert.equal(atLock.ok, true, atLock.reason);
+    const laterLock = depositIndexed(state, after, lockAt);
+    assert.equal(laterLock.ok, true, laterLock.reason);
     const session = await bootReserveEvm();
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(boundary, PI_SHE_NANOS, lockAt))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(after, PI_SHE_NANOS, lockAt))).ok, true);
     const justBefore = withdraw({ state, dest: boundary, nowMs: end - 1 });
+    assert.equal(justBefore.ok, false);
     assert.equal(justBefore.reason, 'epoch_open');
     assert.equal((await callReserve(session, encodeWithdraw(boundary, end - 1))).ok, false);
     assert.equal(enact({ state, nowMs: end }).ok, true);
     assert.equal((await callReserve(session, encodeEnact(end))).ok, true);
-    const atEnd = withdraw({ state, dest: boundary, nowMs: end });
-    const afterEnd = withdraw({ state, dest: after, nowMs: laterAt });
-    assert.equal(atEnd.ok, true, atEnd.reason);
-    assert.equal(afterEnd.ok, true, afterEnd.reason);
-    assert.equal(atEnd.interest, 0);
-    assert.equal(afterEnd.interest, 0);
-    assert.equal(atEnd.principal, 0);
-    assert.equal(afterEnd.principal, 0);
-    assert.equal(atEnd.earned, 0);
-    assert.equal(afterEnd.earned, 0);
+    const atEnd = indexedHiddenWithdraw(state, boundary, end, atLock.planted, 'boundary-draw');
+    const afterEnd = indexedHiddenWithdraw(state, after, laterAt, laterLock.planted, 'later-draw');
+    assertPaidPi(atEnd, 'at end');
+    assertPaidPi(afterEnd, 'after end');
     assert.ok(full() > 0);
     const evmEnd = await callReserve(session, encodeWithdraw(boundary, end, undefined, 0, {
       locks: [{ nanos: PI_SHE_NANOS, at: lockAt }],
@@ -1791,33 +1943,42 @@ describe('a lock stays until its epoch ends', () => {
 });
 
 describe('a top-up does not re-lock earlier principal', () => {
-  const TOP = PI_SHE_NANOS * 2;
+  // One credit per portal, and a leaf is π. The top-up is π on a second portal.
+  const TOP = PI_SHE_NANOS;
 
   function partialOf(amount, remain, span) {
     return Number((BigInt(amount) * BigInt(GENESIS_BPS) * BigInt(remain)) / (BigInt(span) * 10000n));
   }
 
-  it('JS releases an unindexed finished deposit, and a 3-arg EVM withdraw leaves the later top-up locked', async () => {
+  it('JS releases an indexed finished deposit, a top-up is its own portal, and a 3-arg EVM withdraw leaves it locked', async () => {
     const epoch = RESERVE_EPOCH_MS;
     const who = minerOf();
+    const topWho = minerOf();
     const lockAt = T0;
     const topAt = T0 + epoch + Math.floor(epoch / 2);
     const topEnd = T0 + 2 * epoch;
     const state = emptyVault();
     state.genesisMs = T0;
     state.magic = MAGIC_TESTNET;
-    assert.equal(deposit({ state, dest: who, nanos: PI_SHE_NANOS, nowMs: lockAt }).ok, true);
+    const first = depositIndexed(state, who, lockAt);
+    assert.equal(first.ok, true, first.reason);
     assert.equal(enact({ state, nowMs: T0 + epoch }).ok, true);
-    assert.equal(deposit({ state, dest: who, nanos: TOP, nowMs: topAt }).ok, true);
+    const topUp = deposit({ state, dest: who, nanos: TOP, nowMs: topAt });
+    assert.equal(topUp.ok, false);
+    assert.equal(topUp.reason, 'portal_exists');
+    const top = depositIndexed(state, topWho, topAt);
+    assert.equal(top.ok, true, top.reason);
     const full = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
-    const early = withdraw({ state, dest: who, nowMs: topAt });
-    assert.equal(early.ok, true, early.reason);
-    assert.equal(early.principal, 0);
-    assert.equal(early.interest, 0);
-    assert.equal(early.earned, 0);
+    const early = indexedHiddenWithdraw(state, who, topAt, first.planted, 'early-draw');
+    assertPaidPi(early, 'early');
     assert.ok(full > 0);
     assert.notEqual(early.principal, PI_SHE_NANOS + TOP);
-    const portal = state.portals[Object.keys(state.portals)[0]];
+    // The top-up's epoch is still open. Its portal keeps its one tranche.
+    const topOpen = withdraw({ state, dest: topWho, nowMs: topAt });
+    assert.equal(topOpen.ok, false);
+    assert.equal(topOpen.reason, 'epoch_open');
+    assert.equal(state.portals[portalIdFromDest(who)].tranches.length, 0);
+    const portal = state.portals[portalIdFromDest(topWho)];
     assert.equal(portal.tranches.length, 1);
     assert.equal(portal.tranches[0].amount, undefined);
     assert.equal(String(portal.tranches[0].commit).length, 64);
@@ -1831,7 +1992,10 @@ describe('a top-up does not re-lock earlier principal', () => {
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lockAt))).ok, true);
     assert.equal((await callReserve(session, encodeEnact(T0 + epoch))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(who, TOP, topAt))).ok, true);
+    const evmTopUp = await callReserve(session, encodeDeposit(who, TOP, topAt));
+    assert.equal(evmTopUp.ok, false);
+    assert.equal(evmTopUp.reason, 'portal_exists');
+    assert.equal((await callReserve(session, encodeDeposit(topWho, TOP, topAt))).ok, true);
     const held = decodePortal((await callReserve(session, encodePortalOf(who), { staticCall: true })).returnValue);
     assert.equal(held.staked + held.idle, 0);
     assert.equal(held.joined, true);
@@ -1854,16 +2018,13 @@ describe('a top-up does not re-lock earlier principal', () => {
     assert.ok(topDue > 0);
     assert.ok(topDue < wholeTop);
     assert.equal(enact({ state, nowMs: topEnd }).ok, true);
-    const rest = withdraw({ state, dest: who, nowMs: topEnd });
-    assert.equal(rest.ok, true, rest.reason);
-    assert.equal(rest.principal, 0);
-    assert.equal(rest.interest, 0);
-    assert.equal(rest.earned, 0);
+    const rest = indexedHiddenWithdraw(state, topWho, topEnd, top.planted, 'top-draw');
+    assertPaidPi(rest, 'top');
     assert.ok(topDue > 0 && topDue < wholeTop);
     assert.equal(Number(state.totalLockedNanos), 0);
     assert.equal((await callReserve(session, encodeEnact(topEnd))).ok, true);
-    const restEvm = await callReserve(session, encodeWithdraw(who, topEnd, undefined, 0, {
-      tranches: lockTranches(who).slice(-1),
+    const restEvm = await callReserve(session, encodeWithdraw(topWho, topEnd, undefined, 0, {
+      tranches: lockTranches(topWho).slice(-1),
     }));
     assert.equal(restEvm.ok, false);
     assert.equal(restEvm.reason, 'unsigned');
@@ -1897,7 +2058,8 @@ describe('an epoch with no commit keeps the running rate', () => {
 
   it('JS and the EVM keep the last adopted rate when the next epoch has no commit', async () => {
     const epoch = RESERVE_EPOCH_MS;
-    const who = minerOf();
+    const signer = lockSigner();
+    const who = signer.dest;
     const adopted = 350;
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
@@ -1918,7 +2080,7 @@ describe('an epoch with no commit keeps the running rate', () => {
       const evm = await executeBlockEvm(session, txs, now, T0);
       assert.equal(evm.ok, true, `${now} ${evm.reason}`);
     };
-    await run(T0, [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'rate-lock' })]);
+    await run(T0, [cb, piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'rate-lock' }, signer)]);
     await run(T0 + epoch, [cb]);
     await run(T0 + epoch + 1, [cb]);
     assert.equal(state.currentEpoch, 1);

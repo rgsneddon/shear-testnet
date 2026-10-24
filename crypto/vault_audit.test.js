@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM, VAULT_FS1_ACTIVATION_HEIGHT } from './asert.js';
-import { newIdentity, hash20FromAddress } from './address.js';
+import { destCommitFromSpendPub, newIdentity, hash20FromAddress } from './address.js';
 import { vaultDest } from './flow_sheet.js';
 import {
   commit,
@@ -39,6 +39,7 @@ import {
   proveRemainOpen,
   verifyRemainOpen,
   portalIdFromDest,
+  portalIdFromDest20,
   provePrincipalOpen,
   rewardClaimTx,
   rewardOwnerCommit,
@@ -1135,18 +1136,22 @@ describe('hidden vault claims', () => {
     const unlock = consensusUnlockPeriod(0);
     const note = vaultLockNote(PI_SHE_NANOS, 3n, rIn, unlock).note;
     const who = dest20();
+    // The EVM keys a lock by its vout dest20 (cb733226). The dest20 is the
+    // lockAuth key's commit and the portal id is H(tag, dest20).
+    const lockD20 = destCommitFromSpendPub(who.id.spendPub);
     const tx = {
       id: 'evm-unlock',
       kind: 'lock',
       programId: RESERVE_PROGRAM,
       nanos: 0,
-      portalId: '11'.repeat(32),
+      portalId: portalIdFromDest20(lockD20),
       ownerPub: who.id.spendPub.toString('hex'),
       vaultLockNote: note,
-      vout: [{ kind: 'lock', commit: funded, rangeProof: range }],
+      vout: [{ kind: 'lock', commit: funded, rangeProof: range, dest20: lockD20 }],
     };
     const session = await bootReserveEvm();
     attachLockAuth(tx, who.id.privateKey);
+    assert.ok(tx.lockAuth, 'lockAuth');
     const good = await executeBlockEvm(
       session,
       [{ coinbase: true, vout: [] }, tx],
@@ -1161,6 +1166,7 @@ describe('hidden vault claims', () => {
     const badTx = { ...tx, id: 'evm-unlock-bad', vaultLockNote: badNote };
     delete badTx.lockAuth;
     attachLockAuth(badTx, who.id.privateKey);
+    assert.ok(badTx.lockAuth, 'bad lockAuth');
     // A second lock on the session that already took the good one is
     // portal_exists. The unlock check is the first lock of a fresh book.
     const badBook = await bootReserveEvm();

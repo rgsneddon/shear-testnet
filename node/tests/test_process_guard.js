@@ -5,6 +5,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { headerHash } from '../src/chain.js';
 import { createP2p, fingerprintHelloHash } from '../src/p2p.js';
 import { createRpc } from '../src/rpc.js';
 import {
@@ -20,6 +21,16 @@ import {
 
 const self = fileURLToPath(import.meta.url);
 const guardProbe = process.argv.includes('--guard-probe');
+
+function guardBlock() {
+  const header = Buffer.alloc(128, 0x11);
+  return {
+    header: header.toString('hex'),
+    hash: headerHash(header).toString('hex'),
+    height: 1,
+    txs: [],
+  };
+}
 const spread = process.argv.includes('--fault-spread');
 const phaseInject = process.argv.includes('--phase-inject');
 const BOOK = { tip: 7, supply: 11, spent: 3, jroot: 'cd'.repeat(32) };
@@ -81,11 +92,11 @@ async function runSpreadChild() {
   const kind = process.argv[idx + 3];
   installNodeGuards();
   const err = makeFault(kind, `spread ${source} ${timing} ${kind}`);
-  const aliveMs = source === 'rpc' ? 2500 : 800;
-  setTimeout(() => {
-    console.log('alive');
-    process.exit(0);
-  }, aliveMs);
+  // A block claim hashes off-loop before ingest. The stay-up timer has to
+  // outlast that worker on a cold start, then leave once the fault is logged.
+  const aliveMs = source === 'rpc' ? 2500 : (source === 'p2p' && timing === 'async' ? 15000 : 4000);
+  const armStay = () => armStayUp(aliveMs, null, source !== 'rpc');
+  if (source !== 'p2p') armStay();
   if (source === 'timer') {
     setTimeout(() => {
       if (timing === 'sync') throw err;
@@ -147,13 +158,9 @@ async function runSpreadChild() {
       : `${JSON.stringify({
         type: 'block',
         magic: MAGIC_TESTNET,
-        block: {
-          header: '11'.repeat(128),
-          hash: '22'.repeat(32),
-          height: 1,
-          txs: [],
-        },
+        block: guardBlock(),
       })}\n`;
+    armStay();
     sock.write(hello + faultLine);
     return;
   }
@@ -175,12 +182,9 @@ async function runPhaseChild() {
   const book = { ...BOOK };
   const publish = () => console.log(JSON.stringify({ book: { ...book } }));
   publish();
-  const aliveMs = source === 'rpc' ? 2500 : 800;
-  setTimeout(() => {
-    publish();
-    console.log('alive');
-    process.exit(0);
-  }, aliveMs);
+  const aliveMs = source === 'rpc' ? 2500 : (source === 'ingest' ? 15000 : 4000);
+  const armStay = () => armStayUp(aliveMs, publish, source !== 'rpc');
+  if (source === 'rpc') armStay();
   const boom = () => {
     throw phaseError(phase);
   };
@@ -235,14 +239,30 @@ async function runPhaseChild() {
     : `${JSON.stringify({
       type: 'block',
       magic: MAGIC_TESTNET,
-      block: {
-        header: '11'.repeat(128),
-        hash: '22'.repeat(32),
-        height: 1,
-        txs: [],
-      },
+      block: guardBlock(),
     })}\n`;
+  armStay();
   sock.write(hello + line);
+}
+
+function armStayUp(ms, beforeExit, followLog = true) {
+  let left = false;
+  const leave = () => {
+    if (left) return;
+    left = true;
+    clearTimeout(timer);
+    if (beforeExit) beforeExit();
+    console.log('alive');
+    process.exit(0);
+  };
+  const timer = setTimeout(leave, ms);
+  if (!followLog) return;
+  const orig = console.error;
+  console.error = (...args) => {
+    orig.apply(console, args);
+    const text = args.map((part) => String(part)).join('\n');
+    if (/SHEAR \S+ request/.test(text)) setTimeout(leave, 30);
+  };
 }
 
 function runProbe(mode) {
@@ -302,10 +322,11 @@ function runSpread(source, timing, kind) {
     let stderr = '';
     child.stdout.on('data', (c) => { stdout += c.toString('utf8'); });
     child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
+    const waitMs = source === 'p2p' && timing === 'async' ? 25000 : 8000;
     const timer = setTimeout(() => {
       child.kill();
       reject(new Error(`spread ${source} ${timing} ${kind} hung\n${stdout}\n${stderr}`));
-    }, 8000);
+    }, waitMs);
     let httpResult = null;
     let exitCode = null;
     let httpDone = source !== 'rpc';
@@ -488,10 +509,11 @@ function runPhase(source, phase) {
     let stderr = '';
     child.stdout.on('data', (c) => { stdout += c.toString('utf8'); });
     child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
+    const waitMs = source === 'ingest' ? 25000 : 8000;
     const timer = setTimeout(() => {
       child.kill();
       reject(new Error(`phase ${source} ${phase} hung\n${stdout}\n${stderr}`));
-    }, 8000);
+    }, waitMs);
     let httpResult = null;
     let exitCode = null;
     let httpDone = source !== 'rpc';

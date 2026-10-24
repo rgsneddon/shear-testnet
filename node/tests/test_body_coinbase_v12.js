@@ -9,11 +9,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { V12_VALUE_KINDS } from '../../crypto/spend.js';
+import { compactLockLeakRejected, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
 import { flowNeedsDummy } from '../../crypto/dummy.js';
 import { FS1_SEND_REASON } from '../../crypto/fs1_send_gate.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
@@ -80,6 +81,15 @@ function carry(tpl, body) {
   return blockOf({ ...tpl, header, txs });
 }
 
+/**
+ * A lock or withdraw body names its input by dest20. An ssa1 address on it is
+ * vote_leak, and that gate runs before the coinbase flag. Other kinds keep the address.
+ */
+function vinOf(kind, who) {
+  if (kind === 'lock' || kind === 'withdraw') return { dest20: Buffer.from(hash20FromAddress(who)) };
+  return { address: who };
+}
+
 let powTag = 1;
 function meetsGenesis() {
   const h = Buffer.alloc(32);
@@ -103,9 +113,11 @@ describe('a body coinbase cannot mint the levy', () => {
               kind,
               fee,
               coinbase: flag,
-              vin: [{ address: who }],
+              vin: [vinOf(kind, who)],
               vout: [],
             };
+            assert.equal(compactLockLeakRejected(tx), null, `${kind} lock leak`);
+            assert.equal(withdrawLeakRejected(tx), null, `${kind} withdraw leak`);
             const tpl = template(who, [tx]);
             assert.equal(tpl.txs.some((row) => row && row.id === tx.id), false, `template kept ${kind}`);
             const verdict = verifyBlock(carry(tpl, [tx]), null, { probeBody: true });
@@ -120,7 +132,7 @@ describe('a body coinbase cannot mint the levy', () => {
               assert.equal(minted.ok, false, `${kind} ${fee}`);
               assert.equal(minted.reason, 'levy_split', `${kind} ${fee} ${minted.reason || ''}`);
             }
-            const queued = store.queueTx({ ...tx, vin: [{ address: who }], vout: [] });
+            const queued = store.queueTx({ ...tx, vin: [vinOf(kind, who)], vout: [] });
             assert.equal(queued.ok, false, `queue ${kind} ${fee}`);
             assert.equal(queued.reason, 'coinbase', `queue ${kind} ${fee} ${queued.reason}`);
             assert.equal(store.mempool.some((row) => row && row.id === tx.id), false);
@@ -171,7 +183,8 @@ describe('a body coinbase cannot mint the levy', () => {
 
       // The flagged tx is judged first. A later send with a non-bucket proof
       // passes Stage 0 and would be admit_membership only if the flag were skipped.
-      const flagged = { id: 'flagged', kind: 'withdraw', fee: 2, coinbase: true, vin: [{ address: who }], vout: [] };
+      const flagged = { id: 'flagged', kind: 'withdraw', fee: 2, coinbase: true, vin: [vinOf('withdraw', who)], vout: [] };
+      assert.equal(withdrawLeakRejected(flagged), null, 'flagged withdraw leak');
       const later = { id: 'later', kind: 'send', fee: 2, vin: [{ address: who }], vout: [], admit_proof: { blob: Buffer.from([2, 1]) } };
       const pair = template(who, [flagged, later]);
       assert.equal(pair.txs.some((row) => row && row.id === 'flagged'), false);

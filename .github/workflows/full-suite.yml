@@ -1,0 +1,134 @@
+# Every test file that `npm test` names runs here, in one of the shards.
+# tests/ci_shard.js plans the shards from tests/ci_timings.json. A file can
+# leave the run only by a line in tests/ci_pending.txt that names the PR
+# fixing it; the pending job fails on any other entry.
+name: full-suite
+on:
+  # A PR branch runs once, as its pull_request. Base branches run on push.
+  push:
+    branches: [main, feat/shear-testnet-v12]
+  pull_request:
+# A newer commit on the same ref replaces the run still going.
+concurrency:
+  group: full-suite-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  pending:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Pending list names a PR and a reason for every entry
+        run: node tests/ci_shard.js --check
+      - id: plan
+        run: echo "shards=$(node tests/ci_shard.js --count 16)" >> "$GITHUB_OUTPUT"
+  shard:
+    needs: pending
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.pending.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Plan first, so a shard installs only the toolchains its files need.
+      - name: Plan shard ${{ matrix.shard }} of 16
+        id: needs
+        run: |
+          node tests/ci_shard.js --shard ${{ matrix.shard }} --of 16 > shard.txt
+          echo "files: $(wc -l < shard.txt)"
+          cat shard.txt
+          test -s shard.txt
+          has() { grep -qE "$1" shard.txt && echo true || echo false; }
+          echo "miner=$(has '^(miner|sheark-miner)/tests/|^crypto/shear_hash.test.js$')" >> "$GITHUB_OUTPUT"
+          echo "flutter=$(has 'dart_withdraw_verify|test_dart_withdraw_queue_v12|pool/tests/test_wallet_send')" >> "$GITHUB_OUTPUT"
+          echo "android=$(has 'crypto/android_arm64_libs')" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ steps.needs.outputs.android == 'true' && 'aarch64-linux-android' || '' }}
+      - run: npm ci --ignore-scripts
+      - name: Build the native modules (shearhash, shearadmit)
+        run: |
+          sudo apt-get update
+          # mingw-w64: test_node_pack builds the Windows zip for real.
+          sudo apt-get install -y build-essential cmake python3 mingw-w64
+          cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
+          cmake --build crypto/randomx/build -j"$(nproc)"
+          make -C crypto/native -j"$(nproc)"
+      # miner/tests, sheark-miner/tests and crypto/shear_hash.test.js (its C
+      # vs node vectors) run the built binaries. Without
+      # them every case fails on ENOENT.
+      - name: Build Shear-Miner and ShearK-Miner
+        if: steps.needs.outputs.miner == 'true'
+        run: |
+          sudo apt-get install -y libssl-dev pkg-config
+          make -C miner
+          make -C sheark-miner CC=gcc CXX=g++
+          test -x miner/Shear-Miner
+          test -x sheark-miner/ShearK-Miner
+      # The Dart wallet tests spawn `flutter test` (pinned as in shear-fs1.yml).
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        if: steps.needs.outputs.flutter == 'true'
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      - name: Wallet package and the admit library the Dart prover loads
+        if: steps.needs.outputs.flutter == 'true'
+        run: |
+          (cd wallet && flutter pub get)
+          cargo build --release --manifest-path crypto/native/admit/Cargo.toml
+      # crypto/android_arm64_libs.test.js checks the APK libraries. Built the
+      # same way as android-admit.yml: pinned NDK r27d, then the three libs.
+      - name: Pin NDK r27d
+        if: steps.needs.outputs.android == 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/android-ndk-r27d-linux.zip https://dl.google.com/android/repository/android-ndk-r27d-linux.zip
+          echo "22105e410cf29afcf163760cc95522b9fb981121  /tmp/android-ndk-r27d-linux.zip" | sha1sum -c
+          echo "601246087a682d1944e1e16dd85bc6e49560fe8b6d61255be2829178c8ed15d9  /tmp/android-ndk-r27d-linux.zip" | sha256sum -c
+          sudo unzip -q /tmp/android-ndk-r27d-linux.zip -d /opt
+          grep -q 'Pkg.ReleaseName = r27d' /opt/android-ndk-r27d/source.properties
+          echo "ANDROID_NDK_HOME=/opt/android-ndk-r27d" >> "$GITHUB_ENV"
+          echo "SHEAR_NDK_PIN=r27d" >> "$GITHUB_ENV"
+      - name: Build the arm64 APK libraries
+        if: steps.needs.outputs.android == 'true'
+        env:
+          SHEAR_REQUIRE_MINISIGN: '1'
+        run: |
+          sudo apt-get install -y minisign
+          bash crypto/native/build-android-arm64.sh
+          bash wallet/native/build-android-shear-v3.sh
+          bash crypto/native/build-android-libsodium.sh
+          test -f wallet/android/app/src/main/jniLibs/arm64-v8a/libshear_admit.so
+          test -f wallet/android/app/src/main/jniLibs/arm64-v8a/libshear_v3.so
+      - name: Build the fs1_tree tool
+        working-directory: crypto/native/vendor/monero-oxide-77788c3
+        run: |
+          cargo build --release -p shear-fs1 --features tree-cli --bin fs1_tree
+          echo "SHEAR_FS1_TREE_BIN=$PWD/target/release/fs1_tree" >> "$GITHUB_ENV"
+          echo "SHEAR_FS1_TREE_SHA256=$(sha256sum target/release/fs1_tree | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: Shard ${{ matrix.shard }} of 16
+        run: |
+          # No --test-timeout: each file keeps its own cap.
+          set +e
+          node --test --test-concurrency=1 --test-reporter=tap $(cat shard.txt) | tee shard.tap
+          rc=${PIPESTATUS[0]}
+          set -e
+          # A skipped or todo test is not a pass. The suite runs every test.
+          skipped=$(grep -E '^# skipped ' shard.tap | tail -1 | awk '{print $3}')
+          todo=$(grep -E '^# todo ' shard.tap | tail -1 | awk '{print $3}')
+          if [ "${skipped:-x}" != 0 ] || [ "${todo:-x}" != 0 ]; then
+            echo "::error::shard has skipped=${skipped:-?} todo=${todo:-?}; every test must run"
+            grep -E '# (SKIP|TODO)' shard.tap || true
+            exit 1
+          fi
+          exit "$rc"

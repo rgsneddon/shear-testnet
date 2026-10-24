@@ -15,16 +15,29 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import {
+  GENESIS_BITS_PACKED,
+  MAGIC_TESTNET,
+  SAMPLE_PRUNE_CONFIRMATIONS,
+  asertNextBits,
+} from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { decodeHeader } from '../../crypto/header.js';
+import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
-import { startHttpFollow } from '../src/http_follow.js';
+import { pullNextHttpBlock, startHttpFollow } from '../src/http_follow.js';
 import { createP2p, fingerprintHelloHash } from '../src/p2p.js';
-import { attachPoolIpc } from '../src/p2p_ipc.js';
+import { applyVerifiedIpcBlock, attachPoolIpc } from '../src/p2p_ipc.js';
+import { createRpc } from '../src/rpc.js';
+import { applySoloSubmit } from '../src/solo_stratum.js';
 import { STORE_CORRUPT_EXIT, installNodeGuards } from '../src/process_guard.js';
-import { createStore } from '../src/store.js';
+import {
+  OPEN_ROUND_CAP,
+  OPEN_ROUND_PEER_RATE,
+  OPEN_ROUND_PEER_TAGS,
+  OPEN_ROUND_PEER_WINDOW_MS,
+  createStore,
+} from '../src/store.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -280,6 +293,35 @@ async function runBook(mode, dir) {
     console.log('alive');
     process.exit(0);
   }
+  if (mode === 'publish-throw' || mode === 'publish-ignore') {
+    if (mode === 'publish-ignore') delete process.env.NODE_TEST_CONTEXT;
+    const store = createStore(dir, { pruneAfter: 1_000_000 });
+    const dest = minerDest();
+    const built = grow(store, dest, 2, 100);
+    if (!built.ok) {
+      console.log(JSON.stringify({ stage: 'grow', reason: built.reason || '' }));
+      process.exit(2);
+    }
+    const fork = heavierFork(store, dest, 0, 3, 500);
+    const candidate = store.blocks.slice(0, 1).concat(fork);
+    if (!shouldAdopt(store.blocks, candidate)) {
+      console.log(JSON.stringify({ stage: 'weight', height: store.tip().height }));
+      process.exit(2);
+    }
+    const before = store.tip().height;
+    const got = await Promise.resolve(store.ingest(fork, {
+      trustBlockHash: true,
+      throwAfterPublish: 'spent',
+    }));
+    console.log(JSON.stringify({
+      ok: got?.ok === true,
+      reason: got?.reason || '',
+      height: store.tip()?.height || 0,
+      before,
+    }));
+    console.log('alive');
+    process.exit(0);
+  }
   const store = createStore(dir, { bookFault: mode, pruneAfter: 1_000_000 });
   const dest = minerDest();
   const built = grow(store, dest, 2, 100);
@@ -384,13 +426,80 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       try {
         const got = sealNext(store, minerDest(), 8);
         assert.equal(got.ok, false);
-        assert.equal(got.reason, 'stage_local');
+        assert.equal(got.reason, 'apply_stage');
+        assert.equal(got.at, 0);
+        assert.ok(got.header);
+        assert.equal(got.scorePeer, undefined);
         assert.equal(store.tip(), null);
         assert.equal(store.blocks.length, 0);
         assert.ok(notes.some((line) => line.includes('"event":"apply_stage"') && line.includes('stage_local')));
       } finally {
         console.error = orig;
       }
+    });
+
+    it('peer work rows are rate-limited and the open-round map is capped', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-open-round-'));
+      const store = createStore(dir, { pruneAfter: 1_000_000 });
+      const tag = (n) => `m${n.toString(16).padStart(8, '0')}`;
+      const flood = [];
+      for (let i = 0; i < 400; i += 1) flood.push({ tag: tag(i), count: 1 });
+      const kept = store.noteOpenRound(flood, { source: 'peer', peer: '203.0.113.8' });
+      assert.equal(kept.length, OPEN_ROUND_PEER_RATE);
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_PEER_RATE);
+      const again = store.noteOpenRound(flood, { source: 'peer', peer: '203.0.113.8' });
+      assert.equal(again.length, 0);
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_PEER_RATE);
+      let next = OPEN_ROUND_PEER_RATE;
+      let peerN = 1;
+      while (store.openRoundRows().length < OPEN_ROUND_CAP) {
+        const batch = [];
+        for (let i = 0; i < OPEN_ROUND_PEER_RATE; i += 1) batch.push({ tag: tag(next + i), count: 1 });
+        next += OPEN_ROUND_PEER_RATE;
+        peerN += 1;
+        store.noteOpenRound(batch, { source: 'peer', peer: `198.51.100.${peerN}` });
+      }
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
+      const overflow = store.noteOpenRound(
+        [{ tag: tag(900000), count: 3 }],
+        { source: 'peer', peer: '203.0.113.9' },
+      );
+      assert.equal(overflow.length, 0);
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
+      assert.ok(OPEN_ROUND_PEER_TAGS < OPEN_ROUND_CAP);
+      const local = store.noteOpenRound([{ tag: tag(900001), count: 9 }], { source: 'local' });
+      assert.equal(local.length, 1);
+      assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
+      assert.equal(store.openRoundRows().some((row) => row.tag === tag(900001) && row.count === 9), true);
+    });
+
+    it('an address can take new miner tags after its work window', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-open-round-window-'));
+      const store = createStore(dir, { pruneAfter: 1_000_000 });
+      const tag = (n) => `m${n.toString(16).padStart(8, '0')}`;
+      const peer = '203.0.113.50';
+      const t0 = Date.now();
+      const first = [];
+      const second = [];
+      for (let i = 0; i < OPEN_ROUND_PEER_TAGS; i += 1) first.push({ tag: tag(i), count: 1 });
+      for (let i = 0; i < OPEN_ROUND_PEER_TAGS; i += 1) second.push({ tag: tag(1000 + i), count: 2 });
+      const opened = store.noteOpenRound(first, { source: 'peer', peer, now: t0 });
+      assert.equal(opened.length, OPEN_ROUND_PEER_TAGS);
+      const blocked = store.noteOpenRound(second, { source: 'peer', peer, now: t0 + 1_000 });
+      assert.equal(blocked.length, 0);
+      const rotated = store.noteOpenRound(second, {
+        source: 'peer',
+        peer,
+        now: t0 + OPEN_ROUND_PEER_WINDOW_MS,
+      });
+      assert.equal(rotated.length, OPEN_ROUND_PEER_TAGS);
+      assert.equal(rotated[0].tag, tag(1000));
+      assert.equal(store.openRoundRows().some((row) => row.tag === tag(1000) && row.count === 2), true);
+      const bumped = store.noteOpenRound(
+        [{ tag: tag(1000), count: 3 }],
+        { source: 'peer', peer, now: t0 + OPEN_ROUND_PEER_WINDOW_MS + OPEN_ROUND_PEER_WINDOW_MS },
+      );
+      assert.deepEqual(bumped, [{ tag: tag(1000), count: 3 }]);
     });
 
     it('a partial mempool insert rolls back', () => {
@@ -422,6 +531,30 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       openedBook(dir, 2);
     });
 
+    it('throwAfterPublish fires under node:test and leaves the tip', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-publish-throw-'));
+      const res = await runChild(['--book', 'publish-throw', '--dir', dir], 120_000);
+      assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+      assert.match(res.stdout, /alive/);
+      const row = JSON.parse(res.stdout.trim().split('\n').find((line) => line.startsWith('{')));
+      assert.equal(row.ok, false);
+      assert.equal(row.reason, 'adopt_throw_spent');
+      assert.equal(row.height, row.before);
+    });
+
+    it('a production store ignores throwAfterPublish', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-publish-ignore-'));
+      const env = { ...process.env };
+      delete env.NODE_TEST_CONTEXT;
+      const res = await runChild(['--book', 'publish-ignore', '--dir', dir], 120_000, env);
+      assert.equal(res.code, 0, `${res.stdout}\n${res.stderr}`);
+      assert.match(res.stdout, /alive/);
+      const row = JSON.parse(res.stdout.trim().split('\n').find((line) => line.startsWith('{')));
+      assert.equal(row.ok, true);
+      assert.equal(row.reason, '');
+      assert.ok(row.height > row.before);
+    });
+
     it('a production store ignores bookFault', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-prod-fault-'));
       const env = { ...process.env };
@@ -432,6 +565,229 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       assert.equal(row.ok, true);
       assert.equal(row.height, 1);
       assert.notEqual(row.reason, 'hash_owed');
+    });
+
+    it('a lied block hash is hash_claim for append, ipc, http, rpc, solo, and pool seal', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hash-claim-'));
+      const dest = minerDest();
+      const store = createStore(dir, { pruneAfter: 1_000_000 });
+      const easy = Buffer.alloc(32);
+      easy.writeUInt32LE(11, 4);
+      const lie = Buffer.alloc(32, 0xab);
+      const { tpl, job } = store.template({ miner: dest, now: T0 });
+      const body = {
+        header: tpl.header,
+        txs: tpl.txs,
+        samples: tpl.samples,
+        shareBatch: tpl.shareBatch || [],
+        miner: dest,
+        aLeaves: tpl.aLeaves,
+        bLeaves: tpl.bLeaves,
+        rootA: tpl.rootA,
+        rootB: tpl.rootB,
+        weight: tpl.weight,
+      };
+      const lied = store.append({ ...body, hash: lie, height: 1 }, {
+        trustedPowHash: easy,
+        skipSharePow: true,
+      });
+      assert.equal(lied.ok, false);
+      assert.equal(lied.reason, 'hash_claim');
+      assert.equal(store.blocks.length, 0);
+
+      const ipc = await Promise.resolve(applyVerifiedIpcBlock(store, {
+        type: 'ipc_block',
+        magic: MAGIC_TESTNET,
+        powHash: lie.toString('hex'),
+        block: { ...body, hash: lie, height: 1 },
+      }));
+      assert.equal(ipc.ok, false);
+      assert.equal(ipc.reason, 'hash_claim');
+      assert.equal(store.blocks.length, 0);
+
+      const headerHex = Buffer.from(tpl.header).toString('hex');
+      const followed = await pullNextHttpBlock({
+        store,
+        seeds: ['http://follow.invalid'],
+        magic: MAGIC_TESTNET,
+        fetchImpl: async (url) => ({
+          ok: true,
+          text: async () => JSON.stringify(String(url).includes('/block')
+            ? { ok: true, header: headerHex, hash: lie.toString('hex'), height: 1 }
+            : { ok: true, magic: MAGIC_TESTNET, height: 2 }),
+        }),
+      });
+      assert.equal(followed, false);
+      assert.equal(store.blocks.length, 0);
+
+      const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
+      const submitted = rpc.dispatch('submitblock', {
+        jobId: job.jobId,
+        nonce: '1',
+        miner: dest,
+        powHash: lie.toString('hex'),
+      });
+      assert.equal(submitted.ok, false);
+      assert.equal(submitted.reason, 'hash_claim');
+      assert.equal(store.blocks.length, 0);
+
+      const solo = applySoloSubmit({
+        store,
+        jobId: job.jobId,
+        nonce: '1',
+        claimed: lie.toString('hex'),
+        dest,
+      });
+      assert.equal(solo.ok, false);
+      assert.equal(solo.reason, 'bad_hash');
+      const soloAppend = store.submitHeader({
+        jobId: job.jobId,
+        nonce: '1',
+        miner: dest,
+        powHash: lie.toString('hex'),
+      });
+      assert.equal(soloAppend.ok, false);
+      assert.equal(soloAppend.reason, 'hash_claim');
+      assert.equal(store.blocks.length, 0);
+
+      const pooled = store.submitHeader({
+        jobId: job.jobId,
+        nonce: '0',
+        miner: dest,
+        powHash: easy.toString('hex'),
+      }, { trusted: true });
+      assert.equal(pooled.ok, true, pooled.reason);
+      assert.equal(store.blocks.length, 1);
+      const dup = store.submitHeader({
+        jobId: job.jobId,
+        nonce: '0',
+        miner: dest,
+        powHash: easy.toString('hex'),
+      }, { trusted: true });
+      assert.equal(dup.ok, false);
+      assert.equal(dup.reason, 'not_heavier');
+      assert.equal(store.blocks.length, 1);
+    });
+
+    it('a pruned fork cannot borrow a burial under a different hash', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fork-burial-'));
+      const dest = minerDest();
+      const store = createStore(dir, { pruneAfter: 1_000_000 });
+      assert.equal(sealNext(store, dest, 1).ok, true);
+      assert.equal(sealNext(store, dest, 2).ok, true);
+      const parent = store.blocks[0];
+      const genesisMs = headerTime(parent);
+      const now = genesisMs + STEP;
+      const quote = asertNextBits({
+        anchorBits: GENESIS_BITS_PACKED,
+        anchorTimeMs: genesisMs,
+        anchorHeight: 1,
+        blockTimeMs: now,
+        blockHeight: 2,
+        parentTimeMs: genesisMs,
+      });
+      assert.equal(quote.ok, true, quote.reason);
+      const tpl = buildTemplate({
+        prev: parent.hash,
+        prevHeader: parent.header,
+        prevBlock: parent,
+        height: 2,
+        miner: dest,
+        now,
+        bits: quote.packed,
+        parentBlocks: [parent],
+        parentFluxset: store.fluxThrough(0),
+      });
+      const claimed = easyPow(50);
+      let prev = {
+        header: Buffer.from(tpl.header),
+        hash: claimed,
+        height: 2,
+        time: now,
+        genesisParent: true,
+      };
+      const rows = [{
+        header: Buffer.from(tpl.header).toString('hex'),
+        hash: claimed.toString('hex'),
+        height: 2,
+      }];
+      const trusted = new Set();
+      for (let i = 0; i < SAMPLE_PRUNE_CONFIRMATIONS; i += 1) {
+        const ts = prev.time + STEP;
+        const next = asertNextBits({
+          anchorBits: prev.genesisParent ? quote.packed : GENESIS_BITS_PACKED,
+          anchorTimeMs: prev.genesisParent ? prev.time : genesisMs,
+          anchorHeight: prev.genesisParent ? prev.height : 1,
+          blockTimeMs: ts,
+          blockHeight: prev.height + 1,
+          parentTimeMs: prev.time,
+        });
+        assert.equal(next.ok, true, next.reason);
+        const hash = easyPow(51 + i);
+        const header = encodeHeader({
+          prevBlockHash: prev.hash,
+          merkleRoot: Buffer.alloc(32, 1),
+          continuityRoot: Buffer.alloc(32, 2),
+          timestamp: BigInt(ts),
+          bits: next.packed,
+          nonce: BigInt(i + 1),
+          baseFee: 1n,
+        });
+        const row = { header: header.toString('hex'), hash: hash.toString('hex'), height: prev.height + 1 };
+        rows.push(row);
+        trusted.add(row.hash);
+        prev = { header, hash, height: prev.height + 1, time: ts, genesisParent: false };
+      }
+      const offered = store.offerHeaders(rows, { peer: 'local', tier: 'local', nowMs: prev.time + STEP });
+      assert.equal(offered.accepted, SAMPLE_PRUNE_CONFIRMATIONS + 1);
+      const block = {
+        header: tpl.header,
+        txs: tpl.txs,
+        samples: tpl.samples,
+        shareBatch: tpl.shareBatch || [],
+        miner: dest,
+        aLeaves: tpl.aLeaves,
+        bLeaves: tpl.bLeaves,
+        rootA: tpl.rootA,
+        rootB: tpl.rootB,
+        weight: tpl.weight,
+        hash: claimed,
+        height: 2,
+        samplesPruned: true,
+      };
+      const lied = await Promise.resolve(store.ingest([block], {
+        offLoopPow: true,
+        skipSharePow: true,
+        trustedPowHash: easyPow(9),
+        trustedHeaderHashes: trusted,
+        nowMs: prev.time + STEP,
+      }));
+      assert.equal(lied.ok, false);
+      assert.equal(lied.reason, 'pow');
+      assert.equal(store.tip().height, 2);
+      assert.equal(store.burialView().proven, 0);
+      const matched = await Promise.resolve(store.ingest([block], {
+        offLoopPow: true,
+        skipSharePow: true,
+        trustedPowHash: claimed,
+        trustedHeaderHashes: trusted,
+        nowMs: prev.time + STEP,
+      }));
+      assert.equal(matched.ok, false);
+      assert.notEqual(matched.reason, 'pow');
+      assert.equal(store.tip().height, 2);
+      assert.equal(store.burialView().proven, 0);
+      assert.equal(store.burialView().provenHeaders, SAMPLE_PRUNE_CONFIRMATIONS);
+      const ipc = await Promise.resolve(applyVerifiedIpcBlock(store, {
+        type: 'ipc_block',
+        magic: MAGIC_TESTNET,
+        powHash: claimed.toString('hex'),
+        block,
+      }));
+      assert.equal(ipc.ok, false);
+      assert.equal(ipc.reason, 'pow');
+      assert.equal(store.tip().height, 2);
+      assert.equal(store.burialView().proven, 0);
     });
 
     it('a reorg restore fault exits 70 and the restarted book matches disk', async () => {

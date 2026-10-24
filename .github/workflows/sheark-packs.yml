@@ -1,0 +1,184 @@
+# ShearK-Miner packs for every OS the node ships, named from SHEAR_VERSION in
+# sheark-miner/src/shear_hash.h. Artifacts only.
+# This workflow does not create a release and does not move any tag.
+# The linux job runs sheark-miner/tests/pack_linux.js and the windows job runs
+# sheark-miner/tests/pack_windows.js. Each builds its zip with the repo's own
+# packer and checks it, and fails (never skips) on any other OS.
+name: sheark-packs
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, feat/shear-testnet-v12]
+    paths:
+      - 'sheark-miner/**'
+      - 'crypto/randomx/**'
+      - 'scripts/licenses/**'
+      - 'LICENSE'
+      - 'THIRD_PARTY_NOTICES.txt'
+      - 'LICENSES/**'
+      - '.github/workflows/sheark-packs.yml'
+  pull_request:
+    paths:
+      - 'sheark-miner/**'
+      - 'crypto/randomx/**'
+      - 'scripts/licenses/**'
+      - 'LICENSE'
+      - 'THIRD_PARTY_NOTICES.txt'
+      - 'LICENSES/**'
+      - '.github/workflows/sheark-packs.yml'
+
+concurrency:
+  group: sheark-packs-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack version
+        run: echo "SHEARK_VER=$(sed -n 's/^#define SHEAR_VERSION "\([^"]*\)".*/\1/p' sheark-miner/src/shear_hash.h)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build, selftest, pack, and check the Ubuntu zip
+        run: |
+          set -euo pipefail
+          test -n "$SHEARK_VER"
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libssl-dev pkg-config python3 patchelf
+          make -C sheark-miner CC=gcc CXX=g++
+          bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
+          node sheark-miner/tests/pack_linux.js
+          bash sheark-miner/pack/smoke_zip.sh "dist/ShearK-Miner-${SHEARK_VER}-linux.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShearK-Miner-${{ env.SHEARK_VER }}-linux
+          path: dist/ShearK-Miner-${{ env.SHEARK_VER }}-linux.zip
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # MINGW64 OpenSSL: the exe imports libssl-3-x64.dll and libcrypto-3-x64.dll
+      # (the Makefile and zip_windows.py read OPENSSL_BIN for their directory).
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-python
+      - name: Pack version
+        run: echo "SHEARK_VER=$(sed -n 's/^#define SHEAR_VERSION "\([^"]*\)".*/\1/p' sheark-miner/src/shear_hash.h)" >> "$GITHUB_ENV"
+      - name: Build, selftest, pack, and check the Windows zip
+        run: |
+          set -euo pipefail
+          test -n "$SHEARK_VER"
+          export PATH="/mingw64/bin:$PATH"
+          export OPENSSL_BIN="$(cygpath -m /mingw64/bin)"
+          export OPENSSL_INC="$(cygpath -m /mingw64/include)"
+          test -f "$OPENSSL_BIN/libssl-3-x64.dll"
+          test -f "$OPENSSL_BIN/libcrypto-3-x64.dll"
+          command -v gcc objdump cmake mingw32-make python node
+          mingw32-make -C sheark-miner CC=gcc CXX=g++
+          st="$(./sheark-miner/ShearK-Miner.exe --backend interpreter --selftest)"
+          echo "$st"
+          grep -q 'selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b' <<< "$st"
+          node sheark-miner/tests/pack_windows.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShearK-Miner-${{ env.SHEARK_VER }}-windows
+          path: dist/ShearK-Miner-${{ env.SHEARK_VER }}-windows.zip
+          if-no-files-found: error
+
+  distro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: archlinux
+            image: archlinux:base
+          - flavor: fedora
+            image: fedora:latest
+          - flavor: opensuse
+            image: opensuse/tumbleweed
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack version
+        run: echo "SHEARK_VER=$(sed -n 's/^#define SHEAR_VERSION "\([^"]*\)".*/\1/p' sheark-miner/src/shear_hash.h)" >> "$GITHUB_ENV"
+      - name: Build and pack inside the distro image
+        run: |
+          test -n "$SHEARK_VER"
+          cat > "$RUNNER_TEMP/pack-sheark.sh" << 'ENDSCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+          echo "FLAVOR=$FLAVOR SHEARK_VER=$SHEARK_VER"
+          cat /etc/os-release
+          case "$FLAVOR" in
+            archlinux)
+              pacman-key --init
+              pacman-key --populate archlinux
+              pacman -Syu --noconfirm
+              pacman -S --noconfirm --needed base-devel cmake openssl python git patchelf
+              ;;
+            fedora)
+              dnf -y install gcc gcc-c++ make cmake openssl-devel python3 git zip file patchelf pkgconf-pkg-config libstdc++-static
+              ;;
+            opensuse)
+              zypper -n refresh
+              zypper -n install gcc gcc-c++ make cmake libopenssl-devel python3 git zip file patchelf pkg-config
+              ;;
+            *)
+              echo "unknown flavor $FLAVOR" >&2
+              exit 1
+              ;;
+          esac
+          if ! command -v python3 >/dev/null 2>&1; then
+            if command -v python3.13 >/dev/null 2>&1; then
+              ln -sf "$(command -v python3.13)" /usr/local/bin/python3
+            elif command -v python >/dev/null 2>&1; then
+              ln -sf "$(command -v python)" /usr/local/bin/python3
+            else
+              echo "python3 missing" >&2
+              exit 1
+            fi
+          fi
+          cd /src
+          rm -rf crypto/randomx/build sheark-miner/ShearK-Miner sheark-miner/src/*.o
+          make -C sheark-miner CC=gcc CXX=g++
+          bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
+          python3 sheark-miner/pack/zip_unix.py "$FLAVOR"
+          bash sheark-miner/pack/smoke_zip.sh "dist/ShearK-Miner-${SHEARK_VER}-${FLAVOR}.zip"
+          ENDSCRIPT
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/src \
+            -v "$RUNNER_TEMP/pack-sheark.sh":/pack-sheark.sh:ro \
+            -e FLAVOR="${{ matrix.flavor }}" \
+            -e SHEARK_VER="$SHEARK_VER" \
+            "${{ matrix.image }}" \
+            bash /pack-sheark.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShearK-Miner-${{ env.SHEARK_VER }}-${{ matrix.flavor }}
+          path: dist/ShearK-Miner-${{ env.SHEARK_VER }}-${{ matrix.flavor }}.zip
+          if-no-files-found: error

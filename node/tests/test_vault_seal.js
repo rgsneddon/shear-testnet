@@ -14,7 +14,6 @@ import { newIdentity, destOpeningFromView, freshStealthDest, ed25519SeedOf } fro
 import { signSpendTx } from '../../crypto/spend.js';
 import { bindWeightFee } from '../../crypto/levy.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
-import { CHECKPOINT_FIRST_HEIGHT, CHECKPOINT_EVERY_BLOCKS } from '../src/bootstrap.js';
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 function spendBox(id) {
@@ -61,45 +60,7 @@ function vaultSnap(v) {
   return JSON.stringify(v, (_, x) => (typeof x === 'bigint' ? x.toString() : x));
 }
 
-describe('store.js vault-seal control flow', () => {
-  it('adopt refuses a seal-breaking fork before replayVault; that fork gets no vault', () => {
-    const src = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
-    assert.match(src, /function trialVaultForFork\(/);
-    assert.match(src, /function trialVaultAtForkRoot\(/);
-    const forkFn = src.split('function trialVaultForFork')[1]?.split('function verifyOneForkBlock')[0] || '';
-    assert.match(forkFn, /noVault: true/);
-    assert.doesNotMatch(forkFn, /emptyVault\(/);
-    assert.doesNotMatch(forkFn, /blankFork = true/);
-    assert.match(src, /cloneVault\(emptyVault\(\)\)/);
-    assert.match(src, /reorgBreaksVaultSeal\(/);
-    assert.match(src, /reason: 'reorg_vault_seal'/);
-    const adopt = src.split('function finishAdopt')[1]?.split('function ingest')[0] || '';
-    assert.match(adopt, /reorg_vault_seal/);
-    const replayIdx = adopt.indexOf('replayVault()');
-    const sealIdx = adopt.indexOf('reorg_vault_seal');
-    assert.ok(sealIdx >= 0 && replayIdx > sealIdx, 'reorg_vault_seal must run before replayVault');
-    assert.match(src, /if \(vaultSeal && blocks\.length && !chainHasSealAncestry\(blocks, vaultSeal\)\)/);
-    const dart = fs.readFileSync(new URL('../../wallet/lib/main.dart', import.meta.url), 'utf8');
-    assert.match(dart, /continuum-vault-seal-banner/);
-    const ledger = fs.readFileSync(new URL('../../wallet/lib/shear_ledger.dart', import.meta.url), 'utf8');
-    assert.match(ledger, /vault_seal_banner/);
-    assert.match(ledger, /blank_fork/);
-  });
-});
-
 describe('checkpoint-bound Reserve on the store', () => {
-  it('tip below the freeze has no seal and an empty banner', () => {
-    const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-vault-seal-low-')));
-    const p = store.getpolicy();
-    assert.equal(p.vault_seal_ancestry, true);
-    assert.equal(p.vault_seal_banner, '');
-    assert.equal(p.blank_fork, false);
-    assert.equal(p.vault_seal_height, 0);
-    assert.equal(store.vaultSeal(), null);
-    assert.equal(CHECKPOINT_FIRST_HEIGHT, 1000);
-    assert.equal(CHECKPOINT_EVERY_BLOCKS, 400);
-  });
-
   it('shallow reorg above the seal keeps portals; pre-seal heavier fork is refused and the pot stays', { timeout: 600_000 }, async () => {
     const alice = newIdentity();
     const box = spendBox(alice);

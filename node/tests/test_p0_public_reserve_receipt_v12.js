@@ -70,13 +70,13 @@ function payLevy(tx) {
 /** Lock receipt the public-reserve predicate recognises. No sig, no commit, no proof. */
 function publicLock({ id, amount, portal20, payer20, fee = 0 }) {
   const portalDest = encodeDest(portal20);
-  const payerDest = encodeDest(payer20);
   const tx = {
     id,
     kind: 'lock',
     programId: RESERVE_PROGRAM,
+    // payoutPortalId on a lock is vote_leak (cb733226) and would hide the
+    // public_receipt reason this suite pins. The payer stays the vin dest20.
     portalId: portalIdFromDest(portalDest),
-    payoutPortalId: portalIdFromDest(payerDest),
     fee,
     vin: [{ dest20: Buffer.from(payer20) }],
     vout: [{

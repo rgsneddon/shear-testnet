@@ -66,6 +66,9 @@ describe('finder-fee pays the miner who found the block', () => {
   it('any levy pays the named finder, and the reserve half credits the fee bank', () => {
     const finders = [minerDest(), minerDest(), minerDest()];
     const lowest = byteSort(finders)[0];
+    // The aimed finder must not be the lowest dest, or the not-lowest check
+    // below fails one run in three. The highest of three never is.
+    const highest = byteSort(finders)[2];
     const feeTo = minerDest();
     assert.equal(finders.includes(feeTo), false);
     assert.equal(finders.includes(poolFeeDest()), false);
@@ -188,10 +191,11 @@ describe('finder-fee pays the miner who found the block', () => {
       assert.equal(templateForFinder(shared, feeTo), null);
       assert.equal(templateForFinder(shared, poolFeeDest()), null);
       assert.equal(templateForFinder(shared, reserveFeeDest()), null);
-      const aimed = templateForFinder(shared, finders[2]);
+      const aimed = templateForFinder(shared, highest);
       const paid = aimed.txs[0].vout.find((o) => o.kind === 'finder-fee');
       assert.equal(openedCoinbaseNanos(paid), split.finder, `shared fee ${fee}`);
-      assert.equal(same20(paid, finders[2]), true);
+      assert.notEqual(highest, lowest);
+      assert.equal(same20(paid, highest), true);
       assert.equal(same20(paid, unclaimedFinderDest()), false);
       assert.equal(same20(paid, feeTo), false);
       assert.equal(same20(paid, lowest), false);

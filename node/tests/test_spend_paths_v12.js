@@ -10,11 +10,16 @@ import {
   noteCommitBlocksWalked,
   resetNoteCommitBlocksWalked,
 } from '../../crypto/coinbase_notes.js';
-import { sealCoinbaseNote, noteCommitOfDest20 } from '../../crypto/note.js';
+import { sealCoinbaseNote, sealHiddenNote, noteCommitOfDest20 } from '../../crypto/note.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { createStore } from '../src/store.js';
 import { buildTemplate, GENESIS_PREV } from '../src/chain.js';
 
+/**
+ * A painted send that names its amount in clear (tx.nanos). Since AL-1 a
+ * hidden-kind tx with a plaintext amount is amount_field on queue and in the
+ * template walk, before any painted debit is priced against the book.
+ */
 function paintedSend(from, to, nanos, key, id) {
   const pay = sealCoinbaseNote(nanos, { dest20: hash20FromAddress(to), kind: 'send' });
   delete pay.valueProof;
@@ -25,6 +30,30 @@ function paintedSend(from, to, nanos, key, id) {
     from,
     to,
     nanos,
+    fee: 0,
+    vin: [{ address: from }],
+    vout: [{ ...pay, address: to }, dummy],
+  };
+  signSpendTx(tx, key);
+  return tx;
+}
+
+/**
+ * The same painted spend on the v12 wire: the paid output is hidden (range
+ * proof, rEph, rCt, amtCt to the payee), the tx names no amount, and there is
+ * no membership proof. Nothing on the body prices a debit, so the node never
+ * opens the book for it, and it is admit_membership at any amount.
+ */
+function hiddenPaintedSend(from, to, toAdmitBase, nanos, key, id) {
+  const pay = sealHiddenNote(nanos, { dest20: hash20FromAddress(to), kind: 'send', admitBase: toAdmitBase });
+  assert.ok(pay.rEph && pay.rCt && pay.amtCt, 'hidden pay output is wrapped to the payee');
+  assert.equal(Object.prototype.hasOwnProperty.call(pay, 'valueProof'), false);
+  const dummy = sealCoinbaseNote(0, { dest20: Buffer.alloc(20, 9), kind: 'dummy' });
+  const tx = {
+    id,
+    kind: 'send',
+    from,
+    to,
     fee: 0,
     vin: [{ address: from }],
     vout: [{ ...pay, address: to }, dummy],
@@ -104,13 +133,19 @@ describe('spend paths use the note index', { concurrency: 1 }, () => {
             store.resetWalletWalkStats();
             const asks = [1, Math.max(1, have), have + 1];
             for (const ask of asks) {
-              const got = store.queueTx(paintedSend(dest, other, ask, who.privateKey, `q-${H}-${amount}-${notes}-${ask}`));
+              // A plaintext amount is amount_field (AL-1) before the book is read.
+              const plain = store.queueTx(paintedSend(dest, other, ask, who.privateKey, `q-${H}-${amount}-${notes}-${ask}`));
+              assert.equal(plain.ok, false, `H=${H} ask=${ask}`);
+              assert.equal(plain.reason, 'amount_field');
+              // The v12 wire names no amount. With no proof it is never funded.
+              const got = store.queueTx(hiddenPaintedSend(dest, other, otherId.admitBase, ask, who.privateKey, `h-${H}-${amount}-${notes}-${ask}`));
               assert.equal(got.ok, false, `H=${H} ask=${ask}`);
-              assert.equal(got.reason, 'admit_membership');
+              assert.equal(got.reason, 'admit_membership', `H=${H} ask=${ask} ${got.reason}`);
             }
             assert.equal(store.mempool.length, 0);
             const st = store.walletWalkStats();
-            assert.equal(st.spendChecks, asks.length, `H=${H} amount=${amount} notes=${notes}`);
+            // No painted debit reaches the book: neither spend names an amount the queue may price.
+            assert.equal(st.spendChecks, 0, `H=${H} amount=${amount} notes=${notes}`);
             assert.equal(st.forkSpendChecks, 0);
             assert.equal(st.syncBlocks, 0, `H=${H}`);
             assert.equal(noteCommitBlocksWalked(), 0, `H=${H} amount=${amount} notes=${notes}`);
@@ -125,22 +160,29 @@ describe('spend paths use the note index', { concurrency: 1 }, () => {
       resetNoteCommitBlocksWalked();
       const have = store.spendableNanos(dest);
       assert.equal(have, 4000);
+      // Pushed past queueTx, as a peer relay or an old mempool would hold them.
       store.mempool.push(paintedSend(dest, other, have + 5, who.privateKey, 'held'));
-      store.mempool.push(paintedSend(dest, other, 1, who.privateKey, 'covered'));
+      store.mempool.push(hiddenPaintedSend(dest, other, otherId.admitBase, 1, who.privateKey, 'covered'));
       skips.length = 0;
+      // The lookup above is one spend check. The template must add none: no
+      // painted send is held against owed nanos any more (e2bd74cf).
+      const checksBefore = store.walletWalkStats().spendChecks;
       const built = store.template({ miner: dest });
       const packed = new Set((built.tpl.txs || []).map((tx) => tx.id).filter(Boolean));
       assert.equal(packed.has('held'), false);
       assert.equal(packed.has('covered'), false);
-      assert.deepEqual(store.mempool.map((tx) => tx.id), ['held', 'covered']);
-      assert.ok(skips.some((line) => line.includes('painted_hold') && line.includes('held')));
+      // The plaintext painted spend is dropped as amount_field. It is never held
+      // against owed nanos, so a painted amount cannot wait in the pool for cover.
+      assert.ok(skips.some((line) => line.includes('amount_field') && line.includes('held')));
+      assert.equal(skips.some((line) => line.includes('painted_hold')), false);
       assert.ok(skips.some((line) => line.includes('admit_membership') && line.includes('covered')));
+      assert.deepEqual(store.mempool.map((tx) => tx.id), ['covered']);
       assert.equal(noteCommitBlocksWalked(), 0);
-      assert.ok(store.walletWalkStats().spendChecks >= 1);
+      assert.equal(store.walletWalkStats().spendChecks, checksBefore);
       assert.equal(store.spendableNanos(dest), have);
 
       store.mempool.length = 0;
-      const debit = paintedSend(dest, other, 50, who.privateKey, 'fork-debit');
+      const debit = hiddenPaintedSend(dest, other, otherId.admitBase, 50, who.privateKey, 'fork-debit');
       const forkTpl = buildTemplate({
         prev: GENESIS_PREV,
         height: 1,

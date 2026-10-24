@@ -32,6 +32,8 @@ jobs:
           node/tests/test_mine_worker_fault.js
           node/tests/test_p2p_idle.js
           node/tests/test_feed_fault.js
+          node/tests/test_fork_claim_loop_v12.js
+          node/tests/test_book_magic_admit_v12.js
           pool/tests/test_pool_datadir.js
   cli:
     runs-on: ubuntu-latest
