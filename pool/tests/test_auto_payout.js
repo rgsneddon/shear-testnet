@@ -108,7 +108,11 @@ describe('auto payout at π SHE to miner ssa1', () => {
     const hash = hashCreditNanos(256, HASH_BONUS_NANOS);
     assert.equal(hash, 256 * HASH_BONUS_NANOS);
     assert.equal(hash, 256);
-    assert.equal(hashCreditNanos(256, 0), 256);
+    // A voted unit of 0 is bonus off (cfe93bf5). Only a malformed unit clamps to 1.
+    assert.equal(hashCreditNanos(256, 0), 0);
+    assert.equal(hashCreditNanos(256, 0n), 0);
+    assert.equal(hashCreditNanos(256, -1), 256);
+    assert.equal(hashCreditNanos(256, undefined), 256);
   });
 
   it('pool fee dest keeps 10 SHE and sweeps surplus to SHEAR_POOL_FEE_PAYOUT_DEST', () => {
