@@ -58,6 +58,9 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
     assert.equal(tagged.ok, false);
     assert.equal(tagged.reason, 'pow');
 
+    // A claimed id that is not the header's ShearHash is hash_claim before any
+    // target check (store.append). The same header under its own ShearHash is
+    // then judged on pow.
     const fresh = createStore(tmp('shear-syn-fresh-'));
     const issued = fresh.template({ miner, now });
     assert.equal(Buffer.from(setNonce(issued.tpl.header, 0n)).equals(header), true);
@@ -70,7 +73,18 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
       skipSharePow: true,
     }));
     assert.equal(direct.ok, false);
-    assert.equal(direct.reason, 'pow');
+    assert.equal(direct.reason, 'hash_claim');
+    assert.equal(fresh.tip(), null);
+    const own = await Promise.resolve(fresh.submitHeader({
+      jobId: issued.job.jobId,
+      nonce: 0n,
+      miner,
+      powHash: real.toString('hex'),
+      trustedPowHash: pow.toString('hex'),
+      skipSharePow: true,
+    }));
+    assert.equal(own.ok, false);
+    assert.equal(own.reason, 'pow');
     assert.equal(fresh.tip(), null);
 
     const rpcStore = createStore(tmp('shear-syn-rpc-'));
@@ -78,17 +92,19 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
     const rpc = createRpc({ store: rpcStore, port: 0, host: '127.0.0.1' });
     try {
       for (const method of ['submitblock', 'submitHeader']) {
-        const got = await Promise.resolve(rpc.dispatch(method, {
-          jobId: rpcJob.job.jobId,
-          nonce: '0',
-          miner,
-          powHash: pow.toString('hex'),
-          trustedPowHash: pow.toString('hex'),
-          skipSharePow: true,
-        }));
-        assert.equal(got.ok, false, method);
-        assert.equal(got.reason, 'pow', `${method} ${got.reason}`);
-        assert.equal(rpcStore.tip(), null);
+        for (const [claim, want] of [[pow, 'hash_claim'], [real, 'pow']]) {
+          const got = await Promise.resolve(rpc.dispatch(method, {
+            jobId: rpcJob.job.jobId,
+            nonce: '0',
+            miner,
+            powHash: claim.toString('hex'),
+            trustedPowHash: pow.toString('hex'),
+            skipSharePow: true,
+          }));
+          assert.equal(got.ok, false, method);
+          assert.equal(got.reason, want, `${method} ${got.reason}`);
+          assert.equal(rpcStore.tip(), null);
+        }
       }
     } finally {
       await rpc.close();
@@ -99,21 +115,33 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
       trustedPowHash: pow,
     }]));
     assert.equal(ingested.ok, false);
-    assert.equal(ingested.reason, 'pow');
-    const p2p = await Promise.resolve(createStore(tmp('shear-syn-p2p-')).ingest([tip], {
-      offLoopPow: true,
-    }));
-    assert.equal(p2p.ok, false);
-    assert.equal(p2p.reason, 'pow');
+    assert.equal(ingested.reason, 'hash_claim');
+    const ingestedOwn = await Promise.resolve(createStore(tmp('shear-syn-ingest-own-')).ingest([{
+      ...tip,
+      hash: real,
+      trustedPowHash: pow,
+    }]));
+    assert.equal(ingestedOwn.ok, false);
+    assert.equal(ingestedOwn.reason, 'pow');
+    // The off-loop gate hashes the header and checks its target first.
+    for (const block of [tip, { ...tip, hash: real }]) {
+      const p2p = await Promise.resolve(createStore(tmp('shear-syn-p2p-')).ingest([block], {
+        offLoopPow: true,
+      }));
+      assert.equal(p2p.ok, false);
+      assert.equal(p2p.reason, 'pow');
+    }
 
-    const ipc = await Promise.resolve(applyVerifiedIpcBlock(createStore(tmp('shear-syn-ipc-')), {
-      type: 'ipc_block',
-      magic: MAGIC_TESTNET,
-      block: { ...encodeWireBlock(tip), trustedPowHash: pow.toString('hex') },
-      powHash: pow.toString('hex'),
-      trustedPowHash: pow.toString('hex'),
-    }));
-    assert.equal(ipc.ok, false);
-    assert.equal(ipc.reason, 'pow');
+    for (const [claim, want] of [[pow, 'hash_claim'], [real, 'pow']]) {
+      const ipc = await Promise.resolve(applyVerifiedIpcBlock(createStore(tmp('shear-syn-ipc-')), {
+        type: 'ipc_block',
+        magic: MAGIC_TESTNET,
+        block: { ...encodeWireBlock({ ...tip, hash: claim }), trustedPowHash: pow.toString('hex') },
+        powHash: claim.toString('hex'),
+        trustedPowHash: pow.toString('hex'),
+      }));
+      assert.equal(ipc.ok, false);
+      assert.equal(ipc.reason, want);
+    }
   });
 });
