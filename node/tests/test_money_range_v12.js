@@ -113,8 +113,12 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
       }, null, LUMP_CLOCK);
       assert.equal(exact.ok, false, String(nanos));
       assert.equal(exact.reason, 'mint_forbidden', `${nanos} ${exact.reason}`);
+      // Same portal lookup as `exact` (a5760821: the portal id is the carried
+      // one, not a hash of from). With the portal found and the program
+      // right, a plaintext label is not an amount: mint_amount.
       const unlabeled = boundReserveWithdraw({
         ...bare,
+        portalId: portalIdFromDest(dest),
         programId: RESERVE_PROGRAM,
       }, {
         epochBps: 0,
