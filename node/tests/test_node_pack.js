@@ -208,6 +208,25 @@ describe('portable node packs', () => {
     assert.match(r.stdout, /prebuilds-ok/);
   });
 
+  it('every packer that copies node_modules filters prebuilds by its flavor', () => {
+    // 38682e3f filtered zip_node.py and the release sidecar but missed
+    // zip_windows.py's own walk, so every Windows wallet zip was refused.
+    const dirs = ['node/pack', 'wallet/pack', 'scripts/packaging'];
+    const copiers = [];
+    for (const dir of dirs) {
+      for (const f of fs.readdirSync(path.join(root, dir)).filter((n) => n.endsWith('.py') || n.endsWith('.sh'))) {
+        const text = fs.readFileSync(path.join(root, dir, f), 'utf8');
+        if (!/node_modules/.test(text)) continue;
+        if (!/os\.walk|copytree|add_filtered_tree|add_tree|copy_tree/.test(text)) continue;
+        copiers.push(`${dir}/${f}`);
+        assert.match(text, /ships_prebuild\(|write_release_sidecar\(/, `${dir}/${f} copies node_modules without ships_prebuild`);
+      }
+    }
+    for (const want of ['node/pack/zip_node.py', 'node/pack/bundle_modules.py', 'wallet/pack/zip_windows.py', 'wallet/pack/stage_macos_sidecar.py', 'scripts/packaging/stage_packs.py']) {
+      assert.ok(copiers.includes(want), `${want} found as a node_modules copier`);
+    }
+  });
+
   it('every file named by the node and wallet packers is in the tree', () => {
     function listed(rel, open, close) {
       const text = fs.readFileSync(path.join(root, rel), 'utf8');

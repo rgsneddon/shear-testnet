@@ -15,7 +15,9 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "licenses"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "node", "pack"))
 import release_notices  # noqa: E402
+from bundle_modules import ships_prebuild  # noqa: E402
 
 
 def stage_app_sidecar(dest: str, repo: str) -> None:
@@ -43,6 +45,9 @@ def stage_app_sidecar(dest: str, repo: str) -> None:
                 if not os.path.isfile(src):
                     continue
                 rel = os.path.relpath(src, root)
+                # No koffi prebuild: the macOS node never loads koffi (win32 only).
+                if not ships_prebuild("/".join([arc_prefix, rel]).replace(os.sep, "/"), "macos"):
+                    continue
                 target = os.path.join(dest, arc_prefix, rel)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 shutil.copy2(src, target)
