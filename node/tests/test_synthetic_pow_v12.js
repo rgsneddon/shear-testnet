@@ -123,13 +123,14 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
     }]));
     assert.equal(ingestedOwn.ok, false);
     assert.equal(ingestedOwn.reason, 'pow');
-    // The off-loop gate hashes the header and checks its target first.
-    for (const block of [tip, { ...tip, hash: real }]) {
+    // The off-loop path is the same: a stand-in claim is hash_claim, and the
+    // header under its own ShearHash misses its target as pow.
+    for (const [block, want] of [[tip, 'hash_claim'], [{ ...tip, hash: real }, 'pow']]) {
       const p2p = await Promise.resolve(createStore(tmp('shear-syn-p2p-')).ingest([block], {
         offLoopPow: true,
       }));
       assert.equal(p2p.ok, false);
-      assert.equal(p2p.reason, 'pow');
+      assert.equal(p2p.reason, want);
     }
 
     for (const [claim, want] of [[pow, 'hash_claim'], [real, 'pow']]) {
