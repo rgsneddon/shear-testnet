@@ -10,7 +10,7 @@ import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET, MAX_LOCK_LEAVES } fro
 import { EMPTY_ROOT } from './merkle.js';
 import {
   reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth,
-  lockQualifies, lockFundingRejected, lockUnlockOf, consensusUnlockPeriod,
+  lockQualifies, lockFundingRejected, lockNotePrincipal, lockUnlockOf, consensusUnlockPeriod,
   portalIdFromDest, portalIdFromDest20, withdrawSignedDest, signRewardAuth, verifyRewardAuth,
 } from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
@@ -1057,6 +1057,9 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
         unlock: consensusUnlockPeriod(clock.epoch),
       });
       if (opened) return { ok: false, reason: opened.reason || 'stake_reward' };
+      // As the JS vault: every leaf of a note lock proves π (fundProof), or
+      // the lock is refused, since an unproved leaf would never be booked.
+      if (lockNotePrincipal(tx, magic) <= 0n) return { ok: false, reason: 'stake_reward' };
       // The π proof opens the funding output. The leaf adds the unlock point.
       let valueCommit = leafCommit;
       try {

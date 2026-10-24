@@ -4876,6 +4876,17 @@ export function applyReserveBlock({
           return finishReserveApply(results);
         }
       }
+      // A note lock books π per leaf only through each leaf's fundProof, and
+      // txDigestV3 does not bind fundProof, so anyone relaying or mining the
+      // lock could strip it. Indexed but unbooked, the leaf's withdraw would
+      // then fail the note book and its owner could never exit. A note lock
+      // whose leaves do not all prove π is refused before anything is indexed.
+      const noted = lockNotePrincipal(tx, state.magic || MAGIC_TESTNET);
+      if (tx?.vaultLockNote && noted <= 0n) {
+        results.push({ action: KIND_LOCK, ok: false, reason: 'stake_reward' });
+        state.deferEpochRoll = false;
+        return finishReserveApply(results);
+      }
       if (tx?.vaultLockNote) {
         const portal = state.portals?.[act.portalId];
         const tranche = portal?.tranches?.[portal.tranches.length - 1];
@@ -4893,7 +4904,6 @@ export function applyReserveBlock({
         }
         ensureEpochCensus(state, blockHeight);
       }
-      const noted = lockNotePrincipal(tx, state.magic || MAGIC_TESTNET);
       const claimsNote = (Array.isArray(tx?.vin) ? tx.vin : []).some((vin) => vin && (vin.commit || vin.noteCommit || vin.valueProof));
       if (!tx?.vaultLockNote && claimsNote && noted <= 0n) {
         results.push({ action: KIND_LOCK, ok: false, reason: 'stake_reward' });

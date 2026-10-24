@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from '../src/store.js';
+import { createRpc } from '../src/rpc.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { newIdentity, encodeDest, hash20FromAddress, destCommitFromSpendPub, ed25519PrivateFromSeed, ed25519RawPub } from '../../crypto/address.js';
 import {
@@ -357,6 +358,20 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     const lockOut = (tx.vout || []).find((row) => row && row.kind === 'lock');
     assert.ok(lockOut && lockOut.fundProof && lockOut.fundProof.R && lockOut.fundProof.z, 'fund proof');
     assert.equal(lockNotePrincipal(tx, MAGIC_TESTNET), BigInt(PI_SHE_NANOS));
+    // A relayer or miner can strip the π fundProof without changing a signed
+    // byte. The stripped lock is refused on p2p (queueTx) and RPC, so its leaf
+    // can never be indexed unbooked (old code accepted it).
+    const strippedLock = structuredClone(tx);
+    for (const row of strippedLock.vout) if (row && row.kind === 'lock') delete row.fundProof;
+    resetFs1Tree();
+    const viaPeer = store.queueTx(structuredClone(strippedLock), { nowMs: lastStamp(store) });
+    assert.equal(viaPeer.ok, false, `stripped lock via p2p: ok=${viaPeer.ok} reason=${viaPeer.reason}`);
+    assert.equal(viaPeer.reason, 'stake_reward', `stripped lock via p2p: ${viaPeer.reason}`);
+    resetFs1Tree();
+    const viaRpc = await Promise.resolve(createRpc({ store, port: 0, host: '127.0.0.1' })
+      .dispatch('queuetx', { tx: structuredClone(strippedLock) }));
+    assert.equal(viaRpc.ok, false, `stripped lock via RPC: ok=${viaRpc.ok} reason=${viaRpc.reason}`);
+    assert.equal(viaRpc.reason, 'stake_reward', `stripped lock via RPC: ${viaRpc.reason}`);
     resetFs1Tree();
     const relayed = [];
     const lockApi = handleWalletApi(new URL('http://127.0.0.1/api/wallet/send'), 'POST', tx, {
