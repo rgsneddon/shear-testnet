@@ -202,7 +202,7 @@ describe('v12 hidden outputs carry no value opening', () => {
       assert.equal(store.tip().height, tipHeight);
       const url = new URL('http://127.0.0.1/api/wallet/send');
       const note = opening(AMOUNTS[2], 'send');
-      const fat = handleWalletApi(url, 'POST', {
+      const posted = (admitProof) => handleWalletApi(url, 'POST', {
         from: dest,
         to: dest,
         amount: 1,
@@ -211,12 +211,20 @@ describe('v12 hidden outputs carry no value opening', () => {
         spendPub: Buffer.alloc(32, 8).toString('hex'),
         vin: [{ commit: Buffer.alloc(32, 1) }],
         vout: [note],
-        admit_proof: {
-          blob: Buffer.from([3, 1]),
-          spendTag: Buffer.alloc(32, 2),
-          cTilde: Buffer.alloc(32, 3),
-        },
+        admit_proof: admitProof,
       }, { store, miners: new Map(), queueSend: () => { throw new Error('queued'); } });
+      // A byte-3 bucket proof is send_unavailable at the pool's FS-1 gate
+      // before any output check (acc9570c).
+      const bucket = posted({
+        blob: Buffer.from([3, 1]),
+        spendTag: Buffer.alloc(32, 2),
+        cTilde: Buffer.alloc(32, 3),
+      });
+      assert.equal(bucket.status, 400);
+      assert.equal(bucket.json.reason, 'send_unavailable');
+      // With the byte-2 stub the same body reaches the output check, and the
+      // posted opening is refused.
+      const fat = posted(stubAdmitV2({ cTilde: note.commit }));
       assert.equal(fat.status, 400);
       assert.equal(fat.json.reason, 'value_open');
       const row = { ...note };
