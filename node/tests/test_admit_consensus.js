@@ -4,13 +4,24 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, freshStealthDest, ed25519SeedOf, stealthKey } from '../../crypto/address.js';
-import { attachDummyOuts } from '../../crypto/dummy.js';
-import { sealNote } from '../../crypto/note.js';
+import {
+  newIdentity,
+  freshStealthDest,
+  ed25519SeedOf,
+  stealthKey,
+  hash20FromAddress,
+  admitBaseFromAddress,
+  checkTxAddressFields,
+} from '../../crypto/address.js';
+import { attachDummyOuts, viewTagOf } from '../../crypto/dummy.js';
+import { sealNote, kernelExcess } from '../../crypto/note.js';
+import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
+import { FS1_SEND_REASON } from '../../crypto/fs1_send_gate.js';
+import { compactLockLeakRejected } from '../../crypto/reserve_vault.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
 import { levyNanos } from '../../crypto/levy.js';
-import { fluxsetFromBlocks } from '../../crypto/admit.js';
+import { fluxsetFromBlocks, attachAdmitPub } from '../../crypto/admit.js';
 import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { decodeHeader } from '../../crypto/header.js';
@@ -46,6 +57,38 @@ async function mine(tpl) {
     weight: tpl.weight,
     hash: found.hash,
   };
+}
+
+/**
+ * A Flow pay output that still carries its value opening. Since e2bd74cf
+ * attachDummyOuts seals hidden notes, so a plain body has no opening and
+ * value_open can only be reached with an output like this one.
+ */
+function openedFlowVout(dest, nanos) {
+  const d20 = hash20FromAddress(dest);
+  let note = sealNote(nanos, { dest20: d20, kind: 'send' });
+  note.viewTag = viewTagOf(note.noteCommit);
+  note.dest20 = d20;
+  note.address = dest;
+  note = attachAdmitPub(note, { admitBase: admitBaseFromAddress(dest) });
+  assert.ok(note.valueProof && note.commit && note.admitPub);
+  return note;
+}
+
+/** The same send with its pay output opened, balanced again, and signed again. */
+function withOpenedPay(tx, id, nanos, key) {
+  const opened = {
+    ...tx,
+    id,
+    vin: (tx.vin || []).map((v) => ({ ...v })),
+    vout: (tx.vout || []).map((o) => ({ ...o })),
+  };
+  if (tx.admit_proof) opened.admit_proof = { ...tx.admit_proof };
+  opened.vout[0] = openedFlowVout(tx.vout[0].address, nanos);
+  opened.excess = kernelExcess(opened.vout, opened.vin);
+  assert.ok(opened.excess, 'opened excess');
+  signSpendTx(opened, key);
+  return opened;
 }
 
 function identityDest() {
@@ -170,7 +213,9 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     const missingBlock = await mine(missingTpl);
     const gotMissing = verifyBlock(missingBlock, parent, height3Opts);
     assert.equal(gotMissing.ok, false);
-    assert.equal(gotMissing.reason, 'admit_membership');
+    // Stage 0 (acc9570c) refuses a proofless send in any block before the
+    // membership check. queueTx still names it admit_membership (next test).
+    assert.equal(gotMissing.reason, FS1_SEND_REASON);
 
     const sampled = attachStubAdmitV2(mkSend({ id: 'sampled' }), { tagFill: 4 });
     assert.equal(sampled.admit_proof.blob[0], 2);
@@ -274,10 +319,15 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       ],
     }, { spent });
 
+    // A full body's outputs are sealed hidden notes (e2bd74cf), so it carries
+    // no opening and fails as the compact body does. An opened pay output is value_open.
     const missing = signSpendTx(body(), key);
     const missFat = store.queueTx(missing);
     assert.equal(missFat.ok, false);
-    assert.equal(missFat.reason, 'value_open', missFat.reason);
+    assert.equal(missFat.reason, 'admit_membership', missFat.reason);
+    const missOpen = store.queueTx(withOpenedPay(missing, `${missing.id}-open`, 2, key));
+    assert.equal(missOpen.ok, false);
+    assert.equal(missOpen.reason, 'value_open', missOpen.reason);
     const missQ = store.queueTx(compactTx(missing));
     assert.equal(missQ.ok, false);
     assert.equal(missQ.reason, 'admit_membership');
@@ -286,7 +336,9 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     assert.equal(sampled.admit_proof.blob[0], 2);
     signSpendTx(sampled, key);
     const sampFat = store.queueTx(sampled);
-    assert.equal(sampFat.reason, 'value_open', sampFat.reason);
+    assert.equal(sampFat.reason, 'admit_version', sampFat.reason);
+    const sampOpen = store.queueTx(withOpenedPay(sampled, `${sampled.id}-open`, 2, key));
+    assert.equal(sampOpen.reason, 'value_open', sampOpen.reason);
     const sampQ = store.queueTx(compactTx(sampled));
     assert.equal(sampQ.ok, false);
     assert.equal(sampQ.reason, 'admit_version');
@@ -294,7 +346,9 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     const honest = attachStubAdmitV2(body(), { tagFill: 7 });
     signSpendTx(honest, key);
     const okFat = store.queueTx(honest);
-    assert.equal(okFat.reason, 'value_open', okFat.reason);
+    assert.equal(okFat.reason, 'admit_version', okFat.reason);
+    const okOpen = store.queueTx(withOpenedPay(honest, `${honest.id}-open`, 2, key));
+    assert.equal(okOpen.reason, 'value_open', okOpen.reason);
     const okQ = store.queueTx(compactTx(honest));
     assert.equal(okQ.reason, 'admit_version', okQ.reason);
     assert.equal(store.mempool.some((m) => m.id === honest.id), false);
@@ -306,7 +360,9 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     reuse.spendTag = honest.spendTag;
     signSpendTx(reuse, key);
     const reuseFat = store.queueTx(reuse);
-    assert.equal(reuseFat.reason, 'value_open', reuseFat.reason);
+    assert.equal(reuseFat.reason, 'admit_version', reuseFat.reason);
+    const reuseOpen = store.queueTx(withOpenedPay(reuse, `${reuse.id}-open`, 2, key));
+    assert.equal(reuseOpen.reason, 'value_open', reuseOpen.reason);
     const reuseQ = store.queueTx(compactTx(reuse));
     assert.equal(reuseQ.ok, false);
     assert.equal(reuseQ.reason, 'admit_version');
@@ -373,11 +429,15 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     }, { spent });
     attachStubAdmitV2(honest, { tagFill: 9 });
     signSpendTx(honest, key);
-    const hexed = JSON.parse(JSON.stringify(honest, (_, v) => (
+    const toHex = (tx) => JSON.parse(JSON.stringify(tx, (_, v) => (
       Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
     )));
+    // The full hidden body carries no opening (e2bd74cf); its byte-2 proof is admit_version.
+    const hexed = toHex(honest);
     const queued = store.queueTx(hexed);
-    assert.equal(queued.reason, 'value_open', queued.reason);
+    assert.equal(queued.reason, 'admit_version', queued.reason);
+    const hexOpen = store.queueTx(toHex(withOpenedPay(honest, 'job-send-open', 2, key)));
+    assert.equal(hexOpen.reason, 'value_open', hexOpen.reason);
     const hexWire = JSON.parse(JSON.stringify(compactTx(honest), (_, v) => (
       Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
     )));
@@ -493,7 +553,22 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     const sheBlock = await mine(sheTpl);
     const gotShe = verifyBlock(sheBlock, null, { magic: MAGIC_REGTEST });
     assert.equal(gotShe.ok, false);
-    assert.equal(gotShe.reason, 'silent_id_on_chain');
+    // A proofless send never enters a block: Stage 0 (acc9570c) runs before
+    // the address rule. With a proof object it stops at the proof version
+    // first, so a send block cannot reach silent_id_on_chain.
+    assert.equal(gotShe.reason, FS1_SEND_REASON);
+    // The address rule itself, the one verifyBlock and the mempool share.
+    assert.equal(checkTxAddressFields(she, { coinbase: false }).reason, 'silent_id_on_chain');
+    // The mempool reaches it on a proofless send. The output names no plaintext
+    // amount, which would be amount_field first (e2bd74cf).
+    const sheWire = {
+      ...she,
+      id: 'she-wire',
+      vout: [{ address: 'she1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', kind: 'send' }],
+    };
+    const parkedShe = admitMempool(emptyMempool(), sheWire, { baseFee: 1 });
+    assert.equal(parkedShe.ok, false);
+    assert.equal(parkedShe.reason, 'silent_id_on_chain', parkedShe.reason);
   });
 
   it('lock without C or stub range is range_proof; compact lock has no dest/nanos', async () => {
@@ -514,15 +589,16 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
 
-    const plain = lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'lock-no-c' });
+    // A lock on the wire is compact: no from, to, or ssa1 address. Those are
+    // vote_leak (a5760821, 325b50f5) before the range check.
+    const plain = compactTx(lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'lock-no-c' }));
     delete plain.vout[0].commit;
     delete plain.vout[0].rangeProof;
     delete plain.vout[0].valueProof;
     delete plain.vout[0].noteCommit;
-    delete plain.vout[0].dest20;
-    delete plain.vout[0].portalId;
-    plain.vout[0].address = vault;
     plain.vout[0].nanos = PI_SHE_NANOS;
+    assert.ok(plain.vout[0].dest20, 'plain lock dest20');
+    assert.equal(compactLockLeakRejected(plain), null, 'plain lock leak');
     const plainTpl = buildTemplate({
       prev: parent.hash,
       prevHeader: parent.header,
@@ -566,11 +642,16 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       parentBlocks: [parent],
     });
     const openBlock = await mine(openTpl);
+    assert.equal(compactLockLeakRejected(openSealed), null, 'open lock leak');
     const gotOpen = await Promise.resolve(verifyBlock(openBlock, parent, { evmHistory: [parent], magic: MAGIC_REGTEST }));
-    assert.equal(gotOpen.ok, true, gotOpen.reason);
+    // An opened dest20 lock with no hidden note is a public receipt. Since
+    // f2525d52 it is refused from genesis as unfunded.
+    assert.equal(gotOpen.ok, false);
+    assert.equal(gotOpen.reason, 'public_receipt', gotOpen.reason);
 
-    const stub = lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'lock-stub' });
+    const stub = compactTx(lockTx({ from: dest, to: vault, nanos: PI_SHE_NANOS, id: 'lock-stub' }));
     stub.vout[0].rangeProof = true;
+    assert.equal(compactLockLeakRejected(stub), null, 'stub lock leak');
     const stubTpl = buildTemplate({
       prev: parent.hash,
       prevHeader: parent.header,
