@@ -1,0 +1,5 @@
+# Test files that cannot pass yet and the PR that fixes each one.
+# Format: <path> <PR2|PR3> <reason>
+# PR2 = "book magic everywhere", PR3 = "real-data fixtures". Both land before v12.
+# tests/ci_shard.js --check fails on a missing PR, a missing reason, a
+# duplicate, or a path that is not a test file. No test file skips itself.

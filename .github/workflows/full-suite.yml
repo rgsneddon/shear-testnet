@@ -1,0 +1,58 @@
+# Every test file that `npm test` names runs here, in one of the shards.
+# tests/ci_shard.js plans the shards from tests/ci_timings.json. A file can
+# leave the run only by a line in tests/ci_pending.txt that names the PR
+# fixing it; the pending job fails on any other entry.
+name: full-suite
+on:
+  push:
+  pull_request:
+jobs:
+  pending:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Pending list names a PR and a reason for every entry
+        run: node tests/ci_shard.js --check
+      - id: plan
+        run: echo "shards=$(node tests/ci_shard.js --count 16)" >> "$GITHUB_OUTPUT"
+  shard:
+    needs: pending
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.pending.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci --ignore-scripts
+      - name: Build the native modules (shearhash, shearadmit)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake python3
+          cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
+          cmake --build crypto/randomx/build -j"$(nproc)"
+          make -C crypto/native -j"$(nproc)"
+      - name: Build the fs1_tree tool
+        working-directory: crypto/native/vendor/monero-oxide-77788c3
+        run: |
+          cargo build --release -p shear-fs1 --features tree-cli --bin fs1_tree
+          echo "SHEAR_FS1_TREE_BIN=$PWD/target/release/fs1_tree" >> "$GITHUB_ENV"
+          echo "SHEAR_FS1_TREE_SHA256=$(sha256sum target/release/fs1_tree | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: Shard ${{ matrix.shard }} of 16
+        run: |
+          node tests/ci_shard.js --shard ${{ matrix.shard }} --of 16 > shard.txt
+          echo "files: $(wc -l < shard.txt)"
+          cat shard.txt
+          test -s shard.txt
+          node --test --test-concurrency=1 --test-timeout=2700000 $(cat shard.txt)
