@@ -1,0 +1,18 @@
+# The CI workflows keep their shape: every matrix job has a matrix, and the
+# full suite checks its pending list, plans its shards and runs every shard.
+# Kept apart from full-suite.yml so an edit there cannot drop its own check.
+name: ci-shape
+on:
+  push:
+    branches: [main, feat/shear-testnet-v12]
+  pull_request:
+jobs:
+  shape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test tests/test_ci_workflows.js
