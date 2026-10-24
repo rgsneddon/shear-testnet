@@ -5,7 +5,7 @@
  * applyReserveBlock — the transition a note-funded lock block would run.
  * The input opens to at least the lock. Replay of the heavier fork, which
  * has no lock, unwinds that principal. A withdraw of the same lock pays
- * principal only.
+ * principal plus the arrival stub, never interest.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,7 +21,7 @@ import {
   EPOCH_DAYS_TESTNET,
 } from '../../crypto/asert.js';
 import { MS_PER_DAY } from '../../crypto/pot_sched.js';
-import { applyReserveBlock, attachLockEquality, chainPeriodIndex, cloneVault, consensusUnlockPeriod, leafEpochsToBurn, lockWitnessOf, portalIdFromDest, provePrincipalOpen, supplyIdentity, withdraw, withdrawTx } from '../../crypto/reserve_vault.js';
+import { applyReserveBlock, attachLockEquality, chainPeriodIndex, cloneVault, consensusUnlockPeriod, leafEpochsToBurn, leafStubNanos, lockWitnessOf, portalIdFromDest, provePrincipalOpen, supplyIdentity, withdraw, withdrawTx } from '../../crypto/reserve_vault.js';
 import { txDigestV3 } from '../../crypto/admit_v3.js';
 import { proveLeafRetire, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { lockTx } from '../../crypto/owned_portal.js';
@@ -42,8 +42,11 @@ function pow(tail) {
   return `${'00'.repeat(31)}${tail}`;
 }
 
-function noteLock(portal, key) {
-  const tx = lockTx({ from: portal, to: portal, nanos: PI_SHE_NANOS, id: 'reorg-lock' });
+function noteLock(portal, key, ownerPub) {
+  // The portal dest20 is H(spendPub), so that key is the portal key and
+  // signs the lock. Since 325b50f5 a signer that is not ownerPub is unsigned,
+  // so ownerPub names this key instead of the module portal-owner default.
+  const tx = lockTx({ from: portal, to: portal, nanos: PI_SHE_NANOS, id: 'reorg-lock', ownerPub });
   let fee = 0;
   const arm = (nextFee) => {
     const sealed = sealCoinbaseNote(PI_SHE_NANOS + nextFee, {
@@ -116,7 +119,7 @@ describe('store reorg across a note-funded lock', () => {
     assert.equal(side.ok, true, side.reason);
     assert.equal(local.tip().height, 2);
 
-    const lock = noteLock(portal, who.privateKey);
+    const lock = noteLock(portal, who.privateKey, Buffer.from(who.spendPub).toString('hex'));
     const opened = noteU64(lock.vin[0].valueProof.v);
     assert.equal(publicReserveReceipt(lock), false);
     assert.equal(opened != null && verifySealedNote(lock.vin[0], opened), true);
@@ -137,8 +140,14 @@ describe('store reorg across a note-funded lock', () => {
     const feeBefore = nanosOf(paid.feeBankNanos);
     const leaf = lock._leaf;
     const when = T0 + 90_000 + EPOCH_MS + 1;
-    const drawnTx = withdrawTx({ from: portal, to: portal, nanos: PI_SHE_NANOS, id: 'reorg-draw' });
     const commit = leaf.note.subarray(32, 64);
+    // Since cfe93bf5 the testnet arrival day is 24 blocks, so a lock at
+    // height 2 earns an arrival stub. The withdraw asks principal plus that
+    // stub. The stub is minted from the bank. Principal is still exact.
+    const stub = leafStubNanos(paid, [commit.toString('hex')]);
+    assert.ok(stub > 0n, `stub ${stub}`);
+    const due = BigInt(PI_SHE_NANOS) + stub;
+    const drawnTx = withdrawTx({ from: portal, to: portal, nanos: due, id: 'reorg-draw' });
     const period = chainPeriodIndex(paid, when);
     const retire = proveLeafRetire({
       scalar: leaf.scalar,
@@ -155,19 +164,20 @@ describe('store reorg across a note-funded lock', () => {
       dest: portal,
       portalId: pid,
       nowMs: when,
-      principal: PI_SHE_NANOS,
+      principal: due,
       principalProof: drawnTx.principalProof,
       retireProof: drawnTx.retireProof,
       tx: drawnTx,
     });
     assert.equal(drawn.ok, true, drawn.reason);
     assert.equal(drawn.principal, PI_SHE_NANOS);
+    assert.equal(BigInt(drawn.arrival), stub);
     assert.equal(drawn.interest, 0);
     assert.equal(drawn.earned, 0);
     assert.equal(drawn.mint, null);
     const minted = nanosOf(paid.mintBankNanos);
     const fromFee = feeBefore - nanosOf(paid.feeBankNanos);
-    assert.equal(minted, 0n);
+    assert.equal(minted, stub);
     assert.equal(fromFee, 0n);
     assert.equal(supplyIdentity(paid).principalNanos, 0);
     assert.equal(supplyIdentity(local.reserveVault).principalNanos, PI_SHE_NANOS);
