@@ -6,7 +6,7 @@ import path from 'node:path';
 import { newIdentity, isDestAddress } from '../../crypto/address.js';
 import { destForLogin, vaultDest } from '../../crypto/flow_sheet.js';
 import { RESERVE_PROGRAM, wrapMintForbidden, extraMintAllowed, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
-import { withdrawTx } from '../../crypto/reserve_vault.js';
+import { withdrawLeakRejected, withdrawTx } from '../../crypto/reserve_vault.js';
 import {
   buildTemplate,
   verifyBlock,
@@ -68,10 +68,15 @@ describe('verifyBlock extra mint', () => {
     assert.equal(appended.ok, false);
     assert.equal(appended.reason, 'range_proof');
 
-    const reserveTx = {
-      ...withdrawTx({ from: dest, to: vault, nanos: 7, id: 'w-7' }),
-      fee: 1,
-    };
+    // The compact wire shape: from, to, payoutPortalId and a vout address are
+    // vote_leak (325b50f5) before the mint check this case targets.
+    const wd = withdrawTx({ from: dest, to: vault, nanos: 7, id: 'w-7' });
+    delete wd.from;
+    delete wd.to;
+    delete wd.payoutPortalId;
+    wd.vout = wd.vout.map(({ address: _address, r: _r, ...row }) => row);
+    assert.equal(withdrawLeakRejected(wd), null);
+    const reserveTx = { ...wd, fee: 1 };
     const reserved = mine(buildTemplate({ ...base, txs: [reserveTx] }));
     const allowed = await Promise.resolve(verifyBlock(reserved, null, trust(reserved)));
     assert.equal(allowed.ok, false);
