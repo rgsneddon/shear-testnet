@@ -11,11 +11,11 @@ node/tests/test_genesis_pool_seal.js PR3 Seals every block through submitHeader 
 # Tracked: files PR 3 must move to the shared regtest mining module. They pass
 # today and stay in the full suite; a track row only keeps them from being lost.
 node/tests/test_ibd_unsigned.js PR3 track Mines testnet-difficulty blocks with synchronous mineTemplate on the main thread (about 2^17 hashes each), which blocks the event loop and the file's own timeout.
-node/tests/test_levy_verify.js PR3 track Mines testnet-difficulty blocks with synchronous mineTemplate on the main thread, which blocks the event loop and the file's own timeout.
+node/tests/test_levy_verify.js PR3 Mines GENESIS_BITS_PACKED blocks with synchronous mineTemplate on the main thread and times out; needs the shared regtest mining module. Behind the timeout: evm-value is kind (c990b120), a proofless send is send_unavailable (acc9570c), a plaintext nanos send may be amount_field.
 node/tests/test_pot_prop.js PR3 track Its older subtests mine a testnet-difficulty block with synchronous mineTemplate on the main thread; the snapshot subtest already mines on regtest.
-node/tests/test_reserve.js PR3 track mineOne mines testnet-difficulty blocks with synchronous mineTemplate on the main thread, which blocks the event loop and the file's own timeout.
+node/tests/test_reserve.js PR2 Times out mining testnet blocks synchronously on the main thread (PR 3), and behind that its plaintext locks are vote_leak (a5760821) and its funded-lock, vote and withdraw legs need an FS-1 lock on regtest, which needs PR 2's book-magic supply and template paths.
 node/tests/test_load_verify_v12.js PR3 track Mines testnet-difficulty blocks in a spawned child (event loop free, about 20 min); move to the shared module.
-node/tests/test_lock_does_not_stall.js PR3 track Mines with two spawned jit-full children under its own timer (event loop free); move to the shared module.
+node/tests/test_lock_does_not_stall.js PR2 Needs a funded lock to queue, mine and raise totalLockedNanos; in v12 only an FS-1 lock does that, and an FS-1 lock on a regtest chain needs supply.js lockNotePrincipal and vaultAfterBlock, the verifyFlowAdmitFs1 magic default and buildTemplate potSubsidyAt to take the book magic (PR 2). Its plaintext lockTx is vote_leak (a5760821). It also mines in spawned children, for PR 3.
 node/tests/test_hash_bonus_cap.js PR3 track before() runs a synchronous findShare at SHARE_FLOOR_BITS (about 256 hashes); blocks now mine on mine_worker.mjs.
 node/tests/test_wire_sharebatch.js PR3 track Synchronous findShare at the share floor (about 256 hashes) on the main thread.
 pool/tests/test_seal_cache_v12.js PR3 track Synchronous findShare at the share floor, capped at 1600 tries, on the main thread.
