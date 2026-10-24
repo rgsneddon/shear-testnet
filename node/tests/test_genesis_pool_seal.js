@@ -19,7 +19,7 @@ import { custodyPotShares } from '../src/chain.js';
 import { reconstructOwner } from '../../pool/src/wallet_api.js';
 import { createPullBook } from '../../pool/src/pull_book.js';
 import { publicMinerTag } from '../../pool/src/pool.js';
-import { potCreditAfterFeeNanos } from '../../pool/src/auto_payout.js';
+import { potCreditAfterFeeNanos, custodialPullAllowed } from '../../pool/src/auto_payout.js';
 
 function destMiner() {
   return freshStealthDest(newIdentity()).dest;
@@ -154,22 +154,27 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
     assert.equal(hashRec.spendableNanos, rest + units * HASH_BONUS_NANOS);
     assert.ok(poolRec.spendableNanos >= rest);
 
+    // v12 pays miners in their own coinbase notes, as reconstructOwner shows
+    // above. The custodial pull book is closed on this magic (75eaca70): it
+    // credits nothing and owes no auto payout, however much is offered.
+    assert.equal(custodialPullAllowed(), false);
     const book = createPullBook(path.join(dir, 'pull'));
     const tag = publicMinerTag(hasher);
     const potShare = potCreditAfterFeeNanos(BLOCK_SUBSIDY_NANOS);
-    assert.equal(book.creditRound(
+    const first = book.creditRound(
       [{ tag, dest: hasher, count: units }],
       { height: 1, nanos: potShare, hashByDest: new Map() },
-    ).ok, true);
-    assert.equal(book.dueAuto({ tipHeight: 40, need: 6 }).length, 0);
-    assert.equal(book.creditRound(
+    );
+    assert.equal(first.ok, false);
+    assert.equal(first.reason, 'custodial_pull');
+    const second = book.creditRound(
       [{ tag, dest: hasher, count: units }],
       { height: 2, nanos: PI_SHE_NANOS, hashByDest: new Map() },
-    ).ok, true);
-    const due = book.dueAuto({ tipHeight: 40, need: 6 });
-    assert.equal(due.length, 1);
-    assert.equal(due[0].dest, hasher);
-    assert.ok(due[0].nanos >= PI_SHE_NANOS);
+    );
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, 'custodial_pull');
+    assert.deepEqual(book.dueAuto({ tipHeight: 40, need: 6 }), []);
+    assert.equal(book.view(tag, { tipHeight: 40, need: 6 }).confirmedNanos, 0);
 
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');
     assert.match(src, /potSharesFromBatch\(lag1Shares, feeTo, wantPot, carry\)/);
