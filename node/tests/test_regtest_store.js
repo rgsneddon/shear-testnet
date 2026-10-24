@@ -88,7 +88,7 @@ describe('shear-regtest store factory', () => {
 import sys
 sys.path.insert(0, 'node/pack')
 from bundle_modules import required_module_paths
-paths = required_module_paths('.')
+paths = sorted(set(required_module_paths('.', 'linux')) | set(required_module_paths('.', 'windows')))
 bad = [p for p in paths if p.startswith('node/tests/') or p.endswith('regtest_store.js') or p.endswith('mine_worker.mjs')]
 if bad:
     raise SystemExit('bundled ' + ','.join(bad))

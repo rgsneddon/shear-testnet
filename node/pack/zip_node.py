@@ -21,6 +21,7 @@ from bundle_modules import (
     copy_linked_libs,
     resolve_real_node,
     rpath_origin,
+    ships_prebuild,
     write_missing_required,
 )
 
@@ -78,6 +79,8 @@ def add_filtered_tree(z: zipfile.ZipFile, root: str, arc_prefix: str, skip_dirs=
             if not os.path.isfile(p):
                 continue
             rel = os.path.relpath(p, root).replace("\\", "/")
+            if not ships_prebuild(f"{arc_prefix}/{rel}", os.environ.get("SHEAR_NODE_FLAVOR", "")):
+                continue
             z.write(p, f"{arc_prefix}/{rel}")
 
 
@@ -229,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
             "node_modules, crypto, and the native addons are inside this zip.\n"
         )
         z.writestr("README.txt", readme)
-        write_missing_required(z, REPO)
+        write_missing_required(z, REPO, flavor)
 
     size = os.path.getsize(out)
     names = zipfile.ZipFile(out).namelist()
@@ -267,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     if any(n.startswith("node_modules/solc/") for n in names):
         sys.exit("node zip must not ship the development-only solc compiler")
     release_notices.assert_has_notices(names, REPO)
-    assert_zip_has_modules(names, REPO)
+    assert_zip_has_modules(names, REPO, flavor)
     print("ok", name, "pin", pin, "flavor", flavor, "modules", len(names))
     return 0
 

@@ -27,6 +27,17 @@ function mingwCompiler() {
   return '';
 }
 
+const LINUX_ZIP_SKIP = process.platform === 'linux'
+  ? false
+  : "the linux zip bundles this host's node runtime, so it is packed on Linux (as CI does).";
+
+// koffi prebuild directories in a zip listing.
+function koffiPrebuilds(listing) {
+  return [...new Set(listing.split(/\r?\n/)
+    .map((n) => /^node_modules\/koffi\/build\/koffi\/([^/]+)\//.exec(n)?.[1])
+    .filter(Boolean))].sort();
+}
+
 const WINDOWS_ZIP_SKIP = mingwCompiler()
   ? false
   : 'windows zip needs the MinGW toolchain (x86_64-w64-mingw32-gcc or MSYS2 mingw64 gcc, with static libgcc, libstdc++, and winpthread). This host has no MinGW compiler, so the Windows pack is skipped instead of recorded as a pass.';
@@ -141,6 +152,9 @@ describe('portable node packs', () => {
     assert.match(listed.stdout, /node_modules\/@ethereumjs\/util\/dist\/esm\/index\.js/);
     assert.match(listed.stdout, /crypto\/native\/shearadmit\.node/);
     assert.match(listed.stdout, /reserve\/latest\.json/);
+    // koffi loads on win32 only, from the x64 node.exe this zip bundles.
+    assert.match(listed.stdout, /node_modules\/koffi\/index\.js/);
+    assert.deepEqual(koffiPrebuilds(listed.stdout), ['win32_x64']);
     assert.doesNotMatch(listed.stdout, /SHEAR_BOOTSTRAP=1/);
     const crlf = runPython([
       '-c',
@@ -154,6 +168,44 @@ describe('portable node packs', () => {
     ]);
     assert.equal(crlf.status, 0, `${crlf.stdout}\n${crlf.stderr}`);
     assert.match(crlf.stdout, /crlf-ok/);
+  });
+
+  it('zip_node.py writes a linux zip with no koffi prebuild and no GCC runtime', { skip: LINUX_ZIP_SKIP }, () => {
+    // koffi's linux and musl builds link libstdc++ and libgcc_s; the linux
+    // node never loads koffi (datadir_acl.js reaches it on win32 only).
+    const r = runPython(['node/pack/zip_node.py', 'linux']);
+    assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+    const zipPath = path.join(root, 'dist', `shear-node-v${PRODUCT_VERSION.split('.')[0]}-linux.zip`);
+    const listed = runPython([
+      '-c',
+      'import zipfile,sys; print("\\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))',
+      zipPath,
+    ]);
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.match(listed.stdout, /node\/src\/node\.js/);
+    assert.match(listed.stdout, /runtime\/node/);
+    assert.match(listed.stdout, /node_modules\/koffi\/index\.js/);
+    assert.deepEqual(koffiPrebuilds(listed.stdout), []);
+  });
+
+  it('a pack names and accepts only the koffi prebuilds its runtime loads', () => {
+    const r = runPython(['-c', [
+      'import sys',
+      "sys.path.insert(0, 'node/pack')",
+      'import bundle_modules as b',
+      "def builds(fl): return sorted({p.split('/')[4] for p in b.required_module_paths('.', fl) if p.startswith('node_modules/koffi/build/koffi/')})",
+      "assert builds('windows') == ['win32_x64'], builds('windows')",
+      "for fl in ('linux', 'fedora', 'archlinux', 'opensuse', 'macos'): assert builds(fl) == [], (fl, builds(fl))",
+      "names = set(b.required_module_paths('.', 'linux')) | {'node_modules/koffi/build/koffi/linux_x64/koffi.node'}",
+      'try:',
+      "    b.assert_zip_has_modules(names, '.', 'linux')",
+      "    raise SystemExit('a linux zip with koffi linux_x64 was accepted')",
+      'except SystemExit as e:',
+      "    assert 'never loads' in str(e), e",
+      "print('prebuilds-ok')",
+    ].join('\n')]);
+    assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+    assert.match(r.stdout, /prebuilds-ok/);
   });
 
   it('every file named by the node and wallet packers is in the tree', () => {

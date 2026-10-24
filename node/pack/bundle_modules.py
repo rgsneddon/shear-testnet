@@ -32,6 +32,21 @@ NATIVE = (
     "crypto/native/shearadmit.node",
 )
 
+# koffi carries a prebuilt addon for every platform, and its loader names all
+# of them, so the walk below reaches every one. node/src/win32_system.cjs is
+# its only user, and datadir_acl.js loads that on win32 only; the Windows packs
+# bundle an x64 node.exe. A pack ships just the prebuilds its runtime loads.
+# The linux and musl builds also need the shared GCC runtime, which no pack
+# may ship (docs/licensing-audit.md decision 4).
+PREBUILD_RE = re.compile(r"^node_modules/koffi/build/koffi/([^/]+)/")
+FLAVOR_PREBUILDS = {"windows": frozenset({"win32_x64"})}
+
+
+def ships_prebuild(arc: str, flavor: str) -> bool:
+    """False for a per-platform prebuild that a flavor's runtime never loads."""
+    m = PREBUILD_RE.match(arc.replace("\\", "/"))
+    return m is None or m.group(1) in FLAVOR_PREBUILDS.get(flavor, frozenset())
+
 
 def _export_target(node):
     if isinstance(node, str):
@@ -138,8 +153,8 @@ def _local_target(repo: str, importer_rel: str, spec: str) -> str | None:
     return None
 
 
-def required_module_paths(repo: str) -> list[str]:
-    """Zip paths the release executable needs. Missing any one is a broken pack."""
+def required_module_paths(repo: str, flavor: str) -> list[str]:
+    """Zip paths a flavor's release executable needs. Missing any one is a broken pack."""
     repo = os.path.abspath(repo)
     seen: set[str] = set()
     needed: list[str] = []
@@ -150,7 +165,7 @@ def required_module_paths(repo: str) -> list[str]:
         # reached it would ship the only opener for the shear-regtest book.
         if arc.startswith("node/tests/"):
             raise SystemExit(f"release graph reaches test-only module {arc}")
-        if arc in seen:
+        if arc in seen or not ships_prebuild(arc, flavor):
             return
         seen.add(arc)
         needed.append(arc)
@@ -323,6 +338,8 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux", extra_runtime=())
                 if not os.path.isfile(p):
                     continue
                 rel = os.path.relpath(p, root).replace("\\", "/")
+                if not ships_prebuild(f"{arc_prefix}/{rel}", flavor):
+                    continue
                 z.write(p, f"{arc_prefix}/{rel}")
 
     add_tree(os.path.join(repo, "node", "src"), "node/src", {".git", "node_modules"})
@@ -388,15 +405,15 @@ def write_release_sidecar(z, repo: str, flavor: str = "linux", extra_runtime=())
         raise SystemExit("pack the linux release on linux so native addons match that OS")
 
 
-def missing_on_disk(repo: str) -> list[str]:
+def missing_on_disk(repo: str, flavor: str) -> list[str]:
     missing = []
-    for arc in required_module_paths(repo):
+    for arc in required_module_paths(repo, flavor):
         if not os.path.isfile(os.path.join(repo, *arc.split("/"))):
             missing.append(arc)
     return missing
 
 
-def write_missing_required(z, repo: str) -> None:
+def write_missing_required(z, repo: str, flavor: str) -> None:
     """Store walker paths the hand list did not already put in the archive.
 
     Duplicate names are not written. A path that is not on disk is left for
@@ -404,7 +421,7 @@ def write_missing_required(z, repo: str) -> None:
     """
     repo = os.path.abspath(repo)
     have = {info.filename.replace("\\", "/") for info in z.infolist()}
-    for arc in required_module_paths(repo):
+    for arc in required_module_paths(repo, flavor):
         if arc in have:
             continue
         src = os.path.join(repo, *arc.split("/"))
@@ -414,9 +431,12 @@ def write_missing_required(z, repo: str) -> None:
         have.add(arc)
 
 
-def assert_zip_has_modules(names: set[str] | list[str], repo: str) -> None:
+def assert_zip_has_modules(names: set[str] | list[str], repo: str, flavor: str) -> None:
     have = set(names)
-    missing = [arc for arc in required_module_paths(repo) if arc not in have]
+    foreign = sorted(n for n in have if not ships_prebuild(n, flavor))
+    if foreign:
+        raise SystemExit(f"{flavor} release ships prebuilds its runtime never loads: {', '.join(foreign)}")
+    missing = [arc for arc in required_module_paths(repo, flavor) if arc not in have]
     if missing:
         preview = "\n".join(missing[:40])
         extra = "" if len(missing) <= 40 else f"\n… {len(missing) - 40} more"

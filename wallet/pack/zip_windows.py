@@ -178,7 +178,7 @@ def main() -> int:
             release_notices.assert_no_mingw_runtime(
                 [os.path.join(native, n) for n in ("shearhash.node", "shearadmit.node") if os.path.isfile(os.path.join(native, n))]
             )
-            write_missing_required(z, node_root)
+            write_missing_required(z, node_root, "windows")
             print("bundled Shear Sentinel v18 beside Continuum")
 
     size = os.path.getsize(out)
@@ -228,7 +228,7 @@ def main() -> int:
     if any(n.startswith("node_modules/solc/") for n in names):
         sys.exit("wallet zip must not ship the development-only solc compiler")
     release_notices.assert_has_notices(names, node_root)
-    assert_zip_has_modules(names, node_root)
+    assert_zip_has_modules(names, node_root, "windows")
     banned = []
     for n in names:
         base = n.replace("\\", "/").rstrip("/").split("/")[-1].lower()
