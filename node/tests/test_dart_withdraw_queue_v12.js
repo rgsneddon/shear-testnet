@@ -575,6 +575,14 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     assert.ok(receipt, 'receipt');
     assert.ok(receipt.rEph, 'receipt wrapped to the wallet');
     assert.ok(Buffer.from(receipt.dest20).equals(want), 'wallet payout');
+    // The wallet's real FS-1 withdraw with a stray identity signature added is
+    // refused before it is queued (old code accepted it: the SAL and rewardSig
+    // authorise the withdraw, so the sig was never checked, only carried).
+    for (const field of ['sig', 'signature']) {
+      resetFs1Tree();
+      const probe = store.queueTx({ ...structuredClone(body), [field]: 'ab'.repeat(64) }, { nowMs: wall });
+      assert.equal(probe.reason, 'vote_leak', `${field} on the real withdraw: ok=${probe.ok} reason=${probe.reason}`);
+    }
     resetFs1Tree();
     const got = store.queueTx(body, { nowMs: wall });
     assert.equal(got.ok, true, `queue ${got.reason || ''} ${got.error || ''}`);

@@ -4495,13 +4495,12 @@ export function withdrawLeakRejected(tx) {
   if (tx?.payer != null && String(tx.payer) !== '') return { ok: false, reason: 'vote_leak' };
   if (tx?.payoutPortalId != null && String(tx.payoutPortalId) !== '') return { ok: false, reason: 'vote_leak' };
   if (valueHasAddrLeak(tx, new Set())) return { ok: false, reason: 'vote_leak' };
-  // The identity spend key is the wallet address. An FS-1 withdraw does not carry it.
-  if (tx?.spendPub != null && String(tx.spendPub) !== '') {
-    try {
-      const blob = Buffer.from(asU8(tx.fs1));
-      if (blob.length > 0 && blob[0] === 0xf1) return { ok: false, reason: 'vote_leak' };
-    } catch { /* a withdraw with no FS-1 blob is not this rule */ }
-  }
+  // The identity spend key, and an identity signature, are the wallet. An FS-1
+  // withdraw carries neither: the SAL and the owner rewardSig authorise it, so
+  // a stray sig is never checked, and anyone holding a candidate spendPub
+  // could test it against the tx digest and link the withdraw. Same rule as
+  // the FS-1 lock gate.
+  if (fs1SpendIdentityLeak(tx)) return { ok: false, reason: 'vote_leak' };
   return null;
 }
 
