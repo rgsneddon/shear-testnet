@@ -109,33 +109,6 @@ jobs:
           path: dist/ShearK-Miner-${{ env.SHEARK_VER }}-windows.zip
           if-no-files-found: error
 
-  macos:
-    # No Mac host packs or checks this zip yet (Apple work is tracked in the
-    # Desktop HANDOFF). It runs only when started by hand.
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - name: Pack version
-        run: echo "SHEARK_VER=$(sed -n 's/^#define SHEAR_VERSION "\([^"]*\)".*/\1/p' sheark-miner/src/shear_hash.h)" >> "$GITHUB_ENV"
-      - name: Build, selftest, and pack the macOS zip
-        run: |
-          set -euo pipefail
-          test -n "$SHEARK_VER"
-          brew install openssl cmake
-          PREFIX="$(brew --prefix openssl)"
-          test -f "$PREFIX/include/openssl/ssl.h"
-          make -C sheark-miner OPENSSL_PREFIX="$PREFIX"
-          bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
-          python3 sheark-miner/pack/zip_unix.py macos
-          bash sheark-miner/pack/smoke_zip.sh "dist/ShearK-Miner-${SHEARK_VER}-macos.zip"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ShearK-Miner-${{ env.SHEARK_VER }}-macos
-          path: dist/ShearK-Miner-${{ env.SHEARK_VER }}-macos.zip
-          if-no-files-found: error
-
   distro:
     runs-on: ubuntu-latest
     timeout-minutes: 120
