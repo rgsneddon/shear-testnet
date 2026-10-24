@@ -56,23 +56,30 @@ describe('store policy and pause', () => {
     assert.equal(fp.includes(':30:'), false);
   });
 
+  // A pool-withdraw is a custodial pull, refused on every network (f9897d50).
+  // custodial_pull is named before the module pause, paused or not.
   it('module pause refuses new pool-withdraw txs and does not rewind the tip', () => {
     const dest = destMiner();
     const store = createStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pause-')));
     const mined = mineOne(store, dest);
     assert.equal(mined.ok, true, mined.reason);
     const before = Buffer.from(store.tip().hash);
-    store.pause.poolWithdraw = true;
-    const q = store.queueTx({
-      id: 'pull-paused',
+    const pull = (id) => store.queueTx({
+      id,
       kind: 'pool-withdraw',
       from: dest,
       to: dest,
       nanos: 1,
       fee: 100,
     });
+    const open = pull('pull-open');
+    assert.equal(open.ok, false);
+    assert.equal(open.reason, 'custodial_pull');
+    store.pause.poolWithdraw = true;
+    const q = pull('pull-paused');
     assert.equal(q.ok, false);
-    assert.equal(q.reason, 'paused');
+    assert.equal(q.reason, 'custodial_pull');
+    assert.equal(store.mempool.some((row) => String(row?.id || '').startsWith('pull-')), false);
     assert.equal(Buffer.from(store.tip().hash).equals(before), true);
     assert.equal(store.tip().height, 1);
   });
