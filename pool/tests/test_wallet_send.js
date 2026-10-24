@@ -702,6 +702,58 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(posted[0].portalId, 'ab'.repeat(32));
   });
 
+  it('the pool relays only the compact FS-1 lock and never builds one', () => {
+    const store = storeWith({});
+    const alice = newIdentity();
+    const silent = spendDestOf(alice.spendPub);
+    const dest20 = Buffer.alloc(20, 7);
+    const commit = Buffer.alloc(32, 3);
+    const posted = [];
+    const send = (body) => handleWalletApi(url('/api/wallet/send'), 'POST', body, {
+      store,
+      miners: new Map(),
+      queueSend: (t) => {
+        posted.push(t);
+        return { id: 'lock-x', ...t };
+      },
+    });
+    // A signed address lock with no `to` used to fall through to a draft
+    // built from lockTx({ from, to }), which every node refuses as vote_leak.
+    const signed = spendSig({ from: silent, to: silent, amount: 1, identity: alice, kind: 'lock' });
+    const addressLock = send({
+      from: silent,
+      amount: 1,
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      sig: signed.sig,
+      spendPub: signed.spendPub,
+      vout: signed.vout,
+    });
+    assert.equal(addressLock.status, 400);
+    assert.equal(addressLock.json.reason, 'bad_send');
+    // A compact lock missing its FS-1 blob is not the relayed shape either.
+    const noBlob = send({
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      portalId: 'ab'.repeat(32),
+      dest20: dest20.toString('hex'),
+      vin: [{ commit }],
+      vout: [{ kind: 'lock', dest20, commit }],
+    });
+    assert.equal(noBlob.status, 400);
+    assert.equal(noBlob.json.reason, 'bad_send');
+    // Two lock outputs are one portal credit too many.
+    const twice = send({
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      from: silent,
+      vout: [{ kind: 'lock', dest20, commit }, { kind: 'lock', dest20, commit }],
+    });
+    assert.equal(twice.status, 400);
+    assert.equal(twice.json.reason, 'portal_exists');
+    assert.equal(posted.length, 0, 'no lock body was built or queued');
+  });
+
   it('a hidden lock that carries payoutPortalId is vote_leak and is not queued', () => {
     const store = storeWith({});
     const dest20 = Buffer.alloc(20, 7);
