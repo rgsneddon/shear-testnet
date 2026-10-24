@@ -96,7 +96,12 @@ function potAt(ts) {
   return potSubsidyAt({ nowMs: ts, genesisMs: GENESIS, magic: MAGIC_TESTNET });
 }
 
-function blockAt(ts, miner, notes, moreTxs, observe) {
+// Every block names its height, as a store or wire block does. foldSupply
+// and supplyStep replay the vault at i+1 when a block omits it, while
+// vaultAfterBlock, fillSnapInterest, and the audit replay it at 0. A lock at
+// height 0 is on a period start (stub 0); at height 1 it earns an arrival
+// stub, so a height-less chain made the fold disagree with the other walks.
+function blockAt(ts, miner, notes, moreTxs, observe, height = 1) {
   const potNotes = notes.filter((n) => n.kind !== 'finder-fee' && n.kind !== 'reserve-fee' && n.kind !== 'hash');
   const shares = potNotes.map((n) => ({
     address: n.address || miner,
@@ -124,14 +129,15 @@ function blockAt(ts, miner, notes, moreTxs, observe) {
   }
   if (observe) tx.observe = observe;
   return {
+    height,
     header: header(ts),
     txs: [tx, ...(moreTxs || [])],
     shareBatch: [],
   };
 }
 
-function potBlock(ts, miner, more, observe) {
-  return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], more, observe);
+function potBlock(ts, miner, more, observe, height = 1) {
+  return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], more, observe, height);
 }
 
 // Since d5529d81 a lock with no vaultLockNote is stake_reward, and only a π
@@ -265,7 +271,7 @@ function drawOf(state, portal, miner, nanos, id, { nowMs = DRAW, extra = null } 
  */
 function nextBlock(prefix, ts, miner, make) {
   const vault = prefix.length ? vaultAfter(prefix) : null;
-  const block = potBlock(ts, miner, make ? make(vault) : []);
+  const block = potBlock(ts, miner, make ? make(vault) : [], undefined, prefix.length + 1);
   if (vault) {
     const plan = rewardCommitment(vault, ts);
     if (plan.rows.length) block.txs[0].rewardRoot = plan.root;
@@ -406,7 +412,7 @@ describe('principal-only withdraw receipts', () => {
     const edgeLock = potBlock(GENESIS, miner, [lockOf(miner, edge, edgeStake, 'z-edge')]);
     expectSupplyReject([
       edgeLock,
-      potBlock(DRAW, miner, [drawOf(null, edge, miner, edgeStake, 'z-we')]),
+      potBlock(DRAW, miner, [drawOf(null, edge, miner, edgeStake, 'z-we')], undefined, 2),
     ], 'dust-boundary');
 
     const late = GENESIS + EPOCH_MS - joinCutoffMs(MAGIC_TESTNET) + 1000;
@@ -469,7 +475,7 @@ describe('principal-only withdraw receipts', () => {
     const opened = potBlock(GENESIS, floorMiner, [lockOf(floorMiner, voter, stake, 'floor-lock')]);
     const down = potBlock(GENESIS + 1000, floorMiner, [
       voteTx({ from: floorMiner, dest: voter, choice: VOTE_DECREASE, id: 'floor-down' }),
-    ]);
+    ], undefined, 2);
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
     const seated = vaultAfterBlock(null, opened);
     assert.equal(seated.ok, true);
@@ -578,25 +584,34 @@ describe('principal-only withdraw receipts', () => {
     assert.equal(reserveAction(high).opened, false);
     expectSupplyReject(above, 'above-2^53');
 
-    const parent = foldSupply([honest[0]], foldOpts());
-    assert.equal(parent.ok, true);
-    parent.state.mintedInterest = U64;
-    parent.state.permittedInterest = U64;
     const vault = vaultAfterBlock(null, honest[0]);
-    const stepped = supplyStep(parent.state, honest[1], {
-      magic: MAGIC_TESTNET,
-      unit: HASH_BONUS_NANOS,
-      tipHeight: 2,
-      height: 2,
-      genesisMs: GENESIS,
-      vault: vault.vault,
-    });
-    // These blocks carry no height, so the lock is on a period start and its
-    // arrival stub is 0. A receipt that mints nothing leaves a full book full.
-    assert.equal(safeStub, 0n);
-    assert.equal(stepped.ok, true, stepped.reason);
-    assert.equal(stepped.state.mintedInterest, U64);
-    assert.equal(stepped.state.permittedInterest, U64);
+    assert.equal(vault.ok, true);
+    const stepFrom = (book) => {
+      const parent = foldSupply([honest[0]], foldOpts());
+      assert.equal(parent.ok, true);
+      parent.state.mintedInterest = book;
+      parent.state.permittedInterest = book;
+      return supplyStep(parent.state, honest[1], {
+        magic: MAGIC_TESTNET,
+        unit: HASH_BONUS_NANOS,
+        tipHeight: 2,
+        height: 2,
+        genesisMs: GENESIS,
+        vault: vault.vault,
+      });
+    };
+    // The lock is at height 1, past its period start, so it earns an arrival
+    // stub. The receipt mints exactly that stub and no principal or epoch
+    // interest: a book one stub short of u64 ends full, not over.
+    assert.ok(safeStub > 0n, 'height-1 lock earns an arrival stub');
+    const filled = stepFrom(U64 - safeStub);
+    assert.equal(filled.ok, true, filled.reason);
+    assert.equal(filled.state.mintedInterest, U64);
+    assert.equal(filled.state.permittedInterest, U64);
+    // A full book cannot take that stub. The step refuses it, it does not wrap.
+    const full = stepFrom(U64);
+    assert.equal(full.ok, false);
+    assert.equal(full.reason, 'supply');
   });
 
   it('a reorg that drops the withdraw does not keep the minted interest', () => {
