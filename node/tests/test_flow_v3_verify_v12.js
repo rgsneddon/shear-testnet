@@ -125,6 +125,8 @@ async function blockVerdict(store, dest, tx) {
   }, tip, {
     noteAtAnchor: (anchor) => store.anchorNote(anchor),
     magic: store.magic,
+    // With no trusted hash the block clock is checked against genesis.
+    genesisMs: Number(decodeHeader(Buffer.from(store.blocks[0].header)).timestamp),
   });
 }
 
