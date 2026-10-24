@@ -1,9 +1,10 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createStore } from '../src/store.js';
+import { createRegtestStore } from './regtest_store.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import { verifyBlock } from '../src/chain.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { newIdentity } from '../../crypto/address.js';
@@ -15,14 +16,12 @@ function minerDest() {
   return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
 }
 
-let powTag = 1;
-function easyPowHash() {
-  const h = Buffer.alloc(32);
-  h[4] = powTag & 0xff;
-  h[5] = (powTag >> 8) & 0xff;
-  h[6] = (powTag >> 16) & 0xff;
-  powTag += 1;
-  return h;
+// Regtest work (bits 4, about 16 hashes). Every header carries a real nonce
+// and every block claims its own ShearHash, so no check is trusted past.
+async function seal(header, bits) {
+  const found = await mineHeaderParallel(header, bits, 8_192, 1);
+  assert.ok(found && found.block, 'regtest pow');
+  return { header: found.header, hash: found.hash };
 }
 
 function flipContinuity(header) {
@@ -31,9 +30,11 @@ function flipContinuity(header) {
   return encodeHeader(decoded);
 }
 
-function asBlock(tpl, extra = {}) {
+async function asBlock(tpl, extra = {}) {
+  const { header: raw, ...rest } = extra;
+  const { header, hash } = await seal(raw || tpl.header, tpl.bits);
   return {
-    header: tpl.header,
+    header,
     txs: tpl.txs,
     samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
@@ -43,43 +44,44 @@ function asBlock(tpl, extra = {}) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
-    hash: easyPowHash(),
-    ...extra,
+    hash,
+    ...rest,
   };
 }
 
 describe('v12 IBD does not skip on a peer-advertised height', () => {
+  const dirs = [];
+  after(async () => {
+    await closeMineWorkers();
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  });
+
   it('a tall advertised tip still rejects a continuity lie on the block being checked', async () => {
     const dest = minerDest();
     const other = minerDest();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-h-'));
-    const store = createStore(dir);
+    dirs.push(dir);
+    const store = createRegtestStore(dir, { bits: 4 });
     const t0 = 1_700_000_000_000;
     const honest = store.template({ miner: dest, shareBits: 4, now: t0 });
-    const sealed = await Promise.resolve(store.append(asBlock(honest.tpl, { miner: dest }), {
-      trustedPowHash: easyPowHash(),
-      skipSharePow: true,
-    }));
+    const sealed = await Promise.resolve(store.append(await asBlock(honest.tpl, { miner: dest })));
     assert.equal(sealed.ok, true, sealed.reason);
 
     const rivalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-r-'));
-    const rivalStore = createStore(rivalDir);
+    dirs.push(rivalDir);
+    const rivalStore = createRegtestStore(rivalDir, { bits: 4 });
     const rivalTpl = rivalStore.template({ miner: other, shareBits: 4, now: t0 }).tpl;
-    const broken = asBlock(rivalTpl, {
+    // The continuity lie is sealed with real work, so continuity is the
+    // first check it fails.
+    const broken = await asBlock(rivalTpl, {
       miner: other,
       header: flipContinuity(rivalTpl.header),
       samplesPruned: true,
       height: 1,
     });
-    const decoy = {
-      ...broken,
-      height: 80_000,
-      hash: easyPowHash(),
-      samplesPruned: true,
-    };
+    // The same block, advertised at a tall height. The height is not an input.
+    const decoy = { ...broken, height: 80_000 };
     const got = await Promise.resolve(store.ingest([broken, decoy], {
-      trustBlockHash: true,
-      skipSharePow: true,
       nowMs: t0 + TARGET_BLOCK_INTERVAL_MS,
     }));
     assert.equal(got.ok, false);
@@ -93,7 +95,7 @@ describe('v12 IBD does not skip on a peer-advertised height', () => {
       shareBits: 4,
       now: t0 + TARGET_BLOCK_INTERVAL_MS,
     }).tpl;
-    const child = asBlock(childTpl, {
+    const child = await asBlock(childTpl, {
       miner: dest,
       header: flipContinuity(childTpl.header),
       samplesPruned: true,
@@ -110,8 +112,7 @@ describe('v12 IBD does not skip on a peer-advertised height', () => {
       weight: tip.weight,
     }, {
       tipHeight: 1_000_000,
-      trustedPowHash: easyPowHash(),
-      skipSharePow: true,
+      magic: store.magic,
       genesisMs: t0,
       nowMs: t0 + TARGET_BLOCK_INTERVAL_MS,
     });
