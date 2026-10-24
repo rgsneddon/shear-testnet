@@ -11,7 +11,13 @@ describe('fluxset membership', () => {
   it('applyBlockToFluxset matches fluxsetFromBlocks and empty J has a 32-byte jroot', () => {
     const x = randomScalar();
     const P = admitPub(x);
-    const block = { txs: [{ vout: [{ admitPub: P.toBytes(), commit: Buffer.alloc(32, 3) }] }] };
+    // N-1 (#79): an admit-set output must be an FS-1 leaf, so commit is a real
+    // Pedersen point. A non-point commit is refused below.
+    const noteCommit = (v) => pointBytes(commit(v, randomScalar()));
+    const block = { txs: [{ vout: [{ admitPub: P.toBytes(), commit: noteCommit(3) }] }] };
+    const junk = { txs: [{ vout: [{ admitPub: admitPub(randomScalar()).toBytes(), commit: Buffer.alloc(32, 3) }] }] };
+    assert.throws(() => applyBlockToFluxset(emptyFluxset(), junk), /admit_note_point/);
+    assert.throws(() => fluxsetFromBlocks([junk]), /admit_note_point/);
     const live = applyBlockToFluxset(emptyFluxset(), block);
     const rebuilt = fluxsetFromBlocks([block]);
     assert.equal(live.pubs.length, 1);
@@ -20,8 +26,8 @@ describe('fluxset membership', () => {
     assert.equal(Buffer.from(emptyFluxset().jroot).length, 32);
     const more = [
       block,
-      { txs: [{ vout: [{ admitPub: admitPub(randomScalar()).toBytes(), commit: Buffer.alloc(32, 4) }] }] },
-      { txs: [{ vout: [{ admitPub: admitPub(randomScalar()).toBytes(), commit: Buffer.alloc(32, 5) }] }] },
+      { txs: [{ vout: [{ admitPub: admitPub(randomScalar()).toBytes(), commit: noteCommit(4) }] }] },
+      { txs: [{ vout: [{ admitPub: admitPub(randomScalar()).toBytes(), commit: noteCommit(5) }] }] },
     ];
     let folded = emptyFluxset();
     for (const b of more) folded = applyBlockToFluxset(folded, b);
