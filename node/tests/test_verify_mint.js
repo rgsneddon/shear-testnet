@@ -52,16 +52,21 @@ describe('verifyBlock extra mint', () => {
       vout: [{ address: dest, nanos: 99 }],
       programId: 'third-party-stake',
     };
+    // The thief is an unfunded mint under a program that may not mint.
+    assert.equal(extraMintAllowed(thief.programId, { kind: thief.kind }), false);
+    // Since e136cdf7 the range gate runs first: a kindless output with no
+    // commit or range proof is range_proof before the extra-mint check, the
+    // same reason test_gate_evm pins for this thief. It is still refused.
     const stolen = mine(buildTemplate({ ...base, txs: [thief] }));
     const denied = await Promise.resolve(verifyBlock(stolen, null, trust(stolen)));
     assert.equal(denied.ok, false);
-    assert.equal(denied.reason, 'mint_forbidden');
+    assert.equal(denied.reason, 'range_proof');
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-store-'));
     const store = createStore(dir);
     const appended = await Promise.resolve(store.append(stolen, trust(stolen)));
     assert.equal(appended.ok, false);
-    assert.equal(appended.reason, 'mint_forbidden');
+    assert.equal(appended.reason, 'range_proof');
 
     const reserveTx = {
       ...withdrawTx({ from: dest, to: vault, nanos: 7, id: 'w-7' }),
