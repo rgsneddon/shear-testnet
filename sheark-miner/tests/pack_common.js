@@ -46,12 +46,14 @@ export function zipEntries(zipPath) {
   return new Map(Object.entries(JSON.parse(r.stdout)));
 }
 
+// The member's exact bytes. Text-mode stdout on Windows turns each \n into
+// \r\n, which would double a CRLF file's \r and give an LF file a \r.
 export function zipText(zipPath, member) {
   const r = spawnSync(python(), ['-I', '-c',
-    'import sys,zipfile; sys.stdout.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]).decode("utf-8"))',
-    zipPath, member], { encoding: 'utf8' });
-  assert.equal(r.status, 0, r.stderr);
-  return r.stdout;
+    'import sys,zipfile; sys.stdout.buffer.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]))',
+    zipPath, member]);
+  assert.equal(r.status, 0, String(r.stderr));
+  return new TextDecoder('utf-8', { fatal: true }).decode(r.stdout);
 }
 
 export function unzipTo(zipPath, dir) {
