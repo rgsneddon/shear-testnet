@@ -77,6 +77,8 @@ jobs:
           SHEAR_FS1_TREE_BIN: ${{ github.workspace }}/crypto/native/vendor/monero-oxide-77788c3/target/release/fs1_tree
         run: node --test node/tests/test_fs1_tree.js
       - run: node --test crypto/fs1_pin.test.js
+      - name: FS-1 verify and root caches refuse stale passes
+        run: node --test crypto/fs1_verify_cache.test.js crypto/fs1_spend.test.js
       - name: Shipped withdraws, one past the retire cap
         run: node --test node/tests/test_withdraw_ship_v12.js
       - name: Fresh peer sync and restart across lock, claim, vote, and withdraw
