@@ -7,35 +7,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const dist = path.join(root, '..', 'dist');
 const bin = process.platform === 'win32'
   ? path.join(root, 'ShearK-Miner.exe')
   : path.join(root, 'ShearK-Miner');
-
-function pythonBin() {
-  const candidates = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
-  for (const c of candidates) {
-    const r = spawnSync(c, ['-c', 'import zipfile,sys; sys.stdout.write("ok")'], { encoding: 'utf8' });
-    if (r.status === 0 && r.stdout.includes('ok')) return c;
-  }
-  throw new Error('python with zipfile not found');
-}
-
-function zipNamelist(zipPath) {
-  const py = spawnSync(pythonBin(), ['-c',
-    'import zipfile,sys; print("\\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))', zipPath],
-    { encoding: 'utf8' });
-  assert.equal(py.status, 0, py.stderr);
-  return py.stdout.split(/\r?\n/).map((s) => s.replace(/\\/g, '/').trim()).filter(Boolean);
-}
-
-function zipMemberHead(zipPath, member, n) {
-  const py = spawnSync(pythonBin(), ['-c',
-    'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2])[:int(sys.argv[3])].hex())',
-    zipPath, member, String(n)], { encoding: 'utf8' });
-  assert.equal(py.status, 0, py.stderr);
-  return py.stdout.trim();
-}
 
 function stripAnsi(s) {
   return String(s || '').replace(/\x1b\[[0-9;]*m/g, '');
@@ -238,39 +212,6 @@ describe('ShearK-Miner', () => {
     }
   });
 
-  it('2.5 windows zip is only ShearK-Miner.exe + example.bat (MZ)', (t) => {
-    const zip = path.join(dist, 'ShearK-Miner-2.5-windows.zip');
-    if (!fs.existsSync(zip)) {
-      t.skip('2.5 windows zip is packed on Windows, not this linux box');
-      return;
-    }
-    assert.deepEqual(zipNamelist(zip).sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
-    assert.equal(zipMemberHead(zip, 'ShearK-Miner.exe', 2), '4d5a');
-  });
-
-  it('2.5 linux zip is ELF, never Darwin Mach-O', (t) => {
-    const zip = path.join(dist, 'ShearK-Miner-2.5-linux.zip');
-    if (!fs.existsSync(zip)) {
-      t.skip('2.5 linux zip is packed on the linux box, not this Windows cut');
-      return;
-    }
-    const py = spawnSync(pythonBin(), ['-c',
-      'import zipfile,sys\n'
-      + 'z=zipfile.ZipFile(sys.argv[1])\n'
-      + 'print("\\n".join(z.namelist()))\n'
-      + 'b=z.read("ShearK-Miner")[:4]\n'
-      + 'print("MAGIC", b.hex())\n'
-      + 'print("MODE", oct((z.getinfo("ShearK-Miner").external_attr >> 16) & 0o777))',
-      zip], { encoding: 'utf8' });
-    assert.equal(py.status, 0, py.stderr);
-    const out = py.stdout;
-    assert.match(out, /ShearK-Miner/);
-    assert.match(out, /example\.sh/);
-    assert.match(out, /MAGIC 7f454c46/);
-    assert.equal(/MAGIC cffaedfe/.test(out), false);
-    assert.ok(/MODE 0o755/.test(out) || /MODE 0755/.test(out), out);
-  });
-
   it('login status=OK does not bump accepted; status line prints hashes and job bits', async () => {
     needBin();
     const header = Buffer.alloc(128);
@@ -435,25 +376,6 @@ describe('ShearK-Miner', () => {
     assert.ok(two > one, `1-thread hashes=${one} 2-thread hashes=${two}`);
   });
 
-  it('2.5 windows zip root is PE + example.bat', (t) => {
-    const win = path.join(dist, 'ShearK-Miner-2.5-windows.zip');
-    if (!fs.existsSync(win)) {
-      t.skip('2.5 windows zip is packed on Windows, not this linux box');
-      return;
-    }
-    const names = zipNamelist(win);
-    assert.deepEqual(names.sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
-    assert.equal(zipMemberHead(win, 'ShearK-Miner.exe', 2), '4d5a');
-    const bat = spawnSync(pythonBin(), ['-c',
-      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.bat").decode("utf-8"))',
-      win], { encoding: 'utf8' });
-    assert.equal(bat.status, 0, bat.stderr);
-    assert.match(bat.stdout, /ShearK-Miner-2\.5-windows\.zip/);
-    assert.match(bat.stdout, /shear-testnet-v4/);
-    assert.match(bat.stdout, /--user YOUR_SSA1\.worker/);
-    assert.match(bat.stdout, /--backend jit-full/);
-  });
-
   it('requireTls refuses a cleartext pool url in either flag order', () => {
     needBin();
     const user = 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul';
@@ -477,36 +399,21 @@ describe('ShearK-Miner', () => {
     assert.match(bare.stderr, /requireTls: refusing cleartext/);
   });
 
-  it('2.9 windows zip bundles the OpenSSL DLLs the exe imports', (t) => {
-    if (process.platform !== 'win32') {
-      t.skip('2.9 windows zip is packed on Windows');
-      return;
+  // The zips themselves are built and checked per OS by pack_linux.js and
+  // pack_windows.js in sheark-packs.yml, never skipped here.
+  it('sheark-packs runs the Linux and Windows pack checks on their own OS', () => {
+    const wf = fs.readFileSync(path.join(root, '..', '.github', 'workflows', 'sheark-packs.yml'), 'utf8');
+    const job = (name) => wf.split(new RegExp(`^  ${name}:`, 'm'))[1].split(/^ {2}\w[\w-]*:/m)[0];
+    assert.match(job('linux'), /runs-on: ubuntu-/);
+    assert.match(job('linux'), /node sheark-miner\/tests\/pack_linux\.js/);
+    assert.match(job('windows'), /runs-on: windows-/);
+    assert.match(job('windows'), /node sheark-miner\/tests\/pack_windows\.js/);
+    assert.equal(/ShearK-Miner-2\.[0-8]-/.test(wf), false, 'stale pack version in sheark-packs.yml');
+    for (const f of ['pack_linux.js', 'pack_windows.js']) {
+      const src = fs.readFileSync(path.join(root, 'tests', f), 'utf8');
+      assert.match(src, /assert\.equal\(process\.platform, '(linux|win32)'/);
+      assert.equal(/\.skip\(|SKIP/.test(src), false, `${f} must fail, not skip`);
     }
-    const pack = path.join(root, 'pack', 'zip_windows.py');
-    const built = spawnSync(pythonBin(), [pack], { encoding: 'utf8', cwd: root });
-    assert.equal(built.status, 0, built.stdout + built.stderr);
-    const zip = path.join(dist, 'ShearK-Miner-2.9-windows.zip');
-    assert.equal(fs.existsSync(zip), true, zip);
-    const names = zipNamelist(zip);
-    for (const need of ['ShearK-Miner.exe', 'example.bat', 'example.sh', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll']) {
-      assert.ok(names.includes(need), names.join(','));
-    }
-    assert.equal(zipMemberHead(zip, 'ShearK-Miner.exe', 2), '4d5a');
-    const bat = spawnSync(pythonBin(), ['-c',
-      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.bat").decode("utf-8"))',
-      zip], { encoding: 'utf8' });
-    assert.equal(bat.status, 0, bat.stderr);
-    assert.match(bat.stdout, /ShearK-Miner-2\.9-windows\.zip/);
-    assert.match(bat.stdout, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
-    assert.match(bat.stdout, /libcrypto-3-x64\.dll/);
-    const sh = spawnSync(pythonBin(), ['-c',
-      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.sh").decode("utf-8"))',
-      zip], { encoding: 'utf8' });
-    assert.equal(sh.status, 0, sh.stderr);
-    assert.match(sh.stdout, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
-    assert.match(sh.stdout, /--backend jit-full/);
-    const exeOnly = names.filter((n) => n === 'ShearK-Miner.exe' || n === 'example.bat');
-    assert.ok(names.length > exeOnly.length, 'exe+bat alone is not a 2.9 pack');
   });
 
   it('unix pack script keeps a sample bat and shell launcher in every flavor', () => {
