@@ -37,6 +37,10 @@ const AMOUNTS = [1, 100_000_000_000];
 const UNDER_IN = [1, 2, 4, 8];
 const OVER_IN = [9, 64];
 const FRAME_P = Math.floor(P2P_MAX_FRAME_DEFAULT / 256);
+// Live versioned Admit head (versionedByte in crypto/note.js is 3 or 0xF1).
+// A 2 is the retired ADMITv2 head. It falls to the shape-proof path, so a
+// timing on it measures bindListedSlow, not the bound a v3 spend takes.
+const ADMIT_V3_HEAD = 3;
 
 function minerDest() {
   const id = newIdentity();
@@ -118,7 +122,7 @@ function boundAt(p, extraBytes = 0) {
   const proofs = new Array(p);
   for (let i = 0; i < p; i += 1) {
     const blob = Buffer.alloc(33);
-    blob[0] = 2;
+    blob[0] = ADMIT_V3_HEAD;
     blob.writeUInt32BE(i + 1, 1);
     const tag = Buffer.from(blob.subarray(1, 33));
     const c = Buffer.alloc(32);
@@ -129,7 +133,7 @@ function boundAt(p, extraBytes = 0) {
   const tx = { kind: 'send', vin: vins, admit_proofs: proofs, vout: [{ kind: 'send' }] };
   if (extraBytes > 0) {
     const blob = Buffer.alloc(Math.max(33, extraBytes));
-    blob[0] = 2;
+    blob[0] = ADMIT_V3_HEAD;
     blob.writeUInt32BE(0xffffffff, 1);
     const tag = Buffer.from(blob.subarray(1, 33));
     tx.admit_proof = { blob, cTilde: Buffer.alloc(32, 9), spendTag: tag };
@@ -334,7 +338,7 @@ function postChunked(port, cap) {
 
 describe('v12 tx input and output cap', { concurrency: 1 }, () => {
   it('rejects any oversize tx before a proof parse, and still binds a listed proof', async () => {
-    const one = versioned(9, 2);
+    const one = versioned(9, ADMIT_V3_HEAD);
     const copy = {
       blob: Buffer.from(one.blob),
       cTilde: Buffer.from(one.cTilde),
