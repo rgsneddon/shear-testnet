@@ -32,7 +32,7 @@ jobs:
           cat shard.txt
           test -s shard.txt
           has() { grep -qE "$1" shard.txt && echo true || echo false; }
-          echo "miner=$(has '^(miner|sheark-miner)/tests/')" >> "$GITHUB_OUTPUT"
+          echo "miner=$(has '^(miner|sheark-miner)/tests/|^crypto/shear_hash.test.js$')" >> "$GITHUB_OUTPUT"
           echo "flutter=$(has 'dart_withdraw_verify|test_dart_withdraw_queue_v12|pool/tests/test_wallet_send')" >> "$GITHUB_OUTPUT"
           echo "android=$(has 'crypto/android_arm64_libs')" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
@@ -47,7 +47,8 @@ jobs:
           cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native -j"$(nproc)"
-      # miner/tests and sheark-miner/tests run the built binaries. Without
+      # miner/tests, sheark-miner/tests and crypto/shear_hash.test.js (its C
+      # vs node vectors) run the built binaries. Without
       # them every case fails on ENOENT.
       - name: Build Shear-Miner and ShearK-Miner
         if: steps.needs.outputs.miner == 'true'
