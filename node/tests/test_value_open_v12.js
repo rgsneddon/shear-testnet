@@ -202,11 +202,12 @@ describe('v12 hidden outputs carry no value opening', () => {
       assert.equal(store.tip().height, tipHeight);
       const url = new URL('http://127.0.0.1/api/wallet/send');
       const note = opening(AMOUNTS[2], 'send');
-      const posted = (admitProof) => handleWalletApi(url, 'POST', {
-        from: dest,
-        to: dest,
-        amount: 1,
+      // AL-3: a posted send is the sealed tx only, with a fee and no amount,
+      // from, or to hint (pool wallet_api sealedSendOnly).
+      const posted = (admitProof, hints = {}) => handleWalletApi(url, 'POST', {
+        ...hints,
         kind: 'send',
+        fee: 1000,
         sig: Buffer.alloc(64, 7).toString('hex'),
         spendPub: Buffer.alloc(32, 8).toString('hex'),
         vin: [{ commit: Buffer.alloc(32, 1) }],
@@ -224,7 +225,11 @@ describe('v12 hidden outputs carry no value opening', () => {
       assert.equal(bucket.json.reason, 'send_unavailable');
       // With the byte-2 stub the same body reaches the output check, and the
       // posted opening is refused.
-      const fat = posted(stubAdmitV2({ cTilde: note.commit }));
+      const stub = stubAdmitV2({ cTilde: note.commit });
+      const hinted = posted(stub, { from: dest, to: dest, amount: 1 });
+      assert.equal(hinted.status, 400);
+      assert.equal(hinted.json.reason, 'send_hint');
+      const fat = posted(stub);
       assert.equal(fat.status, 400);
       assert.equal(fat.json.reason, 'value_open');
       const row = { ...note };

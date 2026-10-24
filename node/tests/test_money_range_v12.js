@@ -104,7 +104,9 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         portals: { [dest]: { staked: nanos - 1, idle: 0, ownerPub: '11'.repeat(32) } },
       });
       if (nanos > 1) assert.equal(over.reason, 'insufficient');
-      const exact = boundReserveWithdraw(bare, {
+      // The portal is keyed by its id, so the body names it. Without it the
+      // lookup finds no portal and stops at owner_missing (ac3951ea).
+      const exact = boundReserveWithdraw({ ...bare, portalId: portalIdFromDest(dest) }, {
         epochBps: 0,
         genesisMs: LUMP_GENESIS,
         portals: { [portalIdFromDest(dest)]: dueLump(nanos) },
