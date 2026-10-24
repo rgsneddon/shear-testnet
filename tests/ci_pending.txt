@@ -3,3 +3,6 @@
 # PR2 = "book magic everywhere", PR3 = "real-data fixtures". Both land before v12.
 # tests/ci_shard.js --check fails on a missing PR, a missing reason, a
 # duplicate, or a path that is not a test file. No test file skips itself.
+node/tests/test_070_acceptance_v12.js PR3 R5 replays an 8 h spread from stand-in block ids ingested with trustBlockHash; PR 130's claim check refuses them as hash_claim. Needs the shared regtest mining module, then a server run with its runtime reported.
+node/tests/test_fork_vault.js PR2 Only an FS-1 funded lock credits the vault in v12, which needs real mining on regtest; supply.js lockNotePrincipal (148, 168) and vaultAfterBlock (271) default to testnet magic, so a regtest lock's fund proof does not verify.
+node/tests/test_vault_fs1_funding_v12.js PR2 Suite 2 mines with a zero trusted hash that PR 130 refuses; its regtest move needs supply.js lockNotePrincipal, chain.js buildTemplate potSubsidyAt and the verifyFlowAdmitFs1 default to take the book magic.
