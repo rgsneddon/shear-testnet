@@ -21,7 +21,7 @@ import {
   shareSlotRoot,
   unpackShareBatchBytes,
 } from '../../crypto/pack.js';
-import { meetsTarget } from '../../crypto/shear_hash.js';
+import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
 import {
   clearLiveSharePow,
   destBoundShareHash,
@@ -223,7 +223,9 @@ describe('v12 proofSlot is bound by the block', () => {
       const tpl = childOf(store, rows, clock);
       assert.deepEqual(rows.map((row) => row.proofSlot), slotsBefore);
       const honestHeader = Buffer.from(tpl.header);
-      const honest = asBlock(tpl, dests[0], easyPow());
+      // The honest block claims its own ShearHash. Every attack keeps that
+      // header and claim, so the share slot is the only thing that differs.
+      const honest = asBlock(tpl, dests[0], Buffer.from(shearHash(honestHeader)));
       const tipBefore = store.tip().height;
       const attacks = [
         {
