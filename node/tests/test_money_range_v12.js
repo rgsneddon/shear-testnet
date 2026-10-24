@@ -92,6 +92,9 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         // output check. verifyBlock below still holds a vote to range_proof.
         let want = ADDRESS_KINDS.has(kind) ? 'kind' : 'range_proof';
         if (kind === 'vote') want = 'vote_retired';
+        // A pool withdraw is custodial_pull on every network (f9897d50), before
+        // any kind or output check. The pool never pays out of custody.
+        if (kind === 'pool-withdraw') want = 'custodial_pull';
         assert.equal(parked.reason, want, `${kind} ${nanos}`);
       }
       const bare = plainTx('withdraw', dest, nanos);
@@ -147,7 +150,8 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
     const cases = [];
     for (const nanos of amounts) {
       for (const kind of KINDS) {
-        cases.push({ name: `${kind}-${nanos}`, tx: wireTx(kind, dest, nanos), reason: 'range_proof' });
+        const reason = kind === 'pool-withdraw' ? 'custodial_pull' : 'range_proof';
+        cases.push({ name: `${kind}-${nanos}`, tx: wireTx(kind, dest, nanos), reason });
       }
       const d20 = Buffer.from(hash20FromAddress(dest));
       const note = sealNote(nanos, { dest20: d20, kind: 'withdraw' });
