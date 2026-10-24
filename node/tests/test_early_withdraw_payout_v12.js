@@ -113,8 +113,9 @@ function publicLock(dest, d20) {
     programId: RESERVE_PROGRAM,
     kind: 'lock',
     nanos: PI_SHE_NANOS,
+    // A lock that names payoutPortalId is vote_leak (cb733226). This
+    // receipt carries only the portal id, so the receipt gate names it.
     portalId: portalIdFromDest(dest),
-    payoutPortalId: portalIdFromDest(dest),
     vin: [{ dest20: d20 }],
     vout: [{ kind: 'lock', dest20: d20, valueProof: { v: PI_SHE_NANOS } }],
   };
@@ -130,8 +131,9 @@ function publicWithdraw(dest, d20) {
     kind: 'withdraw',
     mint: true,
     nanos: PI_SHE_NANOS,
+    // A withdraw names its lock by portalId only. payoutPortalId is
+    // vote_leak (325b50f5) and would hide the receipt and epoch reasons.
     portalId: portalIdFromDest(dest),
-    payoutPortalId: portalIdFromDest(dest),
     vin: [{ dest20: d20 }],
     vout: [{ kind: 'withdraw', dest20: d20, valueProof: { v: PI_SHE_NANOS } }],
   };
