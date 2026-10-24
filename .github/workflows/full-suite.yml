@@ -61,8 +61,7 @@ jobs:
           sudo apt-get update
           # mingw-w64: test_node_pack builds the Windows zip for real.
           sudo apt-get install -y build-essential cmake python3 mingw-w64
-          cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
-          cmake --build crypto/randomx/build -j"$(nproc)"
+          bash scripts/randomx_build.sh
           make -C crypto/native -j"$(nproc)"
       # miner/tests, sheark-miner/tests and crypto/shear_hash.test.js (its C
       # vs node vectors) run the built binaries. Without

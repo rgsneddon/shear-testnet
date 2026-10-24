@@ -4,6 +4,12 @@ RXLIB := $(RX)/build/librandomx.a
 MINER := $(abspath ../../sheark-miner)
 CC ?= cc
 CFLAGS ?= -O2 -Wall -fPIC
+# x86_64 public builds pin the ISA baseline, not the compiler's default, which
+# can be higher (scripts/randomx_build.sh says why; scripts/isa_scan.py checks
+# the addons). Build librandomx.a with that script too.
+ifneq ($(filter x86_64 amd64 AMD64,$(shell uname -m 2>/dev/null)),)
+  X86_BASELINE := -march=x86-64 -mtune=generic
+endif
 UNAME_S := $(shell uname -s 2>/dev/null)
 ifeq ($(OS),Windows_NT)
   # Command-line CC= still wins. Plain `cc` is not this MinGW gcc.
@@ -51,7 +57,7 @@ all: shearhash.node shearadmit.node
 # C sources. Do not compile with g++ — stdatomic.h is not C++ on this box.
 # RandomX is C++, and Windows N-API symbols come from node.exe via the import lib.
 shearhash.node: shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c $(RXLIB) $(NODE_IMPORT)
-	$(CC) $(CFLAGS) $(LINKFLAGS) \
+	$(CC) $(X86_BASELINE) $(CFLAGS) $(LINKFLAGS) \
 	  -I$(NODE_INC) -I$(MINER)/src -I$(RX)/src \
 	  -o $@ shearhash.c $(MINER)/src/shear_hash.c $(MINER)/src/sha512.c $(MINER)/src/sha256.c $(RXLIB) \
 	  $(NODE_IMPORT) $(LIBSTDCXX)
@@ -77,7 +83,7 @@ win_node_import.a: win_node_import.def
 	dlltool -d $< -l $@ -D node.exe
 
 shearadmit.node: admit_napi.c admitlib $(NODE_IMPORT)
-	$(CC) $(CFLAGS) $(LINKFLAGS) \
+	$(CC) $(X86_BASELINE) $(CFLAGS) $(LINKFLAGS) \
 	  -I$(NODE_INC) \
 	  -o $@ admit_napi.c $(ADMITLIB) $(NODE_IMPORT) $(ADMITSYS)
 ifeq ($(OS),Windows_NT)

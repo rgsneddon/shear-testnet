@@ -438,9 +438,13 @@ describe('ShearK-Miner', () => {
     const linux = mk.split('ifeq ($(UNAME),Linux)')[1].split('endif')[0];
     assert.equal(linux.includes('-march=native'), false);
     assert.match(mk, /ifeq \(\$\(SHEARK_NATIVE\),1\)[\s\S]*-march=native/);
-    assert.match(mk, /-DARCH=\$\(RX_ARCH\)/);
     assert.equal(mk.includes('-DARCH=native'), false);
-    assert.match(mk, /RX_ARCH := default/);
+    // RandomX comes from the shared script, which pins the x86_64 baseline.
+    assert.match(mk, /SHEARK_NATIVE=\$\(SHEARK_NATIVE\) RANDOMX_BUILD_DIR=\$\(RXBUILD\) bash \.\.\/scripts\/randomx_build\.sh/);
+    assert.match(mk, /X86_BASELINE := -march=x86-64 -mtune=generic/);
+    const rx = fs.readFileSync(path.join(root, '..', 'scripts', 'randomx_build.sh'), 'utf8');
+    assert.match(rx, /ARCH=default/);
+    assert.match(rx, /-march=x86-64 -mtune=generic/);
   });
 
   it('sheark-v4-afk defaults take the worker from the host file', () => {

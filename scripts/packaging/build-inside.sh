@@ -77,8 +77,7 @@ npm ci --no-audit --no-fund --ignore-scripts
 log "randomx"
 RX="${SRC}/crypto/randomx"
 rm -rf "${RX}/build"
-cmake -S "${RX}" -B "${RX}/build" -DCMAKE_BUILD_TYPE=Release -DARCH=default
-cmake --build "${RX}/build" -j"${JOBS}"
+bash "${SRC}/scripts/randomx_build.sh"
 test -f "${RX}/build/librandomx.a"
 
 log "ShearK miner"

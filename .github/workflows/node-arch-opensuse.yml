@@ -116,8 +116,7 @@ jobs:
             crypto/native/shearhash.node crypto/native/shearadmit.node \
             crypto/native/admit/target
           npm ci --ignore-scripts
-          cmake -S crypto/randomx -B crypto/randomx/build
-          cmake --build crypto/randomx/build -j"$(nproc)"
+          bash scripts/randomx_build.sh
           make -C crypto/native -j"$(nproc)"
           test -f crypto/native/shearhash.node
           test -f crypto/native/shearadmit.node

@@ -53,8 +53,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake python3
-          cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
-          cmake --build crypto/randomx/build -j"$(nproc)"
+          bash scripts/randomx_build.sh
           make -C crypto/native -j"$(nproc)"
           node -e 'const r = require("module").createRequire(process.cwd() + "/"); for (const m of ["shearhash", "shearadmit"]) { const n = r("./crypto/native/" + m + ".node"); if (!n || !Object.keys(n).length) throw new Error(m); }'
       - name: Vault qualification, autocredit, and FS-1 lock identity, with shearadmit

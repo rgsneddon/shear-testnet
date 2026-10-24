@@ -26,17 +26,19 @@ ifneq ($(OS),Windows_NT)
     GCC_RT_CHECK := python3 ../scripts/licenses/release_notices.py no-gcc-runtime
   endif
 endif
-# Public packs stay on the compiler baseline. SHEARK_NATIVE=1 is a local opt-in.
+# Public packs pin the x86_64 baseline, not the compiler's default, which can
+# be higher (scripts/randomx_build.sh says why; scripts/isa_scan.py checks the
+# binary). SHEARK_NATIVE=1 is a local opt-in for this machine only.
+ifneq ($(filter x86_64 amd64 AMD64,$(shell uname -m)),)
+  X86_BASELINE := -march=x86-64 -mtune=generic
+endif
 ifeq ($(SHEARK_NATIVE),1)
+  X86_BASELINE :=
   CFLAGS += -march=native
 endif
 RX := $(abspath ../crypto/randomx)
 RXBUILD := $(RX)/build
 RXLIB := $(RXBUILD)/librandomx.a
-RX_ARCH := default
-ifeq ($(SHEARK_NATIVE),1)
-  RX_ARCH := native
-endif
 INCLUDES := -Isrc -I$(RX)/src
 
 ifeq ($(OS),Windows_NT)
@@ -77,15 +79,13 @@ all: $(BIN)
 randomx: $(RXLIB)
 
 $(RXLIB):
-	mkdir -p $(RXBUILD)
-	cd $(RXBUILD) && cmake $(CMAKE_GEN) -DCMAKE_BUILD_TYPE=Release -DARCH=$(RX_ARCH) $(RX)
-	$(MAKE) -C $(RXBUILD) -j4
+	SHEARK_NATIVE=$(SHEARK_NATIVE) RANDOMX_BUILD_DIR=$(RXBUILD) bash ../scripts/randomx_build.sh $(CMAKE_GEN)
 
 src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+	$(CC) $(X86_BASELINE) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BIN): $(RXLIB) $(OBJS)
-	$(CXX) $(CFLAGS) -o $@ $(OBJS) $(RXLIB) $(OPENSSL_DLLS) $(LIBS) $(WIN_STATIC_RT) $(LINUX_STATIC_RT)
+	$(CXX) $(X86_BASELINE) $(CFLAGS) -o $@ $(OBJS) $(RXLIB) $(OPENSSL_DLLS) $(LIBS) $(WIN_STATIC_RT) $(LINUX_STATIC_RT)
 ifeq ($(OS),Windows_NT)
 	python pack/zip_windows.py --stage
 endif

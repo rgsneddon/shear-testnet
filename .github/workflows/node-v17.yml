@@ -58,8 +58,7 @@ jobs:
           rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
           rustup override set stable-x86_64-pc-windows-gnu
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=gcc
-          cmake -S crypto/randomx -B crypto/randomx/build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DARCH=native
-          cmake --build crypto/randomx/build -j"$(nproc)"
+          bash scripts/randomx_build.sh -G "MinGW Makefiles"
           make -C crypto/native
           test -f crypto/native/shearadmit.node
           test -f crypto/native/shearhash.node
@@ -100,8 +99,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake python3
           npm ci --ignore-scripts
-          cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
-          cmake --build crypto/randomx/build -j"$(nproc)"
+          bash scripts/randomx_build.sh
           make -C crypto/native
           python3 node/pack/zip_node.py linux
           test -f dist/shear-node-v17-linux.zip
@@ -242,8 +240,7 @@ jobs:
             crypto/native/shearhash.node crypto/native/shearadmit.node \
             crypto/native/admit/target
           npm ci --ignore-scripts
-          cmake -S crypto/randomx -B crypto/randomx/build
-          cmake --build crypto/randomx/build -j"$(nproc)"
+          bash scripts/randomx_build.sh
           make -C crypto/native -j"$(nproc)"
           test -f crypto/native/shearhash.node
           test -f crypto/native/shearadmit.node
