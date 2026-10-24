@@ -16,7 +16,8 @@ import {
   GENESIS_BITS_PACKED,
 } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
-import { vote, emptyVault, VOTE_DECREASE, VOTE_HOLD, withdrawTx } from '../../crypto/reserve_vault.js';
+import { vote, emptyVault, VOTE_DECREASE, VOTE_HOLD, withdrawTx, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
+import { unsignedBodyField } from '../../crypto/spend.js';
 import { deposit } from '../../crypto/owned_portal.js';
 import { PI_SHE_NANOS } from '../../crypto/asert.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
@@ -29,6 +30,24 @@ import {
 
 function destOf(id) {
   return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
+}
+
+/**
+ * withdrawTx still writes from, to, payoutPortalId, and the vout address.
+ * Since 325b50f5 those are vote_leak, which the block names before an
+ * uncovered field. A posted withdraw names its lock by portalId and pays
+ * dest20, so drop them. r is the blind and never goes on the wire.
+ */
+function compactWithdraw(args) {
+  const tx = withdrawTx(args);
+  delete tx.from;
+  delete tx.to;
+  delete tx.payoutPortalId;
+  tx.vout = tx.vout.map(({ address: _address, r: _r, ...row }) => row);
+  assert.equal(withdrawLeakRejected(tx), null);
+  // The bare body is covered, so an 'unsigned' verdict below names the stake fields.
+  assert.equal(unsignedBodyField(tx), null);
+  return tx;
 }
 
 function mine(tpl) {
@@ -78,7 +97,7 @@ describe('Reserve mint is sealed-state pure', () => {
     const staked = NANOS_PER_SHE;
     const want = staked + interestNanos(staked, 425);
     const wrong = {
-      ...withdrawTx({ from: dest, to: vault, nanos: want + 1, id: 'w-wrong' }),
+      ...compactWithdraw({ from: dest, to: vault, nanos: want + 1, id: 'w-wrong' }),
       stakedNanos: staked,
       principalNanos: staked,
     };
@@ -89,7 +108,7 @@ describe('Reserve mint is sealed-state pure', () => {
 
     assert.equal(interestNanos(0, 425), 0);
     const idleTaxed = {
-      ...withdrawTx({ from: dest, to: vault, nanos: staked + interestNanos(staked, 425), id: 'w-idle' }),
+      ...compactWithdraw({ from: dest, to: vault, nanos: staked + interestNanos(staked, 425), id: 'w-idle' }),
       stakedNanos: 0,
       principalNanos: staked,
     };
@@ -101,7 +120,7 @@ describe('Reserve mint is sealed-state pure', () => {
     assert.equal(idleDenied.reason, 'unsigned');
 
     const as425 = {
-      ...withdrawTx({ from: dest, to: vault, nanos: staked + interestNanos(staked, 425), id: 'w-425' }),
+      ...compactWithdraw({ from: dest, to: vault, nanos: staked + interestNanos(staked, 425), id: 'w-425' }),
       stakedNanos: staked,
       principalNanos: staked,
     };
