@@ -14,7 +14,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, lockTx, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, lockTx, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1458,6 +1458,17 @@ function postedFs1(body) {
   }
 }
 
+/** A 64-byte Ed25519 signature, hex or raw bytes. */
+function postedSig64(raw) {
+  if (raw == null || raw === '') return false;
+  try {
+    if (Buffer.isBuffer(raw) || raw instanceof Uint8Array) return raw.length === 64;
+    return /^[0-9a-f]{128}$/i.test(String(raw).replace(/^0x/i, ''));
+  } catch {
+    return false;
+  }
+}
+
 const SHE_SCALE = 100_000_000_000n;
 const MAX_SAFE_NANOS = 9007199254740991n;
 
@@ -1734,6 +1745,15 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && Array.isArray(body.vin) && body.vin.length > 0
       && (body.retireProof || (Array.isArray(body.retireProofs) && body.retireProofs.length))
       && (body.principalProof || (Array.isArray(body.principalProofs) && body.principalProofs.length));
+    // An FS-1 withdraw carries no identity spendPub or spend sig (consensus
+    // refuses one as vote_leak). Its signature is the portal owner's rewardSig
+    // over ownerPub, and the node checks it with the SAL when it queues the tx.
+    const fs1Withdraw = fundedWithdraw
+      && postedFs1(body)
+      && (body.spendPub == null || body.spendPub === '')
+      && !body.sig && !body.signature
+      && postedSig64(body.rewardSig)
+      && /^[0-9a-f]{64}$/.test(String(body.ownerPub || '').replace(/^0x/i, '').toLowerCase());
     // A proved withdraw with a one-time dest20 has no address on the wire.
     const hiddenWithdraw = fundedWithdraw && !isDestAddress(to) && !!postedPayoutDest20(body.dest20);
     if ((!sealedSendEarly && !fundedWithdraw && !hiddenLock && !isDestAddress(from)) || (!isDestAddress(to) && !hiddenWithdraw && !hiddenLock)) {
@@ -1765,7 +1785,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && (body.sig || body.signature)
       && body.spendPub;
     // A posted body with no signature is unsigned, including when the book is short.
-    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && !hiddenLock && (kindIn === 'send' || isLock || isVote || isWithdraw)) {
+    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && !hiddenLock && !fs1Withdraw && (kindIn === 'send' || isLock || isVote || isWithdraw)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
     if (!isVote && !isWithdraw && !sealedSend && !hiddenLock && chainNanos < nanos) {
@@ -1883,6 +1903,9 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (isWithdraw && !draft) {
       return { status: 400, json: { ok: false, reason: 'withdraw_funding' } };
     }
+    // Same leak rule the node applies. Do not relay a withdraw it will refuse.
+    const wdLeak = isWithdraw ? withdrawLeakRejected(draft) : null;
+    if (wdLeak) return { status: 400, json: { ok: false, reason: wdLeak.reason } };
     if (taxed && postedFee == null) bindWeightFee(draft);
     if (taxed) {
       const need = levyNeed(draft);
