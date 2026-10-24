@@ -39,7 +39,8 @@ jobs:
       - name: Build the native modules (shearhash, shearadmit)
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake python3
+          # mingw-w64: test_node_pack builds the Windows zip for real.
+          sudo apt-get install -y build-essential cmake python3 mingw-w64
           cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
           cmake --build crypto/randomx/build -j"$(nproc)"
           make -C crypto/native -j"$(nproc)"
@@ -56,4 +57,16 @@ jobs:
           cat shard.txt
           test -s shard.txt
           # No --test-timeout: each file keeps its own cap.
-          node --test --test-concurrency=1 $(cat shard.txt)
+          set +e
+          node --test --test-concurrency=1 --test-reporter=tap $(cat shard.txt) | tee shard.tap
+          rc=${PIPESTATUS[0]}
+          set -e
+          # A skipped or todo test is not a pass. The suite runs every test.
+          skipped=$(grep -E '^# skipped ' shard.tap | tail -1 | awk '{print $3}')
+          todo=$(grep -E '^# todo ' shard.tap | tail -1 | awk '{print $3}')
+          if [ "${skipped:-x}" != 0 ] || [ "${todo:-x}" != 0 ]; then
+            echo "::error::shard has skipped=${skipped:-?} todo=${todo:-?}; every test must run"
+            grep -E '# (SKIP|TODO)' shard.tap || true
+            exit 1
+          fi
+          exit "$rc"
