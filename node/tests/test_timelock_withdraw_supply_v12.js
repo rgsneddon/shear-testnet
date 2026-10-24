@@ -42,6 +42,7 @@ import {
   lockWitnessOf,
   portalEpochInterest,
   portalIdFromDest,
+  portalIdFromDest20,
   previewWithdraw,
   provePrincipalOpen,
   rewardCommitment,
@@ -574,11 +575,15 @@ describe('time-locked withdraw supply', () => {
     );
     assert.equal(still.totalLockedNanos, 0);
     const owed = rewardCommitment(js, DRAW).root;
-    const draw = withdrawTx({ from: dest, to: dest, nanos: 0, id: 'evm-withdraw' });
+    // Reserve.sol keys the lock by its 20-byte dest20: id = H(tag, dest20).
+    // A withdraw that names the address is a different portal with no owner
+    // (owner_missing), so it carries that id and reaches the matured-leaf rule.
+    const evmPortalId = portalIdFromDest20(hash20FromAddress(dest));
+    const draw = withdrawTx({ from: dest, to: dest, nanos: 0, id: 'evm-withdraw', portalId: evmPortalId });
     // Signed by the real owner. The 3-arg call has no retire blob, so a
     // matured hidden leaf is still refused as unsigned (Reserve.sol _withdraw).
     signWithdrawReward(draw, who.privateKey, {
-      portalId: portalIdFromDest(dest),
+      portalId: evmPortalId,
       nanos: 0,
       dest: Buffer.from(hash20FromAddress(dest)).toString('hex'),
       state: js,
@@ -596,7 +601,7 @@ describe('time-locked withdraw supply', () => {
     assert.equal(released.totalLockedNanos, 0);
     const again = await executeBlockEvm(session, [
       { coinbase: true, vout: [], rewardRoot: owed },
-      withdrawTx({ from: dest, to: dest, nanos: 0, id: 'evm-again' }),
+      withdrawTx({ from: dest, to: dest, nanos: 0, id: 'evm-again', portalId: evmPortalId }),
     ], DRAW, T0, owed);
     assert.equal(again.ok, false);
     assert.equal(again.reason, 'unsigned');
