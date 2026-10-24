@@ -60,6 +60,7 @@ jobs:
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=gcc
           bash scripts/randomx_build.sh -G "MinGW Makefiles"
           make -C crypto/native
+          python3 scripts/isa_scan.py crypto/randomx/build/librandomx.a crypto/native/shearhash.node crypto/native/shearadmit.node
           test -f crypto/native/shearadmit.node
           test -f crypto/native/shearhash.node
           python3 node/pack/zip_node.py windows
@@ -101,6 +102,7 @@ jobs:
           npm ci --ignore-scripts
           bash scripts/randomx_build.sh
           make -C crypto/native
+          python3 scripts/isa_scan.py crypto/randomx/build/librandomx.a crypto/native/shearhash.node crypto/native/shearadmit.node
           python3 node/pack/zip_node.py linux
           test -f dist/shear-node-v17-linux.zip
           test ! -f dist/shear-node-v17-fedora.zip
@@ -242,6 +244,7 @@ jobs:
           npm ci --ignore-scripts
           bash scripts/randomx_build.sh
           make -C crypto/native -j"$(nproc)"
+          python3 scripts/isa_scan.py crypto/randomx/build/librandomx.a crypto/native/shearhash.node crypto/native/shearadmit.node
           test -f crypto/native/shearhash.node
           test -f crypto/native/shearadmit.node
           file crypto/native/shearhash.node

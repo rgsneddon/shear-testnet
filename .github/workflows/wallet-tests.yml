@@ -32,6 +32,7 @@ jobs:
           sudo apt-get install -y build-essential cmake pkg-config libsodium-dev
           bash crypto/native/build-linux-admit-so.sh
           bash wallet/native/build-shear-v3.sh
+          python3 scripts/isa_scan.py wallet/native/libshear_v3.so crypto/randomx/build/librandomx.a crypto/native/admit/target/release/libshear_admit.so
       - name: Spendable, t18, and reserve-hold tests
         working-directory: wallet
         run: |

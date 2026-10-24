@@ -89,6 +89,11 @@ bash "${SRC}/crypto/native/build-linux-admit-so.sh" --locked
 make -C "${SRC}/crypto/native" shearhash.node shearadmit.node
 test -f "${SRC}/crypto/native/shearhash.node"
 test -f "${SRC}/crypto/native/shearadmit.node"
+# No AVX2+ in baseline code of anything this image packs (scripts/isa_scan.py).
+python3 "${SRC}/scripts/isa_scan.py" "${RX}/build/librandomx.a" \
+  "${SRC}"/sheark-miner/src/*.o "${SRC}/sheark-miner/ShearK-Miner" \
+  "${SRC}/crypto/native/shearhash.node" "${SRC}/crypto/native/shearadmit.node" \
+  "${SRC}/crypto/native/admit/target/release/libshear_admit.so"
 node -e 'const r=require("module").createRequire("/src/package.json"); const h=r("/src/crypto/native/shearhash.node"); const a=r("/src/crypto/native/shearadmit.node"); if (typeof h.hash!=="function"||typeof a.noteH!=="function") process.exit(1); console.log("built", h.backend());'
 
 log "wallet CLI"

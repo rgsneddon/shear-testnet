@@ -47,6 +47,11 @@ jobs:
           flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $define
           New-Item -ItemType Directory -Force -Path dist-cli | Out-Null
           cmd /c "dart compile exe bin/shear.dart -o dist-cli/shear.exe & exit /b 0"
+      - name: No AVX2+ in baseline code of the wallet native libraries
+        run: |
+          $env:OBJDUMP = @('C:\msys64\mingw64\bin\objdump.exe', 'C:\tools\msys64\mingw64\bin\objdump.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+          python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Zip GUI
         run: python wallet/pack/zip_windows.py
       - name: Refuse a Windows zip without shear_v3.dll
@@ -84,6 +89,7 @@ jobs:
           flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
           mkdir -p dist-cli
           dart compile exe bin/shear.dart -o dist-cli/shear || true
+          python3 ../scripts/isa_scan.py ../wallet/native/libshear_v3.so ../crypto/randomx/build/librandomx.a ../crypto/native/admit/target/release/libshear_admit.so
       - name: Continuum release signing
         working-directory: wallet/android
         env:

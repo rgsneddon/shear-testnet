@@ -118,6 +118,7 @@ jobs:
           npm ci --ignore-scripts
           bash scripts/randomx_build.sh
           make -C crypto/native -j"$(nproc)"
+          python3 scripts/isa_scan.py crypto/randomx/build/librandomx.a crypto/native/shearhash.node crypto/native/shearadmit.node
           test -f crypto/native/shearhash.node
           test -f crypto/native/shearadmit.node
           file crypto/native/shearhash.node
