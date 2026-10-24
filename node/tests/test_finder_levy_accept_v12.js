@@ -5,14 +5,15 @@
  * body are not this path. The fee is the weight levy of the sealed proof.
  * The spread is which of the prepared dests found the block.
  */
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
-import { createStore } from '../src/store.js';
+import { createRegtestStore } from './regtest_store.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import {
   buildTemplate,
   verifyBlock,
@@ -24,7 +25,6 @@ import {
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
 import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import {
   FEE_SPLIT_FINDER_BPS,
   LEVY_CAP_NANOS,
@@ -113,6 +113,14 @@ function byteSort(rows) {
   return rows.slice().sort((a, b) => dest20(a.dest).compare(dest20(b.dest)));
 }
 
+// Regtest work (bits 4, about 16 hashes). Every block carries a real nonce
+// and is stored under its own ShearHash, with no trusted hash.
+async function sealHeader(header, bits) {
+  const found = await mineHeaderParallel(header, bits, 8_192, 1);
+  assert.ok(found && found.block, 'regtest pow');
+  return found.header;
+}
+
 async function grow(store, dest, n) {
   let opening = null;
   for (let i = 0; i < n; i += 1) {
@@ -127,7 +135,7 @@ async function grow(store, dest, n) {
       };
     }
     const got = await Promise.resolve(store.append({
-      header: tpl.header,
+      header: await sealHeader(tpl.header, tpl.bits),
       height: tpl.height,
       txs: tpl.txs,
       samples: tpl.samples,
@@ -138,7 +146,7 @@ async function grow(store, dest, n) {
       rootA: tpl.rootA,
       rootB: tpl.rootB,
       weight: tpl.weight,
-    }, { trustedPowHash: Buffer.alloc(32), skipSharePow: true }));
+    }));
     assert.equal(got.ok, true, `height ${i + 1} ${got.reason || ''}`);
   }
   return opening;
@@ -177,6 +185,8 @@ function blockOf(tpl) {
 }
 
 describe('accepted finder levy', () => {
+  after(() => closeMineWorkers());
+
   it('the miner who found the block is paid, and the reserve half credits the fee bank', { timeout: 7_200_000 }, async () => {
     const who = payer();
     const payee = payer();
@@ -187,7 +197,7 @@ describe('accepted finder levy', () => {
     const templateMiner = sorted[0].dest;
     const finders = [sorted[0], sorted[3], sorted[6]];
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-finder-levy-accept-'));
-    const store = createStore(dir);
+    const store = createRegtestStore(dir, { bits: 4 });
     resetFlowProofVerifies();
     try { fs.unlinkSync(PROGRESS); } catch { /* first run */ }
     try {
@@ -291,6 +301,7 @@ describe('accepted finder levy', () => {
       assert.equal(split.reserve, 0);
       assert.equal(split.finder + split.reserve, tx.fee);
       const parked = admitMempool(emptyMempool(), tx, {
+        magic: store.magic,
         height,
         noteAtAnchor: (got) => store.anchorNote(got),
         blocks: store.blocks,
@@ -311,12 +322,10 @@ describe('accepted finder levy', () => {
       } catch { /* missing genesis clock stays 0 */ }
       const parentSupply = typeof store.supplyState === 'function' ? store.supplyState() : null;
       const verifyOpts = {
-        trustedPowHash: Buffer.alloc(32),
-        skipSharePow: true,
         noteAtAnchor: (got) => store.anchorNote(got),
         evmHistory: store.blocks,
         genesisMs,
-        magic: MAGIC_TESTNET,
+        magic: store.magic,
         ...(parentSupply ? { parentSupply } : {}),
       };
 
@@ -364,15 +373,13 @@ describe('accepted finder levy', () => {
         assert.equal(bound.finder + bound.reserve, tx.fee, label);
       }
 
-      const aimed = aimedTemplate(finders[0].dest);
+      const built = aimedTemplate(finders[0].dest);
+      const aimed = { ...built, header: await sealHeader(built.header, built.bits) };
       const verdict = verifyBlock(blockOf(aimed), tip, verifyOpts);
       assert.equal(verdict.ok, false, verdict.reason);
       assert.equal(verdict.reason, 'send_unavailable');
       assert.equal(flowProofVerifyCount(), 0);
-      const appended = await Promise.resolve(store.append(blockOf(aimed), {
-        trustedPowHash: Buffer.alloc(32),
-        skipSharePow: true,
-      }));
+      const appended = await Promise.resolve(store.append(blockOf(aimed)));
       assert.equal(appended.ok, false, appended.reason);
       assert.equal(appended.reason, 'send_unavailable');
       assert.equal(store.tip().height, height - 1);
