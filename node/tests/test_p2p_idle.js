@@ -1263,6 +1263,51 @@ describe('p2p hello deadline and idle eviction', () => {
     }
   });
 
+  it('a peer\'s blocks reach ingest in arrival order when a later claim hashes first', async () => {
+    const first = matchingBlock(0x71);
+    const second = matchingBlock(0x72);
+    const order = [];
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest(fork) {
+        order.push(Buffer.from(fork[0].header).toString('hex'));
+        return { ok: true };
+      },
+    };
+    const p2p = createP2p({
+      store,
+      port: 0,
+      host: '127.0.0.1',
+      magic: MAGIC_TESTNET,
+      helloMs: 5000,
+      idleMs: 5000,
+    });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const send = (row) => sock.write(frame({
+        type: 'block',
+        block: { hash: row.hash, height: 1, header: row.header },
+      }));
+      // The second block's claim is hashed once and cached, so the next time
+      // it resolves at once while the first block's claim is still hashing.
+      send(second);
+      for (let i = 0; i < 200 && order.length < 1; i += 1) await delay(25);
+      assert.equal(order.length, 1, 'warm-up body ingested');
+      order.length = 0;
+      send(first);
+      send(second);
+      for (let i = 0; i < 200 && order.length < 2; i += 1) await delay(25);
+      assert.deepEqual(order, [first.header, second.header], 'arrival order');
+    } finally {
+      p2p.close();
+    }
+  });
+
   it('a full getblock window of asked bodies is hashed, and an over-cap body goes back to want', async () => {
     const window = getblockBatch();
     const rows = [];

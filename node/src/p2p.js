@@ -2664,8 +2664,14 @@ export function createP2p({
     return job.then(finish, (err) => { throw err; }).finally(release);
   }
 
+  // Claims hash in parallel on two lanes, so a later block's claim can finish
+  // first. Each peer's blocks still reach ingest in the order they arrived:
+  // a child must not be verified before the parent that came just ahead of it.
   function checkBlockClaims(sock, fork, next) {
-    Promise.all(fork.map((block) => claimVerdict(sock, block))).then((rows) => {
+    const verdicts = Promise.all(fork.map((block) => claimVerdict(sock, block)));
+    const rec = peers.get(sock);
+    const prior = rec?.claimOrder || Promise.resolve();
+    const turn = prior.then(() => verdicts).then((rows) => {
       if (rows.some((row) => !row.ok)) {
         scoreHashClaim(sock);
         return;
@@ -2675,6 +2681,10 @@ export function createP2p({
       const fault = classifyByPhase(err, 'verify');
       deliverProcessFault('p2p', fault);
     });
+    // The order chain must not stop on a throw, and a throw in next() still
+    // surfaces as an unhandled rejection to the process guard, as before.
+    if (rec) rec.claimOrder = turn.then(() => {}, () => {});
+    turn.then(null, (err) => Promise.reject(err));
   }
 
   function ingestDecodedFork(sock, fork, last, lastHash, recNow, provenHeaderHash = '') {
