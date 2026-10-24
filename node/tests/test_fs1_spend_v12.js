@@ -10,12 +10,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createStore } from '../src/store.js';
+import { createRegtestStore } from './regtest_store.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
+import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
 import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
-import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { levyNeed, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { admitBaseScalar, admitScalarFromSeed, attachAdmitPub, blindCommit } from '../../crypto/admit.js';
@@ -72,11 +73,26 @@ function lastStamp(store) {
   return tip ? Number(decodeHeader(Buffer.from(tip.header)).timestamp) : T0;
 }
 
+// Regtest work (bits 4, about 16 hashes). Every block is stored under its
+// own ShearHash and appended with no trusted hash. The regtest bits exist
+// only once createRegtestStore has sealed them, so they are read per block.
+const MAX_TRIES = 8_192;
+const regtestBits = () => regtestBitsOverride(MAGIC_REGTEST);
+
+async function sealHeader(header, bits) {
+  const found = await mineHeaderParallel(header, bits, MAX_TRIES, 1);
+  assert.ok(found && found.block, 'regtest pow');
+  return found.header;
+}
+
 async function mine(store, dest) {
   const now = Math.max(T0, lastStamp(store) + 90_000);
-  const { tpl } = store.template({ miner: dest, shareBits: 4, now });
+  const bits = regtestBits();
+  const { tpl } = store.template({ miner: dest, bits, shareBits: 4, now });
+  assert.equal(tpl.bits, bits, 'template seals the regtest bits');
+  const header = await sealHeader(tpl.header, tpl.bits);
   const got = await Promise.resolve(store.append({
-    header: tpl.header,
+    header,
     height: tpl.height,
     txs: tpl.txs,
     samples: tpl.samples,
@@ -87,14 +103,14 @@ async function mine(store, dest) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
-  }, { trustedPowHash: Buffer.alloc(32), skipSharePow: true }));
+  }));
   assert.equal(got.ok, true, `append ${got.reason || ''}`);
   return tpl;
 }
 
-function blockVerdict(store, dest, tx) {
+async function blockVerdict(store, dest, tx) {
   const tip = store.tip();
-  const preview = store.template({ miner: dest, shareBits: 4, now: lastStamp(store) + 90_000 });
+  const preview = store.template({ miner: dest, bits: regtestBits(), shareBits: 4, now: lastStamp(store) + 90_000 });
   const stamp = Number(decodeHeader(Buffer.from(preview.tpl.header)).timestamp);
   const built = buildTemplate({
     prev: tip ? tip.hash : GENESIS_PREV,
@@ -114,8 +130,9 @@ function blockVerdict(store, dest, tx) {
     if (g?.header) genesisMs = Number(decodeHeader(Buffer.from(g.header)).timestamp) || 0;
   } catch { /* a missing genesis clock stays 0 */ }
   const parentSupply = typeof store.supplyState === 'function' ? store.supplyState() : null;
+  const header = await sealHeader(built.header, built.bits);
   return verifyBlock({
-    header: built.header,
+    header,
     height: built.height,
     txs: built.txs,
     samples: built.samples,
@@ -127,12 +144,10 @@ function blockVerdict(store, dest, tx) {
     rootB: built.rootB,
     weight: built.weight,
   }, tip, {
-    trustedPowHash: Buffer.alloc(32),
-    skipSharePow: true,
     noteAtAnchor: (anchor) => store.anchorNote(anchor),
     evmHistory: store.blocks,
     genesisMs,
-    magic: MAGIC_TESTNET,
+    magic: store.magic,
     ...(parentSupply ? { parentSupply } : {}),
   });
 }
@@ -197,7 +212,7 @@ function buildSend({ id, kind = 'send', coins, anchor, live, outsOf }) {
     indices: coins.map((c) => c.index),
     xs: coins.map((c) => c.x),
     tx: draft,
-    magic: MAGIC_TESTNET,
+    magic: MAGIC_REGTEST,
   });
   const proveMs = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.ok(proven, `${id} prove`);
@@ -221,7 +236,7 @@ function buildSend({ id, kind = 'send', coins, anchor, live, outsOf }) {
   });
   const need = levyNeed(tx);
   assert.ok(tx.fee >= need, `${id} levy ${need} fee ${tx.fee}`);
-  assert.ok(txBodyDigestFs1(tx, MAGIC_TESTNET).equals(proven.digest), `${id} compact digest`);
+  assert.ok(txBodyDigestFs1(tx, MAGIC_REGTEST).equals(proven.digest), `${id} compact digest`);
   return { tx, outs, proven, proveMs, fee: tx.fee, total };
 }
 
@@ -239,7 +254,9 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
   let store;
   const coins = [];
   const spent = new Set();
+  // The book's magic, as queueTx and block verify use it.
   const opts = () => ({
+    magic: store.magic,
     height: store.tip().height + 1,
     noteAtAnchor: (a) => store.anchorNote(a),
     blocks: store.blocks,
@@ -294,7 +311,8 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     resetFs1Tree();
     resetFlowProofVerifies();
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fs1-spend-'));
-    store = createStore(dir);
+    store = createRegtestStore(dir, { bits: 4 });
+    assert.equal(store.magic, MAGIC_REGTEST);
     const t0 = Date.now();
     for (let i = 0; i < 34; i += 1) {
       const tpl = await mine(store, who.dest);
@@ -311,6 +329,7 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
   });
 
   after(() => {
+    closeMineWorkers();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
   });
 
