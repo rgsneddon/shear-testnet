@@ -480,10 +480,11 @@ describe('v12 proven burial', () => {
     assert.equal(sent.pool.tip(), null);
 
     // An honest-looking run: every header links to the one before by its real
-    // ShearHash and claims its own ShearHash, so nothing is refused at offer or
-    // as hash_claim. None of these headers is mined, so none meets its target.
-    // The store has to hash the run to judge the burial: it refuses it, clears
-    // the run, and drops the peer that sent it. IPC never trusts a hash.
+    // ShearHash and claims its own ShearHash. None of these headers is mined,
+    // so each real hash misses its target. The store checks the claimed hash
+    // against the target at offer (rootHeaderReason, headerLinkReason), so it
+    // refuses the run there and drops the peer. The pruned block then has no
+    // proven run to stand on. IPC never trusts a hash.
     const headers = [];
     let prev = null;
     for (const row of runFrame.headers) {
@@ -495,13 +496,20 @@ describe('v12 proven burial', () => {
     }
     const real = headers[0].hash;
     assert.equal(blockFrame.block.header, headers[0].header, 'the run starts at the pruned block');
-    const block = { ...blockFrame, powHash: real, block: { ...blockFrame.block, hash: real } };
-    const judged = await sendRun('ipc-judged', headers, block);
-    assert.equal(judged.got.ok, false);
-    assert.equal(judged.got.reason, 'samples_pruned');
-    assert.equal(judged.pool.tip(), null);
-    assert.equal(judged.pool.burialView().offered, 0);
-    assert.equal(judged.pool.offerPeerDropped('ipc'), true);
+    const judgedPool = createStore(tmp('ipc-judged'), { fastSync: true });
+    const offered = judgedPool.offerHeaders(headers, { peer: 'ipc' });
+    assert.equal(offered.accepted, 0);
+    assert.equal(offered.dropped, true);
+    assert.equal(judgedPool.burialView().offered, 0);
+    assert.equal(judgedPool.offerPeerDropped('ipc'), true);
+    const judged = await applyVerifiedIpcBlock(judgedPool, {
+      ...blockFrame,
+      powHash: real,
+      block: { ...blockFrame.block, hash: real },
+    });
+    assert.equal(judged.ok, false);
+    assert.equal(judged.reason, 'samples_pruned');
+    assert.equal(judgedPool.tip(), null);
 
     const src = fs.readFileSync(new URL('../src/p2p_ipc.js', import.meta.url), 'utf8');
     assert.doesNotMatch(src, /shouldPruneSamples\(structuralH/);
