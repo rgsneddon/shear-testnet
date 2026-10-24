@@ -164,6 +164,9 @@ describe('spend paths use the note index', { concurrency: 1 }, () => {
       store.mempool.push(paintedSend(dest, other, have + 5, who.privateKey, 'held'));
       store.mempool.push(hiddenPaintedSend(dest, other, otherId.admitBase, 1, who.privateKey, 'covered'));
       skips.length = 0;
+      // The lookup above is one spend check. The template must add none: no
+      // painted send is held against owed nanos any more (e2bd74cf).
+      const checksBefore = store.walletWalkStats().spendChecks;
       const built = store.template({ miner: dest });
       const packed = new Set((built.tpl.txs || []).map((tx) => tx.id).filter(Boolean));
       assert.equal(packed.has('held'), false);
@@ -175,7 +178,7 @@ describe('spend paths use the note index', { concurrency: 1 }, () => {
       assert.ok(skips.some((line) => line.includes('admit_membership') && line.includes('covered')));
       assert.deepEqual(store.mempool.map((tx) => tx.id), ['covered']);
       assert.equal(noteCommitBlocksWalked(), 0);
-      assert.equal(store.walletWalkStats().spendChecks, 0);
+      assert.equal(store.walletWalkStats().spendChecks, checksBefore);
       assert.equal(store.spendableNanos(dest), have);
 
       store.mempool.length = 0;
