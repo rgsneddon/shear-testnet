@@ -1,0 +1,122 @@
+#!/usr/bin/env node
+/**
+ * Full-suite CI shards. Every test file that `npm test` names is in exactly
+ * one shard, unless tests/ci_pending.txt lists it with the PR that fixes it.
+ * Weights come from tests/ci_timings.json (seconds per file, measured on the
+ * build servers). An unmeasured file counts as 60 s.
+ *
+ *   node tests/ci_shard.js --check          pending list is well formed
+ *   node tests/ci_shard.js --count N        print a JSON matrix of 0..N-1
+ *   node tests/ci_shard.js --shard I --of N print shard I's files, one per line
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// The same globs as package.json "test". A new test file joins a shard
+// without any workflow edit.
+const DIRS = [
+  ['crypto', /\.test\.js$/],
+  ['node/tests', /^test_.*\.js$/],
+  ['pool/tests', /^test_.*\.js$/],
+  ['miner/tests', /^test_.*\.js$/],
+  ['sheark-miner/tests', /^test_.*\.js$/],
+  ['tests', /^test_.*\.js$/],
+];
+const EXTRA = ['tests/forbid_foreign_names.js', 'tests/forbid_privacy_regressions.js', 'tests/privacy.walk.js'];
+const PENDING_PRS = new Set(['PR2', 'PR3']);
+
+export function allTestFiles() {
+  const out = [];
+  for (const [dir, re] of DIRS) {
+    const abs = path.join(root, dir);
+    if (!fs.existsSync(abs)) continue;
+    for (const name of fs.readdirSync(abs).sort()) {
+      if (re.test(name)) out.push(`${dir}/${name}`);
+    }
+  }
+  for (const f of EXTRA) if (fs.existsSync(path.join(root, f))) out.push(f);
+  return out;
+}
+
+/** Rows of `path PRn reason`. Blank lines and # comments are ignored. */
+export function readPending() {
+  const file = path.join(root, 'tests/ci_pending.txt');
+  if (!fs.existsSync(file)) return [];
+  const rows = [];
+  for (const [i, raw] of fs.readFileSync(file, 'utf8').split(/\r?\n/).entries()) {
+    const line = raw.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const [f, pr, ...why] = line.split(/\s+/);
+    rows.push({ line: i + 1, file: f, pr, reason: why.join(' ') });
+  }
+  return rows;
+}
+
+export function checkPending(files = allTestFiles(), rows = readPending()) {
+  const errors = [];
+  const known = new Set(files);
+  const seen = new Set();
+  for (const r of rows) {
+    if (!known.has(r.file)) errors.push(`line ${r.line}: ${r.file} is not a test file`);
+    if (!PENDING_PRS.has(r.pr)) errors.push(`line ${r.line}: ${r.file} needs PR2 or PR3, got ${r.pr || 'nothing'}`);
+    if (!r.reason) errors.push(`line ${r.line}: ${r.file} needs a reason`);
+    if (seen.has(r.file)) errors.push(`line ${r.line}: ${r.file} is listed twice`);
+    seen.add(r.file);
+  }
+  return errors;
+}
+
+function timings() {
+  const file = path.join(root, 'tests/ci_timings.json');
+  if (!fs.existsSync(file)) return {};
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+/** Longest first into the lightest shard. Deterministic for a given input. */
+export function planShards(n, files = allTestFiles(), rows = readPending(), weight = timings()) {
+  const pending = new Set(rows.map((r) => r.file));
+  const run = files.filter((f) => !pending.has(f));
+  const cost = (f) => Number(weight[f]) > 0 ? Number(weight[f]) : 60;
+  run.sort((a, b) => cost(b) - cost(a) || a.localeCompare(b));
+  const shards = Array.from({ length: n }, () => ({ files: [], load: 0 }));
+  for (const f of run) {
+    let best = shards[0];
+    for (const s of shards) if (s.load < best.load) best = s;
+    best.files.push(f);
+    best.load += cost(f);
+  }
+  return shards;
+}
+
+function arg(name) {
+  const i = process.argv.indexOf(name);
+  return i >= 0 ? process.argv[i + 1] : null;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const errors = checkPending();
+  if (errors.length) {
+    for (const e of errors) console.error(`ci_pending.txt ${e}`);
+    process.exit(1);
+  }
+  if (process.argv.includes('--check')) {
+    const rows = readPending();
+    console.log(`${allTestFiles().length} test files, ${rows.length} pending`);
+    for (const r of rows) console.log(`pending ${r.pr} ${r.file}: ${r.reason}`);
+  } else if (arg('--count')) {
+    const n = Number(arg('--count'));
+    console.log(JSON.stringify(Array.from({ length: n }, (_, i) => i)));
+  } else if (arg('--shard') != null) {
+    const n = Number(arg('--of'));
+    const i = Number(arg('--shard'));
+    const shard = planShards(n)[i];
+    if (!shard) process.exit(2);
+    for (const f of shard.files) console.log(f);
+  } else {
+    console.error('usage: --check | --count N | --shard I --of N');
+    process.exit(2);
+  }
+}
