@@ -41,6 +41,24 @@ function stripAnsi(s) {
   return String(s || '').replace(/\x1b\[[0-9;]*m/g, '');
 }
 
+// A spawn that fails (ENOENT) emits 'error' and need not emit 'close'.
+// Waiting on 'close' alone, with the stub pool still listening, hung the file
+// until the 45-minute runner cap. `done` is armed at spawn and rejects on
+// 'error'. The stub pool is unref'd so a failed case cannot pin the loop.
+function spawnMiner(args) {
+  const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  child.done = new Promise((resolve, reject) => {
+    child.once('close', resolve);
+    child.once('error', reject);
+  });
+  child.done.catch(() => {});
+  return child;
+}
+
+function needBin() {
+  assert.equal(fs.existsSync(bin), true, `missing ${bin}: build it with make -C sheark-miner`);
+}
+
 function jsonFromProc(s) {
   const m = stripAnsi(s).match(/\{[\s\S]*\}/);
   assert.ok(m, `no json in ${s}`);
@@ -254,6 +272,7 @@ describe('ShearK-Miner', () => {
   });
 
   it('login status=OK does not bump accepted; status line prints hashes and job bits', async () => {
+    needBin();
     const header = Buffer.alloc(128);
     header[0] = 1;
     const job = {
@@ -276,14 +295,15 @@ describe('ShearK-Miner', () => {
     });
     server.on('error', () => {});
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    server.unref();
     const port = server.address().port;
-    const child = spawn(bin, [
+    const child = spawnMiner([
       '--backend', 'interpreter',
       '--pool', `127.0.0.1:${port}`,
       '--notls',
       '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
       '--threads', '1',
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ]);
     let out = '';
     child.stdout.on('data', (d) => { out += d.toString(); });
     child.stderr.on('data', (d) => { out += d.toString(); });
@@ -296,7 +316,7 @@ describe('ShearK-Miner', () => {
       await new Promise((r) => setTimeout(r, 150));
     }
     child.kill('SIGTERM');
-    await new Promise((r) => child.once('close', r));
+    await child.done;
     server.close();
     assert.match(loginLine, /"name":"ShearK-Miner"/);
     assert.match(loginLine, /"version":"2\.9"/);
@@ -316,6 +336,7 @@ describe('ShearK-Miner', () => {
   });
 
   it('she1 login with owned ssa1 --dest still gets a 256-hex job', async () => {
+    needBin();
     const header = Buffer.alloc(128);
     header[0] = 1;
     const job = {
@@ -338,16 +359,17 @@ describe('ShearK-Miner', () => {
     });
     server.on('error', () => {});
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    server.unref();
     const port = server.address().port;
     const dest = 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z';
-    const child = spawn(bin, [
+    const child = spawnMiner([
       '--backend', 'interpreter',
       '--pool', `127.0.0.1:${port}`,
       '--notls',
       '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
       '--dest', dest,
       '--threads', '1',
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ]);
     let out = '';
     child.stdout.on('data', (d) => { out += d.toString(); });
     child.stderr.on('data', (d) => { out += d.toString(); });
@@ -356,7 +378,7 @@ describe('ShearK-Miner', () => {
       await new Promise((r) => setTimeout(r, 150));
     }
     child.kill('SIGTERM');
-    await new Promise((r) => child.once('close', r));
+    await child.done;
     server.close();
     assert.match(loginLine, /"version":"2\.9"/);
     assert.match(loginLine, new RegExp(`"dest":"${dest}"`));
@@ -365,6 +387,7 @@ describe('ShearK-Miner', () => {
   });
 
   it('two hash threads complete more hashes than one against the same job', async () => {
+    needBin();
     const header = Buffer.alloc(128);
     header[0] = 1;
     const job = {
@@ -385,19 +408,20 @@ describe('ShearK-Miner', () => {
       });
       server.on('error', () => {});
       await new Promise((r) => server.listen(0, '127.0.0.1', r));
+      server.unref();
       const port = server.address().port;
-      const child = spawn(bin, [
+      const child = spawnMiner([
         '--backend', 'interpreter',
         '--pool', `127.0.0.1:${port}`,
         '--notls',
         '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
         '--threads', String(n),
-      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      ]);
       let out = '';
       child.stdout.on('data', (d) => { out += d.toString(); });
       await new Promise((r) => setTimeout(r, 4500));
       child.kill('SIGTERM');
-      await new Promise((r) => child.once('close', r));
+      await child.done;
       server.close();
       const lines = out.split('\n').filter((l) => l.includes('hashes='));
       assert.ok(lines.length >= 1, out);
@@ -431,6 +455,7 @@ describe('ShearK-Miner', () => {
   });
 
   it('requireTls refuses a cleartext pool url in either flag order', () => {
+    needBin();
     const user = 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul';
     const first = spawnSync(bin, [
       '--require-tls', '--pool', 'stratum+tcp://127.0.0.1:1111',
