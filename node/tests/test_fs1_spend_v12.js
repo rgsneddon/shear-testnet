@@ -37,6 +37,7 @@ import {
   fs1ProveSpend,
   fs1RootAt,
   resetFs1Tree,
+  resetFs1VerifyCache,
   txBodyDigestFs1,
 } from '../../crypto/fs1_spend.js';
 import { fs1NativeLoaded, fs1TreeAppend, fs1TreeNew, fs1Verify } from '../../crypto/native_admit.js';
@@ -288,7 +289,9 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     const parked = admitMempool(emptyMempool(), tx, o);
     assert.equal(parked.ok, true, `${label} mempool ${parked.reason}`);
     assert.ok(flowProofVerifyCount() > beforeMem, `${label} mempool skipped the FS-1 verify`);
-    resetFlowProofVerifies();
+    // Mempool admit cached this proof's verify. Drop the cache, not just the
+    // tree, so block verify has to run the native FS-1 check itself.
+    resetFs1VerifyCache();
     resetFs1Tree();
     const verdict = await Promise.resolve(blockVerdict(store, who.dest, tx));
     assert.equal(verdict.ok, true, `${label} verify ${verdict.reason}`);
