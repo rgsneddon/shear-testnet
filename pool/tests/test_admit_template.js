@@ -115,7 +115,9 @@ describe('admitted txs enter the live miner template', () => {
       bad.maxLevy = bad.fee;
       const refused = pool.store.queueTx(bad);
       assert.equal(refused.ok, false);
-      assert.equal(refused.reason, 'admit_version');
+      // A plaintext lock names from and to, which the leak gate refuses first
+      // (a5760821, 325b50f5), before the admit-version check.
+      assert.equal(refused.reason, 'vote_leak');
       assert.equal(pool.store.mempool.some((m) => m.id === 'lock-rejected'), false);
 
       pool.store.mempool.push({
