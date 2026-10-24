@@ -479,12 +479,22 @@ describe('v12 proven burial', () => {
     assert.equal(sent.got.reason, 'hash_claim');
     assert.equal(sent.pool.tip(), null);
 
-    // The block and the run's first header under the block's real ShearHash.
-    // The rest of the run is stand-ins that are not ShearHash work, so the
-    // store refuses the burial, clears the run, and drops the peer that sent
-    // the bad link. IPC never trusts a hash.
-    const real = shearHash(Buffer.from(blockFrame.block.header, 'hex')).toString('hex');
-    const headers = runFrame.headers.map((row, i) => (i === 0 ? { ...row, hash: real } : row));
+    // An honest-looking run: every header links to the one before by its real
+    // ShearHash and claims its own ShearHash, so nothing is refused at offer or
+    // as hash_claim. None of these headers is mined, so none meets its target.
+    // The store has to hash the run to judge the burial: it refuses it, clears
+    // the run, and drops the peer that sent it. IPC never trusts a hash.
+    const headers = [];
+    let prev = null;
+    for (const row of runFrame.headers) {
+      const decoded = decodeHeader(Buffer.from(row.header, 'hex'));
+      const header = prev ? encodeHeader({ ...decoded, prevBlockHash: prev }) : Buffer.from(row.header, 'hex');
+      const hash = shearHash(header);
+      headers.push({ ...row, header: header.toString('hex'), hash: hash.toString('hex') });
+      prev = hash;
+    }
+    const real = headers[0].hash;
+    assert.equal(blockFrame.block.header, headers[0].header, 'the run starts at the pruned block');
     const block = { ...blockFrame, powHash: real, block: { ...blockFrame.block, hash: real } };
     const judged = await sendRun('ipc-judged', headers, block);
     assert.equal(judged.got.ok, false);
