@@ -134,4 +134,25 @@ describe('x86_64 ISA baseline', () => {
     assert.ok(rel.includes('python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll'));
     assert.match(read('scripts/packaging/build-inside.sh'), /python3 "\$\{SRC\}\/scripts\/isa_scan\.py" "\$\{RX\}\/build\/librandomx\.a"/);
   });
+
+  it('every job that builds and scans on the Linux host runs on ubuntu-24.04, not ubuntu-latest', () => {
+    // ubuntu-latest (26.04) sets APT::Architecture-Variants "amd64v3": its static
+    // libstdc++ and libgcc carry AVX2 whatever -march the build passes.
+    const hostJobs = {
+      'full-suite.yml': ['shard'], 'day-one.yml': ['node'], 'shear-fs1.yml': ['node-routes'],
+      'sheark-packs.yml': ['linux'], 'wallet-tests.yml': ['spendable'], 'wallet-release.yml': ['linux'],
+      'node-linux.yml': ['linux'], 'node-v17.yml': ['linux'],
+    };
+    for (const [f, jobs] of Object.entries(hostJobs)) {
+      const text = read(`.github/workflows/${f}`).replace(/\r\n/g, '\n');
+      for (const job of jobs) {
+        const start = text.indexOf(`\n  ${job}:\n`);
+        assert.ok(start >= 0, `${f} ${job}`);
+        const rest = text.slice(start + job.length + 5);
+        const body = rest.slice(0, rest.search(/\n  \S/) >= 0 ? rest.search(/\n  \S/) : rest.length);
+        assert.match(body, /^    runs-on: ubuntu-24\.04$/m, `${f} ${job}`);
+        assert.match(body, /isa_scan\.py/, `${f} ${job} scans`);
+      }
+    }
+  });
 });

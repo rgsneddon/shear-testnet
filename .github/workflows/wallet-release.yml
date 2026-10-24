@@ -64,7 +64,12 @@ jobs:
           if (Test-Path wallet/dist-cli/shear.exe) { gh release upload ${{ inputs.pin }} wallet/dist-cli/shear.exe --repo ${{ inputs.repo }} }
 
   linux:
-    runs-on: ubuntu-latest
+    # ubuntu-latest (the ubuntu-26.04 image) sets APT::Architecture-Variants
+    # "amd64v3", so its gcc defaults to x86-64-v3 and its static libstdc++ and
+    # libgcc are AVX2 builds that no -march flag can undo. ubuntu-24.04 builds
+    # at the x86-64 baseline; scripts/isa_scan.py fails the job if that drifts.
+    # Proven fallback: the ubuntu:26.04 container (baseline toolchain).
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
