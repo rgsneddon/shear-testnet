@@ -28,7 +28,8 @@ const DIRS = [
   ['tests', /^test_.*\.js$/],
 ];
 const EXTRA = ['tests/forbid_foreign_names.js', 'tests/forbid_privacy_regressions.js', 'tests/privacy.walk.js'];
-const PENDING_PRS = new Set(['PR2', 'PR3']);
+// PRHASH is the native ShearHash thread-safety PR that lands after PR 130.
+const PENDING_PRS = new Set(['PR2', 'PR3', 'PRHASH']);
 const TRACK_DIRS = ['crypto', 'node/tests', 'pool/tests', 'miner/tests', 'sheark-miner/tests', 'tests'];
 
 export function allTestFiles() {
@@ -72,7 +73,7 @@ export function checkPending(files = allTestFiles(), rows = readPending()) {
     } else if (!known.has(r.file)) {
       errors.push(`line ${r.line}: ${r.file} is not a test file`);
     }
-    if (!PENDING_PRS.has(r.pr)) errors.push(`line ${r.line}: ${r.file} needs PR2 or PR3, got ${r.pr || 'nothing'}`);
+    if (!PENDING_PRS.has(r.pr)) errors.push(`line ${r.line}: ${r.file} needs PR2, PR3 or PRHASH, got ${r.pr || 'nothing'}`);
     if (!r.reason) errors.push(`line ${r.line}: ${r.file} needs a reason`);
     if (seen.has(r.file)) errors.push(`line ${r.line}: ${r.file} is listed twice`);
     seen.add(r.file);
