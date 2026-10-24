@@ -57,8 +57,10 @@ function receipt({ kind, amount, portal = 1, vin }) {
     id: `${kind}-p${portal}-${amount}`,
     kind,
     programId: RESERVE_PROGRAM,
+    // payoutPortalId on a lock or withdraw is vote_leak (cb733226), refused
+    // before the public_receipt reason this suite pins. The payer stays the
+    // vin dest20, which is what the public-receipt predicate reads.
     portalId: portalIdFromDest(encodeDest(portal20)),
-    payoutPortalId: portalIdFromDest(encodeDest(payer20)),
     fee: 1,
     vin: vin || [{ dest20: Buffer.from(payer20) }],
     vout: [{
