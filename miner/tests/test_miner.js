@@ -82,6 +82,7 @@ describe('C miner', () => {
   });
 
   it('admits --user she1 and ssa1, refuses rest-frame shear1', () => {
+    assert.equal(fs.existsSync(bin), true, `missing miner binary at ${bin}: build it with make -C miner`);
     const usage = spawnSync(bin, [], { encoding: 'utf8' });
     assert.match(usage.stderr + usage.stdout, /ssa1/);
     assert.match(usage.stderr + usage.stdout, /she1/);
