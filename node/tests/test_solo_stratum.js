@@ -17,6 +17,7 @@ import {
   soloMaySeal,
 } from '../src/solo_stratum.js';
 import { createStore } from '../src/node.js';
+import { createRegtestStore } from './regtest_store.js';
 import { setNonce, headerFromHex } from '../../crypto/header.js';
 import { shearHash, meetsTarget, setHashBackend } from '../../crypto/shear_hash.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
@@ -426,7 +427,9 @@ describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, 
 
   it('header hash that meets blockBits appends', { timeout: 300_000 }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-block-'));
-    const store = createStore(dir);
+    // Regtest work (bits 4, about 16 hashes). The block hit is a real nonce
+    // whose ShearHash meets the sealed header bits; the stratum re-hashes it.
+    const store = createRegtestStore(dir, { bits: 4 });
     const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
     const bound = await stratum.listen();
     const dest = destMiner();
@@ -506,7 +509,9 @@ describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, 
 
   it('block-bits hit whose append is rejected is an error, not OK', { timeout: 180_000 }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-seal-fail-'));
-    const store = createStore(dir);
+    // Regtest work (bits 4, about 16 hashes). The block hit is a real nonce
+    // whose ShearHash meets the sealed header bits; the stratum re-hashes it.
+    const store = createRegtestStore(dir, { bits: 4 });
     const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
     const bound = await stratum.listen();
     const dest = destMiner();
