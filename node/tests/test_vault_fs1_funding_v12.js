@@ -73,6 +73,7 @@ import {
   consensusUnlockPeriod,
   emptyVault as freshEmpty,
   leafEpochsToBurn,
+  leafStubNanos,
   lockTx as vaultLockTx,
   lockUnlockOf as vaultUnlock,
   lockWitnessOf,
@@ -342,16 +343,21 @@ function notedFundingLock(who, id, stamp) {
 function payNoted(state, dest, lock, when, id) {
   const portal = portalOfDest(dest);
   const leaf = lock._leaf;
+  // Since cfe93bf5 the testnet arrival day is 24 blocks, so a lock at
+  // height 1 earns an arrival stub. The receipt is π plus that stub. The
+  // principal proof still opens π.
+  const stub = leafStubNanos(state, [leaf.note.subarray(32, 64).toString('hex')]);
+  assert.ok(stub > 0n, `${id} stub ${stub}`);
+  const due = PI_SHE_NANOS + Number(stub);
+  // A withdraw names its lock by portalId and pays dest20. from, to, and
+  // payoutPortalId are vote_leak on the wire (325b50f5).
   const tx = {
     kind: 'withdraw',
     id,
     programId: RESERVE_PROGRAM,
     portalId: portal,
-    payoutPortalId: portal,
-    from: dest,
-    to: dest,
-    nanos: PI_SHE_NANOS,
-    vout: [{ kind: 'withdraw', dest20: hash20FromAddress(dest), valueProof: { v: PI_SHE_NANOS } }],
+    nanos: due,
+    vout: [{ kind: 'withdraw', dest20: hash20FromAddress(dest), valueProof: { v: due } }],
   };
   const period = chainPeriodIndex(state, when);
   const retire = proveLeafRetire({
@@ -373,15 +379,17 @@ function payNoted(state, dest, lock, when, id) {
     state.magic,
     leaf.unlock,
   );
-  return withdraw({
+  const paid = withdraw({
     state,
     dest,
     nowMs: when,
-    principal: PI_SHE_NANOS,
+    principal: due,
     principalProof: tx.principalProof,
     retireProof: tx.retireProof,
     tx,
   });
+  if (paid.ok) assert.equal(BigInt(paid.arrival), stub, `${id} arrival`);
+  return paid;
 }
 
 function vaultWithdraw(dest, nanos) {
@@ -581,8 +589,8 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
         anchor,
         fee,
         programId: RESERVE_PROGRAM,
+        // A lock names only its own portalId. payoutPortalId is vote_leak (cb733226).
         portalId,
-        payoutPortalId,
         to: who.dest,
         ownerPub: who.id.spendPub.toString('hex'),
         vin: ph.vin,
@@ -623,7 +631,6 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       fee: draft.fee,
       programId: RESERVE_PROGRAM,
       portalId,
-      payoutPortalId,
       to: who.dest,
       ownerPub: who.id.spendPub.toString('hex'),
       vin: proven.proofs.map((p) => ({ commit: Buffer.from(p.cTilde) })),
@@ -1007,8 +1014,8 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
         anchor,
         fee,
         programId: RESERVE_PROGRAM,
+        // A withdraw names its lock by portalId only. payoutPortalId is vote_leak (325b50f5).
         portalId,
-        payoutPortalId,
         withdrawNonce: Buffer.alloc(32, 9).toString('hex'),
         vin: ph.vin,
         vout: outs,
@@ -1038,7 +1045,6 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       fee: draft.fee,
       programId: RESERVE_PROGRAM,
       portalId,
-      payoutPortalId,
       withdrawNonce: Buffer.alloc(32, 9).toString('hex'),
       vin: [{ commit: Buffer.from(proven.proofs[0].cTilde) }],
       vout: outs,
@@ -1046,8 +1052,8 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       admit_proofs: proven.proofs,
       excess,
     });
+    // The payout is dest20. `to` on a withdraw is the address, which is vote_leak.
     tx.dest20 = Buffer.from(d20);
-    tx.to = who.dest;
     tx.ownerPub = who.id.spendPub.toString('hex');
     signSpendTx(tx, who.id.privateKey);
     assert.equal(txVerifyWeight(tx), W_TX + W_FS1_BASE + W_FS1_PER_INPUT + W_OUT * 2);
