@@ -214,7 +214,7 @@ export function shareCreditMaxBits(maxUnits = MAX_HASH_UNITS_PER_BLOCK) {
   const log = Math.floor(Math.log2(cap));
   return Math.min(52, Math.max(SHARE_FLOOR_BITS, log));
 }
-/** Median of last 11 header timestamps. Future skew 2 h (Bitcoin-class).
+/** Median of last 11 header timestamps. Future skew 2 h.
  *  15 min left only ~3 s of legal header time when the tip sat near the
  *  cap; ASERT then saw a 3 s interval and hardened +2 every round. */
 export const MTP_WINDOW = 11;
