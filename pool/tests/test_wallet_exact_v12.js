@@ -9,7 +9,7 @@ import { admitBaseScalar } from '../../crypto/admit.js';
 import { NANOS_PER_SHE, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { bindWeightFee, levyNeed, levyNanos, LEVY_CAP_NANOS } from '../../crypto/levy.js';
 import { noteU64, openNoteAmount, sealHiddenNote, sealNote } from '../../crypto/note.js';
-import { buildFundedWithdraw, emptyVault, portalIdFromDest20, portalOwnerKey, signWithdrawReward, voteTx, vortexSums, withdrawTx } from '../../crypto/reserve_vault.js';
+import { buildFundedWithdraw, emptyVault, portalIdFromDest, portalIdFromDest20, portalOwnerKey, signWithdrawReward, voteTx, vortexSums, withdrawTx } from '../../crypto/reserve_vault.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { vaultDest } from '../../crypto/flow_sheet.js';
 import { handleWalletApi } from '../src/wallet_api.js';
@@ -301,8 +301,20 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     const alice = newIdentity();
     const built = fundedWithdraw(alice, 5000n, 'wd-only');
     const base = wirePost(built, 5000n);
-    // The same unsigned shape under every other kind, and under a withdraw
-    // that is not the Reserve program, carries no spend sig and is refused.
+    const post = (body) => {
+      const { posted, queueSend } = queue();
+      const got = handleWalletApi(url('/api/wallet/send'), 'POST', body, { store: store(), miners: new Map(), queueSend });
+      return { status: got.status, reason: got.json && got.json.reason, queued: posted.length };
+    };
+    const bare = (body) => {
+      const copy = { ...body };
+      delete copy.rewardSig;
+      delete copy.ownerPub;
+      return copy;
+    };
+    // The same shape under every other kind, and a withdraw that is not the
+    // Reserve program. A rewardSig and ownerPub change nothing for any of them,
+    // so the relaxed path opens for no kind but the FS-1 withdraw.
     const others = [
       { kind: 'send', programId: '' },
       { kind: 'lock', programId: RESERVE_PROGRAM },
@@ -311,20 +323,31 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
       { kind: 'withdraw', programId: '' },
     ];
     for (const shape of others) {
-      const { posted, queueSend } = queue();
-      const got = handleWalletApi(url('/api/wallet/send'), 'POST', { ...base, ...shape }, { store: store(), miners: new Map(), queueSend });
       const label = `${shape.kind}/${shape.programId || 'none'}`;
-      assert.notEqual(got.status, 200, `${label} relayed`);
-      assert.equal(posted.length, 0, `${label} queued`);
-      assert.equal(got.json.ok, false, label);
+      const signed = post({ ...base, ...shape });
+      assert.deepEqual(signed, post(bare({ ...base, ...shape })), `${label} rewardSig changed the verdict`);
+      if (shape.kind === 'lock') {
+        // A body with a portal, dest20, FS-1 blob and a sealed output is the
+        // wallet's compact lock. It is relayed unchanged for the node to judge,
+        // with or without a rewardSig; the pool is not its verifier.
+        assert.equal(signed.status, 200, label);
+        assert.equal(signed.queued, 1, label);
+        continue;
+      }
+      assert.notEqual(signed.status, 200, `${label} relayed`);
+      assert.equal(signed.queued, 0, `${label} queued`);
     }
-    // A withdraw without its FS-1 blob is not the relaxed shape either.
-    const { posted, queueSend } = queue();
+    // The withdraw itself needs its rewardSig, and its FS-1 blob.
+    assert.equal(post(base).status, 200);
+    const unsigned = post(bare(base));
+    assert.equal(unsigned.status, 403);
+    assert.equal(unsigned.reason, 'unsigned');
+    assert.equal(unsigned.queued, 0);
     const noBlob = { ...base };
     delete noBlob.fs1;
-    const got = handleWalletApi(url('/api/wallet/send'), 'POST', noBlob, { store: store(), miners: new Map(), queueSend });
-    assert.notEqual(got.status, 200, 'withdraw without fs1 relayed');
-    assert.equal(posted.length, 0);
+    const blobless = post(noBlob);
+    assert.notEqual(blobless.status, 200, 'withdraw without fs1 relayed');
+    assert.equal(blobless.queued, 0);
   });
 
   it('keeps a posted withdraw id and nonce on the queued tx', () => {
@@ -339,7 +362,10 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     }, { store: store(), miners: new Map(), queueSend });
     assert.equal(got.status, 200, got.json && got.json.reason);
     assert.equal(posted[0].id, ident);
-    assert.equal(posted[0].withdrawNonce, nonce);
+    // The pool parses the posted hex nonce to its 32 bytes. The bytes, and so
+    // the digest the proofs bind, are what the wallet signed.
+    assert.equal(Buffer.from(posted[0].withdrawNonce).toString('hex'), nonce);
+    assert.ok(Buffer.from(txDigestV3(posted[0])).equals(Buffer.from(txDigestV3(built))), 'txDigestV3 with nonce');
     assert.equal(posted[0].from, undefined);
     assert.equal(Buffer.from(posted[0].vout[0].commit).toString('hex'), Buffer.from(built.vout[0].commit).toString('hex'));
   });
