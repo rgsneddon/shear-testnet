@@ -291,6 +291,19 @@ describe('x86_64 ISA baseline', () => {
     const bundleScan = inside.indexOf('$(find "${BUNDLE_LIB}"');
     assert.ok(bundleScan > inside.indexOf('as-builder flutter build linux'), 'the shipped desktop libraries are scanned after the desktop build');
     assert.match(inside, /test -f "\$\{BUNDLE_LIB\}\/libshear_v3\.so"/);
+    // Everything the image compiles for the bundle: the runner and every
+    // plugin, both libraries required, only Flutter's own builds left out.
+    assert.match(inside, /test -f "\$\{BUNDLE_LIB\}\/libshear_admit\.so"/);
+    assert.match(inside, /isa_scan\.py" "\$\{RX\}\/build\/librandomx\.a" "\$\{BUNDLE\}\/shear_wallet"/);
+    assert.match(inside, /-name '\*\.so' ! -name 'libflutter_linux_gtk\.so' ! -name 'libapp\.so'/);
+    const linuxZip = read('.github/workflows/wallet-linux.yml');
+    assert.match(linuxZip, /isa_scan\.py \$B\/shear_wallet \$\(find \$B\/lib -maxdepth 1 -type f -name '\*\.so' ! -name 'libflutter_linux_gtk\.so' ! -name 'libapp\.so'/);
+    assert.match(linuxZip, /test -f \$B\/lib\/libshear_admit\.so/);
+    // And they are built at the baseline, not the distro compiler's default.
+    const cmake = read('wallet/linux/CMakeLists.txt');
+    assert.match(cmake, /string\(APPEND CMAKE_C_FLAGS " -march=x86-64 -mtune=generic"\)/);
+    assert.match(cmake, /string\(APPEND CMAKE_CXX_FLAGS " -march=x86-64 -mtune=generic"\)/);
+    assert.ok(cmake.indexOf('CMAKE_CXX_FLAGS " -march') < cmake.indexOf('add_subdirectory'), 'set before the runner and plugins are added');
   });
 
   it('every job that builds and scans on the Linux host runs on ubuntu-24.04, not ubuntu-latest', () => {

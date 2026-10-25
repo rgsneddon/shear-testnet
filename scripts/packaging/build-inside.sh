@@ -125,11 +125,16 @@ if [ "${SHEAR_PACK_DESKTOP:-1}" = "1" ]; then
   su -s /bin/bash builder -c '/usr/local/bin/as-builder flutter build linux --release'
   test -x "${SRC}/wallet/build/linux/x64/release/bundle/shear_wallet"
   # The desktop build rebuilt RandomX, libshear_v3.so and the admit cdylib
-  # after the scan above. Scan what the bundle ships, as stage_packs copies it.
-  BUNDLE_LIB="${SRC}/wallet/build/linux/x64/release/bundle/lib"
+  # after the scan above. Scan everything built here that the bundle ships, as
+  # stage_packs copies it: the runner, our two libraries and every plugin.
+  # Not libflutter_linux_gtk.so (Flutter's prebuilt engine) or libapp.so (Dart
+  # AOT code from gen_snapshot): Flutter builds those, not this image.
+  BUNDLE="${SRC}/wallet/build/linux/x64/release/bundle"
+  BUNDLE_LIB="${BUNDLE}/lib"
   test -f "${BUNDLE_LIB}/libshear_v3.so"
-  python3 "${SRC}/scripts/isa_scan.py" "${RX}/build/librandomx.a" \
-    $(find "${BUNDLE_LIB}" -maxdepth 1 -type f \( -name 'libshear_v3.so' -o -name 'libshear_admit.so' \) | sort)
+  test -f "${BUNDLE_LIB}/libshear_admit.so"
+  python3 "${SRC}/scripts/isa_scan.py" "${RX}/build/librandomx.a" "${BUNDLE}/shear_wallet" \
+    $(find "${BUNDLE_LIB}" -maxdepth 1 -type f -name '*.so' ! -name 'libflutter_linux_gtk.so' ! -name 'libapp.so' | sort)
 fi
 
 log "stage packs"

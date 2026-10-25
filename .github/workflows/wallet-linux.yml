@@ -46,6 +46,12 @@ jobs:
           DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
           flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
           python3 ../scripts/isa_scan.py ../wallet/native/libshear_v3.so ../crypto/randomx/build/librandomx.a ../crypto/native/admit/target/release/libshear_admit.so
+          # Everything built here that the zip ships: the runner and every
+          # plugin, not Flutter's prebuilt engine or the Dart AOT libapp.so.
+          B=build/linux/x64/release/bundle
+          test -f $B/lib/libshear_v3.so
+          test -f $B/lib/libshear_admit.so
+          python3 ../scripts/isa_scan.py $B/shear_wallet $(find $B/lib -maxdepth 1 -type f -name '*.so' ! -name 'libflutter_linux_gtk.so' ! -name 'libapp.so' | sort)
       - name: Bundle libsodium and zip linux + arch
         env:
           PIN: ${{ inputs.pin }}
