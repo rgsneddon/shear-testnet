@@ -52,9 +52,19 @@ export function mempoolRow(tx, fee, kind) {
   return out;
 }
 
-/** Key-order-free bytes of a row: Buffers as hex, bigints as strings. */
+/**
+ * Key-order-free bytes of a row: bytes as their lowercase hex text, bigints
+ * as strings. A body is the same whether a field holds a Buffer, the hex an
+ * HTTP post carries, or the {$hex} a p2p frame carries (p2p.js hexify);
+ * reviveTx turns only some of those into Buffers. So a resend matches the
+ * row a reorg bounce re-queued from the block's copy.
+ */
 function canonicalRow(v) {
-  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return JSON.stringify({ $hex: Buffer.from(v).toString('hex') });
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return JSON.stringify(Buffer.from(v).toString('hex'));
+  if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && typeof v.$hex === 'string') {
+    return canonicalRow(v.$hex);
+  }
+  if (typeof v === 'string' && /^(0x)?([0-9a-fA-F]{2})+$/.test(v)) return JSON.stringify(v.replace(/^0x/, '').toLowerCase());
   if (typeof v === 'bigint') return JSON.stringify({ $big: v.toString() });
   if (Array.isArray(v)) return `[${v.map(canonicalRow).join(',')}]`;
   if (v && typeof v === 'object') {

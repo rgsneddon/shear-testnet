@@ -100,4 +100,30 @@ describe('one body per mempool id', () => {
     delete noFee.fee;
     assert.equal(sameMempoolBody(row, noFee), false, 'no fee');
   });
+
+  it('a resend matches the row a reorg bounce queued from the block copy, in every byte shape', () => {
+    const note = sealNote(5_000, { dest20: Buffer.alloc(20, 7), kind: 'send' });
+    const tx = { id: 'tx-bounce', kind: 'send', fee: 120, anchor: 3, vin: [{ commit: Buffer.alloc(32, 1) }], vout: [{ ...note, kind: 'send' }] };
+    // A block copy from a p2p frame carries bytes as {$hex} (p2p.js hexify);
+    // one posted over HTTP carries hex text.
+    const asWire = (v) => {
+      if (Buffer.isBuffer(v) || v instanceof Uint8Array) return { $hex: Buffer.from(v).toString('hex') };
+      if (Array.isArray(v)) return v.map(asWire);
+      if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, asWire(x)]));
+      return v;
+    };
+    const asHttp = (v) => JSON.parse(JSON.stringify(v, function hexed(k, x) {
+      const raw = this[k];
+      return Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw).toString('hex') : x;
+    }));
+    // store.js bounceMempool re-admits the disconnected block's tx as this row.
+    const copy = asWire(tx);
+    const bounced = { ...copy, kind: copy.kind, to: copy.to || copy.vout?.[0]?.address, from: copy.from || copy.vin?.[0]?.address, nanos: copy.nanos || copy.vout?.[0]?.nanos, fee: copy.fee };
+    const row = mempoolRow(bounced, postedFeeNanos(bounced), 'send');
+    assert.equal(sameMempoolBody(row, tx), true, 'Buffer resend');
+    assert.equal(sameMempoolBody(row, asHttp(tx)), true, 'hex resend');
+    assert.equal(sameMempoolBody(row, asWire(tx)), true, '{$hex} resend');
+    assert.equal(sameMempoolBody(row, { ...asHttp(tx), vin: [{ commit: 'AA'.repeat(32) }] }), false, 'other input bytes, upper-case hex');
+    assert.equal(sameMempoolBody(row, { ...tx, vin: [{ commit: '01'.repeat(32).toUpperCase() }] }), true, 'same input bytes, upper-case hex');
+  });
 });
