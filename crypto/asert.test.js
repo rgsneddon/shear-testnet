@@ -625,8 +625,9 @@ describe('hash-tx consensus law', () => {
     assert.match(mfp, /DIGEST_STAMP=unlockAtMs\+lockEpoch\+H\(piProof\)/);
     assert.match(mfp, /ASERT_EASE=1/);
     assert.match(mfp, /ASERT_HARDEN=6/);
-    assert.match(mfp, /GENESIS=2026-09-18T21:00:00\+01:00/);
-    assert.equal(GENESIS_MAINNET, '2026-09-18T21:00:00+01:00');
+    assert.match(mfp, /GENESIS=2026-12-21T14:00:00\+00:00/);
+    assert.equal(GENESIS_MAINNET, '2026-12-21T14:00:00+00:00');
+    assert.equal(Date.parse(GENESIS_MAINNET), Date.UTC(2026, 11, 21, 14, 0, 0));
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET)), false);
     const prevEmit = process.env.SHEAR_MAINNET_EMIT;

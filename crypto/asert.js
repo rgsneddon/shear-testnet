@@ -321,8 +321,12 @@ export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 /** Chain magics are reserve_books.js. This module re-exports them. */
-/** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
-export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
+/**
+ * Mainnet genesis: 21 Dec 2026 at 14:00 UK time (GMT), after the v12 cut and
+ * its stressnet floor (Russell, 25 Oct 2026). The public countdown is this
+ * instant. Reaching it does not emit: mainnetMayEmit also needs both env keys.
+ */
+export const GENESIS_MAINNET = '2026-12-21T14:00:00+00:00';
 export const GENESIS_MAINNET_MS = Date.parse(GENESIS_MAINNET);
 export const HASH_FN = 'ShearHash-v3';
 export const RX_SALT = 'ShearHash-v3/rx';
