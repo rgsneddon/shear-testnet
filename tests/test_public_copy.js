@@ -14,6 +14,7 @@ import {
   ASERT_TAU_MS,
   BLOCK_SUBSIDY_NANOS,
   GENESIS_BITS,
+  GENESIS_MAINNET_MS,
   HASH_BONUS_NANOS,
   MAGIC_TESTNET,
   MAGIC_TESTNET_V10,
@@ -296,23 +297,31 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /same shell.*npm run solo|npm run solo/);
     assert.match(nodePage, /Darwin/);
     assert.doesNotMatch(pool, /shear-testnet-v3/);
-    assert.match(main, /countdown to 16th November 2026 at 1400hrs UK time/);
-    assert.match(main, /2026-11-16T14:00:00\+00:00/);
+    assert.match(main, /countdown to 21st December 2026 at 1400hrs UK time/);
+    assert.match(main, /2026-12-21T14:00:00\+00:00/);
     assert.doesNotMatch(main, /launch date not decided/);
     for (const page of ['site/network.html', 'site/mine.html', 'site/governance.html', 'site/get-started.html']) {
-      assert.match(read(page), /countdown to 16th November 2026 at 1400hrs UK time/, page);
+      assert.match(read(page), /countdown to 21st December 2026 at 1400hrs UK time/, page);
       assert.doesNotMatch(read(page), /launch date not decided/, page);
     }
     const operatorNote = read('docs/OPERATOR_NOTE_AUDIT.md');
-    assert.match(operatorNote, /16th November 2026 at 1400hrs UK time/);
+    assert.match(operatorNote, /21st December 2026 at 1400hrs UK time/);
     assert.doesNotMatch(operatorNote, /Launch date is not decided/);
     const nodeHelp = read('node/src/help.js');
-    assert.match(nodeHelp, /SHEAR_MAINNET_EMIT  do not set\. The 16 Nov countdown is display only and does not emit\./);
+    assert.match(nodeHelp, /SHEAR_MAINNET_EMIT  do not set\. The 21 Dec countdown is genesis; reaching it does not emit\./);
     assert.doesNotMatch(nodeHelp, /Launch is not decided/);
-    assert.doesNotMatch(main, /2026-09-18T21:00:00/);
-    assert.doesNotMatch(docs, /2026-09-18T21:00:00/);
-    assert.doesNotMatch(readme, /2026-09-18T21:00:00/);
-    assert.match(readme, /16th November 2026 at 1400hrs UK time/);
+    // The countdown is genesis: the site's clock and GENESIS_MAINNET cannot drift.
+    for (const page of ['site/index.html', 'site/wallet/index.html']) {
+      const until = /id="mainnet-countdown" data-until="([^"]+)"/.exec(read(page));
+      assert.ok(until, `${page} countdown clock`);
+      assert.equal(Date.parse(until[1]), GENESIS_MAINNET_MS, `${page} countdown is GENESIS_MAINNET`);
+    }
+    for (const old of [/2026-09-18T21:00:00/, /16th November 2026/, /2026-11-16T14/]) {
+      assert.doesNotMatch(main, old);
+      assert.doesNotMatch(docs, old);
+      assert.doesNotMatch(readme, old);
+    }
+    assert.match(readme, /21st December 2026 at 1400hrs UK time/);
     assert.match(readme, /does not emit/);
   });
 

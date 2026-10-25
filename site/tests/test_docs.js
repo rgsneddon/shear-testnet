@@ -307,7 +307,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(pdf.includes(Buffer.from('ShearK-2.8')), true);
     assert.equal(pdf.includes(Buffer.from('ShearK-2.6')), false);
     assert.equal(pdf.includes(Buffer.from('pool.shear.digital:1111')), false);
-    assert.match(paper, /16th November 2026 at 1400hrs UK time/);
+    assert.match(paper, /21st December 2026 at 1400hrs UK time/);
     assert.doesNotMatch(paper, /1st October 2026/);
     assert.doesNotMatch(paper, /ShearK 2\.6/);
     assert.doesNotMatch(paper, /pool\.shear\.digital:1111/);

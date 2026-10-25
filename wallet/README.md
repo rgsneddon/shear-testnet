@@ -46,4 +46,4 @@ Use the **release** zip/APK from GitHub. A `flutter run` debug build is much hot
 
 Idle 0.48 polls the tip every ~4s when nothing moved; 1s only when the tip, a pending receive, or history is behind.
 
-Mainnet `shear-v1` is not live. The public countdown is 16th November 2026 at 1400hrs UK time. That countdown is a display date and does not emit. `shear --network shear-v1` prints `clock_wait`.
+Mainnet `shear-v1` is not live. The public countdown is 21st December 2026 at 1400hrs UK time, the genesis instant. Reaching it does not emit. `shear --network shear-v1` prints `clock_wait`.
