@@ -129,7 +129,7 @@ import {
 } from './bootstrap.js';
 import { createBurialHold, createBurialProof, settledHeight } from './burial_hold.js';
 import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
-import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
+import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool, sameMempoolBody } from '../../crypto/mempool.js';
 import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import {
   frameDigest,
@@ -4015,8 +4015,13 @@ export function createStore(dir, {
     book.txs = mempool;
     book.tagIndex = mempoolTags;
     const id = String(tx?.id || '');
-    if (id && mempool.some((m) => String(m.id) === id)) {
-      return { ok: true, tx, duplicate: true };
+    const held = id ? mempool.find((m) => String(m.id) === id) : null;
+    if (held) {
+      // An id names one queued body. The same body again is a duplicate. Any
+      // other body under that id was never verified or queued, so it is
+      // refused: an ok here told a wallet its changed body was in.
+      if (sameMempoolBody(held, tx)) return { ok: true, tx, duplicate: true };
+      return { ok: false, reason: 'id_reused' };
     }
     const debitNow = fundedDebit(tx);
     // Chain notes minus every queued debit from this dest. paintedOwedNanos is the

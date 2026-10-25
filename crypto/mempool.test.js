@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { admitMempool, emptyMempool, retargetMempool } from './mempool.js';
+import { admitMempool, emptyMempool, mempoolRow, retargetMempool, sameMempoolBody } from './mempool.js';
 import { encodeDest, encodeAddress, newIdentity } from './address.js';
 import { attachDummyOuts } from './dummy.js';
 import { sealNote } from './note.js';
+import { postedFeeNanos } from './spend.js';
 
 const dest = encodeDest(Buffer.alloc(20, 3), newIdentity().admitBase);
 
@@ -77,5 +78,26 @@ describe('policy mempool', () => {
     assert.equal(drop.dropped.some((t) => t.kind === 'send'), true);
     assert.equal(book.txs.some((t) => t.kind === 'send'), false);
     assert.equal(book.txs.some((t) => t.kind === 'b-spend'), true);
+  });
+});
+
+describe('one body per mempool id', () => {
+  it('matches only the body that was queued: same bytes in any key order, never a changed fee or output', () => {
+    const note = sealNote(5_000, { dest20: Buffer.alloc(20, 7), kind: 'send' });
+    const tx = { id: 'tx-one', kind: 'send', fee: 120, anchor: 3, vin: [{ commit: Buffer.alloc(32, 1) }], vout: [{ ...note, kind: 'send' }] };
+    // The row as admitMempool stores it: the posted fee is what was paid.
+    const row = mempoolRow(tx, postedFeeNanos(tx), 'send');
+    assert.equal(sameMempoolBody(row, tx), true, 'the queued body again');
+    // A copy from the wire: other key order, Uint8Array for Buffer, a secret key the row never kept.
+    const wire = { vout: tx.vout.map((o) => ({ ...o, commit: new Uint8Array(o.commit) })), vin: tx.vin, anchor: 3, fee: 120, kind: 'send', id: 'tx-one', viewKey: 'aa' };
+    assert.equal(sameMempoolBody(row, wire), true, 'same bytes, other shape');
+    // Anything that changes the body is another body under the same id.
+    assert.equal(sameMempoolBody(row, { ...tx, fee: 121 }), false, 'fee');
+    assert.equal(sameMempoolBody(row, { ...tx, anchor: 4 }), false, 'anchor');
+    assert.equal(sameMempoolBody(row, { ...tx, vout: [{ ...tx.vout[0], commit: Buffer.alloc(32, 9) }] }), false, 'output');
+    assert.equal(sameMempoolBody(row, { ...tx, vin: [] }), false, 'input');
+    const noFee = { ...tx };
+    delete noFee.fee;
+    assert.equal(sameMempoolBody(row, noFee), false, 'no fee');
   });
 });

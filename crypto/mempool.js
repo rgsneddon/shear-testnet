@@ -52,6 +52,34 @@ export function mempoolRow(tx, fee, kind) {
   return out;
 }
 
+/** Key-order-free bytes of a row: Buffers as hex, bigints as strings. */
+function canonicalRow(v) {
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return JSON.stringify({ $hex: Buffer.from(v).toString('hex') });
+  if (typeof v === 'bigint') return JSON.stringify({ $big: v.toString() });
+  if (Array.isArray(v)) return `[${v.map(canonicalRow).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v).filter((k) => v[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canonicalRow(v[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v === undefined ? null : v);
+}
+
+/**
+ * True when `tx` is the body already queued as `row`. admitMempool stores
+ * mempoolRow(tx, postedFeeNanos(tx), kind), so the arrival is built the same
+ * way, with its own posted fee and the row's kind, before the compare: a
+ * different fee is a different body.
+ */
+export function sameMempoolBody(row, tx) {
+  if (!row || !tx) return false;
+  try {
+    const paid = postedFeeNanos(tx);
+    if (paid == null) return false;
+    return canonicalRow(mempoolRow(tx, paid, row.kind)) === canonicalRow(row);
+  } catch {
+    return false;
+  }
+}
+
 export function emptyMempool() {
   return { txs: [], baseFee: 1, max: MEMPOOL_MAX, tagIndex: new Map() };
 }

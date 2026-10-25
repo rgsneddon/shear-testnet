@@ -601,6 +601,18 @@ describe('Dart withdraw queues', { concurrency: false, timeout: 2_400_000 }, () 
     resetFs1Tree();
     const got = store.queueTx(body, { nowMs: wall });
     assert.equal(got.ok, true, `queue ${got.reason || ''} ${got.error || ''}`);
+    // An admitted id names one body. The same body again is a duplicate; a
+    // changed body under that id was never verified or queued, so it is
+    // refused, not reported ok (the wallet marks its note spent on an ok).
+    const again = store.queueTx(structuredClone(body), { nowMs: wall });
+    assert.equal(again.ok, true, `resend ${again.reason || ''}`);
+    assert.equal(again.duplicate, true, 'resend is a duplicate');
+    const changed = structuredClone(body);
+    changed.fee = Number(changed.fee) + 1;
+    const reused = store.queueTx(changed, { nowMs: wall });
+    assert.equal(reused.ok, false, 'a changed body under an admitted id is not ok');
+    assert.equal(reused.reason, 'id_reused');
+    assert.equal(store.mempool.filter((row) => String(row.id) === String(body.id)).length, 1, 'one body for the id');
     const withdrawn = await mine(store, who.dest, wall + 1000);
     assert.ok(withdrawn.tpl.txs.some((row) => row.id === body.id), 'withdraw mined');
     console.log(`e2e withdraw height=${withdrawn.tpl.height} id=${String(body.id).slice(0, 12)}`);
