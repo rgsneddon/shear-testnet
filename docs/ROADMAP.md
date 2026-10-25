@@ -47,6 +47,28 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
 9. **Landing.** Every commit is signed off (`git commit -s`). Everything
    lands through a PR. No direct push to `main`. A merge needs Russell's GO,
    one merge at a time, as a normal merge commit.
+10. **Review section (standing rule, Russell 2026-10-25).** Every PR keeps
+    a Review section in its body, updated as work happens and complete
+    before any merge ask. It records:
+    1. Bugs found: what it was, the root cause, the commit or version it
+       came from, severity, the fix commit SHA, and the test that proves
+       it. Pre-existing bugs are labelled as such.
+    2. Verdict changes: any block or tx that is now refused, accepted, or
+       refused for a different reason, before and after.
+    3. Consensus and pin moves: all pins before and after, and the sign-off
+       reference.
+    4. Rulings applied: which of Russell's rulings, with its date, and how
+       it was applied.
+    5. Test fixes: harness bugs, stale tests rewritten and why, and any test
+       that couldn't be built honestly (say so; don't fake it).
+    6. Void runs: any lane result that doesn't count, and why.
+    7. Process slips, and the guard added so they don't happen again.
+    8. Lane verdicts: which lanes reviewed it, each verdict, and the SHA
+       reviewed.
+    9. Final head SHA, with the full re-run results on that exact head.
+
+    Nothing is left as a known issue unless Russell has made a deliberate
+    ruling to keep it, recorded with its date.
 
 ## Rows
 
