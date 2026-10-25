@@ -70,6 +70,6 @@ Compile-C (Join-Path $Miner 'sha256.c') 'sha256.o'
   (Join-Path $Obj 'sha512.o') `
   (Join-Path $Obj 'sha256.o') `
   $RxLib `
-  -Wl,-Bstatic -lpthread -Wl,-Bdynamic
+  '-Wl,-Bstatic' '-lpthread' '-Wl,-Bdynamic'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "built $Out"
