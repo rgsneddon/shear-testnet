@@ -173,6 +173,9 @@ describe('tip gossip does not inflate catch-up', () => {
       // The claim is the header's own ShearHash, so the body passes the
       // p2p claim check and is served to ingest.
       const header = Buffer.alloc(128, 0x11);
+      // Its parent is our tip, as the next block a peer serves is. A body under
+      // an unknown parent is answered prev before ingest (p2p parentKnown).
+      hash.copy(header, 4);
       // bits 0: a target any hash meets, as a real block's id meets its own
       // header's target. The claim check refuses a claim that misses it unhashed.
       header.writeUInt32LE(0, 108);
