@@ -258,12 +258,17 @@ describe('sequential IBD', () => {
       assert.equal(a.store.tip().height, 2);
       // The stand-in id meets the target and fails the claim check, so the
       // body never reaches ingest. Height 1 is re-keyed to ShearHash(header)
-      // so the claim matches. That digest misses the target, and header
-      // admission would drop the peer before the body retry this test watches.
+      // so the claim matches, under bits 0 so that claim meets the header's
+      // own target: the p2p claim check refuses a missed target unhashed.
+      // Ingest here is the stub below, so the rewritten bits never reach
+      // verify before the retry this test watches. Header admission is
+      // stubbed too.
       const heightOne = a.store.blocks.find((block) => Number(block.height) === 1);
       const header = Buffer.isBuffer(heightOne.header) && heightOne.header.length === 128
         ? Buffer.from(heightOne.header)
         : Buffer.from(String(heightOne.header), 'hex');
+      header.writeUInt32LE(0, 108);
+      heightOne.header = header;
       heightOne.hash = Buffer.from(await hashHeaderOffLoop(header));
       b.store.offerHeaders = () => ({ accepted: 0, dropped: false });
       const origIngest = b.store.ingest.bind(b.store);

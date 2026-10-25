@@ -118,6 +118,9 @@ describe('empty want recovers from an eligible peer', () => {
       // A full header that claims its own ShearHash, so the claim check
       // passes and the block reaches ingest.
       const header = Buffer.alloc(128, 0x33);
+      // bits 0: a target any hash meets, as a real block's id meets its own
+      // header's target. The claim check refuses a claim that misses it unhashed.
+      header.writeUInt32LE(0, 108);
       sock.write(`${JSON.stringify({
         type: 'block',
         magic: MAGIC_TESTNET,

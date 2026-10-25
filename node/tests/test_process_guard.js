@@ -24,6 +24,9 @@ const guardProbe = process.argv.includes('--guard-probe');
 
 function guardBlock() {
   const header = Buffer.alloc(128, 0x11);
+  // bits 0: a target any hash meets, as a real block's id meets its own
+  // header's target. The claim check refuses a claim that misses it unhashed.
+  header.writeUInt32LE(0, 108);
   return {
     header: header.toString('hex'),
     hash: headerHash(header).toString('hex'),

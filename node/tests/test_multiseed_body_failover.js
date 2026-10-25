@@ -79,6 +79,9 @@ describe('multi-seed body-proven failover', () => {
     // The served body is a full header under its own ShearHash, so the claim
     // check passes and the body reaches ingest.
     const bodyHeader = Buffer.alloc(128, 0x11);
+    // bits 0: a target any hash meets, as a real block's id meets its own
+    // header's target. The claim check refuses a claim that misses it unhashed.
+    bodyHeader.writeUInt32LE(0, 108);
     const bodyHash = shearHash(bodyHeader).toString('hex');
     let hollowAsked = false;
     let hollowNacked = false;

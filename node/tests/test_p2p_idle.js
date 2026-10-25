@@ -85,6 +85,9 @@ function matchingBlock(fill) {
   const key = String(fill);
   if (!wireBlocks.has(key)) {
     const header = Buffer.alloc(128, fill);
+    // bits 0: a target any hash meets, as a real block's id meets its own
+    // header's target. The claim check refuses a claim that misses it unhashed.
+    header.writeUInt32LE(0, 108);
     wireBlocks.set(key, {
       header: header.toString('hex'),
       hash: headerHash(header).toString('hex'),
@@ -1538,7 +1541,9 @@ describe('p2p hello deadline and idle eviction', () => {
     for (let i = 0; i < P2P_ASK_BLOCKS; i += 1) assert.equal(takeBlockAsk(ask, t0), true);
     assert.equal(takeBlockAsk(ask, t0 + P2P_ASK_WINDOW_MS - 1), false);
     assert.equal(takeBlockAsk(ask, t0 + P2P_ASK_WINDOW_MS), true);
-    assert.ok(P2P_ASK_BLOCKS * (P2P_SERVE_WINDOW_MS / P2P_ASK_WINDOW_MS) < P2P_SERVE_BLOCK_PER_WINDOW);
+    // One serve window overlaps up to ceil(serve / ask) + 1 fixed ask windows.
+    const overlap = Math.ceil(P2P_SERVE_WINDOW_MS / P2P_ASK_WINDOW_MS) + 1;
+    assert.ok(P2P_ASK_BLOCKS * overlap < P2P_SERVE_BLOCK_PER_WINDOW, 'an honest fast IBD stays under the serve cap with headroom');
 
     const hash = Buffer.alloc(32, 0x11);
     const store = {
@@ -1751,6 +1756,173 @@ describe('p2p hello deadline and idle eviction', () => {
     } finally {
       mesh.close();
       server.close();
+    }
+  });
+
+  it('a claim that misses its own header target is scored unhashed, and a lying frame costs one hash', async () => {
+    let calls = 0;
+    const store = { blocks: [], tip: () => null, on() { return () => {}; }, ingest() { calls += 1; return { ok: true }; } };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000 });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const rec = () => [...p2p.peers.values()].find((row) => row.helloAt);
+      // Header bits ask for 200 leading zero bits; a random claim misses it.
+      const header = Buffer.alloc(128, 0x44);
+      header.writeUInt32LE(200, 108);
+      resetP2pHashStats();
+      sock.write(frame({ type: 'block', block: { hash: 'ab'.repeat(32), height: 1, header: header.toString('hex') } }));
+      for (let i = 0; i < 40 && !(Number(rec()?.expensiveFails) > 0); i += 1) await delay(25);
+      assert.ok(Number(rec()?.expensiveFails) > 0, 'scored');
+      assert.equal(p2pHashStats().started, 0, 'no ShearHash for a claim that misses its target');
+      // Three blocks whose first claim lies: hashing stops at the first.
+      const a = matchingBlock(0x51);
+      const b = matchingBlock(0x52);
+      const c = matchingBlock(0x53);
+      const before = Number(rec()?.expensiveFails) || 0;
+      resetP2pHashStats();
+      sock.write(frame({ type: 'block', blocks: [
+        { hash: 'cd'.repeat(32), height: 1, header: a.header },
+        { hash: b.hash, height: 2, header: b.header },
+        { hash: c.hash, height: 3, header: c.header },
+      ] }));
+      for (let i = 0; i < 80 && (Number(rec()?.expensiveFails) || 0) === before; i += 1) await delay(25);
+      assert.ok((Number(rec()?.expensiveFails) || 0) > before, 'lying frame scored');
+      assert.equal(p2pHashStats().started, 1, 'one hash for a frame whose first claim lies');
+      assert.equal(calls, 0, 'nothing ingested');
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('junk does not reset a busy streak, busy at the limit is a miss, and an unsolicited nak changes nothing', async () => {
+    const server = net.createServer((sock) => {
+      sock.on('data', (buf) => { if (buf.toString().includes('"type":"hello"')) sock.write(helloLine()); });
+      sock.on('error', () => {});
+    });
+    let remote = null;
+    server.on('connection', (sock) => { remote = sock; });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    const mesh = createP2p({
+      store: { blocks: [], mempool: [], tip: () => null, on() { return () => {}; } },
+      port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000,
+    });
+    try {
+      await mesh.connect('127.0.0.1', server.address().port);
+      for (let i = 0; i < 40 && !remote; i += 1) await delay(25);
+      await delay(40);
+      const rec = [...mesh.peers.values()][0];
+      assert.ok(rec?.helloAt);
+      const line = (msg) => `${JSON.stringify({ magic: MAGIC_TESTNET, ...msg })}\n`;
+      const id = 'ef'.repeat(32);
+      rec.pending = new Set([id]);
+      remote.write(line({ type: 'serve_busy', what: 'getblock', hash: id }));
+      await delay(50);
+      assert.equal(rec.busyStreak, 1);
+      // Old code reset the streak on any block-type message.
+      remote.write(line({ type: 'blocks', blocks: [{}, {}] }));
+      remote.write(line({ type: 'block_not_found', hash: '11'.repeat(32) }));
+      await delay(50);
+      assert.equal(rec.busyStreak, 1, 'junk and unsolicited answers leave the streak');
+      const missesBefore = Number(rec.getblockMiss) || 0;
+      rec.pending = new Set([id]);
+      remote.write(line({ type: 'serve_busy', what: 'getblock', hash: id }));
+      await delay(50);
+      rec.pending = new Set([id]);
+      remote.write(line({ type: 'serve_busy', what: 'getblock', hash: id }));
+      await delay(50);
+      assert.equal(Number(rec.getblockMiss) || 0, missesBefore + 1, 'busy at the limit counts a miss');
+      // An unsolicited nak does not add to want or count a miss.
+      const wantBefore = [...(rec.want || [])];
+      const missAt = Number(rec.getblockMiss) || 0;
+      remote.write(line({ type: 'getblock_nak', hash: '22'.repeat(32) }));
+      await delay(50);
+      assert.deepEqual(rec.want || [], wantBefore);
+      assert.equal(Number(rec.getblockMiss) || 0, missAt);
+      // A busy answer to a burial ask is retried, not left quiet.
+      rec.pending = new Set();
+      rec.syncing = false;
+      rec.burialWait = new Set(['33'.repeat(32)]);
+      rec.burialAskHeight = 7;
+      rec.softHoldUntil = 0;
+      remote.write(line({ type: 'serve_busy', what: 'getheaders' }));
+      await delay(50);
+      assert.equal(rec.burialAskHeight, 0, 'burial ask no longer quiet');
+      assert.ok(Number(rec.softHoldUntil) > Date.now(), 'retry armed');
+    } finally {
+      mesh.close();
+      server.close();
+    }
+  });
+
+  it('a stage hold keys on the exact body, so a malleated copy does not hold the honest block', async () => {
+    const wire = matchingBlock(0x61);
+    let calls = 0;
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest(fork) {
+        calls += 1;
+        // The malleated copy throws in staging; the honest one is accepted.
+        return fork?.[0]?.samplesPruned === true ? { ok: false, reason: 'apply_stage' } : { ok: true };
+      },
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000, stageHoldBaseMs: 60_000 });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const rec = () => [...p2p.peers.values()].find((row) => row.helloAt);
+      const malleated = { hash: wire.hash, height: 1, header: wire.header, samplesPruned: true };
+      sock.write(frame({ type: 'block', block: malleated }));
+      for (let i = 0; i < 40 && calls < 1; i += 1) await delay(25);
+      assert.equal(calls, 1);
+      for (let i = 0; i < 40 && rec()?.verifying?.size; i += 1) await delay(25);
+      // The same malleated body again is held (no second verify).
+      sock.write(frame({ type: 'block', block: malleated }));
+      await delay(80);
+      assert.equal(calls, 1, 'malleated body held');
+      // The honest body for the same header is not held. Old code keyed the
+      // hold on the header alone and dropped it.
+      sock.write(frame({ type: 'block', block: { hash: wire.hash, height: 1, header: wire.header } }));
+      for (let i = 0; i < 40 && calls < 2; i += 1) await delay(25);
+      assert.equal(calls, 2, 'honest body verified');
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('a lying claim for a hash we asked for releases that hash', async () => {
+    const wire = matchingBlock(0x71);
+    const store = { blocks: [], tip: () => null, on() { return () => {}; }, ingest() { return { ok: true }; } };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000 });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const rec = [...p2p.peers.values()].find((row) => row.helloAt);
+      const asked = 'aa'.repeat(32);
+      rec.pending = new Set([asked]);
+      // Our asked id, but a header whose ShearHash is something else.
+      sock.write(frame({ type: 'block', block: { hash: asked, height: 1, header: wire.header } }));
+      // Wait for the refusal itself (the score), not for pending to clear:
+      // the getblock sweep can also clear it, before the hash is done.
+      for (let i = 0; i < 200 && !(Number(rec.expensiveFails) > 0); i += 1) await delay(25);
+      assert.ok(Number(rec.expensiveFails) > 0, 'scored');
+      rec.pending.add(asked);
+      // A second lying frame for an asked hash: the refusal releases it.
+      const before = Number(rec.expensiveFails);
+      sock.write(frame({ type: 'block', block: { hash: asked, height: 1, header: wire.header } }));
+      for (let i = 0; i < 200 && Number(rec.expensiveFails) === before; i += 1) await delay(25);
+      assert.ok(Number(rec.expensiveFails) > before, 'scored again (the claim is cached, no second hash)');
+      assert.equal(rec.pending.has(asked), false, 'the asked hash is no longer pending on the liar');
+    } finally {
+      p2p.close();
     }
   });
 

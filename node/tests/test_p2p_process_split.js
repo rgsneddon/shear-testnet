@@ -431,9 +431,9 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
         }), Number(tipDecoded.nonce % 1_000_000n) + 99);
         const bad = JSON.parse(JSON.stringify(blocks[2]));
         bad.header = badHeader.toString('hex');
-        // The claim is the header's own ShearHash, so the sidecar's claim
-        // check passes and verify is what refuses the missed target as pow.
-        // A forged claim is refused earlier as hash_claim.
+        // The claim is the header's own ShearHash, and it misses the header's
+        // target. The sidecar refuses that claim as hash_claim before any
+        // ShearHash runs, so a bad-pow body never reaches verify.
         bad.hash = Buffer.from(shearHash(badHeader)).toString('hex');
         bad.height = beforeBad + 1;
         const badLine = `${JSON.stringify({ type: 'block', magic: MAGIC_TESTNET, block: bad })}\n`;
@@ -443,7 +443,7 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
         await waitFor(() => badPeer.lines.length >= 1, 4000, 'bad-pow peer hello');
         badPeer.sock.write(badLine);
         await waitFor(
-          () => jsonEvents(side.stderr(), 'p2p_ingest').some((e) => e.ok === false && e.reason === 'pow'),
+          () => jsonEvents(side.stderr(), 'p2p_ingest').some((e) => e.ok === false && e.reason === 'hash_claim'),
           60_000,
           () => `bad pow not rejected\n${side.stderr().slice(-2500)}`,
         );
