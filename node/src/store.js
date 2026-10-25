@@ -4999,7 +4999,7 @@ export function createStore(dir, {
     const base = supplyAt[from];
     if (!base || base.owedKnown !== true || !supplyLinks(base, blocks[from])) return null;
     const burial = Number.isInteger(tipH) && tipH >= 0 ? tipH : (Number(blocks[endIdx]?.height) || endIdx + 1);
-    const carriedVault = vaultParent(blocks, from + 1);
+    const carriedVault = vaultParent(blocks, from + 1, bookMagic);
     if (!carriedVault.ok) return null;
     let vault = carriedVault.vault;
     let state = base;
@@ -5018,7 +5018,7 @@ export function createStore(dir, {
       });
       if (!stepped.ok) return null;
       state = stepped.state;
-      const advanced = vaultAfterBlock(vault, block);
+      const advanced = vaultAfterBlock(vault, block, [], { magic: bookMagic });
       if (!advanced.ok) return null;
       vault = advanced.vault;
     }
@@ -5112,7 +5112,7 @@ export function createStore(dir, {
           from = prefix;
         }
       }
-      const historyVault = vaultParent(rows, from);
+      const historyVault = vaultParent(rows, from, bookMagic);
       if (!historyVault.ok) return { ok: false, reason: 'supply' };
       let vault = historyVault.vault;
       // One prefix. A slice at every height made the reorg walk cost grow with the chain.
@@ -5131,7 +5131,7 @@ export function createStore(dir, {
         });
         if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
         supply = stepped.state;
-        const advanced = vaultAfterBlock(vault, viewed.block, chain);
+        const advanced = vaultAfterBlock(vault, viewed.block, chain, { magic: bookMagic });
         if (!advanced.ok) return { ok: false, reason: 'supply' };
         vault = advanced.vault;
         chain.push(rows[hi]);
@@ -5562,7 +5562,7 @@ export function createStore(dir, {
         }
         adoptedSupply = supplyAt.slice(0, lca);
         let carriedSupply = prefixSupply;
-        const openedVault = vaultParent(accepted, lca);
+        const openedVault = vaultParent(accepted, lca, bookMagic);
         if (!openedVault.ok) {
           clearReorgMarkers();
           return { ok: false, reason: 'supply', tip: tip() };
@@ -5591,7 +5591,7 @@ export function createStore(dir, {
             return { ok: false, reason: stepped.ok ? 'supply' : (stepped.reason || 'supply'), tip: tip() };
           }
           carriedSupply = stepped.state;
-          const advanced = vaultAfterBlock(carriedVault, block);
+          const advanced = vaultAfterBlock(carriedVault, block, [], { magic: bookMagic });
           if (!advanced.ok) {
             clearReorgMarkers();
             return { ok: false, reason: 'supply', tip: tip() };

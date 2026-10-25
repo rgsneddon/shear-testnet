@@ -256,9 +256,11 @@ export function vaultAfterBlock(vault, block, prior = [], applyOpts = {}) {
 /**
  * Parent vault for `blocks[index]`. Null when the list has no reserve tx.
  * Null when a prefix apply fails. An empty vault is the parent of the first
- * reserve block, and is not null.
+ * reserve block, and is not null. `magic` is the book's: a note lock's π
+ * proof binds txDigestV3 at that magic, so a vault rebuilt at another magic
+ * refuses an honest lock (reorg and supply carry run through here).
  */
-export function vaultBefore(blocks, index) {
+export function vaultBefore(blocks, index, magic = MAGIC_TESTNET) {
   const list = Array.isArray(blocks) ? blocks : [];
   let needs = false;
   for (let i = 0; i < list.length; i += 1) {
@@ -267,17 +269,18 @@ export function vaultBefore(blocks, index) {
   if (!needs) return null;
   const end = Math.max(0, Math.min(Number(index) || 0, list.length));
   let vault = emptyVault();
+  vault.magic = magic;
   for (let i = 0; i < end; i += 1) {
-    const applied = vaultApply(vault, list[i], priorForOracle(list, i, MAGIC_TESTNET));
+    const applied = vaultApply(vault, list[i], priorForOracle(list, i, magic), { magic });
     if (!applied || applied.ok !== true) return null;
   }
   return vault;
 }
 
 /** `{ ok, vault }` so a failed prefix is not the same as a coinbase-only list. */
-export function vaultParent(blocks, index) {
+export function vaultParent(blocks, index, magic = MAGIC_TESTNET) {
   const list = Array.isArray(blocks) ? blocks : [];
-  const vault = vaultBefore(list, index);
+  const vault = vaultBefore(list, index, magic);
   if (vault) return { ok: true, vault };
   for (let i = 0; i < list.length; i += 1) {
     if (blockNeedsReserve(list[i])) return { ok: false, vault: null };
