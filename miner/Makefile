@@ -19,10 +19,12 @@ else
 endif
 
 SCALAR_OBJS := src/shear_miner.o src/shear_hash.o src/sha256.o src/sha256_dispatch.o
-UNAME_M := $(shell uname -m)
-ifeq ($(UNAME_M),arm64)
-  ISA_OBJS := src/sha256_isa_stub.o
-else ifeq ($(UNAME_M),aarch64)
+UNAME_M := $(shell uname -m 2>/dev/null)
+# cmd or PowerShell with mingw32-make has no uname: the CPU is PROCESSOR_ARCHITECTURE.
+ifeq ($(strip $(UNAME_M)),)
+  UNAME_M := $(PROCESSOR_ARCHITECTURE)
+endif
+ifneq ($(filter arm64 aarch64 ARM64,$(UNAME_M)),)
   ISA_OBJS := src/sha256_isa_stub.o
 else
   ISA_OBJS := src/sha256_ni.o src/sha256_avx2.o

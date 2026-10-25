@@ -1,6 +1,13 @@
 # One-shot Windows pack for a wallet pin. Darwin and Dedicated-de cannot
 # `flutter build windows`. Dispatch after a wallet cut, then the zip is
-# attached to the same GitHub tag.
+# attached to the same GitHub tag (attach: false builds and checks only).
+#
+# The zip carries the node sidecar, so its native addons (shearhash.node,
+# shearadmit.node) and node_modules are built here first. shear_admit.dll and
+# the addons come from the GNU Rust toolchain and MSYS2 UCRT64 gcc, as the node
+# packs do (node-v17.yml): their DLLs keep a symbol table, so
+# scripts/isa_scan.py can check every function against the x86-64 baseline.
+# The MSVC linker keeps none, so an MSVC shear_admit.dll could not be scanned.
 name: wallet-windows
 on:
   workflow_dispatch:
@@ -13,6 +20,10 @@ on:
         description: Flutter build-number
         required: true
         default: '48'
+      attach:
+        description: Attach the zip to the GitHub release (false builds and checks only)
+        type: boolean
+        default: true
 
 jobs:
   windows:
@@ -21,27 +32,78 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: dtolnay/rust-toolchain@stable
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-python
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.6'
           channel: stable
+      - name: Node sidecar addons, GNU toolchain
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:$PATH"
+          VER=$(node -p process.version)
+          rm -rf .node-headers && mkdir -p .node-headers
+          curl -fsSL "https://nodejs.org/dist/${VER}/node-${VER}-headers.tar.gz" | tar -xz -C .node-headers
+          export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
+          test -f "$NODE_INC/node_api.h"
+          npm ci --ignore-scripts
+          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
+          rustup override set stable-x86_64-pc-windows-gnu
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=gcc
+          bash scripts/randomx_build.sh -G "MinGW Makefiles"
+          make -C crypto/native
+          test -f crypto/native/shearhash.node
+          test -f crypto/native/shearadmit.node
       - name: Build Windows release
         working-directory: wallet
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
         run: |
+          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin;$env:PATH"
+          # VS 18's <experimental/coroutine> is a hard STL1011 error unless
+          # silenced, as wallet-release.yml does; this workflow lacked it.
+          $env:CL = "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
+          rustup override set stable-x86_64-pc-windows-gnu
           flutter config --enable-windows-desktop
           flutter pub get
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/shear_admit.dll).Trim()
           flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }} $define
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: No code above the x86-64 baseline in the native libraries
+        run: |
+          $env:OBJDUMP = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\objdump.exe"
+          python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll crypto/native/shearhash.node crypto/native/shearadmit.node crypto/randomx/build/librandomx.a
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Zip
         run: python wallet/pack/zip_windows.py
+      - name: Refuse a Windows zip without shear_v3.dll
+        run: python wallet/pack/check_shear_v3_bundled.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip
       - name: Attach to GitHub release
+        if: ${{ inputs.attach }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-windows.zip --clobber
+          gh release upload ${{ inputs.pin }} wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: shear-wallet-${{ inputs.pin }}-windows
-          path: dist/shear-wallet-${{ inputs.pin }}-windows.zip
+          path: wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip
+          if-no-files-found: error

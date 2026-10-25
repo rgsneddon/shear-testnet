@@ -25,32 +25,71 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: dtolnay/rust-toolchain@stable
+      # The zip carries the node sidecar, so its addons and node_modules are
+      # built here. shear_admit.dll and the addons come from the GNU Rust
+      # toolchain and MSYS2 UCRT64 gcc (as node-v17.yml packs the node): those
+      # DLLs keep a symbol table, so scripts/isa_scan.py can check every
+      # function. The MSVC linker keeps none.
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-python
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.6'
           channel: stable
+      - name: Node sidecar addons, GNU toolchain
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:$PATH"
+          VER=$(node -p process.version)
+          rm -rf .node-headers && mkdir -p .node-headers
+          curl -fsSL "https://nodejs.org/dist/${VER}/node-${VER}-headers.tar.gz" | tar -xz -C .node-headers
+          export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
+          test -f "$NODE_INC/node_api.h"
+          npm ci --ignore-scripts
+          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
+          rustup override set stable-x86_64-pc-windows-gnu
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=gcc
+          bash scripts/randomx_build.sh -G "MinGW Makefiles"
+          make -C crypto/native
+          test -f crypto/native/shearhash.node
+          test -f crypto/native/shearadmit.node
       - name: Build Windows GUI + CLI
         working-directory: wallet
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
         run: |
+          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin;$env:PATH"
           $env:CL = "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
+          rustup override set stable-x86_64-pc-windows-gnu
           flutter config --enable-windows-desktop
           flutter pub get
           dart run tool/checkpoint_guard.dart --release
-          if (-not (Test-Path 'C:\msys64\mingw64\bin\gcc.exe') -and -not (Test-Path 'C:\tools\msys64\mingw64\bin\gcc.exe')) {
-            choco install msys2 -y --no-progress
-            $bash = @('C:\msys64\usr\bin\bash.exe', 'C:\tools\msys64\usr\bin\bash.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
-            & $bash -lc 'pacman --noconfirm -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake'
-          }
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/shear_admit.dll).Trim()
           flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $define
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force -Path dist-cli | Out-Null
           cmd /c "dart compile exe bin/shear.dart -o dist-cli/shear.exe & exit /b 0"
-      - name: No AVX2+ in baseline code of the wallet native libraries
+      - name: No code above the x86-64 baseline in the native libraries
         run: |
-          $env:OBJDUMP = @('C:\msys64\mingw64\bin\objdump.exe', 'C:\tools\msys64\mingw64\bin\objdump.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
-          python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll
+          $env:OBJDUMP = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\objdump.exe"
+          python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll crypto/native/shearhash.node crypto/native/shearadmit.node crypto/randomx/build/librandomx.a
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Zip GUI
         run: python wallet/pack/zip_windows.py

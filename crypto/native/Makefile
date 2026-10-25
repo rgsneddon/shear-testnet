@@ -7,7 +7,12 @@ CFLAGS ?= -O2 -Wall -fPIC
 # x86_64 public builds pin the ISA baseline, not the compiler's default, which
 # can be higher (scripts/randomx_build.sh says why; scripts/isa_scan.py checks
 # the addons). Build librandomx.a with that script too.
-ifneq ($(filter x86_64 amd64 AMD64,$(shell uname -m 2>/dev/null)),)
+ARCH_M := $(shell uname -m 2>/dev/null)
+# cmd or PowerShell with mingw32-make has no uname: the CPU is PROCESSOR_ARCHITECTURE.
+ifeq ($(strip $(ARCH_M)),)
+  ARCH_M := $(PROCESSOR_ARCHITECTURE)
+endif
+ifneq ($(filter x86_64 amd64 AMD64,$(ARCH_M)),)
   X86_BASELINE := -march=x86-64 -mtune=generic
 endif
 UNAME_S := $(shell uname -s 2>/dev/null)

@@ -149,6 +149,8 @@ describe('x86_64 ISA baseline', () => {
     for (const rel of ['miner/Makefile', 'sheark-miner/Makefile', 'crypto/native/Makefile']) {
       const mk = read(rel);
       assert.match(mk, /X86_BASELINE := -march=x86-64 -mtune=generic/, rel);
+      // cmd or PowerShell with mingw32-make has no uname: the CPU still decides.
+      assert.match(mk, /\$\(PROCESSOR_ARCHITECTURE\)/, `${rel} falls back to PROCESSOR_ARCHITECTURE`);
       const rules = mk.split('\n').filter((l) => /^\t\$\((CC|CXX)\) /.test(l));
       assert.ok(rules.length >= 2, rel);
       for (const l of rules) assert.match(l, /^\t\$\((CC|CXX)\) \$\(X86_BASELINE\) \$\(CFLAGS\)/, `${rel}: ${l}`);
@@ -174,8 +176,19 @@ describe('x86_64 ISA baseline', () => {
     assert.ok(wf('wallet-tests.yml').includes('python3 scripts/isa_scan.py wallet/native/libshear_v3.so crypto/randomx/build/librandomx.a crypto/native/admit/target/release/libshear_admit.so'));
     const rel = wf('wallet-release.yml');
     assert.ok(rel.includes('python3 ../scripts/isa_scan.py ../wallet/native/libshear_v3.so ../crypto/randomx/build/librandomx.a ../crypto/native/admit/target/release/libshear_admit.so'));
-    assert.ok(rel.includes('python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll'));
-    assert.match(read('scripts/packaging/build-inside.sh'), /python3 "\$\{SRC\}\/scripts\/isa_scan\.py" "\$\{RX\}\/build\/librandomx\.a"/);
+    const winScan = 'python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll crypto/native/shearhash.node crypto/native/shearadmit.node';
+    assert.ok(rel.includes(winScan), 'wallet-release windows scans its native libraries');
+    assert.ok(wf('wallet-windows.yml').includes(winScan), 'wallet-windows scans its native libraries');
+    // The Windows wallet DLLs come from the GNU toolchain, so they keep symbols to scan.
+    for (const f of ['wallet-release.yml', 'wallet-windows.yml']) {
+      assert.match(wf(f), /rustup override set stable-x86_64-pc-windows-gnu/, f);
+      assert.match(wf(f), /npm ci --ignore-scripts/, `${f} builds the node sidecar's node_modules`);
+    }
+    const inside = read('scripts/packaging/build-inside.sh');
+    assert.match(inside, /python3 "\$\{SRC\}\/scripts\/isa_scan\.py" "\$\{RX\}\/build\/librandomx\.a"/);
+    // The desktop build runs as builder and reconfigures RandomX; root built it.
+    const own = inside.indexOf('chown -R builder:builder "${RX}/build"');
+    assert.ok(own > 0 && own < inside.indexOf('as-builder flutter build linux'), 'build trees are builder\'s before the desktop build');
   });
 
   it('every job that builds and scans on the Linux host runs on ubuntu-24.04, not ubuntu-latest', () => {
@@ -184,7 +197,7 @@ describe('x86_64 ISA baseline', () => {
     const hostJobs = {
       'full-suite.yml': ['shard'], 'day-one.yml': ['node'], 'shear-fs1.yml': ['node-routes'],
       'sheark-packs.yml': ['linux'], 'wallet-tests.yml': ['spendable'], 'wallet-release.yml': ['linux'],
-      'node-linux.yml': ['linux'], 'node-v17.yml': ['linux'],
+      'node-linux.yml': ['linux'], 'node-v17.yml': ['linux'], 'wallet-linux.yml': ['linux'],
     };
     for (const [f, jobs] of Object.entries(hostJobs)) {
       const text = read(`.github/workflows/${f}`).replace(/\r\n/g, '\n');

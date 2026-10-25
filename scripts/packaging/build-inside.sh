@@ -118,6 +118,10 @@ fi
 
 if [ "${SHEAR_PACK_DESKTOP:-1}" = "1" ]; then
   log "wallet desktop"
+  # The desktop build runs as builder and reconfigures RandomX through
+  # scripts/randomx_build.sh (wallet/native/build-shear-v3.sh) and builds the
+  # admit cdylib, so the build trees root made above must be builder's.
+  chown -R builder:builder "${RX}/build" "${SRC}/crypto/native/admit/target"
   su -s /bin/bash builder -c '/usr/local/bin/as-builder flutter build linux --release'
   test -x "${SRC}/wallet/build/linux/x64/release/bundle/shear_wallet"
 fi
