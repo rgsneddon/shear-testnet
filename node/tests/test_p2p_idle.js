@@ -7,6 +7,8 @@ import path from 'node:path';
 import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { p2pHashStats, resetP2pHashStats } from '../../crypto/hash_offloop.js';
 import { encodeHeader } from '../../crypto/header.js';
+import { packHashCreditBytes } from '../../crypto/hash_owed.js';
+import { noteCommitOfDest20 } from '../../crypto/note.js';
 import { assessHeader, GENESIS_PREV, headerHash } from '../src/chain.js';
 import { OPEN_ROUND_PEER_RATE, createStore } from '../src/store.js';
 import {
@@ -25,6 +27,7 @@ import {
   P2P_SERVE_HEADERS_PER_WINDOW,
   P2P_SERVE_WINDOW_MS,
   STAGE_HOLD_BASE_MS,
+  STAGE_HOLD_BODIES,
   STAGE_HOLD_MAX_MS,
   createP2p,
   fingerprintHelloHash,
@@ -1891,6 +1894,160 @@ describe('p2p hello deadline and idle eviction', () => {
       sock.write(frame({ type: 'block', block: { hash: wire.hash, height: 1, header: wire.header } }));
       for (let i = 0; i < 40 && calls < 2; i += 1) await delay(25);
       assert.equal(calls, 2, 'honest body verified');
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('a free or undecodable block frame does not reset a busy streak, and only a page we asked for resets the header streak', async () => {
+    const server = net.createServer((sock) => {
+      sock.on('data', (buf) => { if (buf.toString().includes('"type":"hello"')) sock.write(helloLine()); });
+      sock.on('error', () => {});
+    });
+    let remote = null;
+    server.on('connection', (sock) => { remote = sock; });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    const mesh = createP2p({
+      store: { blocks: [], mempool: [], tip: () => null, on() { return () => {}; } },
+      port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000,
+    });
+    try {
+      await mesh.connect('127.0.0.1', server.address().port);
+      for (let i = 0; i < 40 && !remote; i += 1) await delay(25);
+      await delay(40);
+      const rec = [...mesh.peers.values()][0];
+      assert.ok(rec?.helloAt);
+      const line = (msg) => `${JSON.stringify({ magic: MAGIC_TESTNET, ...msg })}\n`;
+      const id = 'ab'.repeat(32);
+      rec.pending = new Set([id]);
+      remote.write(line({ type: 'serve_busy', what: 'getblock', hash: id }));
+      await delay(50);
+      assert.equal(rec.busyStreak, 1);
+      // A two-row `blocks` frame ending in the hash we asked for is returned
+      // unread, and a `block` that does not decode is too. Neither is an answer.
+      remote.write(line({ type: 'blocks', blocks: [{}, { hash: id }] }));
+      remote.write(line({ type: 'block', block: { hash: id, header: 'zz' } }));
+      await delay(80);
+      assert.equal(rec.busyStreak, 1, 'free frames leave the busy streak');
+      // The header streak: an empty page, or a page we did not ask for, leaves
+      // it; a page answering our getheaders ends it.
+      const page = [{ hash: '45'.repeat(32), height: 1, header: Buffer.alloc(128, 0x45).toString('hex') }];
+      rec.headerBusyStreak = 2;
+      rec.headersAskedAt = Date.now();
+      remote.write(line({ type: 'headers', headers: [] }));
+      await delay(50);
+      assert.equal(rec.headerBusyStreak, 2, 'an empty page is not an answer');
+      rec.headersAskedAt = 0;
+      remote.write(line({ type: 'headers', headers: page }));
+      await delay(50);
+      assert.equal(rec.headerBusyStreak, 2, 'an unsolicited page is not an answer');
+      rec.headersAskedAt = Date.now();
+      remote.write(line({ type: 'headers', headers: page }));
+      await delay(50);
+      assert.equal(rec.headerBusyStreak, 0, 'the page we asked for ends the streak');
+    } finally {
+      mesh.close();
+      server.close();
+    }
+  });
+
+  it('a body carrying hash credits is stage-held like any other', async () => {
+    const wire = matchingBlock(0x63);
+    const dest20 = Buffer.alloc(20, 0x2c);
+    // Hash-credit rows decode with BigInt nanos; the hold key must still form.
+    const credits = packHashCreditBytes([{ noteCommit: noteCommitOfDest20(dest20), dest20, nanos: 7n }]).toString('hex');
+    let calls = 0;
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest(fork) {
+        calls += 1;
+        assert.equal(typeof fork?.[0]?.hashCredits?.[0]?.nanos, 'bigint', 'credits decode to BigInt nanos');
+        return { ok: false, reason: 'apply_stage' };
+      },
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000, stageHoldBaseMs: 60_000 });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const rec = () => [...p2p.peers.values()].find((row) => row.helloAt);
+      const body = { hash: wire.hash, height: 1, header: wire.header, hashCreditPacked: credits };
+      sock.write(frame({ type: 'block', block: body }));
+      for (let i = 0; i < 40 && calls < 1; i += 1) await delay(25);
+      assert.equal(calls, 1);
+      for (let i = 0; i < 40 && rec()?.verifying?.size; i += 1) await delay(25);
+      // Old code could not key this body (JSON.stringify throws on a BigInt),
+      // so the hold was never written and every resend verified again.
+      sock.write(frame({ type: 'block', block: body }));
+      await delay(80);
+      assert.equal(calls, 1, 'the credit-carrying body is held');
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('a header holds at most STAGE_HOLD_BODIES bodies', async () => {
+    const wire = matchingBlock(0x65);
+    let calls = 0;
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest() {
+        calls += 1;
+        return { ok: false, reason: 'apply_stage' };
+      },
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000, stageHoldBaseMs: 60_000 });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const rec = () => [...p2p.peers.values()].find((row) => row.helloAt);
+      // Bodies that differ outside the header commitment, each throwing in stage.
+      const variants = STAGE_HOLD_BODIES + 3;
+      for (let i = 0; i < variants; i += 1) {
+        sock.write(frame({ type: 'block', block: { hash: wire.hash, height: 1, header: wire.header, miner: `variant-${i}` } }));
+        for (let k = 0; k < 40 && calls < i + 1; k += 1) await delay(25);
+        for (let k = 0; k < 40 && rec()?.verifying?.size; k += 1) await delay(25);
+      }
+      assert.equal(calls, variants, 'each distinct body was verified once');
+      const held = p2p.stageHoldBodies(Buffer.from(wire.header, 'hex').toString('hex'));
+      assert.equal(held, STAGE_HOLD_BODIES, `held bodies ${held}`);
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('a late answer behind our own asks is not scored as an unsolicited claim burst', async () => {
+    const asked = [];
+    for (let n = 0; n < P2P_CLAIM_QUEUE; n += 1) asked.push(matchingBlock(0x80 + n));
+    const late = matchingBlock(0x9f);
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest() { return new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 200)); },
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000 });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const rec = [...p2p.peers.values()].find((row) => row.helloAt);
+      // P2P_CLAIM_QUEUE bodies we asked this peer for, then one body we did
+      // not (a late answer after a handoff). Old code counted the asked
+      // claims against the unsolicited cap and scored the late one.
+      rec.pending = new Set(asked.map((row) => row.hash));
+      for (const row of asked) sock.write(frame({ type: 'block', block: { hash: row.hash, height: 1, header: row.header } }));
+      sock.write(frame({ type: 'block', block: { hash: late.hash, height: 1, header: late.header } }));
+      await delay(400);
+      assert.equal(Number(rec.expensiveFails) || 0, 0, 'no claim_queue score for an honest late answer');
     } finally {
       p2p.close();
     }

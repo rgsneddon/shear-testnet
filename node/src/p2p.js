@@ -470,6 +470,8 @@ export const P2P_SERVE_CREDIT_BLOCKS = 64;
 export const STAGE_HOLD_BASE_MS = 60_000;
 export const STAGE_HOLD_MAX_MS = 15 * 60_000;
 export const STAGE_HOLD_CAP = 1024;
+/** Held bodies per header. Past it the hold ending soonest is dropped, so memory stays bounded. */
+export const STAGE_HOLD_BODIES = 8;
 
 export function nextStageHold(prev, now = Date.now(), base = STAGE_HOLD_BASE_MS, max = STAGE_HOLD_MAX_MS) {
   const prior = Number(prev?.delay) || 0;
@@ -620,27 +622,35 @@ export function locatorHashes(blocks, { max = 32 } = {}) {
   return out;
 }
 
+/** Locator hashes read from a getheaders. Ours sends at most 33 (locatorHashes plus the side tip). */
+export const LOCATOR_MAX = 64;
+
 /**
  * Headers after the requester's locator. `locator: []` starts at genesis.
  * Legacy getheaders (no locator field) treats stopHash as the have-hash.
  * When locator is present, stopHash is the target to include, then stop.
+ * `indexOf` finds a hash in `blocks`; the node passes its per-tip index, so
+ * a request costs O(locator), not O(locator x height). Only the first
+ * LOCATOR_MAX locator hashes are read.
  */
 export function selectHeadersAfterLocator(blocks, {
   locator,
   stopHash = '',
   limit = HEADERS_PAGE,
+  indexOf = null,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
+  const find = typeof indexOf === 'function' ? indexOf : (h) => headerIndexByHash(list, h);
   const hasLocatorField = Array.isArray(locator);
   const locators = hasLocatorField
-    ? locator.map((x) => wireHash(x)).filter(Boolean)
+    ? locator.slice(0, LOCATOR_MAX).map((x) => wireHash(x)).filter(Boolean)
     : [];
   const stop = wireHash(stopHash);
   if (!hasLocatorField && stop) locators.push(stop);
 
   let start = 0;
   for (const h of locators) {
-    const idx = headerIndexByHash(list, h);
+    const idx = find(h);
     if (idx >= 0) {
       start = idx + 1;
       break;
@@ -763,7 +773,7 @@ export function nextSequentialHeader({
 } = {}) {
   const wantH = Math.max(0, Number(localHeight) || 0) + 1;
   const prev = String(localHash || '').toLowerCase();
-  const haveSet = have instanceof Set ? have : new Set(have || []);
+  const haveSet = have instanceof Set || typeof have?.has === 'function' ? have : new Set(have || []);
   const failSet = failed instanceof Set ? failed : new Set(failed || []);
   const pendSet = pending instanceof Set ? pending : new Set(pending || []);
   for (const h of headers || []) {
@@ -1053,7 +1063,10 @@ export async function rejectUnprovenTipExtend(store, block) {
 function headerSkipped(hash, have, failed, pending) {
   const h = String(hash || '').toLowerCase();
   if (!h) return true;
-  const has = (set) => (set instanceof Set ? set.has(h) : Array.isArray(set) && set.includes(h));
+  const has = (set) => {
+    if (set instanceof Set || typeof set?.has === 'function') return set.has(h);
+    return Array.isArray(set) && set.includes(h);
+  };
   return has(have) || has(failed) || has(pending);
 }
 
@@ -1087,14 +1100,17 @@ export function competingHeader({
   have,
   failed,
   pending,
+  indexOf = null,
 } = {}) {
+  // The node passes its per-tip index: a page costs O(page), not O(page x height).
+  const find = typeof indexOf === 'function' ? indexOf : (h) => headerIndexByHash(blocks, h);
   const tip = String(localHash || '').toLowerCase();
   for (const h of headers || []) {
     const hash = wireHash(h.hash);
     if (!hash || headerSkipped(hash, have, failed, pending)) continue;
     const prev = headerPrevHash(h.header);
     if (!prev || (tip && prev === tip)) continue;
-    if (headerIndexByHash(blocks, prev) < 0) continue;
+    if (find(prev) < 0) continue;
     return { hash, height: Number(h.height) || 0 };
   }
   return null;
@@ -1347,15 +1363,24 @@ export function createP2p({
     return t ? Buffer.from(t.hash).toString('hex') : '';
   }
 
+  /**
+   * Stored hashes, through the per-tip index. A Set of the whole chain cost
+   * O(height) per tip, headers or block frame, unscored (Protocol lane, P1).
+   */
+  function storedView() {
+    return { has: (h) => storedIndex(h) >= 0 };
+  }
+
+  /** Stored hashes plus the staged side branch (short). */
   function seenHashes() {
-    const have = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
+    const side = new Set();
     if (typeof store.sideHashes === 'function') {
       for (const h of store.sideHashes()) {
         const hex = hexHash(h);
-        if (hex) have.add(hex);
+        if (hex) side.add(hex.toLowerCase());
       }
     }
-    return have;
+    return { has: (h) => storedIndex(h) >= 0 || side.has(String(h || '').toLowerCase()) };
   }
 
   function tipMsg() {
@@ -1515,6 +1540,7 @@ export function createP2p({
       if (bestAheadSock() !== sock) return;
     } else if (bestCatchupSock() !== sock) return;
     rec.syncing = true;
+    rec.headersAskedAt = Date.now();
     send(sock, {
       type: 'getheaders',
       magic,
@@ -1650,7 +1676,7 @@ export function createP2p({
     const peerH = Number(msg?.height);
     const localH = Number(store.tip()?.height || 0);
     if (!hash || !Number.isFinite(peerH) || peerH !== localH + 1) return false;
-    const have = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
+    const have = storedView();
     if (have.has(hash)) return false;
     if (!rec.pending) rec.pending = new Set();
     if (!rec.failed) rec.failed = new Set();
@@ -1821,7 +1847,7 @@ export function createP2p({
     if (!rec.pending) rec.pending = new Set();
     if (!rec.failed) rec.failed = new Set();
     drainRetryPrev(rec);
-    const have = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
+    const have = storedView();
     while (rec.pending.size < getblockBatch() && rec.want.length) {
       const hash = rec.want[0];
       if (!hash || have.has(hash) || failActive(rec, hash) || rec.pending.has(hash)) {
@@ -2035,7 +2061,10 @@ export function createP2p({
       // The claimed id and the height hint are not the body: a resend of the
       // same body under another claim is the same held body.
       const { hash: _claim, height: _hint, ...body } = block || {};
-      return createHash('sha256').update(JSON.stringify(body)).digest('hex');
+      // Hash-credit rows carry BigInt nanos, which JSON.stringify refuses;
+      // an empty key would hold nothing, so they are written as tagged text.
+      const text = JSON.stringify(body, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v));
+      return createHash('sha256').update(text).digest('hex');
     } catch {
       return '';
     }
@@ -2053,6 +2082,19 @@ export function createP2p({
     if (!key || !body) return;
     const byBody = stageHolds.get(key) || new Map();
     byBody.set(body, nextStageHold(byBody.get(body), now, stageHoldBase, STAGE_HOLD_MAX_MS));
+    while (byBody.size > STAGE_HOLD_BODIES) {
+      let drop = '';
+      let soon = Infinity;
+      for (const [k, row] of byBody) {
+        if (k === body) continue;
+        if (Number(row?.until) < soon) {
+          soon = Number(row.until);
+          drop = k;
+        }
+      }
+      if (!drop) break;
+      byBody.delete(drop);
+    }
     stageHolds.set(key, byBody);
     while (stageHolds.size > STAGE_HOLD_CAP) {
       let drop = '';
@@ -2097,17 +2139,17 @@ export function createP2p({
       sock.destroy();
       return;
     }
-    // Only an answer to a hash we asked this peer for ends its busy streak.
-    // Junk block frames, unsolicited naks and census chatter do not.
+    // Only a real answer to a hash we asked this peer for ends its busy
+    // streak: a nak or not-found for it here, or its body once that passes
+    // the claim check (ingestDecodedFork). A block frame is not an answer
+    // until then, so a free or undecodable frame resets nothing. Census
+    // chatter does not either. The header streak ends on a page that
+    // answers our getheaders (the headers handler).
     if (welcomed && heard && heard.pending instanceof Set
-      && (msg.type === 'block' || msg.type === 'blocks' || msg.type === 'getblock_nak' || msg.type === 'block_not_found')) {
-      const rows = msg.block ? [msg.block] : (Array.isArray(msg.blocks) ? msg.blocks : []);
-      const answered = msg.type === 'getblock_nak' || msg.type === 'block_not_found'
-        ? wireHash(msg.hash)
-        : wireHash(rows[rows.length - 1]?.hash);
+      && (msg.type === 'getblock_nak' || msg.type === 'block_not_found')) {
+      const answered = wireHash(msg.hash);
       if (answered && heard.pending.has(answered)) heard.busyStreak = 0;
     }
-    if (welcomed && heard && msg.type === 'headers') heard.headerBusyStreak = 0;
     if (msg.type === 'hello') {
       const rec = heard || { id: ++peerSeq, remote: peerRemoteKey(sock), hash: null, height: 0 };
       rec.remote = peerRemoteKey(sock) || rec.remote;
@@ -2215,6 +2257,7 @@ export function createP2p({
         locator: msg.locator,
         stopHash: msg.stopHash || msg.hashStop || '',
         limit: HEADERS_PAGE,
+        indexOf: storedIndex,
       });
       if (!hdrs.length) {
         if (msg.type === 'getheaders') send(sock, { type: 'headers', magic, headers: hdrs });
@@ -2240,6 +2283,12 @@ export function createP2p({
       const have = seenHashes();
       const page = msg.headers || [];
       rec.page = page;
+      // A non-empty page answering our getheaders ends the header busy
+      // streak. An empty or unsolicited page does not.
+      if (rec.headersAskedAt && Array.isArray(page) && page.length) {
+        rec.headerBusyStreak = 0;
+        rec.headersAskedAt = 0;
+      }
       // A pruned body served next needs these headers to show its burial.
       let offered = null;
       if (typeof store.offerHeaders === 'function') {
@@ -2283,6 +2332,7 @@ export function createP2p({
       }) || competingHeader({
         headers: page,
         blocks: store.blocks || [],
+        indexOf: storedIndex,
         localHash,
         have,
         failed: blocked,
@@ -2521,26 +2571,34 @@ export function createP2p({
       // A body we asked for is bounded by our own getblock window. A full
       // queue hands the hash back to want, so it is not left in flight.
       const asked = !!(lastHash && recNow?.pending?.has(lastHash));
-      const claimCap = asked ? Math.max(P2P_CLAIM_QUEUE, getblockBatch()) : P2P_CLAIM_QUEUE;
-      if (recNow && (Number(recNow.claimQueued) || 0) + jobs > claimCap) {
-        if (asked) {
-          inflightBlocks.delete(lastHash);
-          recNow.pending.delete(lastHash);
-          if (!Array.isArray(recNow.want)) recNow.want = [];
-          if (!recNow.want.includes(lastHash)) recNow.want.unshift(lastHash);
-          if (recNow.pending.size === 0) {
-            recNow.pendingAt = 0;
-            recNow.syncing = false;
-          }
-        } else {
-          scoreHashClaim(sock, 'claim_queue');
+      const room = Math.max(P2P_CLAIM_QUEUE, getblockBatch());
+      const queued = (Number(recNow?.claimQueued) || 0) + jobs;
+      if (recNow && asked && queued > room) {
+        inflightBlocks.delete(lastHash);
+        recNow.pending.delete(lastHash);
+        if (!Array.isArray(recNow.want)) recNow.want = [];
+        if (!recNow.want.includes(lastHash)) recNow.want.unshift(lastHash);
+        if (recNow.pending.size === 0) {
+          recNow.pendingAt = 0;
+          recNow.syncing = false;
         }
         return;
+      }
+      if (recNow && !asked) {
+        // Only unsolicited claims count against the unsolicited cap: a late
+        // answer behind our own asks is honest, so it is dropped unscored
+        // when there is no room, and scored only past P2P_CLAIM_QUEUE
+        // unsolicited claims in flight.
+        if ((Number(recNow.unaskedQueued) || 0) + jobs > P2P_CLAIM_QUEUE) {
+          scoreHashClaim(sock, 'claim_queue');
+          return;
+        }
+        if (queued > room) return;
       }
       checkBlockClaims(sock, fork, (rows) => {
         const proven = rows?.find((row) => row?.computed)?.computed || '';
         ingestDecodedFork(sock, fork, last, lastHash, recNow, proven);
-      });
+      }, asked ? 0 : jobs);
       return;
     }
   }
@@ -2694,6 +2752,21 @@ export function createP2p({
     return at == null ? -1 : at;
   }
 
+  /**
+   * Whether store.ingest could attach this block: an empty book, the genesis
+   * parent, a stored parent, or the side tip. Mirrors locateFork, so a block
+   * this refuses would only have come back `prev`.
+   */
+  function parentKnown(block) {
+    const prev = headerPrevHash(block?.header);
+    if (!prev) return true;
+    if (!Array.isArray(store.blocks) || !store.blocks.length) return true;
+    if (/^0{64}$/.test(prev)) return true;
+    if (storedIndex(prev) >= 0) return true;
+    const side = typeof store.sideTipHash === 'function' ? String(store.sideTipHash() || '').toLowerCase() : '';
+    return !!side && side === prev;
+  }
+
   function rememberHeaderClaim(headerHex, hashHex) {
     headerClaims.delete(headerHex);
     headerClaims.set(headerHex, hashHex);
@@ -2770,8 +2843,10 @@ export function createP2p({
     rec.syncing = false;
   }
 
-  function checkBlockClaims(sock, fork, next) {
+  function checkBlockClaims(sock, fork, next, unasked = 0) {
     const rec = peers.get(sock);
+    // Unsolicited claims in flight, counted apart from asked ones until the frame ends.
+    if (rec && unasked > 0) rec.unaskedQueued = (Number(rec.unaskedQueued) || 0) + unasked;
     const lastHash = wireHash(fork[fork.length - 1]?.hash);
     // A claim that misses its own header's target costs no ShearHash. The
     // rest are hashed one at a time and the first mismatch ends the frame, so
@@ -2799,7 +2874,11 @@ export function createP2p({
         rows.push(row);
         return rows;
       }), Promise.resolve([]));
-    const verdicts = checked.finally(() => handBack(held));
+    const verdicts = checked.finally(() => {
+      handBack(held);
+      const live = peers.get(sock);
+      if (live && unasked > 0) live.unaskedQueued = Math.max(0, (Number(live.unaskedQueued) || 0) - unasked);
+    });
     const prior = rec?.claimOrder || Promise.resolve();
     const turn = prior.then(() => verdicts).then((rows) => {
       if (!rows) {
@@ -2853,8 +2932,7 @@ export function createP2p({
       // The claim was already checked against the header hash.
       const extendsTip = fork.length === 1 && blockExtendsTip(store, fork[0]);
       if (!extendsTip) {
-        const haveNow = new Set((store.blocks || []).map((b) => hexHash(b.hash).toLowerCase()));
-        if (lastHash && haveNow.has(lastHash)) {
+        if (lastHash && storedIndex(lastHash) >= 0) {
           if (recNow) {
             recNow.pending?.delete(lastHash);
             for (const key of headerKeys) recNow.verifying?.delete(key);
@@ -2868,6 +2946,9 @@ export function createP2p({
         if (!recNow.pending) recNow.pending = new Set();
         if (!recNow.failed) recNow.failed = new Set();
         if (!recNow.verifying) recNow.verifying = new Set();
+        // The body we asked this peer for passed its claim check: that is an
+        // answer, so it ends the peer's busy streak.
+        if (lastHash && recNow.pending.has(lastHash)) recNow.busyStreak = 0;
         if (lastHash) recNow.pending.delete(lastHash);
         for (const key of headerKeys) recNow.verifying.add(key);
         if (headerKeys.length) recNow.syncing = true;
@@ -2877,6 +2958,11 @@ export function createP2p({
         // IBD validates every block. A peer-advertised height is not a skip.
         // store.append proves a tip extension's header target before the
         // claimed hash meets the book. A synchronous ingest throw rejects.
+        // A first block whose parent is neither stored nor the side tip can
+        // only come back `prev`, after store.ingest walks the whole chain for
+        // it. Answer that here in O(1); the `prev` branch below asks for the
+        // parent as before.
+        if (!parentKnown(fork[0])) return Promise.resolve({ got: { ok: false, reason: 'prev', tip: before }, before });
         const go = () => Promise.resolve().then(() => store.ingest(fork, {
           offLoopPow: true,
           ...(provenHeaderHash ? { provenHeaderHash } : {}),
@@ -2909,7 +2995,7 @@ export function createP2p({
             if (!needsBook) {
               if (isFinalIngestFail(reason)) rec.failed.add(lastHash);
             } else {
-              const have = new Set((store.blocks || []).map((b) => hexHash(b.hash)));
+              const have = storedView();
               if (reason === 'prev' && !have.has(lastHash)) {
                 queueMissingParent(rec, lastHash, headerPrevHash(last?.header));
               } else if (reason === 'samples_pruned' && !have.has(lastHash)) {
@@ -2918,6 +3004,7 @@ export function createP2p({
                 // stays out of `failed`, so a later full run can still bury it.
                 holdBurial(rec, lastHash);
                 rec.syncing = false;
+                rec.headersAskedAt = Date.now();
                 send(sock, {
                   type: 'getheaders',
                   magic,
@@ -3382,6 +3469,8 @@ export function createP2p({
     getblockServeBacklog: () => getblockServeQ.length,
     getblockServeSent: () => getblockServeSent,
     getblockServeMaxBacklog: () => getblockServeMaxBacklog,
+    /** Bodies held under one header (stage holds). Read-only, for tests. */
+    stageHoldBodies: (headerHex) => stageHolds.get(String(headerHex || '').toLowerCase())?.size || 0,
     syncSnapshot: () => syncSnapshot(peers),
     originInvSetSize: (id) => Number(originInvSize.get(String(id || '')) || 0),
     get port() { return server?.address()?.port ?? port; },
