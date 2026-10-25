@@ -81,11 +81,32 @@ function frame(msg) {
 
 async function helloPeer(port) {
   const sock = net.connect(port, '127.0.0.1');
-  sock.on('data', () => {});
+  // Every line the node sends us, in order: a reply proves the frames we
+  // wrote before its request were handled (one socket, one reader).
+  sock.lines = [];
+  let buf = '';
+  sock.on('data', (chunk) => {
+    buf += chunk.toString();
+    let at;
+    while ((at = buf.indexOf('
+')) >= 0) {
+      try { sock.lines.push(JSON.parse(buf.slice(0, at))); } catch { /* not a frame */ }
+      buf = buf.slice(at + 1);
+    }
+  });
   sock.on('error', () => {});
   await new Promise((resolve, reject) => { sock.once('connect', resolve); sock.once('error', reject); });
   sock.write(`${JSON.stringify({ type: 'hello', magic: MAGIC_REGTEST, fingerprint: fingerprintHelloHash(MAGIC_REGTEST) })}\n`);
   return sock;
+}
+
+/** Wait for the node's next `type` line after `seen` lines. */
+async function replyAfter(sock, seen, type, ms = 20_000) {
+  for (let i = 0; i < ms / 10; i += 1) {
+    if (sock.lines.slice(seen).some((m) => m?.type === type)) return true;
+    await delay(10);
+  }
+  return false;
 }
 
 function recFor(p2p, sock) {
@@ -206,17 +227,22 @@ describe('a p2p block frame has a bounded cost', () => {
 
       // Empty headers frames. Old code: a full-chain Set per frame (seenHashes).
       counter.reset();
+      let seen = sock.lines.length;
       for (let i = 0; i < copies; i += 1) sock.write(frame({ type: 'headers', headers: [] }));
-      await delay(400);
-      assert.ok(counter.reads <= H + 4 * copies, `headers frames read store.blocks ${counter.reads} times for H=${H}`);
+      // A getheaders from our tip answers after every frame above was read.
+      const tipHex = Buffer.from(store.tip().hash).toString('hex');
+      sock.write(frame({ type: 'getheaders', locator: [tipHex], stopHash: '' }));
+      assert.ok(await replyAfter(sock, seen, 'headers'), 'the node answered after the empty frames');
+      assert.ok(counter.reads <= H + 4 * copies + 8, `headers frames read store.blocks ${counter.reads} times for H=${H}`);
 
       // A getheaders with 1000 unknown locator hashes. Old code: one chain
       // walk per locator hash, 1000 x H. Now: LOCATOR_MAX lookups, then the
       // page itself (at most H rows).
       counter.reset();
       const longLocator = Array.from({ length: 1000 }, () => randomBytes(32).toString('hex'));
+      seen = sock.lines.length;
       sock.write(frame({ type: 'getheaders', locator: longLocator, stopHash: '' }));
-      await delay(400);
+      assert.ok(await replyAfter(sock, seen, 'headers'), 'the long-locator getheaders was answered');
       assert.ok(counter.reads <= 3 * H + LOCATOR_MAX, `getheaders read store.blocks ${counter.reads} times for H=${H}`);
       assert.ok(counter.reads < 1000 * H / 4, 'well under one walk per locator hash');
       sock.destroy();
