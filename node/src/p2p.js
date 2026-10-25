@@ -2543,8 +2543,10 @@ export function createP2p({
           // another peer; the miss still counts against this peer.
           const child = recMiss.orphanAsk.get(missHash);
           recMiss.orphanAsk.delete(missHash);
-          recMiss.want = recMiss.want.filter((h) => h !== missHash);
+          // drainRetryPrev may already have moved the orphan into want.
+          recMiss.want = recMiss.want.filter((h) => h !== missHash && h !== child);
           if (child && Array.isArray(recMiss.retryPrev)) recMiss.retryPrev = recMiss.retryPrev.filter((h) => h !== child);
+          if (child) recMiss.pending?.delete(child);
         } else if (missHash && !recMiss.want.includes(missHash)) {
           recMiss.want.unshift(missHash);
         }
