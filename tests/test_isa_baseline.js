@@ -183,6 +183,11 @@ describe('x86_64 ISA baseline', () => {
     for (const f of ['wallet-release.yml', 'wallet-windows.yml']) {
       assert.match(wf(f), /rustup override set stable-x86_64-pc-windows-gnu/, f);
       assert.match(wf(f), /npm ci --ignore-scripts/, `${f} builds the node sidecar's node_modules`);
+      // shear_v3.dll uses the same UCRT64 gcc as the addons, in its own step,
+      // not whatever build-shear-v3.ps1 finds first.
+      assert.match(wf(f), /SHEAR_MINGW_GCC = "\$\{\{ steps\.msys2\.outputs\.msys2-location \}\}\\ucrt64\\bin\\gcc\.exe"/, `${f} names the gcc`);
+      assert.ok(wf(f).indexOf('-File wallet/native/build-shear-v3.ps1') > 0
+        && wf(f).indexOf('-File wallet/native/build-shear-v3.ps1') < wf(f).indexOf('flutter build windows --release'), `${f} builds shear_v3.dll before Flutter`);
     }
     const inside = read('scripts/packaging/build-inside.sh');
     assert.match(inside, /python3 "\$\{SRC\}\/scripts\/isa_scan\.py" "\$\{RX\}\/build\/librandomx\.a"/);

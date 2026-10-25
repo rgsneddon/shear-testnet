@@ -70,12 +70,22 @@ jobs:
           make -C crypto/native
           test -f crypto/native/shearhash.node
           test -f crypto/native/shearadmit.node
+      - name: shear_v3.dll, UCRT64 gcc
+        # The same gcc as the addons above. build-shear-v3.ps1 otherwise looks
+        # in C:\msys64\mingw64 first, another toolchain on this image. Built
+        # here so its output shows; Flutter's CMake target reruns it the same way.
+        run: |
+          $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin;$env:PATH"
+          $env:SHEAR_MINGW_GCC = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\gcc.exe"
+          powershell -NoProfile -ExecutionPolicy Bypass -File wallet/native/build-shear-v3.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build Windows release
         working-directory: wallet
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
         run: |
           $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin;$env:PATH"
+          $env:SHEAR_MINGW_GCC = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\gcc.exe"
           # VS 18's <experimental/coroutine> is a hard STL1011 error unless
           # silenced, as wallet-release.yml does; this workflow lacked it.
           $env:CL = "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
