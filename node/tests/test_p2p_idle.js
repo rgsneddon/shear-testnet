@@ -7,12 +7,13 @@ import path from 'node:path';
 import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { p2pHashStats, resetP2pHashStats } from '../../crypto/hash_offloop.js';
 import { encodeHeader } from '../../crypto/header.js';
-import { packHashCreditBytes } from '../../crypto/hash_owed.js';
+import { packHashCreditBytes, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
 import { assessHeader, GENESIS_PREV, headerHash } from '../src/chain.js';
 import { OPEN_ROUND_PEER_RATE, createStore } from '../src/store.js';
 import {
   HEADERS_PAGE,
+  ORPHAN_PARENT_MAX,
   P2P_ASK_BLOCKS,
   P2P_ASK_WINDOW_MS,
   P2P_BUSY_LIMIT,
@@ -42,6 +43,7 @@ import {
   peerIsBusy,
   peerShouldEvict,
   recordIngestFail,
+  stageBodyKey,
   stageHoldActive,
   takeBlockAsk,
 } from '../src/p2p.js';
@@ -1899,7 +1901,7 @@ describe('p2p hello deadline and idle eviction', () => {
     }
   });
 
-  it('a free or undecodable block frame does not reset a busy streak, and only a page we asked for resets the header streak', async () => {
+  it('a free or undecodable block frame does not reset a busy streak, and only a page answering our ask resets the header streak', async () => {
     const server = net.createServer((sock) => {
       sock.on('data', (buf) => { if (buf.toString().includes('"type":"hello"')) sock.write(helloLine()); });
       sock.on('error', () => {});
@@ -1927,23 +1929,36 @@ describe('p2p hello deadline and idle eviction', () => {
       // unread, and a `block` that does not decode is too. Neither is an answer.
       remote.write(line({ type: 'blocks', blocks: [{}, { hash: id }] }));
       remote.write(line({ type: 'block', block: { hash: id, header: 'zz' } }));
-      await delay(80);
-      assert.equal(rec.busyStreak, 1, 'free frames leave the busy streak');
-      // The header streak: an empty page, or a page we did not ask for, leaves
-      // it; a page answering our getheaders ends it.
+      // A second busy for the same ask, after the free frames: frames are read
+      // in order, so once it lands both frames were handled. A reset by
+      // either would leave the streak at 1, not 2.
+      rec.pending = new Set([id]);
+      remote.write(line({ type: 'serve_busy', what: 'getblock', hash: id }));
+      for (let i = 0; i < 80 && rec.busyStreak !== 2; i += 1) await delay(25);
+      assert.equal(rec.busyStreak, 2, 'free frames leave the busy streak');
+      // The header streak: a page answering our getheaders ends it, empty or
+      // not (an empty page is the peer's answer that it has nothing more); a
+      // page we did not ask for leaves it.
       const page = [{ hash: '45'.repeat(32), height: 1, header: Buffer.alloc(128, 0x45).toString('hex') }];
       rec.headerBusyStreak = 2;
       rec.headersAskedAt = Date.now();
       remote.write(line({ type: 'headers', headers: [] }));
-      await delay(50);
-      assert.equal(rec.headerBusyStreak, 2, 'an empty page is not an answer');
+      for (let i = 0; i < 80 && rec.headerBusyStreak !== 0; i += 1) await delay(25);
+      assert.equal(rec.headerBusyStreak, 0, 'an empty page answering our ask ends the streak');
+      rec.headerBusyStreak = 2;
       rec.headersAskedAt = 0;
       remote.write(line({ type: 'headers', headers: page }));
-      await delay(50);
+      // Sentinel: a not-found for an asked hash counts a miss once handled.
+      const sentinel = 'cd'.repeat(32);
+      rec.pending = new Set([sentinel]);
+      const missBefore = Number(rec.getblockMiss) || 0;
+      remote.write(line({ type: 'block_not_found', hash: sentinel }));
+      for (let i = 0; i < 80 && (Number(rec.getblockMiss) || 0) === missBefore; i += 1) await delay(25);
+      assert.equal(Number(rec.getblockMiss) || 0, missBefore + 1, 'sentinel handled');
       assert.equal(rec.headerBusyStreak, 2, 'an unsolicited page is not an answer');
       rec.headersAskedAt = Date.now();
       remote.write(line({ type: 'headers', headers: page }));
-      await delay(50);
+      for (let i = 0; i < 80 && rec.headerBusyStreak !== 0; i += 1) await delay(25);
       assert.equal(rec.headerBusyStreak, 0, 'the page we asked for ends the streak');
     } finally {
       mesh.close();
@@ -1982,8 +1997,11 @@ describe('p2p hello deadline and idle eviction', () => {
       // Old code could not key this body (JSON.stringify throws on a BigInt),
       // so the hold was never written and every resend verified again.
       sock.write(frame({ type: 'block', block: body }));
-      await delay(80);
-      assert.equal(calls, 1, 'the credit-carrying body is held');
+      // Sentinel: another body for the same header is verified once the held
+      // resend before it has been handled.
+      sock.write(frame({ type: 'block', block: { ...body, miner: 'sentinel' } }));
+      for (let i = 0; i < 80 && calls < 2; i += 1) await delay(25);
+      assert.equal(calls, 2, 'the credit-carrying body is held; only the sentinel verified');
     } finally {
       p2p.close();
     }
@@ -2020,6 +2038,170 @@ describe('p2p hello deadline and idle eviction', () => {
       assert.equal(held, STAGE_HOLD_BODIES, `held bodies ${held}`);
     } finally {
       p2p.close();
+    }
+  });
+
+  it('a hold key writes every value with its type, so a text-nanos copy cannot hold the packed body', async () => {
+    const dest20 = Buffer.alloc(20, 0x2d);
+    const packed = packHashCreditBytes([{ noteCommit: noteCommitOfDest20(dest20), dest20, nanos: 7n }]);
+    const rows = unpackHashCreditBytes(packed);
+    // What a peer can send unpacked: the decoded rows as JSON, Buffers as
+    // {type, data} and the BigInt nanos as the text "7n". 5e43ec02 wrote a
+    // BigInt as `${v}n` and a Buffer through its toJSON, so this copy had the
+    // packed body's key.
+    const forgedRows = JSON.parse(JSON.stringify(rows, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v)));
+    assert.notEqual(stageBodyKey({ header: 'aa', hashCredits: rows }), stageBodyKey({ header: 'aa', hashCredits: forgedRows }));
+    assert.notEqual(stageBodyKey({ x: 7n }), stageBodyKey({ x: 7 }));
+    assert.notEqual(stageBodyKey({ x: 7n }), stageBodyKey({ x: '7' }));
+    assert.notEqual(stageBodyKey({ x: Buffer.from('ab', 'hex') }), stageBodyKey({ x: 'ab' }));
+    assert.equal(stageBodyKey({ x: Buffer.from('ab', 'hex') }), stageBodyKey({ x: new Uint8Array([0xab]) }));
+    assert.equal(stageBodyKey({ header: 'aa', hash: 'claim', height: 9 }), stageBodyKey({ header: 'aa' }), 'the claim and the height hint are not the body');
+
+    // End to end: the forged copy throws in staging and is held; the honest
+    // packed body for the same header is still verified.
+    const wire = matchingBlock(0x67);
+    let calls = 0;
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest(fork) {
+        calls += 1;
+        return typeof fork?.[0]?.hashCredits?.[0]?.nanos === 'string' ? { ok: false, reason: 'apply_stage' } : { ok: true };
+      },
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000, stageHoldBaseMs: 60_000 });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const rec = () => [...p2p.peers.values()].find((row) => row.helloAt);
+      sock.write(frame({ type: 'block', block: { hash: wire.hash, height: 1, header: wire.header, hashCredits: forgedRows } }));
+      for (let i = 0; i < 40 && calls < 1; i += 1) await delay(25);
+      assert.equal(calls, 1);
+      for (let i = 0; i < 40 && rec()?.verifying?.size; i += 1) await delay(25);
+      sock.write(frame({ type: 'block', block: { hash: wire.hash, height: 1, header: wire.header, hashCreditPacked: packed.toString('hex') } }));
+      for (let i = 0; i < 80 && calls < 2; i += 1) await delay(25);
+      assert.equal(calls, 2, 'the honest packed body is verified, not held by the forged copy');
+    } finally {
+      p2p.close();
+    }
+  });
+
+  it('an asked body we already hold ends the busy streak', async () => {
+    const wire = matchingBlock(0x69);
+    const stored = { hash: Buffer.from(wire.hash, 'hex'), header: Buffer.from(wire.header, 'hex'), height: 1 };
+    const server = net.createServer((sock) => {
+      sock.on('data', (buf) => { if (buf.toString().includes('"type":"hello"')) sock.write(helloLine()); });
+      sock.on('error', () => {});
+    });
+    let remote = null;
+    server.on('connection', (sock) => { remote = sock; });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    const mesh = createP2p({
+      store: { blocks: [stored], mempool: [], tip: () => stored, on() { return () => {}; }, ingest: () => ({ ok: true }) },
+      port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000,
+    });
+    try {
+      await mesh.connect('127.0.0.1', server.address().port);
+      for (let i = 0; i < 40 && !remote; i += 1) await delay(25);
+      await delay(40);
+      const rec = [...mesh.peers.values()][0];
+      assert.ok(rec?.helloAt);
+      const line = (msg) => `${JSON.stringify({ magic: MAGIC_TESTNET, ...msg })}\n`;
+      rec.pending = new Set([wire.hash]);
+      remote.write(line({ type: 'serve_busy', what: 'getblock', hash: wire.hash }));
+      for (let i = 0; i < 40 && rec.busyStreak !== 1; i += 1) await delay(25);
+      assert.equal(rec.busyStreak, 1);
+      // The peer then serves the body: ours already, byte for byte. Old code
+      // returned before the reset, so an honest peer that lost the race kept
+      // its streak and could be demoted for busy answers to separate asks.
+      rec.pending = new Set([wire.hash]);
+      remote.write(line({ type: 'block', block: { hash: wire.hash, height: 1, header: wire.header } }));
+      for (let i = 0; i < 80 && rec.busyStreak !== 0; i += 1) await delay(25);
+      assert.equal(rec.busyStreak, 0, 'the answer ends the streak');
+    } finally {
+      mesh.close();
+      server.close();
+    }
+  });
+
+  it('an orphan flood queues at most ORPHAN_PARENT_MAX parents, and a demoted peer\'s orphan asks never move to an honest peer', { timeout: 600_000 }, async () => {
+    // Orphans under parents nobody has: each header's prev is its fill bytes.
+    const count = ORPHAN_PARENT_MAX + 4;
+    const orphans = Array.from({ length: count }, (_v, i) => matchingBlock(0x80 + i));
+    const parents = orphans.map((o) => Buffer.from(o.header, 'hex').subarray(4, 36).toString('hex'));
+    const tipBlock = { hash: Buffer.alloc(32, 0x01), header: Buffer.alloc(128, 0x01), height: 1 };
+    const servers = [];
+    const listen = () => new Promise((resolve, reject) => {
+      const server = net.createServer((sock) => {
+        sock.on('data', (buf) => { if (buf.toString().includes('"type":"hello"')) sock.write(helloLine()); });
+        sock.on('error', () => {});
+      });
+      const row = { server, remote: null };
+      server.on('connection', (sock) => { row.remote = sock; });
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => { servers.push(row); resolve(row); });
+    });
+    const attacker = await listen();
+    const honest = await listen();
+    let ingests = 0;
+    const mesh = createP2p({
+      store: { blocks: [tipBlock], mempool: [], tip: () => tipBlock, on() { return () => {}; }, ingest: () => { ingests += 1; return { ok: false, reason: 'prev' }; } },
+      port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 600_000,
+    });
+    const prevs = [];
+    const orig = console.error;
+    console.error = (...args) => {
+      try {
+        const ev = JSON.parse(String(args[0] || ''));
+        if (ev.event === 'p2p_ingest' && ev.reason === 'prev') prevs.push(ev);
+      } catch { /* not ours */ }
+    };
+    try {
+      await mesh.connect('127.0.0.1', attacker.server.address().port);
+      await mesh.connect('127.0.0.1', honest.server.address().port);
+      for (let i = 0; i < 80 && !(attacker.remote && honest.remote); i += 1) await delay(25);
+      await delay(60);
+      const recOf = (row) => [...mesh.peers.entries()].find(([sock]) => sock.remotePort === row.server.address().port)?.[1];
+      const a = recOf(attacker);
+      const h = recOf(honest);
+      assert.ok(a?.helloAt && h?.helloAt);
+      const line = (msg) => `${JSON.stringify({ magic: MAGIC_TESTNET, ...msg })}\n`;
+      // One orphan at a time, each after the last is answered prev.
+      for (let n = 0; n < count; n += 1) {
+        attacker.remote.write(line({ type: 'block', block: { hash: orphans[n].hash, height: 9, header: orphans[n].header } }));
+        for (let i = 0; i < 400 && prevs.length < n + 1; i += 1) await delay(10);
+      }
+      assert.equal(prevs.length, count, 'every orphan answered prev');
+      assert.equal(ingests, 0, 'an unknown parent never reaches store.ingest');
+      assert.equal(a.orphanAsk.size, ORPHAN_PARENT_MAX, 'orphan parents per peer are capped');
+      const queued = new Set([...(a.want || []), ...(a.pending || [])]);
+      for (const parent of parents.slice(ORPHAN_PARENT_MAX)) assert.equal(queued.has(parent), false, 'an orphan past the cap is not queued');
+      assert.ok((a.retryPrev || []).length <= ORPHAN_PARENT_MAX, `retryPrev ${(a.retryPrev || []).length}`);
+      // A hash the honest mesh did advertise, waiting on the attacker.
+      const real = 'ab'.repeat(32);
+      a.want = [...(a.want || []), real];
+      // The honest peer is ahead; the attacker answers not-found for three of
+      // its own orphan parents and is demoted, which hands its asks off.
+      h.height = 1000;
+      h.syncEligible = true;
+      for (let k = 0; k < 3; k += 1) {
+        a.pending = new Set([parents[k]]);
+        attacker.remote.write(line({ type: 'block_not_found', hash: parents[k] }));
+        for (let i = 0; i < 80 && (Number(a.getblockMiss) || 0) < k + 1; i += 1) await delay(25);
+      }
+      assert.equal(Number(a.getblockMiss) || 0, 3);
+      assert.equal(peerDemoted(a), true, 'the attacker is demoted');
+      const moved = new Set([...(h.want || []), ...(h.pending || [])]);
+      const own = new Set([...parents, ...orphans.map((o) => o.hash)]);
+      for (const hash of moved) assert.equal(own.has(hash), false, `orphan ask ${hash} moved to the honest peer`);
+      assert.equal(moved.has(real), true, 'an advertised hash still moves');
+    } finally {
+      console.error = orig;
+      mesh.close();
+      for (const row of servers) row.server.close();
     }
   });
 

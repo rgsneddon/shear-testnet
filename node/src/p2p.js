@@ -120,6 +120,8 @@ export const GETBLOCK_SERVE_PER_TURN = 1;
 export const GETBLOCK_SERVE_IBD = 16;
 /** Body misses before a peer is dropped from catch-up. */
 export const GETBLOCK_MISS_LIMIT = 3;
+/** Unknown parents queued per peer from its own orphans; see queueMissingParent. */
+export const ORPHAN_PARENT_MAX = 64;
 /** How long a demoted peer stays out of best-ahead selection. */
 export const GETBLOCK_DEMOTE_MS = 30_000;
 
@@ -999,6 +1001,34 @@ export function requeuePrevHash(rec, hash) {
   return rec;
 }
 
+// Stage holds are keyed on the header and then on the exact body. Fields
+// outside the header commitment can differ between copies, so a header-only
+// key let one malleated body that threw in staging hold the honest block
+// for every peer. A header with no hold costs one map lookup; the body
+// digest is computed only for a header that has one.
+export function stageBodyKey(block) {
+  try {
+    // The claimed id and the height hint are not the body: a resend of the
+    // same body under another claim is the same held body.
+    const { hash: _claim, height: _hint, ...body } = block || {};
+    // Every scalar is written with its type, so two bodies share a key only
+    // when they are the same values. Hash-credit rows carry BigInt nanos
+    // when packed and whatever the peer sent when not: BigInt 5n, the
+    // string "5n" and the number 5 must not meet. Bytes are hex under their
+    // own tag (`this[k]` is the value before Buffer#toJSON).
+    const text = JSON.stringify(body, function typed(k, v) {
+      const raw = this[k];
+      if (Buffer.isBuffer(raw) || raw instanceof Uint8Array) return `x:${Buffer.from(raw).toString('hex')}`;
+      if (typeof v === 'bigint') return `b:${v}`;
+      if (typeof v === 'string') return `s:${v}`;
+      return v;
+    });
+    return createHash('sha256').update(text).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
 export function headerPrevHash(header) {
   let buf = null;
   if (Buffer.isBuffer(header)) buf = header;
@@ -1136,16 +1166,52 @@ export function unconnectedHeader({
   return null;
 }
 
-/** On a prev miss, fetch the parent before the child is retried. */
+/**
+ * On a prev miss, fetch the parent before the child is retried.
+ *
+ * A parent we only know from this peer's own orphan is this peer's claim, not
+ * a block anyone advertised: at most ORPHAN_PARENT_MAX of them are queued per
+ * peer (past that the orphan is dropped, unscored, as an out-of-order body
+ * during IBD may be), and each one and its child are kept in `orphanAsk`, so
+ * a handoff never moves them to another peer, whose not-found for a hash it
+ * never had would count as its miss.
+ */
 export function queueMissingParent(rec, childHash, parentHash) {
-  requeuePrevHash(rec, childHash);
   const parent = String(parentHash || '').toLowerCase();
-  if (!rec || !parent || /^0+$/.test(parent)) return rec;
+  if (!rec || !parent || /^0+$/.test(parent)) {
+    requeuePrevHash(rec, childHash);
+    return rec;
+  }
   rec.want = Array.isArray(rec.want) ? rec.want : [];
   rec.pending = rec.pending instanceof Set ? rec.pending : new Set();
-  if (rec.pending.has(parent) || rec.want.includes(parent)) return rec;
+  if (rec.pending.has(parent) || rec.want.includes(parent)) {
+    requeuePrevHash(rec, childHash);
+    return rec;
+  }
+  rec.orphanAsk = rec.orphanAsk instanceof Map ? rec.orphanAsk : new Map();
+  if (rec.orphanAsk.size >= ORPHAN_PARENT_MAX) return rec;
+  const child = String(childHash || '').toLowerCase();
+  requeuePrevHash(rec, child);
+  rec.orphanAsk.set(parent, child);
   rec.want.unshift(parent);
   return rec;
+}
+
+/** Hashes in `rec`'s queues that only its own orphans named (parents and their children). */
+export function orphanAskHashes(rec) {
+  const out = new Set();
+  if (!(rec?.orphanAsk instanceof Map)) return out;
+  for (const [parent, child] of rec.orphanAsk) {
+    out.add(parent);
+    if (child) out.add(child);
+  }
+  return out;
+}
+
+/** Drop the orphan asks whose parent we now hold. */
+export function settleOrphanAsks(rec, have) {
+  if (!(rec?.orphanAsk instanceof Map) || !rec.orphanAsk.size) return;
+  for (const parent of [...rec.orphanAsk.keys()]) if (have.has(parent)) rec.orphanAsk.delete(parent);
 }
 
 export function drainRetryPrev(rec) {
@@ -1650,12 +1716,15 @@ export function createP2p({
     if (!bestRec.pending) bestRec.pending = new Set();
     for (const [sock, rec] of peers) {
       if (sock === best || !rec) continue;
+      const own = orphanAskHashes(rec);
       for (const h of takeWants(rec)) {
         inflightBlocks.delete(String(h).toLowerCase());
+        if (own.has(String(h).toLowerCase())) continue;
         if (!bestRec.want.includes(h) && !bestRec.pending.has(h)) bestRec.want.push(h);
       }
       rec.want = [];
       rec.retryPrev = [];
+      rec.orphanAsk = new Map();
       if (rec.pending) rec.pending = new Set();
       rec.pendingAt = 0;
       if (!(rec.verifying && rec.verifying.size)) rec.syncing = false;
@@ -2052,24 +2121,7 @@ export function createP2p({
     return top;
   }
 
-  // Stage holds are keyed on the header and then on the exact body. Fields
-  // outside the header commitment can differ between copies, so a header-only
-  // key let one malleated body that threw in staging hold the honest block
-  // for every peer. A header with no hold costs one map lookup; the body
-  // digest is computed only for a header that has one.
-  function bodyKeyOf(block) {
-    try {
-      // The claimed id and the height hint are not the body: a resend of the
-      // same body under another claim is the same held body.
-      const { hash: _claim, height: _hint, ...body } = block || {};
-      // Hash-credit rows carry BigInt nanos, which JSON.stringify refuses;
-      // an empty key would hold nothing, so they are written as tagged text.
-      const text = JSON.stringify(body, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v));
-      return createHash('sha256').update(text).digest('hex');
-    } catch {
-      return '';
-    }
-  }
+  const bodyKeyOf = stageBodyKey;
 
   function stageHeld(block, now = Date.now()) {
     const byBody = stageHolds.get(blockHeaderHex(block));
@@ -2142,7 +2194,8 @@ export function createP2p({
     }
     // Only a real answer to a hash we asked this peer for ends its busy
     // streak: a nak or not-found for it here, or its body once that passes
-    // the claim check (ingestDecodedFork). A block frame is not an answer
+    // the claim check (ingestDecodedFork) or is ours byte for byte
+    // (releaseKnownFork). A block frame is not an answer
     // until then, so a free or undecodable frame resets nothing. Census
     // chatter does not either. The header streak ends on a page that
     // answers our getheaders (the headers handler).
@@ -2284,9 +2337,10 @@ export function createP2p({
       const have = seenHashes();
       const page = msg.headers || [];
       rec.page = page;
-      // A non-empty page answering our getheaders ends the header busy
-      // streak. An empty or unsolicited page does not.
-      if (rec.headersAskedAt && Array.isArray(page) && page.length) {
+      // A page answering our getheaders ends the header busy streak, empty
+      // or not: an empty page is the peer's answer that it has nothing past
+      // our locator. An unsolicited page does not.
+      if (rec.headersAskedAt && Array.isArray(page)) {
         rec.headerBusyStreak = 0;
         rec.headersAskedAt = 0;
       }
@@ -2477,7 +2531,16 @@ export function createP2p({
           } catch { /* ignore */ }
         }
         if (!Array.isArray(recMiss.want)) recMiss.want = [];
-        if (missHash && !recMiss.want.includes(missHash)) recMiss.want.unshift(missHash);
+        if (recMiss.orphanAsk instanceof Map && recMiss.orphanAsk.has(missHash)) {
+          // The peer has no parent for its own orphan. Nobody else named that
+          // parent, so neither it nor the orphan is asked again, here or of
+          // another peer; the miss still counts against this peer.
+          const child = recMiss.orphanAsk.get(missHash);
+          recMiss.orphanAsk.delete(missHash);
+          if (child && Array.isArray(recMiss.retryPrev)) recMiss.retryPrev = recMiss.retryPrev.filter((h) => h !== child);
+        } else if (missHash && !recMiss.want.includes(missHash)) {
+          recMiss.want.unshift(missHash);
+        }
         const missed = noteGetblockMiss(recMiss, Date.now());
         recMiss.syncing = false;
         if (missed.demoted) {
@@ -2487,8 +2550,10 @@ export function createP2p({
             if (dest) {
               if (!Array.isArray(dest.want)) dest.want = [];
               if (!dest.pending) dest.pending = new Set();
+              const own = orphanAskHashes(recMiss);
               for (const h of [...(recMiss.want || [])]) {
                 inflightBlocks.delete(String(h).toLowerCase());
+                if (own.has(String(h).toLowerCase())) continue;
                 if (!dest.want.includes(h) && !dest.pending.has(h)) dest.want.push(h);
               }
               recMiss.want = [];
@@ -2612,7 +2677,9 @@ export function createP2p({
     if (!rec.pending || rec.pending.size === 0) rec.pendingAt = 0;
     if (Array.isArray(rec.want)) rec.want = rec.want.filter((h) => h !== hash);
     let destSock = null;
-    for (const [other, orec] of peers) {
+    // A parent only this peer's orphan named stays this peer's ask.
+    const own = orphanAskHashes(rec).has(String(hash).toLowerCase());
+    for (const [other, orec] of own ? [] : peers) {
       if (other === sock || other.destroyed || !orec) continue;
       if (!(Number(orec.helloAt) > 0)) continue;
       if (!peerTipAhead(orec)) continue;
@@ -2673,6 +2740,9 @@ export function createP2p({
       if (id) inflightBlocks.delete(id);
     }
     if (!recNow) return;
+    // Every block here is ours, byte for byte under its own hash: an asked
+    // body we already had is still this peer's answer.
+    if (lastHash && recNow.pending?.has(lastHash)) recNow.busyStreak = 0;
     recNow.pending?.delete(lastHash);
     for (const key of fork.map((block) => blockHeaderHex(block)).filter(Boolean)) {
       recNow.verifying?.delete(key);
@@ -2914,6 +2984,10 @@ export function createP2p({
         const id = wireHash(block?.hash);
         if (id) inflightBlocks.delete(id);
       }
+      // The body we asked this peer for passed its claim check: that is an
+      // answer, so it ends the peer's busy streak, even when the body is then
+      // held, already stored, or already being verified from another peer.
+      if (recNow && lastHash && recNow.pending?.has(lastHash)) recNow.busyStreak = 0;
       if (fork.some((block) => stageHeld(block))) {
         if (recNow) {
           recNow.pending?.delete(lastHash);
@@ -2941,9 +3015,6 @@ export function createP2p({
         if (!recNow.pending) recNow.pending = new Set();
         if (!recNow.failed) recNow.failed = new Set();
         if (!recNow.verifying) recNow.verifying = new Set();
-        // The body we asked this peer for passed its claim check: that is an
-        // answer, so it ends the peer's busy streak.
-        if (lastHash && recNow.pending.has(lastHash)) recNow.busyStreak = 0;
         if (lastHash) recNow.pending.delete(lastHash);
         for (const key of headerKeys) recNow.verifying.add(key);
         if (headerKeys.length) recNow.syncing = true;
@@ -2992,6 +3063,7 @@ export function createP2p({
             } else {
               const have = storedView();
               if (reason === 'prev' && !have.has(lastHash)) {
+                settleOrphanAsks(rec, have);
                 queueMissingParent(rec, lastHash, headerPrevHash(last?.header));
               } else if (reason === 'samples_pruned' && !have.has(lastHash)) {
                 // The body arrived before a 1000-header run. Ask for headers and
