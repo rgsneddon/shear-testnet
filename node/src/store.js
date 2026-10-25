@@ -39,6 +39,7 @@ import {
   rootHeaderReason,
   discardPreparedHeader,
   holdPreparedHeader,
+  preparedHeaderHash,
   noteFromAnchor,
   OWED_CHECKPOINT_SPACING,
   keepsFrontier,
@@ -3460,7 +3461,8 @@ export function createStore(dir, {
       try {
         const header = Buffer.from(block.header);
         if (header.length === HEADER_LEN) {
-          const got = Buffer.from(headerHash(header));
+          // assessHeader stashed the hash when it got that far; hash once.
+          const got = preparedHeaderHash(header) || Buffer.from(headerHash(header));
           if (!claimed.equals(got)) {
             discardPreparedHeader(block.header);
             return 'hash_claim';

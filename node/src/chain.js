@@ -1759,6 +1759,11 @@ function peekPreparedHeader(header) {
   return found ? Buffer.from(found) : null;
 }
 
+/** The hash assessHeader stashed for this header, or null. Read-only. */
+export function preparedHeaderHash(header) {
+  return header ? peekPreparedHeader(header) : null;
+}
+
 export function discardPreparedHeader(header) {
   if (header) dropPreparedHeader(header);
 }
