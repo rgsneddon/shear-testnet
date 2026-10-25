@@ -80,6 +80,50 @@ describe('x86_64 ISA baseline', () => {
       assert.equal(pop.status, 1, pop.stdout);
       assert.match(pop.stderr, /\[popcnt\]/);
       assert.equal(scan(cc(dir, 'pop_base', POP, BASE)).status, 0);
+      // SSE3 is above the baseline in every function, a std one included: the
+      // haddpd rustc's Windows default put in gimli's Value::from_u64 is
+      // refused under that very name, and its SSE2 form passes.
+      const GIMLI = '_RNvMs_NtNtCsjJ0bvPrw9X3_5gimli4read5valueNtB4_5Value8from_u64';
+      const sum = (body, target) => [
+        '#include <pmmintrin.h>',
+        `${target}__m128d f(__m128d a) __asm__("${GIMLI}");`,
+        `${target}__m128d f(__m128d a) { return ${body}; }`,
+      ].join('\n') + '\n';
+      const hadd = scan(cc(dir, 'gimli_sse3.so', sum('_mm_hadd_pd(a, a)', '__attribute__((target("sse3"))) '), BASE));
+      assert.equal(hadd.status, 1, hadd.stdout);
+      assert.ok(hadd.stderr.includes(`${GIMLI} [sse3]: haddpd`), hadd.stderr);
+      const sse2 = cc(dir, 'gimli_sse2.so', sum('_mm_add_pd(a, _mm_unpackhi_pd(a, a))', ''), BASE);
+      assert.equal(scan(sse2).status, 0);
+      // scripts/scan_shipped_zip.py scans the members of the zip that ships.
+      const zipOf = (name, entries) => {
+        const z = path.join(dir, name);
+        const r = spawnSync(python, ['-I', '-c', [
+          'import sys, zipfile',
+          'with zipfile.ZipFile(sys.argv[1], "w") as z:',
+          '    for a in sys.argv[2:]:',
+          '        n, _, p = a.partition("=")',
+          '        z.write(p, n)',
+        ].join('\n'), z, ...entries], { timeout: 600_000, encoding: 'utf8' });
+        assert.equal(r.status, 0, r.stderr);
+        return z;
+      };
+      const shipped = (...args) => spawnSync(python, [path.join(root, 'scripts/scan_shipped_zip.py'), ...args], { timeout: 600_000, encoding: 'utf8' });
+      const good = zipOf('good.zip', [`shear_admit.dll=${sse2}`]);
+      assert.equal(shipped(good, '--built', `shear_admit.dll=${sse2}`, 'shear_admit.dll').status, 0);
+      const bad = shipped(zipOf('bad.zip', [`shear_admit.dll=${path.join(dir, 'gimli_sse3.so')}`]), 'shear_admit.dll');
+      assert.equal(bad.status, 1, bad.stdout);
+      assert.ok(bad.stderr.includes(`${GIMLI} [sse3]: haddpd`), bad.stderr);
+      const absent = shipped(good, 'shear_v3.dll');
+      assert.notEqual(absent.status, 0);
+      assert.match(absent.stderr, /missing \['shear_v3\.dll'\]/);
+      const other = shipped(good, '--built', `shear_admit.dll=${path.join(dir, 'gimli_sse3.so')}`, 'shear_admit.dll');
+      assert.notEqual(other.status, 0);
+      assert.match(other.stderr, /shear_admit\.dll in the zip is not/);
+      // A 16-byte CAS without CMPXCHG16B is a call to a lock-based helper: refused.
+      const CAS = '_Bool c(unsigned __int128 *p, unsigned __int128 *e, unsigned __int128 v) { return __atomic_compare_exchange_n(p, e, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }\n';
+      const cas = shipped(zipOf('cas.zip', [`shear_admit.dll=${cc(dir, 'cas.so', CAS, BASE)}`]), 'shear_admit.dll');
+      assert.equal(cas.status, 1, cas.stdout);
+      assert.match(cas.stderr, /128-bit atomic call\(s\) \['__atomic_compare_exchange_16'\]/);
       // AES-NI is RandomX's hard-AES kernel only: allowed in aes_hash.cpp.o,
       // refused in any other object.
       const AES = '#include <wmmintrin.h>\n__m128i e(__m128i a, __m128i k) { return _mm_aesenc_si128(a, k); }\n';
@@ -186,6 +230,7 @@ describe('x86_64 ISA baseline', () => {
         'vdbpsadbw $1,%ymm1,%ymm2,%ymm3', 'vpmultishiftqb %ymm1,%ymm2,%ymm3',
         'vaesenc %ymm1,%ymm2,%ymm3', 'vaesenc %xmm1,%xmm2,%xmm3', 'vpclmulqdq $0,%ymm1,%ymm2,%ymm3',
         'gf2p8mulb %xmm1,%xmm2', 'vgf2p8affineqb $0,%ymm1,%ymm2,%ymm3',
+        'haddpd %xmm0,%xmm0', 'movddup %xmm1,%xmm9', 'movsldup %xmm3,%xmm4',
       ])], { timeout: 600_000, encoding: 'utf8' });
       assert.equal(table.status, 0, table.stderr);
       assert.deepEqual(JSON.parse(table.stdout), {
@@ -207,10 +252,33 @@ describe('x86_64 ISA baseline', () => {
         'vaesenc %ymm1,%ymm2,%ymm3': 'vaes', 'vaesenc %xmm1,%xmm2,%xmm3': 'avx',
         'vpclmulqdq $0,%ymm1,%ymm2,%ymm3': 'vpclmul', 'gf2p8mulb %xmm1,%xmm2': 'gfni',
         'vgf2p8affineqb $0,%ymm1,%ymm2,%ymm3': 'gfni',
+        'haddpd %xmm0,%xmm0': 'sse3', 'movddup %xmm1,%xmm9': 'sse3', 'movsldup %xmm3,%xmm4': 'sse3',
       });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('Rust for the Windows x86_64 targets turns SSE3 and CMPXCHG16B off, in one place', () => {
+    // rustc's Windows targets default to both (Linux stops at SSE2).
+    const flag = 'rustflags = ["-C", "target-feature=-sse3,-cmpxchg16b"]';
+    const cfg = read('.cargo/config.toml').replace(/\r\n/g, '\n');
+    const table = (name) => cfg.split(/\n(?=\[)/).find((t) => t.startsWith(`[${name}]`)) || '';
+    for (const t of ['x86_64-pc-windows-gnu', 'x86_64-pc-windows-msvc']) {
+      assert.equal(table(`target.${t}`).replace(/\n+$/, ''), `[target.${t}]\n${flag}`, t);
+    }
+    // Only there: Linux and macOS builds keep their defaults.
+    assert.equal(cfg.split('rustflags').length - 1, 2);
+    assert.doesNotMatch(cfg, /^\[build\]/m);
+    assert.doesNotMatch(read('crypto/native/admit/.cargo/config.toml'), /rustflags|^\[(build|target)/m);
+    // std's code is generated again under the flags only with fat LTO.
+    assert.match(read('crypto/native/admit/Cargo.toml').replace(/\r\n/g, '\n'), /\[profile\.release\]\nlto = true\n/);
+    // RUSTFLAGS in the environment would replace the config's flags.
+    const builds = [
+      ...fs.readdirSync(path.join(root, '.github/workflows')).map((f) => `.github/workflows/${f}`),
+      'crypto/native/Makefile', 'wallet/windows/CMakeLists.txt', 'wallet/native/build-shear-v3.ps1',
+    ];
+    for (const rel of builds) assert.doesNotMatch(read(rel), /RUSTFLAGS/, rel);
   });
 
   it('every RandomX build goes through scripts/randomx_build.sh, which pins the baseline', () => {
@@ -271,6 +339,20 @@ describe('x86_64 ISA baseline', () => {
     const winScan = 'python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll crypto/native/shearhash.node crypto/native/shearadmit.node';
     assert.ok(rel.includes(winScan), 'wallet-release windows scans its native libraries');
     assert.ok(wf('wallet-windows.yml').includes(winScan), 'wallet-windows scans its native libraries');
+    // And the files inside the shipped zip, after it is packed and before it
+    // is attached, proven the same files the vectors run on.
+    const zipScan = 'python scripts/scan_shipped_zip.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --built crypto/native/shearadmit.node=crypto/native/shearadmit.node --built crypto/native/shearhash.node=crypto/native/shearhash.node shear_admit.dll shear_v3.dll crypto/native/shearhash.node crypto/native/shearadmit.node';
+    for (const f of ['wallet-release.yml', 'wallet-windows.yml']) {
+      const text = wf(f);
+      const at = text.indexOf(zipScan);
+      assert.ok(at > text.indexOf('python wallet/pack/zip_windows.py'), `${f} scans the shipped zip after packing`);
+      assert.ok(at < text.indexOf('gh release upload'), `${f} scans before attaching`);
+      const after = text.slice(at);
+      assert.ok(after.indexOf('node scripts/shipped_hash_vector.mjs') > 0, `${f} checks the hash vector`);
+      assert.ok(after.indexOf('node --test --test-concurrency=1 crypto/range_packed.test.js crypto/fs1_pin.test.js crypto/fs1_fingerprint.test.js') > 0, `${f} runs the admit vectors`);
+    }
+    const minerZip = 'python scripts/scan_shipped_zip.py "dist/ShearK-Miner-$SHEARK_VER-windows.zip" --built ShearK-Miner.exe=sheark-miner/ShearK-Miner.exe ShearK-Miner.exe';
+    assert.ok(packs.indexOf(minerZip) > packs.indexOf('node sheark-miner/tests/pack_windows.js'), 'the miner zip is scanned after packing');
     // The Windows wallet DLLs come from the GNU toolchain, so they keep symbols to scan.
     for (const f of ['wallet-release.yml', 'wallet-windows.yml']) {
       assert.match(wf(f), /rustup override set stable-x86_64-pc-windows-gnu/, f);

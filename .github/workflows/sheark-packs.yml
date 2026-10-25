@@ -114,6 +114,8 @@ jobs:
           echo "$st"
           grep -q 'selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b' <<< "$st"
           node sheark-miner/tests/pack_windows.js
+          # The exe in the shipped zip: the one selftested above, at the baseline.
+          python scripts/scan_shipped_zip.py "dist/ShearK-Miner-$SHEARK_VER-windows.zip" --built ShearK-Miner.exe=sheark-miner/ShearK-Miner.exe ShearK-Miner.exe
       - uses: actions/upload-artifact@v4
         with:
           name: ShearK-Miner-${{ env.SHEARK_VER }}-windows

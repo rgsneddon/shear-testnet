@@ -106,6 +106,18 @@ jobs:
         run: python wallet/pack/zip_windows.py
       - name: Refuse a Windows zip without shear_v3.dll
         run: python wallet/pack/check_shear_v3_bundled.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip
+      - name: The shipped zip's own native files, at the x86-64 baseline, give the pinned vectors
+        # The zip's members, not the build tree: shear_admit.dll, shear_v3.dll
+        # and the sidecar addons, every native file this repo builds into it.
+        # The addons tested below are proven byte-identical to the shipped ones.
+        run: |
+          $env:OBJDUMP = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\objdump.exe"
+          python scripts/scan_shipped_zip.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --built crypto/native/shearadmit.node=crypto/native/shearadmit.node --built crypto/native/shearhash.node=crypto/native/shearhash.node shear_admit.dll shear_v3.dll crypto/native/shearhash.node crypto/native/shearadmit.node
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/shipped_hash_vector.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test --test-concurrency=1 crypto/range_packed.test.js crypto/fs1_pin.test.js crypto/fs1_fingerprint.test.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Attach to GitHub release
         if: ${{ inputs.attach }}
         env:
