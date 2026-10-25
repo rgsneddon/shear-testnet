@@ -126,9 +126,11 @@ function wirePost(built, nanos) {
 function queue() {
   const posted = [];
   const raw = [];
+  // As pool.js queueSend does: a body with no id, or an empty one, gets a
+  // fresh id on the queued copy; a posted id is kept.
   const queueSend = (t) => {
     raw.push(t);
-    const tx = { id: `tx-${posted.length + 1}`, ...t };
+    const tx = { ...t, id: t.id || `tx-${posted.length + 1}` };
     posted.push(tx);
     return tx;
   };
@@ -350,6 +352,46 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     assert.equal(refusedOpen.status, 400);
     assert.equal(refusedOpen.json.reason, 'value_open');
     assert.equal(b.raw.length, 0, 'nothing queued');
+  });
+
+  it('refuses an FS-1 withdraw posted with no id, since the withdraw signs its id', () => {
+    const alice = newIdentity();
+    const built = fundedWithdraw(alice, 5000n, 'wd-signed-id');
+    for (const id of [undefined, null, '']) {
+      const body = { ...wirePost(built, 5000n) };
+      if (id === undefined) delete body.id;
+      else body.id = id;
+      const q = queue();
+      const got = handleWalletApi(url('/api/wallet/send'), 'POST', body, { store: store(), miners: new Map(), queueSend: q.queueSend });
+      assert.equal(got.status, 400, `id ${String(id)}`);
+      assert.equal(got.json.reason, 'withdraw_id', `id ${String(id)}`);
+      assert.equal(q.raw.length, 0, `id ${String(id)} queued`);
+    }
+    // The posted id is the id the wallet signed: queueSend keeps it, so the
+    // digest the proofs bind is unchanged.
+    const q = queue();
+    const got = handleWalletApi(url('/api/wallet/send'), 'POST', wirePost(built, 5000n), { store: store(), miners: new Map(), queueSend: q.queueSend });
+    assert.equal(got.status, 200, got.json && got.json.reason);
+    assert.equal(q.posted[0].id, 'wd-signed-id');
+    assert.ok(Buffer.from(txDigestV3(q.posted[0])).equals(Buffer.from(txDigestV3(built))), 'txDigestV3 with the signed id');
+  });
+
+  it('relays an FS-1 withdraw whose hidden output carries an empty valueProof, as the node takes it', () => {
+    const alice = newIdentity();
+    const built = fundedWithdraw(alice, 5000n, 'wd-empty-open');
+    // The node's rule (valueOpenRejected) reads null, '', false and {} as no
+    // opening. The pool judges a posted withdraw by that rule and does not
+    // strip, so each is relayed as posted.
+    for (const empty of [null, '', false, {}]) {
+      const body = { ...wirePost(built, 5000n) };
+      body.vout = [...built.vout, { kind: 'send', commit: Buffer.alloc(32, 8), valueProof: empty }];
+      const before = bodyBytes(body);
+      const q = queue();
+      const got = handleWalletApi(url('/api/wallet/send'), 'POST', body, { store: store(), miners: new Map(), queueSend: q.queueSend });
+      assert.equal(got.status, 200, `${JSON.stringify(empty)} ${got.json && got.json.reason}`);
+      assert.equal(q.raw[0], body, `${JSON.stringify(empty)} relayed as posted`);
+      assert.equal(bodyBytes(q.raw[0]), before, `${JSON.stringify(empty)} byte for byte`);
+    }
   });
 
   it('opens the rewardSig path to an FS-1 withdraw only', () => {

@@ -1793,13 +1793,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
-    if (Array.isArray(body.vout)) {
-      const stripped = stripHiddenValueOpen(kindIn, body.vout);
-      // A withdraw is relayed as posted, so an opened hidden value is refused, not stripped.
-      if (isWithdraw && stripped.some((o, i) => o !== body.vout[i])) {
-        return { status: 400, json: { ok: false, reason: 'value_open' } };
-      }
-      body.vout = stripped;
+    // A withdraw is relayed as posted, so its outputs are not stripped: the
+    // node's own rule below (valueOpenRejected) refuses an opened hidden value
+    // and lets an empty valueProof through, as the node does.
+    if (Array.isArray(body.vout) && !isWithdraw) {
+      body.vout = stripHiddenValueOpen(kindIn, body.vout);
     }
     const postedOpen = valueOpenRejected({ kind: kindIn, vout: body.vout });
     if (postedOpen) return { status: 400, json: { ok: false, reason: 'value_open' } };
@@ -1912,6 +1910,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if (isWithdraw) {
       const postedLeak = withdrawLeakRejected(body);
       if (postedLeak) return { status: 400, json: { ok: false, reason: postedLeak.reason } };
+      // A withdraw signs its id (reserveDigestSuffix). queueSend gives a body
+      // with no id a fresh one, which would change a signed field, so a
+      // withdraw posted with no id is refused here, plainly.
+      if (body.id == null || String(body.id) === '') {
+        return { status: 400, json: { ok: false, reason: 'withdraw_id' } };
+      }
       const paid = postedFee == null ? NaN : Number(postedFee);
       if (!(paid >= levyNeed(body)) || paid > LEVY_CAP_NANOS) {
         return { status: 400, json: { ok: false, reason: 'levy' } };
