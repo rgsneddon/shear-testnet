@@ -81,8 +81,10 @@ DISPATCH_PATTERNS = (
     # libstdc++'s std::random_device sources, statically linked: random.cc
     # _M_init picks __x86_rdrand / __x86_rdseed only after cpuid reports
     # RDRND / RDSEED (the cpuid is in its disassembly), else it uses another
-    # source. Only these three functions are entitled.
-    (re.compile(r"^_ZNSt12_GLOBAL__N_1L(12__x86_rdrand|12__x86_rdseed|19__x86_rdseed_rdrand)EPv$"), frozenset({"rdrand"})),
+    # source. Only these three functions are entitled. Some gcc releases mangle
+    # them with the internal-linkage L (_1L12__x86_rdrand), others without
+    # (ubuntu-24.04's: _112__x86_rdrand); both name the same function.
+    (re.compile(r"^_ZNSt12_GLOBAL__N_1L?(12__x86_rdrand|12__x86_rdseed|19__x86_rdseed_rdrand)EPv$"), frozenset({"rdrand"})),
 )
 # Rust (v0-mangled) functions in runtime-dispatched modules, matched on their
 # length-prefixed path segments.

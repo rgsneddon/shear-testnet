@@ -134,6 +134,12 @@ describe('x86_64 ISA baseline', () => {
       ].join('\n')).join('\n') + '\n';
       const rdOk = scan(cc(dir, 'rd_ok.so', RD(['_ZNSt12_GLOBAL__N_1L12__x86_rdrandEPv', '_ZNSt12_GLOBAL__N_1L12__x86_rdseedEPv']), BASE));
       assert.equal(rdOk.status, 0, rdOk.stderr);
+      // The same three as ubuntu-24.04's gcc mangles them, with no L.
+      const rdOkNoL = scan(cc(dir, 'rd_ok_nol.so', RD(['_ZNSt12_GLOBAL__N_112__x86_rdrandEPv', '_ZNSt12_GLOBAL__N_112__x86_rdseedEPv', '_ZNSt12_GLOBAL__N_119__x86_rdseed_rdrandEPv']), BASE));
+      assert.equal(rdOkNoL.status, 0, rdOkNoL.stderr);
+      // Another anonymous-namespace function with RDRAND is not entitled.
+      const rdOther = scan(cc(dir, 'rd_other.so', RD(['_ZNSt12_GLOBAL__N_112__x86_rdbadEPv']), BASE));
+      assert.equal(rdOther.status, 1, rdOther.stdout);
       const rdBad = scan(cc(dir, 'rd_bad.so', RD(['entropy_now']), BASE));
       assert.equal(rdBad.status, 1, rdBad.stdout);
       assert.match(rdBad.stderr, /rd_bad\.so entropy_now \[rdrand\]: rdrand/);
