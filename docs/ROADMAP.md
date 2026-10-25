@@ -1,8 +1,7 @@
 # Shear roadmap
 
 The one shared roadmap for every agent working on this repo (Claude, Grok,
-GPT or any other). Russell's spreadsheet, `Shear-v12-work-plan.xlsx`, is his
-view of the same plan and is kept in step with this file.
+GPT or any other), and the source of truth for the plan.
 
 Last updated: 2026-10-25 by Claude.
 
@@ -72,18 +71,19 @@ moves the later rows by a day.
 | R13 | Wallet copy | N: wallet text and errors only | planned | Claude | Grok + Wallet Hardening | | | | 27 Nov (22 Nov–2 Dec) |
 | R14 | PR 128 M3: shear-dev pin move | Y: moves the shear-dev pin only; every other pin must equal main | planned | Claude | Grok + Protocol, pins | | | | 27 Nov (22 Nov–3 Dec) |
 | R15 | shear-dev deploy GO and live bug hunt | N: operational; fixes found there are their own PRs | planned | Claude | Grok | | | | 2 Dec (25 Nov–10 Dec) |
-| R16 | v12 cut | N: operational; pins checked at the cut | planned | Claude | Grok + pins | | | | 3 Dec (26 Nov–11 Dec) |
+| R18a | Host rebuild on the mainnet OS split (pool Ubuntu LTS, p2p-a Debian stable, p2p-b Fedora Server), so stressnet runs on the mainnet OSes | N: hosts only | planned | Claude | Grok | | | | after R15, before R16 (estimate 1–2 days; the later rows move by that) |
+| R16 | v12 cut (onto the rebuilt hosts) | N: operational; pins checked at the cut | planned | Claude | Grok + pins | | | | 3 Dec (26 Nov–11 Dec) |
 | R17 | Stressnet (7-day floor) | N: live testnet | planned | Claude | Grok | | | | 10 Dec (3–18 Dec) |
-| R18 | Mainnet host rebuild and OS split | N: hosts only | planned | Claude | Grok | | | | after R17, before R19 |
+| R18b | Final wipe of testing leftovers and mainnet release deploy | N: hosts only | planned | Claude | Grok + pins | | | | 18–21 Dec |
 | R19 | Mainnet genesis | N: date fixed by R01 | planned | Claude | Grok + pins | | | | Mon 21 Dec 2026 14:00 UK (fixed) |
 
-R03 and R10 come from earlier rulings (25 Oct) and keep their ruled places;
-Russell to confirm they stay.
+R03 (CLI reserve lock) and R10 (private tokens build) stay where they are
+(Russell, 25 Oct). This file is the source of truth; the xlsx is not kept in
+step.
 
-## R18 detail: mainnet host rebuild and OS split
+## R18a and R18b detail: mainnet hosts and OS split
 
-This is a record only for now. Each wipe or reinstall needs Russell's GO, one
-host at a time.
+Each wipe or reinstall needs Russell's GO, one host at a time.
 
 | Host | IP | OS |
 |------|----|----|
@@ -95,9 +95,12 @@ Why: OS diversity. One distro's bad update, kernel bug or package compromise
 cannot take down all three hosts. A clean start means users mine, download
 clients and connect to nodes with no testing leftovers.
 
-When: after testnet and stressnet are over, before mainnet genesis, with
-time left for the rebuild and verification. In the worst case the stressnet
-floor is met on 18 Dec, leaving three days.
+When: R18a rebuilds the hosts on their mainnet OSes after shear-dev and
+before the v12 cut, so the v12 testnet and stressnet run on the OSes mainnet
+will use. R18b, 18–21 Dec, removes everything testing left behind and
+deploys the mainnet release.
+
+### R18a: rebuild before stressnet
 
 Before the rebuild:
 
@@ -106,27 +109,32 @@ Before the rebuild:
 2. A short live shear-dev session on each target OS (Debian and Fedora nodes
    peering with the Ubuntu pool), with the results recorded.
 3. An inventory of each host: services, timers, cron jobs, users, ports,
-   disk. Record what mainnet must keep (SSH access, TLS certs, DNS, firewall
+   disk. Record what must be kept (SSH access, TLS certs, DNS, firewall
    rules).
-4. Back up only what mainnet needs. No testnet datadir or `tip.json` copies.
+4. Back up only what is needed. No testnet datadir or `tip.json` copies.
+5. IP independence: no client, wallet, miner config, seed list or doc
+   hardcodes a host IP; everything points to DNS names. Check whether
+   Hetzner's Rebuild keeps each IP (if not, keep a Primary IP). If an IP does
+   change, lower the DNS TTL 48 hours ahead, then update the DNS records and
+   the firewall allowlists.
 
 Rebuild:
 
-5. Reinstall each host from a fresh image of its OS. Nothing from testing
-   survives: no `/root/claude-ci`, lane scripts or tars, test datadirs,
-   services, timers, cron jobs, wallets, keys, logs, or VM or container
-   images.
-6. Firewall on each OS (ufw on Ubuntu, nftables on Debian, firewalld on
+6. Reinstall each host from a fresh image of its OS.
+7. Firewall on each OS (ufw on Ubuntu, nftables on Debian, firewalld on
    Fedora): ports 22, 80, 443, 1111, 8080 and 30303 only.
-7. Deploy only the mainnet release build from a tagged commit. No silent
-   automatic systemctl recoveries.
 8. Write down each host's update routine. Unattended upgrades are limited to
    security updates; kernel reboots are done by hand and logged.
 9. Verify, don't paint: a post-rebuild check on each host lists its services,
-   ports and files and shows nothing from testing. Record it in the launch
-   log with the release SHA.
-10. IP independence: no client, wallet, miner config, seed list or doc
-    hardcodes a host IP; everything points to DNS names. Before the rebuild,
-    check whether Hetzner's Rebuild keeps each IP (if not, keep a Primary
-    IP). If an IP does change, lower the DNS TTL 48 hours ahead, then update
-    the DNS records and the firewall allowlists.
+   ports and files. Record it in the launch log.
+
+### R18b: final wipe and mainnet deploy, 18–21 Dec
+
+1. Remove everything testing left behind: `/root/claude-ci`, lane scripts
+   and tars, testnet and stressnet datadirs, test services, timers, cron
+   jobs, wallets, keys, logs, and VM or container images.
+2. Deploy only the mainnet release build from a tagged commit. No silent
+   automatic systemctl recoveries.
+3. Verify, don't paint: a check on each host lists its services, ports and
+   files, and shows nothing from testing. Record it in the launch log with
+   the release SHA.
