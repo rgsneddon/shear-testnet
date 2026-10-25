@@ -95,7 +95,9 @@ describe('verifyBlock extra mint', () => {
     // withdraw with no FS-1 blob is admit_version and the amount check is not
     // reached. The paid Reserve withdraw is covered by
     // test_withdraw_ship_v12.js ('queues a funded withdraw into a block the EVM
-    // accepts') and test_interest_spread_v12.js ('principal-only withdraw receipts').
+    // accepts') and test_interest_spread_v12.js ('principal-only withdraw receipts'),
+    // and an over-amount receipt with every proof real is mint_amount on the
+    // block path in test_withdraw_owner_auth_v12.js.
     const reserved = mine(buildTemplate({ ...base, txs: [reserveTx] }));
     const allowed = await Promise.resolve(verifyBlock(reserved, null, trust(reserved)));
     assert.equal(allowed.ok, false);

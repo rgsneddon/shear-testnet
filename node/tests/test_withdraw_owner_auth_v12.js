@@ -29,6 +29,7 @@ import {
   withdrawTx,
 } from '../../crypto/reserve_vault.js';
 import { deposit, ownerFor } from '../../crypto/owned_portal.js';
+import { boundReserveWithdraw } from '../../crypto/spend.js';
 
 const T0 = 1_700_000_000_000;
 const END = T0 + RESERVE_EPOCH_MS;
@@ -65,9 +66,9 @@ function indexPiLock(state, dest, nowMs, ownerPub) {
 }
 
 /** The compact FS-1 withdraw body: dest20 payout, retire and principal proofs. */
-function drawBody(state, dest, leaf, id) {
+function drawBody(state, dest, leaf, id, extra = 0) {
   const stub = leafStubNanos(state, [leaf.commit.toString('hex')]);
-  const nanos = PI_SHE_NANOS + Number(stub);
+  const nanos = PI_SHE_NANOS + Number(stub) + extra;
   const tx = withdrawTx({ nanos, id, portalId: portalIdFromDest(dest) });
   delete tx.from;
   delete tx.to;
@@ -124,6 +125,22 @@ describe('the node refuses an FS-1 withdraw without the owner rewardSig', () => 
     assert.equal(withdrawRewardRejected(state, tx, END), null);
     const got = applied(state, tx);
     assert.equal(got.ok, true, got.reason);
+  });
+
+  it('block verify refuses a receipt that is not exactly π plus the stub as mint_amount', () => {
+    // boundReserveWithdraw is the call verifyBlockConsensus makes for every
+    // withdraw (chain.js). Every proof here is real and signed by the owner;
+    // only the receipt amount is over.
+    const honest = drawBody(state, dest, leaf, 'wd-exact');
+    sign(honest.tx, owner.key, dest, honest.d20, state);
+    assert.equal(boundReserveWithdraw(honest.tx, state, null, END).ok, true);
+    for (const extra of [1, 7, PI_SHE_NANOS]) {
+      const over = drawBody(state, dest, leaf, `wd-over-${extra}`, extra);
+      sign(over.tx, owner.key, dest, over.d20, state);
+      const got = boundReserveWithdraw(over.tx, state, null, END);
+      assert.equal(got.ok, false, `+${extra}`);
+      assert.equal(got.reason, 'mint_amount', `+${extra} ${got.reason}`);
+    }
   });
 
   it('refuses a missing rewardSig', () => {
