@@ -441,9 +441,10 @@ describe('p2p process split', { concurrency: 1, timeout: 400_000 }, () => {
         const badPeer = await connectPeer(sideBoot.p2p, received);
         peers.push(badPeer);
         await waitFor(() => badPeer.lines.length >= 1, 4000, 'bad-pow peer hello');
+        const claimsBefore = jsonEvents(side.stderr(), 'p2p_ingest').filter((e) => e.ok === false && e.reason === 'hash_claim').length;
         badPeer.sock.write(badLine);
         await waitFor(
-          () => jsonEvents(side.stderr(), 'p2p_ingest').some((e) => e.ok === false && e.reason === 'hash_claim'),
+          () => jsonEvents(side.stderr(), 'p2p_ingest').filter((e) => e.ok === false && e.reason === 'hash_claim').length > claimsBefore,
           60_000,
           () => `bad pow not rejected\n${side.stderr().slice(-2500)}`,
         );
