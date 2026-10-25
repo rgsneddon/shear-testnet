@@ -21,8 +21,13 @@ the kernels below may use one, each only the extensions its CPU check covers:
 Classes: sse3, ssse3, sse41, sse42, popcnt and v2 (CMPXCHG16B, LAHF/SAHF),
 the x86-64 v2 level; aes, pclmul and sha; avx (VEX vector code, AVX and
 AVX2), fma, f16c, bmi (BMI1/2, LZCNT) and movbe, the x86-64 v3 level, each
-its own class; avx512 (EVEX, zmm, xmm/ymm16-31, mask registers); and sse4a,
-adx, rdrand and tbm, outside the levels.
+its own class; avx512 (EVEX, zmm, xmm/ymm16-31, mask registers, embedded
+broadcast and rounding, EVEX-only mnemonics); vaes and vpclmul (VEX AES and
+carry-less multiply on ymm, each its own CPUID bit) and gfni; and sse4a, adx,
+rdrand and tbm, outside the levels.
+
+A compiler clone of a function (.constprop.N, .isra.N, .part.N, .lto_priv.N,
+.cold) is judged as the function it was cloned from.
 
 Usage: isa_scan.py FILE...   (ELF or PE executables, shared objects, .node
 addons, .o objects and .a archives). An archive is judged member by member,
@@ -86,8 +91,8 @@ DISPATCH_PATTERNS = (
     # (ubuntu-24.04's: _112__x86_rdrand); both name the same function.
     (re.compile(r"^_ZNSt12_GLOBAL__N_1L?(12__x86_rdrand|12__x86_rdseed|19__x86_rdseed_rdrand)EPv$"), frozenset({"rdrand"})),
 )
-# Rust (v0-mangled) functions in runtime-dispatched modules, matched on their
-# length-prefixed path segments.
+# Rust functions in runtime-dispatched modules, matched on their
+# length-prefixed path segments (v0 or legacy mangling).
 DISPATCH_RUST = (
     (re.compile(r"16curve25519_dalek7backend6vector"), UP_TO_AVX2 | {"avx512"}),
     (re.compile(r"6memchr4arch6x86_644avx2"), UP_TO_AVX2),
@@ -125,7 +130,20 @@ EVEX_ONLY = re.compile(
     r"|pabsq|pm(ax|in)[su]q|pmullq|pconflict\w|plzcnt\w|pmadd52\w+|popcnt[bwdq]|pdp\w+|pshl?dv?\w|pshrdv?\w"
     r"|cvt\w*2u\w+|cvtu\w+|pbroadcastm\w+|pmov(q|d|w)[bwd]|pmovs(q|d|w)[bwd]|pmovus(q|d|w)[bwd]"
     r"|psraq|psravq|psrav[wq]|psllv[w]|psrlv[w]|blendm\w+|pblendm\w+|extract[fi](32x4|32x8|64x2|64x4)"
-    r"|insert[fi](32x4|32x8|64x2|64x4)|broadcast[fi](32x2|32x4|32x8|64x2|64x4)|shuf[fi](32x4|64x2)|align[dq])$")
+    r"|insert[fi](32x4|32x8|64x2|64x4)|broadcast[fi](32x2|32x4|32x8|64x2|64x4)|shuf[fi](32x4|64x2)|align[dq]"
+    r"|p(and|andn|or|xor)[dq]|cvtt?p[sd]2qq|cvtqq2p[sd]|rcp14\w+|rsqrt14\w+|perm[wb]|dbpsadbw|pmultishiftqb)$")
+# EVEX operand decorations: embedded broadcast, static rounding, suppress-all-exceptions.
+EVEX_DECOR = re.compile(r"\{1to\d+\}|\{r[nduz]-sae\}|\{sae\}")
+# vpbroadcast[bwdq] from a general register exists only as EVEX.
+GPR_BROADCAST = re.compile(r"^vpbroadcast[bwdq]$")
+GPR_FIRST = re.compile(r"^%(?![xyz]mm|k[0-7]\b)[a-z0-9]+\s*,")
+# VEX AES and carry-less multiply on ymm are VAES and VPCLMULQDQ, each its own
+# CPUID bit beyond AVX2 and AES/PCLMUL; GFNI is its own bit in every form.
+VAES = re.compile(r"^vaes(enc|enclast|dec|declast)$")
+VPCLMUL = re.compile(r"^vpclmul\w*$")
+GFNI = re.compile(r"^v?gf2p8(affineqb|affineinvqb|mulb)$")
+# Compiler clones keep the name they were cloned from before the suffix.
+CLONE_SUFFIX = re.compile(r"(\.(?:constprop|isra|part|lto_priv|cold|localalias)(?:\.\d+)?)+$")
 LEGACY = (
     ("sse3", re.compile(r"^(addsubp[sd]|hadd(p[sd])|hsubp[sd]|lddqu|movddup|movs[hl]dup|fisttp\w*|monitor|mwait)$")),
     ("ssse3", re.compile(r"^(pabs[bwd]|palignr|phadd(w|d|sw)|phsub(w|d|sw)|pmaddubsw|pmulhrsw|pshufb|psign[bwd])$")),
@@ -160,8 +178,15 @@ def extension_of(insn: str) -> str | None:
         return None
     mnem = parts[0]
     ops = parts[1] if len(parts) > 1 else ""
-    if evex or re.search(r"%zmm\d|%k[0-7]\b|%[xy]mm(1[6-9]|2\d|3[01])\b", ops) or EVEX_ONLY.match(mnem):
+    if evex or re.search(r"%zmm\d|%k[0-7]\b|%[xy]mm(1[6-9]|2\d|3[01])\b", ops) or EVEX_ONLY.match(mnem) \
+            or EVEX_DECOR.search(ops) or (GPR_BROADCAST.match(mnem) and GPR_FIRST.match(ops)):
         return "avx512"
+    if GFNI.match(mnem):
+        return "gfni"
+    if VAES.match(mnem) and "%ymm" in ops:
+        return "vaes"
+    if VPCLMUL.match(mnem) and "%ymm" in ops:
+        return "vpclmul"
     if FMA.match(mnem):
         return "fma"
     if F16C.match(mnem):
@@ -180,6 +205,7 @@ def extension_of(insn: str) -> str | None:
 def allowed_for(member: str, func: str, linked: bool) -> frozenset:
     if member in DISPATCH_OBJECTS:
         return DISPATCH_OBJECTS[member]
+    func = CLONE_SUFFIX.sub("", func)
     # The mangled RandomX template names are unambiguous, so they hold in an
     # archive member too: VmBase<..., false> lives in virtual_machine.cpp.o.
     for pat, ok in DISPATCH_PATTERNS:
@@ -189,7 +215,9 @@ def allowed_for(member: str, func: str, linked: bool) -> frozenset:
         return frozenset()
     if func in DISPATCH_FUNCTIONS:
         return DISPATCH_FUNCTIONS[func]
-    if func.startswith("_R"):
+    # v0 (_R) and legacy (_ZN) Rust mangling both spell each path segment
+    # length-prefixed, so the same patterns read either.
+    if func.startswith(("_R", "_ZN")):
         for pat, ok in DISPATCH_RUST:
             if pat.search(func):
                 return ok

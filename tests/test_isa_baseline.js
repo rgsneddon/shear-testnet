@@ -143,6 +143,30 @@ describe('x86_64 ISA baseline', () => {
       const rdBad = scan(cc(dir, 'rd_bad.so', RD(['entropy_now']), BASE));
       assert.equal(rdBad.status, 1, rdBad.stdout);
       assert.match(rdBad.stderr, /rd_bad\.so entropy_now \[rdrand\]: rdrand/);
+      // A compiler clone (.constprop, .isra, .part, .lto_priv, .cold) is the
+      // function it was cloned from: entitled when that one is, and only then.
+      const AVX2_AS = (names) => names.map((name, i) => [
+        `__attribute__((target("avx2"))) void v${i}(int *restrict a, const int *restrict b) __asm__("${name}");`,
+        `__attribute__((target("avx2"))) void v${i}(int *restrict a, const int *restrict b) { for (int j = 0; j < 64; j++) a[j] += b[j] * 3; }`,
+      ].join('\n')).join('\n') + '\n';
+      const clones = scan(cc(dir, 'clones.so', AVX2_AS(['sha256_oneshot_x8_avx2.constprop.0', 'randomx_argon2_fill_segment_avx2.isra.0', 'sha256_compress_x8.part.0.lto_priv.0']), BASE));
+      assert.equal(clones.status, 0, clones.stderr);
+      const rdClone = scan(cc(dir, 'rd_clone.so', RD(['_ZNSt12_GLOBAL__N_112__x86_rdrandEPv.cold']), BASE));
+      assert.equal(rdClone.status, 0, rdClone.stderr);
+      const badClone = scan(cc(dir, 'bad_clone.so', AVX2_AS(['helper.constprop.0']), BASE));
+      assert.equal(badClone.status, 1, badClone.stdout);
+      // Rust's legacy mangling spells the module path as v0 does.
+      const rust = scan(cc(dir, 'rust.so', AVX2_AS(['_ZN16curve25519_dalek7backend6vector4avx25field17h0123456789abcdefE', '_RNvNtNtNtCs1_16curve25519_dalek7backend6vector4avx24mulx']), BASE));
+      assert.equal(rust.status, 0, rust.stderr);
+      const rustOther = scan(cc(dir, 'rust_other.so', AVX2_AS(['_ZN9other_crate4avx24mulx17h0123456789abcdefE']), BASE));
+      assert.equal(rustOther.status, 1, rustOther.stdout);
+      // AVX-512VL hides behind ymm: vpbroadcastd from a general register is
+      // EVEX only, and an AVX2 kernel built with AVX-512VL on emits it.
+      const SET1 = '#include <immintrin.h>\n__m256i s(int x) { return _mm256_set1_epi32(x); }\n';
+      const bcast = scan(cc(dir, 'argon2_avx2.c', SET1, `${BASE} -mavx2 -mavx512f -mavx512vl`));
+      assert.equal(bcast.status, 1, bcast.stdout);
+      assert.match(bcast.stderr, /\[avx512\]: vpbroadcastd/);
+      assert.equal(scan(cc(dir, 'argon2_avx2.c', SET1, `${BASE} -mavx2`)).status, 0, 'the AVX2 form of the same broadcast');
       // Instructions gcc will not emit on demand, classed straight from the table.
       const table = spawnSync(python, ['-I', '-c', [
         'import importlib.util, json, sys',
@@ -155,6 +179,13 @@ describe('x86_64 ISA baseline', () => {
         '{evex} vpaddd %xmm1,%xmm2,%xmm3', 'vpaddd %ymm17,%ymm2,%ymm3', 'vprord $7,%xmm1,%xmm2',
         'vfmadd231ps %ymm1,%ymm2,%ymm3', 'vcvtph2ps %xmm1,%ymm2', 'movbe (%rdi),%eax', 'lzcnt %eax,%ebx',
         'extrq $1,$2,%xmm1', 'adcx %eax,%ebx', 'rdrand %eax', 'tzcnt %eax,%ebx', 'pmuludq %xmm1,%xmm2',
+        'vpaddd (%rax){1to8},%ymm1,%ymm2', 'vaddps {rn-sae},%ymm1,%ymm2,%ymm3', 'vucomiss {sae},%xmm1,%xmm2',
+        'vpbroadcastd %edi,%ymm0', 'vpbroadcastd %xmm1,%ymm0', 'vpandd %ymm1,%ymm2,%ymm3', 'vpxorq %xmm1,%xmm2,%xmm3',
+        'vpand %ymm1,%ymm2,%ymm3', 'vcvtps2qq %xmm1,%ymm2', 'vcvttpd2qq %ymm1,%ymm2', 'vcvtqq2pd %ymm1,%ymm2',
+        'vrcp14ps %ymm1,%ymm2', 'vrsqrt14pd %xmm1,%xmm2', 'vpermw %ymm1,%ymm2,%ymm3', 'vpermd %ymm1,%ymm2,%ymm3',
+        'vdbpsadbw $1,%ymm1,%ymm2,%ymm3', 'vpmultishiftqb %ymm1,%ymm2,%ymm3',
+        'vaesenc %ymm1,%ymm2,%ymm3', 'vaesenc %xmm1,%xmm2,%xmm3', 'vpclmulqdq $0,%ymm1,%ymm2,%ymm3',
+        'gf2p8mulb %xmm1,%xmm2', 'vgf2p8affineqb $0,%ymm1,%ymm2,%ymm3',
       ])], { timeout: 600_000, encoding: 'utf8' });
       assert.equal(table.status, 0, table.stderr);
       assert.deepEqual(JSON.parse(table.stdout), {
@@ -166,6 +197,16 @@ describe('x86_64 ISA baseline', () => {
         'vcvtph2ps %xmm1,%ymm2': 'f16c', 'movbe (%rdi),%eax': 'movbe', 'lzcnt %eax,%ebx': 'bmi',
         'extrq $1,$2,%xmm1': 'sse4a', 'adcx %eax,%ebx': 'adx', 'rdrand %eax': 'rdrand',
         'tzcnt %eax,%ebx': null, 'pmuludq %xmm1,%xmm2': null,
+        'vpaddd (%rax){1to8},%ymm1,%ymm2': 'avx512', 'vaddps {rn-sae},%ymm1,%ymm2,%ymm3': 'avx512',
+        'vucomiss {sae},%xmm1,%xmm2': 'avx512', 'vpbroadcastd %edi,%ymm0': 'avx512',
+        'vpbroadcastd %xmm1,%ymm0': 'avx', 'vpandd %ymm1,%ymm2,%ymm3': 'avx512', 'vpxorq %xmm1,%xmm2,%xmm3': 'avx512',
+        'vpand %ymm1,%ymm2,%ymm3': 'avx', 'vcvtps2qq %xmm1,%ymm2': 'avx512', 'vcvttpd2qq %ymm1,%ymm2': 'avx512',
+        'vcvtqq2pd %ymm1,%ymm2': 'avx512', 'vrcp14ps %ymm1,%ymm2': 'avx512', 'vrsqrt14pd %xmm1,%xmm2': 'avx512',
+        'vpermw %ymm1,%ymm2,%ymm3': 'avx512', 'vpermd %ymm1,%ymm2,%ymm3': 'avx',
+        'vdbpsadbw $1,%ymm1,%ymm2,%ymm3': 'avx512', 'vpmultishiftqb %ymm1,%ymm2,%ymm3': 'avx512',
+        'vaesenc %ymm1,%ymm2,%ymm3': 'vaes', 'vaesenc %xmm1,%xmm2,%xmm3': 'avx',
+        'vpclmulqdq $0,%ymm1,%ymm2,%ymm3': 'vpclmul', 'gf2p8mulb %xmm1,%xmm2': 'gfni',
+        'vgf2p8affineqb $0,%ymm1,%ymm2,%ymm3': 'gfni',
       });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
