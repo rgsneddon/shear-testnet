@@ -88,8 +88,7 @@ async function helloPeer(port) {
   sock.on('data', (chunk) => {
     buf += chunk.toString();
     let at;
-    while ((at = buf.indexOf('
-')) >= 0) {
+    while ((at = buf.indexOf('\n')) >= 0) {
       try { sock.lines.push(JSON.parse(buf.slice(0, at))); } catch { /* not a frame */ }
       buf = buf.slice(at + 1);
     }
