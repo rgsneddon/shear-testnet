@@ -1300,6 +1300,9 @@ export function createP2p({
   const stageHoldBase = Math.max(1, Math.floor(Number(stageHoldBaseMs) || STAGE_HOLD_BASE_MS));
   const stageHolds = new Map();
   let lastCapEvictAt = 0;
+  // Set by close(). Verify jobs run on one process-wide queue, so a job this
+  // node queued before close() would still reach store.ingest after it.
+  let closed = false;
   const sockets = new Set();
   const peers = new Map();
   const linking = new Set();
@@ -3034,6 +3037,7 @@ export function createP2p({
         if (headerKeys.length) recNow.syncing = true;
       }
       const job = scheduleP2pVerify(() => {
+        if (closed) return Promise.resolve({ got: null, before: null, stopped: true });
         const before = store.tip();
         // IBD validates every block. A peer-advertised height is not a skip.
         // store.append proves a tip extension's header target before the
@@ -3049,7 +3053,8 @@ export function createP2p({
         })).then((got) => ({ got, before }));
         return go();
       });
-      job.then(({ got, before }) => {
+      job.then(({ got, before, stopped }) => {
+        if (stopped) return;
         const held = thrownBlock(fork, got);
         if (got?.reason === 'apply_stage' && held) noteStageHold(held);
         else if (got?.ok) {
@@ -3466,6 +3471,7 @@ export function createP2p({
   }
 
   function close() {
+    closed = true;
     if (pendingWatch) {
       clearInterval(pendingWatch);
       pendingWatch = null;

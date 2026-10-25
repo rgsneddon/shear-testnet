@@ -2303,6 +2303,45 @@ describe('p2p hello deadline and idle eviction', () => {
     }
   });
 
+  it('a verify job queued before close() never reaches store.ingest', async () => {
+    const bodies = [0xa1, 0xa2, 0xa3, 0xa4, 0xa5].map((fill) => matchingBlock(fill));
+    const gates = [];
+    let calls = 0;
+    const store = {
+      blocks: [],
+      tip: () => null,
+      on() { return () => {}; },
+      ingest() {
+        calls += 1;
+        return new Promise((resolve) => gates.push(() => resolve({ ok: true })));
+      },
+    };
+    const p2p = createP2p({ store, port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 5000 });
+    const bound = await p2p.listen();
+    try {
+      const sock = await connect(bound.port);
+      sock.write(helloLine());
+      await delay(40);
+      const rec = [...p2p.peers.values()].find((row) => row.helloAt);
+      rec.pending = new Set(bodies.map((row) => row.hash));
+      for (const row of bodies) sock.write(frame({ type: 'block', block: { hash: row.hash, height: 1, header: row.header } }));
+      // Verify runs one ingest at a time, so the first holds the queue while
+      // every body's claim is hashed and its verify job queued behind it.
+      for (let i = 0; i < 400 && !(calls === 1 && rec.verifying?.size === bodies.length); i += 1) await delay(10);
+      assert.equal(calls, 1, 'the first ingest holds the queue');
+      assert.equal(rec.verifying?.size, bodies.length, 'every body is queued for verify');
+      p2p.close();
+      for (let i = 0; i < 20; i += 1) {
+        while (gates.length) gates.shift()();
+        await delay(10);
+      }
+      assert.equal(calls, 1, 'no queued job reaches the store after close()');
+    } finally {
+      p2p.close();
+      while (gates.length) gates.shift()();
+    }
+  });
+
   it('a repeatable stage throw does not ban honest peers', async () => {
     const wire = matchingBlock(0x33);
     for (const peersN of [1, 4, 8, 16]) {
