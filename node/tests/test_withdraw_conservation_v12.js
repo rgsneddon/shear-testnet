@@ -2,15 +2,20 @@
  * Lock conservation in walkWithdrawInterest.
  *
  * The note book is openedLockNanos - openedWithdrawNanos. A withdraw may not
- * release more principal than the book holds before it, and the book may not
- * end below zero. The old check, startNote + locksIn === noteBook() +
+ * release more principal than the book holds before it: a global backstop on
+ * top of the per-leaf π opening in openIndexedLeaves. (The end-of-block
+ * "book below zero" check is a backstop for an already-negative book and is
+ * not reached from a sound one: every case below is refused by the
+ * per-withdraw check first.) The old check, startNote + locksIn === noteBook() +
  * principalOut, held for every withdraw: withdraw() adds the released π to
  * openedWithdrawNanos, so noteBook() fell by exactly what principalOut rose
  * by (B + 0 === (B - π) + π for any book B, including 0). Each refusal below
  * returned ok on that code.
  *
  * Locks are real π vault-lock notes with their equality proof (which is what
- * books openedLockNanos), and withdraws open them with a principal proof and
+ * books openedLockNanos). The refusal cases set the book by hand to model a
+ * short book; a stripped fundProof, the real way a book fell short, is now
+ * refused at the lock (test_lock_fundproof_v12). Withdraws open them with a principal proof and
  * a retire proof signed by the portal owner, as in test_supply_walk_heights_v12.js.
  */
 import { describe, it } from 'node:test';

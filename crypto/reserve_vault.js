@@ -5612,9 +5612,11 @@ export function withdraw({
   state.totalLockedNanos = asBig(state.totalLockedNanos) - release;
   // totalLockedNanos is the legacy public-lock counter. A v12 hidden lock books
   // its principal in openedLockNanos and never adds here, so a hidden withdraw
-  // takes this below zero and the clamp holds it at 0. Over-release is refused
-  // by the note-book checks in walkWithdrawInterest. PR 2 makes this counter
-  // count hidden locks or retires it, and removes the clamp.
+  // takes this below zero and the clamp holds it at 0. A withdraw's principal
+  // is bound per leaf by openIndexedLeaves (the π opening of each indexed
+  // leaf); walkWithdrawInterest's note-book check is a global backstop on top.
+  // PR 2 makes this counter count hidden locks or retires it, and removes the
+  // clamp.
   if (state.totalLockedNanos < 0n) state.totalLockedNanos = 0n;
   if (release > 0n) state.openedWithdrawNanos = asBig(state.openedWithdrawNanos) + release;
   p.redeemedNanos = asBig(p.redeemedNanos) + release;
@@ -5820,7 +5822,9 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
     if (interest !== 0n || vaultPrincipal + arrival !== opened) return fail();
     const mintedHere = got[0].mint && got[0].mint.ok === true ? exactBi(got[0].mint.nanos) : 0n;
     if (mintedHere == null || mintedHere !== 0n) return fail();
-    // Conservation: no withdraw releases more principal than the book holds.
+    // Conservation backstop: no withdraw releases more principal than the
+    // whole note book holds. The book is global, not per portal; each leaf's
+    // own principal is bound by openIndexedLeaves.
     if (vaultPrincipal > bookBefore) return fail();
     minted += arrival;
     permittedSum += arrival;
@@ -5829,9 +5833,12 @@ function walkWithdrawInterest(vault, block, nowMs, oracle = {}) {
   }
   if (!applySlice(txs.slice(from), started)) return fail();
   if (counted !== rows.length) return fail();
-  // The book never ends below zero. (A check of book in plus locks against
-  // book out plus released principal always holds: withdraw() moves
-  // openedWithdrawNanos by exactly the principal it reports.)
+  // Backstop for a book that is already negative when the block starts (a
+  // damaged state): the per-withdraw check above refuses every over-release
+  // from a sound book first, and locks only add, so from a sound book this
+  // never fires. (The old check, book in plus locks against book out plus
+  // released principal, always held: withdraw() moves openedWithdrawNanos by
+  // exactly the principal it reports.)
   if (noteBook() < 0n) return fail();
   if (minted !== permittedSum) return fail();
   return { ok: true, minted, permitted: permittedSum };
