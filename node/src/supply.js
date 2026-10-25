@@ -586,9 +586,13 @@ export function fillSnapInterest(rows, blocks, opts = {}) {
     if (!row) return { ok: false, reason: 'supply_state' };
     const ts = headerMs(list[i]);
     if (!(ts > 0)) return { ok: false, reason: 'header' };
-    const got = blockWithdrawInterest(vault, list[i], ts);
+    // Same height foldSupply replays at. A block that omits height is i+1;
+    // the withdraw walk and the vault replay both see that height, so an
+    // epoch or ballot boundary is decided the same way in each.
+    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: i + 1 };
+    const got = blockWithdrawInterest(vault, vaultBlock, ts);
     if (!got.ok) return { ok: false, reason: got.reason || 'supply' };
-    const allowed = blockPermittedInterest(vault, list[i], ts);
+    const allowed = blockPermittedInterest(vault, vaultBlock, ts);
     if (!allowed.ok) return { ok: false, reason: allowed.reason || 'supply' };
     interest += got.nanos;
     permitted += allowed.nanos;
@@ -596,9 +600,6 @@ export function fillSnapInterest(rows, blocks, opts = {}) {
     if (interest !== permitted) return { ok: false, reason: 'supply' };
     row.mintedInterest = interest;
     row.permittedInterest = permitted;
-    // Same height foldSupply replays at. A block that omits height is i+1;
-    // replaying it at 0 records a different arrival stub than the fold.
-    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: i + 1 };
     const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, i, magic), replay);
     if (!advanced.ok) return { ok: false, reason: 'supply' };
     vault = advanced.vault;
@@ -929,7 +930,10 @@ export function foldSupply(blocks, opts = {}) {
     const h = Number(list[i]?.height) || (i + 1);
     // A pruned block a proven-work header chain buried keeps that tip.
     const own = typeof opts.burialOf === 'function' ? opts.burialOf(list[i]) : null;
-    const stepped = supplyStep(state, list[i], {
+    // A wire block often omits height. The step (and its withdraw walk) and
+    // the vault replay below all see the same stamped height.
+    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: h };
+    const stepped = supplyStep(state, vaultBlock, {
       magic: opts.magic,
       unit: units[i] == null ? HASH_BONUS_NANOS : units[i],
       tipHeight: Number.isInteger(own) && own > tipHeight ? own : tipHeight,
@@ -940,9 +944,6 @@ export function foldSupply(blocks, opts = {}) {
     });
     if (!stepped.ok) return stepped;
     state = stepped.state;
-    // Same height the supply step stamped. A wire block often omits height;
-    // replaying the vault at 0 records a different arrival stub than the step.
-    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: h };
     // Same prior and stake-reward rule as the store's vault apply.
     const foldMagic = opts.magic || MAGIC_TESTNET;
     const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, i, foldMagic), {
@@ -1188,7 +1189,9 @@ export function auditCirculatingSupply(blocks, opts = {}) {
   let claimedUnfunded = 0n;
   for (let bi = 0; bi < list.length; bi += 1) {
     const h = Number(list[bi]?.height);
-    const next = accountBlock(state, list[bi], {
+    // Same stamped height for the step, the withdraw walk and the replay.
+    const vaultBlock = Number.isInteger(h) && h > 0 ? list[bi] : { ...list[bi], height: bi + 1 };
+    const next = accountBlock(state, vaultBlock, {
       magic,
       unit: units[bi] == null ? HASH_BONUS_NANOS : units[bi],
       tipHeight: auditTip,
@@ -1214,13 +1217,10 @@ export function auditCirculatingSupply(blocks, opts = {}) {
       vault = broken;
     } else {
       state = next.state;
-      const split = lockPrincipalSplit(list[bi]);
-      const withdrawn = openedWithdrawPrincipal(list[bi], vault, headerMs(list[bi]));
+      const split = lockPrincipalSplit(vaultBlock);
+      const withdrawn = openedWithdrawPrincipal(vaultBlock, vault, headerMs(vaultBlock));
       // prior is the prefix this block was applied on. An empty prior
       // installs this header as genesis and skips the epoch boundary.
-      // Same height the step above stamped and foldSupply replays at.
-      // A block that omits height is bi+1, not 0.
-      const vaultBlock = Number.isInteger(h) && h > 0 ? list[bi] : { ...list[bi], height: bi + 1 };
       const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, bi, magic), {
         requireStakeReward: true,
         magic,
