@@ -15,12 +15,12 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity } from '../../crypto/address.js';
+import { destCommitFromSpendPub, newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { potSubsidyAt, MS_PER_DAY, EPOCH_DAYS_TESTNET } from '../../crypto/pot_sched.js';
-import { PI_SHE_NANOS, MAGIC_TESTNET } from '../../crypto/asert.js';
-import { sealCoinbaseNote, excessOf, randomScalar } from '../../crypto/note.js';
+import { PI_SHE_NANOS, MAGIC_TESTNET, RESERVE_PROGRAM, VAULT_FS1_ACTIVATION_HEIGHT } from '../../crypto/asert.js';
+import { commit, pointBytes, proveRange, sealCoinbaseNote, excessOf, randomScalar } from '../../crypto/note.js';
 import {
   attachLockEquality,
   blockWithdrawInterest,
@@ -33,6 +33,8 @@ import {
   lockUnlockOf,
   lockWitnessOf,
   portalIdFromDest,
+  portalIdFromDest20,
+  proveLockEquality,
   provePrincipalOpen,
   reserveAction,
   rewardCommitment,
@@ -40,7 +42,7 @@ import {
   trialReserveApply,
   withdrawSignedDest,
 } from '../../crypto/reserve_vault.js';
-import { bootReserveEvm, callReserve, encodePinClock, executeReserveTx } from '../../crypto/reserve_evm.js';
+import { attachLockAuth, bootReserveEvm, executeBlockEvm } from '../../crypto/reserve_evm.js';
 import { lockTx, ownerFor, withdrawTx } from '../../crypto/owned_portal.js';
 import { txDigestV3 } from '../../crypto/admit_v3.js';
 import { proveLeafRetire, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
@@ -185,16 +187,80 @@ describe('a note lock proves π for every leaf, or it is refused', () => {
     assert.equal(verifyVault(potBlock(GENESIS, miner, [one.tx], 1)).ok, true);
   });
 
-  it('the EVM refuses a stripped lock the same way, and lets the honest lock past that rule', async () => {
+  it('refuses a stripped lock in place on a vault that already holds a lock, indexing and booking nothing for it', () => {
     const miner = freshDest();
-    const lock = lockOf(miner, freshDest(), 'evm');
-    const evm = await bootReserveEvm();
-    assert.equal((await callReserve(evm, encodePinClock(GENESIS))).ok, true);
-    const ctx = { blockHeight: 1, magic: MAGIC_TESTNET, genesisMs: GENESIS };
-    const bad = await executeReserveTx(evm, stripped(lock.tx), GENESIS, ctx);
-    assert.equal(bad.ok, false);
-    assert.equal(bad.reason, 'stake_reward', bad.reason);
-    const good = await executeReserveTx(evm, lock.tx, GENESIS, ctx);
-    assert.notEqual(good.reason, 'stake_reward', `honest lock: ${good.reason}`);
+    const held = lockOf(miner, freshDest(), 'held');
+    const first = potBlock(GENESIS, miner, [held.tx], 1);
+    const parent = vaultAfterBlock(null, first, [], { requireStakeReward: true, magic: MAGIC_TESTNET });
+    assert.equal(parent.ok, true, parent.reason);
+    const state = parent.vault;
+    const notesBefore = (state.vaultLockNotes || []).slice();
+    const indexBefore = { ...(state.vaultLockIndex || {}) };
+    const victim = lockOf(miner, freshDest(), 'victim-in-place');
+    const block = potBlock(GENESIS + 90_000, miner, [stripped(victim.tx)], 2);
+    const inPlace = trialReserveApply({ state, block, nowMs: GENESIS + 90_000, height: 2, genesisMs: GENESIS, inPlace: true });
+    assert.equal(inPlace.ok, false);
+    assert.equal(inPlace.reason, 'stake_reward', inPlace.reason);
+    // In-place apply is not a transaction: the block's own fields and the
+    // deposit's running sums may move before the refusal. The store applies
+    // in place only a block that verify already passed on a trial clone, and a
+    // refusal there is a mid-commit fault that reloads the vault from disk
+    // (store.js commitStagedAppend). What must hold is that the refused lock
+    // is never a leaf and never booked, beside a lock that already is.
+    assert.deepEqual(state.vaultLockNotes || [], notesBefore, 'no leaf indexed for the refused lock');
+    assert.deepEqual({ ...(state.vaultLockIndex || {}) }, indexBefore);
+    assert.equal(state.vaultLockIndex?.[victim.leaf.commit.toString('hex')], undefined);
+    assert.equal(BigInt(state.openedLockNanos || 0), PI, 'only the held lock is booked');
+  });
+
+  it('the EVM refuses a stripped or swapped lock the same way, and executes the honest lock', async () => {
+    // The lock as the EVM executes it: the reserve action with its funded lock
+    // output, the owner's lockAuth and the π proof, as vault_audit's EVM test
+    // builds it. The wallet's funding input is the FS-1 spend's, not the EVM's.
+    const evmLock = (id) => {
+      const rIn = randomScalar();
+      const funded = pointBytes(commit(PI_SHE_NANOS, rIn));
+      const range = proveRange(PI_SHE_NANOS, rIn);
+      const unlock = consensusUnlockPeriod(0);
+      const note = vaultLockNote(PI_SHE_NANOS, randomScalar(), rIn, unlock).note;
+      const who = newIdentity();
+      const d20 = destCommitFromSpendPub(who.spendPub);
+      const tx = {
+        id,
+        kind: 'lock',
+        programId: RESERVE_PROGRAM,
+        nanos: 0,
+        portalId: portalIdFromDest20(d20),
+        ownerPub: who.spendPub.toString('hex'),
+        vaultLockNote: note,
+        vout: [{ kind: 'lock', commit: funded, rangeProof: range, dest20: d20 }],
+      };
+      attachLockAuth(tx, who.privateKey);
+      assert.ok(tx.lockAuth, `${id} lockAuth`);
+      tx.vout[0].fundProof = proveLockEquality(funded, PI_SHE_NANOS, rIn, tx, MAGIC_TESTNET);
+      assert.ok(tx.vout[0].fundProof, `${id} π proof`);
+      return tx;
+    };
+    const run = async (tx) => executeBlockEvm(
+      await bootReserveEvm(),
+      [{ coinbase: true, vout: [] }, tx],
+      GENESIS,
+      GENESIS,
+      undefined,
+      undefined,
+      { height: VAULT_FS1_ACTIVATION_HEIGHT, magic: MAGIC_TESTNET },
+    );
+    const honest = evmLock('evm-honest');
+    const other = evmLock('evm-other');
+    const strippedTx = { ...honest, vout: honest.vout.map((row) => { const copy = { ...row }; delete copy.fundProof; return copy; }) };
+    const swappedTx = { ...honest, vout: honest.vout.map((row) => ({ ...row, fundProof: other.vout[0].fundProof })) };
+    for (const [name, tx] of [['stripped', strippedTx], ['swapped', swappedTx]]) {
+      const got = await run(tx);
+      assert.equal(got.ok, false, name);
+      assert.equal(got.reason, 'stake_reward', `${name} ${got.reason}`);
+    }
+    // The honest lock is executed, not merely past this rule.
+    const good = await run(honest);
+    assert.equal(good.ok, true, `honest lock: ${good.reason}`);
   });
 });
