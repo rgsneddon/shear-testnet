@@ -5,6 +5,7 @@ import { hash20FromAddress, newIdentity } from './address.js';
 import { vaultDest } from './flow_sheet.js';
 import {
   appendVaultLockNote,
+  attachLockEquality,
   cloneVault,
   applyReserveBlock,
   consensusUnlockPeriod,
@@ -71,6 +72,9 @@ function notedPiLock(owner, id) {
   const leaf = vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
   if (!leaf) return null;
   tx.vaultLockNote = leaf.note;
+  // The π proof a wallet attaches with the note, last. A note with no proof
+  // is the stripped lock applyReserveBlock refuses (2461ec67).
+  if (!attachLockEquality(tx)) throw new Error(`π proof ${tx.id}`);
   return tx;
 }
 
@@ -140,7 +144,11 @@ describe('epoch sums stay commitments', () => {
       }
       const identity = supplyIdentity(state);
       assert.equal(identity.ok, true, identity.reason);
-      assert.equal(identity.principalNanos, 0);
+      // Each leaf proves π (its fundProof), so the note-backed principal is
+      // count x π: public supply, as every leaf is the same constant. It read
+      // 0 only while a lock's π could go unbooked (2461ec67). The hidden lock
+      // integer stays off totalLocked, below.
+      assert.equal(identity.principalNanos, count * PI_SHE_NANOS);
       assert.equal(identity.principalCommit.length, 64);
       const view = publicVaultView(state, T0 + span + 1);
       assert.equal(view.totalLockedNanos, 0);

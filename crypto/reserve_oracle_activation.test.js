@@ -23,7 +23,7 @@ import {
   trimmedMeanBps,
   windowBlocksFor,
 } from './reserve_oracle.js';
-import { appendVaultLockNote, applyReserveBlock, chainPeriodIndex, coinbaseRewardRoot, consensusUnlockPeriod, enact, emptyVault, leafEpochsToBurn, leafStubNanos, lockUnlockOf, lockWitnessOf, portalEpochInterest, portalIdFromDest, portalIdFromDest20, previewWithdraw, produceLockOpening, provePrincipalOpen, sealEpochLocks, trialReserveApply, VAULT_MINT_DELAY_BLOCKS, vote, VOTE_INCREASE, withdraw } from './reserve_vault.js';
+import { appendVaultLockNote, applyReserveBlock, attachLockEquality, chainPeriodIndex, coinbaseRewardRoot, consensusUnlockPeriod, enact, emptyVault, leafEpochsToBurn, leafStubNanos, lockUnlockOf, lockWitnessOf, portalEpochInterest, portalIdFromDest, portalIdFromDest20, previewWithdraw, produceLockOpening, provePrincipalOpen, sealEpochLocks, trialReserveApply, VAULT_MINT_DELAY_BLOCKS, vote, VOTE_INCREASE, withdraw } from './reserve_vault.js';
 import { deposit, lockTx, withdrawTx, encodeDeposit, encodeWithdraw, lockTranches } from './owned_portal.js';
 import { pointBytes, pointFrom, proveRange, randomScalar } from './note.js';
 import { proveLeafRetire, subtractUnlock, vaultLockNote } from './vault_reward_fs1.js';
@@ -82,6 +82,9 @@ function piLock(args, signer = null) {
     attachLockAuth(tx, signer.key);
     assert.ok(tx.lockAuth, 'lockAuth');
   }
+  // The π proof a wallet attaches with the note, last. A note with no proof
+  // is the stripped lock applyReserveBlock refuses (2461ec67).
+  if (leaf && !attachLockEquality(tx)) throw new Error(`π proof ${tx.id}`);
   return tx;
 }
 

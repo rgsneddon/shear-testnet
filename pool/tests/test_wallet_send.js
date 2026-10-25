@@ -1173,10 +1173,17 @@ describe('pool send reconstruct and Join vault', () => {
       genesisMs: t0,
       height: 1,
     });
-    assert.equal(applied.ok, true, `${label} ${applied.reason || ''}`);
-    const id = String(body.portalId || '').toLowerCase();
-    assert.ok(state.portals[id], label);
-    assert.ok(state.portals[id].tranches.length >= 1, label);
+    // This body is the pool draft sealSignReserveWire emits. The lock the
+    // wallet posts (send -> _sendSealedLock -> sealWalletLockTx) attaches the
+    // π proof after FS-1 proving; test_dart_withdraw_queue_v12 mines that real
+    // lock and withdraws it end to end. A draft with no π proof is the
+    // stripped lock 2461ec67 refuses: nothing is indexed and nothing booked.
+    const lockOut = rows.find((row) => String(row?.kind || '') === 'lock');
+    assert.equal(lockOut?.fundProof, undefined, `${label} draft carries no π proof`);
+    assert.equal(applied.ok, false, label);
+    assert.equal(applied.reason, 'stake_reward', `${label} ${applied.reason || ''}`);
+    assert.equal((state.vaultLockNotes || []).length, 0, label);
+    assert.equal(BigInt(state.openedLockNanos || 0), 0n, label);
   }
 
   it('a wallet-built lock keeps lockAuth, ownerPub, and vaultLockNote on the draft', () => {

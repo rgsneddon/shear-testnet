@@ -32,7 +32,9 @@ import {
   consensusUnlockPeriod,
   leafEpochsToBurn,
   leafStubNanos,
+  attachLockEquality,
   lockFundingRejected,
+  proveLockEquality,
   lockUnlockContext,
   lockUnlockOf,
   lockTx,
@@ -474,6 +476,8 @@ describe('hidden vault claims', () => {
     });
     action.vaultLockNote = note;
     action.vin = [{ commit: funded, rangeProof: range, address: who.dest }];
+    // The π proof a wallet attaches last, once every digest-bound field is set.
+    assert.ok(attachLockEquality(action), 'π proof');
     const applied = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, action] },
@@ -1029,6 +1033,8 @@ describe('hidden vault claims', () => {
     assert.ok(spanOpen);
     spanTx.remainCommit = spanOpen.commit.toString('hex');
     spanTx.remainProof = spanOpen;
+    // The π proof, so the refusal below is the remain span's alone.
+    assert.ok(attachLockEquality(spanTx), 'π proof');
     const tooWide = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, spanTx] },
@@ -1044,6 +1050,7 @@ describe('hidden vault claims', () => {
     assert.ok(open);
     openTx.remainCommit = open.commit.toString('hex');
     openTx.remainProof = open;
+    assert.ok(attachLockEquality(openTx), 'π proof');
     const fresh = emptyVault();
     fresh.genesisMs = T0;
     fresh.magic = MAGIC_TESTNET;
@@ -1156,6 +1163,9 @@ describe('hidden vault claims', () => {
     const session = await bootReserveEvm();
     attachLockAuth(tx, who.id.privateKey);
     assert.ok(tx.lockAuth, 'lockAuth');
+    // The π proof over the funded output (blind rIn), as a wallet attaches it.
+    tx.vout[0].fundProof = proveLockEquality(funded, PI_SHE_NANOS, rIn, tx, MAGIC_TESTNET);
+    assert.ok(tx.vout[0].fundProof, 'π proof');
     const good = await executeBlockEvm(
       session,
       [{ coinbase: true, vout: [] }, tx],

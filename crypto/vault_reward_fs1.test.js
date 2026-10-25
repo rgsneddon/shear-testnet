@@ -708,6 +708,8 @@ describe('vault-lock reward proof', () => {
     });
     first.vaultLockNote = ownerLeaf.note;
     first.vin = [{ commit: ownerFunded, rangeProof: ownerRange }];
+    // The π proof a wallet attaches with the note, last (2461ec67 refuses a lock without it).
+    assert.ok(attachLockEquality(first, state.magic), 'π proof');
     const opened = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, first] },
@@ -720,6 +722,7 @@ describe('vault-lock reward proof', () => {
     });
     second.vaultLockNote = ownerLeaf.note;
     second.vin = [{ commit: ownerFunded, rangeProof: ownerRange }];
+    assert.ok(attachLockEquality(second, state.magic), 'π proof');
     const changed = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, second] },
@@ -1675,6 +1678,8 @@ describe('vault-lock reward proof', () => {
       from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, blind, ownerPub: owner.pub, id: 'boundary-lock',
     });
     tx.vaultLockNote = leaf.note;
+    // The π proof a wallet attaches with the note, last (2461ec67 refuses a lock without it).
+    assert.ok(attachLockEquality(tx, state.magic), 'π proof');
     const locked = applyReserveBlock({
       state,
       block: { height: blocks, txs: [{ coinbase: true, vout: [] }, tx] },
@@ -1698,6 +1703,7 @@ describe('vault-lock reward proof', () => {
       from: nextOwner.dest, to: nextOwner.dest, nanos: PI_SHE_NANOS, blind: 29n, ownerPub: nextOwner.pub, id: 'later-lock',
     });
     laterTx.vaultLockNote = laterLeaf.note;
+    assert.ok(attachLockEquality(laterTx, state.magic), 'π proof');
     const frozen = state.epochStartRoots['1'];
     const later = applyReserveBlock({
       state,
@@ -1726,6 +1732,8 @@ describe('vault-lock reward proof', () => {
       from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, blind, ownerPub: owner.pub, id: 'bound-lock',
     });
     action.vaultLockNote = leaf.note;
+    // The π proof a wallet attaches with the note, last (2461ec67 refuses a lock without it).
+    assert.ok(attachLockEquality(action, state.magic), 'π proof');
     const locked = applyReserveBlock({
       state,
       block: { height: lockHeight, txs: [{ coinbase: true, vout: [] }, action] },
