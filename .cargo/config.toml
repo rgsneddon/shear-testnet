@@ -5,13 +5,17 @@ RUST_MIN_STACK = "67108864"
 
 # Rust's x86_64 Windows targets turn on SSE3 and CMPXCHG16B by default (the
 # Linux target stops at SSE2), so rustc may emit them anywhere: it did, a
-# haddpd in std's gimli Value::from_u64 in shear_admit.dll and shearadmit.node.
-# Off here, at the x86-64 baseline. Release builds use fat LTO, so std's code
-# is generated again under these flags. Nothing uses 128-bit atomics, and the
-# Windows jobs refuse an __atomic_*_16 call in the shipped files. This is the
-# only place the flag is set; tests/test_isa_baseline.js fails without it.
+# haddpd in std's gimli Value::from_u64 and a cmpxchg16b in core's 128-bit
+# atomic Debug impls, in shear_admit.dll and shearadmit.node. Off here, at the
+# x86-64 baseline. The prebuilt std was compiled with them on and LTO does not
+# rebuild it, so the Windows build steps also build std, core, alloc,
+# compiler_builtins and panic_unwind from source (-Zbuild-std, RUSTC_BOOTSTRAP
+# on stable 1.98.1 with its own rust-src), and these flags reach that build.
+# Nothing uses 128-bit atomics, and the Windows jobs refuse an __atomic_*_16
+# call in the shipped files. This is the only place the flags are set;
+# tests/test_isa_baseline.js fails without them.
 [target.x86_64-pc-windows-gnu]
-rustflags = ["-C", "target-feature=-sse3,-cmpxchg16b"]
+rustflags = ["-C", "target-cpu=x86-64", "-C", "target-feature=-sse3,-cmpxchg16b"]
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=-sse3,-cmpxchg16b"]
+rustflags = ["-C", "target-cpu=x86-64", "-C", "target-feature=-sse3,-cmpxchg16b"]

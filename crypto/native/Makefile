@@ -53,7 +53,9 @@ ADMIT_DIR := $(abspath admit)
 # Node addon only. Wallet targets do not pass admit-v3.
 ADMIT_FEATURES := --features admit-v3
 ADMIT_TARGET := $(ADMIT_DIR)/target/node
-ADMITLIB := $(ADMIT_TARGET)/release/libshear_admit.a
+# The Windows build step builds std from source (-Zbuild-std), which needs an
+# explicit target (CARGO_BUILD_TARGET): cargo then writes under <triple>/release.
+ADMITLIB := $(ADMIT_TARGET)/$(if $(CARGO_BUILD_TARGET),$(CARGO_BUILD_TARGET)/)release/libshear_admit.a
 
 .PHONY: all clean admitlib ios-staticlib android-arm64
 

@@ -261,7 +261,7 @@ describe('x86_64 ISA baseline', () => {
 
   it('Rust for the Windows x86_64 targets turns SSE3 and CMPXCHG16B off, in one place', () => {
     // rustc's Windows targets default to both (Linux stops at SSE2).
-    const flag = 'rustflags = ["-C", "target-feature=-sse3,-cmpxchg16b"]';
+    const flag = 'rustflags = ["-C", "target-cpu=x86-64", "-C", "target-feature=-sse3,-cmpxchg16b"]';
     const cfg = read('.cargo/config.toml').replace(/\r\n/g, '\n');
     const table = (name) => cfg.split(/\n(?=\[)/).find((t) => t.startsWith(`[${name}]`)) || '';
     for (const t of ['x86_64-pc-windows-gnu', 'x86_64-pc-windows-msvc']) {
@@ -279,6 +279,47 @@ describe('x86_64 ISA baseline', () => {
       'crypto/native/Makefile', 'wallet/windows/CMakeLists.txt', 'wallet/native/build-shear-v3.ps1',
     ];
     for (const rel of builds) assert.doesNotMatch(read(rel), /RUSTFLAGS/, rel);
+  });
+
+  it('std is built from source only in the Windows build steps, on stable 1.98.1', () => {
+    // RUSTC_BOOTSTRAP turns on -Z flags in a stable toolchain. It is set in the
+    // env of the two Windows build steps of the two wallet Windows jobs, with
+    // the build-std list and the target, and nowhere else in the repo.
+    const stepEnv = [
+      "          RUSTC_BOOTSTRAP: '1'",
+      '          CARGO_BUILD_TARGET: x86_64-pc-windows-gnu',
+      '          CARGO_UNSTABLE_BUILD_STD: std,core,alloc,compiler_builtins,panic_unwind',
+    ].join('
+');
+    const steps = ['      - name: Node sidecar addons, GNU toolchain', '      - name: Build Windows release'];
+    for (const f of ['wallet-windows.yml', 'wallet-release.yml']) {
+      const text = read(`.github/workflows/${f}`).replace(/
+/g, '
+');
+      assert.equal(text.split('RUSTC_BOOTSTRAP').length - 1, 2, `${f}: two build steps`);
+      for (const name of steps) {
+        const at = text.indexOf(name);
+        assert.ok(at > 0, `${f} ${name}`);
+        const end = text.indexOf('
+      - ', at + 1);
+        const step = text.slice(at, end > 0 ? end : text.length);
+        assert.ok(step.includes(stepEnv), `${f} ${name} builds std from source`);
+      }
+    }
+    const tracked = spawnSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', timeout: 600_000 });
+    assert.equal(tracked.status, 0, tracked.stderr);
+    const allowed = new Set(['.github/workflows/wallet-windows.yml', '.github/workflows/wallet-release.yml', '.cargo/config.toml', 'tests/test_isa_baseline.js']);
+    const stray = [];
+    for (const rel of tracked.stdout.split(' ').filter(Boolean)) {
+      if (allowed.has(rel)) continue;
+      let text;
+      try { text = fs.readFileSync(path.join(root, rel)); } catch { continue; }
+      // The two names that turn it on. Comments elsewhere may say build-std.
+      if (text.includes('RUSTC_BOOTSTRAP') || text.includes('CARGO_UNSTABLE_BUILD_STD')) stray.push(rel);
+    }
+    assert.deepEqual(stray, [], 'std from source and RUSTC_BOOTSTRAP live in the Windows build steps only');
+    // The config only explains it: it sets no unstable table.
+    assert.doesNotMatch(read('.cargo/config.toml'), /^[unstable]/m);
   });
 
   it('every RandomX build goes through scripts/randomx_build.sh, which pins the baseline', () => {
@@ -336,7 +377,7 @@ describe('x86_64 ISA baseline', () => {
     assert.ok(wf('wallet-tests.yml').includes('python3 scripts/isa_scan.py wallet/native/libshear_v3.so crypto/randomx/build/librandomx.a crypto/native/admit/target/release/libshear_admit.so'));
     const rel = wf('wallet-release.yml');
     assert.ok(rel.includes('python3 ../scripts/isa_scan.py ../wallet/native/libshear_v3.so ../crypto/randomx/build/librandomx.a ../crypto/native/admit/target/release/libshear_admit.so'));
-    const winScan = 'python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll crypto/native/shearhash.node crypto/native/shearadmit.node';
+    const winScan = 'python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/x86_64-pc-windows-gnu/release/shear_admit.dll crypto/native/shearhash.node crypto/native/shearadmit.node';
     assert.ok(rel.includes(winScan), 'wallet-release windows scans its native libraries');
     assert.ok(wf('wallet-windows.yml').includes(winScan), 'wallet-windows scans its native libraries');
     // And the files inside the shipped zip, after it is packed and before it
@@ -355,7 +396,8 @@ describe('x86_64 ISA baseline', () => {
     assert.ok(packs.indexOf(minerZip) > packs.indexOf('node sheark-miner/tests/pack_windows.js'), 'the miner zip is scanned after packing');
     // The Windows wallet DLLs come from the GNU toolchain, so they keep symbols to scan.
     for (const f of ['wallet-release.yml', 'wallet-windows.yml']) {
-      assert.match(wf(f), /rustup override set stable-x86_64-pc-windows-gnu/, f);
+      assert.match(wf(f), /rustup override set 1.98.1-x86_64-pc-windows-gnu/, f);
+      assert.match(wf(f), /rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rust-src/, f);
       assert.match(wf(f), /npm ci --ignore-scripts/, `${f} builds the node sidecar's node_modules`);
       // shear_v3.dll uses the same UCRT64 gcc as the addons, in its own step,
       // not whatever build-shear-v3.ps1 finds first.

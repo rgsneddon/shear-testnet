@@ -52,6 +52,14 @@ jobs:
           channel: stable
       - name: Node sidecar addons, GNU toolchain
         shell: msys2 {0}
+        env:
+          # std, core, alloc, compiler_builtins and panic_unwind are built from
+          # source for the Windows target, at the baseline flags in
+          # .cargo/config.toml: the prebuilt std ships SSE3 and CMPXCHG16B.
+          # Stable 1.98.1 and its own rust-src; set in these build steps only.
+          RUSTC_BOOTSTRAP: '1'
+          CARGO_BUILD_TARGET: x86_64-pc-windows-gnu
+          CARGO_UNSTABLE_BUILD_STD: std,core,alloc,compiler_builtins,panic_unwind
         run: |
           set -euo pipefail
           export PATH="/ucrt64/bin:$PATH"
@@ -61,8 +69,8 @@ jobs:
           export NODE_INC="$(pwd)/.node-headers/node-${VER}/include/node"
           test -f "$NODE_INC/node_api.h"
           npm ci --ignore-scripts
-          rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
-          rustup override set stable-x86_64-pc-windows-gnu
+          rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rust-src
+          rustup override set 1.98.1-x86_64-pc-windows-gnu
           export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=gcc
           bash scripts/randomx_build.sh -G "MinGW Makefiles"
           make -C crypto/native
@@ -81,17 +89,24 @@ jobs:
         working-directory: wallet
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
+          # std, core, alloc, compiler_builtins and panic_unwind are built from
+          # source for the Windows target, at the baseline flags in
+          # .cargo/config.toml: the prebuilt std ships SSE3 and CMPXCHG16B.
+          # Stable 1.98.1 and its own rust-src; set in these build steps only.
+          RUSTC_BOOTSTRAP: '1'
+          CARGO_BUILD_TARGET: x86_64-pc-windows-gnu
+          CARGO_UNSTABLE_BUILD_STD: std,core,alloc,compiler_builtins,panic_unwind
         run: |
           $env:PATH = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin;$env:PATH"
           $env:SHEAR_MINGW_GCC = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\gcc.exe"
           $env:CL = "/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS"
-          rustup override set stable-x86_64-pc-windows-gnu
+          rustup override set 1.98.1-x86_64-pc-windows-gnu
           flutter config --enable-windows-desktop
           flutter pub get
           dart run tool/checkpoint_guard.dart --release
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/shear_admit.dll).Trim()
+          $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/x86_64-pc-windows-gnu/release/shear_admit.dll).Trim()
           flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $define
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force -Path dist-cli | Out-Null
@@ -99,7 +114,7 @@ jobs:
       - name: No code above the x86-64 baseline in the native libraries
         run: |
           $env:OBJDUMP = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\objdump.exe"
-          python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/release/shear_admit.dll crypto/native/shearhash.node crypto/native/shearadmit.node crypto/randomx/build/librandomx.a
+          python scripts/isa_scan.py wallet/native/shear_v3.dll crypto/randomx/build-win/librandomx.a crypto/native/admit/target/x86_64-pc-windows-gnu/release/shear_admit.dll crypto/native/shearhash.node crypto/native/shearadmit.node crypto/randomx/build/librandomx.a
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Zip GUI
         run: python wallet/pack/zip_windows.py
