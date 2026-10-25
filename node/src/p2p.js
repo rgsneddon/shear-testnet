@@ -2669,8 +2669,13 @@ export function createP2p({
     }
   }
 
-  function reassignBusyHash(sock, rec, hash) {
-    rec.busyStreak = 0;
+  /**
+   * Move an asked hash off this peer. After a third busy the streak was just
+   * counted as a miss, so it starts again; a refused (lying) answer keeps it:
+   * a frame that fails its claim is not an answer and resets nothing.
+   */
+  function reassignBusyHash(sock, rec, hash, { keepStreak = false } = {}) {
+    if (!keepStreak) rec.busyStreak = 0;
     rec.askPaused = true;
     inflightBlocks.delete(hash);
     rec.pending?.delete(hash);
@@ -2904,7 +2909,7 @@ export function createP2p({
   /** Hand a refused frame's asked hash to another peer, as a busy answer does. */
   function releaseRefusedAsk(sock, rec, hash) {
     if (!rec || !hash || !(rec.pending instanceof Set) || !rec.pending.has(hash)) return;
-    reassignBusyHash(sock, rec, hash);
+    reassignBusyHash(sock, rec, hash, { keepStreak: true });
     rec.syncing = false;
   }
 
