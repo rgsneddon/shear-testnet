@@ -126,4 +126,17 @@ describe('the vault rebuilt for a reorg or a supply carry is at the book magic',
     for (const call of parents) assert.match(call, /, bookMagic\)$/, call);
     for (const call of steps) assert.match(call, /magic: bookMagic/, call);
   });
+
+  it('every supply fold names its magic: the resume load in store.js and the parents in chain.js', () => {
+    // foldSupply replays the vault at opts.magic || MAGIC_TESTNET, so a fold
+    // with no magic refuses an honest note lock on any other book.
+    const store = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
+    const chain = fs.readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
+    const storeFolds = store.match(/foldSupply\([^)]*\)/g) || [];
+    const chainFolds = chain.match(/foldSupply\([^)]*\)/g) || [];
+    assert.ok(storeFolds.length >= 1, `store.js foldSupply calls ${storeFolds.length}`);
+    assert.ok(chainFolds.length >= 2, `chain.js foldSupply calls ${chainFolds.length}`);
+    for (const call of storeFolds) assert.match(call, /magic: bookMagic/, call);
+    for (const call of chainFolds) assert.match(call, /\{ magic,/, call);
+  });
 });
