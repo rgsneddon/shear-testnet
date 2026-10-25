@@ -6,6 +6,7 @@ import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveR
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
 import { HEADER_LEN, hashHex } from '../../crypto/shear_hash.js';
+import { chainIndexOf, emptyChainIndex } from './chain_index.js';
 import { asCommitFault } from './process_guard.js';
 import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
@@ -181,15 +182,6 @@ function workOfBlock(block) {
   } catch {
     return 0;
   }
-}
-
-function indexByHex(list, hex) {
-  const want = String(hex || '').toLowerCase();
-  if (!want) return -1;
-  for (let i = list.length - 1; i >= 0; i -= 1) {
-    if (hex32(list[i].hash).toLowerCase() === want) return i;
-  }
-  return -1;
 }
 
 function commonPrefixLen(a, b) {
@@ -398,6 +390,8 @@ export function createStore(dir, {
   const snapFile = path.join(dir, 'book.snap');
   const vaultSnapFile = path.join(dir, 'vault.snap');
   const blocks = [];
+  // Our chain by hash for locateFork and ingest; see chain_index.js.
+  const chainIndex = emptyChainIndex();
   const explorer = [];
   const spentB = new Set();
   const headers = new Map();
@@ -5735,24 +5729,26 @@ export function createStore(dir, {
     try { decoded = decodeHeader(Buffer.from(fork[0].header)); } catch { return null; }
     const t = tip();
     const prev = decoded.prevBlockHash;
+    // The prefix is built only when a pruned block needs its history: a copy
+    // of the chain per ingested block made IBD quadratic.
     if (t ? prev.equals(Buffer.from(t.hash)) : prev.equals(GENESIS_PREV)) {
-      return { parentH: Number(t?.height) || 0, prefix: blocks.slice() };
+      return { parentH: Number(t?.height) || 0, prefixOf: () => blocks.slice() };
     }
     const prevHex = Buffer.from(prev).toString('hex').toLowerCase();
-    const anchorIdx = indexByHex(blocks, prevHex);
+    const anchorIdx = chainIndexOf(chainIndex, blocks, prevHex);
     if (anchorIdx >= 0) {
       const parent = blocks[anchorIdx];
       return {
         parentH: Number(parent?.height) || (anchorIdx + 1),
-        prefix: blocks.slice(0, anchorIdx + 1),
+        prefixOf: () => blocks.slice(0, anchorIdx + 1),
       };
     }
     if (sideBlocks.length && prevHex === sideTipHash()) {
       const chain = sideChain();
       const last = chain[chain.length - 1];
-      return { parentH: Number(last?.height) || chain.length, prefix: chain };
+      return { parentH: Number(last?.height) || chain.length, prefixOf: () => chain };
     }
-    if (prev.equals(GENESIS_PREV)) return { parentH: 0, prefix: [] };
+    if (prev.equals(GENESIS_PREV)) return { parentH: 0, prefixOf: () => [] };
     return null;
   }
 
@@ -5775,7 +5771,7 @@ export function createStore(dir, {
   function ensurePrunedBurial(fork, verifyOpts) {
     const located = locateFork(fork);
     if (!located) return { ok: true, verifyOpts };
-    const { parentH, prefix } = located;
+    const { parentH, prefixOf } = located;
     const forkTip = parentH + fork.length;
     const need = [];
     for (let i = 0; i < fork.length; i += 1) {
@@ -5792,6 +5788,7 @@ export function createStore(dir, {
       need.push({ block, structuralH, index: i });
     }
     if (!need.length) return { ok: true, verifyOpts };
+    const prefix = prefixOf();
     const proveAt = (n, at) => {
       if (n >= need.length) return { ok: true, verifyOpts: { ...verifyOpts, provenBurialAt: at } };
       const item = need[n];
@@ -5866,7 +5863,7 @@ export function createStore(dir, {
       return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, blocks.length - 1));
     }
     const prevHex = Buffer.from(decoded.prevBlockHash).toString('hex').toLowerCase();
-    const anchorIdx = indexByHex(blocks, prevHex);
+    const anchorIdx = chainIndexOf(chainIndex, blocks, prevHex);
     if (anchorIdx >= 0 || (sideBlocks.length && prevHex === sideTipHash())) {
       return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, anchorIdx));
     }

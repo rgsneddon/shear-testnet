@@ -1,5 +1,6 @@
 import net from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
+import { chainIndexOf, emptyChainIndex } from './chain_index.js';
 import { MAGIC_TESTNET, PRODUCT_VERSION, SAMPLE_PRUNE_CONFIRMATIONS, consensusFingerprint } from '../../crypto/asert.js';
 import { safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
@@ -2736,20 +2737,14 @@ export function createP2p({
 
   // Our chain by hash. headerIndexByHash walks the whole chain from the tip
   // and hexes every stored hash, so a frame of N blocks cost N chain walks on
-  // the main thread. The map is rebuilt once per tip, not per lookup.
-  let chainIndex = { ref: null, len: -1, tip: '', map: new Map() };
+  // the main thread. The map follows the chain: blocks appended on top of the
+  // last indexed tip are added one by one, so IBD costs O(1) per block; a
+  // reorg or a shorter chain rebuilds it once.
+  const chainIndex = emptyChainIndex();
   function storedIndex(hash) {
     const want = wireHash(hash);
     if (!want) return -1;
-    const list = Array.isArray(store.blocks) ? store.blocks : [];
-    const tip = list.length ? hexHash(list[list.length - 1].hash) : '';
-    if (chainIndex.ref !== list || chainIndex.len !== list.length || chainIndex.tip !== tip) {
-      const map = new Map();
-      for (let i = 0; i < list.length; i += 1) map.set(hexHash(list[i].hash), i);
-      chainIndex = { ref: list, len: list.length, tip, map };
-    }
-    const at = chainIndex.map.get(want);
-    return at == null ? -1 : at;
+    return chainIndexOf(chainIndex, Array.isArray(store.blocks) ? store.blocks : [], want);
   }
 
   /**
