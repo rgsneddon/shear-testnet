@@ -8,17 +8,20 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createRegtestStore } from './regtest_store.js';
 import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import { buildTemplate, digestTx, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
+import { emptyMempool, admitMempool, heldBodyKey, txBodyKey } from '../../crypto/mempool.js';
+import { createP2p, fingerprintHelloHash, jsonWire } from '../src/p2p.js';
 import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
 import { levyNeed, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
-import { compactTx } from '../../crypto/chronoflux.js';
+import { admitWireTx, compactTx } from '../../crypto/chronoflux.js';
 import { admitBaseScalar, admitScalarFromSeed, attachAdmitPub, blindCommit } from '../../crypto/admit.js';
 import {
   asU8,
@@ -508,6 +511,138 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     }
     spent.add(view.coins[0].commit.toString('hex'));
     spent.add(view.coins[1].commit.toString('hex'));
+  });
+
+  describe('a held body is known by its bytes, not the id its sender picks', () => {
+    const LABEL = 'shared-label';
+    const back20 = () => hash20FromAddress(who.dest);
+    const sendOf = (view, c, id) => buildSend({
+      id,
+      coins: [c],
+      anchor: view.anchor,
+      live: view.live,
+      outsOf: (room) => [
+        hiddenOut(room, back20(), who.base, 'send'),
+        hiddenOut(0, Buffer.alloc(20, 4), null, 'dummy'),
+      ],
+    }).tx;
+    const held = (tx) => store.mempool.some((m) => heldBodyKey(m) === txBodyKey(tx));
+    let a = null;
+    let b = null;
+
+    it('two bodies under one id are each judged and held; one body under two ids is one', () => {
+      const view = liveCoins();
+      assert.ok(view.coins.length >= 5, `only ${view.coins.length} live coins`);
+      a = sendOf(view, view.coins[0], LABEL);
+      b = sendOf(view, view.coins[1], LABEL);
+      // Queued now, so later tests do not spend these notes again.
+      spent.add(view.coins[0].commit.toString('hex'));
+      spent.add(view.coins[1].commit.toString('hex'));
+      // The cost of a key on a real send: what each arrival pays once, and
+      // what a full pool's first walk pays per held row (heldBodyKey keeps it).
+      const reps = 200;
+      const t0 = process.hrtime.bigint();
+      for (let i = 0; i < reps; i += 1) txBodyKey(a);
+      record({ phase: 'body-key', bytes: JSON.stringify(compactTx(a)).length, usPerKey: Math.round(Number(process.hrtime.bigint() - t0) / 1e3 / reps) });
+      const before = store.mempool.length;
+      const qa = store.queueTx(a);
+      assert.equal(qa.ok, true, `a ${qa.reason}`);
+      const qb = store.queueTx(b);
+      assert.equal(qb.ok, true, `another body under a's id is judged on its own: ${qb.reason}`);
+      assert.equal(qb.duplicate, undefined);
+      assert.equal(store.mempool.filter((m) => String(m.id) === LABEL).length, 2, 'both bodies held');
+      const relabelled = store.queueTx({ ...a, id: 'another-label' });
+      assert.equal(relabelled.ok, true, relabelled.reason);
+      assert.equal(relabelled.duplicate, true, 'the same body under a second id is the held tx');
+      assert.equal(store.mempool.length, before + 2);
+      // A changed body spending a's note under a's id is its sender changing a
+      // queued tx: refused. Under a fresh id it is a double spend of a held note.
+      const respend = sendOf(view, view.coins[0], LABEL);
+      assert.notEqual(txBodyKey(respend), txBodyKey(a), 'a new proof is a new body');
+      const reused = store.queueTx(respend);
+      assert.equal(reused.ok, false);
+      assert.equal(reused.reason, 'id_reused');
+      const twice = store.queueTx({ ...respend, id: 'fresh-label' });
+      assert.equal(twice.ok, false);
+      assert.equal(twice.reason, 'admit_link_tag');
+      assert.equal(store.mempool.length, before + 2);
+    });
+
+    it('a block sealing another body under a held id evicts neither held body', async () => {
+      assert.ok(a && b && held(a) && held(b), 'a and b held');
+      const view = liveCoins();
+      const c = sendOf(view, view.coins[0], LABEL);
+      spent.add(view.coins[0].commit.toString('hex'));
+      const tip = store.tip();
+      const preview = store.template({ miner: who.dest, bits: regtestBits(), shareBits: 4, now: lastStamp(store) + 90_000 });
+      const built = buildTemplate({
+        prev: tip.hash,
+        prevHeader: tip.header,
+        prevBlock: tip,
+        height: tip.height + 1,
+        miner: who.dest,
+        bits: preview.tpl.bits,
+        now: Number(decodeHeader(Buffer.from(preview.tpl.header)).timestamp),
+        txs: [c],
+        parentBlocks: store.blocks,
+      });
+      assert.deepEqual(built.txs.slice(1).map((row) => row.id), [LABEL], 'the block carries only c, under the held id');
+      const header = await sealHeader(built.header, built.bits);
+      resetFs1VerifyCache();
+      resetFs1Tree();
+      const got = await Promise.resolve(store.append({
+        header,
+        height: built.height,
+        txs: built.txs,
+        samples: built.samples,
+        shareBatch: built.shareBatch || [],
+        miner: who.dest,
+        aLeaves: built.aLeaves,
+        bLeaves: built.bLeaves,
+        rootA: built.rootA,
+        rootB: built.rootB,
+        weight: built.weight,
+      }));
+      assert.equal(got.ok, true, `append ${got.reason || ''}`);
+      assert.equal(held(a), true, 'a sealed id does not evict a');
+      assert.equal(held(b), true, 'nor b');
+      assert.equal(held(c), false);
+    });
+
+    it('a gossiped body under a held label is not suppressed, and a relabelled copy is held once', async () => {
+      const view = liveCoins();
+      const e = sendOf(view, view.coins[0], 'gossip-label');
+      const f = sendOf(view, view.coins[1], 'gossip-label');
+      spent.add(view.coins[0].commit.toString('hex'));
+      spent.add(view.coins[1].commit.toString('hex'));
+      const mesh = createP2p({ store, port: 0, host: '127.0.0.1', magic: store.magic, helloMs: 5000, idleMs: 60_000 });
+      const bound = await mesh.listen();
+      const sock = net.connect(bound.port, '127.0.0.1');
+      sock.on('data', () => {});
+      sock.on('error', () => {});
+      try {
+        await new Promise((resolve, reject) => { sock.once('connect', resolve); sock.once('error', reject); });
+        sock.write(`${JSON.stringify({ type: 'hello', magic: store.magic, fingerprint: fingerprintHelloHash(store.magic) })}\n`);
+        await delay(60);
+        const send = (tx) => sock.write(`${jsonWire({ type: 'tx', magic: store.magic, tx: admitWireTx(tx), stem: false })}\n`);
+        const before = store.mempool.length;
+        send(e);
+        for (let i = 0; i < 400 && !held(e); i += 1) await delay(25);
+        assert.equal(held(e), true, 'e queued from gossip');
+        // f is another body under e's label: the old dedupe dropped it unseen.
+        send(f);
+        for (let i = 0; i < 400 && !held(f); i += 1) await delay(25);
+        assert.equal(held(f), true, 'f is not hidden behind e\'s label');
+        // e again under a new label is the body already held.
+        send({ ...e, id: 'gossip-relabel' });
+        await delay(300);
+        assert.equal(store.mempool.length, before + 2);
+        assert.equal(store.mempool.some((m) => String(m.id) === 'gossip-relabel'), false);
+      } finally {
+        sock.destroy();
+        mesh.close();
+      }
+    });
   });
 
   it('rejects a second spend of a spent note', async () => {

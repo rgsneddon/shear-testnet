@@ -3,13 +3,14 @@
  * Paid ≥ current base; bounded; requote/drop after retarget.
  * Shares are not in the mempool.
  */
+import { createHash } from 'node:crypto';
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceiptRejected } from './dummy.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
 import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
-import { sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from './chronoflux.js';
+import { sealedVinLinkField, valueOpenRejected, bSpendVinRejected, compactTx } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
@@ -90,14 +91,55 @@ export function sameMempoolBody(row, tx) {
   }
 }
 
+/**
+ * The key a held body is known by. A tx's `id` is a label its sender picks;
+ * outside a withdraw it is in no digest, so two bodies can carry one id and
+ * one body can be sent under two. This is sha256 of the compact form, the
+ * bytes a block and a p2p frame carry, less that label. A withdraw signs its
+ * id (reserveDigestSuffix), so there the id is body and stays in. The body is
+ * built as admitMempool holds it (mempoolRow with the posted fee), so an
+ * arrival, its held row, and a block's copy share one key; a field is the
+ * same whether it holds a Buffer, hex, or {$hex} (canonicalRow). '' when
+ * the body has no posted fee or no compact form.
+ */
+export function txBodyKey(tx) {
+  if (!tx || typeof tx !== 'object') return '';
+  try {
+    const paid = postedFeeNanos(tx);
+    if (paid == null) return '';
+    const body = { ...compactTx(mempoolRow(tx, paid, String(tx.kind))) };
+    if (String(body.kind || '') !== 'withdraw') delete body.id;
+    return createHash('sha256').update('shear-mempool-body-v1').update(canonicalRow(body)).digest('hex');
+  } catch {
+    return '';
+  }
+}
+
+const heldKeys = new WeakMap();
+
+/**
+ * txBodyKey of a row the mempool holds, kept per row object. A held row is
+ * never edited in place (mempoolRow, requote and bounce build new rows), so
+ * its key is computed once, not on every arrival's walk of the pool.
+ */
+export function heldBodyKey(row) {
+  if (!row || typeof row !== 'object') return '';
+  let key = heldKeys.get(row);
+  if (key === undefined) {
+    key = txBodyKey(row);
+    heldKeys.set(row, key);
+  }
+  return key;
+}
+
 export function emptyMempool() {
   return { txs: [], baseFee: 1, max: MEMPOOL_MAX, tagIndex: new Map() };
 }
 
-/** tag hex → tx id. One walk when the set changes, not one walk per arrival. */
+/** tag hex → the body key of the tx holding it. One walk when the set changes, not one walk per arrival. */
 export function rememberMempoolTag(index, tx, tags) {
   if (!index || typeof index.set !== 'function' || !tx) return;
-  const id = String(tx.id || '');
+  const id = heldBodyKey(tx);
   const list = Array.isArray(tags) ? tags : txSpendTags(tx).tags.map((tag) => tag.toString('hex'));
   for (const th of list) {
     const hex = String(th || '');
@@ -248,7 +290,9 @@ export function admitMempool(pool, tx, opts = {}) {
   // Same v3 verifier as consensus. A bad byte-3 proof is not saved by a
   // missing range proof. A flow that did not finish that check does not
   // reach admit_verify.
-  const flowSelf = String(tx?.id || '');
+  // The caller passes the key it holds (a held row's cached one, or the
+  // arrival's), so a template walk does not key every row again.
+  const flowSelf = typeof opts.selfKey === 'string' ? opts.selfKey : txBodyKey(tx);
   const flowSpent = spentView(book, opts, flowSelf);
   let flowV3Done = false;
   if (flowNeedsDummy(tx) && flowPresentsProof(tx) && !shapeOnly) {
@@ -312,7 +356,7 @@ export function admitMempool(pool, tx, opts = {}) {
   // Lock, vote, and withdraw: same funding check, same drawn mint, same
   // header-time vault trial as queue and consensus. A vault miss is marked
   // so the template drops the tx instead of retrying it forever.
-  const selfId = String(tx?.id || '');
+  const selfId = flowSelf;
   const runningTags = spentView(book, opts, selfId);
   let fundTags = null;
   let vaultState = null;

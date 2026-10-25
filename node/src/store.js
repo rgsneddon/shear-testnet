@@ -130,7 +130,7 @@ import {
 } from './bootstrap.js';
 import { createBurialHold, createBurialProof, settledHeight } from './burial_hold.js';
 import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
-import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool, sameMempoolBody } from '../../crypto/mempool.js';
+import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool, sameMempoolBody, txBodyKey, heldBodyKey } from '../../crypto/mempool.js';
 import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import {
   frameDigest,
@@ -193,8 +193,27 @@ function commonPrefixLen(a, b) {
   return i;
 }
 
+/** The label a tx's sender picked. Reported, never a key: see txBodyKey. */
 function txIdOf(tx) {
   return String(tx?.id || '');
+}
+
+/** A real outpoint a vin names. An FS-1 vin names none (it is a C~ only). */
+function vinOutpoint(vin) {
+  if (vin?.prev == null || vin.prev === '' || vin.index == null) return '';
+  try {
+    return `${Buffer.from(asU8(vin.prev)).toString('hex')}:${Number(vin.index)}`;
+  } catch {
+    return '';
+  }
+}
+
+/** True when `tx` spends a note `held` spends: a shared spend tag or outpoint. */
+function spendsHeldNote(held, tx) {
+  const tags = new Set(txSpendTags(held).tags.map((tag) => tag.toString('hex')));
+  if (txSpendTags(tx).tags.some((tag) => tags.has(tag.toString('hex')))) return true;
+  const outs = new Set((held?.vin || []).map(vinOutpoint).filter(Boolean));
+  return (tx?.vin || []).some((v) => outs.has(vinOutpoint(v)));
 }
 
 function spendLeafOf(tx) {
@@ -2674,12 +2693,14 @@ export function createStore(dir, {
   }
 
   function bounceMempool(disconnected, connected) {
-    const winnerIds = new Set();
+    // By body key, not by the label a sender picks: a winner that only shares
+    // a held tx's id neither evicts it nor stops a loser's body coming back.
+    const winnerKeys = new Set();
     const winnerInputs = new Set();
     for (const b of connected || []) {
       for (const tx of (b.txs || []).slice(1)) {
-        const id = txIdOf(tx);
-        if (id) winnerIds.add(id);
+        const key = txBodyKey(tx);
+        if (key) winnerKeys.add(key);
         for (const tag of txSpendTags(tx).tags) winnerInputs.add(tag.toString('hex'));
         for (const vin of tx.vin || []) {
           winnerInputs.add(`${vin.prev || ''}:${vin.index}`);
@@ -2689,9 +2710,9 @@ export function createStore(dir, {
     const tagSpent = (tx) => txSpendTags(tx).tags.some((tag) => winnerInputs.has(tag.toString('hex')));
     for (let i = mempool.length - 1; i >= 0; i -= 1) {
       const tx = mempool[i];
-      const id = txIdOf(tx);
+      const key = heldBodyKey(tx);
       const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
-      if ((id && winnerIds.has(id)) || spent || tagSpent(tx)) mempool.splice(i, 1);
+      if ((key && winnerKeys.has(key)) || spent || tagSpent(tx)) mempool.splice(i, 1);
     }
     let base = 1;
     const t = tip();
@@ -2707,14 +2728,15 @@ export function createStore(dir, {
     const book = emptyMempool();
     book.txs = mempool.slice();
     book.tagIndex = mempoolTags;
+    const heldKeys = new Set(mempool.map(heldBodyKey).filter(Boolean));
     for (const b of disconnected || []) {
       for (const tx of (b.txs || []).slice(1)) {
         if (tx?.coinbase) continue;
-        const id = txIdOf(tx);
-        if (id && winnerIds.has(id)) continue;
+        const key = txBodyKey(tx);
+        if (key && winnerKeys.has(key)) continue;
         const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
         if (spent || tagSpent(tx)) continue;
-        if (id && mempool.some((m) => txIdOf(m) === id)) continue;
+        if (key && heldKeys.has(key)) continue;
         const row = {
           ...tx,
           kind: tx.kind,
@@ -3808,13 +3830,15 @@ export function createStore(dir, {
     noteAppendedBlock();
     rememberHeaders([stored], 'active');
     {
-      const sealedIds = new Set((stored.txs || []).map((t) => String(t.id || '')));
+      // The block's own bodies, by key: a sealed tx that only carries a held
+      // tx's id does not evict it. A held body whose note the block spent goes.
+      const sealedKeys = new Set((stored.txs || []).slice(1).map(txBodyKey).filter(Boolean));
       const spentNow = liveFlux?.spendTags || new Set();
       for (let i = mempool.length - 1; i >= 0; i -= 1) {
         const row = mempool[i];
-        const idHit = sealedIds.has(String(row?.id || ''));
+        const sealedHit = sealedKeys.has(heldBodyKey(row));
         const tagHit = txSpendTags(row).tags.some((tag) => spentNow.has(tag.toString('hex')));
-        if (idHit || tagHit) mempool.splice(i, 1);
+        if (sealedHit || tagHit) mempool.splice(i, 1);
       }
     }
     for (const tx of (stored.txs || []).slice(1)) {
@@ -4008,13 +4032,16 @@ export function createStore(dir, {
     const book = emptyMempool();
     book.txs = mempool;
     book.tagIndex = mempoolTags;
+    // A held body is known by its key (txBodyKey), not by the id its sender
+    // picks. The same body again is a duplicate. Another body under a held id
+    // that spends a note the held body spends is that sender changing a queued
+    // tx: refused, so an ok never tells a wallet its changed body is in. Any
+    // other body under that id is judged on its own: a label cannot keep a
+    // real tx out.
+    const bodyKey = txBodyKey(tx);
+    if (bodyKey && mempool.some((m) => heldBodyKey(m) === bodyKey)) return { ok: true, tx, duplicate: true };
     const id = String(tx?.id || '');
-    const held = id ? mempool.find((m) => String(m.id) === id) : null;
-    if (held) {
-      // An id names one queued body. The same body again is a duplicate. Any
-      // other body under that id was never verified or queued, so it is
-      // refused: an ok here told a wallet its changed body was in.
-      if (sameMempoolBody(held, tx)) return { ok: true, tx, duplicate: true };
+    if (id && mempool.some((m) => String(m.id) === id && spendsHeldNote(m, tx))) {
       return { ok: false, reason: 'id_reused' };
     }
     const debitNow = fundedDebit(tx);
@@ -4029,7 +4056,7 @@ export function createStore(dir, {
       && paintedSpendSig(tx)
       && chainHave < debitNow.nanos
       && chainHave + paintedOwedNanos >= debitNow.nanos);
-    const selfId = String(tx?.id || '');
+    const selfId = bodyKey;
     const chainTags = liveFlux.spendTags;
     const spentNow = {
       has(tag) {
@@ -4164,6 +4191,7 @@ export function createStore(dir, {
       admitOpts.reserveCarried = mempoolVault;
       admitOpts.verifiedFund = fundVerdictFor(tx);
     }
+    admitOpts.selfKey = bodyKey;
     return insertMempool(() => {
       const got = admitMempool(book, tx, admitOpts);
       if (got && got.ok && got.vaultState) mempoolVault = got.vaultState;
@@ -6273,6 +6301,7 @@ export function createStore(dir, {
         // Mark the leaf now. One tree rebuild, after this walk, covers the body.
         admitOpts.deferVaultRoot = true;
       }
+      admitOpts.selfKey = heldBodyKey(raw);
       const got = admitMempool(book, tx, admitOpts);
       if (got.ok) {
         pendingTxs.push(got.tx);

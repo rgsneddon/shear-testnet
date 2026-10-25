@@ -9,7 +9,7 @@
  * and enclosing function, with its reason. A new one fails until it is
  * reviewed and listed; a listed one that is gone fails too, so the list stays
  * exact. crypto/mempool.js is the policy book, not consensus: it keys held
- * bodies by their own bytes (test_mempool_body_key_v12.js).
+ * bodies by their own bytes (txBodyKey; test_fs1_spend_v12.js).
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';

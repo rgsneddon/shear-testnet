@@ -13,6 +13,7 @@ import {
   unpackSpillCreditBytes,
 } from '../../crypto/hash_owed.js';
 import { admitWireTx, compactTx, shouldPruneSamples } from '../../crypto/chronoflux.js';
+import { txBodyKey } from '../../crypto/mempool.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
@@ -1491,6 +1492,9 @@ export function createP2p({
     }
   }
 
+  // Gossip dedupe and fluff timers key a tx by its body (txBodyKey), not by
+  // the id its sender picks: a frame reusing a real tx's id neither hides
+  // that tx from this node nor holds its relay.
   const seenTxOrder = [];
   function rememberTxId(id) {
     if (!id) return false;
@@ -1533,7 +1537,8 @@ export function createP2p({
   }
 
   function ingestRemoteTx(tx, fromSock, { stem = false, hops = 0 } = {}) {
-    const id = String(tx?.id || '');
+    if (!String(tx?.id || '')) return;
+    const id = txBodyKey(tx);
     if (!id || !rememberTxId(id)) return;
     if (typeof store.queueTx !== 'function') return;
     const got = store.queueTx(tx);
@@ -1561,12 +1566,13 @@ export function createP2p({
 
   if (store && typeof store.on === 'function') {
     store.on('tx', (tx) => {
-      const id = String(tx?.id || '');
-      if (!id) return;
-      if (!rememberTxId(id)) return;
+      const label = String(tx?.id || '');
+      if (!label) return;
       const sealed = wireTx(tx);
+      const id = txBodyKey(sealed);
+      if (!id || !rememberTxId(id)) return;
       const n = stemRelay(sealed, null, 0);
-      originInvSize.set(id, n);
+      originInvSize.set(label, n);
       scheduleFluff(id, sealed, null);
     });
   }

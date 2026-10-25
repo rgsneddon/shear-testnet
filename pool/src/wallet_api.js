@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPaymentCode, checkAddressField, hash20FromAddress } from '../../crypto/address.js';
 import { walletSubmitLog, newConnId, lineJoinsIpToIdentity } from '../../crypto/privacy_net.js';
+import { heldBodyKey } from '../../crypto/mempool.js';
 import {
   HASH_BONUS_NANOS,
   hashBonusUnitNanos,
@@ -1100,8 +1101,11 @@ export function mempoolLattice(store, limitOrOpts = 24) {
     ? store.jobs.get(String(lastJob.jobId))
     : null;
   const tplTxs = rec?.tpl?.txs || [];
-  const includedIds = new Set(
-    tplTxs.filter((t) => t && !t.coinbase).map((t) => String(t.id || '')).filter(Boolean),
+  // Rows match by body key (a network view row carries it), not by the id a
+  // sender picks: a reused id neither hides a pending tx nor marks it included.
+  const keyOf = (m) => (/^[0-9a-f]{64}$/.test(String(m?.key || '')) ? String(m.key) : heldBodyKey(m));
+  const includedKeys = new Set(
+    tplTxs.filter((t) => t && !t.coinbase).map(keyOf).filter(Boolean),
   );
   const jobUser = [];
   for (const t of tplTxs) {
@@ -1110,6 +1114,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
     if (!id) continue;
     const weight = Number(t.weight) > 0 ? Number(t.weight) : memoTxWeight(t);
     jobUser.push({
+      key: keyOf(t),
       id,
       kind: t.kind || 'send',
       fee: Number(t.fee || 0),
@@ -1119,10 +1124,13 @@ export function mempoolLattice(store, limitOrOpts = 24) {
   const rawPending = Array.isArray(opts.networkPending)
     ? opts.networkPending
     : (store?.mempool || []);
+  const seenPending = new Set();
   const pending = rawPending.map((m) => {
     const weight = Number(m.weight) > 0 ? Number(m.weight) : memoTxWeight(m);
     const fee = Number(m.fee || 0);
-    const included = includedIds.size ? includedIds.has(String(m.id || '')) : true;
+    const key = keyOf(m);
+    if (m?.id && key) seenPending.add(key);
+    const included = includedKeys.size ? includedKeys.has(key) : true;
     const mass = weight * (1 + Math.log1p(Math.max(0, fee)));
     return {
       id: String(m.id || ''),
@@ -1134,9 +1142,8 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       priority: (included ? 400 : 0) + mass,
     };
   }).filter((t) => t.id);
-  const seenPending = new Set(pending.map((t) => t.id));
   for (const row of jobUser) {
-    if (seenPending.has(row.id)) continue;
+    if (row.key && seenPending.has(row.key)) continue;
     const mass = row.weight * (1 + Math.log1p(Math.max(0, row.fee)));
     pending.push({
       id: row.id,
@@ -1147,7 +1154,7 @@ export function mempoolLattice(store, limitOrOpts = 24) {
       included: true,
       priority: 400 + mass,
     });
-    seenPending.add(row.id);
+    if (row.key) seenPending.add(row.key);
   }
   pending.sort((a, b) => b.priority - a.priority);
   const gossipRounds = Array.isArray(opts.networkRounds);
