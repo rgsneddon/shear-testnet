@@ -54,7 +54,7 @@ describe('x86_64 ISA baseline', () => {
       const v3 = cc(dir, 'v3', LOOP, '-march=x86-64-v3');
       const r = scan(v3);
       assert.equal(r.status, 1, r.stdout);
-      assert.match(r.stderr, /v3\.o add: v\S+ .*%ymm/);
+      assert.match(r.stderr, /v3\.o add \[v3\]: v\S+ .*%ymm/);
       // A dispatch object may hold AVX2.
       const kernel = cc(dir, 'sha256_avx2', LOOP, `${BASE} -mavx2`);
       assert.equal(scan(kernel).status, 0, scan(kernel).stderr);
@@ -69,10 +69,53 @@ describe('x86_64 ISA baseline', () => {
       ].join('\n'), BASE);
       const lr = scan(leak);
       assert.equal(lr.status, 1, lr.stdout);
-      assert.match(lr.stderr, /leak\.so helper:/);
+      assert.match(lr.stderr, /leak\.so helper \[v3\]:/);
       // rep bsf for ctz prints as tzcnt and runs on any x86-64: not flagged.
       const ctz = cc(dir, 'ctz', 'int f(unsigned x) { return __builtin_ctz(x); }\n', BASE);
       assert.equal(scan(ctz).status, 0, scan(ctz).stderr);
+      // x86-64 v2 is above the baseline too: POPCNT in baseline code is refused,
+      // and the same code at the baseline calls the libgcc helper instead.
+      const POP = 'int g(unsigned x) { return __builtin_popcount(x); }\n';
+      const pop = scan(cc(dir, 'pop', POP, `${BASE} -mpopcnt`));
+      assert.equal(pop.status, 1, pop.stdout);
+      assert.match(pop.stderr, /\[popcnt\]/);
+      assert.equal(scan(cc(dir, 'pop_base', POP, BASE)).status, 0);
+      // AES-NI is RandomX's hard-AES kernel only: allowed in aes_hash.cpp.o,
+      // refused in any other object.
+      const AES = '#include <wmmintrin.h>\n__m128i e(__m128i a, __m128i k) { return _mm_aesenc_si128(a, k); }\n';
+      assert.equal(scan(cc(dir, 'aes_hash.cpp', AES, `${BASE} -maes`)).status, 0, 'hard-AES object');
+      const stray = scan(cc(dir, 'stray_aes', AES, `${BASE} -maes`));
+      assert.equal(stray.status, 1, stray.stdout);
+      assert.match(stray.stderr, /\[aes\]/);
+      // In a linked file the hard-AES instances are RandomX's softAes=false
+      // templates (Lb0E), given here the names RandomX's build gives them. The
+      // <true> instances are the soft-AES fallback and may not hold AES-NI.
+      const aesAs = (names) => '#include <wmmintrin.h>\n' + names.map((name, i) => [
+        `__attribute__((target("aes"))) __m128i k${i}(__m128i a, __m128i k) __asm__("${name}");`,
+        `__attribute__((target("aes"))) __m128i k${i}(__m128i a, __m128i k) { return _mm_aesenc_si128(a, k); }`,
+      ].join('\n')).join('\n') + '\n';
+      const hard = scan(cc(dir, 'rx_hard.so', aesAs([
+        '_Z11fillAes1Rx4ILb0EEvPvmS0_',
+        '_Z18hashAndFillAes1Rx4ILb0EEvPvmS0_S0_',
+        '_ZN7randomx6VmBaseINS_18LargePageAllocatorELb0EE8allocateEv',
+      ]), BASE));
+      assert.equal(hard.status, 0, hard.stderr);
+      for (const soft of ['_Z11fillAes1Rx4ILb1EEvPvmS0_', '_ZN7randomx6VmBaseINS_18LargePageAllocatorELb1EE8allocateEv']) {
+        const sr = scan(cc(dir, 'rx_soft.so', aesAs([soft]), BASE));
+        assert.equal(sr.status, 1, `${soft} ${sr.stdout}`);
+        assert.ok(sr.stderr.includes(`${soft} [aes]`), sr.stderr);
+      }
+      // librandomx.a is scanned per member, and VmBase<..., false> lives in
+      // virtual_machine.cpp.o, not aes_hash.cpp.o: the template name holds there.
+      const vmHard = scan(cc(dir, 'virtual_machine.cpp', aesAs(['_ZN7randomx6VmBaseINS_16AlignedAllocatorILm64EEELb0EE8allocateEv']), BASE));
+      assert.equal(vmHard.status, 0, vmHard.stderr);
+      const vmSoft = scan(cc(dir, 'vm_soft.cpp', aesAs(['_ZN7randomx6VmBaseINS_16AlignedAllocatorILm64EEELb1EE8allocateEv']), BASE));
+      assert.equal(vmSoft.status, 1, vmSoft.stdout);
+      assert.ok(vmSoft.stderr.includes('Lb1EE8allocateEv [aes]'), vmSoft.stderr);
+      // A kernel is allowed only its own extension: SHA-NI code may not use AVX2.
+      const shaAvx = scan(cc(dir, 'sha256_ni', LOOP, `${BASE} -mavx2`));
+      assert.equal(shaAvx.status, 1, shaAvx.stdout);
+      assert.match(shaAvx.stderr, /sha256_ni\.o .*\[v3\]/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
