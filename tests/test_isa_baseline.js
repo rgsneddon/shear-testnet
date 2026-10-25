@@ -54,7 +54,7 @@ describe('x86_64 ISA baseline', () => {
       const v3 = cc(dir, 'v3', LOOP, '-march=x86-64-v3');
       const r = scan(v3);
       assert.equal(r.status, 1, r.stdout);
-      assert.match(r.stderr, /v3\.o add \[v3\]: v\S+ .*%ymm/);
+      assert.match(r.stderr, /v3\.o add \[avx\]: v\S+ .*%ymm/);
       // A dispatch object may hold AVX2.
       const kernel = cc(dir, 'sha256_avx2', LOOP, `${BASE} -mavx2`);
       assert.equal(scan(kernel).status, 0, scan(kernel).stderr);
@@ -69,7 +69,7 @@ describe('x86_64 ISA baseline', () => {
       ].join('\n'), BASE);
       const lr = scan(leak);
       assert.equal(lr.status, 1, lr.stdout);
-      assert.match(lr.stderr, /leak\.so helper \[v3\]:/);
+      assert.match(lr.stderr, /leak\.so helper \[avx\]:/);
       // rep bsf for ctz prints as tzcnt and runs on any x86-64: not flagged.
       const ctz = cc(dir, 'ctz', 'int f(unsigned x) { return __builtin_ctz(x); }\n', BASE);
       assert.equal(scan(ctz).status, 0, scan(ctz).stderr);
@@ -115,7 +115,52 @@ describe('x86_64 ISA baseline', () => {
       // A kernel is allowed only its own extension: SHA-NI code may not use AVX2.
       const shaAvx = scan(cc(dir, 'sha256_ni', LOOP, `${BASE} -mavx2`));
       assert.equal(shaAvx.status, 1, shaAvx.stdout);
-      assert.match(shaAvx.stderr, /sha256_ni\.o .*\[v3\]/);
+      assert.match(shaAvx.stderr, /sha256_ni\.o .*\[avx\]/);
+      // An AVX2 kernel is entitled to AVX2 only. AVX-512 on ymm registers
+      // (EVEX) and BMI2 there are refused: its CPU check tests neither.
+      const TERN = '#include <immintrin.h>\n__m256i t(__m256i a, __m256i b, __m256i c) { return _mm256_ternarylogic_epi32(a, b, c, 0x96); }\n';
+      const evex = scan(cc(dir, 'sha256_avx2', TERN, `${BASE} -mavx2 -mavx512f -mavx512vl`));
+      assert.equal(evex.status, 1, evex.stdout);
+      assert.match(evex.stderr, /sha256_avx2\.o t \[avx512\]: vpternlogd/);
+      const ROT = 'unsigned r(unsigned x, unsigned n) { return x >> (n & 31); }\n';
+      const bmi = scan(cc(dir, 'sha256_avx2', ROT, `${BASE} -mavx2 -mbmi2`));
+      assert.equal(bmi.status, 1, bmi.stdout);
+      assert.match(bmi.stderr, /sha256_avx2\.o r \[bmi\]: shrx/);
+      // libstdc++'s random_device RDRAND/RDSEED sources are picked after a
+      // cpuid check, so those three may hold them; RDRAND elsewhere is refused.
+      const RD = (names) => names.map((name, i) => [
+        `__attribute__((target("rdrnd"))) unsigned d${i}(void) __asm__("${name}");`,
+        `__attribute__((target("rdrnd"))) unsigned d${i}(void) { unsigned v = 0; __builtin_ia32_rdrand32_step(&v); return v; }`,
+      ].join('\n')).join('\n') + '\n';
+      const rdOk = scan(cc(dir, 'rd_ok.so', RD(['_ZNSt12_GLOBAL__N_1L12__x86_rdrandEPv', '_ZNSt12_GLOBAL__N_1L12__x86_rdseedEPv']), BASE));
+      assert.equal(rdOk.status, 0, rdOk.stderr);
+      const rdBad = scan(cc(dir, 'rd_bad.so', RD(['entropy_now']), BASE));
+      assert.equal(rdBad.status, 1, rdBad.stdout);
+      assert.match(rdBad.stderr, /rd_bad\.so entropy_now \[rdrand\]: rdrand/);
+      // Instructions gcc will not emit on demand, classed straight from the table.
+      const table = spawnSync(python, ['-I', '-c', [
+        'import importlib.util, json, sys',
+        `spec = importlib.util.spec_from_file_location("s", ${JSON.stringify(path.join(root, 'scripts/isa_scan.py'))})`,
+        'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+        'print(json.dumps({k: m.extension_of(k) for k in json.loads(sys.argv[1])}))',
+      ].join('\n'), JSON.stringify([
+        'sahf', 'lahf', 'cmpxchg16b (%rdi)', 'lock cmpxchg16b (%rdi)', 'vzeroupper', 'vldmxcsr (%rsp)',
+        'phminposuw %xmm1,%xmm2', 'rex.W pshufb %xmm1,%xmm2', '{vex} vpaddd %xmm1,%xmm2,%xmm3',
+        '{evex} vpaddd %xmm1,%xmm2,%xmm3', 'vpaddd %ymm17,%ymm2,%ymm3', 'vprord $7,%xmm1,%xmm2',
+        'vfmadd231ps %ymm1,%ymm2,%ymm3', 'vcvtph2ps %xmm1,%ymm2', 'movbe (%rdi),%eax', 'lzcnt %eax,%ebx',
+        'extrq $1,$2,%xmm1', 'adcx %eax,%ebx', 'rdrand %eax', 'tzcnt %eax,%ebx', 'pmuludq %xmm1,%xmm2',
+      ])], { timeout: 600_000, encoding: 'utf8' });
+      assert.equal(table.status, 0, table.stderr);
+      assert.deepEqual(JSON.parse(table.stdout), {
+        sahf: 'v2', lahf: 'v2', 'cmpxchg16b (%rdi)': 'v2', 'lock cmpxchg16b (%rdi)': 'v2',
+        vzeroupper: 'avx', 'vldmxcsr (%rsp)': 'avx', 'phminposuw %xmm1,%xmm2': 'sse41',
+        'rex.W pshufb %xmm1,%xmm2': 'ssse3', '{vex} vpaddd %xmm1,%xmm2,%xmm3': 'avx',
+        '{evex} vpaddd %xmm1,%xmm2,%xmm3': 'avx512', 'vpaddd %ymm17,%ymm2,%ymm3': 'avx512',
+        'vprord $7,%xmm1,%xmm2': 'avx512', 'vfmadd231ps %ymm1,%ymm2,%ymm3': 'fma',
+        'vcvtph2ps %xmm1,%ymm2': 'f16c', 'movbe (%rdi),%eax': 'movbe', 'lzcnt %eax,%ebx': 'bmi',
+        'extrq $1,$2,%xmm1': 'sse4a', 'adcx %eax,%ebx': 'adx', 'rdrand %eax': 'rdrand',
+        'tzcnt %eax,%ebx': null, 'pmuludq %xmm1,%xmm2': null,
+      });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -194,6 +239,11 @@ describe('x86_64 ISA baseline', () => {
     // The desktop build runs as builder and reconfigures RandomX; root built it.
     const own = inside.indexOf('chown -R builder:builder "${RX}/build"');
     assert.ok(own > 0 && own < inside.indexOf('as-builder flutter build linux'), 'build trees are builder\'s before the desktop build');
+    // The desktop build rebuilds libshear_v3.so and the admit cdylib, so what
+    // the bundle ships is scanned after it.
+    const bundleScan = inside.indexOf('$(find "${BUNDLE_LIB}"');
+    assert.ok(bundleScan > inside.indexOf('as-builder flutter build linux'), 'the shipped desktop libraries are scanned after the desktop build');
+    assert.match(inside, /test -f "\$\{BUNDLE_LIB\}\/libshear_v3\.so"/);
   });
 
   it('every job that builds and scans on the Linux host runs on ubuntu-24.04, not ubuntu-latest', () => {

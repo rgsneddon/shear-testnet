@@ -18,9 +18,11 @@ the kernels below may use one, each only the extensions its CPU check covers:
     get_selected_backend), memchr arch::x86_64::avx2 and blake2b_simd avx2
     and sse41 (is_x86_feature_detected), sha2 x86 avx2 and SHA-NI (cpufeatures).
 
-Classes: sse3, ssse3, sse41, sse42, popcnt, aes, pclmul, sha (x86-64 v2 and
-the crypto extensions), v3 (VEX: AVX, AVX2, FMA, F16C; BMI1/2, LZCNT, MOVBE)
-and avx512 (EVEX, zmm, mask registers).
+Classes: sse3, ssse3, sse41, sse42, popcnt and v2 (CMPXCHG16B, LAHF/SAHF),
+the x86-64 v2 level; aes, pclmul and sha; avx (VEX vector code, AVX and
+AVX2), fma, f16c, bmi (BMI1/2, LZCNT) and movbe, the x86-64 v3 level, each
+its own class; avx512 (EVEX, zmm, xmm/ymm16-31, mask registers); and sse4a,
+adx, rdrand and tbm, outside the levels.
 
 Usage: isa_scan.py FILE...   (ELF or PE executables, shared objects, .node
 addons, .o objects and .a archives). An archive is judged member by member,
@@ -35,7 +37,9 @@ import shutil
 import subprocess
 import sys
 
-UP_TO_AVX2 = frozenset({"sse3", "ssse3", "sse41", "sse42", "popcnt", "v3"})
+# AVX and AVX2 vector code, and the SSE levels below them. An AVX2 kernel is
+# not entitled to BMI, FMA, F16C or MOVBE: its CPU check tests AVX2 only.
+UP_TO_AVX2 = frozenset({"sse3", "ssse3", "sse41", "sse42", "popcnt", "avx"})
 
 # Objects whose whole content is a runtime-dispatched kernel, and what each may use.
 DISPATCH_OBJECTS = {
@@ -47,8 +51,11 @@ DISPATCH_OBJECTS = {
     "aes_hash.cpp.o": frozenset({"aes"}), "aes_hash.cpp.obj": frozenset({"aes"}),
 }
 # Functions defined only in those kernels, for linked files. fill_block is
-# also argon2_ref's baseline name; librandomx.a is scanned per member, which
-# judges that one.
+# also argon2_ref's (and argon2_ssse3's) name, so in a linked file this entry
+# would let a baseline fill_block through. That is safe only because every job
+# that scans a linked RandomX consumer also scans the same librandomx.a, which
+# is judged member by member (argon2_ref.c.o gets no entitlement). Keep that
+# pairing in every workflow that scans one.
 DISPATCH_FUNCTIONS = {
     "randomx_argon2_fill_segment_avx2": UP_TO_AVX2, "randomx_argon2_impl_avx2": UP_TO_AVX2,
     "randomx_argon2_fill_segment_ssse3": frozenset({"sse3", "ssse3"}),
@@ -63,9 +70,19 @@ DISPATCH_FUNCTIONS = {
 # hardware path is <false> (Itanium Lb0E): the aes_hash kernels and the
 # VmBase<Allocator, false> members, whose allocate() probes AESENC. The
 # <true> instances are the portable soft-AES build and get no entitlement.
+# The entitlement rests on RANDOMX_FLAG_HARD_AES being set only after
+# cpu.hasAes(). ShearK-Miner's jit backends (sheark-miner/src/shear_hash.c
+# flags_jit_light) set it with no CPU check, so on a CPU without AES-NI the
+# miner faults; that is D2, fixed in the hash-safety PR. shearhash.node and the
+# wallet library take their flags from randomx_get_flags().
 DISPATCH_PATTERNS = (
     (re.compile(r"^_Z\d+(?:fill|hash|hashAndFill)Aes\w*ILb0E"), frozenset({"aes"})),
     (re.compile(r"^_ZN7randomx6VmBaseI\w*?Lb0EE"), frozenset({"aes"})),
+    # libstdc++'s std::random_device sources, statically linked: random.cc
+    # _M_init picks __x86_rdrand / __x86_rdseed only after cpuid reports
+    # RDRND / RDSEED (the cpuid is in its disassembly), else it uses another
+    # source. Only these three functions are entitled.
+    (re.compile(r"^_ZNSt12_GLOBAL__N_1L(12__x86_rdrand|12__x86_rdseed|19__x86_rdseed_rdrand)EPv$"), frozenset({"rdrand"})),
 )
 # Rust (v0-mangled) functions in runtime-dispatched modules, matched on their
 # length-prefixed path segments.
@@ -78,17 +95,39 @@ DISPATCH_RUST = (
     (re.compile(r"4sha26sha2563x86"), frozenset({"sse3", "ssse3", "sse41", "sha"})),
 )
 
-# x86-64-v3 scalar extensions. tzcnt is left out: GCC emits rep bsf for ctz
-# under -mtune=generic, objdump prints it as tzcnt, and it runs as bsf on any
-# x86-64.
-V3_SCALAR = frozenset({
-    "andn", "bextr", "blsi", "blsmsk", "blsr", "bzhi", "mulx", "pdep", "pext",
-    "rorx", "sarx", "shlx", "shrx", "lzcnt", "movbe",
-})
+# Scalar extensions of x86-64-v3, each its own class so a vector kernel's
+# AVX2 entitlement does not cover them. tzcnt is left out: GCC emits rep bsf
+# for ctz under -mtune=generic and objdump prints that as tzcnt. Both are
+# F3 0F BC and run as bsf on any x86-64; only tzcnt(0) differs (32 against an
+# undefined result), and baseline code built here never relies on it.
+SCALAR = (
+    ("bmi", frozenset({"andn", "bextr", "blsi", "blsmsk", "blsr", "bzhi", "mulx", "pdep", "pext",
+                       "rorx", "sarx", "shlx", "shrx", "lzcnt"})),
+    ("movbe", frozenset({"movbe"})),
+    # x86-64-v2 above SSE4.2 and POPCNT.
+    ("v2", frozenset({"cmpxchg16b", "lahf", "sahf"})),
+    # Outside the psABI levels.
+    ("sse4a", frozenset({"extrq", "insertq", "movntsd", "movntss"})),
+    ("adx", frozenset({"adcx", "adox"})),
+    ("rdrand", frozenset({"rdrand", "rdseed"})),
+    ("tbm", frozenset({"blcfill", "blci", "blcic", "blcmsk", "blcs", "blsfill", "blsic", "t1mskc", "tzmsk"})),
+)
+# AVX vector instructions that may name no xmm register.
+AVX_BARE = frozenset({"vzeroupper", "vzeroall", "vldmxcsr", "vstmxcsr"})
+FMA = re.compile(r"^vf(n?madd|n?msub|maddsub|msubadd)\w+$")
+F16C = re.compile(r"^vcvt(ph2ps|ps2ph)$")
+# AVX-512 encodings that can name only xmm or ymm registers.
+EVEX_ONLY = re.compile(
+    r"^v(pternlog[dq]|pro[lr]v?[dq]|movdq[au](8|16|32|64)|perm[it]2\w+|pcompress\w|pexpand\w"
+    r"|range\w+|reduce\w+|rndscale\w+|getexp\w+|getmant\w+|fixupimm\w+|scalef\w+"
+    r"|pabsq|pm(ax|in)[su]q|pmullq|pconflict\w|plzcnt\w|pmadd52\w+|popcnt[bwdq]|pdp\w+|pshl?dv?\w|pshrdv?\w"
+    r"|cvt\w*2u\w+|cvtu\w+|pbroadcastm\w+|pmov(q|d|w)[bwd]|pmovs(q|d|w)[bwd]|pmovus(q|d|w)[bwd]"
+    r"|psraq|psravq|psrav[wq]|psllv[w]|psrlv[w]|blendm\w+|pblendm\w+|extract[fi](32x4|32x8|64x2|64x4)"
+    r"|insert[fi](32x4|32x8|64x2|64x4)|broadcast[fi](32x2|32x4|32x8|64x2|64x4)|shuf[fi](32x4|64x2)|align[dq])$")
 LEGACY = (
     ("sse3", re.compile(r"^(addsubp[sd]|hadd(p[sd])|hsubp[sd]|lddqu|movddup|movs[hl]dup|fisttp\w*|monitor|mwait)$")),
     ("ssse3", re.compile(r"^(pabs[bwd]|palignr|phadd(w|d|sw)|phsub(w|d|sw)|pmaddubsw|pmulhrsw|pshufb|psign[bwd])$")),
-    ("sse41", re.compile(r"^(blendv?p[sd]|dpp[sd]|extractps|insertps|movntdqa|mpsadbw|packusdw|pblendvb|pblendw|pcmpeqq|pextr[bdq]|pinsr[bdq]|pmax(sb|sd|ud|uw)|pmin(sb|sd|ud|uw)|pmov[sz]x\w+|pmuldq|pmulld|ptest|round[ps][sd])$")),
+    ("sse41", re.compile(r"^(blendv?p[sd]|dpp[sd]|extractps|insertps|movntdqa|mpsadbw|packusdw|pblendvb|pblendw|pcmpeqq|pextr[bdq]|phminposuw|pinsr[bdq]|pmax(sb|sd|ud|uw)|pmin(sb|sd|ud|uw)|pmov[sz]x\w+|pmuldq|pmulld|ptest|round[ps][sd])$")),
     ("sse42", re.compile(r"^(crc32[bwlq]?|pcmp[ei]str[im]|pcmpgtq)$")),
     ("popcnt", re.compile(r"^popcnt[wlq]?$")),
     ("aes", re.compile(r"^aes(enc|enclast|dec|declast|imc|keygenassist)$")),
@@ -105,21 +144,31 @@ FUNC_RE = re.compile(r"^[0-9a-f]+ <(.+)>:$")
 MEMBER_RE = re.compile(r"^(.+):\s+file format (\S+)$")
 
 
+PSEUDO_PREFIX = re.compile(r"^(\{\w+\}|rex(\.[WRXB]+)?)$")
+
+
 def extension_of(insn: str) -> str | None:
     """The extension above x86-64 v1 an instruction needs (AT&T, as objdump prints it), or None."""
     parts = insn.split(None, 1)
-    while parts and parts[0] in PREFIXES:
+    evex = False
+    while parts and (parts[0] in PREFIXES or PSEUDO_PREFIX.match(parts[0])):
+        evex = evex or parts[0] == "{evex}"
         parts = parts[1].split(None, 1) if len(parts) > 1 else []
     if not parts:
         return None
     mnem = parts[0]
     ops = parts[1] if len(parts) > 1 else ""
-    if re.search(r"%zmm\d|%k[0-7]\b", ops):
+    if evex or re.search(r"%zmm\d|%k[0-7]\b|%[xy]mm(1[6-9]|2\d|3[01])\b", ops) or EVEX_ONLY.match(mnem):
         return "avx512"
-    if re.search(r"%ymm\d", ops) or (mnem.startswith("v") and "%xmm" in ops):
-        return "v3"
-    if mnem in V3_SCALAR:
-        return "v3"
+    if FMA.match(mnem):
+        return "fma"
+    if F16C.match(mnem):
+        return "f16c"
+    if re.search(r"%ymm\d", ops) or (mnem.startswith("v") and "%xmm" in ops) or mnem in AVX_BARE:
+        return "avx"
+    for name, names in SCALAR:
+        if mnem in names:
+            return name
     for name, pat in LEGACY:
         if pat.match(mnem):
             return name
