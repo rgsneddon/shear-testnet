@@ -220,38 +220,6 @@ function ref32(x) {
   }
 }
 
-function lookupSpentVout(vin, block, prev, bodyIndex, history) {
-  const idx = Number(vin?.index || 0);
-  const want = ref32(vin?.prev);
-  const tryTx = (tx, blockHash) => {
-    const vout = (tx?.vout || [])[idx];
-    if (!vout?.commit) return null;
-    if (!want) return null;
-    const dig = digestTx(tx);
-    if (dig.equals(want)) return vout;
-    const bh = ref32(blockHash);
-    if (bh && bh.equals(want)) return vout;
-    if (tx?.id && String(tx.id) === String(vin.prev)) return vout;
-    return null;
-  };
-  const txs = Array.isArray(block?.txs) ? block.txs : [];
-  const last = Math.min(txs.length, 1 + Number(bodyIndex || 0));
-  for (let j = 0; j < last; j += 1) {
-    const hit = tryTx(txs[j], block.hash);
-    if (hit) return hit;
-  }
-  const chain = [];
-  if (Array.isArray(history) && history.length) chain.push(...history);
-  else if (prev) chain.push(prev);
-  for (const b of chain) {
-    for (const tx of b.txs || []) {
-      const hit = tryTx(tx, b.hash);
-      if (hit) return hit;
-    }
-  }
-  return null;
-}
-
 /** Non-negative safe-integer carry, 0 when absent. Null is not a carry. */
 export function canonicalCarry(tx) {
   if (tx == null || tx.carryNanos == null || tx.carryNanos === '') return 0;

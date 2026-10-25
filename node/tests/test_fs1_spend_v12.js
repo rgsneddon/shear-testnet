@@ -13,7 +13,7 @@ import path from 'node:path';
 import { createRegtestStore } from './regtest_store.js';
 import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
-import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
+import { buildTemplate, digestTx, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { emptyMempool, admitMempool } from '../../crypto/mempool.js';
 import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
@@ -427,6 +427,87 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
       ],
     });
     await sendAndSeal(built, 'receive-spend');
+  });
+
+  it('a tx id decides nothing in a block: an earlier tx labelled with a later tx\'s digest changes no verdict', async () => {
+    const view = liveCoins();
+    assert.ok(view.coins.length >= 2, `only ${view.coins.length} live coins`);
+    const back20 = hash20FromAddress(who.dest);
+    const one = (c, id) => buildSend({
+      id,
+      coins: [c],
+      anchor: view.anchor,
+      live: view.live,
+      outsOf: (room) => [
+        hiddenOut(room, back20, who.base, 'send'),
+        hiddenOut(0, Buffer.alloc(20, 4), null, 'dummy'),
+      ],
+    }).tx;
+    const a = one(view.coins[0], 'label-a');
+    const b = one(view.coins[1], 'label-b');
+    const tip = store.tip();
+    const preview = store.template({ miner: who.dest, bits: regtestBits(), shareBits: 4, now: lastStamp(store) + 90_000 });
+    const built = buildTemplate({
+      prev: tip.hash,
+      prevHeader: tip.header,
+      prevBlock: tip,
+      height: tip.height + 1,
+      miner: who.dest,
+      bits: preview.tpl.bits,
+      now: Number(decodeHeader(Buffer.from(preview.tpl.header)).timestamp),
+      txs: [a, b],
+      parentBlocks: store.blocks,
+    });
+    const user = built.txs.slice(1);
+    assert.deepEqual(user.map((row) => row.id), ['label-a', 'label-b'], 'both sends in the block, a first');
+    const header = await sealHeader(built.header, built.bits);
+    const genesisMs = Number(decodeHeader(Buffer.from(store.blocks[0].header)).timestamp) || 0;
+    const blockOf = (txs) => ({
+      header,
+      height: built.height,
+      txs,
+      samples: built.samples,
+      shareBatch: built.shareBatch || [],
+      miner: who.dest,
+      aLeaves: built.aLeaves,
+      bLeaves: built.bLeaves,
+      rootA: built.rootA,
+      rootB: built.rootB,
+      weight: built.weight,
+    });
+    const verdictOf = async (txs) => {
+      resetFs1VerifyCache();
+      resetFs1Tree();
+      return Promise.resolve(verifyBlock(blockOf(txs), tip, {
+        noteAtAnchor: (anchor) => store.anchorNote(anchor),
+        evmHistory: store.blocks,
+        genesisMs,
+        magic: store.magic,
+        parentSupply: store.supplyState(),
+      }));
+    };
+    const plain = await verdictOf(built.txs);
+    assert.equal(plain.ok, true, `plain labels ${plain.reason}`);
+    // The earlier send names the later send's leaf digest, the later one the
+    // earlier's: the labels a sender-picked id match would resolve.
+    const [ra, rb] = user.map((row) => digestTx(row).toString('hex'));
+    const crossed = [built.txs[0], { ...user[0], id: rb }, { ...user[1], id: ra }];
+    assert.deepEqual(crossed.slice(1).map((row) => digestTx(row).toString('hex')), [ra, rb], 'the label is in no leaf');
+    const relabelled = await verdictOf(crossed);
+    assert.equal(relabelled.ok, plain.ok, `crossed labels ${relabelled.reason}`);
+    // The same header (same merkle root) appends, and both spends land.
+    resetFs1VerifyCache();
+    resetFs1Tree();
+    const got = await Promise.resolve(store.append(blockOf(crossed)));
+    assert.equal(got.ok, true, `append ${got.reason || ''}`);
+    const sealed = store.blocks[store.blocks.length - 1].txs.slice(1);
+    assert.deepEqual(sealed.map((row) => digestTx(row).toString('hex')), [ra, rb]);
+    const tags = store.fluxset().spendTags;
+    for (const row of [a, b]) {
+      for (const p of row.admit_proofs) assert.equal(tags.has(Buffer.from(asU8(p.spendTag)).toString('hex')), true, 'spend joined the chain');
+    }
+    spent.add(view.coins[0].commit.toString('hex'));
+    spent.add(view.coins[1].commit.toString('hex'));
   });
 
   it('rejects a second spend of a spent note', async () => {
