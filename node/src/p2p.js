@@ -1189,6 +1189,12 @@ export function queueMissingParent(rec, childHash, parentHash) {
     return rec;
   }
   rec.orphanAsk = rec.orphanAsk instanceof Map ? rec.orphanAsk : new Map();
+  if (rec.orphanAsk.size >= ORPHAN_PARENT_MAX) {
+    // An ask holds a slot only while its parent is still queued here: a
+    // handoff, an idle release or a new header page may have cleared it.
+    const queued = new Set([...rec.want, ...rec.pending].map((h) => String(h).toLowerCase()));
+    for (const held of [...rec.orphanAsk.keys()]) if (!queued.has(held)) rec.orphanAsk.delete(held);
+  }
   if (rec.orphanAsk.size >= ORPHAN_PARENT_MAX) return rec;
   const child = String(childHash || '').toLowerCase();
   requeuePrevHash(rec, child);

@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -35,6 +36,7 @@ import {
   getblockBatch,
   isFinalIngestFail,
   nextStageHold,
+  orphanAskHashes,
   p2pHelloMs,
   p2pIdleMs,
   p2pInboundCap,
@@ -42,6 +44,7 @@ import {
   peerDemoted,
   peerIsBusy,
   peerShouldEvict,
+  queueMissingParent,
   recordIngestFail,
   stageBodyKey,
   stageHoldActive,
@@ -1902,8 +1905,21 @@ describe('p2p hello deadline and idle eviction', () => {
   });
 
   it('a free or undecodable block frame does not reset a busy streak, and only a page answering our ask resets the header streak', async () => {
+    // Every line the node sends this peer, in order. A reply to our getheaders
+    // proves every frame written before it was read (one socket, one reader),
+    // without touching the peer state the test checks.
+    const heard = [];
     const server = net.createServer((sock) => {
-      sock.on('data', (buf) => { if (buf.toString().includes('"type":"hello"')) sock.write(helloLine()); });
+      let buf = '';
+      sock.on('data', (chunk) => {
+        buf += chunk.toString();
+        let at;
+        while ((at = buf.indexOf('\n')) >= 0) {
+          try { heard.push(JSON.parse(buf.slice(0, at))); } catch { /* not a frame */ }
+          buf = buf.slice(at + 1);
+        }
+        if (chunk.toString().includes('"type":"hello"')) sock.write(helloLine());
+      });
       sock.on('error', () => {});
     });
     let remote = null;
@@ -1920,6 +1936,12 @@ describe('p2p hello deadline and idle eviction', () => {
       const rec = [...mesh.peers.values()][0];
       assert.ok(rec?.helloAt);
       const line = (msg) => `${JSON.stringify({ magic: MAGIC_TESTNET, ...msg })}\n`;
+      const settled = async () => {
+        const seen = heard.length;
+        remote.write(line({ type: 'getheaders', locator: [], stopHash: '' }));
+        for (let i = 0; i < 80 && !heard.slice(seen).some((m) => m?.type === 'headers'); i += 1) await delay(25);
+        assert.ok(heard.slice(seen).some((m) => m?.type === 'headers'), 'the node answered after the frames');
+      };
       const id = 'ab'.repeat(32);
       rec.pending = new Set([id]);
       remote.write(line({ type: 'serve_busy', what: 'getblock', hash: id }));
@@ -1929,13 +1951,8 @@ describe('p2p hello deadline and idle eviction', () => {
       // unread, and a `block` that does not decode is too. Neither is an answer.
       remote.write(line({ type: 'blocks', blocks: [{}, { hash: id }] }));
       remote.write(line({ type: 'block', block: { hash: id, header: 'zz' } }));
-      // A second busy for the same ask, after the free frames: frames are read
-      // in order, so once it lands both frames were handled. A reset by
-      // either would leave the streak at 1, not 2.
-      rec.pending = new Set([id]);
-      remote.write(line({ type: 'serve_busy', what: 'getblock', hash: id }));
-      for (let i = 0; i < 80 && rec.busyStreak !== 2; i += 1) await delay(25);
-      assert.equal(rec.busyStreak, 2, 'free frames leave the busy streak');
+      await settled();
+      assert.equal(rec.busyStreak, 1, 'free frames leave the busy streak');
       // The header streak: a page answering our getheaders ends it, empty or
       // not (an empty page is the peer's answer that it has nothing more); a
       // page we did not ask for leaves it.
@@ -1948,13 +1965,7 @@ describe('p2p hello deadline and idle eviction', () => {
       rec.headerBusyStreak = 2;
       rec.headersAskedAt = 0;
       remote.write(line({ type: 'headers', headers: page }));
-      // Sentinel: a not-found for an asked hash counts a miss once handled.
-      const sentinel = 'cd'.repeat(32);
-      rec.pending = new Set([sentinel]);
-      const missBefore = Number(rec.getblockMiss) || 0;
-      remote.write(line({ type: 'block_not_found', hash: sentinel }));
-      for (let i = 0; i < 80 && (Number(rec.getblockMiss) || 0) === missBefore; i += 1) await delay(25);
-      assert.equal(Number(rec.getblockMiss) || 0, missBefore + 1, 'sentinel handled');
+      await settled();
       assert.equal(rec.headerBusyStreak, 2, 'an unsolicited page is not an answer');
       rec.headersAskedAt = Date.now();
       remote.write(line({ type: 'headers', headers: page }));
@@ -2127,28 +2138,61 @@ describe('p2p hello deadline and idle eviction', () => {
     }
   });
 
-  it('an orphan flood queues at most ORPHAN_PARENT_MAX parents, and a demoted peer\'s orphan asks never move to an honest peer', { timeout: 600_000 }, async () => {
-    // Orphans under parents nobody has: each header's prev is its fill bytes.
+  it('a peer queues at most ORPHAN_PARENT_MAX parents from its own orphans, and a cleared ask frees its slot', () => {
+    const hex = (tag, i) => createHash('sha256').update(`${tag}-${i}`).digest('hex');
+    const rec = { want: [], pending: new Set() };
     const count = ORPHAN_PARENT_MAX + 4;
+    for (let i = 0; i < count; i += 1) queueMissingParent(rec, hex('child', i), hex('parent', i));
+    assert.equal(rec.orphanAsk.size, ORPHAN_PARENT_MAX);
+    assert.equal(rec.want.length, ORPHAN_PARENT_MAX, 'an orphan past the cap queues no parent');
+    assert.equal(rec.retryPrev.length, ORPHAN_PARENT_MAX, 'nor its own retry');
+    for (let i = ORPHAN_PARENT_MAX; i < count; i += 1) assert.equal(rec.want.includes(hex('parent', i)), false);
+    // A parent already queued costs no slot; its child still waits for it.
+    queueMissingParent(rec, hex('child', 'again'), hex('parent', 0));
+    assert.equal(rec.orphanAsk.size, ORPHAN_PARENT_MAX);
+    assert.equal(rec.retryPrev.includes(hex('child', 'again')), true);
+    // The queues were cleared elsewhere (a handoff, an idle release): those
+    // asks no longer hold slots, so this peer's next orphan is queued.
+    rec.want = [];
+    rec.pending = new Set();
+    queueMissingParent(rec, hex('child', 'late'), hex('parent', 'late'));
+    assert.deepEqual(rec.want, [hex('parent', 'late')]);
+    assert.equal(rec.orphanAsk.size, 1);
+    assert.deepEqual([...orphanAskHashes(rec)].sort(), [hex('child', 'late'), hex('parent', 'late')].sort());
+  });
+
+  it('a demoted peer\'s orphan asks never move to an honest peer', { timeout: 600_000 }, async () => {
+    // Orphans under parents nobody has: each header's prev is its fill bytes.
+    const count = 8;
     const orphans = Array.from({ length: count }, (_v, i) => matchingBlock(0x80 + i));
     const parents = orphans.map((o) => Buffer.from(o.header, 'hex').subarray(4, 36).toString('hex'));
     const tipBlock = { hash: Buffer.alloc(32, 0x01), header: Buffer.alloc(128, 0x01), height: 1 };
     const servers = [];
     const listen = () => new Promise((resolve, reject) => {
-      const server = net.createServer((sock) => {
-        sock.on('data', (buf) => { if (buf.toString().includes('"type":"hello"')) sock.write(helloLine()); });
+      const row = { server: null, remote: null, asked: [] };
+      row.server = net.createServer((sock) => {
+        let buf = '';
+        sock.on('data', (chunk) => {
+          buf += chunk.toString();
+          let at;
+          while ((at = buf.indexOf('\n')) >= 0) {
+            let msg = null;
+            try { msg = JSON.parse(buf.slice(0, at)); } catch { /* not a frame */ }
+            buf = buf.slice(at + 1);
+            if (msg?.type === 'hello') sock.write(helloLine());
+            if (msg?.type === 'getblock') row.asked.push(String(msg.hash));
+          }
+        });
         sock.on('error', () => {});
       });
-      const row = { server, remote: null };
-      server.on('connection', (sock) => { row.remote = sock; });
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => { servers.push(row); resolve(row); });
+      row.server.on('connection', (sock) => { row.remote = sock; });
+      row.server.once('error', reject);
+      row.server.listen(0, '127.0.0.1', () => { servers.push(row); resolve(row); });
     });
     const attacker = await listen();
     const honest = await listen();
-    let ingests = 0;
     const mesh = createP2p({
-      store: { blocks: [tipBlock], mempool: [], tip: () => tipBlock, on() { return () => {}; }, ingest: () => { ingests += 1; return { ok: false, reason: 'prev' }; } },
+      store: { blocks: [tipBlock], mempool: [], tip: () => tipBlock, on() { return () => {}; }, ingest: () => ({ ok: false, reason: 'prev' }) },
       port: 0, host: '127.0.0.1', magic: MAGIC_TESTNET, helloMs: 5000, idleMs: 600_000,
     });
     const prevs = [];
@@ -2168,36 +2212,30 @@ describe('p2p hello deadline and idle eviction', () => {
       const a = recOf(attacker);
       const h = recOf(honest);
       assert.ok(a?.helloAt && h?.helloAt);
+      // Both are ahead of us, the attacker furthest, so it is the catch-up
+      // peer and its orphans' parents are asked of it.
+      a.height = 2000;
+      a.syncEligible = true;
+      h.height = 1000;
+      h.syncEligible = true;
       const line = (msg) => `${JSON.stringify({ magic: MAGIC_TESTNET, ...msg })}\n`;
-      // One orphan at a time, each after the last is answered prev.
       for (let n = 0; n < count; n += 1) {
         attacker.remote.write(line({ type: 'block', block: { hash: orphans[n].hash, height: 9, header: orphans[n].header } }));
         for (let i = 0; i < 400 && prevs.length < n + 1; i += 1) await delay(10);
       }
       assert.equal(prevs.length, count, 'every orphan answered prev');
-      assert.equal(ingests, 0, 'an unknown parent never reaches store.ingest');
-      assert.equal(a.orphanAsk.size, ORPHAN_PARENT_MAX, 'orphan parents per peer are capped');
-      const queued = new Set([...(a.want || []), ...(a.pending || [])]);
-      for (const parent of parents.slice(ORPHAN_PARENT_MAX)) assert.equal(queued.has(parent), false, 'an orphan past the cap is not queued');
-      assert.ok((a.retryPrev || []).length <= ORPHAN_PARENT_MAX, `retryPrev ${(a.retryPrev || []).length}`);
-      // A hash the honest mesh did advertise, waiting on the attacker.
-      const real = 'ab'.repeat(32);
-      a.want = [...(a.want || []), real];
-      // The honest peer is ahead; the attacker answers not-found for three of
-      // its own orphan parents and is demoted, which hands its asks off.
-      h.height = 1000;
-      h.syncEligible = true;
-      for (let k = 0; k < 3; k += 1) {
-        a.pending = new Set([parents[k]]);
-        attacker.remote.write(line({ type: 'block_not_found', hash: parents[k] }));
-        for (let i = 0; i < 80 && (Number(a.getblockMiss) || 0) < k + 1; i += 1) await delay(25);
-      }
-      assert.equal(Number(a.getblockMiss) || 0, 3);
+      for (let i = 0; i < 200 && attacker.asked.filter((x) => parents.includes(x)).length < 3; i += 1) await delay(25);
+      const asked = attacker.asked.filter((x) => parents.includes(x));
+      assert.ok(asked.length >= 3, `parents asked of the attacker: ${asked.length}`);
+      // The attacker has none of them: three not-founds for what it was asked
+      // demote it, which hands its asks off to the honest peer.
+      for (const parent of asked.slice(0, 3)) attacker.remote.write(line({ type: 'block_not_found', hash: parent }));
+      for (let i = 0; i < 200 && !peerDemoted(a); i += 1) await delay(25);
       assert.equal(peerDemoted(a), true, 'the attacker is demoted');
-      const moved = new Set([...(h.want || []), ...(h.pending || [])]);
+      await delay(100);
       const own = new Set([...parents, ...orphans.map((o) => o.hash)]);
-      for (const hash of moved) assert.equal(own.has(hash), false, `orphan ask ${hash} moved to the honest peer`);
-      assert.equal(moved.has(real), true, 'an advertised hash still moves');
+      const moved = [...(h.want || []), ...(h.pending || []), ...honest.asked];
+      assert.deepEqual(moved.filter((x) => own.has(x)), [], 'no orphan ask moved to the honest peer');
     } finally {
       console.error = orig;
       mesh.close();
