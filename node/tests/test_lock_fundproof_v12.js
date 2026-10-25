@@ -45,6 +45,7 @@ import {
 import { attachLockAuth, bootReserveEvm, executeBlockEvm } from '../../crypto/reserve_evm.js';
 import { lockTx, ownerFor, withdrawTx } from '../../crypto/owned_portal.js';
 import { txDigestV3 } from '../../crypto/admit_v3.js';
+import { MAGIC_REGTEST } from '../../crypto/regtest_bits.js';
 import { proveLeafRetire, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { coinbaseTx } from '../src/chain.js';
 import { foldSupply, vaultAfterBlock } from '../src/supply.js';
@@ -166,7 +167,20 @@ describe('a note lock proves π for every leaf, or it is refused', () => {
     const other = lockOf(miner, freshDest(), 'other');
     const swapped = stripped(one.tx);
     for (const row of swapped.vout) if (String(row?.kind || '') === 'lock') row.fundProof = other.tx.vout.find((o) => o.kind === 'lock').fundProof;
-    for (const [name, tx] of [['stripped', stripped(one.tx)], ['swapped', swapped]]) {
+    // Proofs over this lock's own commitment and blind, made for another tx
+    // (one more fee unit) and for another network: each opens the right
+    // commitment, so only the tx and magic binding can refuse them.
+    const held = lockWitnessOf(one.tx);
+    const funded = one.tx.vout.find((o) => o.kind === 'lock').commit;
+    const rebound = (proof) => {
+      assert.ok(proof, 'a proof over the same commitment');
+      const copy = stripped(one.tx);
+      for (const row of copy.vout) if (String(row?.kind || '') === 'lock') row.fundProof = proof;
+      return copy;
+    };
+    const otherTx = rebound(proveLockEquality(funded, held.amount, held.blind, { ...one.tx, fee: Number(one.tx.fee || 0) + 1 }, MAGIC_TESTNET));
+    const otherNet = rebound(proveLockEquality(funded, held.amount, held.blind, one.tx, MAGIC_REGTEST));
+    for (const [name, tx] of [['stripped', stripped(one.tx)], ['swapped', swapped], ['other tx', otherTx], ['other network', otherNet]]) {
       // The leaf and every bound byte are unchanged; only the π proof is gone.
       assert.equal(txDigestV3(tx, MAGIC_TESTNET).equals(txDigestV3(one.tx, MAGIC_TESTNET)), true, `${name} digest`);
       assert.equal(lockNotePrincipal(tx, MAGIC_TESTNET), 0n, name);
