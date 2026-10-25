@@ -1261,9 +1261,6 @@ function settleLockTotal(state, block, height) {
   return plaintextOpeningRejected(block, ['epochLockTotal', 'epochLockTotals', 'epochLockProof']);
 }
 
-/** A fund proof stays valid for this many blocks after the height it names. */
-export const LOCK_FUND_HEIGHT_WINDOW = 4;
-
 function fundBoundHeight(height) {
   const at = Math.floor(Number(height));
   if (!Number.isSafeInteger(at) || at < 0) return null;
@@ -1271,9 +1268,9 @@ function fundBoundHeight(height) {
 }
 
 /**
- * Transcript for the lock-leaf equality proof: domain, the tx hash, and the
- * height the proof names. A block in [height, height + window] still accepts it.
- * The free id string is not in the hash.
+ * Transcript for the lock's π proof (fundProof): domain, the tx hash, and the
+ * height the proof names. The height is part of the transcript only; the tx
+ * hash is what binds the proof to this lock. The free id string is not in it.
  */
 export function lockFundContext(tx, height, magic) {
   const at = fundBoundHeight(height);
@@ -1282,13 +1279,6 @@ export function lockFundContext(tx, height, magic) {
   try { digest = txDigestV3(tx, magic || MAGIC_TESTNET); } catch { return null; }
   if (!digest || digest.length !== 32) return null;
   return Buffer.concat([Buffer.from(LOCK_FUND_DST), digest, u64le(at)]);
-}
-
-export function fundHeightAccepted(proofHeight, blockHeight) {
-  const bound = fundBoundHeight(proofHeight);
-  const now = fundBoundHeight(blockHeight);
-  if (bound == null || now == null) return false;
-  return now >= bound && now <= bound + LOCK_FUND_HEIGHT_WINDOW;
 }
 
 function schnorrH(P, s, extra) {
@@ -1376,18 +1366,6 @@ function leafFundingPoint(lockCommit, outCommit, unlock) {
   return subtractUnlock(pointFrom(lockCommit).subtract(pointFrom(outCommit)), unlock);
 }
 
-function sameCommitValue(lockCommit, outCommit, proof, extra, unlock) {
-  try {
-    const P = leafFundingPoint(lockCommit, outCommit, unlock);
-    if (pointBytes(P).equals(pointBytes(RistrettoPoint.ZERO))) return !!extra;
-    if (!extra || !proof?.R || !proof?.z) return false;
-    const e = hashToScalar(pointBytes(P), proof.R, extra);
-    return H.multiply(scalarFrom(proof.z)).equals(pointFrom(proof.R).add(P.multiply(e)));
-  } catch {
-    return false;
-  }
-}
-
 function consumedLockOutput(tx) {
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   const rows = outs.filter((row) => String(row?.kind || tx?.kind || '') === KIND_LOCK);
@@ -1395,10 +1373,13 @@ function consumedLockOutput(tx) {
 }
 
 /**
- * The lock leaf equals the funded output plus the consensus unlock and a blind.
- * leaf = funded + unlock·U + H·s. The proof is bound to this tx, the height,
- * and that unlock. Unlock 0 and the open sentinel are refused. The amount
- * is not read.
+ * The lock leaf is exactly the funded output plus the consensus unlock:
+ * leaf = funded + unlock·U. Unlock 0 and the open sentinel are refused. The
+ * amount is not read here; lockNotePrincipal proves it is π from fundProof.
+ * A reblinded leaf (an extra H·s) used to pass on a leaf-output equality
+ * proof carried in that same fundProof. One {R, z} cannot prove both
+ * statements, so since 2461ec67 no reblinded lock could be accepted, and
+ * before it one was indexed with its π never booked. It is refused.
  */
 export function lockFundingRejected(tx, ctx = {}) {
   const note = lockNoteBytes(tx?.vaultLockNote);
@@ -1423,10 +1404,8 @@ export function lockFundingRejected(tx, ctx = {}) {
   } catch {
     same = false;
   }
-  const boundHeight = same ? ctx.height : out.fundProof?.height;
-  if (!same && !fundHeightAccepted(boundHeight, ctx.height)) return { ok: false, reason: 'stake_reward' };
-  const extra = lockUnlockContext(tx, boundHeight, ctx.magic, unlock);
-  if (!sameCommitValue(want, raw, out.fundProof, extra, unlock)) return { ok: false, reason: 'stake_reward' };
+  if (!same) return { ok: false, reason: 'stake_reward' };
+  if (!lockUnlockContext(tx, ctx.height, ctx.magic, unlock)) return { ok: false, reason: 'stake_reward' };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   for (const row of outs) {
     if (row?.valueProof?.v != null && Math.floor(Number(row.valueProof.v) || 0) > 0) {

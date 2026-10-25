@@ -446,16 +446,20 @@ describe('hidden vault claims', () => {
       vaultLockNote: blinded,
       vout: [{ kind: 'lock', commit: funded, rangeProof: range }],
     };
+    // A reblinded leaf (funded + unlock·U + H·s) is refused, even with a
+    // valid leaf-output equality proof in fundProof. That field is the π proof
+    // lockNotePrincipal checks, and one proof cannot show both, so a
+    // reblinded lock could never be booked; before 2461ec67 one was indexed
+    // with its π never booked (Vault lane F4, PR 130).
     sameValue.vout[0].fundProof = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT, MAGIC_TESTNET, unlock);
-    assert.equal(lockFundingRejected(sameValue, ctx), null);
+    assert.equal(lockFundingRejected(sameValue, ctx)?.reason, 'stake_reward', 'reblinded with a valid equality proof');
+    assert.equal(lockFundingRejected(sameValue, { height: HEIGHT + 1, magic: MAGIC_TESTNET, unlock })?.reason, 'stake_reward');
     sameValue.vout[0].fundProof = fundProof(locked, funded, randomScalar(), sameValue, HEIGHT, MAGIC_TESTNET, unlock);
-    assert.equal(lockFundingRejected(sameValue, ctx).reason, 'stake_reward');
-    const bound = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT, MAGIC_TESTNET, unlock);
-    sameValue.vout[0].fundProof = bound;
-    assert.equal(lockFundingRejected(sameValue, ctx), null);
-    assert.equal(lockFundingRejected(sameValue, { height: HEIGHT + 1, magic: MAGIC_TESTNET, unlock }), null);
-    assert.equal(lockFundingRejected({ ...sameValue, id: 'renamed-id' }, ctx), null);
-    assert.equal(lockFundingRejected({ ...sameValue, portalId: 'ab'.repeat(32) }, ctx).reason, 'stake_reward');
+    assert.equal(lockFundingRejected(sameValue, ctx)?.reason, 'stake_reward');
+    delete sameValue.vout[0].fundProof;
+    assert.equal(lockFundingRejected(sameValue, ctx)?.reason, 'stake_reward');
+    // The exact leaf beside it is still accepted.
+    assert.equal(lockFundingRejected(tx, ctx), null);
 
     const state = emptyVault();
     state.genesisMs = T0;
