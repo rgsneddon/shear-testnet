@@ -117,7 +117,13 @@ function flowOf(proofs, admit) {
   };
 }
 
-function boundAt(p, extraBytes = 0) {
+/**
+ * flowInputsBound on a P-proof frame, timed over `runs` calls on the same tx.
+ * The cost is the fastest call: preemption by other work on the host only
+ * adds time, so one sample reads the scheduler as often as the code. A scan
+ * that is quadratic stays slow on every call. Every call gives one verdict.
+ */
+function boundAt(p, extraBytes = 0, runs = 1) {
   const vins = new Array(p);
   const proofs = new Array(p);
   for (let i = 0; i < p; i += 1) {
@@ -138,10 +144,21 @@ function boundAt(p, extraBytes = 0) {
     const tag = Buffer.from(blob.subarray(1, 33));
     tx.admit_proof = { blob, cTilde: Buffer.alloc(32, 9), spendTag: tag };
   }
-  const t0 = performance.now();
-  const got = flowInputsBound(tx);
-  return { ms: performance.now() - t0, reason: got.reason || (got.ok ? 'ok' : 'fail') };
+  let ms = Infinity;
+  let reason = null;
+  for (let r = 0; r < runs; r += 1) {
+    const t0 = performance.now();
+    const got = flowInputsBound(tx);
+    ms = Math.min(ms, performance.now() - t0);
+    const why = got.reason || (got.ok ? 'ok' : 'fail');
+    assert.ok(reason === null || reason === why, `verdict moved ${reason} -> ${why}`);
+    reason = why;
+  }
+  return { ms, reason };
 }
+
+/** Timed calls per bound check. The first frame-sized call is timed alone. */
+const BOUND_RUNS = 5;
 
 function queuePicture(store, nanos) {
   const parts = [];
@@ -471,24 +488,24 @@ describe('v12 tx input and output cap', { concurrency: 1 }, () => {
   });
 
   it('bounds a frame of proofs in under 50 ms at the cap and at frame size', () => {
-    const small = boundAt(8);
+    const small = boundAt(8, 0, BOUND_RUNS);
     console.log(`flowInputsBound P=8 ${small.ms.toFixed(3)} ms ${small.reason}`);
     assert.ok(small.ms < 50, `P=8 ${small.ms.toFixed(3)} ms`);
     assert.equal(small.reason, 'ok');
-    const mid = boundAt(1024);
+    const mid = boundAt(1024, 0, BOUND_RUNS);
     console.log(`flowInputsBound P=1024 ${mid.ms.toFixed(3)} ms ${mid.reason}`);
     assert.ok(mid.ms < 50, `P=1024 ${mid.ms.toFixed(3)} ms ${mid.reason}`);
     // The first frame-sized call also compiles the loop. Time the next call.
     // A quadratic scan stays slow on that next call; the old one was hundreds of ms.
     const compiled = boundAt(FRAME_P);
-    const frame = boundAt(FRAME_P);
+    const frame = boundAt(FRAME_P, 0, BOUND_RUNS);
     console.log(`flowInputsBound frame P=${FRAME_P} compile ${compiled.ms.toFixed(3)} ms steady ${frame.ms.toFixed(3)} ms ${frame.reason}`);
     assert.equal(compiled.reason, 'ok');
     assert.ok(compiled.ms < 400, `frame compile P=${FRAME_P} ${compiled.ms.toFixed(3)} ms`);
     assert.ok(frame.ms < 50, `frame P=${FRAME_P} ${frame.ms.toFixed(3)} ms ${frame.reason}`);
     assert.equal(frame.reason, 'ok');
     // A distinct extra proof used to copy every blob. Tag identity stays under the same budget.
-    const hostile = boundAt(FRAME_P, 64 * 1024);
+    const hostile = boundAt(FRAME_P, 64 * 1024, BOUND_RUNS);
     console.log(`flowInputsBound extra P=${FRAME_P} ${hostile.ms.toFixed(3)} ms ${hostile.reason}`);
     assert.equal(hostile.reason, 'admit_membership');
     assert.ok(hostile.ms < 50, `extra P=${FRAME_P} ${hostile.ms.toFixed(3)} ms`);
