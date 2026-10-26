@@ -143,12 +143,13 @@ describe('mainnet host files', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'units-'));
     const base = read('units/shear-node.service');
     const cases = {
-      restarts: [base.replace('Restart=no', 'Restart=always'), /restarts by itself/],
+      restarts: [base.replace('\nRestart=no\n', '\nRestart=always\n'), /restarts by itself/],
       copies: [base.replace('ExecStart=', 'ExecStartPre=/bin/cp /backup/tip.json /var/lib/shear/mainnet/\nExecStart='), /Exec step other than one ExecStart|copies or fetches/],
       ip: [base.replace('p2p.shear.digital:30303', '157.180.70.110:30303'), /names a host IP/],
-      hook: [base.replace('Restart=no', 'Restart=no\nOnFailure=recover.service'), /failure hook/],
+      hook: [base.replace('\nRestart=no\n', '\nRestart=no\nOnFailure=recover.service\n'), /failure hook/],
     };
     for (const [name, [text, why]] of Object.entries(cases)) {
+      assert.notEqual(text, base, `${name} fixture changed the unit`);
       const f = path.join(tmp, `${name}.service`);
       fs.writeFileSync(f, text);
       const got = bash([file('scripts/check_host.sh'), '--unit-file', f]);
