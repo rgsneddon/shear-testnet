@@ -37,7 +37,7 @@ import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected, outputMayCarryValueOpen } from '../../crypto/chronoflux.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
-import { noteCommitOfDest20, asU8, hiddenAmountRangeReady } from '../../crypto/note.js';
+import { noteCommitOfDest20, asU8, hiddenAmountRangeReady, verifySealedNote } from '../../crypto/note.js';
 import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
@@ -764,6 +764,8 @@ export function hashBonusEmittedOfBlock(block, unit = HASH_BONUS_NANOS) {
         try { n = BigInt(raw); } catch { n = null; }
       }
       if (n == null || n < 0n || n > BigInt(Number.MAX_SAFE_INTEGER)) return 0;
+      // Never an unchecked amount: v counts only when it opens the commitment.
+      if (o.commit && !verifySealedNote(o, Number(n))) return 0;
       minted += Number(n);
     } else if (confidentialZeroNanos(o)) {
       confidentialFloor = true;

@@ -863,9 +863,9 @@ function propPayCandidates(leaves, feeBase, hinted, extraAmt, shareBatch, splitP
 
 /**
  * One non-hasher pot note: absent (0) or a bps of `wantPot` through
- * POOL_FEE_MAX_BPS. The published valueProof.v is only a hint. A missing,
- * high, or wrong v does not change the verdict: the note must open to a
- * legal subsidy fee.
+ * POOL_FEE_MAX_BPS. A published valueProof.v, when present, is the fee: it
+ * must open the note and be a legal subsidy fee, or the note is refused
+ * (COINBASE_V=opens). Only a note with no v is found by the bps search.
  */
 export function extraPotFeeNanos(extraVouts = [], wantPot) {
   const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
@@ -873,11 +873,14 @@ export function extraPotFeeNanos(extraVouts = [], wantPot) {
   const extra = Array.isArray(extraVouts) ? extraVouts : [];
   if (!extra.length) return 0;
   if (extra.length !== 1 || !(pot > 0)) return null;
-  const claimed = Math.floor(Number(extra[0]?.valueProof?.v));
-  if (claimed > 0 && claimed <= maxFee) {
+  const raw = extra[0]?.valueProof?.v;
+  if (raw != null && raw !== '') {
+    const claimed = Math.floor(Number(raw));
+    if (!(claimed > 0 && claimed <= maxFee)) return null;
     for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
       if (Math.floor(pot * bps / 10000) === claimed && verifySealedNote(extra[0], claimed)) return claimed;
     }
+    return null;
   }
   for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
     const n = Math.floor(pot * bps / 10000);

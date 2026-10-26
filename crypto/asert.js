@@ -321,6 +321,8 @@ export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
 /** chain.js digestTx: the packed core plus sha256 of the canonical compact body. */
 export const TX_DIGEST_LAW = 'body-v2';
+/** note.js coinbaseVoutsBound: a coinbase row's published valueProof.v, when present, opens its commitment. */
+export const COINBASE_V_LAW = 'opens';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 /** Chain magics are reserve_books.js. This module re-exports them. */
 /**
@@ -497,6 +499,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     // The merkle leaf binds the whole compact body (chain.js digestTx). A
     // node on the older digest refuses this book at hello, not at a merkle.
     `TX_DIGEST=${TX_DIGEST_LAW}`,
+    // A coinbase row's published v, when present, is its commitment's
+    // opening (and the value consensus derives for a row it opens itself).
+    `COINBASE_V=${COINBASE_V_LAW}`,
     `COMPACT_TO=${COMPACT_TO}`,
     `VAULT_GAP=${VAULT_GAP_LAW}`,
     `POT_PROP=${POT_PROP}`,

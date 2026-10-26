@@ -17,7 +17,7 @@ import {
 } from '../../crypto/asert.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
-import { excessOf, noteCommitOfDest20, openedCoinbaseNanos, sealCoinbaseNote } from '../../crypto/note.js';
+import { coinbaseVoutsBound, excessOf, noteCommitOfDest20, openedCoinbaseNanos, sealCoinbaseNote } from '../../crypto/note.js';
 import { epochMs, potSubsidyAt, potSubsidyNanos } from '../../crypto/pot_sched.js';
 import {
   aLeavesFromShares,
@@ -211,13 +211,14 @@ function retargetHash(tpl, dest, nanos) {
   return blockFrom(tpl, [cb, ...tpl.txs.slice(1)]);
 }
 
-function paintV(block, mode) {
+/** The coinbase with a published v edited on the rows `pick` names (every row with one by default). */
+function paintV(block, mode, pick = () => true) {
   const txs = block.txs.map((tx, i) => {
     if (i !== 0) return tx;
     return {
       ...tx,
-      vout: (tx.vout || []).map((o) => {
-        if (!o?.valueProof) return o;
+      vout: (tx.vout || []).map((o, j) => {
+        if (!o?.valueProof || !pick(o, j)) return o;
         const valueProof = { ...o.valueProof };
         if (mode === 'strip') delete valueProof.v;
         else if (mode === 'one') valueProof.v = 1;
@@ -473,13 +474,52 @@ describe('v12 consensus rejects a custodial coinbase', () => {
       }
     }
 
+    // COINBASE_V=opens (Russell, 25 Oct 2026). The leaf binds a coinbase
+    // row's published v (TX_DIGEST=body-v2), and a v that is present opens
+    // the row's commitment and equals what consensus derives for a row it
+    // opens itself. An edited v is refused as it stands (merkle) and with the
+    // header resealed over it (coinbase_output), one row kind at a time: the
+    // work-split pot rows, the hash rows and the pool-fee row of a share
+    // block, the pool-fee row of a carry block, and the solo pot row.
     const sample = painted[1];
-    for (const mode of ['strip', 'one', 'huge']) {
-      const honestV = sameVerdict(paintV(sample.block, mode), sample.prev, sample.now, sample.supplyParents);
-      assert.equal(honestV.ok, true, `honest ${mode} ${honestV.reason}`);
-      const attackV = sameVerdict(paintV(sample.attack, mode), sample.prev, sample.now, sample.supplyParents);
+    const resealed = (block) => blockFrom(block, block.txs);
+    const vCases = [
+      { label: 'share', block: sample.block, prev: sample.prev, now: sample.now, parents: sample.supplyParents },
+      { label: 'carry', block: empties[0].parent.block, prev: asView(paid), now: empties[0].now, parents: supplyPrefix(paid) },
+      { label: 'solo', block: paid.block, prev: null, now: genesisMs, parents: supplyPrefix(null) },
+    ];
+    const seenKinds = new Set();
+    for (const c of vCases) {
+      const honestAgain = sameVerdict(resealed(c.block), c.prev, c.now, c.parents);
+      assert.equal(honestAgain.ok, true, `${c.label} resealed honest ${honestAgain.reason}`);
+      const kinds = [...new Set((c.block.txs[0].vout || []).filter((o) => o?.valueProof?.v != null).map((o) => String(o.kind)))];
+      assert.ok(kinds.length > 0, `${c.label} has a published v`);
+      for (const kind of kinds) {
+        seenKinds.add(kind);
+        let first = -1;
+        const one = (o, j) => {
+          if (String(o.kind) !== kind) return false;
+          if (first < 0) first = j;
+          return j === first;
+        };
+        for (const mode of ['one', 'huge']) {
+          first = -1;
+          const edited = paintV(c.block, mode, one);
+          const asIs = sameVerdict(edited, c.prev, c.now, c.parents);
+          assert.equal(asIs.ok, false, `${c.label} ${kind} ${mode} as is`);
+          assert.equal(asIs.reason, 'merkle', `${c.label} ${kind} ${mode} as is ${asIs.reason}`);
+          const sealedEdit = sameVerdict(resealed(edited), c.prev, c.now, c.parents);
+          assert.equal(sealedEdit.ok, false, `${c.label} ${kind} ${mode} resealed`);
+          assert.equal(sealedEdit.reason, 'coinbase_output', `${c.label} ${kind} ${mode} resealed ${sealedEdit.reason}`);
+        }
+      }
+    }
+    for (const kind of ['pot', 'hash', 'pool-fee']) assert.ok(seenKinds.has(kind), `row kind ${kind} covered`);
+    // A custodial attack stays pot_prop, an edited v or not.
+    for (const mode of ['one', 'huge']) {
+      const attackV = sameVerdict(resealed(paintV(sample.attack, mode)), sample.prev, sample.now, sample.supplyParents);
       assert.equal(attackV.ok, false, `attack ${mode}`);
-      assert.equal(attackV.reason, 'pot_prop', mode);
+      assert.equal(attackV.reason, 'pot_prop', `attack ${mode} ${attackV.reason}`);
     }
 
     const shuffleParent = streaks[1].parent;
@@ -675,5 +715,28 @@ describe('v12 consensus rejects a custodial coinbase', () => {
     }));
     assert.equal(ipc.ok, false);
     assert.equal(store.tip().height, parentTip.height);
+  });
+});
+
+describe('COINBASE_V=opens on every coinbase row kind', () => {
+  it('a present v opens the commitment and equals the derived value; a row with no v is judged by the commitment', () => {
+    const d20 = hash20FromAddress(minerDest());
+    for (const kind of ['pot', 'hash', 'pool-fee', 'finder-fee', 'reserve-fee']) {
+      const nanos = 1_234_567;
+      const row = sealCoinbaseNote(nanos, { dest20: d20, kind });
+      const ex = excessOf([row]);
+      assert.equal(coinbaseVoutsBound([row], ex).ok, true, `${kind} honest`);
+      for (const v of [nanos + 1, 1, nanos * 2]) {
+        const edited = { ...row, valueProof: { ...row.valueProof, v } };
+        assert.deepEqual(coinbaseVoutsBound([edited], ex), { ok: false, reason: 'coinbase_output' }, `${kind} v=${v}`);
+        // A row consensus opens itself: the published v must be the derived value.
+        assert.deepEqual(coinbaseVoutsBound([edited], ex, () => nanos), { ok: false, reason: 'coinbase_output' }, `${kind} hinted v=${v}`);
+      }
+      assert.equal(coinbaseVoutsBound([row], ex, () => nanos).ok, true, `${kind} hinted honest`);
+      // No v: the derived value opens it; without one the row cannot open.
+      const bare = { ...row, valueProof: { R: row.valueProof.R, z: row.valueProof.z } };
+      assert.equal(coinbaseVoutsBound([bare], ex, () => nanos).ok, true, `${kind} bare hinted`);
+      assert.deepEqual(coinbaseVoutsBound([bare], ex), { ok: false, reason: 'coinbase_output' }, `${kind} bare unhinted`);
+    }
   });
 });

@@ -16,9 +16,11 @@ function ncHex(buf) {
 }
 
 /**
- * Coinbase compact drops `v` on a pool-fee note. The commitment still opens
- * at the sealed amount: the claimed v, this pool's 1%, any fee up to 2% of the subsidy, or
- * the whole pot.
+ * The amount a coinbase note opens to, for readers (the explorer, balances).
+ * Compact keeps a pool-fee note's v (chronoflux compactVout). A note with
+ * no v is found by trying this pool's 1%, any fee up to 2% of the subsidy,
+ * or the whole pot. A v that does not open is not shown: consensus refuses
+ * that row (note.js coinbaseVoutsBound, COINBASE_V=opens).
  */
 export function openedCoinbaseNanos(vout, potNanos = BLOCK_SUBSIDY_NANOS) {
   if (!vout?.commit || !vout?.valueProof) return 0;

@@ -788,8 +788,24 @@ function rangeProofEmpty(o) {
   }
 }
 
+/**
+ * A coinbase row's published valueProof.v, when present, opens the row's
+ * commitment (COINBASE_V=opens). A row with no v is not judged here. The
+ * body is what a block carries, so an amount it states is that amount.
+ */
+function publishedVOpens(o) {
+  const raw = o?.valueProof?.v;
+  if (raw == null || raw === '') return { present: false };
+  const n = noteU64(raw);
+  if (n == null || !verifySealedNote(o, n)) return { present: true, ok: false };
+  return { present: true, ok: true, n };
+}
+
 export function coinbaseVoutsBound(vouts, excess, openedFor = null, splitPaid = null) {
   const rows = Array.isArray(vouts) ? vouts : [];
+  for (const o of rows) {
+    if (publishedVOpens(o).ok === false) return { ok: false, reason: 'coinbase_output' };
+  }
   if (splitPaid != null) {
     if (!rows.length) return { ok: false, reason: 'coinbase_output' };
     const paid = noteU64(splitPaid);
@@ -827,6 +843,9 @@ export function coinbaseVoutsBound(vouts, excess, openedFor = null, splitPaid = 
           return { ok: false, reason: 'range_proof' };
         }
         v = noteU64(hinted);
+        // A row consensus opened itself: a published v is that value.
+        const published = publishedVOpens(o);
+        if (published.present && published.n !== v) return { ok: false, reason: 'coinbase_output' };
       }
     }
     if (v == null) {
