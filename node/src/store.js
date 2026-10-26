@@ -228,22 +228,66 @@ function txIdOf(tx) {
   return String(tx?.id || '');
 }
 
-/** A real outpoint a vin names. An FS-1 vin names none (it is a C~ only). */
-function vinOutpoint(vin) {
-  if (vin?.prev == null || vin.prev === '' || vin.index == null) return '';
-  try {
-    return `${Buffer.from(asU8(vin.prev)).toString('hex')}:${Number(vin.index)}`;
-  } catch {
-    return '';
+/** A vin's prev as its 32 bytes, from a Buffer, hex (with or without 0x) or {$hex}; null otherwise. */
+function prevBytes(prev) {
+  if (prev == null || prev === '') return null;
+  let raw = prev;
+  if (raw && typeof raw === 'object' && !Buffer.isBuffer(raw) && !(raw instanceof Uint8Array) && typeof raw.$hex === 'string') raw = raw.$hex;
+  if (typeof raw === 'string') {
+    const hex = raw.trim().replace(/^0x/i, '');
+    if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+    return Buffer.from(hex, 'hex');
   }
+  try {
+    const b = Buffer.from(asU8(raw));
+    return b.length === 32 ? b : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A real outpoint a vin names, as one canonical key. An FS-1 vin names none (it is a C~ only). */
+function vinOutpoint(vin) {
+  const prev = prevBytes(vin?.prev);
+  const index = Number(vin?.index);
+  if (!prev || vin?.index == null || vin.index === '' || !Number.isSafeInteger(index) || index < 0) return '';
+  return `out:${prev.toString('hex')}:${index}`;
+}
+
+/**
+ * The notes `tx` spends, one canonical key each: `out:` a real outpoint
+ * (vinOutpoint), `tag:` a spend tag (an FS-1 input's nullifier). Two
+ * separate FS-1 vins never share a key; the same note does however its
+ * bytes are held.
+ */
+export function spentNoteKeys(tx) {
+  const keys = new Set();
+  for (const tag of txSpendTags(tx).tags) keys.add(`tag:${tag.toString('hex')}`);
+  for (const vin of tx?.vin || []) {
+    const out = vinOutpoint(vin);
+    if (out) keys.add(out);
+  }
+  return keys;
+}
+
+/**
+ * What a reorg's winning blocks spend (spentNoteKeys of their txs). The
+ * returned test is true when `tx` spends one of those notes.
+ */
+export function winnerSpends(connected) {
+  const spent = new Set();
+  for (const b of connected || []) {
+    for (const tx of (b?.txs || []).slice(1)) {
+      for (const k of spentNoteKeys(tx)) spent.add(k);
+    }
+  }
+  return (tx) => [...spentNoteKeys(tx)].some((k) => spent.has(k));
 }
 
 /** True when `tx` spends a note `held` spends: a shared spend tag or outpoint. */
 function spendsHeldNote(held, tx) {
-  const tags = new Set(txSpendTags(held).tags.map((tag) => tag.toString('hex')));
-  if (txSpendTags(tx).tags.some((tag) => tags.has(tag.toString('hex')))) return true;
-  const outs = new Set((held?.vin || []).map(vinOutpoint).filter(Boolean));
-  return (tx?.vin || []).some((v) => outs.has(vinOutpoint(v)));
+  const keys = spentNoteKeys(held);
+  return [...spentNoteKeys(tx)].some((k) => keys.has(k));
 }
 
 function spendLeafOf(tx) {
@@ -2726,23 +2770,17 @@ export function createStore(dir, {
     // By body key, not by the label a sender picks: a winner that only shares
     // a held tx's id neither evicts it nor stops a loser's body coming back.
     const winnerKeys = new Set();
-    const winnerInputs = new Set();
     for (const b of connected || []) {
       for (const tx of (b.txs || []).slice(1)) {
         const key = txBodyKey(tx);
         if (key) winnerKeys.add(key);
-        for (const tag of txSpendTags(tx).tags) winnerInputs.add(tag.toString('hex'));
-        for (const vin of tx.vin || []) {
-          winnerInputs.add(`${vin.prev || ''}:${vin.index}`);
-        }
       }
     }
-    const tagSpent = (tx) => txSpendTags(tx).tags.some((tag) => winnerInputs.has(tag.toString('hex')));
+    const spentByWinner = winnerSpends(connected);
     for (let i = mempool.length - 1; i >= 0; i -= 1) {
       const tx = mempool[i];
       const key = heldBodyKey(tx);
-      const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
-      if ((key && winnerKeys.has(key)) || spent || tagSpent(tx)) mempool.splice(i, 1);
+      if ((key && winnerKeys.has(key)) || spentByWinner(tx)) mempool.splice(i, 1);
     }
     let base = 1;
     const t = tip();
@@ -2764,8 +2802,7 @@ export function createStore(dir, {
         if (tx?.coinbase) continue;
         const key = txBodyKey(tx);
         if (key && winnerKeys.has(key)) continue;
-        const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
-        if (spent || tagSpent(tx)) continue;
+        if (spentByWinner(tx)) continue;
         if (key && heldKeys.has(key)) continue;
         const row = {
           ...tx,
