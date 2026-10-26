@@ -3817,6 +3817,12 @@ const kErrNoSealedNote =
 /// Header depth is still unknown. Not a balance shortfall.
 const kErrHeaderSync = 'waiting for header sync';
 
+/// A Vault lock is one π leaf. Any other amount is refused before anything is posted.
+const kErrLockAmount = 'A Vault lock is exactly 3.14159265358 SHE (one π leaf)';
+
+/// True when [amountShe] is exactly one π leaf in protocol units.
+bool isOnePiLeaf(double amountShe) => (amountShe * kUnitsPerShe).round() == kPiSheNanos;
+
 /// Pool answered with an HTML error page (or other non-JSON). Never surface FormatException.
 const kErrPoolHtml = 'pool returned HTML';
 
@@ -12936,6 +12942,9 @@ class ShearLedger implements ReadProofSink {
     if (sendKind != 'vote' && sendKind != 'roll' && amount <= 0) {
       throw ArgumentError('amount');
     }
+    // A lock is one π leaf (the node refuses any other amount); a note larger
+    // than that keeps the rest as hidden change in the same tx.
+    if (sendKind == 'lock' && !isOnePiLeaf(amount)) throw StateError(kErrLockAmount);
     if (isShearAddress(from)) {
       throw ArgumentError('rest_frame');
     }

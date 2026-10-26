@@ -974,6 +974,11 @@ Future<int> _reserve(IOSink out, IOSink err, _Flags flags, Map<String, String> e
   final BigInt? lockNanos = sub == 'lock'
       ? _sheNanos(flags['amount'], missing: 'reserve lock needs --amount')
       : null;
+  // A lock is one π leaf; nothing is posted for any other amount.
+  if (lockNanos != null && !isOnePiLeaf(lockNanos.toDouble() / kUnitsPerShe)) {
+    err.writeln(kErrLockAmount);
+    return 2;
+  }
   final session = _session(flags);
   final id = await _needId(session, flags, env);
   final ledger = ShearLedger();
