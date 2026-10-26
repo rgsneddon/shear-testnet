@@ -352,9 +352,11 @@ describe('wallet fluxset RPC', () => {
     const leafNc = noteCommitOfDest20(hash20FromAddress(hasher));
     // No poolDest, empty shareBatch, pot dest20 stripped: sealedPotIsCustody misses
     // and paysFromALeaves would PROP pot-after-fee onto the hasher leaf.
-    const propBlock = (i) => {
+    // A labelled pot with no dest20 is refused on chain (COINBASE_NC=dest-bound)
+    // and credited to nobody; keepDest is the honest row, the pool's in full.
+    const propBlock = (i, { keepDest = false } = {}) => {
       const pot = sealCoinbaseNote(rest, { dest20: hash20FromAddress(pool), kind: 'pot' });
-      delete pot.dest20;
+      if (!keepDest) delete pot.dest20;
       return {
         height: i + 1,
         hash: Buffer.from([0x71, i + 1, ...Buffer.alloc(30)]),
@@ -387,7 +389,15 @@ describe('wallet fluxset RPC', () => {
         blocks: [...found, { height: tipH, hash: Buffer.alloc(32, 0x72), txs: [] }],
         tip: () => ({ height: tipH }),
         mempool: [],
-      }, pool).spendableNanos, n * rest);
+      }, pool).spendableNanos, 0, `unbound pot N=${n}`);
+      const honest = Array.from({ length: n }, (_, i) => propBlock(i, { keepDest: true }));
+      const view = {
+        blocks: [...honest, { height: tipH, hash: Buffer.alloc(32, 0x72), txs: [] }],
+        tip: () => ({ height: tipH }),
+        mempool: [],
+      };
+      assert.equal(reconstructOwner(view, pool).spendableNanos, n * rest, `honest pot N=${n}`);
+      assert.equal(reconstructOwner(view, hasher).spendableNanos, n * hashNanos, `honest hasher N=${n}`);
     }
 
     // Painted `to` with nanos = 0.99 and no noteCommit: matureSpendable > 0, which
@@ -413,7 +423,7 @@ describe('wallet fluxset RPC', () => {
       const got = reconstructOwner(store, hasher);
       assert.equal(got.spendableNanos, n * hashNanos, `painted grow N=${n}`);
       assert.notEqual(got.spendableNanos, n * rest);
-      assert.equal(reconstructOwner(store, pool).spendableNanos, n * rest);
+      assert.equal(reconstructOwner(store, pool).spendableNanos, 0, `unbound pot N=${n}`);
       store.blocks.pop();
     }
     fs.rmSync(dir, { recursive: true, force: true });

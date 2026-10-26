@@ -323,6 +323,8 @@ export const POT_PROP = 'shareBatch';
 export const TX_DIGEST_LAW = 'body-v2';
 /** note.js coinbaseVoutsBound: a coinbase row's published valueProof.v, when present, opens its commitment. */
 export const COINBASE_V_LAW = 'opens';
+/** chain.js coinbaseLabelRejected: a non-hasher coinbase row's noteCommit is the one its own dest20 derives. */
+export const COINBASE_NC_LAW = 'dest-bound';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 /** Chain magics are reserve_books.js. This module re-exports them. */
 /**
@@ -502,6 +504,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     // A coinbase row's published v, when present, is its commitment's
     // opening (and the value consensus derives for a row it opens itself).
     `COINBASE_V=${COINBASE_V_LAW}`,
+    // A coinbase label credits the dest it names, so it is bound to the
+    // row's own dest20 (hasher payouts keep the Tree-A match).
+    `COINBASE_NC=${COINBASE_NC_LAW}`,
     `COMPACT_TO=${COMPACT_TO}`,
     `VAULT_GAP=${VAULT_GAP_LAW}`,
     `POT_PROP=${POT_PROP}`,

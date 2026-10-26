@@ -417,7 +417,11 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
         const kind = String(o.kind || tx.kind || '');
         // A lock or vote receipt is vault principal, not a second coin.
         if (kind === 'lock' || kind === 'vote') continue;
-        const byNote = !!(o.noteCommit && noteCommitEq(o.noteCommit, want));
+        // A coinbase label names its payee only as the row's own dest20
+        // derives it (COINBASE_NC=dest-bound; node note_ledger.js does the
+        // same), so a label painted onto another dest's row credits nobody.
+        const byNote = !!(o.noteCommit && noteCommitEq(o.noteCommit, want))
+          && (!tx.coinbase || sameDest20(o.dest20, dest20));
         const byDest = kind === 'pool-withdraw' && sameDest20(o.dest20, dest20);
         if (!byNote && !byDest) continue;
         if (byNote) {

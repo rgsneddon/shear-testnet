@@ -2381,6 +2381,30 @@ function parentSpendView(chain) {
   };
 }
 
+/**
+ * A coinbase output's noteCommit names the dest a node credits it to
+ * (note_ledger.js), so on every output but a hasher payout it must be the
+ * one its own dest20 derives (noteCommitOfDest20), and a row with no dest20
+ * carries none. Nothing derives or fills one in. A hasher payout is a hash
+ * row or a row whose label is a Tree-A share leaf (`hasherNcs`), which the
+ * hasher match binds. Russell 26 Oct: from height 0, COINBASE_NC=dest-bound.
+ */
+export function coinbaseLabelRejected(vout, hasherNcs = new Set()) {
+  for (const o of Array.isArray(vout) ? vout : []) {
+    if (!o || typeof o !== 'object') continue;
+    if (String(o.kind || '') === 'hash') continue;
+    if (o.noteCommit == null || o.noteCommit === '') continue;
+    let label;
+    try { label = Buffer.from(asU8(o.noteCommit)); } catch { return { ok: false, reason: 'coinbase_output' }; }
+    if (hasherNcs.has(label.toString('hex'))) continue;
+    let d20 = null;
+    try { d20 = o.dest20 == null || o.dest20 === '' ? null : Buffer.from(asU8(o.dest20)); } catch { d20 = null; }
+    if (!d20 || d20.length !== 20) return { ok: false, reason: 'coinbase_output' };
+    if (!noteCommitOfDest20(d20).equals(label)) return { ok: false, reason: 'coinbase_output' };
+  }
+  return null;
+}
+
 /** The key opts.arrivedRows is read by: the header bytes as hex, however the block holds them. */
 export function arrivedRowsKey(block) {
   try {
@@ -2877,6 +2901,11 @@ function verifyBlockBody(block, prev, opts = {}) {
       return { ok: false, reason: r.reason === 'dest' ? 'miner_addr' : r.reason };
     }
   }
+  // COINBASE_NC=dest-bound: a label names its payee only as its own dest20
+  // derives it. Hasher payouts keep the Tree-A match above.
+  const hasherLeaves = Array.isArray(shareLeaves) ? shareLeaves : (shareBatch.length ? aLeavesFromShares(shareBatch) : []);
+  const labelled = coinbaseLabelRejected(txs[0].vout, new Set(hasherLeaves.map((l) => ncHex(l.noteCommit))));
+  if (labelled) return labelled;
   if (block.miner) {
     const minerHrp = checkAddressField(block.miner, { allowEmpty: true });
     if (!minerHrp.ok) return { ok: false, reason: minerHrp.reason };

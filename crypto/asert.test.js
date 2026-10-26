@@ -438,7 +438,7 @@ describe('hash bonus step (law)', () => {
     assert.match(fp, /HASH_BONUS_CEIL=none/);
     assert.match(fp, /P2P_HELLO=fingerprint/);
     assert.match(fp, /:TX_DIGEST=body-v2:/);
-    assert.match(fp, /:TX_DIGEST=body-v2:COINBASE_V=opens:/);
+    assert.match(fp, /:TX_DIGEST=body-v2:COINBASE_V=opens:COINBASE_NC=dest-bound:/);
     assert.match(fp, /COMPACT_TO=dropped/);
     assert.match(fp, /VAULT_GAP=A1-once/);
     assert.match(mainnetFingerprint(), /HASH_UNIT_FLOOR=1/);
@@ -454,7 +454,7 @@ describe('hash bonus step (law)', () => {
     assert.match(mainnetFingerprint(), /HASH_BONUS_CEIL=none/);
     assert.match(mainnetFingerprint(), /P2P_HELLO=fingerprint/);
     assert.match(mainnetFingerprint(), /:TX_DIGEST=body-v2:/);
-    assert.match(mainnetFingerprint(), /:TX_DIGEST=body-v2:COINBASE_V=opens:/);
+    assert.match(mainnetFingerprint(), /:COINBASE_V=opens:COINBASE_NC=dest-bound:/);
     assert.match(mainnetFingerprint(), /PORTAL_ID=H\(tag,dest20\)/);
     assert.match(mainnetFingerprint(), /HASH_BONUS_STEP=1rho/);
     assert.match(mainnetFingerprint(), /HASH_BONUS_OFF=0/);

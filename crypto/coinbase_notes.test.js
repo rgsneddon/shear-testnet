@@ -68,6 +68,23 @@ describe('expectedCoinbasePays potNanos', () => {
 });
 
 describe('noteCommitSpendableNanos', () => {
+  it("a coinbase label painted onto another dest's row credits nobody (COINBASE_NC=dest-bound)", () => {
+    const miner = spendDestOf(newIdentity().spendPub);
+    const victim = spendDestOf(newIdentity().spendPub);
+    const amount = 2 * NANOS_PER_SHE;
+    const own = sealCoinbaseNote(amount, { dest20: hash20FromAddress(miner), kind: 'pot' });
+    const matureTip = 2 + SPENDABLE_CONFIRMATIONS - 1;
+    const at = (vout) => [{ height: 2, txs: [{ coinbase: true, vout }] }];
+    // Control: the row under its own label is its dest's, in full.
+    assert.equal(noteCommitSpendableNanos(at([own]), miner, matureTip), amount);
+    const painted = { ...own, noteCommit: noteCommitOfDest20(hash20FromAddress(victim)) };
+    assert.equal(noteCommitSpendableNanos(at([painted]), victim, matureTip), 0);
+    assert.equal(noteCommitSpendableNanos(at([painted]), miner, matureTip), 0);
+    // A label with no dest20 is not bound to anyone either.
+    const { dest20: _d, ...unbound } = own;
+    assert.equal(noteCommitSpendableNanos(at([unbound]), miner, matureTip), 0);
+  });
+
   it('counts an opened note and ignores a painted nanos row', () => {
     const alice = newIdentity();
     const dest = spendDestOf(alice.spendPub);
