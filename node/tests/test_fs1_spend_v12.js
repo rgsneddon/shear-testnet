@@ -423,14 +423,14 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     // earlier's: the labels a sender-picked id match would resolve.
     const [ra, rb] = user.map((row) => digestTx(row).toString('hex'));
     const crossed = [built.txs[0], { ...user[0], id: rb }, { ...user[1], id: ra }];
-    // The leaf binds the whole compact body (TX_DIGEST=body-v2), the label
-    // with it: relabelling is another block, refused under the old header.
+    // The id is a label no signature covers, so it is not in the leaf
+    // (Russell 26 Oct): relabelled, each send keeps its leaf, and the block
+    // under the old header is the same block, with the same verdict.
     const crossedLeaves = crossed.slice(1).map((row) => digestTx(row).toString('hex'));
-    assert.notEqual(crossedLeaves[0], ra, 'a label is in its leaf');
-    assert.notEqual(crossedLeaves[1], rb, 'a label is in its leaf');
+    assert.equal(crossedLeaves[0], ra, 'a label is not in its leaf');
+    assert.equal(crossedLeaves[1], rb, 'a label is not in its leaf');
     const underOld = await verdictOf(crossed);
-    assert.equal(underOld.ok, false, 'a relabelled body under the old header');
-    assert.equal(underOld.reason, 'merkle');
+    assert.equal(underOld.ok, true, `a relabelled body under the old header ${underOld.reason}`);
     // Sealed under its own header, the crossed block decides as the plain
     // block does, and both spends land: no label decides a verdict.
     const rebuilt = buildTemplate({

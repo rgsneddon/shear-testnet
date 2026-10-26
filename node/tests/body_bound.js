@@ -75,7 +75,8 @@ function withLeaf(body, path, value) {
 }
 
 /**
- * Every leaf of compactTx(tx) is in the leaf digest. Returns the paths
+ * Every leaf of compactTx(tx) is in the leaf digest, but the id of any kind
+ * other than a withdraw, which is shown not to be. Returns the paths
  * checked and the normalized ones, for the test to print.
  */
 export function everyFieldBound(tx, name = String(tx?.id || tx?.kind || 'tx')) {
@@ -95,6 +96,12 @@ export function everyFieldBound(tx, name = String(tx?.id || tx?.kind || 'tx')) {
     if (canonicalEncode(compactTx(mutated)) === baseBody) {
       assert.ok(Object.prototype.hasOwnProperty.call(NORMALIZED, name2), `${name}: ${name2} changed but compaction undid it, and it is not on NORMALIZED`);
       normalized.push(name2);
+      continue;
+    }
+    if (name2 === 'id' && String(body.kind || '') !== 'withdraw') {
+      // The id is a label its sender picks and no signature covers: it is
+      // not in the leaf (Russell 26 Oct). A withdraw signs its id, so there it is.
+      assert.equal(digestTx(mutated).toString('hex'), base, `${name}: the id is not in the leaf digest`);
       continue;
     }
     assert.notEqual(digestTx(mutated).toString('hex'), base, `${name}: ${name2} is not in the leaf digest`);

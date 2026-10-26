@@ -250,10 +250,15 @@ function negativeTopNanos(tx) {
  * field compaction drops reaches no digest. It binds the packed core and
  * sha256 of the canonical encoding of the whole compact row
  * (canonical_row.js), so every byte a validator reads is in the block hash,
- * for every kind including the coinbase.
+ * for every kind including the coinbase. The id is a label its sender picks
+ * and no signature covers, so it is not in the leaf: a relayed copy under a
+ * new id is the same tx (Russell 26 Oct). A withdraw signs its id
+ * (reserveDigestSuffix), so there it is body and stays in, as in the
+ * mempool body key (mempool.js txBodyKey).
  */
 export function digestTx(tx) {
-  const body = compactTx(tx);
+  const body = { ...compactTx(tx) };
+  if (String(body.kind || '') !== 'withdraw') delete body.id;
   return packDigest(Buffer.concat([
     Buffer.from(TX_DIGEST_DOMAIN),
     coreDigest(body),
