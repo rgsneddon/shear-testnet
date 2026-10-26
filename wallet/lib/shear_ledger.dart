@@ -762,12 +762,14 @@ bool spendableNote(
       '';
   if (tag.isNotEmpty && spentTags.contains(tag)) return false;
   if (lockNoteIsLocked(Map<String, dynamic>.from(note), tipMs)) return false;
+  // Spendable is only what a send can use now: a note mined at a known
+  // height with the required confirmations. A note with no height (fresh
+  // change, a remembered session row) is Pending until a chain read gives it
+  // one. [ignoreConfs] skips only the confirmation count, never the height:
+  // no header sync gives an unmined note a height.
+  final h = note['height'];
+  if (h is! num || h < 1) return false;
   if (!ignoreConfs) {
-    // Spendable is only what a send can use now: a note mined at a known
-    // height with the required confirmations. A note with no height (fresh
-    // change, a remembered session row) is Pending until a chain read gives it one.
-    final h = note['height'];
-    if (h is! num || h < 1) return false;
     final height = h.toInt();
     if (tip < height || (tip - height + 1) < confirmations) return false;
   }
@@ -3817,6 +3819,10 @@ const kErrNoSealedNote =
 /// Header depth is still unknown. Not a balance shortfall.
 const kErrHeaderSync = 'waiting for header sync';
 
+/// The send needs this wallet's own change, which is not mined yet. Pending,
+/// not a balance shortfall: it becomes spendable once it has a height.
+const kErrChangePending = 'waiting for your change to be mined';
+
 /// A Vault lock is one π leaf. Any other amount is refused before anything is posted.
 const kErrLockAmount = 'A Vault lock is exactly 3.14159265358 SHE (one π leaf)';
 
@@ -5769,6 +5775,17 @@ class ShearLedger implements ReadProofSink {
         spendableSum + 1e-12 < amount &&
         withDepth + 1e-12 >= amount) {
       return StateError(kErrHeaderSync);
+    }
+    // This wallet's own unmined change would cover it: Pending, not short.
+    final changePending = _unminedNoteShe({
+      for (final n in _notes) ...{
+        (n['address'] ?? n['dest'])?.toString() ?? '',
+      },
+    }..remove(''));
+    if (changePending > 0 &&
+        spendableSum + 1e-12 < amount &&
+        withDepth + changePending + 1e-12 >= amount) {
+      return StateError(kErrChangePending);
     }
     if (anySpendable) return StateError('insufficient');
     if (headerDepthPending &&
@@ -8002,6 +8019,21 @@ class ShearLedger implements ReadProofSink {
     return n + _unminedNoteShe({for (final d in seen) ...{d, payKey(d)}});
   }
 
+  /// This wallet's own change not yet mined, over every money dest it owns:
+  /// the home screen shows it as Pending (gate 3). It is never Spendable and
+  /// becomes Spendable once a chain read gives it a height with its
+  /// confirmations.
+  double unminedChangeShe(String restFrame, {String? paymentCode}) {
+    final dests = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (d.isEmpty) continue;
+      dests
+        ..add(d)
+        ..add(payKey(d));
+    }
+    return _unminedNoteShe(dests);
+  }
+
   /// This wallet's own notes not yet mined (no block height): change from a
   /// posted lock or send. Never Spendable (spendableNote needs a height);
   /// shown as Pending until a chain read gives them one.
@@ -9328,12 +9360,13 @@ class ShearLedger implements ReadProofSink {
     return addr == dest || payKey(addr) == payKey(dest);
   }
 
-  /// Confirmed enough to spend. A missing height is already in the mature book.
+  /// Confirmed enough to spend. A note with no height is not mature: the
+  /// planner counts what Spendable counts (spendableNote needs a height).
   /// Same floor as the Flow picker, counted from [bookTip].
   bool _noteMature(Map<String, dynamic> note, {bool ignoreConfs = false}) {
-    if (ignoreConfs) return true;
     final h = (note['height'] as num?)?.toInt();
-    if (h == null || h < 1) return true;
+    if (h == null || h < 1) return false;
+    if (ignoreConfs) return true;
     return confirmationsOf(h) >= spendableConfirmations;
   }
 
@@ -9633,11 +9666,20 @@ class ShearLedger implements ReadProofSink {
     SendPort? partials,
   }) async {
     final known = <String>{..._acceptedCommits};
+    final heightless = <String>{};
     for (final n in _notes) {
       if (n['verified'] != true) continue;
       final commit = _noteBytes(n['commit']);
-      if (commit != null && commit.isNotEmpty) known.add(_bytesHex(commit));
+      if (commit == null || commit.isEmpty) continue;
+      known.add(_bytesHex(commit));
+      final h = n['height'];
+      if (h is! num || h < 1) heightless.add(_bytesHex(commit));
     }
+    // A held note with no block height yet (this wallet's own change, posted
+    // but not read back mined) is read again: its mined copy is the only one
+    // that carries the height Spendable needs (gate 3), and rememberNote
+    // merges that height onto the note.
+    known.removeAll(heightless);
     final vouts = notesNotYetAccepted(
       List<dynamic>.from(raw['vouts'] as List? ?? const []),
       known,

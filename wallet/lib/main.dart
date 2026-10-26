@@ -2938,6 +2938,10 @@ class ShearWalletAppState extends State<ShearWalletApp>
       ident.address,
       paymentCode: ident.paymentCode,
     );
+    final changePending = ledger.unminedChangeShe(
+      ident.address,
+      paymentCode: ident.paymentCode,
+    );
     final pending = ledger.pendingTxs(ident.address);
     final reserveDest = _reserveDestOf(ident);
     final inReserveNanos = reserveDest == null
@@ -2980,6 +2984,13 @@ class ShearWalletAppState extends State<ShearWalletApp>
         Text(
           'Unconfirmed  ${formatShe(unconfirmed)} SHE',
           key: const Key('continuum-unconfirmed'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 13),
+        ),
+      // Own change not yet mined: Pending, never Spendable, until it has a height.
+      if (changePending > 0)
+        Text(
+          'Pending  ${formatShe(changePending)} SHE',
+          key: const Key('continuum-pending-change'),
           style: TextStyle(color: shearMutedOf(context), fontSize: 13),
         ),
       if (fundsNotCorrectlyShown(

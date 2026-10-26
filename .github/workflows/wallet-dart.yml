@@ -39,6 +39,11 @@ jobs:
         # A lock is one π leaf, refused in the wallet before posting; every
         # memo envelope is one fixed size, in the shape the node admits.
         run: flutter test test/lock_amount_test.dart test/privacy_walk_test.dart test/spendable_never_painted_test.dart
+      - name: Own change has a height before it is spendable
+        working-directory: wallet
+        # Gate 3: a held note with no height is read again until it has one;
+        # until then it is Pending on home and the planner does not count it.
+        run: flutter test test/change_height_test.dart
       - name: Install node deps
         run: npm ci --ignore-scripts
       - name: Build shearadmit.node
