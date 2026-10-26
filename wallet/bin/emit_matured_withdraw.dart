@@ -7,6 +7,8 @@ import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 
+import 'emit_heights.dart';
+
 Uint8List _unhex(String hex) {
   final raw = hex.startsWith('0x') ? hex.substring(2) : hex;
   if (raw.length.isOdd) throw StateError('hex');
@@ -93,6 +95,8 @@ Future<void> main() async {
   reserve.portal(dest)
     ..staked = kPiSheNanos
     ..joined = true;
+  // The chain's tip and the host note's mined height, as a chain read gives them.
+  applyChainHeights(ledger, raw);
   final posted = await postMaturedWithdraws(
     ledger,
     reserve: reserve,

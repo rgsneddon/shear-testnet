@@ -763,11 +763,13 @@ bool spendableNote(
   if (tag.isNotEmpty && spentTags.contains(tag)) return false;
   if (lockNoteIsLocked(Map<String, dynamic>.from(note), tipMs)) return false;
   if (!ignoreConfs) {
+    // Spendable is only what a send can use now: a note mined at a known
+    // height with the required confirmations. A note with no height (fresh
+    // change, a remembered session row) is Pending until a chain read gives it one.
     final h = note['height'];
-    if (h is num && h >= 1) {
-      final height = h.toInt();
-      if (tip < height || (tip - height + 1) < confirmations) return false;
-    }
+    if (h is! num || h < 1) return false;
+    final height = h.toInt();
+    if (tip < height || (tip - height + 1) < confirmations) return false;
   }
   final nanos = noteNanosExact(note);
   if (nanos == null || nanos <= BigInt.zero) return false;
@@ -7978,7 +7980,7 @@ class ShearLedger implements ReadProofSink {
   /// Per-dest pending, or the wallet total when [address] is a rest-frame / she1.
   /// Money dests are destCommit(spendPub) and stealth dests in [_stealthShared].
   double pending(String address, {String? paymentCode}) {
-    if (isDestAddress(address)) return _pending[address] ?? 0;
+    if (isDestAddress(address)) return (_pending[address] ?? 0) + _unminedNoteShe({payKey(address), address});
     var n = 0.0;
     final seen = <String>{};
     void add(String k) {
@@ -7991,7 +7993,26 @@ class ShearLedger implements ReadProofSink {
     for (final d in moneyDests(address, paymentCode: paymentCode)) {
       add(d);
     }
-    return n;
+    return n + _unminedNoteShe({for (final d in seen) ...{d, payKey(d)}});
+  }
+
+  /// This wallet's own notes not yet mined (no block height): change from a
+  /// posted lock or send. Never Spendable (spendableNote needs a height);
+  /// shown as Pending until a chain read gives them one.
+  double _unminedNoteShe(Set<String> dests) {
+    var total = BigInt.zero;
+    for (final n in _notes) {
+      if (n['spent'] == true || n['reorged'] == true || n['verified'] != true) continue;
+      if (isVaultLockNote(n) || (n['kind'] ?? '').toString() == 'lock') continue;
+      final h = n['height'];
+      if (h is num && h >= 1) continue;
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr.isEmpty || !(dests.contains(addr) || dests.contains(payKey(addr)))) continue;
+      final nanos = noteNanosExact(n);
+      if (nanos == null || nanos <= BigInt.zero) continue;
+      total += nanos;
+    }
+    return _sheOfNanos(total);
   }
 
   /// Accrue 0.00000000001 SHE per hash this open round. Live pending row (lean: one

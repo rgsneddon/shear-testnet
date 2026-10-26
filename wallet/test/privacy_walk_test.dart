@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -10,6 +11,7 @@ import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_shewall.dart';
+import 'package:shear_wallet/shear_vault_reward.dart' show hiddenChangeNote, kPiSheNanos;
 
 void main() {
   test('two pays to one published code yield two dests; fingerprint cannot pay', () {
@@ -54,6 +56,27 @@ void main() {
     expect(pub.containsKey('memoCt'), isFalse);
     expect(pub.containsKey('memoPlain'), isFalse);
     expect(pub['amount'], 1);
+  });
+
+  test('a memo envelope is one size whatever the memo, in the shape the node admits', () async {
+    final alice = createIdentity();
+    final pay = silentPay(alice.paymentCodeFull)!;
+    final longest = '${'é' * 127}x';
+    expect(utf8.encode(longest).length, memoMaxBytes);
+    final short = await memoSeal(pay.dest, '', pay.shared);
+    final long = await memoSeal(pay.dest, longest, pay.shared);
+    for (final env in [short, long]) {
+      expect(env.keys.toList()..sort(), ['ct', 'mac', 'nonce', 'v']);
+      expect(env['v'], 2);
+      expect(base64Decode(env['ct'] as String).length, memoSlotBytes);
+      expect(base64Decode(env['nonce'] as String).length, 12);
+      expect(base64Decode(env['mac'] as String).length, 16);
+    }
+    expect(jsonEncode(short).length, jsonEncode(long).length);
+    expect(await memoOpen(pay.dest, short, pay.shared), '');
+    expect(await memoOpen(pay.dest, long, pay.shared), longest);
+    await expectLater(memoSeal(pay.dest, 'x' * (memoMaxBytes + 1), pay.shared), throwsArgumentError);
+    expect(await memoOpen(pay.dest, {...long, 'v': 1}, pay.shared), isNull, reason: 'the unpadded v1 envelope does not open');
   });
 
   test('shewall Argon2id round-trip and PBKDF2 migrate; JSON refused', () async {
@@ -116,12 +139,19 @@ void main() {
     expect(home, ledger.currentDest(alice.address, paymentCode: alice.paymentCode));
     expect(destMatchesSpendPub(home, ledger.spendPub!), isTrue);
     expect(home, isNot(destAtIndex(alice.address, index: 0, viewKey: alice.viewKey)));
-    ledger.rememberSpendable(home, 3);
-    expect(ledger.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: 1), home);
     final seed = Uint8List.fromList([
       for (var i = 0; i < 32; i++)
         int.parse(alice.seedHex.substring(i * 2, i * 2 + 2), radix: 16),
     ]);
+    // Real sealed notes on homeDest, mined deep enough: a send spends notes,
+    // never a painted figure. One covers the send, one the π lock.
+    ledger.noteLiveHeight(40);
+    ledger.settleTo(40);
+    for (final she in [3, 5]) {
+      ledger.rememberNote(_sealedNote(home, seed, she * kUnitsPerShe, height: 20));
+    }
+    ledger.recheckRestFrameSpendable(alice.address, paymentCode: alice.paymentCode);
+    expect(ledger.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: 1), home);
     final tx = await ledger.send(
       from: ledger.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: 1),
       to: bob.dest,
@@ -133,14 +163,14 @@ void main() {
     );
     expect(tx.from, home);
     expect(destMatchesSpendPub(tx.from, ed25519PublicFromSeed(seed)), isTrue);
-    ledger.rememberSpendable(home, 3);
+    // A lock is one π leaf, from the 5 SHE note.
     final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
-    final lockFrom = ledger.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: 1);
+    final lockFrom = ledger.spendFrom(alice.address, paymentCode: alice.paymentCode, amount: kPiSheNanos / kUnitsPerShe);
     expect(lockFrom, home);
     final lock = await ledger.send(
       from: lockFrom,
       to: vault,
-      amount: 1,
+      amount: kPiSheNanos / kUnitsPerShe,
       local: true,
       kind: 'lock',
       programId: 'shear-reserve-v1',
@@ -177,19 +207,29 @@ void main() {
       ledger.pending(alice.address, paymentCode: alice.paymentCode),
       closeTo(256 * kHashBonusShe, 1e-18),
     );
-    ledger.confirmRound(address: home, pot: 1, height: 20);
-    ledger.settleTo(20 + ShearLedger.spendableConfirmations);
+    // A mined round pays a sealed note to homeDest. Once deep enough it is
+    // Spendable, exactly; the same note on the dest-index is not this wallet's.
+    final seed = Uint8List.fromList([
+      for (var i = 0; i < 32; i++)
+        int.parse(alice.seedHex.substring(i * 2, i * 2 + 2), radix: 16),
+    ]);
+    final tip = 20 + ShearLedger.spendableConfirmations;
+    ledger.rememberNote(_sealedNote(home, seed, kUnitsPerShe, height: 20));
+    ledger.noteLiveHeight(tip);
+    ledger.settleTo(tip);
+    ledger.recheckRestFrameSpendable(alice.address, paymentCode: alice.paymentCode);
     expect(
-      ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode),
-      closeTo(1 + 256 * kHashBonusShe, 1e-18),
+      (ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode) * kUnitsPerShe).round(),
+      kUnitsPerShe,
     );
 
     final other = ShearLedger()..bindIdentity(alice);
     other.creditHash(indexed, hashes: 100);
-    other.confirmRound(address: indexed, pot: 1, height: 20);
-    other.settleTo(20 + ShearLedger.spendableConfirmations);
-    expect(other.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0);
-    expect(other.spendable(indexed), closeTo(1 + 100 * kHashBonusShe, 1e-18));
+    other.rememberNote(_sealedNote(indexed, seed, kUnitsPerShe, height: 20));
+    other.noteLiveHeight(tip);
+    other.settleTo(tip);
+    other.recheckRestFrameSpendable(alice.address, paymentCode: alice.paymentCode);
+    expect(other.spendableOwned(alice.address, paymentCode: alice.paymentCode), 0, reason: 'a dest-index note is not Spendable');
   });
 
   test('homeDest dest20||B wraps hash notes; dest20-only ingest cannot recover r', () {
@@ -260,3 +300,26 @@ void main() {
 }
 
 Uint8List utf8Json() => Uint8List.fromList([0x7b, 0x7d]);
+
+/// A real sealed note on [dest] (hiddenChangeNote: commit, range proof, admit
+/// key) that this wallet can spend, mined at [height].
+Map<String, dynamic> _sealedNote(String dest, Uint8List seed, int nanos, {required int height}) {
+  final note = hiddenChangeNote(
+    nanos,
+    hash20FromAddress(dest)!,
+    spendSeed: seed,
+    admitBase: admitPub(admitBaseScalar(seed)),
+  );
+  if (note == null) throw StateError('sealed note: the native admit library is required');
+  return {
+    ...note,
+    'address': dest,
+    'dest': dest,
+    'kind': 'send',
+    'nanos': nanos,
+    'amount': nanos / kUnitsPerShe,
+    'spendSeed': seed,
+    'verified': true,
+    'height': height,
+  };
+}

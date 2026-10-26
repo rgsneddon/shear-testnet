@@ -7,6 +7,8 @@ import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 
+import 'emit_heights.dart';
+
 Uint8List _unhex(String hex) {
   final raw = hex.startsWith('0x') ? hex.substring(2) : hex;
   if (raw.length.isOdd) throw StateError('hex');
@@ -65,7 +67,6 @@ Future<void> main() async {
   });
   final ledger = ShearLedger(pool: pool)..bindIdentity(id);
   final home = ledger.homeDest(dest, paymentCode: id.paymentCode);
-  ledger.replaceFromBackup(address: dest, spendable: 10, pending: 0, txs: const []);
   ledger.rememberNodeChain(bodies: [
     {
       'height': open,
@@ -101,6 +102,8 @@ Future<void> main() async {
     'portalId': leafRaw['portalId'].toString(),
     'lockIndex': leafRaw['lockIndex'] ?? 0,
   });
+  // The chain's tip and the fee note's mined height, as a chain read gives them.
+  applyChainHeights(ledger, raw);
   final reserve = ShearReserve()..currentEpoch = epoch;
   reserve.portal(dest).staked = kPiSheNanos;
   final dir = Directory.systemTemp.createTempSync('shear-e2e-vote-');

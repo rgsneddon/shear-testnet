@@ -62,12 +62,6 @@ void main() {
     fee['address'] = home;
     fee['dest'] = home;
     fee['verified'] = true;
-    ledger.replaceFromBackup(
-      address: dest,
-      spendable: 1,
-      pending: 0,
-      txs: const [],
-    );
     ledger.rememberNodeChain(bodies: [
       {
         'height': open,
@@ -81,7 +75,12 @@ void main() {
         ],
       },
     ]);
+    // The fee note is mined (in the anchor row at 32) and deep at the vote
+    // height: Spendable comes from it, never from a painted figure.
+    fee['height'] = 30;
     ledger.rememberNote(fee);
+    ledger.noteLiveHeight(height);
+    ledger.settleTo(height);
     ledger.rememberNote({
       'kind': 'lock',
       'scalar': scalarBytes(randomScalar()),
@@ -191,12 +190,6 @@ void main() {
     fee['address'] = home;
     fee['dest'] = home;
     fee['verified'] = true;
-    ledger.replaceFromBackup(
-      address: dest,
-      spendable: 1,
-      pending: 0,
-      txs: const [],
-    );
     ledger.rememberNodeChain(bodies: [
       {
         'height': open,
@@ -210,7 +203,12 @@ void main() {
         ],
       },
     ]);
+    // The fee note is mined (in the anchor row at 32) and deep at the vote
+    // height: Spendable comes from it, never from a painted figure.
+    fee['height'] = 30;
     ledger.rememberNote(fee);
+    ledger.noteLiveHeight(height);
+    ledger.settleTo(height);
     ledger.rememberNote({
       'kind': 'lock',
       'scalar': scalarBytes(randomScalar()),

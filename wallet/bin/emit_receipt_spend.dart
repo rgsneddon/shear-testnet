@@ -6,6 +6,8 @@ import 'package:shear_wallet/shear_admit_ffi.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 
+import 'emit_heights.dart';
+
 String _hex(List<int> b) => b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
 
 Object? _json(Object? v) {
@@ -76,12 +78,10 @@ Future<void> main() async {
     if (note['changeSeed'] != null) 'changeSeed': _unhex(note['changeSeed'].toString()),
     'verified': true,
   });
-  ledger.replaceFromBackup(
-    address: home,
-    spendable: nanos / kUnitsPerShe,
-    pending: 0,
-    txs: const [],
-  );
+  // The chain's tip and the note's mined height, as a chain read gives them:
+  // Spendable comes from the note, never from a painted figure.
+  applyChainHeights(ledger, raw);
+  ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
   final to = raw['to'].toString();
   await ledger.send(
     from: home,
