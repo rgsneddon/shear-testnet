@@ -97,7 +97,6 @@ moves the later rows by a day.
 | R06 | Goals 6–9 (register signing, strict wire decode, 018e share commitment, T21 hidden payout) | Y: each changes what a block may hold | planned | Claude | Grok + Protocol, Pool Share, Privacy, pins | | | | 9 Nov (7–11 Nov) |
 | R07 | Goal 10 F: FCMP++ hardening | Y: spend proof checks | planned | Claude | Grok + Privacy, Protocol, pins | | | | 10 Nov (8–12 Nov) |
 | R08 | PR 3a: real-data fixtures, consensus paths | N: tests only | planned | Claude | Grok + Codebase | | | | 13 Nov (10–15 Nov) |
-| R09 | Token spec (mint.shear.digital), spec only | N: a spec, no code | planned | Claude | Grok + all lanes | | | | 14 Nov (11–17 Nov) |
 | R11 | PR 3b: remaining real-data fixtures and CI guard | N: tests and CI only | planned | Claude | Grok + Codebase | | | | 21 Nov (17–26 Nov) |
 | R12 | Goal 10 A–E: five PR updates | Y: A (epoch-end gas) and C (withdraw policy) change consensus | planned | Claude | Grok + Protocol, Vault Security, pins | | | | 25 Nov (20–30 Nov) |
 | R13 | Wallet copy | N: wallet text and errors only | planned | Claude | Grok + Wallet Hardening | | | | 27 Nov (22 Nov–2 Dec) |
@@ -109,7 +108,8 @@ moves the later rows by a day.
 | R17 | Stressnet (7-day floor) | N: live testnet | planned | Claude | Grok | | | | 10 Dec (3–18 Dec) |
 | R18b | Final wipe of testing leftovers and mainnet release deploy | N: hosts only | planned | Claude | Grok + pins | | | | 18–21 Dec |
 | R19 | Mainnet genesis | N: date fixed by R01 | planned | Claude | Grok + pins | | | | Mon 21 Dec 2026 14:00 UK (fixed) |
-| R10 | Private tokens build (a vort1 vortice): a dedicated vortice session under rule 11 | Y: new tx kind and consensus rules | planned (post-mainnet) | Claude | Grok + all lanes, pins | | | | after R19; no date until Russell sets one |
+| R09 | Token spec (mint.shear.digital), spec only: the first half of the R09–R10 vortice session under rule 11 | N: a spec, no code | planned (post-mainnet) | Claude | Grok + all lanes | | | | after R19; no date until Russell sets one |
+| R10 | Private tokens build (a vort1 vortice): the second half of the R09–R10 vortice session under rule 11, after the R09 spec is signed off | Y: new tx kind and consensus rules | planned (post-mainnet) | Claude | Grok + all lanes, pins | | | | after R19; no date until Russell sets one |
 
 R01a and R14a were added by Russell on 26 Oct. R01a is the coinbase
 spend-key binding found by the PR 130 lanes: its own PR straight after R01,
@@ -117,10 +117,10 @@ design first. R14a is the public supply audit tool with its own review lane
 (Public Supply Audit on the Claude side, Supply Auditor on the Grok side), idle until Thu 29
 Oct after the credit reset; its owner is set at that day's 15:00 alignment.
 
-R03 (CLI reserve lock) stays where it is (Russell, 25 Oct). R10 (private
-tokens build, a vort1 vortice) moved to after mainnet genesis as a dedicated
-vortice session under rule 11, with no date until Russell sets one; the later
-rows did not move (Russell, 26 Oct). This file is the source of truth; the xlsx is not kept in
+R03 (CLI reserve lock) stays where it is (Russell, 25 Oct). R09 (token
+spec) and R10 (private tokens build, a vort1 vortice) moved to after mainnet
+genesis as one dedicated vortice session under rule 11, with no date until
+Russell sets one. The other rows did not move (Russell, 26 Oct). This file is the source of truth; the xlsx is not kept in
 step.
 
 ## R18a and R18b detail: mainnet hosts and OS split
