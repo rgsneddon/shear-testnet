@@ -13,6 +13,7 @@ import {
   containsShe1,
 } from '../../crypto/levy.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
+import { sealCoinbaseNote } from '../../crypto/note.js';
 import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
 import { buildAutoPayoutTx } from '../../pool/src/auto_payout.js';
 import { splitPot } from '../../pool/src/pool.js';
@@ -181,6 +182,15 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     }, { trustedPowHash: TRUSTED_POW, skipSharePow: true });
     assert.equal(got.ok, true, got.reason);
     assert.equal(extraPotFeeNanos([], BLOCK_SUBSIDY_NANOS), 0);
+    // A fee note with no published v is found by the bps search; one with a
+    // v must open to it (COINBASE_V=opens). The no-v branch used to throw
+    // (`claimed` out of scope since 296ce0e2).
+    const fee = Math.floor(BLOCK_SUBSIDY_NANOS * 100 / 10000);
+    const note = sealCoinbaseNote(fee, { kind: 'pool-fee', dest20: Buffer.alloc(20, 8) });
+    const { v: _v, ...bare } = note.valueProof;
+    assert.equal(extraPotFeeNanos([{ ...note, valueProof: bare }], BLOCK_SUBSIDY_NANOS), fee);
+    assert.equal(extraPotFeeNanos([note], BLOCK_SUBSIDY_NANOS), fee);
+    assert.equal(extraPotFeeNanos([{ ...note, valueProof: { ...note.valueProof, v: fee + 1 } }], BLOCK_SUBSIDY_NANOS), null);
   });
 
   it('miner pull HTTP is deprecated; auto-payout still spends the pool wallet while operator Flow is locked', async () => {

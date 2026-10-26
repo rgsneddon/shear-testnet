@@ -906,7 +906,7 @@ export function extraPotFeeNanos(extraVouts = [], wantPot) {
   }
   for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
     const n = Math.floor(pot * bps / 10000);
-    if (n > 0 && n <= maxFee && n !== claimed && verifySealedNote(extra[0], n)) return n;
+    if (n > 0 && n <= maxFee && verifySealedNote(extra[0], n)) return n;
   }
   return null;
 }
