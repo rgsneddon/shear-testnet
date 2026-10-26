@@ -84,12 +84,19 @@ function outs(n, kind, nanos) {
 // any proof parse, so the record body is never read on a capped block.
 const FS1_WIRE_STUB = Buffer.concat([Buffer.from([0xf1]), Buffer.alloc(31)]);
 
+// Every body differs. Since the id left the body-v2 leaf (ruling 5, Russell
+// 26 Oct), two bodies that differ only by id are one leaf, and a block that
+// repeats a leaf is duplicate_tx (ruling 4) before its weight is read. The fee
+// does not move the verify weight.
+let bodySeq = 0;
+
 function bodyTx(nIn, nOut, id) {
   const vin = new Array(nIn);
   const vout = new Array(nOut);
   for (let i = 0; i < nIn; i += 1) vin[i] = {};
   for (let i = 0; i < nOut; i += 1) vout[i] = { kind: 'send' };
-  return { id, kind: 'send', fee: 1, vin, vout, admit_proof: { blob: FS1_WIRE_STUB } };
+  bodySeq += 1;
+  return { id, kind: 'send', fee: bodySeq, vin, vout, admit_proof: { blob: FS1_WIRE_STUB } };
 }
 
 function prooflessBodyTx(nIn, nOut, id) {
@@ -103,7 +110,8 @@ function reserveTx(i, kind, nanos, portal) {
     id: `${kind}-${i}-${nanos}`,
     kind,
     nanos,
-    fee: 1 + (i % 7),
+    // Distinct for every i: a lock's leaf has no id (ruling 5).
+    fee: 1 + i,
     portalId: portal,
     vout: [{ kind, nanos }],
   };
@@ -406,9 +414,11 @@ describe('v12 block budget', { concurrency: 1 }, () => {
       }
       const picks = selectBodyIndexes(store.mempool);
       assert.equal(picks.length, MAX_BLOCK_RESERVE_TXS);
-      const pickedFee = picks.map((i) => store.mempool[i].fee);
-      const topFee = store.mempool.reduce((m, tx) => Math.max(m, tx.fee), 0);
-      assert.ok(pickedFee.every((fee) => fee === topFee), `picked ${pickedFee.join(',')}`);
+      // The template takes the highest fees first: the picks are exactly the
+      // MAX_BLOCK_RESERVE_TXS highest fees in the pool (every body distinct).
+      const pickedFee = picks.map((i) => store.mempool[i].fee).sort((x, y) => y - x);
+      const topFees = store.mempool.map((tx) => tx.fee).sort((x, y) => y - x).slice(0, MAX_BLOCK_RESERVE_TXS);
+      assert.deepEqual(pickedFee, topFees, `picked ${pickedFee.join(',')}`);
       const lateReserve = reserveTx(0, 'lock', AMOUNTS[0], portal);
       lateReserve.fee = 9;
       const lateSend = bodyTx(1, 1, 'send-late', AMOUNTS[0]);
