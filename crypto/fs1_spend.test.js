@@ -8,6 +8,7 @@ import { admitPub, admitScalarFromSeed, attachAdmitPub } from './admit.js';
 import { commit, pointBytes, proveRange, randomScalar, sealCoinbaseNote } from './note.js';
 import { lockQualifies, reserveDigestSuffix } from './reserve_vault.js';
 import { spendPackDigest } from './spend.js';
+import { compactTx } from './chronoflux.js';
 import { proofIsV3Bucket } from './fs1_send_gate.js';
 import { fs1NativeLoaded, fs1Verify } from './native_admit.js';
 import { verifyFlowAdmitFs1 } from './admit_v3.js';
@@ -303,5 +304,39 @@ describe('lock reserve suffix binds H(piProof)', () => {
     assert.equal(withProof.length, bare.length);
     assert.equal(withProof.subarray(0, withProof.length - 32).equals(bare.subarray(0, bare.length - 32)), true);
     assert.equal(withProof.subarray(withProof.length - 32).equals(bare.subarray(bare.length - 32)), false);
+  });
+
+  it('a full lock and its compact copy sign the same reserve digest (Russell 26 Oct)', () => {
+    const portalId = 'aa'.repeat(32);
+    const sealed = sealCoinbaseNote(PI_SHE_NANOS, { dest20: Buffer.alloc(20, 4), kind: 'lock' });
+    const lockRow = { kind: 'lock', commit: sealed.commit, noteCommit: sealed.noteCommit, dest20: Buffer.alloc(20, 4) };
+    const lock = {
+      kind: 'lock',
+      portalId,
+      programId: 'shear-reserve-v1',
+      ownerPub: '11'.repeat(32),
+      vout: [lockRow],
+    };
+    const honest = reserveDigestSuffix(lock);
+    // A plaintext nanos beside the commitment: compaction drops it, and the
+    // digest never read it, so the full row and its compact copy agree.
+    for (const planted of [PI_SHE_NANOS, 1, 0, '7']) {
+      const fat = { ...lock, vout: [{ ...lockRow, nanos: planted }] };
+      assert.ok(reserveDigestSuffix(fat).equals(honest), `planted ${planted}`);
+      assert.ok(reserveDigestSuffix(compactTx(fat)).equals(honest), `compact of planted ${planted}`);
+    }
+    // An empty published v is no amount either.
+    assert.ok(reserveDigestSuffix({ ...lock, vout: [{ ...lockRow, valueProof: { v: '' } }] }).equals(honest));
+    // A public withdraw row's nanos equals its posted opening and is read as that opening.
+    const out = sealCoinbaseNote(5_000, { dest20: Buffer.alloc(20, 6), kind: 'withdraw' });
+    const withdraw = {
+      kind: 'withdraw',
+      id: 'wd-same',
+      portalId,
+      programId: 'shear-reserve-v1',
+      withdrawNonce: Buffer.alloc(32, 9),
+      vout: [{ kind: 'withdraw', commit: out.commit, noteCommit: out.noteCommit, valueProof: out.valueProof, nanos: 5_000 }],
+    };
+    assert.ok(reserveDigestSuffix(withdraw).equals(reserveDigestSuffix(compactTx(withdraw))));
   });
 });

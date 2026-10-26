@@ -4023,11 +4023,12 @@ export function canonicalReserveFields(tx) {
   if (kind !== KIND_LOCK && kind !== KIND_VOTE && kind !== KIND_WITHDRAW) return null;
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   const o = outs.find((row) => String(row?.kind || kind) === kind) || outs[0] || {};
-  // The amount is the reserve output's own opening, as compactTx carries it
-  // (valueProof.v). A top-level tx.nanos is never read: compaction drops it,
-  // so it could make a full row and its compact copy decide differently, and
-  // on a hidden lock it would publish the amount (reserveNanosRejected).
-  const raw = o?.valueProof?.v != null ? o.valueProof.v : o?.nanos;
+  // The amount is the reserve output's own opening, read as consensus reads
+  // it (reserveRowNanos): valueProof.v, or nanos only on a row with no
+  // commitment. A top-level tx.nanos, or a nanos beside a commitment, is
+  // never read: compaction drops both, so a full row and its compact copy
+  // sign one digest (Russell 26 Oct, completing ruling C).
+  const raw = reserveRowNanos(o);
   const n = Math.floor(Number(raw));
   const nanos = Number.isFinite(n) ? n : 0;
   // Same rule as reserveAction. A missing id stays empty on both the fat
