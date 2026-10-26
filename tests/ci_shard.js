@@ -79,7 +79,7 @@ export function checkPending(files = allTestFiles(), rows = readPending()) {
     }
     if (!PENDING_PRS.has(r.pr)) errors.push(`line ${r.line}: ${r.file} needs PR2, PR3, PRHASH or SCOPE, got ${r.pr || 'nothing'}`);
     if (r.pr === 'SCOPE' && r.track) errors.push(`line ${r.line}: ${r.file} SCOPE holds a file out; it cannot be tracked`);
-    if (r.pr === 'SCOPE' && !/Russell \d{1,2} [A-Z][a-z]{2}/.test(r.reason)) errors.push(`line ${r.line}: ${r.file} SCOPE needs the dated ruling (Russell D Mon)`);
+    if (r.pr === 'SCOPE' && !/Russell \d{1,2} [A-Z][a-z]{2}\b/.test(r.reason)) errors.push(`line ${r.line}: ${r.file} SCOPE needs the dated ruling (Russell D Mon)`);
     if (!r.reason) errors.push(`line ${r.line}: ${r.file} needs a reason`);
     if (seen.has(r.file)) errors.push(`line ${r.line}: ${r.file} is listed twice`);
     seen.add(r.file);
