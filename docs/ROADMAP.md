@@ -40,10 +40,18 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
 7. **Review.** The reviewer is the other side (Grok reviews Claude's rows and
    Claude reviews Grok's), plus the review lanes the change touches. The
    reviewer signs off before any merge ask.
-8. **Consensus.** A row marked `Y` moves consensus or pins. Every `Y` row
-   must land before shear-dev starts, or it forces a reset. A `Y` row stops
+8. **Consensus.** A row marked `Y` moves consensus or pins. A `Y` row stops
    for Russell's sign-off on the exact diff and the pins before it is
    committed.
+   - **Before mainnet:** every pre-mainnet `Y` row must land before
+     shear-dev starts, or it forces a reset.
+   - **After mainnet (Russell 2026-10-26):** a post-mainnet `Y` row (R09 and
+     R10, and any later ones) lands as its own mainnet activation. It needs
+     all of these:
+     - a named activation height, set in advance;
+     - the rules both before and after that height tested;
+     - Russell's sign-off on the diff and the pins;
+     - a stressnet or shear-dev run of the activation before it goes live.
 9. **Landing.** Every commit is signed off (`git commit -s`). Everything
    lands through a PR. No direct push to `main`. A merge needs Russell's GO,
    one merge at a time, as a normal merge commit.
@@ -89,6 +97,7 @@ moves the later rows by a day.
 | ID | Item | Consensus? | Status | Owner | Reviewer | Working now | PR | Head SHA | Target |
 |----|------|------------|--------|-------|----------|-------------|----|----------|--------|
 | R01 | PR 130: digestTx and bundled fixes | Y: `TX_DIGEST=body-v2`, `COINBASE_V=opens`, `COINBASE_NC=dest-bound`, the memo binding (`FS1_MEMO=bound`) and the new mainnet genesis move the testnet, mainnet and mainnetFP pins | active | Claude | Grok + Protocol, Vault Security, Pool Share, Codebase, Privacy, pins | Claude, cursor/v12-followups-3daf, since 2026-10-23 | [#130](https://github.com/rgsneddon/shear-testnet/pull/130) | 83ea4352 (pushed; rebuilt chain local, awaiting the fresh consensus sign-off) | 28 Oct (28–29 Oct) |
+| R01b | Vault claim post: pool `queuedRewardClaim` takes the FS-1 claim body the wallet sends (found in the PR 107 coverage report: it still expects the old `to` and `proof` shape, so an in-app Vault claim likely fails with `bad_send`). A reproducing test comes first; if confirmed, the fix, a wallet → pool → mempool test and a `double_mint` refusal. A launch blocker | N: pool policy and wallet only; verifyBlock and apply unchanged | planned | Claude | Grok + Vault Security, Pool Share, Wallet | | | | straight after R01, ahead of R01a and R02 (Russell 26 Oct) |
 | R01a | Coinbase spend-key binding: a coinbase payout's admitPub bound to its payee | Y: a coinbase row's spend key must derive from the payee's admit base; the design says how that base is on chain or derivable after pruning | planned (design to Russell first) | Claude | Grok + Protocol, Privacy, pins | | | | after R01, before R02 (date set on the design GO) |
 | R02 | Vault F1 lock-note binding | Y: binds the owner key point into the signed lock digest; new vectors | planned | Claude | Grok + Vault Security, Protocol, Wallet Hardening, pins | | | | 30 Oct (29–31 Oct) |
 | R03 | CLI reserve lock | N: Dart CLI wiring only | planned | Claude | Grok + Wallet Hardening, pins | | | | 31 Oct (30 Oct–1 Nov) |
@@ -98,7 +107,7 @@ moves the later rows by a day.
 | R07 | Goal 10 F: FCMP++ hardening | Y: spend proof checks | planned | Claude | Grok + Privacy, Protocol, pins | | | | 10 Nov (8–12 Nov) |
 | R08 | PR 3a: real-data fixtures, consensus paths | N: tests only | planned | Claude | Grok + Codebase | | | | 13 Nov (10–15 Nov) |
 | R11 | PR 3b: remaining real-data fixtures and CI guard | N: tests and CI only | planned | Claude | Grok + Codebase | | | | 21 Nov (17–26 Nov) |
-| R12 | Goal 10 A–D: four PR updates (A #117, B #111, C #93, D #107). B stays before mainnet for the Vault claim mint-once test cover. D is trimmed to what PR 116's hidden-claim API does not already cover, and D1 (a matured lock is never Spendable) and D2 (the Withdraw button stays visible) must land. E (#98) is folded into R16 (Russell 26 Oct) | Y: A (epoch-end gas) and C (withdraw policy) change consensus | planned | Claude | Grok + Protocol, Vault Security, pins | | | | 25 Nov (20–30 Nov) |
+| R12 | Goal 10 A–D: four PR updates (A #117, B #111, C #93, D #107). B stays before mainnet for the Vault claim mint-once test cover. D is trimmed (Russell 26 Oct, approved) to what PR 116's hidden-claim API does not already cover: pool fee-quote stubs and a rewritten `claim_fee_quote_test`; D2, a per-row "Principal unlocked" label with a Withdraw button that stays visible, plus a widget test; D5, `shear_wallet_test` and the claim-fee test in CI; SHA-256 pins on `libshear_v3.so`, checked in CI. D1 is already covered on base. 107's reward-set scan and its RPC, `publishedRewardSets`, `portalClaimableNanos`, `reserveWireBody`, the libshearhash builds, the wallet ASERT copy, the epoch-end unlock clock and `releaseTimeLockPrincipal` are dropped; the last would break D1 and the never-painted rule. The claim post fix is R01b. Android stays arm64-only for launch. E (#98) is folded into R16 (Russell 26 Oct) | Y: A (epoch-end gas) and C (withdraw policy) change consensus | planned | Claude | Grok + Protocol, Vault Security, pins | | | | 25 Nov (20–30 Nov) |
 | R13 | Wallet copy | N: wallet text and errors only | planned | Claude | Grok + Wallet Hardening | | | | 27 Nov (22 Nov–2 Dec) |
 | R14 | PR 128 M3: shear-dev pin move | Y: moves the shear-dev pin only; every other pin must equal main | planned | Claude | Grok + Protocol, pins | | | | 27 Nov (22 Nov–3 Dec) |
 | R14a | Public supply audit tool: a CLI that reads one's own node and checks, genesis to tip, that emission plus mints minus burns equals the commitment sum with every range proof valid; prints the public supply figure and pass, or fail at the exact height. No phone-home, no pool reliance | N, unless the design needs a consensus change (then Y, with the reason) | planned (lane idle until Thu 29 Oct; spec first, no code before Russell approves it) | TBD (Thu 29 Oct 15:00 alignment) | Public Supply Audit lane (Claude side) and Supply Auditor (Grok side) | | | | before R15, so it runs on shear-dev and stressnet before genesis |
@@ -110,6 +119,7 @@ moves the later rows by a day.
 | R19 | Mainnet genesis | N: date fixed by R01 | planned | Claude | Grok + pins | | | | Mon 21 Dec 2026 14:00 UK (fixed) |
 | R09 | Token spec (mint.shear.digital), spec only: the first half of the R09–R10 vortice session under rule 11 | N: a spec, no code | planned (post-mainnet) | Claude | Grok + all lanes | | | | after R19; no date until Russell sets one |
 | R10 | Private tokens build (a vort1 vortice): the second half of the R09–R10 vortice session under rule 11, after the R09 spec is signed off | Y: new tx kind and consensus rules | planned (post-mainnet) | Claude | Grok + all lanes, pins | | | | after R19; no date until Russell sets one |
+| R20 | Android ABIs beyond arm64-v8a | N: wallet packaging only | planned (post-mainnet) | Claude | Grok + Wallet | | | | after R19; no date until Russell sets one (Russell 26 Oct: arm64-only for launch) |
 
 **Float (26 Oct).** With R09 and R10 after mainnet, the rows from R11 on can run about 6 days (5 to 8) sooner than their targets above. That puts the mainnet release ready around 8–9 Dec on target and 14–18 Dec if every row runs to the late end of its window, against the fixed genesis of 21 Dec 14:00 UK. Without the move it was 14–15 Dec on target, and a late run missed 21 Dec by 1–2 days. The target dates above are unchanged, and the float is not a new date. Plan against it, report any slip that uses it, and an earlier genesis needs Russell's consensus sign-off (rule 8).
 
