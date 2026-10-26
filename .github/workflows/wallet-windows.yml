@@ -13,10 +13,10 @@ on:
   workflow_dispatch:
     inputs:
       pin:
-        # Empty: the pin is the wallet's release pin, the PKGBUILD's pkgver,
-        # so a stale default can never name another release. A pin given here
-        # must equal it.
-        description: Public two-part wallet pin (release tag); empty reads wallet/pack/archlinux/PKGBUILD
+        # Empty: the pin is the wallet's release pin, wallet/pubspec.yaml's
+        # x.y, so a stale default can never name another release. A pin given
+        # here, and the PKGBUILD's pkgver, must equal it.
+        description: Public two-part wallet pin (release tag); empty reads wallet/pubspec.yaml
         required: false
         default: ''
       build_number:
@@ -43,9 +43,15 @@ jobs:
           ASKED: ${{ inputs.pin }}
         run: |
           set -euo pipefail
-          have="$(sed -n 's/^pkgver=//p' wallet/pack/archlinux/PKGBUILD | head -1)"
-          pin="${ASKED:-$have}"
-          if [ "$pin" != "$have" ]; then echo "::error::pin $pin is not the PKGBUILD's pkgver $have"; exit 1; fi
+          # wallet/pubspec.yaml is the one source of the release pin (x.y of
+          # x.y.0+N): the app's own version strings and test_wallet_version_pins
+          # follow it, and the PKGBUILD must say the same.
+          want="$(tr -d '\r' < wallet/pubspec.yaml | sed -n 's/^version: \([0-9]*\.[0-9]*\)\.0+[0-9]*$/\1/p' | head -1)"
+          [ -n "$want" ] || { echo "::error::wallet/pubspec.yaml has no x.y.0+N version"; exit 1; }
+          have="$(tr -d '\r' < wallet/pack/archlinux/PKGBUILD | sed -n 's/^pkgver=//p' | head -1)"
+          if [ "$have" != "$want" ]; then echo "::error::PKGBUILD pkgver $have is not pubspec's $want"; exit 1; fi
+          pin="${ASKED:-$want}"
+          if [ "$pin" != "$want" ]; then echo "::error::pin $pin is not pubspec's $want"; exit 1; fi
           echo "WALLET_PIN=$pin" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:

@@ -19,16 +19,20 @@ function inputBlock(yml, name) {
 }
 
 describe('wallet pack dispatch inputs', () => {
-  const pkgver = /^pkgver=(.+)$/m.exec(read('wallet/pack/archlinux/PKGBUILD'))?.[1];
+  const pkgver = /^pkgver=(.+)$/m.exec(read('wallet/pack/archlinux/PKGBUILD').replace(/\r/g, ''))?.[1];
 
   for (const wf of ['wallet-linux', 'wallet-windows']) {
-    it(`${wf}: an empty pin reads the PKGBUILD, and a pin that differs is refused`, () => {
+    it(`${wf}: an empty pin reads pubspec, and a PKGBUILD or pin that differs is refused`, () => {
       const yml = read(`.github/workflows/${wf}.yml`);
       const pin = inputBlock(yml, 'pin');
       assert.match(pin, /required: false/);
       assert.match(pin, /default: ''/);
-      assert.match(yml, /have="\$\(sed -n 's\/\^pkgver=\/\/p' wallet\/pack\/archlinux\/PKGBUILD \| head -1\)"/);
-      assert.match(yml, /if \[ "\$pin" != "\$have" \]; then .*exit 1; fi/);
+      // The pin is pubspec's x.y; the PKGBUILD and a given pin must equal it.
+      assert.match(yml, /want="\$\(tr -d '\\r' < wallet\/pubspec\.yaml \| sed -n /);
+      assert.match(yml, /have="\$\(tr -d '\\r' < wallet\/pack\/archlinux\/PKGBUILD \| sed -n 's\/\^pkgver=\/\/p' \| head -1\)"/);
+      assert.match(yml, /if \[ "\$have" != "\$want" \]; then .*exit 1; fi/);
+      assert.match(yml, /pin="\$\{ASKED:-\$want\}"/);
+      assert.match(yml, /if \[ "\$pin" != "\$want" \]; then .*exit 1; fi/);
       assert.match(yml, /echo "WALLET_PIN=\$pin" >> "\$GITHUB_ENV"/);
       // Every later use is the resolved pin, never the raw input.
       assert.equal((yml.match(/\$\{\{ inputs\.pin \}\}/g) || []).length, 1, 'inputs.pin only feeds the resolver');
