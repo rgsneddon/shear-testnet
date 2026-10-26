@@ -6,13 +6,17 @@ on:
   workflow_dispatch:
     inputs:
       pin:
-        description: Public two-part wallet pin (release tag)
-        required: true
-        default: '0.70'
+        # Empty: wallet/pubspec.yaml's x.y (scripts/wallet_pin.sh), so a stale
+        # default can never name another release. A pin given here, and the
+        # PKGBUILD's pkgver, must equal it.
+        description: Public two-part wallet pin (release tag); empty reads wallet/pubspec.yaml
+        required: false
+        default: ''
       build_number:
-        description: Flutter build-number
-        required: true
-        default: '95'
+        # Empty: pubspec's +N. A number given here must equal it.
+        description: Flutter build-number; empty reads wallet/pubspec.yaml
+        required: false
+        default: ''
       repo:
         description: GitHub repo that owns the release
         required: true
@@ -25,6 +29,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Wallet pin
+        shell: bash
+        env:
+          ASKED: ${{ inputs.pin }}
+          ASKED_BUILD: ${{ inputs.build_number }}
+        run: bash scripts/wallet_pin.sh "$ASKED" "$ASKED_BUILD"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -107,7 +117,7 @@ jobs:
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/x86_64-pc-windows-gnu/release/shear_admit.dll).Trim()
-          flutter build windows --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $define
+          flutter build windows --release --build-name=${{ env.WALLET_NAME }} --build-number=${{ env.WALLET_BUILD }} $define
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force -Path dist-cli | Out-Null
           cmd /c "dart compile exe bin/shear.dart -o dist-cli/shear.exe & exit /b 0"
@@ -119,14 +129,14 @@ jobs:
       - name: Zip GUI
         run: python wallet/pack/zip_windows.py
       - name: Refuse a Windows zip without shear_v3.dll
-        run: python wallet/pack/check_shear_v3_bundled.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip
+        run: python wallet/pack/check_shear_v3_bundled.py wallet/dist/shear-wallet-${{ env.WALLET_PIN }}-windows.zip
       - name: The shipped zip's own native files, at the x86-64 baseline, give the pinned vectors
         # The zip's members, not the build tree: shear_admit.dll, shear_v3.dll
         # and the sidecar addons, every native file this repo builds into it.
         # The addons tested below are proven byte-identical to the shipped ones.
         run: |
           $env:OBJDUMP = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\objdump.exe"
-          python scripts/scan_shipped_zip.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --built crypto/native/shearadmit.node=crypto/native/shearadmit.node --built crypto/native/shearhash.node=crypto/native/shearhash.node shear_admit.dll shear_v3.dll crypto/native/shearhash.node crypto/native/shearadmit.node
+          python scripts/scan_shipped_zip.py wallet/dist/shear-wallet-${{ env.WALLET_PIN }}-windows.zip --built crypto/native/shearadmit.node=crypto/native/shearadmit.node --built crypto/native/shearhash.node=crypto/native/shearhash.node shear_admit.dll shear_v3.dll crypto/native/shearhash.node crypto/native/shearadmit.node
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/shipped_hash_vector.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -136,8 +146,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --repo ${{ inputs.repo }}
-          if (Test-Path wallet/dist-cli/shear.exe) { gh release upload ${{ inputs.pin }} wallet/dist-cli/shear.exe --repo ${{ inputs.repo }} }
+          gh release upload ${{ env.WALLET_PIN }} wallet/dist/shear-wallet-${{ env.WALLET_PIN }}-windows.zip --repo ${{ inputs.repo }}
+          if (Test-Path wallet/dist-cli/shear.exe) { gh release upload ${{ env.WALLET_PIN }} wallet/dist-cli/shear.exe --repo ${{ inputs.repo }} }
 
   linux:
     # ubuntu-latest (the ubuntu-26.04 image) sets APT::Architecture-Variants
@@ -150,6 +160,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Wallet pin
+        shell: bash
+        env:
+          ASKED: ${{ inputs.pin }}
+          ASKED_BUILD: ${{ inputs.build_number }}
+        run: bash scripts/wallet_pin.sh "$ASKED" "$ASKED_BUILD"
       - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
@@ -167,7 +183,7 @@ jobs:
           dart run tool/checkpoint_guard.dart --release
           bash ../crypto/native/build-linux-admit-so.sh
           DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
-          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
+          flutter build linux --release --build-name=${{ env.WALLET_NAME }} --build-number=${{ env.WALLET_BUILD }} $DEFINE
           mkdir -p dist-cli
           dart compile exe bin/shear.dart -o dist-cli/shear || true
           python3 ../scripts/isa_scan.py ../wallet/native/libshear_v3.so ../crypto/randomx/build/librandomx.a ../crypto/native/admit/target/release/libshear_admit.so
@@ -206,7 +222,7 @@ jobs:
           echo "SHEAR_REQUIRE_MINISIGN=1" >> "$GITHUB_ENV"
       - name: Build release APK
         working-directory: wallet
-        run: flutter build apk --release --target-platform android-arm64 --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }}
+        run: flutter build apk --release --target-platform android-arm64 --build-name=${{ env.WALLET_NAME }} --build-number=${{ env.WALLET_BUILD }}
       - name: Zip
         run: |
           python3 - <<'PY'
@@ -238,19 +254,19 @@ jobs:
           shutil.copy(apk, os.path.join(dist, f"shear-wallet-{pin}-android.apk"))
           PY
         env:
-          PIN: ${{ inputs.pin }}
+          PIN: ${{ env.WALLET_PIN }}
       - name: Refuse a release APK that is not the pinned Continuum cert
-        run: python3 wallet/pack/check_android_release.py dist/shear-wallet-${{ inputs.pin }}-android.apk
+        run: python3 wallet/pack/check_android_release.py dist/shear-wallet-${{ env.WALLET_PIN }}-android.apk
       - name: Refuse a release artifact without libshear_v3
         run: |
-          python3 wallet/pack/check_shear_v3_bundled.py dist/shear-wallet-${{ inputs.pin }}-linux.zip
-          python3 wallet/pack/check_shear_v3_bundled.py dist/shear-wallet-${{ inputs.pin }}-android.apk
+          python3 wallet/pack/check_shear_v3_bundled.py dist/shear-wallet-${{ env.WALLET_PIN }}-linux.zip
+          python3 wallet/pack/check_shear_v3_bundled.py dist/shear-wallet-${{ env.WALLET_PIN }}-android.apk
       - name: Attach
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-linux.zip dist/shear-wallet-${{ inputs.pin }}-archlinux.zip dist/shear-wallet-${{ inputs.pin }}-android.apk --repo ${{ inputs.repo }}
-          if [ -f wallet/dist-cli/shear ]; then gh release upload ${{ inputs.pin }} wallet/dist-cli/shear --repo ${{ inputs.repo }}; fi
+          gh release upload ${{ env.WALLET_PIN }} dist/shear-wallet-${{ env.WALLET_PIN }}-linux.zip dist/shear-wallet-${{ env.WALLET_PIN }}-archlinux.zip dist/shear-wallet-${{ env.WALLET_PIN }}-android.apk --repo ${{ inputs.repo }}
+          if [ -f wallet/dist-cli/shear ]; then gh release upload ${{ env.WALLET_PIN }} wallet/dist-cli/shear --repo ${{ inputs.repo }}; fi
 
   release-notes:
     needs: [windows, linux]
@@ -259,19 +275,25 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Wallet pin
+        shell: bash
+        env:
+          ASKED: ${{ inputs.pin }}
+          ASKED_BUILD: ${{ inputs.build_number }}
+        run: bash scripts/wallet_pin.sh "$ASKED" "$ASKED_BUILD"
       - name: Record the bundled runtime versions in the release notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/assets
-          gh release download ${{ inputs.pin }} --repo ${{ inputs.repo }} --dir /tmp/assets \
-            --pattern 'shear-wallet-${{ inputs.pin }}-*.zip' --pattern 'shear-wallet-${{ inputs.pin }}-*.apk'
+          gh release download ${{ env.WALLET_PIN }} --repo ${{ inputs.repo }} --dir /tmp/assets \
+            --pattern 'shear-wallet-${{ env.WALLET_PIN }}-*.zip' --pattern 'shear-wallet-${{ env.WALLET_PIN }}-*.apk'
           python3 scripts/licenses/release_notes_versions.py /tmp/assets/* > /tmp/versions.md
           cat /tmp/versions.md
-          gh release view ${{ inputs.pin }} --repo ${{ inputs.repo }} --json body -q .body > /tmp/notes.md
+          gh release view ${{ env.WALLET_PIN }} --repo ${{ inputs.repo }} --json body -q .body > /tmp/notes.md
           { echo; cat /tmp/versions.md; } >> /tmp/notes.md
-          gh release edit ${{ inputs.pin }} --repo ${{ inputs.repo }} --notes-file /tmp/notes.md
+          gh release edit ${{ env.WALLET_PIN }} --repo ${{ inputs.repo }} --notes-file /tmp/notes.md
 
   macos:
     if: false
@@ -280,6 +302,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Wallet pin
+        shell: bash
+        env:
+          ASKED: ${{ inputs.pin }}
+          ASKED_BUILD: ${{ inputs.build_number }}
+        run: bash scripts/wallet_pin.sh "$ASKED" "$ASKED_BUILD"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.6'
@@ -291,16 +319,16 @@ jobs:
           flutter pub get
           dart run tool/checkpoint_guard.dart --release
           bash ../native/build-shear-v3.sh
-          flutter build macos --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }} --dart-define=SHEAR_ADMIT_SIGN_ID="Developer ID Application: Russell Sneddon (SFCBP95595)"
+          flutter build macos --release --build-name=${{ env.WALLET_NAME }} --build-number=${{ env.WALLET_BUILD }} --dart-define=SHEAR_ADMIT_SIGN_ID="Developer ID Application: Russell Sneddon (SFCBP95595)"
           mkdir -p build/macos/Build/Products/Release/Shear.app/Contents/Frameworks
           cp ../native/libshear_v3.dylib build/macos/Build/Products/Release/Shear.app/Contents/Frameworks/libshear_v3.dylib
           dart compile exe bin/shear.dart -o dist-cli/shear
           mkdir -p ../dist
-          ditto -c -k --keepParent build/macos/Build/Products/Release/Shear.app ../dist/shear-wallet-${{ inputs.pin }}-macos.zip
-          python3 pack/check_shear_v3_bundled.py ../dist/shear-wallet-${{ inputs.pin }}-macos.zip
+          ditto -c -k --keepParent build/macos/Build/Products/Release/Shear.app ../dist/shear-wallet-${{ env.WALLET_PIN }}-macos.zip
+          python3 pack/check_shear_v3_bundled.py ../dist/shear-wallet-${{ env.WALLET_PIN }}-macos.zip
       - name: Attach
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} dist/shear-wallet-${{ inputs.pin }}-macos.zip wallet/dist-cli/shear --repo ${{ inputs.repo }}
+          gh release upload ${{ env.WALLET_PIN }} dist/shear-wallet-${{ env.WALLET_PIN }}-macos.zip wallet/dist-cli/shear --repo ${{ inputs.repo }}
           echo "Notarized DMG is still a Mac-cut (Developer ID). This job attaches the unsigned-to-GHA .app zip + CLI."

@@ -20,9 +20,11 @@ on:
         required: false
         default: ''
       build_number:
-        description: Flutter build-number
-        required: true
-        default: '48'
+        # Empty: pubspec's +N (Android's versionCode, and the build Windows'
+        # version.json must carry). A number given here must equal it.
+        description: Flutter build-number; empty reads wallet/pubspec.yaml
+        required: false
+        default: ''
       attach:
         # Off unless asked: a dispatch that checks a build never uploads
         # (--clobber) over a published release asset.
@@ -41,18 +43,9 @@ jobs:
         shell: bash
         env:
           ASKED: ${{ inputs.pin }}
+          ASKED_BUILD: ${{ inputs.build_number }}
         run: |
-          set -euo pipefail
-          # wallet/pubspec.yaml is the one source of the release pin (x.y of
-          # x.y.0+N): the app's own version strings and test_wallet_version_pins
-          # follow it, and the PKGBUILD must say the same.
-          want="$(tr -d '\r' < wallet/pubspec.yaml | sed -n 's/^version: \([0-9]*\.[0-9]*\)\.0+[0-9]*$/\1/p' | head -1)"
-          [ -n "$want" ] || { echo "::error::wallet/pubspec.yaml has no x.y.0+N version"; exit 1; }
-          have="$(tr -d '\r' < wallet/pack/archlinux/PKGBUILD | sed -n 's/^pkgver=//p' | head -1)"
-          if [ "$have" != "$want" ]; then echo "::error::PKGBUILD pkgver $have is not pubspec's $want"; exit 1; fi
-          pin="${ASKED:-$want}"
-          if [ "$pin" != "$want" ]; then echo "::error::pin $pin is not pubspec's $want"; exit 1; fi
-          echo "WALLET_PIN=$pin" >> "$GITHUB_ENV"
+          bash scripts/wallet_pin.sh "$ASKED" "$ASKED_BUILD"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -131,7 +124,7 @@ jobs:
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/x86_64-pc-windows-gnu/release/shear_admit.dll).Trim()
-          flutter build windows --release --build-name=${{ env.WALLET_PIN }} --build-number=${{ inputs.build_number }} $define
+          flutter build windows --release --build-name=${{ env.WALLET_NAME }} --build-number=${{ env.WALLET_BUILD }} $define
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: No code above the x86-64 baseline in the native libraries
         run: |
