@@ -34,12 +34,14 @@ import {
 // Header nonces are ShearHash-v3 hits at that target. Share nonces are
 // floor-width hits on the parent, with the credit byte in the high 8 bits.
 // The retired single-gap step does not move an on-time child. chain.js is unchanged.
-const WEDGE_HEADER_NONCE = [59614n, 518050n, 7158n];
-const WEDGE_SHARE_NONCE = [null, ['576460752303423511'], ['576460752303424244']];
+// The nonces are the fixture's own (fixtures/seal_wedge_v12.mjs seals them).
+const WEDGE_FIXTURE = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-v12.json', import.meta.url), 'utf8'));
+const WEDGE_HEADER_NONCE = WEDGE_FIXTURE.headerNonces.map(BigInt);
+const WEDGE_SHARE_NONCE = WEDGE_FIXTURE.shareNonces;
 // ShearHash-v3 hits at GENESIS_BITS_PACKED for the three bodiless headers in
 // the verify-cap test. Each meets its own target, so the p2p claim check
 // passes and verify runs, then refuses the empty body as coinbase.
-const CAP_HEADER_NONCE = [135922n, 89989n, 97429n];
+const CAP_HEADER_NONCE = WEDGE_FIXTURE.capNonces.map(BigInt);
 
 function legalizeBlocks(blocks) {
   const childBits = nextBits(GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS);

@@ -20,7 +20,9 @@ import { createStore } from '../src/store.js';
 import { decodeWireBlock, encodeWireBlock } from '../src/p2p.js';
 import { IPC_BACKFILL_MAX, ancestorWindow, attachPoolIpc } from '../src/p2p_ipc.js';
 
-const WEDGE_HEADER_NONCE = [59614n, 518050n, 7158n];
+// The fixture's own nonces (fixtures/seal_wedge_v12.mjs seals them).
+const WEDGE_FIXTURE = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-v12.json', import.meta.url), 'utf8'));
+const WEDGE_HEADER_NONCE = WEDGE_FIXTURE.headerNonces.map(BigInt);
 
 function cloneBlock(block) {
   return {
