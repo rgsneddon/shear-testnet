@@ -3878,6 +3878,9 @@ export function createStore(dir, {
   }
 
   function appendVerifiedNow(block, verifyOpts, burial) {
+    // The tip this block was verified against. An off-loop or EVM verify
+    // settles later, and an ingest or adopt may move the tip meanwhile.
+    const parentAtStart = tip();
     const { check, spentBefore } = verifyAgainstTip(block, {
       trustedPowHash: trustedHashFor(block, verifyOpts),
       skipSharePow: !!verifyOpts.skipSharePow,
@@ -3886,7 +3889,14 @@ export function createStore(dir, {
       arrivedRows: verifyOpts.arrivedRows,
       ...(burial ? { burialTip: burial.top } : {}),
     });
-    const after = (c) => {
+    // Test hook (node:test or the regtest book only, as the other fault
+    // hooks): an awaited step between verify and store, where a test moves
+    // the tip, so the tip re-check below is reached on demand.
+    const beforeStore = faultHooks && typeof verifyOpts.beforeStore === 'function' ? verifyOpts.beforeStore : null;
+    const after = (c) => (beforeStore && c?.ok
+      ? Promise.resolve(beforeStore()).then(() => storeChecked(c))
+      : storeChecked(c));
+    const storeChecked = (c) => {
       let claimedNow = null;
       try {
         if (block?.hash != null) {
@@ -3911,6 +3921,12 @@ export function createStore(dir, {
       if (!c?.ok) {
         rollbackSpent(spentB, spentBefore);
         return c;
+      }
+      // The tip moved while this block verified: it no longer extends the
+      // tip, so it is not stored on top of another chain. prev is retryable.
+      if (tip() !== parentAtStart) {
+        rollbackSpent(spentB, spentBefore);
+        return { ok: false, reason: 'prev', tip: tip() };
       }
       // The proven header run hangs off the claimed hash. Verify hashed the header.
       if (burial && !(c.hash && Buffer.from(c.hash).equals(burial.claimed))) {
