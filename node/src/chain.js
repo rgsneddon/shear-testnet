@@ -3325,16 +3325,34 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   const owedRoot = opts.reserveState ? coinbaseRewardRoot(opts.reserveState, headerMs) : undefined;
   const vaultBind = vaultCoinbaseBind(opts.reserveState, block.txs || []);
   const structural = Math.floor(Number(consensus?.height) || 0);
-  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot, vaultBind, {
-    height: structural > 0 ? structural : Math.floor(Number(block?.height) || 0),
-    magic: opts.magic || MAGIC_TESTNET,
-  });
-  if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
+  // The store's session is the node's EVM state. Its calls for this block run
+  // inside a checkpoint: a failed block, or a probe, leaves no call applied,
+  // and an append commits only once the block is stored (store.js).
+  const probe = opts.probeBody === true;
+  const sm = (opts.evmCheckpoint === true || probe) ? session?.evm?.stateManager : null;
+  if (sm) await sm.checkpoint();
+  let ran;
+  try {
+    ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot, vaultBind, {
+      height: structural > 0 ? structural : Math.floor(Number(block?.height) || 0),
+      magic: opts.magic || MAGIC_TESTNET,
+    });
+  } catch (err) {
+    // A throw is a refused block too: its partial calls never stay applied.
+    if (sm) await sm.revert();
+    throw err;
+  }
+  if (!ran.ok) {
+    if (sm) await sm.revert();
+    return { ok: false, reason: 'evm', error: ran.reason };
+  }
+  if (sm && probe) await sm.revert();
   return {
     ...consensus,
     evmRan: ran.calls > 0,
     evm: ran,
     evmSession: session,
+    evmOpen: !!sm && !probe,
   };
 }
 

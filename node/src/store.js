@@ -2930,6 +2930,9 @@ export function createStore(dir, {
       skipSharePow: probe ? true : !!extra.skipSharePow,
       offLoopPow: probe ? false : !!extra.offLoopPow,
       probeBody: probe,
+      // This block's EVM calls run in a checkpoint on the live session:
+      // reverted for a probe or a failure, committed once it is stored.
+      evmCheckpoint: true,
       grandparentHeader: grandparentHeader(blocks),
       sealedIntervalsMs: headerGapsMs(blocks),
       parentFluxset: liveFlux,
@@ -2948,11 +2951,30 @@ export function createStore(dir, {
   }
 
   /**
+   * The node has one live EVM session, and a block whose calls run on it
+   * (blockNeedsEvm) holds it from its checkpoint to its commit or revert.
+   * SimpleStateManager commit and revert act on the top layer, so an append
+   * and a probe that overlapped would merge or drop each other's calls. A
+   * block with no EVM calls never touches the session and runs as before.
+   */
+  let evmTail = Promise.resolve();
+  function evmExclusive(block, run) {
+    if (!blockNeedsEvm(block?.txs || [])) return run();
+    const go = evmTail.then(run, run);
+    evmTail = go.then(() => {}, () => {});
+    return go;
+  }
+
+  /**
    * append's verdict on `block`, with nothing kept. The body is compacted
    * first, as append does (arrivedBody), so a template probe and the real
    * append judge the same bytes.
    */
   function probeBlock(block) {
+    return evmExclusive(block, () => probeBlockNow(block));
+  }
+
+  function probeBlockNow(block) {
     const refused = arrivalReason(block);
     const { check, spentBefore } = verifyAgainstTip(arrivedBody(block), { probeBody: true, arrivedRows: arrivedRows(block) });
     const finish = (c) => {
@@ -3808,6 +3830,10 @@ export function createStore(dir, {
   }
 
   function appendVerified(block, verifyOpts, burial) {
+    return evmExclusive(block, () => appendVerifiedNow(block, verifyOpts, burial));
+  }
+
+  function appendVerifiedNow(block, verifyOpts, burial) {
     const { check, spentBefore } = verifyAgainstTip(block, {
       trustedPowHash: trustedHashFor(block, verifyOpts),
       skipSharePow: !!verifyOpts.skipSharePow,
@@ -3864,8 +3890,26 @@ export function createStore(dir, {
       block.bSpendIds = spentDelta(spentBefore, spentB);
       return settleCheck(c, (okCheck) => completeAppend(okCheck, block, burial));
     };
-    if (check && typeof check.then === 'function') return check.then(after);
-    return after(check);
+    // The block's EVM checkpoint (chain.js verifyBlockEvm) is committed only
+    // when the block is stored; any later refusal reverts it, so the node's
+    // EVM state never holds the calls of a block it did not append.
+    const settled = (c) => {
+      if (!c?.evmOpen) return after(c);
+      const sm = c.evmSession?.evm?.stateManager;
+      let out;
+      try {
+        out = after(c);
+      } catch (err) {
+        return Promise.resolve(sm.revert()).then(() => { throw err; });
+      }
+      const close = (o) => Promise.resolve(o?.ok ? sm.commit() : sm.revert()).then(() => o);
+      if (out && typeof out.then === 'function') {
+        return out.then(close, (err) => Promise.resolve(sm.revert()).then(() => { throw err; }));
+      }
+      return close(out);
+    };
+    if (check && typeof check.then === 'function') return check.then(settled);
+    return settled(check);
   }
 
   function stageFaultRow(i, block, verifyOpts) {
@@ -6641,6 +6685,28 @@ export function createStore(dir, {
     template,
     submitHeader,
     probeBlock,
+    /**
+     * A digest (hex) of the live Reserve EVM state: every account, code and
+     * storage slot the session holds, in key order. Null before the first EVM
+     * block. Read-only. The session's SimpleStateManager keeps no trie, so
+     * this hashes its live maps instead of asking for a state root.
+     */
+    evmStateDigest() {
+      const sm = evmSession?.evm?.stateManager;
+      if (!sm || typeof sm.topAccountStack !== 'function') return null;
+      const h = createHash('sha256').update('shear-evm-state-digest-v1');
+      const part = (tag, map, enc) => {
+        for (const key of [...map.keys()].sort()) {
+          const v = enc(map.get(key));
+          h.update(`${tag}:${key}:${v.length}:`).update(v);
+        }
+      };
+      const bytes = (v) => (v == null ? Buffer.alloc(0) : Buffer.from(v));
+      part('a', sm.topAccountStack(), (a) => (a == null ? Buffer.from('-') : Buffer.from(a.serialize())));
+      part('c', sm.topCodeStack(), bytes);
+      part('s', sm.topStorageStack(), bytes);
+      return h.digest('hex');
+    },
     jobs,
     mempool,
     spentB,

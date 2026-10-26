@@ -508,8 +508,62 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     resetFs1Tree();
     const claimQueued = store.queueTx(claim, { nowMs: lastStamp(store) });
     assert.equal(claimQueued.ok, true, `claim queue ${claimQueued.reason}`);
-    const claimBlock = await mine(store, who.dest);
+    // The node's EVM state is written only by a block it stores
+    // (chain.js verifyBlockEvm checkpoint; store.js appendVerified).
+    const claimAt = Math.max(T0, lastStamp(store) + 90_000);
+    const { tpl: claimTpl } = store.template({ miner: who.dest, shareBits: 4, now: claimAt });
+    assert.ok(claimTpl.txs.some((row) => row.id === 'sync-claim'), 'claim in the next block');
+    const claimBody = {
+      header: claimTpl.header,
+      height: claimTpl.height,
+      txs: claimTpl.txs,
+      samples: claimTpl.samples,
+      shareBatch: claimTpl.shareBatch || [],
+      miner: who.dest,
+      aLeaves: claimTpl.aLeaves,
+      bLeaves: claimTpl.bLeaves,
+      rootA: claimTpl.rootA,
+      rootB: claimTpl.rootB,
+      weight: claimTpl.weight,
+    };
+    const rootBefore = store.evmStateDigest();
+    assert.ok(rootBefore, 'the EVM session is live (the lock ran)');
+    // 1. A probe of the claim block passes and leaves the EVM state.
+    resetFs1Tree();
+    const probed = await Promise.resolve(store.probeBlock(claimBody));
+    assert.equal(probed.ok, true, `probe ${probed.reason || ''}`);
+    assert.equal(store.evmStateDigest(), rootBefore, 'a probe leaves the EVM state');
+    // 2. A block whose EVM run fails partway (the claim's nullifier twice:
+    // the second mint call fails after the block's earlier calls ran).
+    resetFs1Tree();
+    const twiceTxs = [...claimTpl.txs, { ...claim, id: 'sync-claim-again' }];
+    const twice = await Promise.resolve(store.append({ ...claimBody, txs: twiceTxs }, { trustedPowHash: nextPow(), skipSharePow: true }));
+    assert.equal(twice.ok, false, 'a block claiming one nullifier twice');
+    console.log(`evm partial-failure probe: reason=${twice.reason} error=${String(twice.error || '').slice(0, 80)}`);
+    assert.equal(store.evmStateDigest(), rootBefore, 'a refused block leaves the EVM state');
+    // 3. A block refused after its EVM calls ran (hash_claim is checked after
+    // verify, as supply_state and hash_owed are) leaves the root.
+    resetFs1Tree();
+    const misclaimed = await Promise.resolve(store.append({ ...claimBody, hash: Buffer.alloc(32, 0x77) }, { trustedPowHash: nextPow(), skipSharePow: true }));
+    assert.equal(misclaimed.ok, false, 'a wrong claimed hash');
+    assert.equal(misclaimed.reason, 'hash_claim');
+    assert.equal(store.evmStateDigest(), rootBefore, 'a block refused after its EVM calls leaves the EVM state');
+    // 4. The real append commits once the block is stored: no already_minted,
+    // and only now does the EVM state move.
+    resetFs1Tree();
+    // 5. A probe that overlaps the real append (the pool probes templates
+    // while blocks arrive) waits for the session: it neither commits its own
+    // calls nor drops the append's (store.js evmExclusive).
+    const overlap = Promise.resolve(store.probeBlock(claimBody));
+    const claimBlock = await mine(store, who.dest, claimAt);
+    const overlapped = await overlap;
+    assert.equal(overlapped.ok, true, `overlapping probe ${overlapped.reason || ''}`);
+    const claimed = store.evmStateDigest();
+    assert.notEqual(claimed, rootBefore, 'the stored claim block wrote the EVM state');
     assert.ok(claimBlock.tpl.txs.some((row) => row.id === 'sync-claim'), 'claim template');
+    const late = await Promise.resolve(store.probeBlock(claimBody));
+    assert.equal(late.ok, false, 'the claim block is no longer next');
+    assert.equal(store.evmStateDigest(), claimed, 'a probe after the append leaves the EVM state');
 
     const genesis = Number(store.reserveVault.genesisMs);
     await advanceClock(store, who.dest, genesis + RESERVE_EPOCH_MS);
@@ -586,9 +640,12 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     resetFs1Tree();
     const voteQueued = store.queueTx(vote, { nowMs: lastStamp(store) });
     assert.equal(voteQueued.ok, true, `vote queue ${voteQueued.reason}`);
+    // The same body under another label is the same tx (the mempool knows a
+    // body by its bytes, not the id its sender picks): a duplicate, held once.
     const again = store.queueTx({ ...vote, id: 'sync-vote-again' }, { nowMs: lastStamp(store) });
-    assert.equal(again.ok, false, 'double spend');
-    assert.equal(again.reason, 'admit_link_tag');
+    assert.equal(again.ok, true, `relabelled vote ${again.reason || ''}`);
+    assert.equal(again.duplicate, true, 'a relabelled vote is the held vote');
+    assert.equal(store.mempool.some((row) => String(row.id) === 'sync-vote-again'), false, 'held once');
     const voteBlock = await mine(store, who.dest);
     assert.ok(voteBlock.tpl.txs.some((row) => row.id === 'sync-vote'), 'vote template');
     for (const c of use) spent.add(c.commit.toString('hex'));
