@@ -48,6 +48,12 @@ jobs:
         working-directory: wallet
         # COINBASE_NC=dest-bound, the wallet's own guard under it.
         run: flutter test test/coinbase_label_paint_test.dart
+      - name: The FS-1 digest the wallet signs is the one the node checks
+        working-directory: wallet
+        # The Dart side of crypto/vectors/fs1_digest_v1.json (memo bound,
+        # FS1_MEMO=bound) and of the Reserve suffix; fs1_spend.test.js runs
+        # the JS side of the same vectors.
+        run: flutter test test/fs1_digest_v1_test.dart test/reserve_suffix_parity_test.dart
       - name: Install node deps
         run: npm ci --ignore-scripts
       - name: Build shearadmit.node
