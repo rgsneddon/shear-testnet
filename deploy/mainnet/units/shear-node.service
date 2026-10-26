@@ -1,0 +1,42 @@
+# Shear mainnet node: p2p-a (Debian) and p2p-b (Fedora). Owns :30303.
+# R18a, deploy/mainnet/RUNBOOK.md. Installed only on Russell's GO.
+#
+# No silent recovery: Restart=no. A node that stops stays stopped, and the
+# operator sees it in `systemctl status` and in check_host.sh, never a quiet
+# restart that hides a fault.
+# No phone-home: nothing here reaches a host but its seeds, by DNS name.
+# No datadir or tip.json copies: the node syncs and verifies from genesis;
+# nothing seeds its datadir.
+[Unit]
+Description=Shear mainnet node (p2p, owns :30303)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shear
+Group=shear
+WorkingDirectory=/opt/shear
+Environment=SHEAR_DATA=/var/lib/shear/mainnet
+Environment=SHEAR_NETWORK=shear-v1
+Environment=SHEAR_P2P_PORT=30303
+Environment=SHEAR_P2P_BIND=0.0.0.0
+Environment=SHEAR_RPC_PORT=18332
+Environment=SHEAR_RPC_BIND=127.0.0.1
+# Seeds are DNS names only, never a host IP.
+Environment=SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303
+Environment=SHEAR_REORG_HALT_DEPTH=0
+ExecStart=/usr/bin/node node/src/node.js --mode=p2p-sync
+Restart=no
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/shear/mainnet
+MemoryAccounting=yes
+MemoryHigh=1024M
+MemoryMax=1536M
+OOMPolicy=stop
+
+[Install]
+WantedBy=multi-user.target

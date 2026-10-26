@@ -1,0 +1,40 @@
+# Shear mainnet pool (Ubuntu host). Stratum :1111; HTTP on loopback :8088
+# behind nginx (80/443). It does not bind :30303 and takes verified blocks
+# from shear-p2p.service on 127.0.0.1:30313. Pool is never consensus.
+# R18a, deploy/mainnet/RUNBOOK.md. Installed only on Russell's GO.
+#
+# No silent recovery (Restart=no), no phone-home, no datadir or tip.json
+# copies: see shear-node.service.
+[Unit]
+Description=Shear mainnet pool (stratum :1111)
+After=network-online.target shear-p2p.service
+Wants=network-online.target
+Requires=shear-p2p.service
+
+[Service]
+Type=simple
+User=shear
+Group=shear
+WorkingDirectory=/opt/shear
+Environment=SHEAR_DATA=/var/lib/shear/mainnet-pool
+Environment=SHEAR_NETWORK=shear-v1
+Environment=SHEAR_P2P_IPC=127.0.0.1:30313
+Environment=SHEAR_STRATUM=1111
+Environment=SHEAR_STRATUM_BIND=0.0.0.0
+Environment=SHEAR_STRATUM_AUTH=1
+Environment=SHEAR_HTTP=8088
+Environment=SHEAR_RPC_BIND=127.0.0.1
+ExecStart=/usr/bin/node pool/src/main.js
+Restart=no
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/shear/mainnet-pool
+MemoryAccounting=yes
+MemoryHigh=1024M
+MemoryMax=1536M
+OOMPolicy=stop
+
+[Install]
+WantedBy=multi-user.target
