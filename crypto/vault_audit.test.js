@@ -26,7 +26,6 @@ import {
   appendVaultLockNote,
   applyReserveBlock,
   chainPeriodIndex,
-  consensusRemainMs,
   deposit,
   emptyVault,
   consensusUnlockPeriod,
@@ -38,8 +37,6 @@ import {
   lockUnlockContext,
   lockUnlockOf,
   lockTx,
-  proveRemainOpen,
-  verifyRemainOpen,
   portalIdFromDest,
   portalIdFromDest20,
   provePrincipalOpen,
@@ -1002,70 +999,6 @@ describe('hidden vault claims', () => {
     assert.equal(nonempty.ok, true, nonempty.reason);
     assert.ok(nonempty.gasUsed > 20000n, `non-empty commitRewards gas ${nonempty.gasUsed}`);
     assert.ok(empty.gasUsed > 0n, `empty commitRewards gas ${empty.gasUsed}`);
-  });
-
-  it('a remain commitment opens to the consensus remainder and not the full span', () => {
-    const who = dest20();
-    const now = T0 + 3_600_000;
-    const r = randomScalar();
-    assert.equal(vaultLockNote(PI_SHE_NANOS + 1, 3n, r), null);
-    const note = vaultLockNote(PI_SHE_NANOS, 3n, r, consensusUnlockPeriod(0)).note;
-    const build = () => {
-      const action = lockTx({
-        from: who.dest,
-        to: who.dest,
-        nanos: PI_SHE_NANOS,
-        blind: r,
-        ownerPub: who.id.spendPub.toString('hex'),
-        id: 'remain-lock',
-      });
-      action.vaultLockNote = note;
-      return action;
-    };
-    const state = emptyVault();
-    state.genesisMs = T0;
-    state.magic = MAGIC_TESTNET;
-    const remain = consensusRemainMs(state, now);
-    assert.ok(remain > 0);
-    assert.ok(remain < span);
-    const spanTx = build();
-    const spanOpen = proveRemainOpen(span, randomScalar(), spanTx, MAGIC_TESTNET);
-    assert.ok(spanOpen);
-    spanTx.remainCommit = spanOpen.commit.toString('hex');
-    spanTx.remainProof = spanOpen;
-    // The π proof, so the refusal below is the remain span's alone.
-    assert.ok(attachLockEquality(spanTx), 'π proof');
-    const tooWide = applyReserveBlock({
-      state,
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, spanTx] },
-      nowMs: now,
-      height: HEIGHT,
-      genesisMs: T0,
-    });
-    assert.equal(tooWide.ok, false);
-    assert.equal(tooWide.reason, 'stake_reward');
-
-    const openTx = build();
-    const open = proveRemainOpen(remain, randomScalar(), openTx, MAGIC_TESTNET);
-    assert.ok(open);
-    openTx.remainCommit = open.commit.toString('hex');
-    openTx.remainProof = open;
-    assert.ok(attachLockEquality(openTx), 'π proof');
-    const fresh = emptyVault();
-    fresh.genesisMs = T0;
-    fresh.magic = MAGIC_TESTNET;
-    const paid = applyReserveBlock({
-      state: fresh,
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, openTx] },
-      nowMs: now,
-      height: HEIGHT,
-      genesisMs: T0,
-    });
-    assert.equal(paid.ok, true, paid.reason);
-    const renamed = { ...openTx, id: 'other-remain-id' };
-    assert.equal(verifyRemainOpen(renamed.remainCommit, remain, renamed.remainProof, renamed, MAGIC_TESTNET), true);
-    const retarget = { ...openTx, portalId: 'cd'.repeat(32) };
-    assert.equal(verifyRemainOpen(retarget.remainCommit, remain, retarget.remainProof, retarget, MAGIC_TESTNET), false);
   });
 
   it('does not consult a lock cap, and refuses a reward that is not the product', () => {

@@ -23,7 +23,7 @@ import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custody
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags, AMOUNT_CT_BYTES, noteCommitOfDest20 } from './note.js';
 import { encodeDest, hash20FromAddress } from './address.js';
-import { canonicalReserveFields } from './reserve_vault.js';
+import { canonicalReserveFields, reserveRowNanos } from './reserve_vault.js';
 import { compactHashLedger, freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
@@ -385,6 +385,8 @@ export const COMPACT_TX_KEYS = Object.freeze([
   'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
   'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig', 'ownerPub', 'piProof',
+  // remainCommit is kept only so a block naming it is refused (spend.js
+  // remainderLockField) rather than scrubbed into another body.
   'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
   'retireProof', 'retireProofs', 'principalProof', 'principalProofs',
   'voteProof', 'voteProofs', 'voteSeq', 'voteParam', 'voteOutput',
@@ -544,7 +546,27 @@ export function valueOpenRejected(tx) {
     if (outputMayCarryValueOpen(tx, o)) continue;
     return { ok: false, reason: 'value_open' };
   }
-  return amountFieldRejected(tx);
+  return amountFieldRejected(tx) || reserveNanosRejected(tx);
+}
+
+/**
+ * A lock or withdraw names its amount only on its reserve output. A
+ * top-level nanos is a plaintext copy the compact body drops: it must equal
+ * that output's public opening, and with a hidden output (a commit and no
+ * opening) it must be absent, so a hidden amount never travels in clear.
+ */
+export function reserveNanosRejected(tx) {
+  if (!tx || typeof tx !== 'object' || tx.coinbase) return null;
+  const kind = String(tx.kind || '');
+  if (kind !== 'lock' && kind !== 'withdraw') return null;
+  if (!hasKey(tx, 'nanos')) return null;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  const o = outs.find((row) => String(row?.kind || '') === kind);
+  const opened = reserveRowNanos(o);
+  if (opened == null) return { ok: false, reason: 'amount_field' };
+  let same = false;
+  try { same = BigInt(String(tx.nanos)) === BigInt(String(opened)); } catch { same = false; }
+  return same ? null : { ok: false, reason: 'amount_field' };
 }
 
 function compactVout(o, tx) {

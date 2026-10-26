@@ -81,6 +81,7 @@ import {
 import { admitPub } from './admit.js';
 import { G, commit, pointBytes, pointFrom, proveRange, proveValue, randomScalar, scalarFrom, sealHiddenNote, verifySealedNote } from './note.js';
 import { admitMempool, emptyMempool } from './mempool.js';
+import { compactTx, reserveNanosRejected } from './chronoflux.js';
 import { blockBudget, fs1VerifyWeight, txVerifyWeight, W_OUT, W_TX, W_VAULT_EXTRA } from './block_budget.js';
 import { consensusFingerprint, MAX_BLOCK_VAULT_CLAIMS } from './asert.js';
 
@@ -1850,15 +1851,21 @@ describe('vault-lock reward proof', () => {
     }];
     assert.equal(verifySealedNote(fatWd.vout[0], bigger), true);
     assert.equal(verifySealedNote(fatWd.vout[0], payNanos), false);
+    // Naming payNanos over a note that opens to more is refused at admission;
+    // compaction drops tx.nanos, so in a block the amount is the note's own
+    // (bigger), and no owner signed a withdraw of that.
+    assert.deepEqual(reserveNanosRejected(fatWd), { ok: false, reason: 'amount_field' });
+    const fatBlock = compactTx(fatWd);
+    assert.equal(Object.prototype.hasOwnProperty.call(fatBlock, 'nanos'), false);
     const overWd = applyReserveBlock({
       state: cloneVault(state),
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, fatWd] },
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, fatBlock] },
       nowMs: T0 + mainEpoch,
       height: HEIGHT,
       genesisMs: T0,
     });
     assert.equal(overWd.ok, false);
-    assert.equal(overWd.reason, 'stake_reward');
+    assert.equal(overWd.reason, 'unsigned');
     const unsigned = applyReserveBlock({
       state: cloneVault(state),
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, tx] },

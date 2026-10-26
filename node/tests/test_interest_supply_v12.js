@@ -27,6 +27,7 @@ import { txDigestV3 } from '../../crypto/admit_v3.js';
 import { proveLeafRetire, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { verifySealedNote } from '../../crypto/note.js';
 import { coinbaseTx } from '../src/chain.js';
+import { reserveNanosRejected } from '../../crypto/chronoflux.js';
 import { auditCirculatingSupply, foldSupply, supplyReport, supplyStep, emptySupplyState, vaultAfterBlock } from '../src/supply.js';
 
 const GENESIS = 1_700_000_000_000;
@@ -453,8 +454,12 @@ describe('v12 supply counts reserve interest from the chain', () => {
       id: 'note-opens-high',
     });
     const wd = openedHigh.txs[1];
-    wd.vout = fat.vout;
-    wd.nanos = honestPay;
+    // Naming the honest amount over a note that opens higher is refused at
+    // arrival; compaction drops tx.nanos, so the block states the smaller
+    // amount on the note itself, which opens to the larger.
+    assert.deepEqual(reserveNanosRejected({ ...wd, vout: fat.vout, nanos: honestPay }), { ok: false, reason: 'amount_field' });
+    delete wd.nanos;
+    wd.vout = fat.vout.map((o) => (String(o?.kind || '') === 'withdraw' ? { ...o, valueProof: { ...o.valueProof, v: honestPay } } : o));
     const act = reserveAction(wd);
     assert.equal(act.nanos, honestPay);
     assert.equal(act.opened, false);

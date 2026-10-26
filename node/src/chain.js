@@ -232,6 +232,18 @@ export function canonicalCarry(tx) {
 }
 
 /**
+ * A negative top-level amount. Only a kind whose compact body keeps nanos
+ * (reward-claim, non-negative only: chronoflux compactTx) can name one, so
+ * on an arrived block this stays a guard; the key is tested before it is
+ * read, as an absent amount is not a negative one.
+ */
+function negativeTopNanos(tx) {
+  if (!tx || typeof tx !== 'object' || !Object.prototype.hasOwnProperty.call(tx, 'nanos')) return false;
+  const n = tx.nanos;
+  return typeof n === 'bigint' ? n < 0n : typeof n === 'number' && n < 0;
+}
+
+/**
  * The merkle leaf of one tx (TX_DIGEST=body-v2). Computed on compactTx(tx),
  * the one form a block is validated in, stored in, served in and read back
  * from disk in, so a full row and its compact copy are one digest and a
@@ -2166,9 +2178,7 @@ export function assessHeader(block, prev, opts = {}) {
         return finish({ ok: false, reason: 'negative_mint' });
       }
     }
-    if (typeof tx?.nanos === 'bigint' ? tx.nanos < 0n : typeof tx?.nanos === 'number' && tx.nanos < 0) {
-      return finish({ ok: false, reason: 'negative_mint' });
-    }
+    if (negativeTopNanos(tx)) return finish({ ok: false, reason: 'negative_mint' });
   }
   const merkle = merkleRoot(txs.map(digestTx));
   if (!merkle.equals(decoded.merkleRoot)) return finish({ ok: false, reason: 'merkle' });
@@ -2477,9 +2487,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         return { ok: false, reason: 'negative_mint' };
       }
     }
-    if (typeof tx?.nanos === 'bigint' ? tx.nanos < 0n : typeof tx?.nanos === 'number' && tx.nanos < 0) {
-      return { ok: false, reason: 'negative_mint' };
-    }
+    if (negativeTopNanos(tx)) return { ok: false, reason: 'negative_mint' };
   }
   for (let i = 0; i < txs.length; i += 1) {
     if (txs[i]?.reports == null) continue;

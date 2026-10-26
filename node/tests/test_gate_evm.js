@@ -35,9 +35,11 @@ import {
  * A lock or withdraw on the wire names dest20 only. from, to, payer,
  * payoutPortalId, and an ssa1 address on it are vote_leak (a5760821,
  * cb733226), which verifyBlock checks before the admit gate this file pins.
+ * Nor does it carry a top-level nanos: compaction drops it, and a hidden
+ * lock's plaintext amount is amount_field (reserveNanosRejected).
  */
 function compactReserve(tx) {
-  for (const key of ['from', 'to', 'payer', 'payoutPortalId']) delete tx[key];
+  for (const key of ['from', 'to', 'payer', 'payoutPortalId', 'nanos']) delete tx[key];
   const strip = (row) => {
     if (!row || typeof row !== 'object') return row;
     const { address, ...rest } = row;

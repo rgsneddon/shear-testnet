@@ -54,7 +54,7 @@ import { lockTx, ownerFor, withdrawTx } from '../../crypto/owned_portal.js';
 import { txDigestV3 } from '../../crypto/admit_v3.js';
 import { proveLeafRetire, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { explicitTypedKindRejected, boundReserveWithdraw } from '../../crypto/spend.js';
-import { compactTx } from '../../crypto/chronoflux.js';
+import { compactTx, reserveNanosRejected } from '../../crypto/chronoflux.js';
 import { walletAnchor, checkAdmitAnchor } from '../../crypto/admit_v3.js';
 import { coinbaseTx, verifyBlock, digestTx } from '../src/chain.js';
 import { createStore } from '../src/store.js';
@@ -577,7 +577,11 @@ describe('principal-only withdraw receipts', () => {
       highLock,
       nextBlock([highLock], DRAW, miner, (vault) => {
         high = drawOf(vault, portal, miner, dueFor(vault, portal), 'high-draw');
-        high.nanos = ABOVE_SAFE.toString();
+        // A top-level amount is refused at arrival and dropped by
+        // compaction; the amount a block carries is the receipt's own.
+        assert.deepEqual(reserveNanosRejected({ ...high, nanos: ABOVE_SAFE.toString() }), { ok: false, reason: 'amount_field' });
+        const at = high.vout.findIndex((o) => String(o?.kind || '') === 'withdraw');
+        high.vout[at] = { ...high.vout[at], valueProof: { ...high.vout[at].valueProof, v: ABOVE_SAFE.toString() } };
         return [high];
       }),
     ];

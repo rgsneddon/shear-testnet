@@ -61,7 +61,7 @@ import {
   VOTE_HOLD,
 } from './reserve_vault.js';
 import { deposit, lockTx, withdrawTx, portalOwnerPub, ownerFor } from './owned_portal.js';
-import { compactTx } from './chronoflux.js';
+import { compactTx, reserveNanosRejected } from './chronoflux.js';
 import { reservePortalRef } from './spend.js';
 import { encodeWireBlock, decodeWireBlock } from '../node/src/p2p.js';
 import { digestTx } from '../node/src/chain.js';
@@ -1359,12 +1359,20 @@ describe('Reserve freeze, vote-once, dest bind', () => {
     const fat = withdrawTx({ from: a, to: a, nanos: honest + 1, id: 'open-more-note' });
     tx.vout = fat.vout;
     tx.nanos = honest;
-    const act = reserveAction(tx);
+    // A top-level amount below the note's is refused at admission, and
+    // compaction drops it from a block: the public amount is the note's own.
+    assert.deepEqual(reserveNanosRejected(tx), { ok: false, reason: 'amount_field' });
+    assert.equal(Object.prototype.hasOwnProperty.call(compactTx(tx), 'nanos'), false);
+    // The note states the smaller amount but opens to the larger: it does not open.
+    const under = structuredClone(fat);
+    delete under.nanos;
+    under.vout[0] = { ...under.vout[0], valueProof: { ...under.vout[0].valueProof, v: honest } };
+    const act = reserveAction(under);
     assert.equal(act.kind, 'withdraw');
     assert.equal(act.nanos, honest);
     assert.equal(act.opened, false);
-    assert.equal(verifySealedNote(tx.vout[0], honest + 1), true);
-    assert.equal(verifySealedNote(tx.vout[0], act.nanos), false);
+    assert.equal(verifySealedNote(under.vout[0], honest + 1), true);
+    assert.equal(verifySealedNote(under.vout[0], act.nanos), false);
     const ok = reserveAction(withdrawTx({ from: a, to: a, nanos: honest, id: 'open-ok' }));
     assert.equal(ok.opened, true);
     assert.equal(ok.nanos, honest);

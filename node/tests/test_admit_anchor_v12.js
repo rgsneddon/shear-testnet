@@ -100,7 +100,9 @@ describe('ADMITv3 anchor on queue and verify', () => {
       const later = SPENDABLE_CONFIRMATIONS + Q;
       const mature = { kind: 'lock', anchor: Q, vin: [{}], vout: [] };
       assert.equal(checkAdmitAnchor(mature, later).ok, true);
-      assert.equal(store.queueTx({ ...mature, id: 'later', nanos: 1 }).reason, 'admit_anchor_window');
+      // No top-level nanos: with no lock row to open, a stated amount is
+      // amount_field (reserveNanosRejected) before the anchor window.
+      assert.equal(store.queueTx({ ...mature, id: 'later' }).reason, 'admit_anchor_window');
       for (const A of [1, Q]) {
         const tx = {
           id: `block-${A}`,

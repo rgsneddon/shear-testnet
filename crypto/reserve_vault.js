@@ -113,7 +113,6 @@ export const EMPTY_VAULT_ROOT = createHash('sha256').update('shear-empty-root-v1
  */
 export const VAULT_MINT_DELAY_BLOCKS = 4;
 const LOCK_FUND_DST = 'shear-lock-fund-v1';
-const REMAIN_OPEN_DST = 'shear-lock-remain-v1';
 const Fn = RistrettoPoint.Fn;
 
 const openMemo = new Map();
@@ -1139,18 +1138,6 @@ export function appendVaultLockNote(state, note, terms = null) {
   slot.n += 1;
   const noteHex = buf.toString('hex');
   notes.push(noteHex);
-  if (terms?.remainCommit) {
-    const earn = String(Math.floor(Number(terms.earnEpoch) || 0));
-    const commit = String(terms.remainCommit).replace(/^0x/i, '').toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(commit)) return null;
-    if (!state.vaultRemainCommits) state.vaultRemainCommits = Object.create(null);
-    if (!state.vaultRemainCommits[earn]) state.vaultRemainCommits[earn] = Object.create(null);
-    state.vaultRemainCommits[earn][commit] = true;
-    if (!state.vaultLeafRemain) state.vaultLeafRemain = Object.create(null);
-    state.vaultLeafRemain[noteHex] = commit;
-    if (!state.vaultRemainLeaf) state.vaultRemainLeaf = Object.create(null);
-    state.vaultRemainLeaf[commit] = noteHex;
-  }
   if (!state.vaultLockIndex) state.vaultLockIndex = Object.create(null);
   state.vaultLockIndex[buf.subarray(32, 64).toString('hex')] = noteHex;
   if (!state.vaultLeafBorn) state.vaultLeafBorn = Object.create(null);
@@ -1298,11 +1285,6 @@ function schnorrHOk(P, R, z, extra) {
   }
 }
 
-function remainExtra(tx, magic, commit) {
-  const digest = txDigestV3(tx, magic || MAGIC_TESTNET);
-  return Buffer.concat([Buffer.from(REMAIN_OPEN_DST), digest, Buffer.from(commit)]);
-}
-
 /** Remainder left in the open epoch. The same integer noteCredit stores. */
 export function consensusRemainMs(state, nowMs) {
   const idx = chainEpochIndex(state, nowMs);
@@ -1313,38 +1295,6 @@ export function consensusRemainMs(state, nowMs) {
   let remain = end > now ? end - now : 0;
   if (span > 0 && remain > span) remain = span;
   return remain;
-}
-
-/** Opening of `remainMs` bound to this tx hash. The integer is the consensus remainder. */
-export function proveRemainOpen(remainMs, blind, tx, magic = MAGIC_TESTNET) {
-  let n;
-  try { n = BigInt(remainMs); } catch { return null; }
-  if (n < 0n || n > 0xffffffffffffffffn) return null;
-  let r;
-  try { r = typeof blind === 'bigint' ? blind : scalarFrom(blind); } catch { return null; }
-  const C = commit(n, r);
-  const P = C.subtract(G.multiply(Fn.create(n)));
-  if (!P.equals(H.multiply(r))) return null;
-  const bytes = pointBytes(C);
-  let extra;
-  try { extra = remainExtra(tx, magic, bytes); } catch { return null; }
-  const sig = schnorrH(P, r, extra);
-  return { commit: bytes, R: sig.R, z: sig.z };
-}
-
-/** True when `commit` opens to `remainMs` under a proof bound to this tx hash. */
-export function verifyRemainOpen(commit, remainMs, proof, tx, magic = MAGIC_TESTNET) {
-  try {
-    const n = BigInt(remainMs);
-    if (n < 0n || n > 0xffffffffffffffffn) return false;
-    const raw = Buffer.from(asU8(commit));
-    if (raw.length !== 32 || !proof?.R || !proof?.z) return false;
-    const C = pointFrom(raw);
-    const P = C.subtract(G.multiply(Fn.create(n)));
-    return schnorrHOk(P, proof.R, proof.z, remainExtra(tx, magic, raw));
-  } catch {
-    return false;
-  }
 }
 
 const LOCK_UNLOCK_DST = Buffer.from('shear-vault-lock-unlock-v1');
@@ -3934,14 +3884,28 @@ function publicNanos(raw) {
   return n;
 }
 
-/** The amount the action publishes. The note has to open to this, not to a larger proof. */
-function publicActionNanos(tx, o) {
-  if (tx && Object.prototype.hasOwnProperty.call(tx, 'nanos') && tx.nanos != null && tx.nanos !== '') {
-    return publicNanos(tx.nanos);
-  }
-  if (o && o.nanos != null && o.nanos !== '') return publicNanos(o.nanos);
-  if (o?.valueProof?.v != null && o.valueProof.v !== '') return publicNanos(o.valueProof.v);
+/**
+ * The amount a Reserve row opens to, as its compact form carries it
+ * (chronoflux compactVout): valueProof.v, or a public row's nanos. A
+ * committed row's nanos and tx.nanos are not body (compaction drops them;
+ * reserveNanosRejected refuses a tx.nanos that differs). Null when absent.
+ */
+export function reserveRowNanos(o) {
+  if (o?.valueProof?.v != null && o.valueProof.v !== '') return o.valueProof.v;
+  if (o && !o.commit && o.nanos != null && o.nanos !== '') return o.nanos;
   return null;
+}
+
+/** The amount the action publishes. The note has to open to this, not to a larger proof. */
+function publicActionNanos(o) {
+  const raw = reserveRowNanos(o);
+  return raw == null ? null : publicNanos(raw);
+}
+
+/** The withdraw row: the one output whose kind is withdraw, else the first. */
+function withdrawRowOf(tx) {
+  const outs = Array.isArray(tx?.vout) ? tx.vout : [];
+  return outs.find((row) => String(row?.kind || '') === KIND_WITHDRAW) || outs[0];
 }
 
 /**
@@ -3970,23 +3934,22 @@ export function reserveAction(tx) {
   if (kind !== KIND_LOCK && kind !== KIND_VOTE && kind !== KIND_WITHDRAW) return null;
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   const o = outs.find((row) => String(row?.kind || kind) === kind) || outs[0] || {};
-  const claimed = o?.valueProof?.v != null
-    ? Math.floor(Number(o.valueProof.v))
-    : Math.floor(Number(tx?.nanos || o?.nanos || 0));
+  // The output's own opening, as the compact body carries it: never tx.nanos
+  // (canonicalReserveFields, reserveNanosRejected).
+  const claimed = Math.floor(Number(reserveRowNanos(o) || 0));
   // A failed opening is not amount 0. Zero would pass an over-mint check.
   let nanos = claimed;
   let opened = true;
   let lockCommit = null;
   let lockRange = null;
   if (kind === KIND_LOCK) {
-    const published = Math.floor(Number(tx?.nanos) || 0) > 0
-      || (o?.valueProof?.v != null && Math.floor(Number(o.valueProof.v) || 0) > 0);
+    const published = o?.valueProof?.v != null && Math.floor(Number(o.valueProof.v) || 0) > 0;
     lockCommit = commit32(o);
     try { lockRange = o?.rangeProof ? Buffer.from(asU8(o.rangeProof)) : null; } catch { lockRange = null; }
     opened = !published && lockCommit.length === 32 && !!lockRange?.length && verifyRange(lockCommit, lockRange);
     nanos = 0;
   } else if (kind === KIND_WITHDRAW) {
-    const pub = publicActionNanos(tx, o);
+    const pub = publicActionNanos(o);
     const published = o?.valueProof?.v != null && Math.floor(Number(o.valueProof.v) || 0) > 0;
     if (pub === 0 && !published) {
       opened = true;
@@ -4060,7 +4023,11 @@ export function canonicalReserveFields(tx) {
   if (kind !== KIND_LOCK && kind !== KIND_VOTE && kind !== KIND_WITHDRAW) return null;
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   const o = outs.find((row) => String(row?.kind || kind) === kind) || outs[0] || {};
-  const raw = o?.valueProof?.v != null ? o.valueProof.v : (tx?.nanos != null ? tx.nanos : o?.nanos);
+  // The amount is the reserve output's own opening, as compactTx carries it
+  // (valueProof.v). A top-level tx.nanos is never read: compaction drops it,
+  // so it could make a full row and its compact copy decide differently, and
+  // on a hidden lock it would publish the amount (reserveNanosRejected).
+  const raw = o?.valueProof?.v != null ? o.valueProof.v : o?.nanos;
   const n = Math.floor(Number(raw));
   const nanos = Number.isFinite(n) ? n : 0;
   // Same rule as reserveAction. A missing id stays empty on both the fat
@@ -4239,7 +4206,7 @@ export function verifyReservePayout(state, tx, clockMs) {
   if (split.legacy <= 0n && split.note > 0n) return { ok: false, reason: 'note_principal' };
   const principal = nanosOut(split.legacy);
   const interest = withdrawPaysInterest(state, p, clock);
-  const published = publicActionNanos(tx, (tx?.vout || []).find((row) => String(row?.kind || '') === KIND_WITHDRAW) || tx?.vout?.[0]);
+  const published = publicActionNanos(withdrawRowOf(tx));
   if (published != null && published < principal) return { ok: false, reason: 'principal_short' };
   if (act.opened === false) return { ok: false, reason: 'mint_amount' };
   if (act.nanos < principal) return { ok: false, reason: 'principal_short' };
@@ -4847,14 +4814,6 @@ export function applyReserveBlock({
         return finishReserveApply(results);
       }
       bindLockNote(state, act.portalId, tx, nowMs);
-      if (tx?.remainCommit) {
-        const openMs = consensusRemainMs(state, nowMs);
-        if (!verifyRemainOpen(tx.remainCommit, openMs, tx.remainProof, tx, state.magic || MAGIC_TESTNET)) {
-          results.push({ action: KIND_LOCK, ok: false, reason: 'stake_reward' });
-          state.deferEpochRoll = false;
-          return finishReserveApply(results);
-        }
-      }
       // A note lock books π per leaf only through each leaf's fundProof, and
       // txDigestV3 does not bind fundProof, so anyone relaying or mining the
       // lock could strip it. Indexed but unbooked, the leaf's withdraw would
@@ -4873,7 +4832,6 @@ export function applyReserveBlock({
           earnEpoch: Math.floor(Number(tranche?.epoch) || 0),
           bornEpoch: chainPeriodIndex(state, nowMs),
           unlockEpoch: consensusUnlockPeriod(lockEpoch),
-          remainCommit: tx.remainCommit,
           lockHeight: blockHeight,
         });
         if (!rooted) {
@@ -5394,7 +5352,7 @@ export function indexedWithdrawQuote(state, portal, nowMs, tx) {
   const indexed = hidden.filter((hex) => state.vaultLockIndex?.[hex]);
   if (!indexed.length) return null;
   const id = portal.id || portalKey(portal.dest);
-  const want = exactBi(tx?.nanos);
+  const want = exactBi(reserveRowNanos(withdrawRowOf(tx)));
   const opened = openIndexedLeaves({
     state,
     tx,
@@ -5458,7 +5416,7 @@ export function retireBlobRejected(tx, state = null, nowMs = null) {
     portalId: id,
     proofList,
     openList: openListOf(tx, null),
-    want: exactBi(tx?.nanos),
+    want: exactBi(reserveRowNanos(withdrawRowOf(tx))),
   });
   if (!opened.ok) return { ok: false, reason: opened.reason || 'stake_reward' };
   return null;

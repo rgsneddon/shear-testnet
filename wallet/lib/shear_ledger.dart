@@ -3157,7 +3157,8 @@ Map<String, Object?>? sealWalletLockTx({
     final body = <String, Object?>{
       'id': id,
       'kind': 'lock',
-      'nanos': 0,
+      // No top-level nanos: the amount is hidden in the lock commit, and the
+      // node refuses a plaintext copy beside it (reserveNanosRejected).
       'portalId': portalId,
       'programId': 'shear-reserve-v1',
       'ownerPub': ownerHex,
