@@ -11,7 +11,13 @@ name = "shear_admit"
 # cdylib: Android arm64-v8a and desktop dart:ffi.
 # staticlib: iOS wallet (`cargo ios-staticlib`, target aarch64-apple-ios).
 # iOS is wallet-only: no node addon and no miner. CI does not sign that target.
-crate-type = ["cdylib", "staticlib", "rlib"]
+# No rlib: cargo runs LTO for a library only when every crate type can take
+# it, and an rlib cannot, so with one listed `lto = true` below never ran.
+# Nothing depends on this crate as an rlib (no tests/ dir, no Rust
+# dependents). With LTO, dead std code goes, as the Windows build at the
+# x86-64 baseline needs: core's unused 128-bit atomic Debug impls otherwise
+# call __atomic_load_16, which nothing provides there.
+crate-type = ["cdylib", "staticlib"]
 
 [features]
 default = []
