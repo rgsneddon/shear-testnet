@@ -575,19 +575,19 @@ export function reserveNanosRejected(tx) {
   return same ? null : { ok: false, reason: 'amount_field' };
 }
 
-/** Every memo envelope on the tx or an output has the fixed slot size (flow_sheet.js). */
+/**
+ * A memo envelope sits only at the top level, in the fixed slot size
+ * (flow_sheet.js). An output memoCt is refused: it would mark which output
+ * is the payee's (Russell 26 Oct).
+ */
 export function memoCtRejected(tx) {
   if (!tx || typeof tx !== 'object') return null;
-  const envs = [];
-  if (tx.memoCt != null) envs.push(tx.memoCt);
   for (const o of Array.isArray(tx.vout) ? tx.vout : []) {
-    if (o && typeof o === 'object' && o.memoCt != null) envs.push(o.memoCt);
+    if (o && typeof o === 'object' && o.memoCt != null) return { ok: false, reason: 'memo_output' };
   }
-  for (const env of envs) {
-    const reason = memoEnvelopeRejected(env);
-    if (reason) return { ok: false, reason };
-  }
-  return null;
+  if (tx.memoCt == null) return null;
+  const reason = memoEnvelopeRejected(tx.memoCt);
+  return reason ? { ok: false, reason } : null;
 }
 
 function compactVout(o, tx) {
@@ -623,8 +623,6 @@ function compactVout(o, tx) {
       if (keepOpen && reserveKind) attachReserveSeal(row, o);
     }
     if (o.memo) row.memo = true;
-    // The payee opens its memo from the chain. memoCtRejected fixes its size.
-    if (o.memoCt) row.memoCt = compactValue(o.memoCt);
     if (keepDest && o.address) row.address = o.address;
     return row;
   }
@@ -641,7 +639,6 @@ function compactVout(o, tx) {
   }
   if (keepDest && o.address) row.address = o.address;
   if (o.memo) row.memo = true;
-  if (o.memoCt) row.memoCt = compactValue(o.memoCt);
   return row;
 }
 

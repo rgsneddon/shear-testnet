@@ -6,7 +6,10 @@ import {
   paymentCodeAtIndex, silentDestFromView, payoutDest, aliasDestOfSilentId, silentPay, isFullPaymentCode,
 } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
-import { memoCtRejected } from './chronoflux.js';
+import { compactTx, memoCtRejected } from './chronoflux.js';
+import { AMOUNT_CT_BYTES } from './note.js';
+import { arrivalFieldRejected } from './arrival_fields.js';
+import { sealedFormOf } from './mempool.js';
 import {
   destForLogin,
   hasherPayoutDest,
@@ -182,7 +185,27 @@ describe('flow sheets', () => {
     assert.equal(memoEnvelopeRejected({ ...short, nonce: ctOf(11) }), 'memo_ct', 'nonce size');
     assert.equal(memoEnvelopeRejected('aa'), 'memo_ct', 'not an envelope');
     assert.equal(memoCtRejected({ kind: 'send', memoCt: short }), null);
-    assert.equal(memoCtRejected({ kind: 'send', vout: [{ kind: 'send', memoCt: { ...short, v: 1 } }] })?.reason, 'memo_ct', 'an output memo too');
+    // An output memo is refused whatever its shape (Russell 26 Oct): only the top level carries one.
+    for (const env of [short, long, { ...short, v: 1 }]) {
+      assert.equal(memoCtRejected({ kind: 'send', vout: [{ kind: 'send', memoCt: env }] })?.reason, 'memo_output');
+    }
+  });
+
+  it('a memo sits only at the top level: an output memoCt is refused on arrival, and the template never puts one there', () => {
+    const dest = destForLogin(newIdentity().address, { height: 1 });
+    const env = memoSeal(dest, 'top only', Buffer.alloc(32, 9));
+    // A hidden send output with its wrap, so the memo is the body's only fault.
+    const hidden = { kind: 'send', commit: Buffer.alloc(32, 2), rEph: Buffer.alloc(32, 3), rCt: Buffer.alloc(48, 4), amtCt: Buffer.alloc(AMOUNT_CT_BYTES, 5) };
+    const body = { kind: 'send', fee: 100, vin: [{ commit: Buffer.alloc(32, 1) }], vout: [hidden] };
+    assert.equal(memoCtRejected({ ...body, memoCt: env }), null);
+    assert.equal(compactTx({ ...body, memoCt: env }).memoCt != null, true, 'the top-level envelope is kept');
+    const onOutput = { ...body, vout: [{ ...body.vout[0], memoCt: env }] };
+    assert.equal(arrivalFieldRejected(onOutput)?.reason, 'memo_output');
+    assert.equal(compactTx(onOutput).vout[0].memoCt, undefined, 'compaction never moves a memo onto an output');
+    // A vout-less send gets its default output with no memo on it.
+    const sealed = sealedFormOf({ kind: 'send', from: dest, to: dest, nanos: 5, memoCt: env });
+    assert.equal(sealed.memoCt, env);
+    assert.equal(sealed.vout[0].memoCt, undefined);
   });
 
   it('memo seals with shared secret; dest-only open is null; public row is amounts+dests+memo boolean', () => {

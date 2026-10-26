@@ -703,17 +703,19 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     const view = liveCoins();
     assert.ok(view.coins.length >= 1, `only ${view.coins.length} live coins`);
     const memoCt = memoSeal(who.dest, 'walk the reads', Buffer.alloc(32, 9));
+    // The memo sits at the top level; an output memoCt is refused (Russell 26 Oct).
     const built = buildSend({
       id: 'walked-memo',
       coins: [view.coins[0]],
       anchor: view.anchor,
       live: view.live,
+      top: { memoCt },
       outsOf: (room) => [
-        { ...hiddenOut(room, hash20FromAddress(who.dest), who.base, 'send'), memoCt },
+        hiddenOut(room, hash20FromAddress(who.dest), who.base, 'send'),
         hiddenOut(0, Buffer.alloc(20, 4), null, 'dummy'),
       ],
     });
-    assert.equal(memoEnvelopeRejected(compactTx(built.tx).vout[0].memoCt), null, 'the memo envelope survives compaction');
+    assert.equal(memoEnvelopeRejected(compactTx(built.tx).memoCt), null, 'the memo envelope survives compaction');
     resetFs1Tree();
     resetFs1VerifyCache();
     const walked = await droppedBlockReads({
@@ -727,7 +729,7 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     assert.equal(walked.verdict.ok, true, `walked block ${walked.verdict.reason} (plain ${JSON.stringify(walked.plain)})`);
     assert.deepEqual(walked.misses, [], `no validator read lands on a field compaction drops (${JSON.stringify(walked.readers)})`);
     const bound = everyFieldBound(built.tx, 'walked-memo');
-    assert.ok(bound.checked.some((p) => p.startsWith('vout[].memoCt')), 'the memo envelope is in the leaf');
+    assert.ok(bound.checked.some((p) => p.startsWith('memoCt')), 'the memo envelope is in the leaf');
   });
 
   it('a peer failure mark does not outlive a valid body for that hash', async () => {

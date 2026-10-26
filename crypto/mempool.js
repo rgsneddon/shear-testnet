@@ -69,7 +69,8 @@ export function sealedFormOf(tx, ctx = {}) {
     to,
     bFlag: tx.kind === 'b-spend' || tx.bFlag,
     vin: tx.vin || [{ address: tx.from }],
-    vout: tx.vout || [{ address: to, nanos: tx.nanos, kind: tx.kind, memoCt: tx.memoCt }],
+    // The memo stays at the top level: an output memoCt is refused.
+    vout: tx.vout || [{ address: to, nanos: tx.nanos, kind: tx.kind }],
   };
 }
 

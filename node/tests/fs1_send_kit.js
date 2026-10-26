@@ -46,7 +46,7 @@ export function placeholders(k) {
  * Build, settle the levy, and prove one send of `coins` (each
  * { index, x, r, v, commit }). `outsOf(room)` builds the outputs.
  */
-export function buildSend({ id, kind = 'send', coins, anchor, live, outsOf, magic = MAGIC_REGTEST }) {
+export function buildSend({ id, kind = 'send', coins, anchor, live, outsOf, magic = MAGIC_REGTEST, top = {} }) {
   const total = coins.reduce((s, c) => s + c.v, 0);
   const k = coins.length;
   const ph = placeholders(k);
@@ -58,6 +58,7 @@ export function buildSend({ id, kind = 'send', coins, anchor, live, outsOf, magi
     assert.ok(room >= 1, `fee consumes the coins ${total} ${fee}`);
     outs = outsOf(room);
     draft = compactTx({
+      ...top,
       id,
       kind,
       anchor,
@@ -95,6 +96,7 @@ export function buildSend({ id, kind = 'send', coins, anchor, live, outsOf, magi
   const excess = kernelExcess(outs, coins.map((c, i) => ({ r: c.r, t: proven.t[i] })));
   assert.ok(excess, `${id} excess`);
   const tx = compactTx({
+    ...top,
     id,
     kind,
     anchor,
