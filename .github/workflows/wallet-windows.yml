@@ -13,17 +13,22 @@ on:
   workflow_dispatch:
     inputs:
       pin:
-        description: Public two-part wallet pin (release tag)
-        required: true
-        default: '0.32'
+        # Empty: the pin is the wallet's release pin, the PKGBUILD's pkgver,
+        # so a stale default can never name another release. A pin given here
+        # must equal it.
+        description: Public two-part wallet pin (release tag); empty reads wallet/pack/archlinux/PKGBUILD
+        required: false
+        default: ''
       build_number:
         description: Flutter build-number
         required: true
         default: '48'
       attach:
+        # Off unless asked: a dispatch that checks a build never uploads
+        # (--clobber) over a published release asset.
         description: Attach the zip to the GitHub release (false builds and checks only)
         type: boolean
-        default: true
+        default: false
 
 jobs:
   windows:
@@ -32,6 +37,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Wallet pin
+        shell: bash
+        env:
+          ASKED: ${{ inputs.pin }}
+        run: |
+          set -euo pipefail
+          have="$(sed -n 's/^pkgver=//p' wallet/pack/archlinux/PKGBUILD | head -1)"
+          pin="${ASKED:-$have}"
+          if [ "$pin" != "$have" ]; then echo "::error::pin $pin is not the PKGBUILD's pkgver $have"; exit 1; fi
+          echo "WALLET_PIN=$pin" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -110,7 +125,7 @@ jobs:
           cargo build --release --manifest-path ../crypto/native/admit/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $define = (python ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/x86_64-pc-windows-gnu/release/shear_admit.dll).Trim()
-          flutter build windows --release --build-name=${{ inputs.pin }} --build-number=${{ inputs.build_number }} $define
+          flutter build windows --release --build-name=${{ env.WALLET_PIN }} --build-number=${{ inputs.build_number }} $define
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: No code above the x86-64 baseline in the native libraries
         run: |
@@ -120,14 +135,14 @@ jobs:
       - name: Zip
         run: python wallet/pack/zip_windows.py
       - name: Refuse a Windows zip without shear_v3.dll
-        run: python wallet/pack/check_shear_v3_bundled.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip
+        run: python wallet/pack/check_shear_v3_bundled.py wallet/dist/shear-wallet-${{ env.WALLET_PIN }}-windows.zip
       - name: The shipped zip's own native files, at the x86-64 baseline, give the pinned vectors
         # The zip's members, not the build tree: shear_admit.dll, shear_v3.dll
         # and the sidecar addons, every native file this repo builds into it.
         # The addons tested below are proven byte-identical to the shipped ones.
         run: |
           $env:OBJDUMP = "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\objdump.exe"
-          python scripts/scan_shipped_zip.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --built crypto/native/shearadmit.node=crypto/native/shearadmit.node --built crypto/native/shearhash.node=crypto/native/shearhash.node shear_admit.dll shear_v3.dll crypto/native/shearhash.node crypto/native/shearadmit.node
+          python scripts/scan_shipped_zip.py wallet/dist/shear-wallet-${{ env.WALLET_PIN }}-windows.zip --built crypto/native/shearadmit.node=crypto/native/shearadmit.node --built crypto/native/shearhash.node=crypto/native/shearhash.node shear_admit.dll shear_v3.dll crypto/native/shearhash.node crypto/native/shearadmit.node
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/shipped_hash_vector.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -138,9 +153,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ inputs.pin }} wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --clobber
+          gh release upload ${{ env.WALLET_PIN }} wallet/dist/shear-wallet-${{ env.WALLET_PIN }}-windows.zip --clobber
       - uses: actions/upload-artifact@v4
         with:
-          name: shear-wallet-${{ inputs.pin }}-windows
-          path: wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip
+          name: shear-wallet-${{ env.WALLET_PIN }}-windows
+          path: wallet/dist/shear-wallet-${{ env.WALLET_PIN }}-windows.zip
           if-no-files-found: error

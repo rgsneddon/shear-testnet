@@ -381,7 +381,7 @@ describe('x86_64 ISA baseline', () => {
     assert.ok(wf('wallet-windows.yml').includes(winScan), 'wallet-windows scans its native libraries');
     // And the files inside the shipped zip, after it is packed and before it
     // is attached, proven the same files the vectors run on.
-    const zipScan = 'python scripts/scan_shipped_zip.py wallet/dist/shear-wallet-${{ inputs.pin }}-windows.zip --built crypto/native/shearadmit.node=crypto/native/shearadmit.node --built crypto/native/shearhash.node=crypto/native/shearhash.node shear_admit.dll shear_v3.dll crypto/native/shearhash.node crypto/native/shearadmit.node';
+    const zipScan = 'python scripts/scan_shipped_zip.py wallet/dist/shear-wallet-${{ env.WALLET_PIN }}-windows.zip --built crypto/native/shearadmit.node=crypto/native/shearadmit.node --built crypto/native/shearhash.node=crypto/native/shearhash.node shear_admit.dll shear_v3.dll crypto/native/shearhash.node crypto/native/shearadmit.node';
     for (const f of ['wallet-release.yml', 'wallet-windows.yml']) {
       const text = wf(f);
       const at = text.indexOf(zipScan);
