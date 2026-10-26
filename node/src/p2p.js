@@ -2658,6 +2658,12 @@ export function createP2p({
       }
       const recNow = peers.get(sock);
       const lastHash = last ? wireHash(last.hash) : '';
+      // A block this peer was already refused for is not taken from it again,
+      // asked or pushed: no claim work, no second verify.
+      if (recNow && lastHash && failActive(recNow, lastHash)) {
+        releaseRefusedAsk(sock, recNow, lastHash);
+        return;
+      }
       const fate = replayFate(fork);
       if (fate === 'score') {
         scoreHashClaim(sock);
