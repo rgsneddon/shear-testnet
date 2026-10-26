@@ -289,19 +289,18 @@ describe('x86_64 ISA baseline', () => {
       "          RUSTC_BOOTSTRAP: '1'",
       '          CARGO_BUILD_TARGET: x86_64-pc-windows-gnu',
       '          CARGO_UNSTABLE_BUILD_STD: std,core,alloc,compiler_builtins,panic_unwind',
-    ].join('
-');
-    const steps = ['      - name: Node sidecar addons, GNU toolchain', '      - name: Build Windows release'];
-    for (const f of ['wallet-windows.yml', 'wallet-release.yml']) {
-      const text = read(`.github/workflows/${f}`).replace(/
-/g, '
-');
+    ].join('\n');
+    const stepsOf = {
+      'wallet-windows.yml': ['      - name: Node sidecar addons, GNU toolchain', '      - name: Build Windows release'],
+      'wallet-release.yml': ['      - name: Node sidecar addons, GNU toolchain', '      - name: Build Windows GUI + CLI'],
+    };
+    for (const [f, steps] of Object.entries(stepsOf)) {
+      const text = read(`.github/workflows/${f}`).replace(/\r\n/g, '\n');
       assert.equal(text.split('RUSTC_BOOTSTRAP').length - 1, 2, `${f}: two build steps`);
       for (const name of steps) {
         const at = text.indexOf(name);
         assert.ok(at > 0, `${f} ${name}`);
-        const end = text.indexOf('
-      - ', at + 1);
+        const end = text.indexOf('\n      - ', at + 1);
         const step = text.slice(at, end > 0 ? end : text.length);
         assert.ok(step.includes(stepEnv), `${f} ${name} builds std from source`);
       }
@@ -310,7 +309,7 @@ describe('x86_64 ISA baseline', () => {
     assert.equal(tracked.status, 0, tracked.stderr);
     const allowed = new Set(['.github/workflows/wallet-windows.yml', '.github/workflows/wallet-release.yml', '.cargo/config.toml', 'tests/test_isa_baseline.js']);
     const stray = [];
-    for (const rel of tracked.stdout.split(' ').filter(Boolean)) {
+    for (const rel of tracked.stdout.split('\0').filter(Boolean)) {
       if (allowed.has(rel)) continue;
       let text;
       try { text = fs.readFileSync(path.join(root, rel)); } catch { continue; }
@@ -319,7 +318,7 @@ describe('x86_64 ISA baseline', () => {
     }
     assert.deepEqual(stray, [], 'std from source and RUSTC_BOOTSTRAP live in the Windows build steps only');
     // The config only explains it: it sets no unstable table.
-    assert.doesNotMatch(read('.cargo/config.toml'), /^[unstable]/m);
+    assert.doesNotMatch(read('.cargo/config.toml'), /^\[unstable\]/m);
   });
 
   it('every RandomX build goes through scripts/randomx_build.sh, which pins the baseline', () => {
