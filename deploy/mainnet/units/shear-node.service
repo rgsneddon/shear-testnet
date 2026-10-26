@@ -5,8 +5,8 @@
 # operator sees it in `systemctl status` and in check_host.sh, never a quiet
 # restart that hides a fault.
 # No phone-home: nothing here reaches a host but its seeds, by DNS name.
-# No datadir or tip.json copies: the node syncs and verifies from genesis;
-# nothing seeds its datadir.
+# No copies: no step before or after the node seeds its datadir; it syncs
+# and verifies from genesis.
 [Unit]
 Description=Shear mainnet node (p2p, owns :30303)
 After=network-online.target
@@ -17,7 +17,11 @@ Type=simple
 User=shear
 Group=shear
 WorkingDirectory=/opt/shear
+# StateDirectory creates these under /var/lib, owned by the shear user, and
+# makes them the only writable paths.
+StateDirectory=shear/mainnet shear/seal-keys/node
 Environment=SHEAR_DATA=/var/lib/shear/mainnet
+Environment=SHEAR_SEAL_KEY_DIR=/var/lib/shear/seal-keys/node
 Environment=SHEAR_NETWORK=shear-v1
 Environment=SHEAR_P2P_PORT=30303
 Environment=SHEAR_P2P_BIND=0.0.0.0
@@ -32,11 +36,6 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/shear/mainnet
-MemoryAccounting=yes
-MemoryHigh=1024M
-MemoryMax=1536M
-OOMPolicy=stop
 
 [Install]
 WantedBy=multi-user.target

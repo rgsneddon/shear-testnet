@@ -3,8 +3,8 @@
 # or a transaction authority: this node owns the tip.
 # R18a, deploy/mainnet/RUNBOOK.md. Installed only on Russell's GO.
 #
-# No silent recovery (Restart=no), no phone-home, no datadir or tip.json
-# copies: see shear-node.service.
+# No silent recovery (Restart=no), no phone-home, no copies: see
+# shear-node.service.
 [Unit]
 Description=Shear mainnet P2P sidecar for the pool host (owns :30303)
 After=network-online.target
@@ -15,8 +15,10 @@ Type=simple
 User=shear
 Group=shear
 WorkingDirectory=/opt/shear
-# Its own datadir: the pool and this node never share chain files.
+# Its own datadir and seal keys: the pool and this node share no chain files.
+StateDirectory=shear/mainnet-p2p shear/seal-keys/p2p
 Environment=SHEAR_DATA=/var/lib/shear/mainnet-p2p
+Environment=SHEAR_SEAL_KEY_DIR=/var/lib/shear/seal-keys/p2p
 Environment=SHEAR_NETWORK=shear-v1
 Environment=SHEAR_P2P_PORT=30303
 Environment=SHEAR_P2P_BIND=0.0.0.0
@@ -31,11 +33,6 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/shear/mainnet-p2p
-MemoryAccounting=yes
-MemoryHigh=1024M
-MemoryMax=1536M
-OOMPolicy=stop
 
 [Install]
 WantedBy=multi-user.target

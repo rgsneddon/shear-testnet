@@ -1,27 +1,46 @@
-# Shear mainnet pool (Ubuntu host). Stratum :1111; HTTP on loopback :8088
-# behind nginx (80/443). It does not bind :30303 and takes verified blocks
-# from shear-p2p.service on 127.0.0.1:30313. Pool is never consensus.
-# R18a, deploy/mainnet/RUNBOOK.md. Installed only on Russell's GO.
+# Shear mainnet pool (Ubuntu host). Stratum on :1111 with TLS; HTTP on
+# loopback :8088 behind nginx (80/443). It does not bind :30303 and takes
+# verified blocks from shear-p2p.service on 127.0.0.1:30313. Pool is never
+# consensus. R18a, deploy/mainnet/RUNBOOK.md. Installed only on Russell's GO.
 #
-# No silent recovery (Restart=no), no phone-home, no datadir or tip.json
-# copies: see shear-node.service.
+# No silent recovery (Restart=no), no phone-home, no copies: see
+# shear-node.service.
 [Unit]
-Description=Shear mainnet pool (stratum :1111)
+Description=Shear mainnet pool (stratum :1111, TLS)
 After=network-online.target shear-p2p.service
 Wants=network-online.target
-Requires=shear-p2p.service
+# Requisite, not Requires: the pool refuses to start unless its own node is
+# already running, and starting the pool never starts the node (each start
+# is its own GO). If the node stops, the pool stops with it (PartOf), so it
+# never serves work without its own verified tip.
+Requisite=shear-p2p.service
+PartOf=shear-p2p.service
 
 [Service]
 Type=simple
 User=shear
 Group=shear
 WorkingDirectory=/opt/shear
+StateDirectory=shear/mainnet-pool shear/seal-keys/pool
+# Operator settings that are not in the repo: SHEAR_STRATUM_AUTH_PUB, and
+# the fee or admin dest if they differ from the shipped pin. Root-owned,
+# mode 0640, group shear (RUNBOOK step 8). The spend seed never goes here:
+# it is the 0600 file pool-spend.seed in the pool datadir.
+EnvironmentFile=/etc/shear/pool.env
 Environment=SHEAR_DATA=/var/lib/shear/mainnet-pool
+Environment=SHEAR_SEAL_KEY_DIR=/var/lib/shear/seal-keys/pool
 Environment=SHEAR_NETWORK=shear-v1
 Environment=SHEAR_P2P_IPC=127.0.0.1:30313
 Environment=SHEAR_STRATUM=1111
 Environment=SHEAR_STRATUM_BIND=0.0.0.0
 Environment=SHEAR_STRATUM_AUTH=1
+# A public stratum bind needs TLS (pool/src/posture.js stratumListenPlan);
+# without the cert the pool refuses to start, it never falls back to
+# cleartext. The cert pair is copied for the shear group by the certbot
+# deploy hook (RUNBOOK step 8). Open point 1: TLS or cleartext on 1111.
+Environment=SHEAR_STRATUM_REQUIRE_TLS=1
+Environment=SHEAR_STRATUM_TLS_CERT=/etc/shear/stratum-tls/fullchain.pem
+Environment=SHEAR_STRATUM_TLS_KEY=/etc/shear/stratum-tls/privkey.pem
 Environment=SHEAR_HTTP=8088
 Environment=SHEAR_RPC_BIND=127.0.0.1
 ExecStart=/usr/bin/node pool/src/main.js
@@ -30,11 +49,6 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/shear/mainnet-pool
-MemoryAccounting=yes
-MemoryHigh=1024M
-MemoryMax=1536M
-OOMPolicy=stop
 
 [Install]
 WantedBy=multi-user.target
