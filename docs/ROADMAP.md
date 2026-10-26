@@ -97,6 +97,26 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
     - A test that keeps other vortices off the chain or away from the
       Reserve guards the Vault/Reserve, so it stays in. Examples are
       `test_vort1_register.js` and `crypto/vortex.test.js`.
+12. **Bootstrap (Russell 2026-10-26, 20:18 GMT).** The old raw-datadir
+    bootstrap is retired, for our own nodes and for users.
+    - Mainnet ships no datadir snapshot publisher, and no client fetches a
+      snapshot. Every node syncs and verifies from genesis itself.
+    - Until R21 lands, users who don't run a node use light wallet mode
+      against a node they choose, and node runners rely on pruning.
+    - Light wallet mode is the privacy risk, not the snapshot. R21's light
+      wallet conditions (local scan, no view key or note queries to a node,
+      own node by default, a plain warning in remote-node mode, Privacy
+      Auditor first) are in its row.
+    - The old bootstrap is removed in one small PR before the v12 cut
+      (R16), owned by Claude (Russell 26 Oct, 20:30 GMT). It covers the
+      node's automatic snapshot write every 200 blocks, the `--bootstrap`
+      flag, the help text, the wallet's dead URL constant, the boot site
+      pages and the deploy files. The places are listed in the Review of the
+      PR that recorded this rule.
+    - Today's light and remote-node wallet is checked against R21's privacy
+      conditions now. Any place it sends a view key or asks a node about
+      specific notes is a pre-mainnet bug: a root-cause fix with a test
+      before v12.
 
 ## Rows
 
@@ -107,7 +127,8 @@ moves the later rows by a day.
 | ID | Item | Consensus? | Status | Owner | Reviewer | Working now | PR | Head SHA | Target |
 |----|------|------------|--------|-------|----------|-------------|----|----------|--------|
 | R01 | PR 130: digestTx and bundled fixes | Y: `TX_DIGEST=body-v2`, `COINBASE_V=opens`, `COINBASE_NC=dest-bound`, the memo binding (`FS1_MEMO=bound`) and the new mainnet genesis move the testnet, mainnet and mainnetFP pins | active | Claude | Grok + Protocol, Vault Security, Pool Share, Codebase, Privacy, pins | Claude, cursor/v12-followups-3daf, since 2026-10-23 | [#130](https://github.com/rgsneddon/shear-testnet/pull/130) | 83ea4352 (pushed; rebuilt chain local, awaiting the fresh consensus sign-off) | 28 Oct (28–29 Oct) |
-| R01b | Vault claim post: pool `queuedRewardClaim` takes the FS-1 claim body the wallet sends (found in the PR 107 coverage report: it still expects the old `to` and `proof` shape, so an in-app Vault claim likely fails with `bad_send`). A reproducing test comes first; if confirmed, the fix, a wallet → pool → mempool test and a `double_mint` refusal. A launch blocker | N: pool policy and wallet only; verifyBlock and apply unchanged | planned | Claude | Owner's lanes: Vault Security, Pool Share, Wallet | | | | straight after R01, ahead of R01a and R02 (Russell 26 Oct) |
+| R01b | Vault claim post: pool `queuedRewardClaim` takes the FS-1 claim body the wallet sends (found in the PR 107 coverage report: it still expects the old `to` and `proof` shape, so an in-app Vault claim likely fails with `bad_send`). A reproducing test comes first; if confirmed, the fix, a wallet → pool → mempool test and a `double_mint` refusal. A launch blocker | N: pool policy and wallet only; verifyBlock and apply unchanged | planned | Claude | Owner's lanes: Vault Security, Pool Share, Wallet | | | | straight after R01, ahead of R01c, R01a and R02 (Russell 26 Oct) |
+| R01c | Wallet remote-node privacy leak: the wallet sends each owned dest with a view-key-derived opening (`notes()`, `balance()`, `history()`) and the Reserve portal dest (`reservePortal()`) to any node that is not the pool host: public seeds after consent, and any own-node URL. Fix: remove the three remote calls (the local scan already supplies notes, Spendable and history, and nodes answer them 404); read the portal from downloaded Reserve state or the whole-book `reserveTrancheBook`; correct the warning copy and stop skipping it for an own node that is not on the same machine. Tests: a guard that no request to a non-loopback host carries a dest, `open`/`X-Shear-Open`, a view key or a portal id; a mutation check for each removed call; Spendable after login unchanged and still only from the local scan. A launch blocker | N: wallet only | planned | Claude | Owner's lanes: Privacy Auditor, Wallet Hardening | | | | straight after R01b, ahead of R01a and R02 (Russell 26 Oct, 20:40 GMT) |
 | R01a | Coinbase spend-key binding: a coinbase payout's admitPub bound to its payee | Y: a coinbase row's spend key must derive from the payee's admit base; the design says how that base is on chain or derivable after pruning | planned (design to Russell first) | Claude | Grok + Protocol, Privacy, pins; Grok bot evaluators read the design from Thu 29 Oct | | | | after R01, before R02 (date set on the design GO) |
 | R02 | Vault F1 lock-note binding | Y: binds the owner key point into the signed lock digest; new vectors | planned | Claude | Grok + Vault Security, Protocol, Wallet Hardening, pins | | | | 30 Oct (29–31 Oct) |
 | R03 | CLI reserve lock | N: Dart CLI wiring only | planned | Grok | Owner's lanes: Wallet Hardening, pins | | | | 31 Oct (30 Oct–1 Nov); starts after R02 merges (it builds on the new lock digest). Fallback: Claude, after R05 |
@@ -130,6 +151,7 @@ moves the later rows by a day.
 | R09 | Token spec (mint.shear.digital), spec only: the first half of the R09–R10 vortice session under rule 11 | N: a spec, no code | planned (post-mainnet) | Claude | Owner's lanes: all lanes | | | | after R19; no date until Russell sets one |
 | R10 | Private tokens build (a vort1 vortice): the second half of the R09–R10 vortice session under rule 11, after the R09 spec is signed off | Y: new tx kind and consensus rules | planned (post-mainnet) | Claude | Grok + all lanes, pins | | | | after R19; no date until Russell sets one |
 | R20 | Android ABIs beyond arm64-v8a | N: wallet packaging only | planned (post-mainnet) | Claude | Owner's lanes: Wallet | | | | after R19; no date until Russell sets one (Russell 26 Oct: arm64-only for launch) |
+| R21 | Pinned note-set snapshot (assumeutxo style): a node may load a UTXO/note-set snapshot whose hash is pinned in the release binary, becomes usable quickly, and still re-verifies from genesis in the background, refusing the snapshot if the result differs. The snapshot can come from anywhere, because the pin is trusted, not the source. No phone-home. Replaces the retired raw-datadir bootstrap (rule 12). **Light wallet privacy (Russell 26 Oct, 20:21 GMT):** the snapshot is public chain data and leaks nothing; light wallet mode is the risk, so it must meet all of these: the wallet downloads every block or output and scans locally, never sends a view key to a node, and never asks a node about specific notes or outputs; it defaults to the user's own node; when it uses someone else's node, remote-node mode shows a plain warning of what that node can still see (IP address and online times); and the Privacy Auditor reviews the design before any code and proposes any network-privacy measure there. **Wallet node setting (Russell 26 Oct, 20:30 GMT):** the user enters their own node's host or IP and port, defaulting to a local node; the wallet checks the node is on the right chain (genesis and pins) before using it; an optional pinned node-key fingerprint keeps a home node reached over the internet from being impersonated; and the remote-node warning shows whenever the node is not on the same machine. The Privacy Auditor reviews it with the rest of R21. No Tor | Y: a pinned snapshot hash in the release binary, and the rule that refuses a snapshot whose background re-verify differs | planned (post-mainnet) | Claude | Grok + Protocol, Privacy Auditor (the light-wallet design, before any code), pins | | | | after R19; no date until Russell sets one (Russell 26 Oct) |
 
 **Float (26 Oct, first estimate; superseded by the current float in the agent split note below).** With R09 and R10 after mainnet, the rows from R11 on can run about 6 days (5 to 8) sooner than their targets above. That puts the mainnet release ready around 8–9 Dec on target and 14–18 Dec if every row runs to the late end of its window, against the fixed genesis of 21 Dec 14:00 UK. Without the move it was 14–15 Dec on target, and a late run missed 21 Dec by 1–2 days. The target dates above are unchanged, and the float is not a new date. Plan against it, report any slip that uses it, and an earlier genesis needs Russell's consensus sign-off (rule 8).
 
