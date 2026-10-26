@@ -3,7 +3,7 @@
  * Paid ≥ current base; bounded; requote/drop after retarget.
  * Shares are not in the mempool.
  */
-import { canonicalHash } from './canonical_row.js';
+import { canonicalAliasPath, canonicalHash } from './canonical_row.js';
 import { droppedFieldOf } from './arrival_fields.js';
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
@@ -191,6 +191,10 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
+  // First, as on a block (arrival_fields.js): a value whose encoding is
+  // another value's would give two bodies one digest and one body key.
+  const alias = canonicalAliasPath(tx);
+  if (alias) return { ok: false, reason: 'canonical_alias', field: alias };
   // The fee note stays in the wallet. A leaf vote that names it is refused
   // before an unknown field is reported as unsigned.
   if (String(tx?.kind || '') === 'leaf-vote') {

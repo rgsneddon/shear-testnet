@@ -14,6 +14,9 @@
  *   changes the digest.
  * - A bigint is {"$big":"<decimal>"}. A number that JSON cannot carry
  *   (NaN, Infinity) encodes as null, as JSON.stringify writes it.
+ * - Those three encodings are each one value's: a body that holds a plain
+ *   {"$b"} or {"$big"} object, or a NaN or Infinity, would share a digest
+ *   with another body, so it is refused on arrival (canonicalAliasPath).
  */
 import { createHash } from 'node:crypto';
 
@@ -45,6 +48,31 @@ export function canonicalEncode(v) {
   }
   if (typeof v === 'number' && !Number.isFinite(v)) return 'null';
   return JSON.stringify(v === undefined ? null : v);
+}
+
+/**
+ * The path of the first value in `v` whose encoding is another value's, or
+ * '' (Russell 26 Oct: body-v2 has no aliases). A plain object holding only
+ * "$b" encodes like bytes and one holding only "$big" like a bigint; NaN
+ * and +/-Infinity encode like null. Byte containers are bytes, not objects.
+ */
+export function canonicalAliasPath(v, at = '') {
+  if (typeof v === 'number') return Number.isFinite(v) ? '' : (at || '.');
+  if (!v || typeof v !== 'object' || byteContainer(v)) return '';
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i += 1) {
+      const hit = canonicalAliasPath(v[i], `${at}[${i}]`);
+      if (hit) return hit;
+    }
+    return '';
+  }
+  const keys = Object.keys(v).filter((k) => v[k] !== undefined);
+  if (keys.length === 1 && (keys[0] === '$b' || keys[0] === '$big')) return at ? `${at}.${keys[0]}` : keys[0];
+  for (const k of keys) {
+    const hit = canonicalAliasPath(v[k], at ? `${at}.${k}` : k);
+    if (hit) return hit;
+  }
+  return '';
 }
 
 /** sha256(domain || canonicalEncode(v)). */

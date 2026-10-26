@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { byteContainer, canonicalEncode, canonicalHash } from './canonical_row.js';
+import { byteContainer, canonicalAliasPath, canonicalEncode, canonicalHash } from './canonical_row.js';
+import { arrivalFieldRejected } from './arrival_fields.js';
+import { admitMempool, emptyMempool } from './mempool.js';
 
 describe('canonical tx body encoding', () => {
   const bytes = Buffer.from('00ab7f', 'hex');
@@ -34,5 +36,40 @@ describe('canonical tx body encoding', () => {
   it('the hash is domain separated', () => {
     assert.notEqual(canonicalHash('one', { a: 1 }).toString('hex'), canonicalHash('two', { a: 1 }).toString('hex'));
     assert.equal(canonicalHash('one', { a: 1 }).length, 32);
+  });
+});
+
+
+describe('body-v2 has no aliases (Russell 26 Oct)', () => {
+  const real = Buffer.from('00ab7f', 'hex');
+  const body = (patch) => ({ kind: 'send', fee: 100, vin: [{ commit: Buffer.alloc(32, 1) }], vout: [{ kind: 'send', commit: Buffer.alloc(32, 2) }], ...patch });
+  // Each shape and the value it would pass for.
+  const shapes = [
+    ['{$b}', { $b: real.toString('hex') }, real, 'vout[0].commit.$b', (v) => body({ vout: [{ kind: 'send', commit: v }] })],
+    ['{$big}', { $big: '100' }, 100n, 'fee.$big', (v) => body({ fee: v })],
+    ['NaN', Number.NaN, null, 'fee', (v) => body({ fee: v })],
+    ['Infinity', Number.POSITIVE_INFINITY, null, 'fee', (v) => body({ fee: v })],
+    ['-Infinity', Number.NEGATIVE_INFINITY, null, 'vin[0].index', (v) => body({ vin: [{ commit: Buffer.alloc(32, 1), index: v }] })],
+  ];
+
+  for (const [name, shape, twin, at, plant] of shapes) {
+    it(`${name} encodes like another value, so it is refused on arrival and in the mempool`, () => {
+      assert.equal(canonicalEncode(shape), canonicalEncode(twin), `${name} aliases`);
+      const tx = plant(shape);
+      assert.equal(canonicalAliasPath(tx), at);
+      assert.deepEqual(arrivalFieldRejected(tx), { ok: false, reason: 'canonical_alias', field: at });
+      const pooled = admitMempool(emptyMempool(), tx);
+      assert.equal(pooled.ok, false);
+      assert.equal(pooled.reason, 'canonical_alias');
+      assert.equal(pooled.field, at);
+    });
+  }
+
+  it('real bytes, a bigint, a finite number and the byte forms a frame carries are no alias', () => {
+    const tx = body({ fee: 100n, vout: [{ kind: 'send', commit: { $hex: real.toString('hex') }, other: { type: 'Buffer', data: [...real] } }], height: 7 });
+    assert.equal(canonicalAliasPath(tx), '');
+    // A "$b" key beside another key encodes as itself, not as bytes.
+    assert.notEqual(canonicalEncode({ $b: real.toString('hex'), x: 1 }), canonicalEncode(real));
+    assert.equal(canonicalAliasPath({ $b: 'ab', x: 1 }), '');
   });
 });

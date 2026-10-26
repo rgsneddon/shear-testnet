@@ -5,7 +5,8 @@
  * field a body is not allowed to carry is refused here, on every path
  * (mempool admission, append, ingest, adopt, probe), not dropped there.
  *
- * Order: a she1 or shear1 address (chainAddressFrameRejected), then the
+ * Order: a value whose encoding is another's (canonical_alias), a she1 or
+ * shear1 address (chainAddressFrameRejected), then the
  * named refusals admission already gives (a coinbase observe,
  * amount, published v, or membership carry, an unsigned field, a reserve leak, a value opening on a hidden output, a
  * plaintext reserve amount, a memo envelope), then dropped_field for any
@@ -18,6 +19,7 @@ import { unsignedBodyField } from './spend.js';
 import { coinbaseObserveRejected } from './reserve_oracle.js';
 import { noteU64, unboundMembershipCarry } from './note.js';
 import { bech32Hrp } from './address.js';
+import { canonicalAliasPath } from './canonical_row.js';
 import { compactLockLeakRejected, withdrawLeakRejected, leafVoteLeakRejected } from './reserve_vault.js';
 
 /**
@@ -194,6 +196,8 @@ export function chainAddressFrameRejected(tx) {
  */
 export function arrivalFieldRejected(tx) {
   if (!tx || typeof tx !== 'object' || isBytes(tx) || Array.isArray(tx)) return null;
+  const alias = canonicalAliasPath(tx);
+  if (alias) return { ok: false, reason: 'canonical_alias', field: alias };
   const framed = chainAddressFrameRejected(tx);
   if (framed) return framed;
   if (tx.coinbase) {
