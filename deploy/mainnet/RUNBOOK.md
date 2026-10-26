@@ -159,9 +159,6 @@ and the live site webroot (backed up in step 4).
 ## Settled (Russell 26 Oct)
 
 - **Port 8080:** closed. Nothing listens on it (see above).
+- **Stratum on 1111:** TLS only (`stratum+ssl`), Russell 26 Oct, 20:30 GMT. No cleartext listener, and the testing-only `SHEAR_STRATUM_LAB_CLEARTEXT` flag never runs in production. The pool unit sets `SHEAR_STRATUM_REQUIRE_TLS=1`.
 - **Bootstrap publisher:** left out. Nodes sync and verify from genesis themselves (roadmap rule 12).
 - **The old units in `deploy/`** (`shear-node`, `shear-p2p`, `shear-pool`, `shear-pool-v4`, `shear-ibd-v4-mine`, `sheark-v4-afk`, `shear-bootstrap-publish`, and `nginx-boot.shear.digital.conf`): removed in their own small PR once the mainnet units are live. They still name testnet-v4 or v10 and use `Restart=always` or `on-failure`.
-
-## Open point for Russell
-
-- **Stratum on 1111: TLS or cleartext?** A public stratum bind without TLS is refused by the pool unless the lab flag `SHEAR_STRATUM_LAB_CLEARTEXT=1` is set, and that flag is meant for testing. The unit asks for TLS (`SHEAR_STRATUM_REQUIRE_TLS=1`, with the cert pair above), so miners connect with `stratum+ssl`. If mainnet should also take cleartext stratum, that is a ruling, because it means running a lab flag in production or adding a second listener.

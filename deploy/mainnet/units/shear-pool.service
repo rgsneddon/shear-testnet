@@ -37,7 +37,8 @@ Environment=SHEAR_STRATUM_AUTH=1
 # A public stratum bind needs TLS (pool/src/posture.js stratumListenPlan);
 # without the cert the pool refuses to start, it never falls back to
 # cleartext. The cert pair is copied for the shear group by the certbot
-# deploy hook (RUNBOOK step 8). Open point 1: TLS or cleartext on 1111.
+# deploy hook (RUNBOOK step 8). TLS only on mainnet (Russell 26 Oct): no
+# cleartext listener, and SHEAR_STRATUM_LAB_CLEARTEXT never runs here.
 Environment=SHEAR_STRATUM_REQUIRE_TLS=1
 Environment=SHEAR_STRATUM_TLS_CERT=/etc/shear/stratum-tls/fullchain.pem
 Environment=SHEAR_STRATUM_TLS_KEY=/etc/shear/stratum-tls/privkey.pem

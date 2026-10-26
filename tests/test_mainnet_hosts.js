@@ -68,7 +68,8 @@ describe('mainnet host files', () => {
     assert.doesNotMatch(pool, /^Requires=/m, 'starting the pool never starts the node');
     assert.match(pool, /^Environment=SHEAR_STRATUM_REQUIRE_TLS=1$/m);
     assert.match(pool, /^Environment=SHEAR_STRATUM_TLS_CERT=\/etc\/shear\/stratum-tls\/fullchain\.pem$/m);
-    assert.doesNotMatch(pool, /LAB_CLEARTEXT/);
+    // TLS only on mainnet (Russell 26 Oct): the lab cleartext flag is never set.
+    assert.doesNotMatch(pool.replace(/^#.*$/gm, ''), /LAB_CLEARTEXT/);
     assert.match(pool, /^EnvironmentFile=\/etc\/shear\/pool\.env$/m);
     assert.doesNotMatch(pool, /SPEND_SEED|SPEND_KEY|AUTH_PUB=/, 'no secret or operator key in the unit');
   });
@@ -175,6 +176,8 @@ describe('mainnet host files', () => {
     assert.match(rb, /p2p-b first, then p2p-a, then the pool/);
     assert.match(rb, /\*\*Port 8080 is closed\*\*/);
     assert.match(rb, /\*\*Bootstrap publisher:\*\* left out/);
+    assert.match(rb, /\*\*Stratum on 1111:\*\* TLS only/);
+    assert.doesNotMatch(rb, /Open point/);
     for (const step of ['Reinstall', 'Firewall', 'Install', 'Verify, don\'t paint']) assert.ok(rb.includes(step), step);
   });
 });
