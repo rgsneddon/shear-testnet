@@ -172,7 +172,7 @@ describe('most-work adopt', () => {
     assert.equal(local.mempool.some((t) => t.id === 'bounce-1'), false, 'refused send stays out of the mempool');
   });
 
-  it('ingest of an invalid child of the tip fails verifyBlock and keeps the tip', { timeout: CASE_MS }, async () => {
+  it('ingest of an invalid child of the tip fails verifyBlock and keeps the tip; a rest-frame address never reaches the chain', { timeout: CASE_MS }, async () => {
     const dest = destMiner();
     const store = tmpStore();
     assert.equal((await mineOne(store, dest)).ok, true);
@@ -180,28 +180,48 @@ describe('most-work adopt', () => {
     const now = Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000;
     const want = regtestBitsOverride(MAGIC_REGTEST);
     const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now });
+    const before = Buffer.from(store.tip().hash);
+    const height = store.tip().height;
+    // A field validators read (the coinbase jroot) is wrong: sealed under its
+    // own merkle root and proven, the child is still refused, and the tip stays.
+    const badRoot = Buffer.alloc(32, 0x5a);
+    const badTxs = [{ ...tpl.txs[0], jroot: badRoot }, ...tpl.txs.slice(1)];
+    const tplHeader = decodeHeader(Buffer.from(tpl.header));
+    const badHeader = encodeHeader({ ...tplHeader, merkleRoot: merkleRoot(badTxs.map(digestTx)), nonce: 0n });
+    const badFound = await mineHeaderParallel(badHeader, tpl.bits, MAX_TRIES, threads);
+    assert.ok(badFound && badFound.block, 'need pow on the bad child');
+    const refused = store.ingest([{ header: badFound.header, txs: badTxs, samples: tpl.samples, miner: dest }]);
+    assert.equal(refused.ok, false, 'a wrong jroot is refused');
+    assert.equal(refused.reason, 'admit_membership');
+    assert.equal(store.tip().height, height);
+    assert.equal(Buffer.from(store.tip().hash).equals(before), true);
+    // A rest-frame (shear1) or payment-code (she1) address on a coinbase
+    // output names its owner. Compaction would drop it and leave the clean
+    // child's leaf, so the arrival gate refuses it on the row as it arrived
+    // (Russell 26 Oct, ruling A; it superseded the 25 Oct 14:20 strip): the
+    // same header and proof of work, refused, the tip kept. The clean child
+    // under that header then appends.
     const found = await mineHeaderParallel(tpl.header, tpl.bits, MAX_TRIES, threads);
     assert.ok(found && found.block, 'need child pow');
     const id = newIdentity();
-    const poisoned = {
-      header: found.header,
-      txs: [{
+    for (const [addr, reason] of [[id.address, 'rest_frame_on_chain'], [id.paymentCode, 'silent_id_on_chain']]) {
+      const addressed = [{
         ...tpl.txs[0],
-        vout: tpl.txs[0].vout.map((o) => ({ ...o, address: id.address })),
-      }],
-      samples: tpl.samples,
-      miner: dest,
-    };
-    const before = Buffer.from(store.tip().hash);
-    const height = store.tip().height;
-    const refused = store.ingest([poisoned]);
-    assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'rest_frame_on_chain');
-    assert.equal(store.tip().height, height);
-    assert.equal(Buffer.from(store.tip().hash).equals(before), true);
+        vout: tpl.txs[0].vout.map((o) => ({ ...o, address: addr })),
+      }, ...tpl.txs.slice(1)];
+      assert.deepEqual(addressed.map((t) => digestTx(t).toString('hex')), tpl.txs.map((t) => digestTx(t).toString('hex')), 'the address is in no leaf');
+      const framed = store.ingest([{ header: found.header, txs: addressed, samples: tpl.samples, miner: dest }]);
+      assert.equal(framed.ok, false, `${reason}: refused, not stripped`);
+      assert.equal(framed.reason, reason);
+      assert.equal(store.tip().height, height);
+      assert.equal(store.blocks.some((b) => JSON.stringify(b.txs).includes(addr)), false, `${reason}: never on chain`);
+    }
+    const got = store.ingest([{ header: found.header, txs: tpl.txs, samples: tpl.samples, miner: dest }]);
+    assert.equal(got.ok, true, `the clean child ${got.reason || ''}`);
+    assert.equal(store.tip().height, height + 1);
   });
 
-  it('heavier rest-frame fork is refused with rest_frame_on_chain and the old tip remains', { timeout: CASE_MS }, async () => {
+  it('a heavier fork with an invalid block is refused and the old tip remains; its rest-frame address never reaches the chain', { timeout: CASE_MS }, async () => {
     const dest = destMiner();
     const local = tmpStore();
     assert.equal((await mineOne(local, dest)).ok, true);
@@ -210,8 +230,13 @@ describe('most-work adopt', () => {
     assert.equal((await mineOne(fork, dest)).ok, true);
     const id = newIdentity();
     const last = fork.blocks[1];
+    // The heavier fork's second block names a wrong jroot, a field
+    // validators read, and a rest-frame address. The arrival refusal waits
+    // for the compact body to verify, so the block keeps its consensus
+    // reason (admit_membership); either way the fork is refused.
     const txs = [{
       ...last.txs[0],
+      jroot: Buffer.alloc(32, 0x5a),
       vout: last.txs[0].vout.map((o) => ({ ...o, address: id.address })),
     }];
     const decoded = decodeHeader(last.header);
@@ -232,9 +257,10 @@ describe('most-work adopt', () => {
     const before = Buffer.from(local.tip().hash);
     const refused = local.ingest(poisoned);
     assert.equal(refused.ok, false);
-    assert.equal(refused.reason, 'rest_frame_on_chain');
+    assert.equal(refused.reason, 'admit_membership');
     assert.equal(local.tip().height, 1);
     assert.equal(Buffer.from(local.tip().hash).equals(before), true);
+    assert.equal(local.blocks.some((b) => JSON.stringify(b.txs).includes(id.address)), false, 'no rest-frame address on chain');
   });
 
   it('rebuildSpentB awaits a real promise when share prehash is cold', { timeout: CASE_MS }, async () => {

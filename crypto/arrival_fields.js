@@ -5,7 +5,8 @@
  * field a body is not allowed to carry is refused here, on every path
  * (mempool admission, append, ingest, adopt, probe), not dropped there.
  *
- * Order: the named refusals admission already gives (a coinbase observe,
+ * Order: a she1 or shear1 address (chainAddressFrameRejected), then the
+ * named refusals admission already gives (a coinbase observe,
  * amount, published v, or membership carry, an unsigned field, a reserve leak, a value opening on a hidden output, a
  * plaintext reserve amount, a memo envelope), then dropped_field for any
  * other field compaction would drop that is neither on the strip list nor
@@ -16,6 +17,7 @@ import { reserveRowNanos } from './reserve_vault.js';
 import { unsignedBodyField } from './spend.js';
 import { coinbaseObserveRejected } from './reserve_oracle.js';
 import { noteU64, unboundMembershipCarry } from './note.js';
+import { bech32Hrp } from './address.js';
 import { compactLockLeakRejected, withdrawLeakRejected, leafVoteLeakRejected } from './reserve_vault.js';
 
 /**
@@ -160,11 +162,40 @@ export function droppedFieldOf(tx) {
 }
 
 /**
+ * A payment-code (she1) or rest-frame (shear1) address on the row, which
+ * would name its owner on chain: silent_id_on_chain or rest_frame_on_chain,
+ * as chain.js judged the full rows. Compaction drops an output address, so
+ * the refusal is read here, on the row as it arrived. The fields are the
+ * ones chain.js checks: a coinbase's output addresses, and a body's
+ * from/to/miner/payer and its vin and vout addresses.
+ */
+export function chainAddressFrameRejected(tx) {
+  if (!tx || typeof tx !== 'object') return null;
+  const fields = [];
+  const push = (a) => { if (typeof a === 'string' && a.trim()) fields.push(a); };
+  if (tx.coinbase) {
+    for (const o of Array.isArray(tx.vout) ? tx.vout : []) push(o?.address);
+  } else {
+    push(tx.from); push(tx.to); push(tx.miner); push(tx.payer);
+    for (const v of Array.isArray(tx.vin) ? tx.vin : []) { push(v?.address); push(v?.miner); }
+    for (const o of Array.isArray(tx.vout) ? tx.vout : []) { push(o?.address); push(o?.miner); }
+  }
+  for (const a of fields) {
+    const hrp = bech32Hrp(a.trim());
+    if (hrp === 'she') return { ok: false, reason: 'silent_id_on_chain' };
+    if (hrp === 'shear') return { ok: false, reason: 'rest_frame_on_chain' };
+  }
+  return null;
+}
+
+/**
  * Why the arriving row may not be carried, or null. Run before compaction
  * on every path a row arrives by.
  */
 export function arrivalFieldRejected(tx) {
   if (!tx || typeof tx !== 'object' || isBytes(tx) || Array.isArray(tx)) return null;
+  const framed = chainAddressFrameRejected(tx);
+  if (framed) return framed;
   if (tx.coinbase) {
     const observed = coinbaseObserveRejected([tx]);
     if (observed) return observed;
