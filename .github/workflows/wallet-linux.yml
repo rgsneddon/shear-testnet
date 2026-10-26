@@ -5,9 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       pin:
-        description: Public two-part wallet pin (release tag)
-        required: true
-        default: '0.35'
+        # Empty: the pin is the PKGBUILD's pkgver, so a stale default can never
+        # disagree with the tree it builds. A pin given here must equal it.
+        description: Public two-part wallet pin (release tag); empty reads wallet/pack/archlinux/PKGBUILD
+        required: false
+        default: ''
       build_number:
         description: Flutter build-number
         required: true
@@ -25,6 +27,15 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: Wallet pin
+        env:
+          ASKED: ${{ inputs.pin }}
+        run: |
+          set -euo pipefail
+          have="$(sed -n 's/^pkgver=//p' wallet/pack/archlinux/PKGBUILD | head -1)"
+          pin="${ASKED:-$have}"
+          if [ "$pin" != "$have" ]; then echo "::error::pin $pin is not the PKGBUILD's pkgver $have"; exit 1; fi
+          echo "WALLET_PIN=$pin" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with:
@@ -44,7 +55,7 @@ jobs:
           flutter pub get
           bash ../crypto/native/build-linux-admit-so.sh
           DEFINE="$(python3 ../crypto/native/stamp_admit_pin.py --define ../crypto/native/admit/target/release/libshear_admit.so)"
-          flutter build linux --release --build-name=${{ inputs.pin }}.0 --build-number=${{ inputs.build_number }} $DEFINE
+          flutter build linux --release --build-name=${{ env.WALLET_PIN }}.0 --build-number=${{ inputs.build_number }} $DEFINE
           python3 ../scripts/isa_scan.py ../wallet/native/libshear_v3.so ../crypto/randomx/build/librandomx.a ../crypto/native/admit/target/release/libshear_admit.so
           # Everything built here that the zip ships: the runner and every
           # plugin, not Flutter's prebuilt engine or the Dart AOT libapp.so.
@@ -54,7 +65,7 @@ jobs:
           python3 ../scripts/isa_scan.py $B/shear_wallet $(find $B/lib -maxdepth 1 -type f -name '*.so' ! -name 'libflutter_linux_gtk.so' ! -name 'libapp.so' | sort)
       - name: Bundle libsodium and zip linux + arch
         env:
-          PIN: ${{ inputs.pin }}
+          PIN: ${{ env.WALLET_PIN }}
         run: |
           python3 - <<'PY'
           import os, shutil, sys, zipfile
@@ -151,8 +162,8 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: shear-wallet-${{ inputs.pin }}-linux-arch
+          name: shear-wallet-${{ env.WALLET_PIN }}-linux-arch
           path: |
-            dist/shear-wallet-${{ inputs.pin }}-linux.zip
-            dist/shear-wallet-${{ inputs.pin }}-archlinux.zip
-            dist/shear-wallet-${{ inputs.pin }}-fedora.zip
+            dist/shear-wallet-${{ env.WALLET_PIN }}-linux.zip
+            dist/shear-wallet-${{ env.WALLET_PIN }}-archlinux.zip
+            dist/shear-wallet-${{ env.WALLET_PIN }}-fedora.zip
