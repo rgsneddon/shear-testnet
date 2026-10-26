@@ -97,6 +97,15 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
     - A test that keeps other vortices off the chain or away from the
       Reserve guards the Vault/Reserve, so it stays in. Examples are
       `test_vort1_register.js` and `crypto/vortex.test.js`.
+12. **Bootstrap (Russell 2026-10-26, 20:18 GMT).** The old raw-datadir
+    bootstrap is retired, for our own nodes and for users.
+    - Mainnet ships no datadir snapshot publisher, and no client fetches a
+      snapshot. Every node syncs and verifies from genesis itself.
+    - Until R21 lands, users who don't run a node use light wallet mode
+      against a node they choose, and node runners rely on pruning.
+    - The old bootstrap is removed from the wallet, node and site before
+      the v12 cut (R16). The places are listed in the Review of the PR that
+      recorded this rule.
 
 ## Rows
 
@@ -130,6 +139,7 @@ moves the later rows by a day.
 | R09 | Token spec (mint.shear.digital), spec only: the first half of the R09–R10 vortice session under rule 11 | N: a spec, no code | planned (post-mainnet) | Claude | Owner's lanes: all lanes | | | | after R19; no date until Russell sets one |
 | R10 | Private tokens build (a vort1 vortice): the second half of the R09–R10 vortice session under rule 11, after the R09 spec is signed off | Y: new tx kind and consensus rules | planned (post-mainnet) | Claude | Grok + all lanes, pins | | | | after R19; no date until Russell sets one |
 | R20 | Android ABIs beyond arm64-v8a | N: wallet packaging only | planned (post-mainnet) | Claude | Owner's lanes: Wallet | | | | after R19; no date until Russell sets one (Russell 26 Oct: arm64-only for launch) |
+| R21 | Pinned note-set snapshot (assumeutxo style): a node may load a UTXO/note-set snapshot whose hash is pinned in the release binary, becomes usable quickly, and still re-verifies from genesis in the background, refusing the snapshot if the result differs. The snapshot can come from anywhere, because the pin is trusted, not the source. No phone-home. Replaces the retired raw-datadir bootstrap (rule 12) | Y: a pinned snapshot hash in the release binary, and the rule that refuses a snapshot whose background re-verify differs | planned (post-mainnet) | Claude | Grok + Protocol, Privacy, pins | | | | after R19; no date until Russell sets one (Russell 26 Oct) |
 
 **Float (26 Oct, first estimate; superseded by the current float in the agent split note below).** With R09 and R10 after mainnet, the rows from R11 on can run about 6 days (5 to 8) sooner than their targets above. That puts the mainnet release ready around 8–9 Dec on target and 14–18 Dec if every row runs to the late end of its window, against the fixed genesis of 21 Dec 14:00 UK. Without the move it was 14–15 Dec on target, and a late run missed 21 Dec by 1–2 days. The target dates above are unchanged, and the float is not a new date. Plan against it, report any slip that uses it, and an earlier genesis needs Russell's consensus sign-off (rule 8).
 
