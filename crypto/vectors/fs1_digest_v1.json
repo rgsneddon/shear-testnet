@@ -94,6 +94,52 @@
         }
       ],
       "digest": "2d0a60142789d31ffa479e113e4fe260d1716a4d67ecde0a247d137081fb9fae"
+    },
+    {
+      "kind": "send",
+      "anchor": 8,
+      "fee": 100,
+      "nIn": 1,
+      "vout": [
+        {
+          "kind": "send",
+          "noteCommit": "f173e859f29bce17d36375ea37c8bb7e6afe6e9be95e2fecdf835fb0012eb0b6",
+          "commit": "2637bb49964bc75d1a18f00c2c101229d62bb493d25e55cb6ab3a9c63857223a",
+          "admitPub": "2d554db67f971e25c94061749c029edddb906546e107857464f04bf70c50bdd3",
+          "rangeProof": "99b07880dd347750f2df1f01021ae2158bea74103107addbc0c4cf9c1ad506801d74c1b636b5ec65c48c100282f405e865a919d32199b5163703a42537f91c99f8bfd8f22fa03a9a8cc65bf137f012a123a124736f09f4b49fbf4e84b1605637",
+          "rEph": "6d9fec1d249763291cb6e8bb9a9df2757c1f4318249c36a323c81ead05316106",
+          "rCt": "ad1066876fcd1c4d1a21c41bf24b5ffb50964f17019a1965373d3be75e427951",
+          "amtCt": "398ca312adb6eab2",
+          "dest20": "03c014e0807ba61bd312ac437602128a0ca75471"
+        },
+        {
+          "kind": "send",
+          "noteCommit": "5ad05a8d2394795fc99f7ff25464bbdd05db0e47a8a24d8c831b7eb2131daf6c",
+          "commit": "85325389ecd3320018c99bdb41d04ce6a0503f90868121716eb25f620a036968",
+          "admitPub": "4fbd7012d9c552015f2541d8f1996fbbbdb008a60bd9f540310022f1075dbd6f",
+          "rangeProof": "bf57eacd40049f6e9b138117f6a6dcbfe56996f81763b3c2e0520a2b47b92691bc97510e2c74a1d39ccd048ea25b77e897328595679cd7909bbf952812fdad86f1724219e31bbc64898089a93d6ddec96f1340d975addc389ccf36eaf18906bf",
+          "rEph": "ae6e39f7eaf9d11301f9ae705519088b6359d720158b7919ff6644b7631d0255",
+          "rCt": "403a0f9e1636fa8d19e2876faa5a0615df4197409552750467a6e2c4af783f9e",
+          "amtCt": "1c3a1bc0b602517b",
+          "dest20": "7a16f55b0c0ccce0e1aa235dc2c131f14d206f62"
+        },
+        {
+          "kind": "dummy",
+          "noteCommit": "63701b22b40cd5829d7d981a75dcb89a8ce618231cdcb0530339dea5e291f6bd",
+          "commit": "d0a3afbef0ed5f5bde341cf5856fb7a18ab6ae411f9f40d5562894dc3c957454",
+          "admitPub": "92baed2f24b3e12cc3a1f40d5a6788639a7961deb0d058c9f868dac3b3227a3e",
+          "rangeProof": "2dea7a4580b7268b3d5016320cac9e7ac5875970bb325d0b12e4f3f0b107851f97861d56f8eb880fa0aedd5d3d5b707e2eddf7ac47342ca56a77257fe828e9ec17f1bd7420a62832bfcbdc2b54428032fec7d82d23dafc332acf601e2ad884a3",
+          "dest20": "67f0ab519d08d3dc088948dfdd4b0b6341d3c855"
+        }
+      ],
+      "digest": "ef7c7f105a6cb14d7828acb5d68580745cc8a203ffcf7c8d9677c9e1cb863a48",
+      "memoCt": {
+        "v": 2,
+        "nonce": "AAECAwQFBgcICQoL",
+        "mac": "EBESExQVFhcYGRobHB0eHw==",
+        "ct": "QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"
+      },
+      "memoDigest": "7c21c111556fc2e18b2f396baee280eaf5243651de6891f5a15258484988084b"
     }
   ]
 }

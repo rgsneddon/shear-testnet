@@ -325,6 +325,8 @@ export const TX_DIGEST_LAW = 'body-v2';
 export const COINBASE_V_LAW = 'opens';
 /** chain.js coinbaseLabelRejected: every coinbase row's noteCommit is the one its own dest20 derives. */
 export const COINBASE_NC_LAW = 'dest-bound';
+/** fs1_spend.js txBodyDigestFs1: an FS-1 spend signs its top-level memo envelope. */
+export const FS1_MEMO_LAW = 'bound';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 /** Chain magics are reserve_books.js. This module re-exports them. */
 /**
@@ -507,6 +509,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     // A coinbase label credits the dest it names, so it is bound to the
     // row's own dest20, hasher payouts included.
     `COINBASE_NC=${COINBASE_NC_LAW}`,
+    // An FS-1 spend signs its top-level memo envelope, so a relayer cannot
+    // strip or swap it.
+    `FS1_MEMO=${FS1_MEMO_LAW}`,
     `COMPACT_TO=${COMPACT_TO}`,
     `VAULT_GAP=${VAULT_GAP_LAW}`,
     `POT_PROP=${POT_PROP}`,

@@ -14,6 +14,7 @@ import { MAGIC_TESTNET } from './asert.js';
 import { asU8, pointBytes, scalarBytes } from './note.js';
 import { jroot as bookJroot } from './admit.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
+import { canonicalEncode } from './canonical_row.js';
 import {
   fs1BlobCap,
   fs1NativeLoaded,
@@ -31,6 +32,13 @@ export const FS1_RECORD_BYTES = 321;
 export const FS1_DEPTH = 7;
 export const FS1_INPUT_MAX = 8;
 export const FS1_DIGEST_DST = 'shear-admit-fs1-txd';
+/** Tags the signed top-level memo envelope (FS1_MEMO=bound). */
+export const FS1_MEMO_DST = 'shear-fs1-memo-v1';
+
+/** sha256 of a memo envelope's canonical encoding: the bytes the spend signs. */
+export function fs1MemoDigest(memoCt) {
+  return createHash('sha256').update(canonicalEncode(memoCt)).digest();
+}
 
 function bytesOf(v) {
   if (v == null || v === '' || v === false) return null;
@@ -166,6 +174,13 @@ export function txBodyDigestFs1(tx, magic = MAGIC_TESTNET) {
   parts.push(lenPref(Buffer.from(String(tx?.payoutPortalId || '').toLowerCase())));
   const reserveSuffix = reserveDigestSuffix(tx);
   if (reserveSuffix) parts.push(reserveSuffix);
+  // The top-level memo envelope is signed (Russell 26 Oct, FS1_MEMO=bound).
+  // A tx with no memo keeps its digest, so adding a memo to it changes the
+  // digest as stripping or swapping one does: each fails the spend.
+  if (tx?.memoCt != null) {
+    parts.push(Buffer.from(FS1_MEMO_DST));
+    parts.push(fs1MemoDigest(tx.memoCt));
+  }
   return createHash('sha256').update(Buffer.concat(parts)).digest();
 }
 

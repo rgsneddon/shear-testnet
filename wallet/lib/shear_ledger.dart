@@ -11682,6 +11682,7 @@ class ShearLedger implements ReadProofSink {
     String id = '',
     Uint8List? withdrawNonce,
     int? reserveNanos,
+    Map<String, dynamic>? memoCt,
   }) async {
     if (notes.isEmpty || notes.length > kFs1InputMax)
       throw StateError('fs1_inputs');
@@ -11738,6 +11739,7 @@ class ShearLedger implements ReadProofSink {
       id: id,
       withdrawNonce: withdrawNonce,
       reserveNanos: reserveNanos,
+      memoCt: memoCt,
     );
     Map<String, dynamic> proved;
     try {
@@ -12278,6 +12280,7 @@ class ShearLedger implements ReadProofSink {
       sealed: sealed,
       fee: feeUnits,
       spendSeed: spendSeed,
+      memoCt: memoCt,
     );
     final vin = spend.vin;
     final proofs = spend.proofs;
@@ -13433,6 +13436,7 @@ class ShearLedger implements ReadProofSink {
           sealed: vouts,
           fee: flowFee,
           spendSeed: spendSeed,
+          memoCt: memoCt,
         );
         vin = spend.vin;
         excess = spend.excess;
@@ -13609,6 +13613,7 @@ class ShearLedger implements ReadProofSink {
             sealed: vouts,
             fee: flowFee,
             spendSeed: spendSeed,
+            memoCt: memoCt,
           );
           vin = spend.vin;
           excess = spend.excess;

@@ -716,6 +716,16 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
       ],
     });
     assert.equal(memoEnvelopeRejected(compactTx(built.tx).memoCt), null, 'the memo envelope survives compaction');
+    // The spend signs the memo (FS1_MEMO=bound): a relayer that strips it or
+    // swaps in another envelope breaks the proof, in the mempool and on a block.
+    const { memoCt: _memo, ...stripped } = built.tx;
+    const swapped = { ...built.tx, memoCt: memoSeal(who.dest, 'not what was sent', Buffer.alloc(32, 9)) };
+    for (const [name, tx] of [['stripped', stripped], ['swapped', swapped]]) {
+      const pooled = admitMempool(emptyMempool(), tx, opts());
+      assert.equal(pooled.ok, false, `${name} memo`);
+      const verdict = await Promise.resolve(blockVerdict(store, who.dest, tx));
+      assert.equal(verdict.ok, false, `${name} memo on a block`);
+    }
     resetFs1Tree();
     resetFs1VerifyCache();
     const walked = await droppedBlockReads({

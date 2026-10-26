@@ -23,6 +23,7 @@ import {
   fs1RootAt,
   resetFs1Tree,
   txBodyDigestFs1,
+  fs1MemoDigest,
 } from './fs1_spend.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,7 @@ function vectorTx(c) {
     fee: c.fee,
     vin: Array.from({ length: c.nIn }, () => ({ commit: Buffer.alloc(32, 7) })),
     vout: c.vout,
+    ...(c.memoCt ? { memoCt: c.memoCt } : {}),
   };
 }
 
@@ -63,6 +65,23 @@ describe('FS-1 body digest', () => {
       differs({ ...vectorTx(c), vout });
     }
     differs({ ...vectorTx(c), vout: [...c.vout].reverse() });
+  });
+
+  it('signs the top-level memo envelope: stripped, swapped or added, the digest moves (FS1_MEMO=bound)', () => {
+    const memoCase = vector.cases.find((c) => c.memoCt);
+    assert.ok(memoCase, 'the shared vector has a memo case');
+    assert.equal(fs1MemoDigest(memoCase.memoCt).toString('hex'), memoCase.memoDigest);
+    const { ct, mac, nonce, v } = memoCase.memoCt;
+    assert.equal(fs1MemoDigest({ v, nonce, mac, ct }).toString('hex'), memoCase.memoDigest, 'key order does not matter');
+    const signed = txBodyDigestFs1(vectorTx(memoCase)).toString('hex');
+    assert.equal(signed, memoCase.digest);
+    const { memoCt: _m, ...stripped } = vectorTx(memoCase);
+    assert.notEqual(txBodyDigestFs1(stripped).toString('hex'), signed, 'stripped');
+    assert.equal(txBodyDigestFs1(stripped).toString('hex'), vector.cases[0].digest, 'a tx with no memo keeps its digest');
+    const swapped = { ...vectorTx(memoCase), memoCt: { ...memoCase.memoCt, ct: 'R'.repeat(ct.length) } };
+    assert.notEqual(txBodyDigestFs1(swapped).toString('hex'), signed, 'swapped');
+    const added = { ...vectorTx(vector.cases[0]), memoCt: memoCase.memoCt };
+    assert.notEqual(txBodyDigestFs1(added).toString('hex'), vector.cases[0].digest, 'added');
   });
 
   it('does not bind fields a relay may drop (maxLevy, sig, excess, vin commits)', () => {
