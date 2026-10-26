@@ -19,7 +19,6 @@ node/tests/test_burial_offers_v12.js PRHASH Pending, not tracked: its jit-full a
 
 # Tracked: files PR 3 must move to the shared regtest mining module. They pass
 # today and stay in the full suite; a track row only keeps them from being lost.
-node/tests/test_ibd_unsigned.js PR3 track Mines testnet-difficulty blocks with synchronous mineTemplate on the main thread (about 2^17 hashes each), which blocks the event loop and the file's own timeout.
 node/tests/test_pot_prop.js PR3 track Its older subtests mine a testnet-difficulty block with synchronous mineTemplate on the main thread; the snapshot subtest already mines on regtest.
 node/tests/test_load_verify_v12.js PR3 track Mines testnet-difficulty blocks in a spawned child (event loop free, about 20 min); move to the shared module.
 node/tests/test_wire_sharebatch.js PR3 track Synchronous findShare at the share floor (about 256 hashes) on the main thread.
