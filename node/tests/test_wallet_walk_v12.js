@@ -34,7 +34,9 @@ function loadBook(store, H, fan, own, dest, other, destNc, otherNc) {
       if (mine) placed += 1;
       total += 1;
       const nc = mine ? destNc : otherNc;
-      vout.push({ kind: 'pot', noteCommit: nc });
+      // An honest coinbase row carries the dest20 its label derives from
+      // (COINBASE_NC=dest-bound); the ledger credits nothing else.
+      vout.push({ kind: 'pot', noteCommit: nc, dest20: hash20FromAddress(mine ? dest : other) });
       store.explorer.push({
         id: `${h}:${j}:${own}:${fan}`,
         to: mine ? dest : other,
