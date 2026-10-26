@@ -8,6 +8,9 @@ import { encodeDest } from '../../crypto/address.js';
 import { createStore } from '../src/store.js';
 import { createRpc, hostIsLoopback, rpcHostAllowed, rpcLoopbackBind } from '../src/rpc.js';
 import { decodeHeader } from '../../crypto/header.js';
+import { merkleRoot } from '../../crypto/merkle.js';
+import { decodeWireBlock } from '../src/p2p.js';
+import { digestTx } from '../src/chain.js';
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 3));
@@ -138,6 +141,13 @@ describe('node RPC', () => {
         assert.equal(sendTx.to, undefined);
         assert.equal(sendTx.nanos, undefined);
       }
+      // HTTP follow reads the p2p frame (wire=1): decoded as a peer's block
+      // is, its body hashes to the header's merkle root (TX_DIGEST=body-v2).
+      const wired = await get(`${base}/block?height=1&wire=1`);
+      assert.equal(wired.json.ok, true);
+      const decoded = decodeWireBlock(wired.json);
+      assert.equal(decoded.txs.length, blk.json.txs.length);
+      assert.ok(merkleRoot(decoded.txs.map(digestTx)).equals(Buffer.from(decodeHeader(decoded.header).merkleRoot)), 'wire body matches its header');
       const jroot = await get(`${base}/jroot`);
       assert.equal(jroot.json.admit, 'ADMITv3');
       assert.equal(typeof jroot.json.jroot, 'string');

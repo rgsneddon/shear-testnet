@@ -104,7 +104,9 @@ export async function pullNextHttpBlock({
   // peers=0 is not idle when the public book is taller. Status reads this.
   noteHttpSync(store, tip, local);
   if (local >= tip) return false;
-  const body = await readJson(`${base}/block?height=${local + 1}`, signal, fetchImpl);
+  // The p2p frame, not the hex view: a body read back from plain hex has
+  // lost its byte types, so its digest no longer matches the header.
+  const body = await readJson(`${base}/block?height=${local + 1}&wire=1`, signal, fetchImpl);
   if (!body || body.ok === false || !body.header) return false;
   const block = decodeWireBlock(body);
   const nextH = Math.max(1, Math.floor(Number(block.height) || (local + 1)));

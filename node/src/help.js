@@ -60,7 +60,7 @@ function sectionRpc() {
     '  GET /api/network | /network synced nodes, tip hash, proven round hashes. No dest, amount, or claimed hash rate',
     '  GET /header?height=N        one header',
     '  GET /headers?from=&to=      header window',
-    '  GET /block?height=N         compact block',
+    '  GET /block?height=N         compact block (&wire=1: the p2p frame, as HTTP follow reads it)',
     '  GET /blocks?from=&to=       compact window',
     '  GET /chaintips /reorgs /policy /jroot /fingerprint /fluxset',
     '  Notes, balance, and history are owner-side: scan /blocks, open amtCt. No route returns an amount.',
