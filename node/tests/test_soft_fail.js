@@ -111,6 +111,26 @@ describe('a refused block is never fetched again on the same binary', () => {
     assert.equal(blocked.has('dd'.repeat(32)), false);
   });
 
+  it('wiring: p2p records a refusal only through noteRefusedBlock or notePeerOnlyRefusal', () => {
+    const src = fs.readFileSync(new URL('../src/p2p.js', import.meta.url), 'utf8');
+    const body = (name) => {
+      const at = src.indexOf(`export function ${name}(`);
+      assert.ok(at >= 0, name);
+      return src.slice(at, src.indexOf(`${String.fromCharCode(10)}}${String.fromCharCode(10)}`, at));
+    };
+    const writes = (s, re) => (s.match(re) || []).length;
+    // Every write to a peer's fail sets sits in one of the three recorders.
+    const recorders = ['noteSoftFail', 'noteRefusedBlock', 'notePeerOnlyRefusal'].map(body).join(String.fromCharCode(10));
+    assert.equal(writes(src, /failed\.add\(/g), writes(recorders, /failed\.add\(/g), 'failed.add only in a recorder');
+    assert.equal(writes(src, /softFailed\.set\(/g), writes(recorders, /softFailed\.set\(/g), 'softFailed.set only in a recorder');
+    assert.equal(writes(src, /noteSoftFail\(/g), 2, 'noteSoftFail is defined once and called only by noteRefusedBlock');
+    // The ingest result handler routes every refusal through them.
+    const handler = src.slice(src.indexOf('function ingestDecodedFork('));
+    const done = handler.slice(0, handler.indexOf('noteCapIdle(sock);'));
+    assert.ok(writes(done, /noteRefusedBlock\(rec, refusedHash, reason\)/g) >= 3, 'final and soft refusals are noted');
+    assert.match(done, /notePeerOnlyRefusal\(rec, refusedHash\)/, 'a peer-only fault is scored');
+  });
+
   it('liveness: every reason the arrival path can return is never fetched again from that peer on the same binary', () => {
     const reasons = arrivalReasons();
     assert.ok(reasons.size > 50, `found ${reasons.size} reasons`);

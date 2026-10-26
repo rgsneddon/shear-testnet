@@ -3576,10 +3576,14 @@ export function createStore(dir, {
     };
   }
 
-  /** The arrival refusal as a result, for a block that verified. */
+  /**
+   * The arrival refusal as a result, for a block that verified. The compact
+   * body the header commits passed, so the fault is only in the rows the
+   * peer sent: peerOnly (p2p scores that peer and never soft-notes the hash).
+   */
   function arrivalRefused(verifyOpts) {
     const r = verifyOpts?.arrivalRefusal;
-    return r ? { ok: false, reason: r.reason, field: r.field, at: r.at, tip: tip() } : null;
+    return r ? { ok: false, reason: r.reason, field: r.field, at: r.at, peerOnly: true, tip: tip() } : null;
   }
 
   /**
@@ -4679,7 +4683,7 @@ export function createStore(dir, {
     // A long prefix is a loop. Recursing once per block overflows on a
     // multi-thousand-block adopt, which hid the earlier body fault.
     const takeOne = (i, c) => {
-      if (!c?.ok) return { ok: false, reason: c.reason, at: i };
+      if (!c?.ok) return { ok: false, reason: c.reason, at: i, ...(c.peerOnly ? { peerOnly: true } : {}) };
       const lean = leanBlock({
         ...fork[i],
         magic: bookMagic,
@@ -4760,7 +4764,7 @@ export function createStore(dir, {
         ...forkRun.opts(),
         burialTip,
       });
-      if (!check.ok) return { ok: false, reason: check.reason, at: i };
+      if (!check.ok) return { ok: false, reason: check.reason, at: i, ...(check.peerOnly ? { peerOnly: true } : {}) };
       stampCredits(fork[i], units[i]);
       const lean = leanBlock({
         ...fork[i],
@@ -4823,7 +4827,7 @@ export function createStore(dir, {
         }),
       );
       if (check.evmSession) trialSession = check.evmSession;
-      if (!check.ok) return { ok: false, reason: check.reason, at: i };
+      if (!check.ok) return { ok: false, reason: check.reason, at: i, ...(check.peerOnly ? { peerOnly: true } : {}) };
       stampCredits(fork[i], units[i]);
       const lean = leanBlock({
         ...fork[i],

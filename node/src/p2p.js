@@ -1011,6 +1011,25 @@ export function upgradeableHold(rec, headers, localHeight, now = Date.now(), pin
   return '';
 }
 
+/**
+ * A refusal whose fault is only in the rows this peer sent (fields the
+ * header does not commit to: the store's `peerOnly`), not in the block: the
+ * peer is scored as for a final fail and is never asked for that block
+ * again, while the hash itself is never soft-noted, so the honest block
+ * stays fetchable from every other peer (Russell 26 Oct). Returns true when
+ * the peer has crossed the ban threshold.
+ */
+export function notePeerOnlyRefusal(rec, hash) {
+  if (!rec) return false;
+  const h = String(hash || '').toLowerCase();
+  if (h) {
+    if (!(rec.failed instanceof Set)) rec.failed = new Set(Array.isArray(rec.failed) ? rec.failed : []);
+    rec.failed.add(h);
+    if (rec.softFailed instanceof Map) rec.softFailed.delete(h);
+  }
+  return noteExpensiveFail(rec);
+}
+
 /** Ban only on final fails. `prev` / native-missing must not increment expensiveFails. */
 export function recordIngestFail(rec, reason) {
   if (!rec) return false;
@@ -2738,6 +2757,43 @@ export function createP2p({
    * counted as a miss, so it starts again; a refused (lying) answer keeps it:
    * a frame that fails its claim is not an answer and resets nothing.
    */
+  /**
+   * After a peer-only refusal the block itself may be honest: it leaves this
+   * peer's asks and goes to another peer that is ahead and has not failed it.
+   * With none connected, catch-up runs again, so a peer that connects later
+   * serves it (Russell 26 Oct).
+   */
+  function fetchElsewhere(sock, rec, hash) {
+    const h = String(hash || '').toLowerCase();
+    if (!h) return;
+    if (Array.isArray(rec.want)) rec.want = rec.want.filter((x) => String(x).toLowerCase() !== h);
+    rec.pending?.delete(h);
+    if (!rec.pending || rec.pending.size === 0) rec.pendingAt = 0;
+    rec.syncing = false;
+    // It served a body it altered: not the catch-up peer for a while, as a
+    // peer past the getblock miss limit is not.
+    rec.demoteUntil = Date.now() + GETBLOCK_DEMOTE_MS;
+    rec.syncEligible = false;
+    rec.height = 0;
+    rec.work = null;
+    rec.hash = null;
+    inflightBlocks.delete(h);
+    for (const [other, orec] of peers) {
+      if (other === sock || other.destroyed || !orec) continue;
+      if (!(Number(orec.helloAt) > 0) || !peerTipAhead(orec) || failActive(orec, h)) continue;
+      if (!orec.pending) orec.pending = new Set();
+      if (orec.pending.has(h)) return;
+      if (!takeBlockAsk(orec)) continue;
+      orec.pending.add(h);
+      inflightBlocks.add(h);
+      orec.pendingAt = Date.now();
+      orec.syncing = true;
+      send(other, { type: 'getblock', magic, hash: h });
+      return;
+    }
+    scheduleCatchup();
+  }
+
   function reassignBusyHash(sock, rec, hash, { keepStreak = false } = {}) {
     if (!keepStreak) rec.busyStreak = 0;
     rec.askPaused = true;
@@ -3130,7 +3186,9 @@ export function createP2p({
         if (rec) {
           for (const key of headerKeys) rec.verifying?.delete(key);
           if (!rec.failed) rec.failed = new Set();
-          if (!got?.ok && lastHash) {
+          if (!got?.ok && lastHash && got?.peerOnly === true) {
+            // Only the rows this peer sent are at fault: scored, below.
+          } else if (!got?.ok && lastHash) {
             const reason = got?.reason;
             const needsBook = reason === 'prev' || reason === 'samples_pruned' || reason === 'hash_bonus' || reason === 'side_hold' || isUpgradeableIngestFail(reason);
             if (!needsBook) {
@@ -3169,7 +3227,11 @@ export function createP2p({
               } else if (isFinalIngestFail(reason)) noteRefusedBlock(rec, refusedHash, reason);
             }
           }
-          if (!got?.ok && recordIngestFail(rec, got?.reason)) {
+          const banned = !got?.ok && (got?.peerOnly === true
+            ? notePeerOnlyRefusal(rec, refusedHash)
+            : recordIngestFail(rec, got?.reason));
+          if (!got?.ok && got?.peerOnly === true) fetchElsewhere(sock, rec, refusedHash);
+          if (banned) {
             const until = Date.now() + P2P_BAN_MS;
             if (rec.remote) peerBans.set(rec.remote, until);
             try { sock.destroy(); } catch { /* ignore */ }

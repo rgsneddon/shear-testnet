@@ -2486,7 +2486,12 @@ function verifyBlockConsensus(block, prev, opts = {}) {
   // a final fault behind it is the verdict, so a block that fails a final
   // check is never noted as soft (Russell 26 Oct).
   const arrived = opts.arrivedRows?.get(arrivedRowsKey(block));
-  const earlies = [arrived?.early, earlyRowsRejected(block)].filter(Boolean);
+  const own = earlyRowsRejected(block);
+  // A verdict only the arrived rows give, where the compact body the header
+  // commits passes the same checks, is the serving peer's fault: peerOnly
+  // (Russell 26 Oct). p2p scores that peer and never soft-notes the hash.
+  const peerEarly = arrived?.early && !own ? { ...arrived.early, peerOnly: true } : arrived?.early;
+  const earlies = [peerEarly, own].filter(Boolean);
   const finalEarly = earlies.find((r) => !upgradeable(r));
   if (finalEarly) return finalEarly;
   if (!earlies.length) return verifyBlockBody(block, prev, opts);
@@ -2983,11 +2988,14 @@ function verifyBlockBody(block, prev, opts = {}) {
   // the rows as they arrived (store.js arrivedRows) and it keeps its place
   // as this first body check.
   const arrivedOpen = opts.arrivedRows?.get(arrivedRowsKey(block))?.opening;
-  if (arrivedOpen) return arrivedOpen;
+  let ownOpen = null;
   for (const tx of txs) {
-    const earlyOpen = openingBeforeCarry(tx);
-    if (earlyOpen) return earlyOpen;
+    ownOpen = openingBeforeCarry(tx);
+    if (ownOpen) break;
   }
+  // An opening only the arrived rows carry is the serving peer's fault.
+  if (arrivedOpen) return ownOpen ? arrivedOpen : { ...arrivedOpen, peerOnly: true };
+  if (ownOpen) return ownOpen;
   const coinbaseCarry = (txs[0]?.coinbase || String(txs[0]?.kind || '') === 'coinbase')
     ? unboundMembershipCarry(txs[0])
     : { ok: true };
