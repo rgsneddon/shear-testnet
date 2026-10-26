@@ -422,10 +422,15 @@ function portalIdFromOpen(o) {
   return /^[0-9a-f]{64}$/.test(pid) ? pid : '';
 }
 
+/**
+ * The amount a reserve row publishes, read as consensus reads it
+ * (reserve_vault.js reserveRowNanos): its valueProof.v, or its nanos only on
+ * a row with no commitment. A nanos beside a commitment is a hidden amount
+ * in clear: compaction strips it and never turns it into an opening.
+ */
 function claimedReserveV(o) {
-  if (o?.valueProof?.v != null) return Math.floor(Number(o.valueProof.v));
-  if (o?.nanos != null) return Math.floor(Number(o.nanos));
-  return 0;
+  const raw = reserveRowNanos(o);
+  return raw == null ? 0 : Math.floor(Number(raw));
 }
 
 function attachLockTime(row, o) {

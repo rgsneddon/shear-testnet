@@ -23,6 +23,7 @@ import {
 import {
   lockTx,
   voteTx,
+  withdrawTx,
   portalIdFromDest,
   signWithdrawReward,
   withdrawOwnerMessage,
@@ -275,6 +276,33 @@ describe('chronoflux prune + collate', () => {
     bent20[0] ^= 1;
     const bent = { ...sealed, vout: [{ ...sealed.vout[0], dest20: bent20 }] };
     assert.equal(digestTx(bent).equals(digestTx(sealed)), false, 'dest20 tamper');
+  });
+
+  it('a nanos beside a committed reserve row is stripped, never compacted into an opening', () => {
+    const id = newIdentity();
+    const continuum = destForLogin(id.address, { viewKey: id.viewKey });
+    const vault = vaultDest(id.address, { viewKey: id.viewKey });
+    const lock = lockTx({ from: continuum, to: vault, nanos: PI_SHE_NANOS, id: 'lock-row-nanos' });
+    assert.equal(lock.vout[0].valueProof, undefined, 'the lock row is hidden');
+    const vote = voteTx({ from: continuum, dest: vault, choice: 1, id: 'vote-row-nanos' });
+    const withdraw = withdrawTx({ from: vault, to: continuum, nanos: PI_SHE_NANOS, id: 'withdraw-row-nanos' });
+    const bare = (tx) => {
+      const { v: _v, ...rest } = tx.vout[0].valueProof || {};
+      return { ...tx, vout: [{ ...tx.vout[0], valueProof: rest }, ...tx.vout.slice(1)] };
+    };
+    // The lock as built, and the public vote and withdraw rows both as built
+    // and with their published v removed: no planted nanos may become one.
+    for (const [label, tx] of [['lock', lock], ['vote', vote], ['withdraw', withdraw], ['vote, no v', bare(vote)], ['withdraw, no v', bare(withdraw)]]) {
+      assert.ok(tx.vout[0].commit, `${label}: a committed row`);
+      const real = compactTx(tx);
+      for (const nanos of [-1, 0, 1, 7, PI_SHE_NANOS, '7', 2 ** 64]) {
+        const planted = { ...tx, vout: [{ ...tx.vout[0], nanos }, ...tx.vout.slice(1)] };
+        const sealed = compactTx(planted);
+        assert.equal(String(sealed.vout[0].valueProof?.v ?? ''), String(real.vout[0].valueProof?.v ?? ''), `${label}: nanos ${nanos} became an opening`);
+        assert.equal(sealed.vout[0].nanos, undefined);
+        assert.equal(digestTx(sealed).equals(digestTx(real)), true, `${label}: nanos ${nanos} reached the digest`);
+      }
+    }
   });
 
   it('compact address-only lock keeps dest20/portalId/valueProof.v so digestTx matches the fat body', () => {
