@@ -69,6 +69,16 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
 
     Nothing is left as a known issue unless Russell has made a deliberate
     ruling to keep it, recorded with its date.
+11. **Vortice scope (Russell 2026-10-26).** Only the Vault/Reserve vortice
+    is in scope for now. The other vortices are paused remnants, kept for
+    dedicated sessions, probably after mainnet. Skip them in every test
+    lane, CI dispatch and fix, and do not touch their code, even if a
+    reviewer flags it.
+    - A skip is explicit and named, never a silent pass. In the PR shards
+      it is a `SCOPE` row in `tests/ci_pending.txt` that cites this ruling.
+    - A test that keeps other vortices off the chain or away from the
+      Reserve guards the Vault/Reserve, so it stays in. Examples are
+      `test_vort1_register.js` and `crypto/vortex.test.js`.
 
 ## Rows
 
@@ -78,7 +88,7 @@ moves the later rows by a day.
 
 | ID | Item | Consensus? | Status | Owner | Reviewer | Working now | PR | Head SHA | Target |
 |----|------|------------|--------|-------|----------|-------------|----|----------|--------|
-| R01 | PR 130: digestTx and bundled fixes | Y: `TX_DIGEST=body-v2` and the new mainnet genesis move the testnet, mainnet and mainnetFP pins | active | Claude | Grok + Protocol, Vault Security, Pool Share, Codebase, Privacy, pins | Claude, cursor/v12-followups-3daf, since 2026-10-23 | [#130](https://github.com/rgsneddon/shear-testnet/pull/130) | 9afd2114 (pushed; local work not yet pushed) | 28 Oct (28–29 Oct) |
+| R01 | PR 130: digestTx and bundled fixes | Y: `TX_DIGEST=body-v2`, `COINBASE_V=opens`, `COINBASE_NC=dest-bound`, the memo binding (`FS1_MEMO=bound`) and the new mainnet genesis move the testnet, mainnet and mainnetFP pins | active | Claude | Grok + Protocol, Vault Security, Pool Share, Codebase, Privacy, pins | Claude, cursor/v12-followups-3daf, since 2026-10-23 | [#130](https://github.com/rgsneddon/shear-testnet/pull/130) | 83ea4352 (pushed; rebuilt chain local, awaiting the fresh consensus sign-off) | 28 Oct (28–29 Oct) |
 | R01a | Coinbase spend-key binding: a coinbase payout's admitPub bound to its payee | Y: a coinbase row's spend key must derive from the payee's admit base; the design says how that base is on chain or derivable after pruning | planned (design to Russell first) | Claude | Grok + Protocol, Privacy, pins | | | | after R01, before R02 (date set on the design GO) |
 | R02 | Vault F1 lock-note binding | Y: binds the owner key point into the signed lock digest; new vectors | planned | Claude | Grok + Vault Security, Protocol, Wallet Hardening, pins | | | | 30 Oct (29–31 Oct) |
 | R03 | CLI reserve lock | N: Dart CLI wiring only | planned | Claude | Grok + Wallet Hardening, pins | | | | 31 Oct (30 Oct–1 Nov) |
@@ -87,29 +97,67 @@ moves the later rows by a day.
 | R06 | Goals 6–9 (register signing, strict wire decode, 018e share commitment, T21 hidden payout) | Y: each changes what a block may hold | planned | Claude | Grok + Protocol, Pool Share, Privacy, pins | | | | 9 Nov (7–11 Nov) |
 | R07 | Goal 10 F: FCMP++ hardening | Y: spend proof checks | planned | Claude | Grok + Privacy, Protocol, pins | | | | 10 Nov (8–12 Nov) |
 | R08 | PR 3a: real-data fixtures, consensus paths | N: tests only | planned | Claude | Grok + Codebase | | | | 13 Nov (10–15 Nov) |
-| R09 | Token spec (mint.shear.digital), spec only | N: a spec, no code | planned | Claude | Grok + all lanes | | | | 14 Nov (11–17 Nov) |
-| R10 | Private tokens build | Y: new tx kind and consensus rules | planned | Claude | Grok + all lanes, pins | | | | 19 Nov (15–23 Nov) |
 | R11 | PR 3b: remaining real-data fixtures and CI guard | N: tests and CI only | planned | Claude | Grok + Codebase | | | | 21 Nov (17–26 Nov) |
-| R12 | Goal 10 A–E: five PR updates | Y: A (epoch-end gas) and C (withdraw policy) change consensus | planned | Claude | Grok + Protocol, Vault Security, pins | | | | 25 Nov (20–30 Nov) |
+| R12 | Goal 10 A–D: four PR updates (A #117, B #111, C #93, D #107). B stays before mainnet for the Vault claim mint-once test cover. D is trimmed to what PR 116's hidden-claim API does not already cover, and D1 (a matured lock is never Spendable) and D2 (the Withdraw button stays visible) must land. E (#98) is folded into R16 (Russell 26 Oct) | Y: A (epoch-end gas) and C (withdraw policy) change consensus | planned | Claude | Grok + Protocol, Vault Security, pins | | | | 25 Nov (20–30 Nov) |
 | R13 | Wallet copy | N: wallet text and errors only | planned | Claude | Grok + Wallet Hardening | | | | 27 Nov (22 Nov–2 Dec) |
 | R14 | PR 128 M3: shear-dev pin move | Y: moves the shear-dev pin only; every other pin must equal main | planned | Claude | Grok + Protocol, pins | | | | 27 Nov (22 Nov–3 Dec) |
-| R14a | Public supply audit tool: a CLI that reads one's own node and checks, genesis to tip, that emission plus mints minus burns equals the commitment sum with every range proof valid; prints the public supply figure and pass, or fail at the exact height. No phone-home, no pool reliance | N, unless the design needs a consensus change (then Y, with the reason) | planned (lane idle until Thu 29 Oct; spec first, no code before Russell approves it) | TBD (Thu 29 Oct 15:00 alignment) | Public Supply Audit lane (Claude and Grok sides) | | | | before R15, so it runs on shear-dev and stressnet before genesis |
+| R14a | Public supply audit tool: a CLI that reads one's own node and checks, genesis to tip, that emission plus mints minus burns equals the commitment sum with every range proof valid; prints the public supply figure and pass, or fail at the exact height. No phone-home, no pool reliance | N, unless the design needs a consensus change (then Y, with the reason) | planned (lane idle until Thu 29 Oct; spec first, no code before Russell approves it) | TBD (Thu 29 Oct 15:00 alignment) | Public Supply Audit lane (Claude side) and Supply Auditor (Grok side) | | | | before R15, so it runs on shear-dev and stressnet before genesis |
 | R15 | shear-dev deploy GO and live bug hunt | N: operational; fixes found there are their own PRs | planned | Claude | Grok | | | | 2 Dec (25 Nov–10 Dec) |
 | R18a | Host rebuild on the mainnet OS split (pool Ubuntu LTS, p2p-a Debian stable, p2p-b Fedora Server), so stressnet runs on the mainnet OSes | N: hosts only | planned | Claude | Grok | | | | after R15, before R16 (estimate 1–2 days; the later rows move by that) |
-| R16 | v12 cut (onto the rebuilt hosts) | N: operational; pins checked at the cut | planned | Claude | Grok + pins | | | | 3 Dec (26 Nov–11 Dec) |
+| R16 | v12 cut (onto the rebuilt hosts), run from the R16 cut checklist below (folded in from #98, Russell 26 Oct) | N: operational; pins checked at the cut | planned | Claude | Grok + pins | | | | 3 Dec (26 Nov–11 Dec) |
 | R17 | Stressnet (7-day floor) | N: live testnet | planned | Claude | Grok | | | | 10 Dec (3–18 Dec) |
 | R18b | Final wipe of testing leftovers and mainnet release deploy | N: hosts only | planned | Claude | Grok + pins | | | | 18–21 Dec |
 | R19 | Mainnet genesis | N: date fixed by R01 | planned | Claude | Grok + pins | | | | Mon 21 Dec 2026 14:00 UK (fixed) |
+| R09 | Token spec (mint.shear.digital), spec only: the first half of the R09–R10 vortice session under rule 11 | N: a spec, no code | planned (post-mainnet) | Claude | Grok + all lanes | | | | after R19; no date until Russell sets one |
+| R10 | Private tokens build (a vort1 vortice): the second half of the R09–R10 vortice session under rule 11, after the R09 spec is signed off | Y: new tx kind and consensus rules | planned (post-mainnet) | Claude | Grok + all lanes, pins | | | | after R19; no date until Russell sets one |
 
 R01a and R14a were added by Russell on 26 Oct. R01a is the coinbase
 spend-key binding found by the PR 130 lanes: its own PR straight after R01,
 design first. R14a is the public supply audit tool with its own review lane
-(Public Supply Audit, on both the Claude and Grok sides), idle until Thu 29
+(Public Supply Audit on the Claude side, Supply Auditor on the Grok side), idle until Thu 29
 Oct after the credit reset; its owner is set at that day's 15:00 alignment.
 
-R03 (CLI reserve lock) and R10 (private tokens build) stay where they are
-(Russell, 25 Oct). This file is the source of truth; the xlsx is not kept in
+R03 (CLI reserve lock) stays where it is (Russell, 25 Oct). R09 (token
+spec) and R10 (private tokens build, a vort1 vortice) moved to after mainnet
+genesis as one dedicated vortice session under rule 11, with no date until
+Russell sets one. The other rows did not move (Russell, 26 Oct). This file is the source of truth; the xlsx is not kept in
 step.
+
+## R16 cut checklist (folded in from #98, Russell 26 Oct)
+
+Facts from `feat/shear-testnet-v12` at dc1422ed. Re-read each one from the
+tree at the cut; none of these steps has run. Every step needs Russell's GO.
+
+1. **Genesis pin.** `node/src/chain.js` still has
+   `V12_GENESIS_BLOCK_HASH = ''` and
+   `V12_BOOTSTRAP_CHECKPOINT = { height: 0, hash: '' }`. A pin is 64
+   lowercase hex characters; a non-hex pin fails closed, and height 0 means
+   the checkpoint is unset.
+   1. Run `node scripts/v12-genesis-cut.mjs --root <empty dir>`. It refuses
+      a root inside the checkout, a live node datadir, `~/.shear` or
+      `%APPDATA%\Shear`.
+   2. Read `block1.hash` and `block1.height` from its `V12_GENESIS_CUT`
+      JSON line.
+   3. Set `V12_GENESIS_BLOCK_HASH` to that hash, and the checkpoint to the
+      cut checkpoint's height and hash (block 1 if the cut book is only
+      height 1). Never invent a hash.
+   4. This is a pin move: stop for Russell's sign-off on the diff and the
+      pins (rule 8).
+2. **Tags.** The display pins in the tree are Continuum `0.72`
+   (`wallet/pubspec.yaml` 0.72.0+97), Shear Sentinel `v19`
+   (`PRODUCT_VERSION` 19.0 in `crypto/asert.js`) and ShearK `2.9`. None of
+   those tags exists yet; the newest Continuum tag is `0.71`. Tag
+   `<cut-tip>`, the commit Russell names after the pin is filled:
+   `0.72`, `v19`, `ShearK-2.9`. Never move an existing tag.
+3. **Version alignment.** `wallet/pack/archlinux/PKGBUILD` says
+   `pkgver=0.71` while `wallet/pubspec.yaml` says 0.72. The wallet pack
+   dispatches take their pin from the PKGBUILD (PR 130, d8 and d9), so the
+   two must agree before the release builds.
+4. **Launch list** (from the work queue): seeds listening on 30303; every
+   service unit sets `SHEAR_NETWORK` or holds `book.magic`, with no stale v4
+   units; release artefacts at the x86-64 baseline (`isa_scan` clean);
+   shear-dev parameters must not leak into v12; the v12 and mainnet pins
+   are checked again at the cut.
 
 ## R18a and R18b detail: mainnet hosts and OS split
 
