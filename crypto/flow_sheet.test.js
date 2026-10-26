@@ -6,6 +6,7 @@ import {
   paymentCodeAtIndex, silentDestFromView, payoutDest, aliasDestOfSilentId, silentPay, isFullPaymentCode,
 } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
+import { memoCtRejected } from './chronoflux.js';
 import {
   destForLogin,
   hasherPayoutDest,
@@ -17,6 +18,9 @@ import {
   vaultDest,
   reserveRejectsDest,
   memoSeal,
+  memoEnvelopeRejected,
+  MEMO_SLOT_BYTES,
+  MEMO_MAX_BYTES,
   memoOpen,
   explorerRowPublic,
   spendHashFromAddress,
@@ -153,6 +157,32 @@ describe('flow sheets', () => {
     assert.equal(reserveRejectsDest(id.address, round, opts), true);
     assert.equal(reserveRejectsDest(id.address, id.address, opts), true);
     assert.equal(spendHashFromAddress(id.address).length, 20);
+  });
+
+  it('a memo envelope is one size whatever the memo, and any other shape is memo_ct', () => {
+    const dest = destForLogin(newIdentity().address, { height: 1 });
+    const shared = Buffer.alloc(32, 9);
+    const short = memoSeal(dest, '', shared);
+    const long = memoSeal(dest, 'é'.repeat(127) + 'x', shared);
+    assert.equal(Buffer.byteLength('é'.repeat(127) + 'x', 'utf8'), MEMO_MAX_BYTES);
+    for (const env of [short, long]) {
+      assert.equal(Buffer.from(env.ct, 'base64').length, MEMO_SLOT_BYTES);
+      assert.equal(memoEnvelopeRejected(env), null);
+    }
+    assert.equal(JSON.stringify(short).length, JSON.stringify(long).length, 'the envelope length says nothing');
+    assert.equal(memoOpen(dest, short, shared), '');
+    assert.equal(memoOpen(dest, long, shared), 'é'.repeat(127) + 'x');
+    assert.throws(() => memoSeal(dest, 'x'.repeat(MEMO_MAX_BYTES + 1), shared), /memo_too_long/);
+    const ctOf = (n) => Buffer.alloc(n, 1).toString('base64');
+    assert.equal(memoEnvelopeRejected({ ...short, ct: ctOf(MEMO_SLOT_BYTES - 1) }), 'memo_ct', 'short ciphertext');
+    assert.equal(memoEnvelopeRejected({ ...short, ct: ctOf(MEMO_SLOT_BYTES + 16) }), 'memo_ct', 'long ciphertext');
+    assert.equal(memoEnvelopeRejected({ ...short, v: 1 }), 'memo_ct', 'the unpadded v1 envelope');
+    assert.equal(memoEnvelopeRejected({ ...short, pad: 'aa' }), 'memo_ct', 'an extra key');
+    assert.equal(memoEnvelopeRejected({ ...short, mac: ctOf(15) }), 'memo_ct', 'tag size');
+    assert.equal(memoEnvelopeRejected({ ...short, nonce: ctOf(11) }), 'memo_ct', 'nonce size');
+    assert.equal(memoEnvelopeRejected('aa'), 'memo_ct', 'not an envelope');
+    assert.equal(memoCtRejected({ kind: 'send', memoCt: short }), null);
+    assert.equal(memoCtRejected({ kind: 'send', vout: [{ kind: 'send', memoCt: { ...short, v: 1 } }] })?.reason, 'memo_ct', 'an output memo too');
   });
 
   it('memo seals with shared secret; dest-only open is null; public row is amounts+dests+memo boolean', () => {

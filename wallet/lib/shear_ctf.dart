@@ -221,17 +221,27 @@ Uint8List? memoKey(String dest, [List<int>? shared]) {
   return _sha(utf8.encode(memoDomain), Uint8List.fromList(shared));
 }
 
+/// Every memo ciphertext is [memoSlotBytes] long, so its length says nothing
+/// about the memo (crypto/flow_sheet.js MEMO_SLOT_BYTES). The plaintext is
+/// padded inside the encryption: its UTF-8 bytes, one 0x80, then zeros.
+const memoSlotBytes = 256;
+const memoMaxBytes = memoSlotBytes - 1;
+
 Future<Map<String, dynamic>> memoSeal(String dest, String plaintext, [List<int>? shared]) async {
   final key = memoKey(dest, shared);
   if (key == null) throw ArgumentError('no_shared');
+  final text = utf8.encode(plaintext);
+  if (text.length > memoMaxBytes) throw ArgumentError('memo_too_long');
+  final slot = Uint8List(memoSlotBytes)..setRange(0, text.length, text);
+  slot[text.length] = 0x80;
   final nonce = Uint8List.fromList(List<int>.generate(12, (_) => Random.secure().nextInt(256)));
   final box = await AesGcm.with256bits().encrypt(
-    utf8.encode(plaintext),
+    slot,
     secretKey: SecretKey(key),
     nonce: nonce,
   );
   return {
-    'v': 1,
+    'v': 2,
     'nonce': base64Encode(nonce),
     'mac': base64Encode(box.mac.bytes),
     'ct': base64Encode(box.cipherText),
@@ -254,18 +264,24 @@ Future<String?> memoOpenOffUi(String dest, Map<String, dynamic>? env, [List<int>
 }
 
 Future<String?> memoOpen(String dest, Map<String, dynamic>? env, [List<int>? shared]) async {
-  if (env == null || env['v'] != 1) return null;
+  if (env == null || env['v'] != 2) return null;
   final key = memoKey(dest, shared);
   if (key == null) return null;
   try {
     final nonce = base64Decode(env['nonce'] as String);
     final mac = Mac(base64Decode(env['mac'] as String));
     final ct = base64Decode(env['ct'] as String);
-    final clear = await AesGcm.with256bits().decrypt(
+    if (ct.length != memoSlotBytes) return null;
+    final slot = await AesGcm.with256bits().decrypt(
       SecretBox(ct, nonce: nonce, mac: mac),
       secretKey: SecretKey(key),
     );
-    return utf8.decode(clear);
+    var end = slot.length - 1;
+    while (end >= 0 && slot[end] == 0) {
+      end -= 1;
+    }
+    if (end < 0 || slot[end] != 0x80) return null;
+    return utf8.decode(slot.sublist(0, end));
   } catch (_) {
     return null;
   }

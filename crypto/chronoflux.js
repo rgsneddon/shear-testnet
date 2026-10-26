@@ -23,6 +23,7 @@ import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custody
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags, AMOUNT_CT_BYTES, noteCommitOfDest20 } from './note.js';
 import { encodeDest, hash20FromAddress } from './address.js';
+import { memoEnvelopeRejected } from './flow_sheet.js';
 import { canonicalReserveFields, reserveRowNanos } from './reserve_vault.js';
 import { compactHashLedger, freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
 
@@ -546,7 +547,7 @@ export function valueOpenRejected(tx) {
     if (outputMayCarryValueOpen(tx, o)) continue;
     return { ok: false, reason: 'value_open' };
   }
-  return amountFieldRejected(tx) || reserveNanosRejected(tx);
+  return amountFieldRejected(tx) || reserveNanosRejected(tx) || memoCtRejected(tx);
 }
 
 /**
@@ -567,6 +568,21 @@ export function reserveNanosRejected(tx) {
   let same = false;
   try { same = BigInt(String(tx.nanos)) === BigInt(String(opened)); } catch { same = false; }
   return same ? null : { ok: false, reason: 'amount_field' };
+}
+
+/** Every memo envelope on the tx or an output has the fixed slot size (flow_sheet.js). */
+export function memoCtRejected(tx) {
+  if (!tx || typeof tx !== 'object') return null;
+  const envs = [];
+  if (tx.memoCt != null) envs.push(tx.memoCt);
+  for (const o of Array.isArray(tx.vout) ? tx.vout : []) {
+    if (o && typeof o === 'object' && o.memoCt != null) envs.push(o.memoCt);
+  }
+  for (const env of envs) {
+    const reason = memoEnvelopeRejected(env);
+    if (reason) return { ok: false, reason };
+  }
+  return null;
 }
 
 function compactVout(o, tx) {
@@ -602,6 +618,8 @@ function compactVout(o, tx) {
       if (keepOpen && reserveKind) attachReserveSeal(row, o);
     }
     if (o.memo) row.memo = true;
+    // The payee opens its memo from the chain. memoCtRejected fixes its size.
+    if (o.memoCt) row.memoCt = compactValue(o.memoCt);
     if (keepDest && o.address) row.address = o.address;
     return row;
   }
@@ -618,6 +636,7 @@ function compactVout(o, tx) {
   }
   if (keepDest && o.address) row.address = o.address;
   if (o.memo) row.memo = true;
+  if (o.memoCt) row.memoCt = compactValue(o.memoCt);
   return row;
 }
 
