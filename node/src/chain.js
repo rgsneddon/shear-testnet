@@ -264,6 +264,23 @@ export function digestTx(tx) {
 const TX_DIGEST_DOMAIN = 'shear-tx-digest-v2';
 
 /**
+ * A block's merkle leaves (digestTx), or null when two txs share a leaf.
+ * merkleRoot pairs an odd last leaf with itself, so [A, B, C] and
+ * [A, B, C, C] have one root and one block hash (the CVE-2012-2459 class):
+ * a repeated leaf is refused before the root is compared (Russell 26 Oct).
+ */
+export function blockLeaves(txs) {
+  const leaves = (Array.isArray(txs) ? txs : []).map(digestTx);
+  const seen = new Set();
+  for (const leaf of leaves) {
+    const hex = Buffer.from(leaf).toString('hex');
+    if (seen.has(hex)) return null;
+    seen.add(hex);
+  }
+  return leaves;
+}
+
+/**
  * The packed core alone: the v1 merkle leaf. It binds no commitment, tag or
  * proof of an FS-1 body, which is why it is no longer the leaf by itself.
  */
@@ -2183,7 +2200,9 @@ export function assessHeader(block, prev, opts = {}) {
     }
     if (negativeTopNanos(tx)) return finish({ ok: false, reason: 'negative_mint' });
   }
-  const merkle = merkleRoot(txs.map(digestTx));
+  const leaves = blockLeaves(txs);
+  if (!leaves) return finish({ ok: false, reason: 'duplicate_tx' });
+  const merkle = merkleRoot(leaves);
   if (!merkle.equals(decoded.merkleRoot)) return finish({ ok: false, reason: 'merkle' });
   let resolvedGenesisMs = 0;
   if (prev?.header) {
@@ -3756,7 +3775,9 @@ function stepLoaded(state, list, i) {
   }
   const txs = Array.isArray(block.txs) ? block.txs : [];
   if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
-  const merkle = merkleRoot(txs.map(digestTx));
+  const leaves = blockLeaves(txs);
+  if (!leaves) return { ok: false, reason: 'duplicate_tx' };
+  const merkle = merkleRoot(leaves);
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
   const prevBlock = i === 0 ? null : list[i - 1];
   // A pruned block a proven-work header chain buried keeps that tip for

@@ -47,7 +47,7 @@ import {
   keepsFrontier,
   frontierWindow,
   retainFrontierBlobs,
-  digestTx,
+  blockLeaves,
   arrivedRowsKey,
   earlyRowsRejected,
 } from './chain.js';
@@ -6108,7 +6108,9 @@ export function createStore(dir, {
       if (!header.equals(Buffer.from(blocks[at].header))) return { ok: false, reason: 'known_hash_header', at: i };
       let sealed;
       try { sealed = Buffer.from(decodeHeader(header).merkleRoot); } catch { return { ok: false, reason: 'bad_header', at: i }; }
-      if (!merkleRoot((b.txs || []).map(digestTx)).equals(sealed)) return { ok: false, reason: 'merkle', at: i };
+      const leaves = blockLeaves(b.txs || []);
+      if (!leaves) return { ok: false, reason: 'duplicate_tx', at: i };
+      if (!merkleRoot(leaves).equals(sealed)) return { ok: false, reason: 'merkle', at: i };
     }
     return null;
   }
