@@ -908,6 +908,8 @@ export function isUpgradeableIngestFail(reason) {
  * `not_heavier` must not poison that branch: a later child can still carry more work.
  * `samples_pruned` means the burial run is not here yet. A later header page can bury it.
  * `pow_worker` is a local hash-worker fault. It says nothing about the block or the peer.
+ * `evm_local` is the node's own EVM failing to start or to replay its stored
+ * history: local too, so the block is asked again and nobody is noted.
  * `apply_stage` is a local staging throw. The block stays retryable and the
  * peer is not scored: a local bug must not ban the relayers.
  * Upgradeable reasons (`evm`, `unsigned`, `admit_membership`) use a TTL, not `failed` forever. */
@@ -917,6 +919,8 @@ export function isFinalIngestFail(reason) {
   if (r === 'prev' || r === 'hash_bonus' || r === 'side_hold' || r === 'not_heavier') return false;
   if (r === 'samples_pruned') return false;
   if (r === 'apply_stage') return false;
+  // The node's own EVM could not start or replay its history: local.
+  if (r === 'evm_local') return false;
   if (isUpgradeableIngestFail(r)) return false;
   if (/native[_ ]addon[_ ]missing|native_missing/i.test(r)) return false;
   return true;

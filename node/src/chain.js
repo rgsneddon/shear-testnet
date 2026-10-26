@@ -3391,7 +3391,9 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
       fresh = true;
     }
   } catch (e) {
-    return { ok: false, reason: 'evm', error: String(e?.message || e) };
+    // The node could not start its own EVM: a local fault, not a verdict on
+    // the block, so it is never noted against the block or its peer.
+    return { ok: false, reason: 'evm_local', error: String(e?.message || e) };
   }
   const genesisMs = evmClockGenesis(consensus, block, opts);
   if (fresh && Array.isArray(opts.evmHistory)) {
@@ -3402,7 +3404,8 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
         magic: opts.magic || MAGIC_TESTNET,
       });
       if (!replayed.ok) {
-        return { ok: false, reason: 'evm', error: `replay:${replayed.reason}` };
+        // Our own stored history did not replay: local, as above.
+        return { ok: false, reason: 'evm_local', error: `replay:${replayed.reason}` };
       }
     }
   }

@@ -29,7 +29,7 @@ function headerFor(prev) {
 // Reasons that are not a refusal of the block: a parent not here yet, a
 // burial run not here yet, a branch that has not won, or a local fault
 // (p2p.js isFinalIngestFail). A peer asks again for these by design.
-const NOT_A_REFUSAL = new Set(['prev', 'hash_bonus', 'side_hold', 'not_heavier', 'samples_pruned', 'apply_stage', 'pow_worker']);
+const NOT_A_REFUSAL = new Set(['prev', 'hash_bonus', 'side_hold', 'not_heavier', 'samples_pruned', 'apply_stage', 'pow_worker', 'evm_local']);
 
 /** Every refusal reason literal on the arrival and verify path. */
 function arrivalReasons() {
@@ -62,6 +62,17 @@ describe('a refused block is never fetched again on the same binary', () => {
       for (const r of UPGRADEABLE_REASONS) assert.equal(recordIngestFail(rec, r), false);
     }
     assert.equal(rec.expensiveFails, 0);
+    // The node's own EVM failing to start or replay is local: no refusal,
+    // no score, the block is asked again (a soft fail would hold it until restart).
+    assert.equal(isFinalIngestFail('evm_local'), false);
+    assert.equal(isUpgradeableIngestFail('evm_local'), false);
+    assert.equal(noteRefusedBlock(rec, 'ee'.repeat(32), 'evm_local'), '');
+    assert.equal(recordIngestFail(rec, 'evm_local'), false);
+    const chainSrc = fs.readFileSync(new URL('../src/chain.js', import.meta.url), 'utf8');
+    const evmFn = chainSrc.slice(chainSrc.indexOf('async function verifyBlockEvm'));
+    const head = evmFn.slice(0, evmFn.indexOf('executeBlockEvm(session, block.txs'));
+    assert.equal((head.match(/reason: 'evm_local'/g) || []).length, 2, 'boot and replay faults are local');
+    assert.equal(/reason: 'evm'[,\s]/.test(head), false, 'neither is noted as a block verdict');
   });
 
   it('a soft fail holds on the same pin with no timer; a pin change retries it exactly once', () => {
