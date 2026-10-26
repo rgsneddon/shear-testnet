@@ -3,7 +3,9 @@
  * signed and inside the merkle leaf (reserveDigestSuffix), it is in no digest,
  * so consensus code must never resolve, compare, or key anything by it.
  * chain.js resolved a vin's prev by `String(tx.id) === String(vin.prev)` in
- * lookupSpentVout, unreachable since the v4 cut (95817cad) and deleted.
+ * lookupSpentVout, unreachable since the v4 cut (95817cad) and deleted. Its
+ * one id read now is digestTx dropping the id from the body-v2 leaf outside a
+ * withdraw (ruling 5, Russell 26 Oct).
  *
  * Every read of an id field in the consensus modules is listed here by file
  * and enclosing function, with its reason. A new one fails until it is
@@ -23,6 +25,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 // which reserveDigestSuffix binds), not a tx id.
 const PORTAL = 'a portal id (the signed portalId), not a tx id';
 const ALLOWED = {
+  'node/src/chain.js': {
+    digestTx: 'drops the id from the body-v2 leaf outside a withdraw (ruling 5): it removes the label, compares nothing',
+  },
   'crypto/reserve_vault.js': {
     reserveDigestSuffix: 'a withdraw signs its id: the id is inside the merkle leaf and the owner signature',
     buildFundedWithdraw: 'assigns the id of a withdraw body being built, compares nothing',
@@ -90,8 +95,10 @@ function idReads(rel) {
 }
 
 describe('consensus never decides by a tx id the sender picks', () => {
-  it('chain.js reads no id field at all', () => {
-    assert.deepEqual(idReads('node/src/chain.js'), []);
+  it('chain.js reads an id only to drop it from a non-withdraw leaf', () => {
+    assert.deepEqual(idReads('node/src/chain.js').map(({ fn, text }) => ({ fn, text })), [
+      { fn: 'digestTx', text: "if (String(body.kind || '') !== 'withdraw') delete body.id;" },
+    ]);
     assert.doesNotMatch(fs.readFileSync(path.join(root, 'node/src/chain.js'), 'utf8'), /lookupSpentVout/);
   });
 

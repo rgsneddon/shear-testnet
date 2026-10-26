@@ -38,7 +38,12 @@ const ALIASES = [
   ['str3', '3'],
   ['hex3', '0x3'],
   ['pad3', ' 3 '],
+  ['inf', Infinity],
 ];
+// The mempool refuses a NaN or Infinity anywhere in an arriving row as
+// canonical_alias before it reads the fee (ruling 3, Russell 26 Oct); the
+// node queue and the block still name the fee. Every path refuses.
+const ARRIVAL_ALIAS = new Set(['nan', 'inf']);
 
 describe('a b-spend fee is signed', () => {
   it('rejects a raised fee and leaves a send digest alone', () => {
@@ -99,7 +104,7 @@ describe('a b-spend fee is signed', () => {
           const tx = { id: `${kind}-${label}`, kind, fee, vin: [], vout: [] };
           assert.equal(feeFieldRejected(tx)?.reason, 'fee', `${kind} ${label}`);
           const parked = admitMempool(emptyMempool(), tx);
-          assert.equal(parked.reason, 'fee', `pool ${kind} ${label}`);
+          assert.equal(parked.reason, ARRIVAL_ALIAS.has(label) ? 'canonical_alias' : 'fee', `pool ${kind} ${label}`);
           const queued = store.queueTx(tx);
           assert.equal(queued.reason, 'fee', `queue ${kind} ${label}`);
           const block = verifyBlock({
