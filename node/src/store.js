@@ -3579,7 +3579,7 @@ export function createStore(dir, {
   /** The arrival refusal as a result, for a block that verified. */
   function arrivalRefused(verifyOpts) {
     const r = verifyOpts?.arrivalRefusal;
-    return r ? { ok: false, reason: r.reason, field: r.field, tip: tip() } : null;
+    return r ? { ok: false, reason: r.reason, field: r.field, at: r.at, tip: tip() } : null;
   }
 
   /**

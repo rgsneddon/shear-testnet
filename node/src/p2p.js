@@ -3113,6 +3113,10 @@ export function createP2p({
           for (const key of headerKeys) stageHolds.delete(key);
         }
         const rec = peers.get(sock);
+        // In a multi-block frame the refusal names its block (`at`): only
+        // that one is marked, so the valid blocks before it are asked again.
+        const at = Number(got?.at);
+        const refusedHash = Number.isInteger(at) && at >= 0 && fork[at] ? wireHash(fork[at].hash) : lastHash;
         if (!got?.ok) {
           try {
             console.error(JSON.stringify({
@@ -3130,7 +3134,7 @@ export function createP2p({
             const reason = got?.reason;
             const needsBook = reason === 'prev' || reason === 'samples_pruned' || reason === 'hash_bonus' || reason === 'side_hold' || isUpgradeableIngestFail(reason);
             if (!needsBook) {
-              noteRefusedBlock(rec, lastHash, reason);
+              noteRefusedBlock(rec, refusedHash, reason);
             } else {
               const have = storedView();
               if (reason === 'prev' && !have.has(lastHash)) {
@@ -3161,8 +3165,8 @@ export function createP2p({
                 });
                 if (follow) rec.want = [follow.hash, ...(rec.want || [])];
               } else if (isUpgradeableIngestFail(reason) && !have.has(lastHash)) {
-                noteRefusedBlock(rec, lastHash, reason);
-              } else if (isFinalIngestFail(reason)) noteRefusedBlock(rec, lastHash, reason);
+                noteRefusedBlock(rec, refusedHash, reason);
+              } else if (isFinalIngestFail(reason)) noteRefusedBlock(rec, refusedHash, reason);
             }
           }
           if (!got?.ok && recordIngestFail(rec, got?.reason)) {
