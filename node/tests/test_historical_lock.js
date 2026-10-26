@@ -47,6 +47,9 @@ describe('sealed reserve-lock prefix', () => {
     // no closed-book carve-out (chain.js assessHeader, closedBook). So the
     // live rules refuse this prefix at its first header, and the v12 vault
     // does not credit its lock. The prefix stays a sealed historical record.
+    // Its headers commit to the v10 tx digest; v12 digests the compact body
+    // (TX_DIGEST=body-v2), so the merkle check, which runs before bits,
+    // refuses it first. The bits mismatch is asserted on its own here.
     assert.equal(matchesHistoricalPrefix(blocks), true);
     for (const block of blocks) assert.equal(isHistoricalHeader(Buffer.from(block.header)), true);
     const genesisBits = decodeHeader(Buffer.from(blocks[0].header)).bits;
@@ -61,7 +64,7 @@ describe('sealed reserve-lock prefix', () => {
       mtpTimestamps: [],
     });
     assert.equal(first.ok, false);
-    assert.equal(first.reason, 'bits');
+    assert.equal(first.reason, 'merkle');
 
     let lockHeight = 0;
     for (const block of blocks) {

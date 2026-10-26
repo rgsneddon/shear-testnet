@@ -1564,7 +1564,24 @@ export function createP2p({
     broadcast({ type: 'tx', magic, tx: payload, stem: false }, fromSock);
   }
 
+  // A peer's failure mark is a verdict on the body that peer served, not on
+  // the hash: a block hash binds its body (chain.js digestTx). Once the store
+  // holds a valid body under a hash, no peer stays marked for it, so a bad
+  // body never keeps an honest block with that hash off this node.
+  function clearFailedNowStored() {
+    const have = storedView();
+    for (const rec of peers.values()) {
+      if (rec?.failed instanceof Set) {
+        for (const h of [...rec.failed]) if (have.has(h)) rec.failed.delete(h);
+      }
+      if (rec?.softFailed instanceof Map) {
+        for (const h of [...rec.softFailed.keys()]) if (have.has(h)) rec.softFailed.delete(h);
+      }
+    }
+  }
+
   if (store && typeof store.on === 'function') {
+    store.on('tip', () => clearFailedNowStored());
     store.on('tx', (tx) => {
       const label = String(tx?.id || '');
       if (!label) return;

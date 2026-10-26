@@ -13,38 +13,37 @@ import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createRegtestStore } from './regtest_store.js';
+import { bookSealKeyPath } from '../src/book_seal_key.js';
+import { DATADIR_CLAIM_NAME, DATADIR_LOCK_NAME } from '../src/datadir_lock.js';
 import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
-import { buildTemplate, digestTx, verifyBlock, GENESIS_PREV } from '../src/chain.js';
-import { decodeHeader } from '../../crypto/header.js';
+import { buildTemplate, digestTx, txCoreDigest, verifyBlock, GENESIS_PREV } from '../src/chain.js';
+import { decodeHeader, encodeHeader } from '../../crypto/header.js';
+import { merkleRoot } from '../../crypto/merkle.js';
 import { emptyMempool, admitMempool, heldBodyKey, txBodyKey } from '../../crypto/mempool.js';
 import { createP2p, fingerprintHelloHash, jsonWire } from '../src/p2p.js';
 import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
-import { levyNeed, LEVY_CAP_NANOS, LEVY_FLOOR_UNITS } from '../../crypto/levy.js';
 import { admitWireTx, compactTx } from '../../crypto/chronoflux.js';
-import { admitBaseScalar, admitScalarFromSeed, attachAdmitPub, blindCommit } from '../../crypto/admit.js';
+import { admitBaseScalar, admitScalarFromSeed } from '../../crypto/admit.js';
 import {
   asU8,
-  kernelExcess,
   openedCoinbaseNanos,
   openNoteAmount,
-  sealHiddenNote,
-  sealNote,
+  reviveTx,
 } from '../../crypto/note.js';
-import { viewTagOf } from '../../crypto/dummy.js';
 import { walletAnchor, flowProofVerifyCount, resetFlowProofVerifies } from '../../crypto/admit_v3.js';
 import {
-  FS1_RECORD_BYTES,
-  FS1_WIRE,
-  fs1BlobLen,
-  fs1ProveSpend,
   fs1RootAt,
   resetFs1Tree,
   resetFs1VerifyCache,
-  txBodyDigestFs1,
 } from '../../crypto/fs1_spend.js';
 import { fs1NativeLoaded, fs1TreeAppend, fs1TreeNew, fs1Verify } from '../../crypto/native_admit.js';
 import { txVerifyWeight } from '../../crypto/block_budget.js';
+import { buildSend, hiddenOut } from './fs1_send_kit.js';
+import { everyFieldBound, stripFieldsIn } from './body_bound.js';
+import { droppedBlockReads } from './compact_reads.js';
+import { canonicalEncode } from '../../crypto/canonical_row.js';
+import { memoSeal, memoEnvelopeRejected } from '../../crypto/flow_sheet.js';
 
 const T0 = 1_700_000_000_000;
 const TIMINGS = path.join(os.tmpdir(), 'shear-fs1-spend-timings.jsonl');
@@ -60,16 +59,6 @@ function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
   return { id, dest, spendSeed: id.spendSeed, base: id.admitBase };
-}
-
-function hiddenOut(nanos, dest20, admitBase, kind) {
-  const sealed = admitBase
-    ? sealHiddenNote(nanos, { dest20, kind, admitBase })
-    : sealNote(nanos, { dest20, kind });
-  let note = attachAdmitPub(sealed, admitBase ? { admitBase } : {});
-  note = { ...note, kind, dest20: Buffer.from(dest20), viewTag: viewTagOf(note.noteCommit) };
-  if (kind !== 'dummy') delete note.valueProof;
-  return note;
 }
 
 function lastStamp(store) {
@@ -156,94 +145,6 @@ async function blockVerdict(store, dest, tx) {
   });
 }
 
-function rangeSlack(outs) {
-  let bytes = 0;
-  for (const o of outs) if (o?.rangeProof) bytes += Buffer.from(asU8(o.rangeProof)).length;
-  return Math.ceil((bytes * 2) / 2048) + 8;
-}
-
-/** Placeholder FS-1 fields of the exact final length, with the widest JSON bytes. */
-function placeholders(k) {
-  const fs1 = Buffer.alloc(fs1BlobLen(k), 255);
-  fs1[0] = FS1_WIRE;
-  const proofs = [];
-  for (let i = 0; i < k; i += 1) {
-    const blob = Buffer.alloc(FS1_RECORD_BYTES, 255);
-    blob[0] = FS1_WIRE;
-    proofs.push({ admit_proof: true, v: 3, spendTag: Buffer.alloc(32, 255), blob, cTilde: Buffer.alloc(32, 255) });
-  }
-  return { fs1, proofs, vin: proofs.map(() => ({ commit: Buffer.alloc(32, 255) })) };
-}
-
-/**
- * Build, settle the levy, and prove one send of `coins` (each
- * { index, x, r, v, commit }) to `to`. `outsOf(room)` builds the outputs.
- */
-function buildSend({ id, kind = 'send', coins, anchor, live, outsOf }) {
-  const total = coins.reduce((s, c) => s + c.v, 0);
-  const k = coins.length;
-  const ph = placeholders(k);
-  let fee = LEVY_FLOOR_UNITS;
-  let outs = null;
-  let draft = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const room = total - fee;
-    assert.ok(room >= 1, `fee consumes the coins ${total} ${fee}`);
-    outs = outsOf(room);
-    draft = compactTx({
-      id,
-      kind,
-      anchor,
-      fee,
-      vin: ph.vin,
-      vout: outs,
-      fs1: ph.fs1,
-      admit_proofs: ph.proofs,
-      excess: Buffer.alloc(32, 255),
-    });
-    const need = levyNeed(draft);
-    if (fee >= need && fee <= LEVY_CAP_NANOS) break;
-    const next = need + rangeSlack(outs);
-    assert.ok(next > fee && next <= LEVY_CAP_NANOS, `levy ${need} fee ${fee}`);
-    fee = next;
-    draft = null;
-  }
-  assert.ok(draft, 'fee did not settle');
-  const t0 = process.hrtime.bigint();
-  const proven = fs1ProveSpend({
-    live,
-    anchor,
-    indices: coins.map((c) => c.index),
-    xs: coins.map((c) => c.x),
-    tx: draft,
-    magic: MAGIC_REGTEST,
-  });
-  const proveMs = Number(process.hrtime.bigint() - t0) / 1e6;
-  assert.ok(proven, `${id} prove`);
-  assert.equal(proven.fs1.length, fs1BlobLen(k));
-  for (let i = 0; i < k; i += 1) {
-    const want = Buffer.from(blindCommit(coins[i].commit, proven.t[i]));
-    assert.ok(want.equals(proven.proofs[i].cTilde), `${id} C~ ${i} is C + t·H`);
-  }
-  const excess = kernelExcess(outs, coins.map((c, i) => ({ r: c.r, t: proven.t[i] })));
-  assert.ok(excess, `${id} excess`);
-  const tx = compactTx({
-    id,
-    kind,
-    anchor,
-    fee: draft.fee,
-    vin: proven.proofs.map((p) => ({ commit: Buffer.from(p.cTilde) })),
-    vout: outs,
-    fs1: proven.fs1,
-    admit_proofs: proven.proofs,
-    excess,
-  });
-  const need = levyNeed(tx);
-  assert.ok(tx.fee >= need, `${id} levy ${need} fee ${tx.fee}`);
-  assert.ok(txBodyDigestFs1(tx, MAGIC_REGTEST).equals(proven.digest), `${id} compact digest`);
-  return { tx, outs, proven, proveMs, fee: tx.fee, total };
-}
-
 describe('v12 FS-1 full-set send', { concurrency: false }, () => {
   if (!fs1NativeLoaded()) {
     it('needs the native FS-1 addon (crypto/native make all)', () => {
@@ -301,10 +202,37 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     assert.ok(flowProofVerifyCount() > 0, `${label} block skipped the FS-1 verify`);
     const queued = store.queueTx(tx);
     assert.equal(queued.ok, true, `${label} queue ${queued.reason}`);
+    const heldRow = store.mempool.find((row) => String(row.id) === String(tx.id));
+    const key = heldBodyKey(heldRow);
+    assert.equal(txBodyKey(tx), key, `${label}: the arrival and its held row are one body`);
+    assert.equal(txBodyKey(reviveTx(heldRow)), key, `${label}: a re-read row is the same body`);
+    // structuredClone turns each Buffer into a bare Uint8Array: the same bytes.
+    assert.equal(txBodyKey(structuredClone(tx)), key, `${label}: a cloned body is the same body`);
     const tpl = await mine(store, who.dest);
     assert.ok(tpl.txs.some((row) => row.id === tx.id), `${label} was not templated`);
     const sealed = store.blocks[store.blocks.length - 1].txs.find((row) => row.id === tx.id);
     assert.ok(sealed, `${label} is not in the block`);
+    assert.equal(txBodyKey(sealed), key, `${label}: the block's copy is the held body`);
+    // Every byte of the compact body is in the leaf, and the block carries
+    // no strip-list field, for the send and for the coinbase that seals it.
+    const coinbase = store.blocks[store.blocks.length - 1].txs[0];
+    for (const [name, row] of [[label, tx], [`${label} coinbase`, coinbase]]) {
+      const bound = everyFieldBound(row, name);
+      assert.ok(bound.checked.length >= 5, `${name}: ${bound.checked.length} fields`);
+      assert.deepEqual(stripFieldsIn(compactTx(row)), [], `${name}: strip-list fields`);
+    }
+    assert.equal(digestTx(sealed).equals(digestTx(tx)), true, `${label}: the stored copy is the validated leaf`);
+    // A relayer's copy with fields compaction drops is the same body: one
+    // compact form, so one leaf and one verdict (store.js validates compact).
+    const relayed = {
+      ...tx,
+      junk: 'relayer bytes',
+      spendPub: Buffer.alloc(32, 7),
+      vout: tx.vout.map((o, i) => (i === 0 ? { ...o, address: who.dest } : o)),
+    };
+    assert.equal(canonicalEncode(compactTx(relayed)), canonicalEncode(compactTx(tx)), `${label}: dropped fields leave one compact body`);
+    assert.equal(digestTx(relayed).equals(digestTx(tx)), true, `${label}: and one leaf`);
+    assert.equal(store.mempool.some((row) => heldBodyKey(row) === key), false, `${label} left the mempool`);
     const tags = store.fluxset().spendTags;
     for (const p of built.proven.proofs) {
       assert.equal(tags.has(Buffer.from(p.spendTag).toString('hex')), true, `${label} tag not spent`);
@@ -495,16 +423,58 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     // earlier's: the labels a sender-picked id match would resolve.
     const [ra, rb] = user.map((row) => digestTx(row).toString('hex'));
     const crossed = [built.txs[0], { ...user[0], id: rb }, { ...user[1], id: ra }];
-    assert.deepEqual(crossed.slice(1).map((row) => digestTx(row).toString('hex')), [ra, rb], 'the label is in no leaf');
-    const relabelled = await verdictOf(crossed);
-    assert.equal(relabelled.ok, plain.ok, `crossed labels ${relabelled.reason}`);
-    // The same header (same merkle root) appends, and both spends land.
+    // The leaf binds the whole compact body (TX_DIGEST=body-v2), the label
+    // with it: relabelling is another block, refused under the old header.
+    const crossedLeaves = crossed.slice(1).map((row) => digestTx(row).toString('hex'));
+    assert.notEqual(crossedLeaves[0], ra, 'a label is in its leaf');
+    assert.notEqual(crossedLeaves[1], rb, 'a label is in its leaf');
+    const underOld = await verdictOf(crossed);
+    assert.equal(underOld.ok, false, 'a relabelled body under the old header');
+    assert.equal(underOld.reason, 'merkle');
+    // Sealed under its own header, the crossed block decides as the plain
+    // block does, and both spends land: no label decides a verdict.
+    const rebuilt = buildTemplate({
+      prev: tip.hash,
+      prevHeader: tip.header,
+      prevBlock: tip,
+      height: tip.height + 1,
+      miner: who.dest,
+      bits: preview.tpl.bits,
+      now: Number(decodeHeader(Buffer.from(preview.tpl.header)).timestamp),
+      txs: [{ ...a, id: rb }, { ...b, id: ra }],
+      parentBlocks: store.blocks,
+    });
+    assert.deepEqual(rebuilt.txs.slice(1).map((row) => row.id), [rb, ra], 'both relabelled sends in the block');
+    const crossedHeader = await sealHeader(rebuilt.header, rebuilt.bits);
+    const crossedBlock = {
+      header: crossedHeader,
+      height: rebuilt.height,
+      txs: rebuilt.txs,
+      samples: rebuilt.samples,
+      shareBatch: rebuilt.shareBatch || [],
+      miner: who.dest,
+      aLeaves: rebuilt.aLeaves,
+      bLeaves: rebuilt.bLeaves,
+      rootA: rebuilt.rootA,
+      rootB: rebuilt.rootB,
+      weight: rebuilt.weight,
+    };
     resetFs1VerifyCache();
     resetFs1Tree();
-    const got = await Promise.resolve(store.append(blockOf(crossed)));
+    const relabelled = await Promise.resolve(verifyBlock(crossedBlock, tip, {
+      noteAtAnchor: (anchor) => store.anchorNote(anchor),
+      evmHistory: store.blocks,
+      genesisMs,
+      magic: store.magic,
+      parentSupply: store.supplyState(),
+    }));
+    assert.equal(relabelled.ok, plain.ok, `crossed labels ${relabelled.reason}`);
+    resetFs1VerifyCache();
+    resetFs1Tree();
+    const got = await Promise.resolve(store.append(crossedBlock));
     assert.equal(got.ok, true, `append ${got.reason || ''}`);
     const sealed = store.blocks[store.blocks.length - 1].txs.slice(1);
-    assert.deepEqual(sealed.map((row) => digestTx(row).toString('hex')), [ra, rb]);
+    assert.deepEqual(sealed.map((row) => String(row.id)), [rb, ra], 'the block holds the relabelled sends');
     const tags = store.fluxset().spendTags;
     for (const row of [a, b]) {
       for (const p of row.admit_proofs) assert.equal(tags.has(Buffer.from(asU8(p.spendTag)).toString('hex')), true, 'spend joined the chain');
@@ -697,6 +667,8 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
       ],
     });
     assert.equal(store.queueTx(twice.tx).ok, true, 'first of two');
+    // Held, so its note is taken: later tests pick other coins.
+    spent.add(fresh.commit.toString('hex'));
     const second = store.queueTx(again.tx);
     assert.equal(second.ok, false, 'a mempool double spend');
   });
@@ -725,5 +697,253 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     const h = fs1TreeNew();
     const bad = Buffer.alloc(64, 0xff);
     assert.equal(fs1TreeAppend(h, bad), false, 'tree refuses a non-leaf');
+  });
+
+  it('block validation reads no field compaction drops: a send with a memo, walked', async () => {
+    const view = liveCoins();
+    assert.ok(view.coins.length >= 1, `only ${view.coins.length} live coins`);
+    const memoCt = memoSeal(who.dest, 'walk the reads', Buffer.alloc(32, 9));
+    const built = buildSend({
+      id: 'walked-memo',
+      coins: [view.coins[0]],
+      anchor: view.anchor,
+      live: view.live,
+      outsOf: (room) => [
+        { ...hiddenOut(room, hash20FromAddress(who.dest), who.base, 'send'), memoCt },
+        hiddenOut(0, Buffer.alloc(20, 4), null, 'dummy'),
+      ],
+    });
+    assert.equal(memoEnvelopeRejected(compactTx(built.tx).vout[0].memoCt), null, 'the memo envelope survives compaction');
+    resetFs1Tree();
+    resetFs1VerifyCache();
+    const walked = await droppedBlockReads({
+      store,
+      miner: who.dest,
+      fullTx: built.tx,
+      sealHeader,
+      bits: regtestBits(),
+      now: lastStamp(store) + 90_000,
+    });
+    assert.equal(walked.verdict.ok, true, `walked block ${walked.verdict.reason} (plain ${JSON.stringify(walked.plain)})`);
+    assert.deepEqual(walked.misses, [], `no validator read lands on a field compaction drops (${JSON.stringify(walked.readers)})`);
+    const bound = everyFieldBound(built.tx, 'walked-memo');
+    assert.ok(bound.checked.some((p) => p.startsWith('vout[].memoCt')), 'the memo envelope is in the leaf');
+  });
+
+  it('a peer failure mark does not outlive a valid body for that hash', async () => {
+    const mesh = createP2p({ store, port: 0, host: '127.0.0.1', magic: store.magic, helloMs: 5000, idleMs: 60_000 });
+    try {
+      // A peer once served a bad body under the tip's hash, and one under a
+      // hash this chain does not hold. The store now holds a valid body for
+      // the first: the next accepted block clears that mark, not the other.
+      const held = Buffer.from(store.tip().hash).toString('hex');
+      const unknown = 'ab'.repeat(32);
+      const rec = { id: 999, failed: new Set([held, unknown]), softFailed: new Map([[held, { at: Date.now(), reason: 'merkle' }]]) };
+      mesh.peers.set({ planted: true }, rec);
+      await mine(store, who.dest);
+      assert.equal(rec.failed.has(held), false, 'the hard mark for a stored hash is gone');
+      assert.equal(rec.softFailed.has(held), false, 'the soft mark for a stored hash is gone');
+      assert.equal(rec.failed.has(unknown), true, 'a mark for a hash the chain lacks stays');
+    } finally {
+      await Promise.resolve(mesh.close());
+    }
+  });
+
+  it('a remainder commitment or its opening is remainder_lock on the queue and in a block', async () => {
+    const view = liveCoins();
+    assert.ok(view.coins.length >= 1, `only ${view.coins.length} live coins`);
+    const built = buildSend({
+      id: 'remainder-probe',
+      coins: [view.coins[0]],
+      anchor: view.anchor,
+      live: view.live,
+      outsOf: (room) => [
+        hiddenOut(room, hash20FromAddress(who.dest), who.base, 'send'),
+        hiddenOut(0, Buffer.alloc(20, 4), null, 'dummy'),
+      ],
+    });
+    const remainCommit = Buffer.alloc(32, 0x31).toString('hex');
+    const withCommit = { ...built.tx, remainCommit };
+    const withProof = { ...built.tx, remainProof: { R: 'ab'.repeat(32), z: 'cd'.repeat(32) } };
+    for (const [label, tx] of [['remainCommit', withCommit], ['remainProof', withProof]]) {
+      const queued = store.queueTx(tx);
+      assert.equal(queued.ok, false, `${label} queued`);
+      assert.equal(queued.reason, 'remainder_lock', `${label} on the queue`);
+      const parked = admitMempool(emptyMempool(), tx, opts());
+      assert.equal(parked.reason, 'remainder_lock', `${label} in the mempool`);
+      const verdict = await Promise.resolve(blockVerdict(store, who.dest, tx));
+      assert.equal(verdict.ok, false, `${label} in a block`);
+      assert.equal(verdict.reason, 'remainder_lock', `${label} in a block`);
+    }
+    // A block the store is handed with a remainCommit body is refused by
+    // name and the chain does not move. (remainProof is not consensus bytes:
+    // compaction drops it before validation, so it never reaches a block.)
+    const tip = store.tip();
+    const preview = store.template({ miner: who.dest, bits: regtestBits(), shareBits: 4, now: lastStamp(store) + 90_000 });
+    const tpl = buildTemplate({
+      prev: tip.hash,
+      prevHeader: tip.header,
+      prevBlock: tip,
+      height: tip.height + 1,
+      miner: who.dest,
+      bits: preview.tpl.bits,
+      now: Number(decodeHeader(Buffer.from(preview.tpl.header)).timestamp),
+      txs: [built.tx],
+      parentBlocks: store.blocks,
+    });
+    const txs = [tpl.txs[0], ...tpl.txs.slice(1).map((row) => ({ ...row, remainCommit }))];
+    const header = encodeHeader({ ...decodeHeader(Buffer.from(tpl.header)), merkleRoot: merkleRoot(txs.map(digestTx)), nonce: 0n });
+    const sealed = await sealHeader(header, tpl.bits);
+    resetFs1Tree();
+    resetFs1VerifyCache();
+    const got = await Promise.resolve(store.append({
+      header: sealed,
+      height: tpl.height,
+      txs,
+      samples: tpl.samples,
+      shareBatch: tpl.shareBatch || [],
+      miner: who.dest,
+      aLeaves: tpl.aLeaves,
+      bLeaves: tpl.bLeaves,
+      rootA: tpl.rootA,
+      rootB: tpl.rootB,
+      weight: tpl.weight,
+    }));
+    assert.equal(got.ok, false, 'a remainCommit block');
+    assert.equal(got.reason, 'remainder_lock');
+    assert.equal(Buffer.from(store.tip().hash).equals(Buffer.from(tip.hash)), true, 'the chain did not move');
+  });
+
+  it('a reorg keeps an unrelated held send and brings back the loser\'s send: an FS-1 vin names no outpoint', async () => {
+    const view = liveCoins();
+    assert.ok(view.coins.length >= 3, `only ${view.coins.length} live coins`);
+    const back20 = hash20FromAddress(who.dest);
+    const sendOf = (c, id) => buildSend({
+      id,
+      coins: [c],
+      anchor: view.anchor,
+      live: view.live,
+      outsOf: (room) => [
+        hiddenOut(room, back20, who.base, 'send'),
+        hiddenOut(0, Buffer.alloc(20, 4), null, 'dummy'),
+      ],
+    }).tx;
+    const s1 = sendOf(view.coins[0], 'reorg-held');
+    const t = sendOf(view.coins[1], 'reorg-loser');
+    const w = sendOf(view.coins[2], 'reorg-winner');
+    for (const c of view.coins.slice(0, 3)) spent.add(c.commit.toString('hex'));
+    // The v1 leaf (the packed core alone) cannot tell these three spends of
+    // three different notes apart; the body-v2 leaf can.
+    const core = [s1, t, w].map((row) => txCoreDigest(row).toString('hex'));
+    assert.equal(new Set(core).size, 1, 'one v1 leaf for three different FS-1 spends');
+    const leaves = [s1, t, w].map((row) => digestTx(row).toString('hex'));
+    assert.equal(new Set(leaves).size, 3, 'three body-v2 leaves');
+    const held = (tx) => store.mempool.some((m) => heldBodyKey(m) === txBodyKey(tx));
+    // A peer that shares the chain to here.
+    const peerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fs1-peer-'));
+    fs.cpSync(dir, peerDir, { recursive: true });
+    fs.copyFileSync(bookSealKeyPath(dir), bookSealKeyPath(peerDir));
+    // The copy carries our datadir lock: the peer takes its own.
+    for (const f of [DATADIR_LOCK_NAME, DATADIR_CLAIM_NAME]) fs.rmSync(path.join(peerDir, f), { force: true });
+    resetFs1Tree();
+    resetFs1VerifyCache();
+    const peer = createRegtestStore(peerDir, { bits: 4 });
+    try {
+      assert.equal(Buffer.from(peer.tip().hash).equals(Buffer.from(store.tip().hash)), true, 'peer at our tip');
+      // Our branch: one block sealing t, with s1 held and not mined.
+      const q1 = store.queueTx(s1);
+      assert.equal(q1.ok, true, `s1 ${q1.reason}`);
+      const tip = store.tip();
+      const preview = store.template({ miner: who.dest, bits: regtestBits(), shareBits: 4, now: lastStamp(store) + 90_000 });
+      const built = buildTemplate({
+        prev: tip.hash,
+        prevHeader: tip.header,
+        prevBlock: tip,
+        height: tip.height + 1,
+        miner: who.dest,
+        bits: preview.tpl.bits,
+        now: Number(decodeHeader(Buffer.from(preview.tpl.header)).timestamp),
+        txs: [t],
+        parentBlocks: store.blocks,
+      });
+      const header = await sealHeader(built.header, built.bits);
+      resetFs1Tree();
+      resetFs1VerifyCache();
+      const ours = await Promise.resolve(store.append({
+        header,
+        height: built.height,
+        txs: built.txs,
+        samples: built.samples,
+        shareBatch: built.shareBatch || [],
+        miner: who.dest,
+        aLeaves: built.aLeaves,
+        bLeaves: built.bLeaves,
+        rootA: built.rootA,
+        rootB: built.rootB,
+        weight: built.weight,
+      }));
+      assert.equal(ours.ok, true, `ours ${ours.reason || ''}`);
+      assert.equal(held(s1), true);
+      assert.equal(held(t), false, 't is sealed on our branch');
+      // The peer's branch: two blocks, the first sealing w, another FS-1 send.
+      resetFs1Tree();
+      resetFs1VerifyCache();
+      const qw = peer.queueTx(w);
+      assert.equal(qw.ok, true, `w on the peer ${qw.reason}`);
+      const b1 = await mine(peer, who.dest);
+      assert.ok(b1.txs.some((row) => row.id === 'reorg-winner'), 'w sealed on the peer');
+      await mine(peer, who.dest);
+      // Two real blocks at one height with different FS-1 spends now have
+      // two hashes (under the v1 leaf they had one, and the node took the
+      // peer's block for ours with no reorg).
+      const ourTip = store.blocks[store.blocks.length - 1];
+      const theirs = peer.blocks[ourTip.height - 1];
+      assert.equal(Number(theirs.height), Number(ourTip.height), 'same height');
+      assert.equal(Buffer.from(theirs.hash).equals(Buffer.from(ourTip.hash)), false, 'different spends, different block hashes');
+      // Our header with the peer's body is refused, never taken as our block.
+      const forgedTip = { ...theirs, header: ourTip.header, hash: ourTip.hash };
+      const forged = store.ingest([forgedTip]);
+      assert.equal(forged.ok, false, 'a known hash with another body');
+      assert.equal(forged.reason, 'merkle');
+      assert.equal(Buffer.from(store.tip().hash).equals(Buffer.from(ourTip.hash)), true, 'our block stands');
+      // The known-hash prefix case: our own chain relayed back with block
+      // `ourTip` carrying the peer's body, and an honest child on top so the
+      // fork is heavier. The prefix matches ours hash for hash; its body is
+      // still checked against the header, so the fork is refused.
+      const childPreview = store.template({ miner: who.dest, bits: regtestBits(), shareBits: 4, now: lastStamp(store) + 90_000 });
+      const childHeader = await sealHeader(childPreview.tpl.header, childPreview.tpl.bits);
+      const child = {
+        header: childHeader,
+        height: childPreview.tpl.height,
+        txs: childPreview.tpl.txs,
+        samples: childPreview.tpl.samples,
+        shareBatch: childPreview.tpl.shareBatch || [],
+        miner: who.dest,
+        aLeaves: childPreview.tpl.aLeaves,
+        bLeaves: childPreview.tpl.bLeaves,
+        rootA: childPreview.tpl.rootA,
+        rootB: childPreview.tpl.rootB,
+        weight: childPreview.tpl.weight,
+      };
+      const relayedChain = [...store.blocks.slice(0, -1), forgedTip, child];
+      resetFs1Tree();
+      resetFs1VerifyCache();
+      const prefixed = await Promise.resolve(store.ingest(relayedChain));
+      assert.equal(prefixed.ok, false, 'a known-hash prefix with another body');
+      assert.equal(prefixed.reason, 'merkle');
+      assert.equal(Buffer.from(store.tip().hash).equals(Buffer.from(ourTip.hash)), true, 'our tip stands');
+      resetFs1Tree();
+      resetFs1VerifyCache();
+      const got = await Promise.resolve(store.ingest(peer.blocks));
+      assert.equal(got.ok, true, `${got.reason || 'ingest'} at=${got.at}`);
+      assert.equal(got.reorg, true, 'the heavier branch wins');
+      assert.equal(Buffer.from(store.tip().hash).equals(Buffer.from(peer.tip().hash)), true);
+      // w's FS-1 vin names no outpoint: it spends neither s1's note nor t's.
+      assert.equal(held(s1), true, 'an unrelated held send stays');
+      assert.equal(held(t), true, 'the loser\'s send comes back to the mempool');
+      assert.equal(held(w), false, 'the winner\'s send is sealed');
+    } finally {
+      fs.rmSync(peerDir, { recursive: true, force: true });
+    }
   });
 });

@@ -16,6 +16,8 @@ import { attachDummyOuts } from '../../crypto/dummy.js';
 import { createStore } from '../src/store.js';
 import { createRegtestStore } from './regtest_store.js';
 import { shouldAdopt, digestTx } from '../src/chain.js';
+import { readChainSegments } from '../../crypto/chainbin.js';
+import { auditCirculatingSupply } from '../src/supply.js';
 import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
@@ -142,6 +144,20 @@ describe('most-work adopt', () => {
     assert.equal(got.reorg, true, `${got.reason || 'expected reorg'} at=${got.at}`);
     assert.equal(local.tip().height, heavierNeed);
     assert.equal(Buffer.from(local.tip().hash).equals(Buffer.from(heavier.tip().hash)), true);
+    // State and disk agree after the adopt: the chain read back from the
+    // segments (what a restart reads) is the live chain block for block,
+    // every stored body rebuilds its sealed merkle root, and the supply audit
+    // of the disk chain is the live one.
+    const onDisk = readChainSegments(path.join(local.dir, 'segments'));
+    assert.ok(Array.isArray(onDisk), 'segments on disk');
+    assert.equal(onDisk.length, local.blocks.length, 'disk height');
+    for (let i = 0; i < onDisk.length; i += 1) {
+      assert.equal(Buffer.from(onDisk[i].header).equals(Buffer.from(local.blocks[i].header)), true, `header ${i}`);
+      const sealed = Buffer.from(decodeHeader(Buffer.from(onDisk[i].header)).merkleRoot);
+      assert.equal(merkleRoot(onDisk[i].txs.map(digestTx)).equals(sealed), true, `disk body ${i} rebuilds its merkle root`);
+      assert.deepEqual(onDisk[i].txs.map((t) => digestTx(t).toString('hex')), local.blocks[i].txs.map((t) => digestTx(t).toString('hex')), `body ${i}`);
+    }
+    assert.deepEqual(auditCirculatingSupply(onDisk), auditCirculatingSupply(local.blocks), 'disk supply is live supply');
     assert.equal(events.length, 1);
     assert.equal(events[0].type, 'reorg');
     assert.ok(events[0].from_hash);

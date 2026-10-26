@@ -344,8 +344,24 @@ const SEALED_SECRET_KEYS = new Set([
   '_origNoteCommit',
 ]);
 
+/**
+ * Every byte view in a compact body as a Buffer. JSON writes a bare
+ * Uint8Array as an object of indices, so without this a block read back from
+ * disk would carry other bytes than the block that was validated.
+ */
+function viewsAsBuffers(v) {
+  if (v == null || typeof v !== 'object' || Buffer.isBuffer(v)) return v;
+  if (v instanceof Uint8Array) return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
+  if (Array.isArray(v)) return v.map(viewsAsBuffers);
+  const out = {};
+  for (const [k, x] of Object.entries(v)) out[k] = viewsAsBuffers(x);
+  return out;
+}
+
 function compactValue(v) {
   if (v == null || typeof v !== 'object' || Buffer.isBuffer(v)) return v;
+  // Bytes, not an object of indices: JSON and the body digest read a Buffer.
+  if (v instanceof Uint8Array) return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
   if (Array.isArray(v)) return v.map(compactValue);
   const out = {};
   for (const [k, val] of Object.entries(v)) {
@@ -775,7 +791,7 @@ export function compactTx(tx) {
       row.issuedJobKeys = tx.issuedJobKeys.map((id) => String(id).toLowerCase());
     }
     compactHashLedger(tx, row);
-    return row;
+    return viewsAsBuffers(row);
   }
   const out = {};
   for (const k of COMPACT_TX_KEYS) {
@@ -908,7 +924,7 @@ export function compactTx(tx) {
   if (kind === 'withdraw') delete out.payoutPortalId;
   // The EVM lock checks this signature. A compact body that drops it cannot replay.
   if (kind === 'lock' && tx.lockAuth) out.lockAuth = compactValue(tx.lockAuth);
-  return out;
+  return viewsAsBuffers(out);
 }
 
 function blobIsFs1Wire(value) {

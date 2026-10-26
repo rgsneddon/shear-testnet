@@ -14,7 +14,7 @@ import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
-import { sealNote } from '../../crypto/note.js';
+import { sealNote, wrapNoteBlind } from '../../crypto/note.js';
 import { freshStealthDest, newIdentity } from '../../crypto/address.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { stubAdmitV2 } from './stub_admit_v2.js';
@@ -85,6 +85,12 @@ function hiddenTx(kind, amount) {
  */
 function provedHiddenTx(kind, amount) {
   const tx = hiddenTx(kind, amount);
+  // A block's hidden send output carries its dest's wrap (rEph, rCt, amtCt),
+  // so the opening is the body's only fault and value_open its refusal.
+  if (kind === 'send') {
+    tx.vout[0] = wrapNoteBlind(tx.vout[0], newIdentity().admitBase, BigInt(amount));
+    assert.ok(tx.vout[0].rEph && tx.vout[0].rCt && tx.vout[0].amtCt);
+  }
   tx.admit_proof = stubAdmitV2({ cTilde: tx.vout[0].commit });
   tx.spendTag = tx.admit_proof.spendTag;
   return tx;

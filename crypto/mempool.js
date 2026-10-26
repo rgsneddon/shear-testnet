@@ -4,6 +4,7 @@
  * Shares are not in the mempool.
  */
 import { createHash } from 'node:crypto';
+import { droppedFieldOf } from './arrival_fields.js';
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceiptRejected } from './dummy.js';
@@ -460,6 +461,11 @@ export function admitMempool(pool, tx, opts = {}) {
   // A leaf ballot is admitted only after the vault trial. A portal vote
   // already returned vote_retired. A proof-less ballot does not sit in the pool.
   if (kind === 'leaf-vote' && !vaultState) return { ok: false, reason: 'not_voter' };
+  // Last: a field compaction would drop that is neither on the strip list
+  // nor rebuilt into a kept field is refused, as a block carrying it is
+  // (arrival_fields.js). The named refusals above keep their reasons.
+  const dropped = droppedFieldOf(tx);
+  if (dropped) return { ok: false, reason: 'dropped_field', field: dropped };
   book.txs.push(mempoolRow(tx, paid, kind));
   const accepted = book.txs[book.txs.length - 1];
   const tags = Array.isArray(fundTags) ? fundTags.slice() : txSpendTags(accepted).tags.map((tag) => tag.toString('hex'));

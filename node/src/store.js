@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { blockArrivalRejected } from '../../crypto/arrival_fields.js';
 import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW, GENESIS_BPS } from '../../crypto/asert.js';
 import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveRejected } from '../../crypto/reserve_oracle.js';
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
@@ -46,9 +47,38 @@ import {
   keepsFrontier,
   frontierWindow,
   retainFrontierBlobs,
+  digestTx,
+  arrivedRowsKey,
 } from './chain.js';
+import { merkleRoot } from '../../crypto/merkle.js';
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
+
+/**
+ * `a` is exactly `b`: the same keys (an undefined value is no key), the same
+ * prototypes, the same types (a Buffer is not a bare Uint8Array) and the
+ * same values, all the way down. Anything else, NaN included, is not the
+ * same, and the store then validates the compact copy (compactOrSame).
+ */
+export function sameCompactShape(a, b) {
+  if (a === b) return true;
+  if (Buffer.isBuffer(a) || Buffer.isBuffer(b)) return Buffer.isBuffer(a) && Buffer.isBuffer(b) && a.equals(b);
+  if (a instanceof Uint8Array || b instanceof Uint8Array) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) if (!sameCompactShape(a[i], b[i])) return false;
+    return true;
+  }
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+    const ka = Object.keys(a).filter((k) => a[k] !== undefined);
+    const kb = Object.keys(b).filter((k) => b[k] !== undefined);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) if (!Object.prototype.hasOwnProperty.call(b, k) || !sameCompactShape(a[k], b[k])) return false;
+    return true;
+  }
+  return false;
+}
 import { bookSealKeyFor } from './book_seal_key.js';
 import { ensureDatadir } from './datadir_acl.js';
 import { acquireDatadirLock } from './datadir_lock.js';
@@ -2912,15 +2942,24 @@ export function createStore(dir, {
         || (block?.miner && isDestAddress(block.miner) ? block.miner : null),
       owedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
+      arrivedRows: extra.arrivedRows,
     });
     return { check, spentBefore };
   }
 
+  /**
+   * append's verdict on `block`, with nothing kept. The body is compacted
+   * first, as append does (arrivedBody), so a template probe and the real
+   * append judge the same bytes.
+   */
   function probeBlock(block) {
-    const { check, spentBefore } = verifyAgainstTip(block, { probeBody: true });
+    const refused = arrivalReason(block);
+    const { check, spentBefore } = verifyAgainstTip(arrivedBody(block), { probeBody: true, arrivedRows: arrivedRows(block) });
     const finish = (c) => {
       rollbackSpent(spentB, spentBefore);
       if (!c?.ok) return { ok: false, reason: c?.reason || 'append' };
+      // As append: the compact body verified, and a field it may not carry is refused.
+      if (refused) return { ok: false, reason: refused.reason, field: refused.field };
       return { ok: true, reason: '' };
     };
     if (check && typeof check.then === 'function') {
@@ -3422,6 +3461,101 @@ export function createStore(dir, {
   }
 
   /**
+   * A field an arrived block may not carry, read on the block as it arrived,
+   * before arrivedBody compacts it (crypto/arrival_fields.js): compaction
+   * strips secrets and local-only fields and never decides validity. The
+   * refusal rides in verifyOpts.arrivalRefusal and is applied once the
+   * compact body verifies, before anything is stored or staged, so a block
+   * that fails consensus keeps its own reason. Null when every row may be
+   * carried.
+   */
+  function arrivalReason(blocks) {
+    const list = Array.isArray(blocks) ? blocks : [blocks];
+    for (let i = 0; i < list.length; i += 1) {
+      const refused = blockArrivalRejected(list[i]);
+      if (refused) return { ok: false, reason: refused.reason, field: refused.field, at: i };
+    }
+    return null;
+  }
+
+  /**
+   * The verdict verifyBlock gave on each arrived block's full rows, by
+   * header (chain.js arrivedRowsKey), or null: `opening`, its first body
+   * check (spend.js openingBeforeCarry). Compaction strips the opening it
+   * reads, so verifyBlock returns it from here at that same point: a block
+   * keeps the reason its full body had.
+   */
+  function arrivedRows(blocks) {
+    const list = Array.isArray(blocks) ? blocks : [blocks];
+    let out = null;
+    for (const b of list) {
+      let opening = null;
+      for (const tx of Array.isArray(b?.txs) ? b.txs : []) {
+        opening = openingBeforeCarry(tx);
+        if (opening) break;
+      }
+      if (!opening) continue;
+      const key = arrivedRowsKey(b);
+      if (key) (out ||= new Map()).set(key, { opening });
+    }
+    return out;
+  }
+
+  /** verifyOpts carrying the arrival refusal and full-row verdicts of `arrived`, if it has them. */
+  function withArrival(arrived, verifyOpts = {}) {
+    if (verifyOpts?.arrivalRefusal || verifyOpts?.arrivedRows) return verifyOpts;
+    const refused = arrivalReason(arrived);
+    const rows = arrivedRows(arrived);
+    if (!refused && !rows) return verifyOpts;
+    return {
+      ...verifyOpts,
+      ...(refused ? { arrivalRefusal: refused } : {}),
+      ...(rows ? { arrivedRows: rows } : {}),
+    };
+  }
+
+  /** The arrival refusal as a result, for a block that verified. */
+  function arrivalRefused(verifyOpts) {
+    const r = verifyOpts?.arrivalRefusal;
+    return r ? { ok: false, reason: r.reason, field: r.field, tip: tip() } : null;
+  }
+
+  /**
+   * A block as it is validated: its txs in the compact form it is stored,
+   * served, read back and hashed in (chain.js digestTx). A field compaction
+   * drops, added or changed by a relayer, so never reaches a check.
+   * Coinbase samples move to the block, as leanBlock stores them.
+   */
+  function arrivedBody(block) {
+    if (!block || typeof block !== 'object' || !Array.isArray(block.txs)) return block;
+    const cb = block.txs[0];
+    const samples = Array.isArray(block.samples) ? block.samples : (cb?.coinbase && Array.isArray(cb.samples) ? cb.samples : block.samples);
+    return { ...block, samples, txs: block.txs.map((tx) => {
+      if (tx?.coinbase) {
+        if (!Object.prototype.hasOwnProperty.call(tx, 'samples')) return compactOrSame(tx, compactTx(tx));
+        const { samples: _s, ...rest } = tx;
+        return compactTx({ ...rest, coinbase: true });
+      }
+      return compactOrSame(tx, compactTx(tx));
+    }) };
+  }
+
+  /**
+   * A row that arrived already compact (a peer's block, a block read back
+   * from disk) is validated as that object, not a byte-identical copy
+   * (Russell 26 Oct, ruling B: keep). It is that object only when
+   * sameCompactShape says it equals its compact form exactly, so the verdict
+   * is the one the copy would get: it can never make an invalid body valid.
+   * Why it is kept: the read walk (tests/compact_reads.js) watches the
+   * objects validators read, and on the reserve kinds a fresh copy hid
+   * those reads (two mutations went uncaught without it). Its cost is one
+   * strict deep compare per tx.
+   */
+  function compactOrSame(tx, compact) {
+    return sameCompactShape(tx, compact) ? tx : compact;
+  }
+
+  /**
    * Header rules and proof-of-work before any book walk. An invalid header
    * must not scan sealed hashes, decode every gap, or copy the owed series.
    * A trusted hash, an off-loop hash, or a pruned burial still uses the
@@ -3538,7 +3672,9 @@ export function createStore(dir, {
     ));
   }
 
-  function append(block, verifyOpts = {}) {
+  function append(arrived, verifyOpts = {}) {
+    verifyOpts = withArrival(arrived, verifyOpts);
+    const block = arrivedBody(arrived);
     const early = unprovenAppendReason(block, verifyOpts);
     if (early) return { ok: false, reason: early, tip: tip() };
     // The off-loop path proves the header target here, so every caller of
@@ -3677,6 +3813,7 @@ export function createStore(dir, {
       skipSharePow: !!verifyOpts.skipSharePow,
       offLoopPow: !!verifyOpts.offLoopPow,
       poolDest: verifyOpts.poolDest,
+      arrivedRows: verifyOpts.arrivedRows,
       ...(burial ? { burialTip: burial.top } : {}),
     });
     const after = (c) => {
@@ -3709,6 +3846,12 @@ export function createStore(dir, {
       if (burial && !(c.hash && Buffer.from(c.hash).equals(burial.claimed))) {
         rollbackSpent(spentB, spentBefore);
         return { ok: false, reason: 'pow', tip: tip() };
+      }
+      // A field the block may not carry, read before compaction.
+      const carried = arrivalRefused(verifyOpts);
+      if (carried) {
+        rollbackSpent(spentB, spentBefore);
+        return carried;
       }
       const vaultClock = blockTimeMs(block);
       for (const tx of (block.txs || []).slice(1)) {
@@ -4363,6 +4506,7 @@ export function createStore(dir, {
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
       genesisMs: genesisHeaderMs(accepted) || Number(verifyOpts.genesisMs) || 0,
       magic: bookMagic,
+      arrivedRows: verifyOpts.arrivedRows,
     });
     const stamp = (c) => {
       const lie = burialClaimPow(parentH + 1, c?.hash, verifyOpts.provenBurialAt, c?.ok === true);
@@ -5300,6 +5444,8 @@ export function createStore(dir, {
     const checked = verifySuffix(fork, parent, history, verifyOpts);
     const apply = (verified) => {
       if (!verified?.ok) return verified;
+      const carried = arrivalRefused(verifyOpts);
+      if (carried) return carried;
       const staged = prior.concat(verified.blocks);
       if (staged.length > 8192) return { ok: false, reason: 'side_hold', tip: tip() };
       const candidate = blocks.slice(0, anchor + 1).concat(staged);
@@ -5498,8 +5644,12 @@ export function createStore(dir, {
     return { blankOnly: false, ckpt, unitAt: units, trial, seal };
   }
 
-  function adopt(fork, verifyOpts = {}) {
-    if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
+  function adopt(arrived, verifyOpts = {}) {
+    if (!Array.isArray(arrived) || !arrived.length) return { ok: false, reason: 'empty' };
+    verifyOpts = withArrival(arrived, verifyOpts);
+    const fork = arrived.map(arrivedBody);
+    const knownBad = knownHashBodyReason(fork);
+    if (knownBad) return { ...knownBad, tip: tip() };
     const verified = verifyOpts.offLoopPow ? verifyForkAsync(fork, verifyOpts) : verifyFork(fork, verifyOpts);
     const take = (v) => finishAdopt(v, verifyOpts);
     if (verified && typeof verified.then === 'function') return verified.then(take);
@@ -5508,7 +5658,14 @@ export function createStore(dir, {
 
   function finishAdopt(verified, verifyOpts = {}) {
     if (!verified.ok) return verified;
-    const accepted = verified.accepted;
+    const carried = arrivalRefused(verifyOpts);
+    if (carried) return carried;
+    // The shared prefix is our own block objects: supply, flux and the vault
+    // carry from them below, so the chain written to disk is those same
+    // blocks, not a peer's copies (knownHashBodyReason held them to our
+    // headers and merkle roots; their other fields are not taken).
+    const shared = commonPrefixLen(blocks, verified.accepted);
+    const accepted = shared > 0 ? blocks.slice(0, shared).concat(verified.accepted.slice(shared)) : verified.accepted;
     rememberFork(accepted, 'valid-fork');
     if (!shouldAdopt(blocks, accepted)) {
       const holdAt = commonPrefixLen(blocks, accepted);
@@ -5850,8 +6007,34 @@ export function createStore(dir, {
 
   let offLoopGate = Promise.resolve();
 
-  function ingestInner(fork, verifyOpts = {}) {
-    if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
+  /**
+   * A block under a hash this chain already holds is that block only if it
+   * carries our header bytes and its body rebuilds the merkle root that
+   * header seals. Otherwise it is refused, never taken as ours: a known hash
+   * does not stand in for a body check.
+   */
+  function knownHashBodyReason(fork) {
+    for (let i = 0; i < fork.length; i += 1) {
+      const b = fork[i];
+      const hex = blockHex(b);
+      const at = hex ? chainIndexOf(chainIndex, blocks, hex) : -1;
+      if (at < 0) continue;
+      let header;
+      try { header = Buffer.from(b.header); } catch { return { ok: false, reason: 'bad_header', at: i }; }
+      if (!header.equals(Buffer.from(blocks[at].header))) return { ok: false, reason: 'known_hash_header', at: i };
+      let sealed;
+      try { sealed = Buffer.from(decodeHeader(header).merkleRoot); } catch { return { ok: false, reason: 'bad_header', at: i }; }
+      if (!merkleRoot((b.txs || []).map(digestTx)).equals(sealed)) return { ok: false, reason: 'merkle', at: i };
+    }
+    return null;
+  }
+
+  function ingestInner(arrived, verifyOpts = {}) {
+    if (!Array.isArray(arrived) || !arrived.length) return { ok: false, reason: 'empty' };
+    verifyOpts = withArrival(arrived, verifyOpts);
+    const fork = arrived.map(arrivedBody);
+    const knownBad = knownHashBodyReason(fork);
+    if (knownBad) return { ...knownBad, tip: tip() };
     const stage0 = chainStage0Rejected(fork);
     if (stage0) return stage0;
     const t = tip();

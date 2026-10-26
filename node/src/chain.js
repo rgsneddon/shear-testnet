@@ -177,6 +177,9 @@ export {
   compactChainBlock,
 } from '../../crypto/chronoflux.js';
 
+import { canonicalHash } from '../../crypto/canonical_row.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+
 export const GENESIS_PREV = Buffer.alloc(32);
 
 /**
@@ -228,7 +231,35 @@ export function canonicalCarry(tx) {
   return n;
 }
 
+/**
+ * The merkle leaf of one tx (TX_DIGEST=body-v2). Computed on compactTx(tx),
+ * the one form a block is validated in, stored in, served in and read back
+ * from disk in, so a full row and its compact copy are one digest and a
+ * field compaction drops reaches no digest. It binds the packed core and
+ * sha256 of the canonical encoding of the whole compact row
+ * (canonical_row.js), so every byte a validator reads is in the block hash,
+ * for every kind including the coinbase.
+ */
 export function digestTx(tx) {
+  const body = compactTx(tx);
+  return packDigest(Buffer.concat([
+    Buffer.from(TX_DIGEST_DOMAIN),
+    coreDigest(body),
+    canonicalHash('shear-tx-body-v2', body),
+  ]));
+}
+
+const TX_DIGEST_DOMAIN = 'shear-tx-digest-v2';
+
+/**
+ * The packed core alone: the v1 merkle leaf. It binds no commitment, tag or
+ * proof of an FS-1 body, which is why it is no longer the leaf by itself.
+ */
+export function txCoreDigest(tx) {
+  return coreDigest(tx);
+}
+
+function coreDigest(tx) {
   const vins = (tx.vin || []).map((v, i) => {
     const prev = ref32(v.prev) || Buffer.alloc(32);
     const nc = ref32(v.noteCommit);
@@ -2337,6 +2368,16 @@ function parentSpendView(chain) {
   };
 }
 
+/** The key opts.arrivedRows is read by: the header bytes as hex, however the block holds them. */
+export function arrivedRowsKey(block) {
+  try {
+    const h = Buffer.from(asU8(block?.header));
+    return h.length ? h.toString('hex') : '';
+  } catch {
+    return '';
+  }
+}
+
 function verifyBlockConsensus(block, prev, opts = {}) {
   const earlyTxs = Array.isArray(block?.txs) ? block.txs : [];
   for (let i = 0; i < earlyTxs.length; i += 1) {
@@ -2840,6 +2881,11 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     return null;
   };
+  // Compaction strips a hidden output's opening, so the store reads it on
+  // the rows as they arrived (store.js arrivedRows) and it keeps its place
+  // as this first body check.
+  const arrivedOpen = opts.arrivedRows?.get(arrivedRowsKey(block))?.opening;
+  if (arrivedOpen) return arrivedOpen;
   for (const tx of txs) {
     const earlyOpen = openingBeforeCarry(tx);
     if (earlyOpen) return earlyOpen;

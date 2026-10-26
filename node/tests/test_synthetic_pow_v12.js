@@ -61,9 +61,14 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
     // A claimed id that is not the header's ShearHash is hash_claim before any
     // target check (store.append). The same header under its own ShearHash is
     // then judged on pow.
+    // Each store seals its own coinbase (fresh blinding), and the leaf binds
+    // those bytes (TX_DIGEST=body-v2), so each store's header is its own and
+    // is judged under its own ShearHash.
     const fresh = createStore(tmp('shear-syn-fresh-'));
     const issued = fresh.template({ miner, now });
-    assert.equal(Buffer.from(setNonce(issued.tpl.header, 0n)).equals(header), true);
+    const freshReal = shearHash(setNonce(issued.tpl.header, 0n));
+    assert.equal(freshReal.equals(pow), false);
+    assert.equal(meetsTarget(freshReal, decoded.bits), false);
     const direct = await Promise.resolve(fresh.submitHeader({
       jobId: issued.job.jobId,
       nonce: 0n,
@@ -79,7 +84,7 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
       jobId: issued.job.jobId,
       nonce: 0n,
       miner,
-      powHash: real.toString('hex'),
+      powHash: freshReal.toString('hex'),
       trustedPowHash: pow.toString('hex'),
       skipSharePow: true,
     }));
@@ -89,10 +94,12 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
 
     const rpcStore = createStore(tmp('shear-syn-rpc-'));
     const rpcJob = rpcStore.template({ miner, now });
+    const rpcReal = shearHash(setNonce(rpcJob.tpl.header, 0n));
+    assert.equal(meetsTarget(rpcReal, decoded.bits), false);
     const rpc = createRpc({ store: rpcStore, port: 0, host: '127.0.0.1' });
     try {
       for (const method of ['submitblock', 'submitHeader']) {
-        for (const [claim, want] of [[pow, 'hash_claim'], [real, 'pow']]) {
+        for (const [claim, want] of [[pow, 'hash_claim'], [rpcReal, 'pow']]) {
           const got = await Promise.resolve(rpc.dispatch(method, {
             jobId: rpcJob.job.jobId,
             nonce: '0',

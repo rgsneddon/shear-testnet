@@ -319,6 +319,8 @@ export const VAULT_FS1_ACTIVATION_HEIGHT = 17;
 /** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
+/** chain.js digestTx: the packed core plus sha256 of the canonical compact body. */
+export const TX_DIGEST_LAW = 'body-v2';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 /** Chain magics are reserve_books.js. This module re-exports them. */
 /**
@@ -492,6 +494,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `FS1_SPEND_IDENTITY=${FS1_SPEND_IDENTITY_LAW}`,
     'HASH_BONUS_CEIL=none',
     'P2P_HELLO=fingerprint',
+    // The merkle leaf binds the whole compact body (chain.js digestTx). A
+    // node on the older digest refuses this book at hello, not at a merkle.
+    `TX_DIGEST=${TX_DIGEST_LAW}`,
     `COMPACT_TO=${COMPACT_TO}`,
     `VAULT_GAP=${VAULT_GAP_LAW}`,
     `POT_PROP=${POT_PROP}`,

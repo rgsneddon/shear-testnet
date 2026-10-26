@@ -229,7 +229,12 @@ describe('N-1 gate order', () => {
     assert.ok(survivorBefore);
     const survivorCommit = Buffer.from(survivorBefore.commit);
     victim.admitPub = Buffer.alloc(32, 0xab);
-    const broken = verifyBlock(viewOf(tpl), null, { probeBody: true });
+    // The leaf binds admitPub (TX_DIGEST=body-v2), so the header is resealed
+    // over the broken body, as a miner sealing it would: the block reaches the
+    // payee check instead of failing merkle first.
+    const brokenView = viewOf(tpl);
+    brokenView.header = encodeHeader({ ...decodeHeader(Buffer.from(tpl.header)), merkleRoot: merkleRoot(tpl.txs.map(digestTx)) });
+    const broken = verifyBlock(brokenView, null, { probeBody: true });
     assert.equal(broken.reason, 'admit_note_point');
     dropBrokenCoinbaseNotes(cb);
     finishTemplate(tpl);
