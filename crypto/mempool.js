@@ -3,7 +3,7 @@
  * Paid ≥ current base; bounded; requote/drop after retarget.
  * Shares are not in the mempool.
  */
-import { createHash } from 'node:crypto';
+import { canonicalHash } from './canonical_row.js';
 import { droppedFieldOf } from './arrival_fields.js';
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
@@ -18,6 +18,7 @@ import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected, leafVoteLeakRejected, compactLockLeakRejected, withdrawLeakRejected } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
+import { destForLogin } from './flow_sheet.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -55,41 +56,21 @@ export function mempoolRow(tx, fee, kind) {
 }
 
 /**
- * Key-order-free bytes of a row: bytes as their lowercase hex text, bigints
- * as strings. A body is the same whether a field holds a Buffer, the hex an
- * HTTP post carries, or the {$hex} a p2p frame carries (p2p.js hexify);
- * reviveTx turns only some of those into Buffers. So a resend matches the
- * row a reorg bounce re-queued from the block's copy.
+ * The body a template seals for a held tx (store.js template): a worker
+ * suffix off the payee, the b-spend flag, and the vin and vout a body with
+ * none gets. A held row and the block's copy of it are then one body. With no
+ * closure given, destForLogin reads no context, so the template's
+ * continuity root and height (`ctx`) do not change the form.
  */
-function canonicalRow(v) {
-  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return JSON.stringify(Buffer.from(v).toString('hex'));
-  if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && typeof v.$hex === 'string') {
-    return canonicalRow(v.$hex);
-  }
-  if (typeof v === 'string' && /^(0x)?([0-9a-fA-F]{2})+$/.test(v)) return JSON.stringify(v.replace(/^0x/, '').toLowerCase());
-  if (typeof v === 'bigint') return JSON.stringify({ $big: v.toString() });
-  if (Array.isArray(v)) return `[${v.map(canonicalRow).join(',')}]`;
-  if (v && typeof v === 'object') {
-    return `{${Object.keys(v).filter((k) => v[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canonicalRow(v[k])}`).join(',')}}`;
-  }
-  return JSON.stringify(v === undefined ? null : v);
-}
-
-/**
- * True when `tx` is the body already queued as `row`. admitMempool stores
- * mempoolRow(tx, postedFeeNanos(tx), kind), so the arrival is built the same
- * way, with its own posted fee and the row's kind, before the compare: a
- * different fee is a different body.
- */
-export function sameMempoolBody(row, tx) {
-  if (!row || !tx) return false;
-  try {
-    const paid = postedFeeNanos(tx);
-    if (paid == null) return false;
-    return canonicalRow(mempoolRow(tx, paid, row.kind)) === canonicalRow(row);
-  } catch {
-    return false;
-  }
+export function sealedFormOf(tx, ctx = {}) {
+  const to = destForLogin(tx.to, ctx) || tx.to;
+  return {
+    ...tx,
+    to,
+    bFlag: tx.kind === 'b-spend' || tx.bFlag,
+    vin: tx.vin || [{ address: tx.from }],
+    vout: tx.vout || [{ address: to, nanos: tx.nanos, kind: tx.kind, memoCt: tx.memoCt }],
+  };
 }
 
 /**
@@ -98,19 +79,21 @@ export function sameMempoolBody(row, tx) {
  * one body can be sent under two. This is sha256 of the compact form, the
  * bytes a block and a p2p frame carry, less that label. A withdraw signs its
  * id (reserveDigestSuffix), so there the id is body and stays in. The body is
- * built as admitMempool holds it (mempoolRow with the posted fee), so an
- * arrival, its held row, and a block's copy share one key; a field is the
- * same whether it holds a Buffer, hex, or {$hex} (canonicalRow). '' when
- * the body has no posted fee or no compact form.
+ * the form a template seals (sealedFormOf), held as admitMempool holds it
+ * (mempoolRow with the posted fee), so an arrival, its held row, and a
+ * block's copy share one key. The bytes hashed are the block digest's
+ * encoding (canonical_row.js): a byte field is one form however it is held,
+ * and a string is its exact text. '' when the body has no posted fee or no
+ * compact form.
  */
 export function txBodyKey(tx) {
   if (!tx || typeof tx !== 'object') return '';
   try {
     const paid = postedFeeNanos(tx);
     if (paid == null) return '';
-    const body = { ...compactTx(mempoolRow(tx, paid, String(tx.kind))) };
+    const body = { ...compactTx(mempoolRow(sealedFormOf(tx), paid, String(tx.kind))) };
     if (String(body.kind || '') !== 'withdraw') delete body.id;
-    return createHash('sha256').update('shear-mempool-body-v1').update(canonicalRow(body)).digest('hex');
+    return canonicalHash('shear-mempool-body-v1', body).toString('hex');
   } catch {
     return '';
   }
@@ -131,6 +114,12 @@ export function heldBodyKey(row) {
     heldKeys.set(row, key);
   }
   return key;
+}
+
+/** `row` is `from` re-read (reviveTx turns hex fields to bytes): the same body and key. */
+export function keepHeldKey(row, from) {
+  if (row && typeof row === 'object' && from && typeof from === 'object') heldKeys.set(row, heldBodyKey(from));
+  return row;
 }
 
 export function emptyMempool() {

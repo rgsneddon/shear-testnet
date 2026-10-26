@@ -160,7 +160,7 @@ import {
 } from './bootstrap.js';
 import { createBurialHold, createBurialProof, settledHeight } from './burial_hold.js';
 import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
-import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool, sameMempoolBody, txBodyKey, heldBodyKey } from '../../crypto/mempool.js';
+import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool, txBodyKey, heldBodyKey, keepHeldKey, sealedFormOf } from '../../crypto/mempool.js';
 import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import {
   frameDigest,
@@ -6429,15 +6429,8 @@ export function createStore(dir, {
     }
     for (const idx of walk) {
       const raw = mempool[idx];
-      const m = reviveTx(raw);
-      const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
-      const tx = {
-        ...m,
-        to: dest,
-        bFlag: m.kind === 'b-spend' || m.bFlag,
-        vin: m.vin || [{ address: m.from }],
-        vout: m.vout || [{ address: dest, nanos: m.nanos, kind: m.kind, memoCt: m.memoCt }],
-      };
+      const m = keepHeldKey(reviveTx(raw), raw);
+      const tx = sealedFormOf(m, { continuityRoot: lag1, height });
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
       const bucket = v3BucketProofRejected(tx);
       if (bucket) {
