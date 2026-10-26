@@ -57,22 +57,24 @@ function relabel(tpl, label) {
 }
 
 describe('a coinbase label is bound to its own dest20', () => {
-  it('coinbaseLabelRejected: honest, another dest, no dest20, hasher payouts', () => {
+  it('coinbaseLabelRejected: honest, another dest, no dest20, hasher payouts too', () => {
     const own = Buffer.alloc(20, 7);
     const other = Buffer.alloc(20, 9);
     const honest = { kind: 'pot', dest20: own, noteCommit: noteCommitOfDest20(own) };
     assert.equal(coinbaseLabelRejected([honest]), null);
-    for (const kind of ['pot', 'pool-fee', 'finder-fee', 'reserve-fee']) {
+    for (const kind of ['pot', 'pool-fee', 'finder-fee', 'reserve-fee', 'hash']) {
       assert.deepEqual(coinbaseLabelRejected([{ ...honest, kind, noteCommit: noteCommitOfDest20(other) }]), { ok: false, reason: 'coinbase_output' }, kind);
     }
     // No dest20: no label, else refused. Nothing derives one.
     assert.equal(coinbaseLabelRejected([{ kind: 'pot' }]), null);
     assert.deepEqual(coinbaseLabelRejected([{ kind: 'pot', noteCommit: noteCommitOfDest20(own) }]), { ok: false, reason: 'coinbase_output' });
     assert.deepEqual(coinbaseLabelRejected([{ kind: 'pot', dest20: Buffer.alloc(19, 7), noteCommit: noteCommitOfDest20(own) }]), { ok: false, reason: 'coinbase_output' });
-    // A hasher payout keeps the Tree-A match: a hash row, or a row whose label is a share leaf.
-    assert.equal(coinbaseLabelRejected([{ kind: 'hash', dest20: own, noteCommit: noteCommitOfDest20(other) }]), null);
+    // No hasher exemption (Russell 26 Oct): an honest hash row is bound like
+    // any other, and a label that is some share leaf is no pass, so nothing
+    // the share batch holds (pruned away later) decides the verdict.
+    assert.equal(coinbaseLabelRejected([{ ...honest, kind: 'hash' }]), null);
     const leaf = noteCommitOfDest20(other);
-    assert.equal(coinbaseLabelRejected([{ kind: 'pot', dest20: own, noteCommit: leaf }], new Set([leaf.toString('hex')])), null);
+    assert.deepEqual(coinbaseLabelRejected([{ kind: 'pot', dest20: own, noteCommit: leaf }], new Set([leaf.toString('hex')])), { ok: false, reason: 'coinbase_output' });
   });
 
   it('a block labelling its reward with another dest\'s noteCommit is refused; the honest block appends', async () => {

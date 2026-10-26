@@ -2383,20 +2383,19 @@ function parentSpendView(chain) {
 
 /**
  * A coinbase output's noteCommit names the dest a node credits it to
- * (note_ledger.js), so on every output but a hasher payout it must be the
- * one its own dest20 derives (noteCommitOfDest20), and a row with no dest20
- * carries none. Nothing derives or fills one in. A hasher payout is a hash
- * row or a row whose label is a Tree-A share leaf (`hasherNcs`), which the
- * hasher match binds. Russell 26 Oct: from height 0, COINBASE_NC=dest-bound.
+ * (note_ledger.js), so on every output, hasher payouts included, it must be
+ * the one its own dest20 derives (noteCommitOfDest20), and a row with no
+ * dest20 carries none. Nothing derives or fills one in, and the verdict
+ * reads only the row: no share batch, so a pruned block is judged as it was
+ * live. Russell 26 Oct: from height 0, COINBASE_NC=dest-bound, with no
+ * hasher exemption (lane finding PS1, 83ea4352).
  */
-export function coinbaseLabelRejected(vout, hasherNcs = new Set()) {
+export function coinbaseLabelRejected(vout) {
   for (const o of Array.isArray(vout) ? vout : []) {
     if (!o || typeof o !== 'object') continue;
-    if (String(o.kind || '') === 'hash') continue;
     if (o.noteCommit == null || o.noteCommit === '') continue;
     let label;
     try { label = Buffer.from(asU8(o.noteCommit)); } catch { return { ok: false, reason: 'coinbase_output' }; }
-    if (hasherNcs.has(label.toString('hex'))) continue;
     let d20 = null;
     try { d20 = o.dest20 == null || o.dest20 === '' ? null : Buffer.from(asU8(o.dest20)); } catch { d20 = null; }
     if (!d20 || d20.length !== 20) return { ok: false, reason: 'coinbase_output' };
@@ -2902,9 +2901,8 @@ function verifyBlockBody(block, prev, opts = {}) {
     }
   }
   // COINBASE_NC=dest-bound: a label names its payee only as its own dest20
-  // derives it. Hasher payouts keep the Tree-A match above.
-  const hasherLeaves = Array.isArray(shareLeaves) ? shareLeaves : (shareBatch.length ? aLeavesFromShares(shareBatch) : []);
-  const labelled = coinbaseLabelRejected(txs[0].vout, new Set(hasherLeaves.map((l) => ncHex(l.noteCommit))));
+  // derives it, on every row, read from the row alone.
+  const labelled = coinbaseLabelRejected(txs[0].vout);
   if (labelled) return labelled;
   if (block.miner) {
     const minerHrp = checkAddressField(block.miner, { allowEmpty: true });
