@@ -1,5 +1,5 @@
 # Test files that cannot pass yet, or must move, and the PR that fixes each one.
-# Format: <path> <PR2|PR3|PRHASH> [track] <reason>
+# Format: <path> <PR2|PR3|PRHASH|SCOPE> [track] <reason>
 # PR2 = "book magic everywhere", PR3 = "real-data fixtures", PRHASH = native ShearHash
 # thread safety. All land before v12.
 # tests/ci_shard.js --check fails on a missing PR, a missing reason, a
@@ -16,6 +16,9 @@ node/tests/test_lock_does_not_stall.js PR2 Needs a funded lock to queue, mine an
 node/tests/test_hash_bonus_cap.js PRHASH Pending, not tracked, since PR 130's GitHub full suite (adcf5b07, run 40122653955, shard 7) timed out on it at its own 600 s cap: subtests took 255 s, 140 s and 133 s on the 4-core runner, and two were cancelled. Two-stage pass, no cap raise (600 s stays). Stage 1, PRHASH: its jit-full mining lanes are worker threads hashing headers with different RandomX keys, which crashes the native ShearHash addon (SIGSEGV seen 24 Oct); after the hash-safety PR it must pass for real on 4-core hosts (pool and GitHub CI). Stage 2, PR 3: its eight 17-bit block mines exceed 600 s on 2-core hosts (two solo p2p-b runs, 24 Oct); after the shared mining module PR 3's merge ask must show it passing on p2p-a and p2p-b too.
 node/tests/test_vault_seal.js PR2 Its two subtests seal a shallow reorg and a boot replay with stand-in proof of work on a testnet store (refused as pow); real data needs a regtest reorg through the vault (vaultBefore and vaultAfterBlock on reorg), which is PR 2. The scan and empty-banner subtests moved to test_vault_seal_flow_v12.js, which runs.
 node/tests/test_burial_offers_v12.js PRHASH Pending, not tracked: its jit-full arm is a spawnSync child that blocks the runner's event loop, so the file's own cap cannot fire, and the arm runs for hours (stopped at 9,726 s on pool, 24 Oct; ci_timings.json still weighed it 126 s), which mis-plans its full-suite shard (Codebase Auditor lane, PR 130). Its jit-full arm verifies a ~1,000-header burial run in a jit-full hash lane; every header has its own RandomX key, so jit-full rebuilds the 2 GiB dataset per header and the arm runs for hours (stopped at 9,726 s on pool, 24 Oct). The hash-safety PR makes verify lanes always hash light (jit-full coerced, with a startup warning); this file's jit-full arm then asserts the coercion and a light-time 1,000-header verify, with a mutation check.
+
+# Skipped by a scope ruling (SCOPE): not run, and not owed by a PR. Each names its ruling.
+node/tests/test_vortice.js SCOPE Vortice scope, Russell 26 Oct: only the Vault/Reserve vortice is in scope; the other vortices are paused remnants kept for their own sessions, probably after mainnet. This file is the third-party vortice deploy-key catalog (vort1 keys, creator hosts), not a guard of the Reserve or the chain. test_vort1_register.js and crypto/vortex.test.js stay in: they keep other vortices off the chain and away from the Reserve's program id.
 
 # Tracked: files PR 3 must move to the shared regtest mining module. They pass
 # today and stay in the full suite; a track row only keeps them from being lost.

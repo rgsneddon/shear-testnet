@@ -2,6 +2,9 @@
 /**
  * Full-suite CI shards. Every test file that `npm test` names is in exactly
  * one shard, unless tests/ci_pending.txt lists it with the PR that fixes it.
+ * A SCOPE row holds out a file whose subject Russell ruled out of scope (a
+ * dated ruling in its reason); it is not a fix owed by a PR, and --check
+ * prints it as skipped, never as passed.
  * A `track` row names a file a later PR must change but that still passes:
  * it stays in its shard, and it may be a test helper as well as a test file.
  * Weights come from tests/ci_timings.json (seconds per file, measured on the
@@ -29,7 +32,8 @@ const DIRS = [
 ];
 const EXTRA = ['tests/forbid_foreign_names.js', 'tests/forbid_privacy_regressions.js', 'tests/privacy.walk.js'];
 // PRHASH is the native ShearHash thread-safety PR that lands after PR 130.
-const PENDING_PRS = new Set(['PR2', 'PR3', 'PRHASH']);
+// SCOPE is a scope ruling, not a PR: the file returns when that scope opens.
+const PENDING_PRS = new Set(['PR2', 'PR3', 'PRHASH', 'SCOPE']);
 const TRACK_DIRS = ['crypto', 'node/tests', 'pool/tests', 'miner/tests', 'sheark-miner/tests', 'tests'];
 
 export function allTestFiles() {
@@ -73,7 +77,9 @@ export function checkPending(files = allTestFiles(), rows = readPending()) {
     } else if (!known.has(r.file)) {
       errors.push(`line ${r.line}: ${r.file} is not a test file`);
     }
-    if (!PENDING_PRS.has(r.pr)) errors.push(`line ${r.line}: ${r.file} needs PR2, PR3 or PRHASH, got ${r.pr || 'nothing'}`);
+    if (!PENDING_PRS.has(r.pr)) errors.push(`line ${r.line}: ${r.file} needs PR2, PR3, PRHASH or SCOPE, got ${r.pr || 'nothing'}`);
+    if (r.pr === 'SCOPE' && r.track) errors.push(`line ${r.line}: ${r.file} SCOPE holds a file out; it cannot be tracked`);
+    if (r.pr === 'SCOPE' && !/Russell \d{1,2} [A-Z][a-z]{2}/.test(r.reason)) errors.push(`line ${r.line}: ${r.file} SCOPE needs the dated ruling (Russell D Mon)`);
     if (!r.reason) errors.push(`line ${r.line}: ${r.file} needs a reason`);
     if (seen.has(r.file)) errors.push(`line ${r.line}: ${r.file} is listed twice`);
     seen.add(r.file);
@@ -118,7 +124,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const rows = readPending();
     const held = rows.filter((r) => !r.track);
     console.log(`${allTestFiles().length} test files, ${held.length} pending, ${rows.length - held.length} tracked (still run)`);
-    for (const r of rows) console.log(`${r.track ? 'tracked' : 'pending'} ${r.pr} ${r.file}: ${r.reason}`);
+    for (const r of rows) console.log(`${r.track ? 'tracked' : r.pr === 'SCOPE' ? 'skipped' : 'pending'} ${r.pr} ${r.file}: ${r.reason}`);
   } else if (arg('--count')) {
     const n = Number(arg('--count'));
     console.log(JSON.stringify(Array.from({ length: n }, (_, i) => i)));

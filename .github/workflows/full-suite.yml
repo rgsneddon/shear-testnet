@@ -1,7 +1,8 @@
 # Every test file that `npm test` names runs here, in one of the shards.
 # tests/ci_shard.js plans the shards from tests/ci_timings.json. A file can
 # leave the run only by a line in tests/ci_pending.txt that names the PR
-# fixing it; the pending job fails on any other entry.
+# fixing it, or SCOPE with Russell's dated scope ruling; the pending job fails
+# on any other entry.
 name: full-suite
 on:
   # A PR branch runs once, as its pull_request. Base branches run on push.
