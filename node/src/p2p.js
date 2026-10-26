@@ -888,9 +888,14 @@ export function lineHasIpBesideIdentity(line) {
 /**
  * `evm`, `unsigned`, and `admit_membership` can pass after a pin bump or a native rebuild.
  * They are not permanent. merkle / pow / bits stay final.
- * The soft-fail map is process memory, so a boot clears it.
+ * A soft fail lasts until the pin moves, never on a timer: the same binary
+ * judges the same block the same way, so it never asks for it again
+ * (Russell 26 Oct). The soft-fail map is process memory, so a new binary
+ * (a boot) asks once more.
+ * SOFT_HOLD_POLL_MS is only how often a peer held at a soft-failed height
+ * asks for headers again, in case its chain moved past it. It re-fetches no block.
  */
-export const SOFT_FAIL_TTL_MS = 60_000;
+export const SOFT_HOLD_POLL_MS = 60_000;
 
 export function isUpgradeableIngestFail(reason) {
   const r = String(reason || '');
@@ -925,17 +930,42 @@ export function noteSoftFail(rec, hash, reason, now = Date.now(), pin = PRODUCT_
   return rec;
 }
 
-/** Permanent fails plus upgradeable fails still inside their TTL and pin. */
+/**
+ * Note a block this peer served that was refused: a final refusal into
+ * `failed`, an upgradeable one as soft under this pin. Either way the same
+ * binary never asks this peer for it again (failActive). Any other reason
+ * (a missing parent, a burial run not here yet, a local fault) is not a
+ * refusal of the block and notes nothing. Returns final, soft, or empty.
+ */
+export function noteRefusedBlock(rec, hash, reason, now = Date.now(), pin = PRODUCT_VERSION) {
+  const h = String(hash || '').toLowerCase();
+  if (!rec || !h) return '';
+  if (isUpgradeableIngestFail(reason)) {
+    noteSoftFail(rec, h, reason, now, pin);
+    return 'soft';
+  }
+  if (!isFinalIngestFail(reason)) return '';
+  if (!(rec.failed instanceof Set)) rec.failed = new Set(Array.isArray(rec.failed) ? rec.failed : []);
+  rec.failed.add(h);
+  return 'final';
+}
+
+/**
+ * Permanent fails plus upgradeable fails noted under this pin. A soft fail
+ * ends only when the pin moves, so a pin change retries it once: the next
+ * refusal notes it under the new pin. `now` is kept for callers; no timer
+ * ends a fail.
+ */
 export function failActive(rec, hash, now = Date.now(), pin = PRODUCT_VERSION) {
+  void now;
   const h = String(hash || '').toLowerCase();
   if (!h || !rec) return false;
   if (rec.failed instanceof Set && rec.failed.has(h)) return true;
   if (Array.isArray(rec.failed) && rec.failed.includes(h)) return true;
   const row = rec.softFailed instanceof Map ? rec.softFailed.get(h) : null;
   if (!row) return false;
-  const expired = (now - Number(row.at || 0)) >= SOFT_FAIL_TTL_MS;
   const pinMoved = row.pin && String(pin || '') && row.pin !== String(pin);
-  if (expired || pinMoved) {
+  if (pinMoved) {
     rec.softFailed.delete(h);
     return false;
   }
@@ -1674,21 +1704,10 @@ export function createP2p({
     scheduleCatchup();
   }
 
-  function softWaitMs(rec) {
-    const now = Date.now();
-    let wait = SOFT_FAIL_TTL_MS;
-    if (rec?.softFailed instanceof Map) {
-      for (const row of rec.softFailed.values()) {
-        const left = SOFT_FAIL_TTL_MS - (now - Number(row?.at || 0));
-        if (left > 0 && left < wait) wait = left;
-      }
-    }
-    return Math.max(50, wait);
-  }
-
   function armSoftRetry(sock, rec, waitMs = 0) {
     if (!rec) return;
-    const wait = waitMs > 0 ? waitMs : softWaitMs(rec);
+    // A held peer asks for headers again; the soft-failed block stays held.
+    const wait = waitMs > 0 ? waitMs : SOFT_HOLD_POLL_MS;
     rec.softHoldUntil = Date.now() + wait;
     if (rec.softTimer) return;
     rec.softTimer = setTimeout(() => {
@@ -3101,7 +3120,7 @@ export function createP2p({
             const reason = got?.reason;
             const needsBook = reason === 'prev' || reason === 'samples_pruned' || reason === 'hash_bonus' || reason === 'side_hold' || isUpgradeableIngestFail(reason);
             if (!needsBook) {
-              if (isFinalIngestFail(reason)) rec.failed.add(lastHash);
+              noteRefusedBlock(rec, lastHash, reason);
             } else {
               const have = storedView();
               if (reason === 'prev' && !have.has(lastHash)) {
@@ -3132,8 +3151,8 @@ export function createP2p({
                 });
                 if (follow) rec.want = [follow.hash, ...(rec.want || [])];
               } else if (isUpgradeableIngestFail(reason) && !have.has(lastHash)) {
-                noteSoftFail(rec, lastHash, reason);
-              } else if (isFinalIngestFail(reason)) rec.failed.add(lastHash);
+                noteRefusedBlock(rec, lastHash, reason);
+              } else if (isFinalIngestFail(reason)) noteRefusedBlock(rec, lastHash, reason);
             }
           }
           if (!got?.ok && recordIngestFail(rec, got?.reason)) {
