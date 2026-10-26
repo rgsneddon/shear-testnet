@@ -3,7 +3,7 @@
 The one shared roadmap for every agent working on this repo (Claude, Grok,
 GPT or any other), and the source of truth for the plan.
 
-Last updated: 2026-10-25 by Claude.
+Last updated: 2026-10-26 by Claude.
 
 ## Who is working now
 
@@ -79,6 +79,7 @@ moves the later rows by a day.
 | ID | Item | Consensus? | Status | Owner | Reviewer | Working now | PR | Head SHA | Target |
 |----|------|------------|--------|-------|----------|-------------|----|----------|--------|
 | R01 | PR 130: digestTx and bundled fixes | Y: `TX_DIGEST=body-v2` and the new mainnet genesis move the testnet, mainnet and mainnetFP pins | active | Claude | Grok + Protocol, Vault Security, Pool Share, Codebase, Privacy, pins | Claude, cursor/v12-followups-3daf, since 2026-10-23 | [#130](https://github.com/rgsneddon/shear-testnet/pull/130) | 9afd2114 (pushed; local work not yet pushed) | 28 Oct (28–29 Oct) |
+| R01a | Coinbase spend-key binding: a coinbase payout's admitPub bound to its payee | Y: a coinbase row's spend key must derive from the payee's admit base; the design says how that base is on chain or derivable after pruning | planned (design to Russell first) | Claude | Grok + Protocol, Privacy, pins | | | | after R01, before R02 (date set on the design GO) |
 | R02 | Vault F1 lock-note binding | Y: binds the owner key point into the signed lock digest; new vectors | planned | Claude | Grok + Vault Security, Protocol, Wallet Hardening, pins | | | | 30 Oct (29–31 Oct) |
 | R03 | CLI reserve lock | N: Dart CLI wiring only | planned | Claude | Grok + Wallet Hardening, pins | | | | 31 Oct (30 Oct–1 Nov) |
 | R04 | Hash-safety | N: native ShearHash thread and key safety; digests stay byte-identical | planned | Claude | Grok + Codebase, pins | | | | 2 Nov (31 Oct–3 Nov) |
@@ -92,12 +93,19 @@ moves the later rows by a day.
 | R12 | Goal 10 A–E: five PR updates | Y: A (epoch-end gas) and C (withdraw policy) change consensus | planned | Claude | Grok + Protocol, Vault Security, pins | | | | 25 Nov (20–30 Nov) |
 | R13 | Wallet copy | N: wallet text and errors only | planned | Claude | Grok + Wallet Hardening | | | | 27 Nov (22 Nov–2 Dec) |
 | R14 | PR 128 M3: shear-dev pin move | Y: moves the shear-dev pin only; every other pin must equal main | planned | Claude | Grok + Protocol, pins | | | | 27 Nov (22 Nov–3 Dec) |
+| R14a | Public supply audit tool: a CLI that reads one's own node and checks, genesis to tip, that emission plus mints minus burns equals the commitment sum with every range proof valid; prints the public supply figure and pass, or fail at the exact height. No phone-home, no pool reliance | N, unless the design needs a consensus change (then Y, with the reason) | planned (lane idle until Thu 29 Oct; spec first, no code before Russell approves it) | TBD (Thu 29 Oct 15:00 alignment) | Public Supply Audit lane (Claude and Grok sides) | | | | before R15, so it runs on shear-dev and stressnet before genesis |
 | R15 | shear-dev deploy GO and live bug hunt | N: operational; fixes found there are their own PRs | planned | Claude | Grok | | | | 2 Dec (25 Nov–10 Dec) |
 | R18a | Host rebuild on the mainnet OS split (pool Ubuntu LTS, p2p-a Debian stable, p2p-b Fedora Server), so stressnet runs on the mainnet OSes | N: hosts only | planned | Claude | Grok | | | | after R15, before R16 (estimate 1–2 days; the later rows move by that) |
 | R16 | v12 cut (onto the rebuilt hosts) | N: operational; pins checked at the cut | planned | Claude | Grok + pins | | | | 3 Dec (26 Nov–11 Dec) |
 | R17 | Stressnet (7-day floor) | N: live testnet | planned | Claude | Grok | | | | 10 Dec (3–18 Dec) |
 | R18b | Final wipe of testing leftovers and mainnet release deploy | N: hosts only | planned | Claude | Grok + pins | | | | 18–21 Dec |
 | R19 | Mainnet genesis | N: date fixed by R01 | planned | Claude | Grok + pins | | | | Mon 21 Dec 2026 14:00 UK (fixed) |
+
+R01a and R14a were added by Russell on 26 Oct. R01a is the coinbase
+spend-key binding found by the PR 130 lanes: its own PR straight after R01,
+design first. R14a is the public supply audit tool with its own review lane
+(Public Supply Audit, on both the Claude and Grok sides), idle until Thu 29
+Oct after the credit reset; its owner is set at that day's 15:00 alignment.
 
 R03 (CLI reserve lock) and R10 (private tokens build) stay where they are
 (Russell, 25 Oct). This file is the source of truth; the xlsx is not kept in
