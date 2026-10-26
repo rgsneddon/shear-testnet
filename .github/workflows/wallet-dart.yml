@@ -44,6 +44,10 @@ jobs:
         # Gate 3: a held note with no height is read again until it has one;
         # until then it is Pending on home and the planner does not count it.
         run: flutter test test/change_height_test.dart
+      - name: A coinbase label painted onto another dest is never its note
+        working-directory: wallet
+        # COINBASE_NC=dest-bound, the wallet's own guard under it.
+        run: flutter test test/coinbase_label_paint_test.dart
       - name: Install node deps
         run: npm ci --ignore-scripts
       - name: Build shearadmit.node
