@@ -32,6 +32,7 @@ import {
   extraPotFeeNanos,
 } from '../src/chain.js';
 import { decodeHeader } from '../../crypto/header.js';
+import { softNeverMasks } from './soft_verdict.js';
 
 const TRUSTED_POW = Buffer.alloc(32);
 
@@ -51,7 +52,7 @@ function blockFromTpl(tpl) {
 }
 
 describe('pool-found 0.01/0.99 and pull-withdraw', () => {
-  it('splits pot 0.01 pool-fee + 0.99 payout; mined withdraw is ssa1 with no she1; empty/unsigned she1 does not withdraw', () => {
+  it('splits pot 0.01 pool-fee + 0.99 payout; mined withdraw is ssa1 with no she1; empty/unsigned she1 does not withdraw', async () => {
     const id = newIdentity();
     const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
     const shares = splitPot([{ miner: dest, count: 1 }], dest);
@@ -107,23 +108,23 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     assert.equal(body.includes('she1'), false);
     assert.equal(containsShe1(block.txs[1]), false);
 
-    const leakTpl = buildTemplate({
+    const leakOf = (extra) => blockFromTpl(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
-      txs: [{
-        ...tx,
-        id: 'leak',
-        login: id.paymentCode,
-        she1: id.paymentCode,
-      }],
+      txs: [{ ...tx, id: 'leak', ...extra }],
+    }));
+    // login and she1 are not spend-signed. The pool withdraw also fails its
+    // final custodial_pull check, which is the verdict (no masking).
+    const denied = await softNeverMasks({
+      block: leakOf({ login: id.paymentCode, she1: id.paymentCode }),
+      without: leakOf({}),
+      verify: (b) => verifyBlock(b, null, { trustedPowHash: TRUSTED_POW }),
+      label: 'she1 leak',
     });
-    const leak = blockFromTpl(leakTpl);
-    const denied = verifyBlock(leak, null, { trustedPowHash: TRUSTED_POW });
-    assert.equal(denied.ok, false);
-    assert.equal(denied.reason, 'unsigned');
+    assert.equal(denied.reason, 'custodial_pull');
 
     const api = handleWalletApi(new URL('http://127.0.0.1/api/pool/withdraw'), 'POST', {
       login: '',

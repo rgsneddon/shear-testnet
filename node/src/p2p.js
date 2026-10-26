@@ -20,7 +20,7 @@ import { parseBoundedJson } from '../../crypto/json_bounds.js';
 import { HEADER_LEN, meetsTarget } from '../../crypto/shear_hash.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
-import { headerPowReason, holdPreparedHeader } from './chain.js';
+import { headerPowReason, holdPreparedHeader, UPGRADEABLE_REASONS } from './chain.js';
 import { classifyByPhase, deliverProcessFault, guardPeerWork, staysUpOnFault } from './process_guard.js';
 
 function reviveDeep(v) {
@@ -894,7 +894,7 @@ export const SOFT_FAIL_TTL_MS = 60_000;
 
 export function isUpgradeableIngestFail(reason) {
   const r = String(reason || '');
-  return r === 'evm' || r === 'unsigned' || r === 'admit_membership';
+  return UPGRADEABLE_REASONS.has(r);
 }
 
 /** `prev` is a batch-order miss; retry on the next header page. Merkle/pow/bits stay final.

@@ -19,6 +19,7 @@ import { newIdentity, encodeDest, destCommitFromSpendPub } from '../../crypto/ad
 import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
 import { GENESIS_PREV, buildTemplate, digestTx, verifyBlock } from '../src/chain.js';
 import { createStore } from '../src/store.js';
+import { softNeverMasks } from './soft_verdict.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -93,7 +94,7 @@ describe('strict admit proof keys', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-keys-'));
   const store = createStore(dir);
 
-  it('refuses t, r, commit, pseudo, seed, and an unknown key in the mempool and in a block', () => {
+  it('refuses t, r, commit, pseudo, seed, and an unknown key in the mempool and in a block', async () => {
     try {
       const clean = body('withdraw');
       assert.equal(admitKeysRejected(clean), null);
@@ -108,9 +109,13 @@ describe('strict admit proof keys', () => {
           const queued = store.queueTx(structuredClone(tx));
           assert.equal(queued.ok, false, `${kind} ${key} queue`);
           assert.equal(queued.reason, 'unsigned', `${kind} ${key} queue ${queued.reason}`);
-          const block = verifyBlock(carry(who, tx), null, { probeBody: true, magic: 'shear-testnet-v12' });
-          assert.equal(block.ok, false, `${kind} ${key} block`);
-          assert.equal(block.reason, 'unsigned', `${kind} ${key} block ${block.reason}`);
+          // The fixture body may also fail a final check; that is then the verdict.
+          await softNeverMasks({
+            block: carry(who, tx),
+            without: carry(who, body(kind)),
+            verify: (b) => verifyBlock(b, null, { probeBody: true, magic: 'shear-testnet-v12' }),
+            label: `${kind} ${key} block`,
+          });
         }
         const send = {
           id: 'admit-send',

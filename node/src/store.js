@@ -49,6 +49,7 @@ import {
   retainFrontierBlobs,
   digestTx,
   arrivedRowsKey,
+  earlyRowsRejected,
 } from './chain.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 
@@ -3538,24 +3539,26 @@ export function createStore(dir, {
   }
 
   /**
-   * The verdict verifyBlock gave on each arrived block's full rows, by
-   * header (chain.js arrivedRowsKey), or null: `opening`, its first body
-   * check (spend.js openingBeforeCarry). Compaction strips the opening it
-   * reads, so verifyBlock returns it from here at that same point: a block
-   * keeps the reason its full body had.
+   * The verdicts verifyBlock gave on each arrived block's full rows, by
+   * header (chain.js arrivedRowsKey), or null: `early`, the row checks it
+   * ran before proof of work (chain.js earlyRowsRejected), and `opening`,
+   * its first body check (spend.js openingBeforeCarry). Compaction strips
+   * fields both read, so verifyBlock returns them from here at those same
+   * points: a block keeps the reason its full body had.
    */
   function arrivedRows(blocks) {
     const list = Array.isArray(blocks) ? blocks : [blocks];
     let out = null;
     for (const b of list) {
+      const early = earlyRowsRejected(b);
       let opening = null;
       for (const tx of Array.isArray(b?.txs) ? b.txs : []) {
         opening = openingBeforeCarry(tx);
         if (opening) break;
       }
-      if (!opening) continue;
+      if (!early && !opening) continue;
       const key = arrivedRowsKey(b);
-      if (key) (out ||= new Map()).set(key, { opening });
+      if (key) (out ||= new Map()).set(key, { early, opening });
     }
     return out;
   }

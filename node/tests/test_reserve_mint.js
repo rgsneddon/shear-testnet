@@ -21,6 +21,7 @@ import { unsignedBodyField } from '../../crypto/spend.js';
 import { deposit } from '../../crypto/owned_portal.js';
 import { PI_SHE_NANOS } from '../../crypto/asert.js';
 import { gateVorticeRegister } from '../../crypto/vortex.js';
+import { softNeverMasks } from './soft_verdict.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -49,6 +50,15 @@ function compactWithdraw(args) {
   assert.equal(unsignedBodyField(tx), null);
   return tx;
 }
+
+/** The same body with the named unsigned fields removed. */
+function without(tx, keys) {
+  const next = { ...tx };
+  for (const k of keys) delete next[k];
+  return next;
+}
+
+const STAKE_KEYS = ['stakedNanos', 'principalNanos'];
 
 function mine(tpl) {
   return {
@@ -101,10 +111,16 @@ describe('Reserve mint is sealed-state pure', () => {
       stakedNanos: staked,
       principalNanos: staked,
     };
-    const denied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, txs: [wrong] })), null, { committedBps: 425, trustedPowHash: TRUSTED }));
-    assert.equal(denied.ok, false);
-    // stakedNanos and principalNanos are not spend-signed body fields.
-    assert.equal(denied.reason, 'unsigned');
+    // stakedNanos and principalNanos are not spend-signed body fields: the
+    // row check names unsigned, and a final fault the fixture body also
+    // carries is the block's verdict (no masking, Russell 26 Oct).
+    const stakeCase = (tx, at, opts, label) => softNeverMasks({
+      block: mine(buildTemplate({ ...base, ...at, txs: [tx] })),
+      without: mine(buildTemplate({ ...base, ...at, txs: [without(tx, STAKE_KEYS)] })),
+      verify: (b) => verifyBlock(b, null, opts),
+      label,
+    });
+    await stakeCase(wrong, {}, { committedBps: 425, trustedPowHash: TRUSTED }, 'wrong interest');
 
     assert.equal(interestNanos(0, 425), 0);
     const idleTaxed = {
@@ -112,25 +128,18 @@ describe('Reserve mint is sealed-state pure', () => {
       stakedNanos: 0,
       principalNanos: staked,
     };
-    const idleDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 90_000, txs: [idleTaxed] })), null, {
-      committedBps: 425,
-      trustedPowHash: TRUSTED,
-    }));
-    assert.equal(idleDenied.ok, false);
-    assert.equal(idleDenied.reason, 'unsigned');
+    await stakeCase(idleTaxed, { now: 1_700_000_000_000 + 90_000 }, { committedBps: 425, trustedPowHash: TRUSTED }, 'idle taxed');
 
     const as425 = {
       ...compactWithdraw({ from: dest, to: vault, nanos: staked + interestNanos(staked, 425), id: 'w-425' }),
       stakedNanos: staked,
       principalNanos: staked,
     };
-    const defDenied = await Promise.resolve(verifyBlock(mine(buildTemplate({ ...base, now: 1_700_000_000_000 + 180_000, txs: [as425] })), null, { trustedPowHash: TRUSTED }));
-    assert.equal(defDenied.ok, false);
-    assert.equal(defDenied.reason, 'unsigned');
+    await stakeCase(as425, { now: 1_700_000_000_000 + 180_000 }, { trustedPowHash: TRUSTED }, 'default bps');
     assert.equal(GENESIS_BPS, 281);
   });
 
-  it('a SHE ticker is unsigned on the block, and the gate still names ticker', () => {
+  it('a SHE ticker is unsigned on the block, and the gate still names ticker', async () => {
     const id = newIdentity();
     const dest = destOf(id);
     const bad = {
@@ -146,19 +155,23 @@ describe('Reserve mint is sealed-state pure', () => {
       ticker: 'SHE',
     };
     assert.equal(gateVorticeRegister(bad).reason, 'ticker');
-    const block = mine(buildTemplate({
+    const blockOf = (tx) => mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
-      txs: [bad],
+      txs: [tx],
     }));
-    const got = verifyBlock(block, null, { trustedPowHash: Buffer.alloc(32) });
-    assert.equal(got.ok, false);
     // ticker, vort1, and bytesHash are not spend-signed body fields, so the
-    // block refuses before the gate. The gate itself still names ticker.
-    assert.equal(got.reason, 'unsigned');
+    // row check names unsigned before the gate; a final fault the body also
+    // carries is the block's verdict. The gate itself still names ticker.
+    await softNeverMasks({
+      block: blockOf(bad),
+      without: blockOf(without(bad, ['ticker', 'vort1', 'bytesHash'])),
+      verify: (b) => verifyBlock(b, null, { trustedPowHash: Buffer.alloc(32) }),
+      label: 'SHE ticker',
+    });
   });
 
   it('verifyBlock does not read reserve/latest.json; votes never move the 1 SHE pot', () => {

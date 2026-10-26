@@ -2391,29 +2391,65 @@ export function arrivedRowsKey(block) {
   }
 }
 
-function verifyBlockConsensus(block, prev, opts = {}) {
-  const earlyTxs = Array.isArray(block?.txs) ? block.txs : [];
-  for (let i = 0; i < earlyTxs.length; i += 1) {
-    const feeHit = feeFieldRejected(earlyTxs[i]);
+/**
+ * The row checks verifyBlock runs before proof of work: fee fields, a
+ * coinbase observe, stage 0, leaked and unsigned fields. They read the rows
+ * as given, so the store also runs them on the rows as they arrived
+ * (store.js arrivedRows): compaction strips some of what they name.
+ */
+export function earlyRowsRejected(block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  for (let i = 0; i < txs.length; i += 1) {
+    const feeHit = feeFieldRejected(txs[i]);
     if (feeHit) return feeHit;
-    const spendFee = bSpendFeeRejected(earlyTxs[i]);
+    const spendFee = bSpendFeeRejected(txs[i]);
     if (spendFee) return spendFee;
   }
   const earlyObserve = coinbaseObserveRejected(block?.txs);
   if (earlyObserve) return earlyObserve;
   const gated = chainStage0Rejected([block]);
   if (gated) return gated;
-  const bodyTxs = Array.isArray(block?.txs) ? block.txs : [];
-  for (let i = 0; i < bodyTxs.length; i += 1) {
-    const leakedVote = leafVoteLeakRejected(bodyTxs[i]);
+  for (let i = 0; i < txs.length; i += 1) {
+    const leakedVote = leafVoteLeakRejected(txs[i]);
     if (leakedVote) return leakedVote;
-    const leakedLock = compactLockLeakRejected(bodyTxs[i]);
+    const leakedLock = compactLockLeakRejected(txs[i]);
     if (leakedLock) return leakedLock;
-    const leakedWithdraw = withdrawLeakRejected(bodyTxs[i]);
+    const leakedWithdraw = withdrawLeakRejected(txs[i]);
     if (leakedWithdraw) return leakedWithdraw;
-    const unsignedField = unsignedBodyField(bodyTxs[i]);
+    const unsignedField = unsignedBodyField(txs[i]);
     if (unsignedField) return unsignedField;
   }
+  return null;
+}
+
+/**
+ * Refusals a later binary may lift (a pin bump or a native rebuild), which a
+ * peer notes as soft (p2p.js). Every other refusal is final.
+ */
+export const UPGRADEABLE_REASONS = Object.freeze(new Set(['evm', 'unsigned', 'admit_membership']));
+
+function upgradeable(r) {
+  return !!r && r.ok === false && UPGRADEABLE_REASONS.has(String(r.reason || ''));
+}
+
+function verifyBlockConsensus(block, prev, opts = {}) {
+  // The arrived rows' verdict first, at the place it held when verifyBlock
+  // read full rows, so a block keeps the reason its full body had. A final
+  // early verdict returns at once. An upgradeable one waits for the body:
+  // a final fault behind it is the verdict, so a block that fails a final
+  // check is never noted as soft (Russell 26 Oct).
+  const arrived = opts.arrivedRows?.get(arrivedRowsKey(block));
+  const earlies = [arrived?.early, earlyRowsRejected(block)].filter(Boolean);
+  const finalEarly = earlies.find((r) => !upgradeable(r));
+  if (finalEarly) return finalEarly;
+  if (!earlies.length) return verifyBlockBody(block, prev, opts);
+  const soft = earlies[0];
+  const settle = (body) => (body && body.ok === false && !upgradeable(body) ? body : soft);
+  const body = verifyBlockBody(block, prev, opts);
+  return body && typeof body.then === 'function' ? body.then(settle) : settle(body);
+}
+
+function verifyBlockBody(block, prev, opts = {}) {
   if (opts.offLoopPow && !opts.trustedPowHash) {
     return prepareOffLoopPow(block, prev, {
       skipSharePow: !!opts.skipSharePow,
@@ -2422,7 +2458,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (!ready.ok) return ready;
       let result;
       try {
-        result = verifyBlockConsensus(block, prev, { ...opts, offLoopPow: false });
+        result = verifyBlockBody(block, prev, { ...opts, offLoopPow: false });
       } catch (err) {
         ready.cleanup?.();
         throw err;

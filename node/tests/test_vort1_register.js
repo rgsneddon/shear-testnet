@@ -64,7 +64,10 @@ function issuedIds(store) {
 
 // v12 (c990b120) refuses vortice-register as a value kind: it is not in
 // V12_VALUE_KINDS. Since e6c1034a its bytesHash, vort1 and ticker fields are
-// not signed body fields, so a block or mempool check names it unsigned first.
+// not signed body fields, so the mempool names it unsigned. A block also
+// fails a final check (its register output has no range proof), and a final
+// fault is the verdict over an upgradeable one (Russell 26 Oct), so the block
+// is range_proof: a peer never notes it as soft.
 // The pure gate still judges ticker, mint and she1. No register is issued.
 describe('vort1 register consensus tx', () => {
   it('bad ticker or mint-not-Reserve fails with no id; v12 refuses every register on chain and issues no id', async () => {
@@ -119,10 +122,10 @@ describe('vort1 register consensus tx', () => {
       const block = await sealBlock(tpl, [...tpl.txs, tx]);
       const check = await Promise.resolve(verifyBlock(block, null, { magic: MAGIC_REGTEST }));
       assert.equal(check.ok, false, tx.ticker);
-      assert.equal(check.reason, 'unsigned', tx.ticker);
+      assert.equal(check.reason, 'range_proof', tx.ticker);
       const got = await Promise.resolve(genesis.append(block));
       assert.equal(got.ok, false, tx.ticker);
-      assert.equal(got.reason, 'unsigned', tx.ticker);
+      assert.equal(got.reason, 'range_proof', tx.ticker);
       assert.equal(genesis.tip(), null);
     }
     assert.deepEqual(issuedIds(genesis), []);
@@ -149,7 +152,8 @@ describe('vort1 register consensus tx', () => {
     const carried = await sealBlock(tpl2, [...tpl2.txs, fundedTx]);
     const appended = await Promise.resolve(store2.append(carried));
     assert.equal(appended.ok, false);
-    assert.equal(appended.reason, 'unsigned');
+    // The mempool names it unsigned; the block also fails range_proof, the verdict.
+    assert.equal(appended.reason, 'range_proof');
     assert.equal(store2.tip().height, before);
     assert.deepEqual(issuedIds(store2), []);
   });

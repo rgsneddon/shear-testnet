@@ -10,6 +10,7 @@ import { GENESIS_BITS_PACKED, JOIN_PROGRAM, RESERVE_PROGRAM, wrapMintForbidden }
 import { newIdentity, encodeDest, destCommitFromSpendPub } from '../../crypto/address.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
+import { unsignedBodyField } from '../../crypto/spend.js';
 import { GENESIS_PREV, buildTemplate, digestTx, verifyBlock } from '../src/chain.js';
 
 const id = newIdentity();
@@ -51,9 +52,12 @@ describe('verifyBlock keeps the join and mint backstops', () => {
     }
   });
 
-  it('the wrap kind and the SHE ticker arms are refused first, and still match the rule', () => {
+  it('the wrap kind is refused first; the SHE ticker arm is unsigned on its row and mint_forbidden on the block', () => {
     assert.equal(verdict(bare({ kind: 'wrap', programId: 'x' })), 'kind');
-    assert.equal(verdict(bare({ kind: 'vote', programId: 'x', ticker: 'she' })), 'unsigned');
+    // ticker is not spend-signed (the row check names unsigned), and the
+    // backstop is a final fault, so it is the block's verdict (no masking).
+    assert.equal(unsignedBodyField(bare({ kind: 'vote', programId: 'x', ticker: 'she' }))?.reason, 'unsigned');
+    assert.equal(verdict(bare({ kind: 'vote', programId: 'x', ticker: 'she' })), 'mint_forbidden');
     // The backstop itself still covers both, if the earlier gates ever move.
     assert.equal(wrapMintForbidden({ kind: 'wrap', programId: 'x' }), true);
     assert.equal(wrapMintForbidden({ kind: 'vote', programId: 'x', ticker: 'she' }), true);
