@@ -76,8 +76,12 @@ cmake -S crypto/randomx -B crypto/randomx/build \
   -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
   -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres \
   -DCMAKE_BUILD_TYPE=Release \
-  -DARCH=default
+  -DARCH=default \
+  -DCMAKE_C_FLAGS="-march=x86-64 -mtune=generic" \
+  -DCMAKE_CXX_FLAGS="-march=x86-64 -mtune=generic"
 cmake --build crypto/randomx/build -j"$(nproc)"
+# Public builds pin the x86-64 baseline (scripts/randomx_build.sh says why);
+# scripts/isa_scan.py checks the result.
 ```
 
 `librandomx.a` members are `pe-x86-64`. The archive was left in place so the miner and addon makefiles did not reconfigure it with the Linux compiler.
@@ -345,8 +349,9 @@ if (-not $nodeInc) {
 
 if (-not (Test-Path (Join-Path $Repo 'node_modules'))) { npm ci --ignore-scripts }
 
-# RandomX static lib. ARCH=default, not -march=native. MinGW Makefiles, so the archive is librandomx.a.
-cmake -S crypto\randomx -B crypto\randomx\build -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DARCH=default
+# RandomX static lib. ARCH=default plus the x86-64 baseline, not -march=native
+# (scripts/randomx_build.sh says why). MinGW Makefiles, so the archive is librandomx.a.
+cmake -S crypto\randomx -B crypto\randomx\build -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DARCH=default "-DCMAKE_C_FLAGS=-march=x86-64 -mtune=generic" "-DCMAKE_CXX_FLAGS=-march=x86-64 -mtune=generic"
 if ($LASTEXITCODE -ne 0) { throw "cmake configure exited $LASTEXITCODE" }
 cmake --build crypto\randomx\build -j
 if ($LASTEXITCODE -ne 0) { throw "randomx build exited $LASTEXITCODE" }

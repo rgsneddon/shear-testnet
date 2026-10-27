@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { mempoolPressure } from '../../crypto/levy.js';
 import { compactChainBlock } from '../../crypto/chronoflux.js';
+import { encodeWireBlock, jsonWire } from './p2p.js';
 import { MAGIC_TESTNET, HASH_TX_LIVE, consensusFingerprint, hashBonusUnitNanos } from '../../crypto/asert.js';
 import { fs1AnchorRows } from '../../crypto/admit_v3.js';
 import { isDestAddress, encodeDest } from '../../crypto/address.js';
@@ -512,6 +513,15 @@ export function createRpc({
         }) || null;
       }
       if (!b) return { ok: false, reason: 'unknown_block' };
+      // wire=1: the frame a p2p peer is sent for this block (p2p.js
+      // encodeWireBlock, under the same servableBlock rule), each byte field
+      // as {$hex}, so the body keeps its types and so its digest
+      // (canonical_row.js). The default is the hex view the wallet reads.
+      if (String(params.wire || '') === '1') {
+        const served = typeof store.servableBlock === 'function' ? store.servableBlock(b) : b;
+        if (!served) return { ok: false, reason: 'unknown_block' };
+        return { ok: true, ...JSON.parse(jsonWire(encodeWireBlock(served))) };
+      }
       return { ok: true, ...compactBlockJson(b) };
     }
     if (m === 'getblocks' || m === 'blocks' || m === 'compactblocks') {

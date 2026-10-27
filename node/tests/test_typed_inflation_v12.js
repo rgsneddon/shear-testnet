@@ -5,8 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
 import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
-import { GENESIS_BITS_PACKED, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM } from '../../crypto/asert.js';
-import { sealNote, sealCoinbaseNote } from '../../crypto/note.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM } from '../../crypto/asert.js';
+import { pointBytes, pointFrom, proveRange, randomScalar, sealNote, sealCoinbaseNote } from '../../crypto/note.js';
+import { proveLeafRetire, subtractUnlock, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
+import { txDigestV3 } from '../../crypto/admit_v3.js';
 import { newIdentity, freshStealthDest, ed25519SeedOf, hash20FromAddress } from '../../crypto/address.js';
 import {
   typedCommitRejected,
@@ -23,8 +25,18 @@ import {
   cloneVault,
   portalIdFromDest,
   portalPrincipalNanos,
+  compactLockLeakRejected,
+  withdrawLeakRejected,
+  appendVaultLockNote,
+  chainPeriodIndex,
+  consensusUnlockPeriod,
+  enact,
+  leafEpochsToBurn,
+  leafStubNanos,
+  lockUnlockOf,
+  provePrincipalOpen,
 } from '../../crypto/reserve_vault.js';
-import { deposit } from '../../crypto/owned_portal.js';
+import { deposit, withdrawTx } from '../../crypto/owned_portal.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 
@@ -45,6 +57,16 @@ function dueLump(nanos, extra = {}) {
   };
 }
 
+// A lock or withdraw on the wire names dest20 only. from, to, payer, and an
+// ssa1 address on it are vote_leak, which the queue, mempool, and block check
+// before the kind and membership gates.
+const COMPACT_KINDS = new Set(['lock', 'withdraw']);
+
+function assertNoLeak(tx, label) {
+  assert.equal(compactLockLeakRejected(tx), null, `${label} lock leak`);
+  assert.equal(withdrawLeakRejected(tx), null, `${label} withdraw leak`);
+}
+
 function mine(tpl) {
   return {
     header: tpl.header,
@@ -55,6 +77,76 @@ function mine(tpl) {
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
   };
+}
+
+/** One indexed π leaf, as crypto/reserve_vault.test.js depositIndexed. */
+function depositIndexed(state, dest, nowMs, extra = {}) {
+  const magic = state.magic || MAGIC_TESTNET;
+  const stamp = lockUnlockOf({ genesisMs: state.genesisMs, magic }, nowMs);
+  const unlock = consensusUnlockPeriod(stamp.epoch);
+  const blind = randomScalar();
+  const scalar = randomScalar();
+  const leaf = vaultLockNote(PI_SHE_NANOS, scalar, blind, unlock);
+  assert.ok(leaf, 'leaf');
+  const got = deposit({
+    state,
+    dest,
+    nanos: PI_SHE_NANOS,
+    nowMs,
+    payout: extra.payout,
+    payoutPortalId: extra.payoutPortalId,
+    ownerPub: extra.ownerPub,
+    commit: leaf.commit,
+    rangeProof: proveRange(BigInt(PI_SHE_NANOS), blind),
+    unlock,
+    rangeCommit: pointBytes(subtractUnlock(pointFrom(leaf.commit), unlock)),
+    piProof: proveRange(0n, blind),
+  });
+  assert.equal(got.ok, true, got.reason);
+  assert.ok(appendVaultLockNote(state, leaf.note, {
+    earnEpoch: Math.floor(Number(stamp.epoch) || 0),
+    bornEpoch: chainPeriodIndex(state, nowMs),
+    unlockEpoch: unlock,
+    lockHeight: extra.lockHeight || 1,
+  }), 'lock note index');
+  return { ...got, planted: { leaf, unlock } };
+}
+
+/** FS-1 hidden withdraw of that leaf, as crypto/reserve_vault.test.js indexedHiddenWithdraw. */
+function indexedHiddenWithdraw(state, dest, nowMs, extra) {
+  const planted = extra.planted;
+  const stub = leafStubNanos(state, [planted.leaf.commit.toString('hex')]);
+  const nanos = PI_SHE_NANOS + Number(stub);
+  const tx = withdrawTx({ from: dest, to: extra.payout || dest, nanos, id: extra.id || `hidden-${nowMs}` });
+  const magic = state.magic || MAGIC_TESTNET;
+  const proof = provePrincipalOpen(
+    planted.leaf.commit, PI_SHE_NANOS, planted.leaf.blind, tx, portalIdFromDest(dest), magic, planted.leaf.unlock,
+  );
+  assert.ok(proof, 'principal proof');
+  tx.principalProof = proof;
+  const retire = proveLeafRetire({
+    scalar: planted.leaf.scalar,
+    epochs: leafEpochsToBurn(state, planted.leaf.note.toString('hex'), chainPeriodIndex(state, nowMs)),
+    leaf: planted.leaf.note,
+    txBind: txDigestV3(tx, magic),
+    unlockEpoch: chainPeriodIndex(state, nowMs),
+    magic,
+  });
+  assert.ok(retire?.proof, 'retire proof');
+  tx.retireProof = retire.proof;
+  const paid = withdraw({
+    state,
+    dest,
+    portalId: portalIdFromDest(dest),
+    nowMs,
+    payout: extra.payout,
+    payoutPortalId: extra.payoutPortalId,
+    principal: nanos,
+    principalProof: proof,
+    retireProof: tx.retireProof,
+    tx,
+  });
+  return { paid, nanos, stub: Number(stub) };
 }
 
 function stealthBox() {
@@ -77,18 +169,20 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
     for (const kind of KINDS) {
       for (const nanos of AMOUNTS) {
         const note = sealNote(nanos, { dest20: d20, kind });
+        const compact = COMPACT_KINDS.has(kind);
         const tx = {
           id: `${kind}-${nanos}`,
           kind,
           programId: kind === 'lock' || kind === 'vote' || kind === 'withdraw' ? RESERVE_PROGRAM : '',
-          from: dest,
-          to: dest,
+          ...(compact ? {} : { from: dest, to: dest }),
           nanos,
           fee: 0,
-          vin: [{ commit: note.commit, address: dest, dest20: d20 }],
-          vout: [{ ...note, kind, address: dest }],
+          vin: [compact ? { commit: note.commit, dest20: d20 } : { commit: note.commit, address: dest, dest20: d20 }],
+          vout: [compact ? { ...note, kind } : { ...note, kind, address: dest }],
         };
+        // No FS-1 blob here, so spendPub and sig are not the FS-1 identity leak.
         signSpendTx(tx, box.key);
+        assertNoLeak(tx, `${kind} ${nanos}`);
         assert.equal(typedCommitRejected(tx)?.reason, 'admit_membership', `${kind} ${nanos}`);
         const refused = kind === 'vortice-register';
         const want = refused ? 'kind' : 'admit_membership';
@@ -227,20 +321,21 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
     for (const kind of typed) {
       for (const nanos of AMOUNTS) {
         const note = sealNote(nanos, { dest20: d20, kind });
+        const compact = COMPACT_KINDS.has(kind);
         const tx = {
           id: `blank-${kind}-${nanos}`,
           kind,
           programId: RESERVE_PROGRAM,
-          from: dest,
-          to: dest,
+          ...(compact ? {} : { from: dest, to: dest }),
           nanos,
           fee: 0,
-          vin: [{ address: dest }],
+          vin: [compact ? { dest20: d20 } : { address: dest }],
           vout: [
-            { ...note, kind, address: dest },
-            { address: dest, nanos: 1 },
+            compact ? { ...note, kind } : { ...note, kind, address: dest },
+            compact ? { dest20: d20, nanos: 1 } : { address: dest, nanos: 1 },
           ],
         };
+        assertNoLeak(tx, `${kind} ${nanos}`);
         const body = verifyFundedBody([tx], () => nanos * 4, {
           reserveState: { portals: {}, epochBps: 0 },
         });
@@ -341,7 +436,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
     }
   });
 
-  it('paid principal stays subtracted, and a lock receipt is not a coin', () => {
+  it('an unindexed lock is not paid, an indexed π lock is paid and its principal stays subtracted, and a lock receipt is not a coin', () => {
     const box = stealthBox();
     const dest = box.dest;
     const pub = box.id.spendPub.toString('hex');
@@ -361,6 +456,11 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
       state.epochStartMs = 1;
       state.bonusEnacted = true;
       state.currentEpoch = 1;
+      const heldBefore = portalPrincipalNanos(state, dest);
+      const lockedBefore = Number(state.totalLockedNanos);
+      // This deposit has no lock-note index entry. A matured commitment that
+      // is not indexed is not a receipt, so the withdraw is refused and
+      // nothing leaves the vault. The indexed π case below is the paid path.
       const paid = withdraw({
         state,
         dest,
@@ -369,8 +469,10 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         payout: dest,
         payoutPortalId: portalIdFromDest(dest),
       });
-      assert.equal(paid.ok, true, `${nanos} ${paid.reason}`);
-      assert.equal(portalPrincipalNanos(state, dest), nanos);
+      assert.equal(paid.ok, false, `${nanos} unindexed paid`);
+      assert.equal(paid.reason, 'stake_reward', `${nanos} ${paid.reason}`);
+      assert.equal(portalPrincipalNanos(state, dest), heldBefore, `${nanos} held`);
+      assert.equal(Number(state.totalLockedNanos), lockedBefore, `${nanos} locked`);
       const d20 = hash20FromAddress(dest);
       const lockNote = sealCoinbaseNote(nanos, { dest20: d20, kind: 'lock' });
       const blocks = [{
@@ -385,6 +487,54 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
       }];
       assert.equal(noteCommitSpendableNanos(paidBlocks, dest, 30), nanos);
     }
+
+    // Paid path: an indexed π leaf, withdrawn by FS-1 after its epoch ends.
+    const state = emptyVault();
+    state.genesisMs = 1;
+    state.magic = MAGIC_TESTNET;
+    const id = portalIdFromDest(dest);
+    const locked = depositIndexed(state, dest, 1, { payout: dest, payoutPortalId: id, ownerPub: pub });
+    // A hidden lock credits no public staked/idle and no totalLockedNanos.
+    assert.equal(portalPrincipalNanos(state, dest), 0);
+    assert.equal(Number(state.totalLockedNanos), 0);
+    const end = 1 + RESERVE_EPOCH_MS;
+    assert.equal(enact({ state, nowMs: end }).ok, true);
+    const drawn = indexedHiddenWithdraw(state, dest, end, {
+      planted: locked.planted,
+      payout: dest,
+      payoutPortalId: id,
+      id: 'typed-paid',
+    });
+    const paid = drawn.paid;
+    assert.equal(paid.ok, true, paid.reason);
+    assert.equal(paid.principal, PI_SHE_NANOS);
+    assert.equal(paid.payout, PI_SHE_NANOS);
+    assert.equal(paid.interest, 0);
+    assert.equal(paid.arrival, drawn.stub);
+    // withdraw() adds the released π to redeemedNanos, so the paid principal
+    // stays in this dest's held total and the lock and withdraw notes are not
+    // both spendable. totalLockedNanos had no public π to drop and is clamped at 0.
+    assert.equal(portalPrincipalNanos(state, dest), PI_SHE_NANOS);
+    assert.equal(Number(state.portals[id].redeemedNanos), PI_SHE_NANOS);
+    assert.equal(Number(state.totalLockedNanos), 0);
+    assert.equal(Number(state.openedWithdrawNanos), PI_SHE_NANOS);
+    assert.equal(state.portals[id].tranches.length, 0);
+    const again = withdraw({ state, dest, portalId: id, nowMs: end, payout: dest, payoutPortalId: id });
+    assert.equal(again.ok, false);
+    assert.equal(again.reason, 'double_mint');
+    assert.equal(portalPrincipalNanos(state, dest), PI_SHE_NANOS);
+    const d20 = hash20FromAddress(dest);
+    const lockNote = sealCoinbaseNote(PI_SHE_NANOS, { dest20: d20, kind: 'lock' });
+    assert.equal(noteCommitSpendableNanos([{
+      height: 1,
+      txs: [{ kind: 'lock', vout: [{ ...lockNote, kind: 'lock' }] }],
+    }], dest, 30), 0);
+    // The withdraw receipt opens π plus this leaf's arrival stub.
+    const back = sealCoinbaseNote(drawn.nanos, { dest20: d20, kind: 'withdraw' });
+    assert.equal(noteCommitSpendableNanos([{
+      height: 1,
+      txs: [{ kind: 'withdraw', vout: [{ ...back, kind: 'withdraw' }] }],
+    }], dest, 30), drawn.nanos);
   });
 
   it('a withdraw mints only an opened principal plus interest, once per portal', () => {

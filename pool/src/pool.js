@@ -12,6 +12,7 @@ import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce 
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
 import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
 import { payeeDecodeOk, payeeFs1Ok, payeeWillProbe } from '../../crypto/n1.js';
+import { heldBodyKey } from '../../crypto/mempool.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { destBoundShareHash, noteCommitOfShare, shareTargetByte } from '../../crypto/share_batch.js';
 import {
@@ -2075,8 +2076,10 @@ export function createPool({
     for (const m of view.txs) {
       const id = String(m?.id || '');
       if (!id) continue;
+      const key = String(m?.key || '');
       txs.push({
         id,
+        key: /^[0-9a-f]{64}$/.test(key) ? key : '',
         kind: String(m.kind || 'send'),
         fee: Number(m.fee) || 0,
         weight: Number(m.weight) || 0,
@@ -2639,11 +2642,12 @@ export function createPool({
     });
   }
 
+  /** The held bodies, by key: two bodies under one id set are not the same pool. */
   function mempoolKey(list) {
     const ids = [];
     for (const t of list || []) {
       if (!t || t.coinbase) continue;
-      const id = String(t.id || '');
+      const id = heldBodyKey(t);
       if (id) ids.push(id);
     }
     ids.sort();
@@ -3339,13 +3343,14 @@ export function createPool({
     return { presence: false, aborted: false, singleton, defer };
   }
 
+  /** Drop the held row that is `tx`'s body. Another body under its id stays. */
   function dropMempoolTx(tx) {
     if (!Array.isArray(store.mempool)) return false;
-    const id = String(tx?.id || '');
+    const key = heldBodyKey(tx);
     const next = [];
     let removed = false;
     for (const row of store.mempool) {
-      if (!removed && (row === tx || (id && String(row?.id || '') === id))) {
+      if (!removed && (row === tx || (key && heldBodyKey(row) === key))) {
         removed = true;
         continue;
       }

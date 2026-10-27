@@ -3,19 +3,22 @@
  * Paid ≥ current base; bounded; requote/drop after retarget.
  * Shares are not in the mempool.
  */
+import { canonicalAliasPath, canonicalHash } from './canonical_row.js';
+import { droppedFieldOf } from './arrival_fields.js';
 import { isDestAddress, isShearAddress, bech32Hrp, checkAddressField, checkTxAddressFields } from './address.js';
 import { levyNanos, levyTaxed, txAmountNanos, nextBaseFee, mempoolDepthBytes, custodialPullRejected } from './levy.js';
 import { dummyCount, flowNeedsDummy, moneyNeedsRange, publicReserveReceiptRejected } from './dummy.js';
 import { verifyRange, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, asU8, txIoCap } from './note.js';
 import { txBudget } from './block_budget.js';
 import { bLeafAskRejected } from './clearing.js';
-import { sealedVinLinkField, valueOpenRejected, bSpendVinRejected } from './chronoflux.js';
+import { sealedVinLinkField, valueOpenRejected, bSpendVinRejected, compactTx } from './chronoflux.js';
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected, leafVoteLeakRejected, compactLockLeakRejected, withdrawLeakRejected } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
+import { destForLogin } from './flow_sheet.js';
 
 export const MEMPOOL_MAX = 4096;
 export const MEMPOOL_KIND_SEND = 'send';
@@ -52,14 +55,82 @@ export function mempoolRow(tx, fee, kind) {
   return out;
 }
 
+/**
+ * The body a template seals for a held tx (store.js template): a worker
+ * suffix off the payee, the b-spend flag, and the vin and vout a body with
+ * none gets. A held row and the block's copy of it are then one body. With no
+ * closure given, destForLogin reads no context, so the template's
+ * continuity root and height (`ctx`) do not change the form.
+ */
+export function sealedFormOf(tx, ctx = {}) {
+  const to = destForLogin(tx.to, ctx) || tx.to;
+  return {
+    ...tx,
+    to,
+    bFlag: tx.kind === 'b-spend' || tx.bFlag,
+    vin: tx.vin || [{ address: tx.from }],
+    // The memo stays at the top level: an output memoCt is refused.
+    vout: tx.vout || [{ address: to, nanos: tx.nanos, kind: tx.kind }],
+  };
+}
+
+/**
+ * The key a held body is known by. A tx's `id` is a label its sender picks;
+ * outside a withdraw it is in no digest, so two bodies can carry one id and
+ * one body can be sent under two. This is sha256 of the compact form, the
+ * bytes a block and a p2p frame carry, less that label. A withdraw signs its
+ * id (reserveDigestSuffix), so there the id is body and stays in. The body is
+ * the form a template seals (sealedFormOf), held as admitMempool holds it
+ * (mempoolRow with the posted fee), so an arrival, its held row, and a
+ * block's copy share one key. The bytes hashed are the block digest's
+ * encoding (canonical_row.js): a byte field is one form however it is held,
+ * and a string is its exact text. '' when the body has no posted fee or no
+ * compact form.
+ */
+export function txBodyKey(tx) {
+  if (!tx || typeof tx !== 'object') return '';
+  try {
+    const paid = postedFeeNanos(tx);
+    if (paid == null) return '';
+    const body = { ...compactTx(mempoolRow(sealedFormOf(tx), paid, String(tx.kind))) };
+    if (String(body.kind || '') !== 'withdraw') delete body.id;
+    return canonicalHash('shear-mempool-body-v1', body).toString('hex');
+  } catch {
+    return '';
+  }
+}
+
+const heldKeys = new WeakMap();
+
+/**
+ * txBodyKey of a row the mempool holds, kept per row object. A held row is
+ * never edited in place (mempoolRow, requote and bounce build new rows), so
+ * its key is computed once, not on every arrival's walk of the pool.
+ */
+export function heldBodyKey(row) {
+  if (!row || typeof row !== 'object') return '';
+  let key = heldKeys.get(row);
+  if (key === undefined) {
+    key = txBodyKey(row);
+    heldKeys.set(row, key);
+  }
+  return key;
+}
+
+/** `row` is `from` re-read (reviveTx turns hex fields to bytes): the same body and key. */
+export function keepHeldKey(row, from) {
+  if (row && typeof row === 'object' && from && typeof from === 'object') heldKeys.set(row, heldBodyKey(from));
+  return row;
+}
+
 export function emptyMempool() {
   return { txs: [], baseFee: 1, max: MEMPOOL_MAX, tagIndex: new Map() };
 }
 
-/** tag hex → tx id. One walk when the set changes, not one walk per arrival. */
+/** tag hex → the body key of the tx holding it. One walk when the set changes, not one walk per arrival. */
 export function rememberMempoolTag(index, tx, tags) {
   if (!index || typeof index.set !== 'function' || !tx) return;
-  const id = String(tx.id || '');
+  const id = heldBodyKey(tx);
   const list = Array.isArray(tags) ? tags : txSpendTags(tx).tags.map((tag) => tag.toString('hex'));
   for (const th of list) {
     const hex = String(th || '');
@@ -121,6 +192,10 @@ export function admitMempool(pool, tx, opts = {}) {
   const book = pool || emptyMempool();
   const base = Math.max(1, Math.floor(Number(baseFee != null ? baseFee : book.baseFee) || 1));
   if (!tx || tx.share || tx.kind === 'share') return { ok: false, reason: 'share_not_mempool' };
+  // First, as on a block (arrival_fields.js): a value whose encoding is
+  // another value's would give two bodies one digest and one body key.
+  const alias = canonicalAliasPath(tx);
+  if (alias) return { ok: false, reason: 'canonical_alias', field: alias };
   // The fee note stays in the wallet. A leaf vote that names it is refused
   // before an unknown field is reported as unsigned.
   if (String(tx?.kind || '') === 'leaf-vote') {
@@ -210,7 +285,9 @@ export function admitMempool(pool, tx, opts = {}) {
   // Same v3 verifier as consensus. A bad byte-3 proof is not saved by a
   // missing range proof. A flow that did not finish that check does not
   // reach admit_verify.
-  const flowSelf = String(tx?.id || '');
+  // The caller passes the key it holds (a held row's cached one, or the
+  // arrival's), so a template walk does not key every row again.
+  const flowSelf = typeof opts.selfKey === 'string' ? opts.selfKey : txBodyKey(tx);
   const flowSpent = spentView(book, opts, flowSelf);
   let flowV3Done = false;
   if (flowNeedsDummy(tx) && flowPresentsProof(tx) && !shapeOnly) {
@@ -274,7 +351,7 @@ export function admitMempool(pool, tx, opts = {}) {
   // Lock, vote, and withdraw: same funding check, same drawn mint, same
   // header-time vault trial as queue and consensus. A vault miss is marked
   // so the template drops the tx instead of retrying it forever.
-  const selfId = String(tx?.id || '');
+  const selfId = flowSelf;
   const runningTags = spentView(book, opts, selfId);
   let fundTags = null;
   let vaultState = null;
@@ -378,6 +455,11 @@ export function admitMempool(pool, tx, opts = {}) {
   // A leaf ballot is admitted only after the vault trial. A portal vote
   // already returned vote_retired. A proof-less ballot does not sit in the pool.
   if (kind === 'leaf-vote' && !vaultState) return { ok: false, reason: 'not_voter' };
+  // Last: a field compaction would drop that is neither on the strip list
+  // nor rebuilt into a kept field is refused, as a block carrying it is
+  // (arrival_fields.js). The named refusals above keep their reasons.
+  const dropped = droppedFieldOf(tx);
+  if (dropped) return { ok: false, reason: 'dropped_field', field: dropped };
   book.txs.push(mempoolRow(tx, paid, kind));
   const accepted = book.txs[book.txs.length - 1];
   const tags = Array.isArray(fundTags) ? fundTags.slice() : txSpendTags(accepted).tags.map((tag) => tag.toString('hex'));

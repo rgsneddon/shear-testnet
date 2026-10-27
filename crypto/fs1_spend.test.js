@@ -8,6 +8,7 @@ import { admitPub, admitScalarFromSeed, attachAdmitPub } from './admit.js';
 import { commit, pointBytes, proveRange, randomScalar, sealCoinbaseNote } from './note.js';
 import { lockQualifies, reserveDigestSuffix } from './reserve_vault.js';
 import { spendPackDigest } from './spend.js';
+import { compactTx } from './chronoflux.js';
 import { proofIsV3Bucket } from './fs1_send_gate.js';
 import { fs1NativeLoaded, fs1Verify } from './native_admit.js';
 import { verifyFlowAdmitFs1 } from './admit_v3.js';
@@ -22,6 +23,7 @@ import {
   fs1RootAt,
   resetFs1Tree,
   txBodyDigestFs1,
+  fs1MemoDigest,
 } from './fs1_spend.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -34,6 +36,7 @@ function vectorTx(c) {
     fee: c.fee,
     vin: Array.from({ length: c.nIn }, () => ({ commit: Buffer.alloc(32, 7) })),
     vout: c.vout,
+    ...(c.memoCt ? { memoCt: c.memoCt } : {}),
   };
 }
 
@@ -62,6 +65,23 @@ describe('FS-1 body digest', () => {
       differs({ ...vectorTx(c), vout });
     }
     differs({ ...vectorTx(c), vout: [...c.vout].reverse() });
+  });
+
+  it('signs the top-level memo envelope: stripped, swapped or added, the digest moves (FS1_MEMO=bound)', () => {
+    const memoCase = vector.cases.find((c) => c.memoCt);
+    assert.ok(memoCase, 'the shared vector has a memo case');
+    assert.equal(fs1MemoDigest(memoCase.memoCt).toString('hex'), memoCase.memoDigest);
+    const { ct, mac, nonce, v } = memoCase.memoCt;
+    assert.equal(fs1MemoDigest({ v, nonce, mac, ct }).toString('hex'), memoCase.memoDigest, 'key order does not matter');
+    const signed = txBodyDigestFs1(vectorTx(memoCase)).toString('hex');
+    assert.equal(signed, memoCase.digest);
+    const { memoCt: _m, ...stripped } = vectorTx(memoCase);
+    assert.notEqual(txBodyDigestFs1(stripped).toString('hex'), signed, 'stripped');
+    assert.equal(txBodyDigestFs1(stripped).toString('hex'), vector.cases[0].digest, 'a tx with no memo keeps its digest');
+    const swapped = { ...vectorTx(memoCase), memoCt: { ...memoCase.memoCt, ct: 'R'.repeat(ct.length) } };
+    assert.notEqual(txBodyDigestFs1(swapped).toString('hex'), signed, 'swapped');
+    const added = { ...vectorTx(vector.cases[0]), memoCt: memoCase.memoCt };
+    assert.notEqual(txBodyDigestFs1(added).toString('hex'), vector.cases[0].digest, 'added');
   });
 
   it('does not bind fields a relay may drop (maxLevy, sig, excess, vin commits)', () => {
@@ -303,5 +323,39 @@ describe('lock reserve suffix binds H(piProof)', () => {
     assert.equal(withProof.length, bare.length);
     assert.equal(withProof.subarray(0, withProof.length - 32).equals(bare.subarray(0, bare.length - 32)), true);
     assert.equal(withProof.subarray(withProof.length - 32).equals(bare.subarray(bare.length - 32)), false);
+  });
+
+  it('a full lock and its compact copy sign the same reserve digest (Russell 26 Oct)', () => {
+    const portalId = 'aa'.repeat(32);
+    const sealed = sealCoinbaseNote(PI_SHE_NANOS, { dest20: Buffer.alloc(20, 4), kind: 'lock' });
+    const lockRow = { kind: 'lock', commit: sealed.commit, noteCommit: sealed.noteCommit, dest20: Buffer.alloc(20, 4) };
+    const lock = {
+      kind: 'lock',
+      portalId,
+      programId: 'shear-reserve-v1',
+      ownerPub: '11'.repeat(32),
+      vout: [lockRow],
+    };
+    const honest = reserveDigestSuffix(lock);
+    // A plaintext nanos beside the commitment: compaction drops it, and the
+    // digest never read it, so the full row and its compact copy agree.
+    for (const planted of [PI_SHE_NANOS, 1, 0, '7']) {
+      const fat = { ...lock, vout: [{ ...lockRow, nanos: planted }] };
+      assert.ok(reserveDigestSuffix(fat).equals(honest), `planted ${planted}`);
+      assert.ok(reserveDigestSuffix(compactTx(fat)).equals(honest), `compact of planted ${planted}`);
+    }
+    // An empty published v is no amount either.
+    assert.ok(reserveDigestSuffix({ ...lock, vout: [{ ...lockRow, valueProof: { v: '' } }] }).equals(honest));
+    // A public withdraw row's nanos equals its posted opening and is read as that opening.
+    const out = sealCoinbaseNote(5_000, { dest20: Buffer.alloc(20, 6), kind: 'withdraw' });
+    const withdraw = {
+      kind: 'withdraw',
+      id: 'wd-same',
+      portalId,
+      programId: 'shear-reserve-v1',
+      withdrawNonce: Buffer.alloc(32, 9),
+      vout: [{ kind: 'withdraw', commit: out.commit, noteCommit: out.noteCommit, valueProof: out.valueProof, nanos: 5_000 }],
+    };
+    assert.ok(reserveDigestSuffix(withdraw).equals(reserveDigestSuffix(compactTx(withdraw))));
   });
 });

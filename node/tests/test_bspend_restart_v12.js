@@ -185,7 +185,8 @@ describe('v12 b-spend stamps survive a restart', () => {
       kind: 'b-spend',
       from: dest,
       to: dest,
-      nanos: 0,
+      // No top-level amount: the mint is the output (a stated nanos must
+      // equal it, arrival_fields.js).
       fee: 0,
       commitHeight: commitH,
       commitHeader: commit.header,
@@ -322,7 +323,8 @@ describe('v12 b-spend stamps survive a restart', () => {
       kind: 'b-spend',
       from: dest,
       to: dest,
-      nanos: 0,
+      // No top-level amount: the mint is the output (a stated nanos must
+      // equal it, arrival_fields.js).
       fee: 0,
       commitHeight: commitH,
       commitHeader: commit.header,

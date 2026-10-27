@@ -28,6 +28,7 @@ import {
 } from '../../crypto/reserve_vault.js';
 import { deposit } from '../../crypto/owned_portal.js';
 import { compactTx } from '../../crypto/chronoflux.js';
+import { arrivalFieldRejected, blockArrivalRejected } from '../../crypto/arrival_fields.js';
 import { GENESIS_PREV, buildTemplate, verifyBlock, digestTx } from '../src/chain.js';
 import { createStore } from '../src/store.js';
 
@@ -91,17 +92,17 @@ describe('oracle observe is not a rate', () => {
     }
   });
 
-  it('the coinbase digest binds an observe, and compact drops it', () => {
+  it('a coinbase naming an observe is refused on arrival, not compacted into the bare one', () => {
+    // An observe is not body (compaction would drop it, TX_DIGEST=body-v2),
+    // and a coinbase may not carry one: it is refused as it arrives, before
+    // compaction, so compaction never decides that it is allowed.
     const plain = { coinbase: true, height: 1, vin: [{ coinbase: true }], vout: [] };
-    const bare = digestTx(plain);
+    assert.equal(arrivalFieldRejected(plain), null, 'the bare coinbase arrives');
     for (const bps of RATES) {
       const row = { ...plain, observe: { annualBps: bps, observedAtMs: T0 } };
-      assert.equal(digestTx(row).equals(bare), false, `bare ${bps}`);
-      const flipped = digestTx({ ...plain, observe: { annualBps: bps + 1, observedAtMs: T0 } });
-      assert.equal(digestTx(row).equals(flipped), false, `flip ${bps}`);
-      const compact = compactTx(row);
-      assert.equal(compact.observe, undefined);
-      assert.equal(digestTx(compact).equals(bare), true);
+      assert.deepEqual(arrivalFieldRejected(row), { ok: false, reason: 'observe_unattested' }, `observe ${bps}`);
+      assert.deepEqual(blockArrivalRejected({ txs: [row] }), { ok: false, reason: 'observe_unattested' }, `block ${bps}`);
+      assert.equal(compactTx(row).observe, undefined, `compact ${bps}`);
     }
   });
 

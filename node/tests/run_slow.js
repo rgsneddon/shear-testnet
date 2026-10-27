@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { SLOW_FILES } from './slow_caps.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const clk = Number(spawnSync('getconf', ['CLK_TCK'], { encoding: 'utf8' }).stdout) || 100;
+const clk = Number(spawnSync('getconf', ['CLK_TCK'], { timeout: 600_000, encoding: 'utf8' }).stdout) || 100;
 const override = Number(process.env.SHEAR_SLOW_CAP_MS || 0);
 const wanted = process.argv.slice(2).filter((arg) => arg && !arg.startsWith('--'));
 const list = wanted.length

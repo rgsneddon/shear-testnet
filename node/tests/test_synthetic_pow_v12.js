@@ -58,9 +58,17 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
     assert.equal(tagged.ok, false);
     assert.equal(tagged.reason, 'pow');
 
+    // A claimed id that is not the header's ShearHash is hash_claim before any
+    // target check (store.append). The same header under its own ShearHash is
+    // then judged on pow.
+    // Each store seals its own coinbase (fresh blinding), and the leaf binds
+    // those bytes (TX_DIGEST=body-v2), so each store's header is its own and
+    // is judged under its own ShearHash.
     const fresh = createStore(tmp('shear-syn-fresh-'));
     const issued = fresh.template({ miner, now });
-    assert.equal(Buffer.from(setNonce(issued.tpl.header, 0n)).equals(header), true);
+    const freshReal = shearHash(setNonce(issued.tpl.header, 0n));
+    assert.equal(freshReal.equals(pow), false);
+    assert.equal(meetsTarget(freshReal, decoded.bits), false);
     const direct = await Promise.resolve(fresh.submitHeader({
       jobId: issued.job.jobId,
       nonce: 0n,
@@ -70,25 +78,40 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
       skipSharePow: true,
     }));
     assert.equal(direct.ok, false);
-    assert.equal(direct.reason, 'pow');
+    assert.equal(direct.reason, 'hash_claim');
+    assert.equal(fresh.tip(), null);
+    const own = await Promise.resolve(fresh.submitHeader({
+      jobId: issued.job.jobId,
+      nonce: 0n,
+      miner,
+      powHash: freshReal.toString('hex'),
+      trustedPowHash: pow.toString('hex'),
+      skipSharePow: true,
+    }));
+    assert.equal(own.ok, false);
+    assert.equal(own.reason, 'pow');
     assert.equal(fresh.tip(), null);
 
     const rpcStore = createStore(tmp('shear-syn-rpc-'));
     const rpcJob = rpcStore.template({ miner, now });
+    const rpcReal = shearHash(setNonce(rpcJob.tpl.header, 0n));
+    assert.equal(meetsTarget(rpcReal, decoded.bits), false);
     const rpc = createRpc({ store: rpcStore, port: 0, host: '127.0.0.1' });
     try {
       for (const method of ['submitblock', 'submitHeader']) {
-        const got = await Promise.resolve(rpc.dispatch(method, {
-          jobId: rpcJob.job.jobId,
-          nonce: '0',
-          miner,
-          powHash: pow.toString('hex'),
-          trustedPowHash: pow.toString('hex'),
-          skipSharePow: true,
-        }));
-        assert.equal(got.ok, false, method);
-        assert.equal(got.reason, 'pow', `${method} ${got.reason}`);
-        assert.equal(rpcStore.tip(), null);
+        for (const [claim, want] of [[pow, 'hash_claim'], [rpcReal, 'pow']]) {
+          const got = await Promise.resolve(rpc.dispatch(method, {
+            jobId: rpcJob.job.jobId,
+            nonce: '0',
+            miner,
+            powHash: claim.toString('hex'),
+            trustedPowHash: pow.toString('hex'),
+            skipSharePow: true,
+          }));
+          assert.equal(got.ok, false, method);
+          assert.equal(got.reason, want, `${method} ${got.reason}`);
+          assert.equal(rpcStore.tip(), null);
+        }
       }
     } finally {
       await rpc.close();
@@ -99,21 +122,34 @@ describe('v12 rejects a synthetic digest on the real chain', () => {
       trustedPowHash: pow,
     }]));
     assert.equal(ingested.ok, false);
-    assert.equal(ingested.reason, 'pow');
-    const p2p = await Promise.resolve(createStore(tmp('shear-syn-p2p-')).ingest([tip], {
-      offLoopPow: true,
-    }));
-    assert.equal(p2p.ok, false);
-    assert.equal(p2p.reason, 'pow');
+    assert.equal(ingested.reason, 'hash_claim');
+    const ingestedOwn = await Promise.resolve(createStore(tmp('shear-syn-ingest-own-')).ingest([{
+      ...tip,
+      hash: real,
+      trustedPowHash: pow,
+    }]));
+    assert.equal(ingestedOwn.ok, false);
+    assert.equal(ingestedOwn.reason, 'pow');
+    // The off-loop path is the same: a stand-in claim is hash_claim, and the
+    // header under its own ShearHash misses its target as pow.
+    for (const [block, want] of [[tip, 'hash_claim'], [{ ...tip, hash: real }, 'pow']]) {
+      const p2p = await Promise.resolve(createStore(tmp('shear-syn-p2p-')).ingest([block], {
+        offLoopPow: true,
+      }));
+      assert.equal(p2p.ok, false);
+      assert.equal(p2p.reason, want);
+    }
 
-    const ipc = await Promise.resolve(applyVerifiedIpcBlock(createStore(tmp('shear-syn-ipc-')), {
-      type: 'ipc_block',
-      magic: MAGIC_TESTNET,
-      block: { ...encodeWireBlock(tip), trustedPowHash: pow.toString('hex') },
-      powHash: pow.toString('hex'),
-      trustedPowHash: pow.toString('hex'),
-    }));
-    assert.equal(ipc.ok, false);
-    assert.equal(ipc.reason, 'pow');
+    for (const [claim, want] of [[pow, 'hash_claim'], [real, 'pow']]) {
+      const ipc = await Promise.resolve(applyVerifiedIpcBlock(createStore(tmp('shear-syn-ipc-')), {
+        type: 'ipc_block',
+        magic: MAGIC_TESTNET,
+        block: { ...encodeWireBlock({ ...tip, hash: claim }), trustedPowHash: pow.toString('hex') },
+        powHash: claim.toString('hex'),
+        trustedPowHash: pow.toString('hex'),
+      }));
+      assert.equal(ipc.ok, false);
+      assert.equal(ipc.reason, want);
+    }
   });
 });

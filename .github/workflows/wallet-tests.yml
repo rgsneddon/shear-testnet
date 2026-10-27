@@ -17,7 +17,12 @@ permissions:
   contents: read
 jobs:
   spendable:
-    runs-on: ubuntu-latest
+    # ubuntu-latest (the ubuntu-26.04 image) sets APT::Architecture-Variants
+    # "amd64v3", so its gcc defaults to x86-64-v3 and its static libstdc++ and
+    # libgcc are AVX2 builds that no -march flag can undo. ubuntu-24.04 builds
+    # at the x86-64 baseline; scripts/isa_scan.py fails the job if that drifts.
+    # Proven fallback: the ubuntu:26.04 container (baseline toolchain).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +37,7 @@ jobs:
           sudo apt-get install -y build-essential cmake pkg-config libsodium-dev
           bash crypto/native/build-linux-admit-so.sh
           bash wallet/native/build-shear-v3.sh
+          python3 scripts/isa_scan.py wallet/native/libshear_v3.so crypto/randomx/build/librandomx.a crypto/native/admit/target/release/libshear_admit.so
       - name: Spendable, t18, and reserve-hold tests
         working-directory: wallet
         run: |

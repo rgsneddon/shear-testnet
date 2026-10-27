@@ -26,6 +26,7 @@ import {
   consensusUnlockPeriod,
   emptyVault,
   lockStampRejected,
+  attachLockEquality,
   lockWitnessOf,
   lockNoteSpendRejected,
   packRewardAuth,
@@ -83,7 +84,12 @@ function attachPiNote(tx) {
   const held = lockWitnessOf(tx);
   if (!held) return tx;
   const leaf = vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
-  if (leaf) tx.vaultLockNote = leaf.note;
+  if (leaf) {
+    tx.vaultLockNote = leaf.note;
+    // The π proof a wallet attaches with the note. A note with no proof is
+    // the stripped lock applyReserveBlock refuses (2461ec67).
+    if (!attachLockEquality(tx)) throw new Error(`π proof ${tx.id}`);
+  }
   return tx;
 }
 

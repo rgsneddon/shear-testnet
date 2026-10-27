@@ -28,6 +28,7 @@ SKIP_SUFFIXES = {".o", ".a", ".d", ".pdb", ".ilk"}
 DOC = "share/doc/shear"
 
 sys.path.insert(0, str(SRC / "scripts" / "licenses"))
+sys.path.insert(0, str(SRC / "node" / "pack"))
 import release_notices  # noqa: E402
 
 
@@ -161,11 +162,17 @@ def install_prefix() -> None:
         shutil.rmtree(modules)
     dev = release_notices.dev_only_npm_dirs(str(SRC))
 
+    from bundle_modules import ships_prebuild
+
     def ignore_dev(directory: str, names: list[str]) -> set[str]:
-        return {
-            name for name in names
-            if os.path.relpath(os.path.join(directory, name), SRC).replace(os.sep, "/") in dev
-        }
+        # Dev-only packages, and koffi's prebuilds: the Linux node never loads
+        # koffi (win32 only), and its linux builds need the shared GCC runtime.
+        out = set()
+        for name in names:
+            rel = os.path.relpath(os.path.join(directory, name), SRC).replace(os.sep, "/")
+            if rel in dev or not ships_prebuild(rel + "/", "linux"):
+                out.add(name)
+        return out
 
     shutil.copytree(SRC / "node_modules", modules, symlinks=False, ignore=ignore_dev)
     release_notices.copy_notices(str(PREFIX / DOC), str(SRC))

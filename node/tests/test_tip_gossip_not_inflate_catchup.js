@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { shearHash } from '../../crypto/shear_hash.js';
 import { createP2p, applyTipAdvertisement, catchupFields, countSyncedOnline, fingerprintHelloHash } from '../src/p2p.js';
 import { nodeStatus } from '../src/status.js';
 
@@ -169,19 +170,31 @@ describe('tip gossip does not inflate catch-up', () => {
       })}\n`);
       await readJsonLines(sock, 1, 2000);
       assert.equal(p2p.syncSnapshot().syncEligiblePeers, 0);
+      // The claim is the header's own ShearHash, so the body passes the
+      // p2p claim check and is served to ingest.
+      const header = Buffer.alloc(128, 0x11);
+      // Its parent is our tip, as the next block a peer serves is. A body under
+      // an unknown parent is answered prev before ingest (p2p parentKnown).
+      hash.copy(header, 4);
+      // bits 0: a target any hash meets, as a real block's id meets its own
+      // header's target. The claim check refuses a claim that misses it unhashed.
+      header.writeUInt32LE(0, 108);
       const block = {
         type: 'block',
         magic: MAGIC_TESTNET,
         block: {
-          header: '11'.repeat(64),
-          hash: '22'.repeat(32),
+          header: header.toString('hex'),
+          hash: shearHash(header).toString('hex'),
           height: 5,
           txs: [],
           shareBatch: [],
         },
       };
       sock.write(`${JSON.stringify(block)}\n`);
-      await new Promise((r) => setTimeout(r, 300));
+      // The claim is hashed off the accept loop. Wait for the served body.
+      for (let i = 0; i < 200 && p2p.syncSnapshot().syncEligiblePeers === 0; i += 1) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
       const snap = p2p.syncSnapshot();
       assert.equal(snap.syncEligiblePeers, 1);
       assert.equal(snap.peerMaxHeight, 9);

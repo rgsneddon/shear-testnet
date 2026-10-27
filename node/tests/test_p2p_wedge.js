@@ -34,8 +34,14 @@ import {
 // Header nonces are ShearHash-v3 hits at that target. Share nonces are
 // floor-width hits on the parent, with the credit byte in the high 8 bits.
 // The retired single-gap step does not move an on-time child. chain.js is unchanged.
-const WEDGE_HEADER_NONCE = [59614n, 518050n, 7158n];
-const WEDGE_SHARE_NONCE = [null, ['576460752303423511'], ['576460752303424244']];
+// The nonces are the fixture's own (fixtures/seal_wedge_v12.mjs seals them).
+const WEDGE_FIXTURE = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-v12.json', import.meta.url), 'utf8'));
+const WEDGE_HEADER_NONCE = WEDGE_FIXTURE.headerNonces.map(BigInt);
+const WEDGE_SHARE_NONCE = WEDGE_FIXTURE.shareNonces;
+// ShearHash-v3 hits at GENESIS_BITS_PACKED for the three bodiless headers in
+// the verify-cap test. Each meets its own target, so the p2p claim check
+// passes and verify runs, then refuses the empty body as coinbase.
+const CAP_HEADER_NONCE = WEDGE_FIXTURE.capNonces.map(BigInt);
 
 function legalizeBlocks(blocks) {
   const childBits = nextBits(GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS);
@@ -369,7 +375,7 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
     }
   });
 
-  it('caps overlapping verifies, still checks the queued block, and rejects bad pow', async () => {
+  it('caps overlapping verifies, still checks the queued block, and refuses bad pow unhashed', async () => {
     resetP2pVerifyStats();
     resetP2pHashStats();
     const [parentBlock] = loadChain();
@@ -378,6 +384,16 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
     const t0 = 1_700_000_000_000;
     const copied = b.append(cloneBlock(parentBlock));
     assert.equal(copied.ok, true, copied.reason);
+    // Each body's claim is hashed off-loop before its verify is scheduled,
+    // so verifies start one claim apart. Holding each ingest briefly makes
+    // them overlap on any host, so the cap and the queue are both exercised.
+    // The real ingest still runs and still refuses each empty body.
+    const realIngest = b.ingest.bind(b);
+    b.ingest = (fork, opts) => new Promise((resolve, reject) => {
+      setTimeout(() => {
+        Promise.resolve().then(() => realIngest(fork, opts)).then(resolve, reject);
+      }, 300);
+    });
     const { p2p, rpc, port } = await listenNode(b);
     const events = [];
     const orig = console.error;
@@ -391,21 +407,25 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
     const sock = await connectPeer(port);
     try {
       const lines = [];
+      const capHeader = (i) => encodeHeader({
+        version: VERSION,
+        prevBlockHash: parentBlock.hash,
+        merkleRoot: Buffer.alloc(32, i + 1),
+        continuityRoot: Buffer.alloc(32, 9),
+        timestamp: BigInt(t0 + 90_000),
+        bits: GENESIS_BITS_PACKED,
+        nonce: BigInt(i + 1),
+        baseFee: 1n,
+      });
       for (let i = 0; i < 3; i += 1) {
-        let header = encodeHeader({
-          version: VERSION,
-          prevBlockHash: parentBlock.hash,
-          merkleRoot: Buffer.alloc(32, i + 1),
-          continuityRoot: Buffer.alloc(32, 9),
-          timestamp: BigInt(t0 + 90_000),
-          bits: GENESIS_BITS_PACKED,
-          nonce: BigInt(i + 1),
-          baseFee: 1n,
-        });
-        header = missHeader(header, i * 30 + 1);
+        const header = setNonce(capHeader(i), CAP_HEADER_NONCE[i]);
+        const hash = shearHash(header);
+        assert.equal(meetsTarget(hash, GENESIS_BITS_PACKED), true, `cap header ${i} misses genesis bits`);
+        // The claim is the header's own ShearHash and meets its target, so
+        // the p2p claim check passes and verify refuses the empty body.
         lines.push(blockLine({
           header,
-          hash: Buffer.alloc(32, i + 3),
+          hash,
           height: 2,
           txs: [],
           shareBatch: [{ nonce: 1 + i }, { nonce: 50 + i }],
@@ -414,8 +434,8 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
       const joined = lines.join('');
       assert.equal(joined.includes('trustedPowHash'), false);
       sock.write(joined);
-      const saw = await waitFor(() => events.filter((e) => e.reason === 'pow').length >= 3, 60_000);
-      assert.equal(saw, true, `pow rejects ${events.length}: ${JSON.stringify(events.slice(0, 6))}`);
+      const saw = await waitFor(() => events.filter((e) => e.reason === 'coinbase').length >= 3, 60_000);
+      assert.equal(saw, true, `coinbase rejects ${events.length}: ${JSON.stringify(events.slice(0, 6))}`);
       const verify = p2pVerifyStats();
       const hash = p2pHashStats();
       assert.ok(verify.maxActive <= P2P_VERIFY_CAP);
@@ -426,6 +446,23 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
       assert.ok(hash.maxQueued >= 1, `hash queue never formed ${JSON.stringify(hash)}`);
       assert.ok(hash.completed >= 9);
       assert.ok(hash.workerMaxActive >= 1);
+      // A missed header under its own ShearHash is a claim that misses its
+      // own target. p2p refuses it as hash_claim before any ShearHash, so the
+      // bad pow costs no hash and never reaches verify.
+      const missed = missHeader(capHeader(3), 1);
+      const verified = p2pVerifyStats().completed;
+      sock.write(blockLine({
+        header: missed,
+        hash: shearHash(missed),
+        height: 2,
+        txs: [],
+        shareBatch: [{ nonce: 4 }, { nonce: 53 }],
+      }));
+      const sawMiss = await waitFor(() => events.some((e) => e.reason === 'hash_claim'), 60_000);
+      assert.equal(sawMiss, true, JSON.stringify(events));
+      assert.equal(p2pHashStats().completed, hash.completed);
+      assert.equal(p2pVerifyStats().completed, verified);
+      assert.equal(events.some((e) => e.reason === 'pow'), false, JSON.stringify(events));
       assert.equal(b.tip().height, 1);
     } finally {
       console.error = orig;
@@ -521,13 +558,31 @@ describe('p2p wedge', { concurrency: 1, timeout: 180_000 }, () => {
       badHeader.header = missHeader(second.header, 90);
       const goodHash = Buffer.from(second.hash).toString('hex');
       sock.write(blockLine(badShare));
+      // A missed header that claims the good block's id, with a
+      // trustedPowHash on the wire, is hash_claim: the claim is not its own
+      // ShearHash. The wire field does not change that.
       sock.write(blockLine(badHeader, { trustedPowHash: goodHash }));
       // The coinbase commits the share frame. A mutated nonce misses that
       // root before ShearHash runs, so the reject is share_slot.
       const sawShare = await waitFor(() => events.some((e) => e.reason === 'share_slot'), 60_000);
-      const sawPow = await waitFor(() => events.some((e) => e.reason === 'pow'), 60_000);
+      const sawClaim = await waitFor(() => events.some((e) => e.reason === 'hash_claim'), 60_000);
       assert.equal(sawShare, true, JSON.stringify(events));
-      assert.equal(sawPow, true, JSON.stringify(events));
+      assert.equal(sawClaim, true, JSON.stringify(events));
+      // The same missed header under its own ShearHash is a claim that misses
+      // its own target. p2p refuses it as hash_claim before any ShearHash, so
+      // the bad pow never reaches verify.
+      const ownId = cloneBlock(badHeader);
+      ownId.hash = shearHash(ownId.header);
+      const claimsBefore = events.filter((e) => e.reason === 'hash_claim').length;
+      const hashedBefore = p2pHashStats().completed;
+      sock.write(blockLine(ownId, { trustedPowHash: goodHash }));
+      const sawMiss = await waitFor(
+        () => events.filter((e) => e.reason === 'hash_claim').length > claimsBefore,
+        60_000,
+      );
+      assert.equal(sawMiss, true, JSON.stringify(events));
+      assert.equal(p2pHashStats().completed, hashedBefore);
+      assert.equal(events.some((e) => e.reason === 'pow'), false, JSON.stringify(events));
       assert.equal(store.tip().height, 1);
     } finally {
       console.error = orig;

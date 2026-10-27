@@ -6,6 +6,10 @@ import {
   paymentCodeAtIndex, silentDestFromView, payoutDest, aliasDestOfSilentId, silentPay, isFullPaymentCode,
 } from './address.js';
 import { EMPTY_ROOT } from './merkle.js';
+import { compactTx, memoCtRejected } from './chronoflux.js';
+import { AMOUNT_CT_BYTES } from './note.js';
+import { arrivalFieldRejected } from './arrival_fields.js';
+import { sealedFormOf } from './mempool.js';
 import {
   destForLogin,
   hasherPayoutDest,
@@ -17,6 +21,9 @@ import {
   vaultDest,
   reserveRejectsDest,
   memoSeal,
+  memoEnvelopeRejected,
+  MEMO_SLOT_BYTES,
+  MEMO_MAX_BYTES,
   memoOpen,
   explorerRowPublic,
   spendHashFromAddress,
@@ -153,6 +160,52 @@ describe('flow sheets', () => {
     assert.equal(reserveRejectsDest(id.address, round, opts), true);
     assert.equal(reserveRejectsDest(id.address, id.address, opts), true);
     assert.equal(spendHashFromAddress(id.address).length, 20);
+  });
+
+  it('a memo envelope is one size whatever the memo, and any other shape is memo_ct', () => {
+    const dest = destForLogin(newIdentity().address, { height: 1 });
+    const shared = Buffer.alloc(32, 9);
+    const short = memoSeal(dest, '', shared);
+    const long = memoSeal(dest, 'é'.repeat(127) + 'x', shared);
+    assert.equal(Buffer.byteLength('é'.repeat(127) + 'x', 'utf8'), MEMO_MAX_BYTES);
+    for (const env of [short, long]) {
+      assert.equal(Buffer.from(env.ct, 'base64').length, MEMO_SLOT_BYTES);
+      assert.equal(memoEnvelopeRejected(env), null);
+    }
+    assert.equal(JSON.stringify(short).length, JSON.stringify(long).length, 'the envelope length says nothing');
+    assert.equal(memoOpen(dest, short, shared), '');
+    assert.equal(memoOpen(dest, long, shared), 'é'.repeat(127) + 'x');
+    assert.throws(() => memoSeal(dest, 'x'.repeat(MEMO_MAX_BYTES + 1), shared), /memo_too_long/);
+    const ctOf = (n) => Buffer.alloc(n, 1).toString('base64');
+    assert.equal(memoEnvelopeRejected({ ...short, ct: ctOf(MEMO_SLOT_BYTES - 1) }), 'memo_ct', 'short ciphertext');
+    assert.equal(memoEnvelopeRejected({ ...short, ct: ctOf(MEMO_SLOT_BYTES + 16) }), 'memo_ct', 'long ciphertext');
+    assert.equal(memoEnvelopeRejected({ ...short, v: 1 }), 'memo_ct', 'the unpadded v1 envelope');
+    assert.equal(memoEnvelopeRejected({ ...short, pad: 'aa' }), 'memo_ct', 'an extra key');
+    assert.equal(memoEnvelopeRejected({ ...short, mac: ctOf(15) }), 'memo_ct', 'tag size');
+    assert.equal(memoEnvelopeRejected({ ...short, nonce: ctOf(11) }), 'memo_ct', 'nonce size');
+    assert.equal(memoEnvelopeRejected('aa'), 'memo_ct', 'not an envelope');
+    assert.equal(memoCtRejected({ kind: 'send', memoCt: short }), null);
+    // An output memo is refused whatever its shape (Russell 26 Oct): only the top level carries one.
+    for (const env of [short, long, { ...short, v: 1 }]) {
+      assert.equal(memoCtRejected({ kind: 'send', vout: [{ kind: 'send', memoCt: env }] })?.reason, 'memo_output');
+    }
+  });
+
+  it('a memo sits only at the top level: an output memoCt is refused on arrival, and the template never puts one there', () => {
+    const dest = destForLogin(newIdentity().address, { height: 1 });
+    const env = memoSeal(dest, 'top only', Buffer.alloc(32, 9));
+    // A hidden send output with its wrap, so the memo is the body's only fault.
+    const hidden = { kind: 'send', commit: Buffer.alloc(32, 2), rEph: Buffer.alloc(32, 3), rCt: Buffer.alloc(48, 4), amtCt: Buffer.alloc(AMOUNT_CT_BYTES, 5) };
+    const body = { kind: 'send', fee: 100, vin: [{ commit: Buffer.alloc(32, 1) }], vout: [hidden] };
+    assert.equal(memoCtRejected({ ...body, memoCt: env }), null);
+    assert.equal(compactTx({ ...body, memoCt: env }).memoCt != null, true, 'the top-level envelope is kept');
+    const onOutput = { ...body, vout: [{ ...body.vout[0], memoCt: env }] };
+    assert.equal(arrivalFieldRejected(onOutput)?.reason, 'memo_output');
+    assert.equal(compactTx(onOutput).vout[0].memoCt, undefined, 'compaction never moves a memo onto an output');
+    // A vout-less send gets its default output with no memo on it.
+    const sealed = sealedFormOf({ kind: 'send', from: dest, to: dest, nanos: 5, memoCt: env });
+    assert.equal(sealed.memoCt, env);
+    assert.equal(sealed.vout[0].memoCt, undefined);
   });
 
   it('memo seals with shared secret; dest-only open is null; public row is amounts+dests+memo boolean', () => {

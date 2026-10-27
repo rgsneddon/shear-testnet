@@ -380,12 +380,13 @@ function seededLock(store, { id, height, anchor, nowMs }) {
     vinCommit.copy(blob, 33);
     const fs1 = Buffer.alloc(fs1BlobLen(1), 0);
     fs1[0] = FS1_WIRE;
+    // No top-level nanos: the lock row is hidden, so a plaintext copy is
+    // amount_field (reserveNanosRejected). The Dart builder posts none.
     tx = {
       id,
       kind: 'lock',
       anchor,
       fee,
-      nanos: 0,
       programId: RESERVE_PROGRAM,
       portalId,
       ownerPub,

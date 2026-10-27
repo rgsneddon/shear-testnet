@@ -135,9 +135,39 @@ async function runChild() {
   })}\n`);
 }
 
+// The book is grown in its own process. createStore holds the datadir lock
+// until its process exits (d5e84bb4), so the cold reader is a second process
+// that opens the book after the writer has stopped, as a node restart does.
+async function growChild() {
+  const store = createStore(process.env.SHEAR_AUDIT_DIR);
+  const counts = await grow(store, process.env.SHEAR_AUDIT_MINER, HEIGHTS);
+  process.stdout.write(`${JSON.stringify({ height: store.tip().height, counts })}\n`);
+}
+
+if (process.env.SHEAR_AUDIT_FORK === 'grow') {
+  await growChild();
+  process.exit(0);
+}
+
 if (process.env.SHEAR_AUDIT_FORK === '1') {
   await runChild();
   process.exit(0);
+}
+
+function forkSelf(mode, dir, who) {
+  const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
+    env: {
+      ...process.env,
+      SHEAR_AUDIT_FORK: mode,
+      SHEAR_AUDIT_DIR: dir,
+      SHEAR_AUDIT_MINER: who,
+    },
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
+  assert.equal(child.status, 0, child.stderr || child.stdout);
+  const line = String(child.stdout || '').trim().split(/\r?\n/).filter((row) => row.startsWith('{')).at(-1);
+  return JSON.parse(line);
 }
 
 describe('v12 pool supply publish', () => {
@@ -145,26 +175,14 @@ describe('v12 pool supply publish', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-supply-audit-'));
     try {
       const who = minerDest();
-      const store = createStore(dir);
-      const counts = await grow(store, who, HEIGHTS);
-      assert.equal(store.tip().height, HEIGHTS.length);
+      const grown = forkSelf('grow', dir, who);
+      const { counts } = grown;
+      assert.equal(grown.height, HEIGHTS.length);
       assert.equal(counts.length, HEIGHTS.length);
       assert.ok(counts.every((n) => n >= 1));
       process.stderr.write(`supply-audit grew ${counts.join(',')}\n`);
 
-      const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
-        env: {
-          ...process.env,
-          SHEAR_AUDIT_FORK: '1',
-          SHEAR_AUDIT_DIR: dir,
-          SHEAR_AUDIT_MINER: who,
-        },
-        encoding: 'utf8',
-        timeout: 120_000,
-      });
-      assert.equal(child.status, 0, child.stderr || child.stdout);
-      const line = String(child.stdout || '').trim().split(/\r?\n/).filter((row) => row.startsWith('{')).at(-1);
-      const report = JSON.parse(line);
+      const report = forkSelf('1', dir, who);
       process.stderr.write(`supply-audit cold ${JSON.stringify(report)}\n`);
       assert.equal(report.loadMode, 'snap');
       assert.equal(report.status, 'verified');

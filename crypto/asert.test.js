@@ -437,6 +437,8 @@ describe('hash bonus step (law)', () => {
     assert.match(fp, /LOCK_OWNER=signer/);
     assert.match(fp, /HASH_BONUS_CEIL=none/);
     assert.match(fp, /P2P_HELLO=fingerprint/);
+    assert.match(fp, /:TX_DIGEST=body-v2:/);
+    assert.match(fp, /:TX_DIGEST=body-v2:COINBASE_V=opens:COINBASE_NC=dest-bound:FS1_MEMO=bound:/);
     assert.match(fp, /COMPACT_TO=dropped/);
     assert.match(fp, /VAULT_GAP=A1-once/);
     assert.match(mainnetFingerprint(), /HASH_UNIT_FLOOR=1/);
@@ -451,6 +453,8 @@ describe('hash bonus step (law)', () => {
     assert.match(mainnetFingerprint(), /FS1_SPEND_IDENTITY=refuse/);
     assert.match(mainnetFingerprint(), /HASH_BONUS_CEIL=none/);
     assert.match(mainnetFingerprint(), /P2P_HELLO=fingerprint/);
+    assert.match(mainnetFingerprint(), /:TX_DIGEST=body-v2:/);
+    assert.match(mainnetFingerprint(), /:COINBASE_V=opens:COINBASE_NC=dest-bound:FS1_MEMO=bound:/);
     assert.match(mainnetFingerprint(), /PORTAL_ID=H\(tag,dest20\)/);
     assert.match(mainnetFingerprint(), /HASH_BONUS_STEP=1rho/);
     assert.match(mainnetFingerprint(), /HASH_BONUS_OFF=0/);
@@ -625,8 +629,9 @@ describe('hash-tx consensus law', () => {
     assert.match(mfp, /DIGEST_STAMP=unlockAtMs\+lockEpoch\+H\(piProof\)/);
     assert.match(mfp, /ASERT_EASE=1/);
     assert.match(mfp, /ASERT_HARDEN=6/);
-    assert.match(mfp, /GENESIS=2026-09-18T21:00:00\+01:00/);
-    assert.equal(GENESIS_MAINNET, '2026-09-18T21:00:00+01:00');
+    assert.match(mfp, /GENESIS=2026-12-21T14:00:00\+00:00/);
+    assert.equal(GENESIS_MAINNET, '2026-12-21T14:00:00+00:00');
+    assert.equal(Date.parse(GENESIS_MAINNET), Date.UTC(2026, 11, 21, 14, 0, 0));
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET) - 1), false);
     assert.equal(mainnetMayEmit(Date.parse(GENESIS_MAINNET)), false);
     const prevEmit = process.env.SHEAR_MAINNET_EMIT;

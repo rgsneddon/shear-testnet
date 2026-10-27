@@ -204,14 +204,30 @@ export function memoKey(dest, shared) {
   return createHash('sha256').update(Buffer.from(MEMO_DOMAIN)).update(s).digest();
 }
 
+/**
+ * Every memo ciphertext is MEMO_SLOT_BYTES long, so its length says nothing
+ * about the memo. The plaintext is padded inside the encryption: its UTF-8
+ * bytes, one 0x80, then zeros to the slot. So a memo is at most
+ * MEMO_SLOT_BYTES - 1 bytes.
+ */
+export const MEMO_SLOT_BYTES = 256;
+export const MEMO_MAX_BYTES = MEMO_SLOT_BYTES - 1;
+const MEMO_NONCE_BYTES = 12;
+const MEMO_MAC_BYTES = 16;
+
 export function memoSeal(dest, plaintext, shared) {
   const key = memoKey(dest, shared);
   if (!key) throw new Error('no_shared');
-  const nonce = randomBytes(12);
+  const text = Buffer.from(String(plaintext || ''), 'utf8');
+  if (text.length > MEMO_MAX_BYTES) throw new Error('memo_too_long');
+  const slot = Buffer.alloc(MEMO_SLOT_BYTES);
+  text.copy(slot);
+  slot[text.length] = 0x80;
+  const nonce = randomBytes(MEMO_NONCE_BYTES);
   const c = createCipheriv('aes-256-gcm', key, nonce);
-  const ct = Buffer.concat([c.update(String(plaintext || ''), 'utf8'), c.final()]);
+  const ct = Buffer.concat([c.update(slot), c.final()]);
   return {
-    v: 1,
+    v: 2,
     nonce: nonce.toString('base64'),
     mac: c.getAuthTag().toString('base64'),
     ct: ct.toString('base64'),
@@ -219,16 +235,41 @@ export function memoSeal(dest, plaintext, shared) {
 }
 
 export function memoOpen(dest, env, shared) {
-  if (!env || env.v !== 1) return null;
+  if (memoEnvelopeRejected(env)) return null;
   const key = memoKey(dest, shared);
   if (!key) return null;
   try {
     const d = createDecipheriv('aes-256-gcm', key, Buffer.from(env.nonce, 'base64'));
     d.setAuthTag(Buffer.from(env.mac, 'base64'));
-    return Buffer.concat([d.update(Buffer.from(env.ct, 'base64')), d.final()]).toString('utf8');
+    const slot = Buffer.concat([d.update(Buffer.from(env.ct, 'base64')), d.final()]);
+    let end = slot.length - 1;
+    while (end >= 0 && slot[end] === 0) end -= 1;
+    if (end < 0 || slot[end] !== 0x80) return null;
+    return slot.subarray(0, end).toString('utf8');
   } catch {
     return null;
   }
+}
+
+function base64Bytes(s, n) {
+  if (typeof s !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) return false;
+  const b = Buffer.from(s, 'base64');
+  return b.length === n && b.toString('base64') === s;
+}
+
+/**
+ * A memo envelope a block or the mempool may carry: exactly {v:2, nonce,
+ * mac, ct}, with a 12-byte nonce, a 16-byte tag and a MEMO_SLOT_BYTES
+ * ciphertext. Any other shape or length would let the size leak the memo.
+ */
+export function memoEnvelopeRejected(env) {
+  if (!env || typeof env !== 'object' || Array.isArray(env) || Buffer.isBuffer(env)) return 'memo_ct';
+  const keys = Object.keys(env).sort().join(',');
+  if (keys !== 'ct,mac,nonce,v' || env.v !== 2) return 'memo_ct';
+  if (!base64Bytes(env.nonce, MEMO_NONCE_BYTES)) return 'memo_ct';
+  if (!base64Bytes(env.mac, MEMO_MAC_BYTES)) return 'memo_ct';
+  if (!base64Bytes(env.ct, MEMO_SLOT_BYTES)) return 'memo_ct';
+  return null;
 }
 
 export function explorerRowPublic(row) {

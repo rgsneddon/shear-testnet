@@ -11,5 +11,7 @@ flutter pub get
 ADMIT="$HOME/src/shear-testnet/crypto/native/admit"
 cargo build --release --manifest-path "$ADMIT/Cargo.toml"
 DEFINE="$(python3 "$HOME/src/shear-testnet/crypto/native/stamp_admit_pin.py" --define "$ADMIT/target/release/libshear_admit.so")"
-flutter build linux --release --build-name=0.30 --build-number=42 $DEFINE
+# The pin and build number are wallet/pubspec.yaml's (scripts/wallet_pin.sh).
+eval "$(bash "$HOME/src/shear-testnet/scripts/wallet_pin.sh")"
+flutter build linux --release --build-name="$WALLET_NAME" --build-number="$WALLET_BUILD" $DEFINE
 echo "LINUX_BUILD_OK"

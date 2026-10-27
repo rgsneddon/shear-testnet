@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { admitMempool, emptyMempool, retargetMempool } from './mempool.js';
+import { admitMempool, emptyMempool, mempoolRow, retargetMempool, txBodyKey } from './mempool.js';
 import { encodeDest, encodeAddress, newIdentity } from './address.js';
 import { attachDummyOuts } from './dummy.js';
 import { sealNote } from './note.js';
+import { postedFeeNanos } from './spend.js';
 
 const dest = encodeDest(Buffer.alloc(20, 3), newIdentity().admitBase);
 
@@ -77,5 +78,70 @@ describe('policy mempool', () => {
     assert.equal(drop.dropped.some((t) => t.kind === 'send'), true);
     assert.equal(book.txs.some((t) => t.kind === 'send'), false);
     assert.equal(book.txs.some((t) => t.kind === 'b-spend'), true);
+  });
+});
+
+describe('one body per mempool id', () => {
+  it('a body has one key: same bytes in any key order, never a changed fee or output', () => {
+    const note = sealNote(5_000, { dest20: Buffer.alloc(20, 7), kind: 'send' });
+    const tx = { id: 'tx-one', kind: 'send', fee: 120, anchor: 3, vin: [{ commit: Buffer.alloc(32, 1) }], vout: [{ ...note, kind: 'send' }] };
+    // The row as admitMempool stores it: the posted fee is what was paid.
+    const key = txBodyKey(mempoolRow(tx, postedFeeNanos(tx), 'send'));
+    assert.match(key, /^[0-9a-f]{64}$/);
+    assert.equal(txBodyKey(tx), key, 'the queued body again');
+    // A copy from the wire: other key order, Uint8Array for Buffer, a secret key the row never kept.
+    const wire = { vout: tx.vout.map((o) => ({ ...o, commit: new Uint8Array(o.commit) })), vin: tx.vin, anchor: 3, fee: 120, kind: 'send', id: 'tx-one', viewKey: 'aa' };
+    assert.equal(txBodyKey(wire), key, 'same bytes, other shape');
+    // structuredClone makes every Buffer a bare Uint8Array.
+    assert.equal(txBodyKey(structuredClone(tx)), key, 'a cloned body');
+    // A send's id is a label: the same body under another id is the same body.
+    assert.equal(txBodyKey({ ...tx, id: 'another-label' }), key, 'relabelled');
+    // Anything that changes the body is another body under the same id.
+    assert.notEqual(txBodyKey({ ...tx, fee: 121 }), key, 'fee');
+    assert.notEqual(txBodyKey({ ...tx, anchor: 4 }), key, 'anchor');
+    assert.notEqual(txBodyKey({ ...tx, vout: [{ ...tx.vout[0], commit: Buffer.alloc(32, 9) }] }), key, 'output');
+    assert.notEqual(txBodyKey({ ...tx, vin: [] }), key, 'input');
+    const noFee = { ...tx };
+    delete noFee.fee;
+    assert.notEqual(txBodyKey(noFee), key, 'no fee');
+    assert.equal(txBodyKey({ ...tx, fee: 1.5 }), '', 'a fee that is no posted fee has no key');
+  });
+
+  it('a withdraw signs its id, so there the id is body', () => {
+    const tx = { id: 'w-one', kind: 'withdraw', fee: 120, anchor: 3, vin: [{ commit: Buffer.alloc(32, 1) }], vout: [{ kind: 'withdraw', commit: Buffer.alloc(32, 2) }] };
+    const key = txBodyKey(tx);
+    assert.match(key, /^[0-9a-f]{64}$/);
+    assert.equal(txBodyKey(structuredClone(tx)), key, 'a cloned withdraw');
+    assert.notEqual(txBodyKey({ ...tx, id: 'w-two' }), key, 'another signed id');
+  });
+
+  it('a resend matches the row a reorg bounce queued from the block copy, in every byte form, and a type change is another body', () => {
+    const note = sealNote(5_000, { dest20: Buffer.alloc(20, 7), kind: 'send' });
+    const tx = { id: 'tx-bounce', kind: 'send', fee: 120, anchor: 3, vin: [{ commit: Buffer.alloc(32, 1) }], vout: [{ ...note, kind: 'send' }] };
+    // A block copy from a p2p frame carries bytes as {$hex} (p2p.js hexify),
+    // and disk as {type:'Buffer',data}. Hex text is a string, not bytes: a
+    // body keeps each field's type on every honest path, so a field turned
+    // from bytes into text, or a letter's case changed, is another body.
+    const asWire = (v) => {
+      if (Buffer.isBuffer(v) || v instanceof Uint8Array) return { $hex: Buffer.from(v).toString('hex') };
+      if (Array.isArray(v)) return v.map(asWire);
+      if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, asWire(x)]));
+      return v;
+    };
+    const asHttp = (v) => JSON.parse(JSON.stringify(v, function hexed(k, x) {
+      const raw = this[k];
+      return Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw).toString('hex') : x;
+    }));
+    // store.js bounceMempool re-admits the disconnected block's tx as this row.
+    const copy = asWire(tx);
+    const bounced = { ...copy, kind: copy.kind, to: copy.to || copy.vout?.[0]?.address, from: copy.from || copy.vin?.[0]?.address, nanos: copy.nanos || copy.vout?.[0]?.nanos, fee: copy.fee };
+    const key = txBodyKey(mempoolRow(bounced, postedFeeNanos(bounced), 'send'));
+    assert.equal(txBodyKey(tx), key, 'Buffer resend');
+    assert.equal(txBodyKey(asWire(tx)), key, '{$hex} resend');
+    assert.equal(txBodyKey(JSON.parse(JSON.stringify(tx))), key, 'disk {type:Buffer} resend');
+    assert.equal(txBodyKey(structuredClone(tx)), key, 'Uint8Array resend');
+    assert.notEqual(txBodyKey(asHttp(tx)), key, 'bytes turned into hex text');
+    assert.notEqual(txBodyKey({ ...tx, vin: [{ commit: '01'.repeat(32) }] }), key, 'one byte field turned into hex text');
+    assert.notEqual(txBodyKey({ ...tx, vin: [{ commit: Buffer.alloc(32, 2) }] }), key, 'other input bytes');
   });
 });

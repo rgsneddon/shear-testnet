@@ -20,11 +20,12 @@ import { createStore } from '../src/store.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
-// Same sealed headers as test_p2p_wedge.js. Nonce 59614 is the fleet's
-// height-1 block. lose-block-nonce.json is a different hit on that header
-// whose hash is greater, so equal work keeps the fleet block.
-const FLEET_HEADER_NONCE = [59614n, 518050n, 7158n];
-const FLEET_SHARE_NONCE = [null, ['576460752303423511'], ['576460752303424244']];
+// Same sealed headers as test_p2p_wedge.js, from the fixture itself
+// (fixtures/seal_wedge_v12.mjs). lose-block-nonce.json is a different hit on
+// the height-1 header whose hash is greater, so equal work keeps the fleet block.
+const WEDGE_FIXTURE = JSON.parse(fs.readFileSync(new URL('./fixtures/p2p-wedge-v12.json', import.meta.url), 'utf8'));
+const FLEET_HEADER_NONCE = WEDGE_FIXTURE.headerNonces.map(BigInt);
+const FLEET_SHARE_NONCE = WEDGE_FIXTURE.shareNonces;
 
 function cloneBlock(block) {
   return {

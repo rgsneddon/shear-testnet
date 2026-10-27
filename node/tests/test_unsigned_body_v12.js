@@ -4,6 +4,9 @@
  * for any extra field and any amount. A signed refused kind with
  * no extra field stays kind. A clean coinbase stays coinbase.
  * verifyBlock of a clean body is not unsigned.
+ * On a block, the pre-PoW row check names unsigned. These blocks carry no
+ * header, a final fault, and a final fault is the verdict over an upgradeable
+ * one (Russell 26 Oct), so verifyBlock names no_header.
  * A b-spend keeps its consensus fields. An extra field on that body is unsigned.
  */
 import { describe, it } from 'node:test';
@@ -12,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
-import { verifyBlock } from '../src/chain.js';
+import { earlyRowsRejected, verifyBlock } from '../src/chain.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { newIdentity } from '../../crypto/address.js';
 import { signSpendTx } from '../../crypto/spend.js';
@@ -108,6 +111,13 @@ function blockWith(tx) {
   return { txs: [coinbaseTx(), tx] };
 }
 
+async function unsignedOnBlock(block, label) {
+  assert.equal(earlyRowsRejected(block)?.reason, 'unsigned', `early ${label}`);
+  const v = await Promise.resolve(verifyBlock(block));
+  assert.equal(v.ok, false, `verify ${label}`);
+  assert.equal(v.reason, 'no_header', `verify ${label} ${v.reason}`);
+}
+
 describe('unsigned body field', () => {
   it('queueTx, admitMempool, and verifyBlock reject any extra field and any amount', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-unsigned-body-'));
@@ -159,9 +169,7 @@ describe('unsigned body field', () => {
             const a = admitMempool(book, plant(signed, where, name, amount));
             assert.equal(a.ok, false, `mempool ${label}`);
             assert.equal(a.reason, 'unsigned', `mempool ${label} ${a.reason}`);
-            const v = await Promise.resolve(verifyBlock(blockWith(plant(signed, where, name, amount))));
-            assert.equal(v.ok, false, `verify ${label}`);
-            assert.equal(v.reason, 'unsigned', `verify ${label} ${v.reason}`);
+            await unsignedOnBlock(blockWith(plant(signed, where, name, amount)), label);
           }
           const cb = plant(coinbaseTx(), 'top', name, amount);
           const cbLabel = `coinbase ${name} ${amount}`;
@@ -171,11 +179,7 @@ describe('unsigned body field', () => {
           const ca = admitMempool(book, plant(coinbaseTx(), 'top', name, amount));
           assert.equal(ca.ok, false, `mempool ${cbLabel}`);
           assert.equal(ca.reason, 'unsigned', `mempool ${cbLabel} ${ca.reason}`);
-          const cv = await Promise.resolve(verifyBlock({
-            txs: [plant(coinbaseTx(), 'top', name, amount)],
-          }));
-          assert.equal(cv.ok, false, `verify ${cbLabel}`);
-          assert.equal(cv.reason, 'unsigned', `verify ${cbLabel} ${cv.reason}`);
+          await unsignedOnBlock({ txs: [plant(coinbaseTx(), 'top', name, amount)] }, cbLabel);
           const cbVin = plant(coinbaseTx(), 'vin', name, amount);
           const vinLabel = `coinbase vin ${name} ${amount}`;
           const vq = store.queueTx(cbVin);
@@ -184,11 +188,7 @@ describe('unsigned body field', () => {
           const va = admitMempool(book, plant(coinbaseTx(), 'vin', name, amount));
           assert.equal(va.ok, false, `mempool ${vinLabel}`);
           assert.equal(va.reason, 'unsigned', `mempool ${vinLabel} ${va.reason}`);
-          const vv = await Promise.resolve(verifyBlock({
-            txs: [plant(coinbaseTx(), 'vin', name, amount)],
-          }));
-          assert.equal(vv.ok, false, `verify ${vinLabel}`);
-          assert.equal(vv.reason, 'unsigned', `verify ${vinLabel} ${vv.reason}`);
+          await unsignedOnBlock({ txs: [plant(coinbaseTx(), 'vin', name, amount)] }, vinLabel);
         }
       }
       for (const name of FIELD_NAMES) {
@@ -202,9 +202,7 @@ describe('unsigned body field', () => {
             const a = admitMempool(book, plant(bspend, where, name, amount));
             assert.equal(a.ok, false, `mempool ${label}`);
             assert.equal(a.reason, 'unsigned', `mempool ${label} ${a.reason}`);
-            const v = await Promise.resolve(verifyBlock(blockWith(plant(bspend, where, name, amount))));
-            assert.equal(v.ok, false, `verify ${label}`);
-            assert.equal(v.reason, 'unsigned', `verify ${label} ${v.reason}`);
+            await unsignedOnBlock(blockWith(plant(bspend, where, name, amount)), label);
           }
         }
       }

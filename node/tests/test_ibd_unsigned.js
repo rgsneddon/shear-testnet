@@ -1,11 +1,13 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, destOpeningFromView } from '../../crypto/address.js';
+import { newIdentity, destOpeningFromView, hash20FromAddress, admitBaseFromAddress } from '../../crypto/address.js';
 import { spendBox } from '../../tests/spend_box.js';
-import { attachDummyOuts } from '../../crypto/dummy.js';
+import { attachDummyOuts, viewTagOf } from '../../crypto/dummy.js';
+import { sealNote, kernelExcess } from '../../crypto/note.js';
+import { attachAdmitPub } from '../../crypto/admit.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { attachStubAdmitV2 } from './stub_admit_v2.js';
 import {
@@ -13,12 +15,10 @@ import {
   verifySpendSig,
 } from '../../crypto/spend.js';
 import { levyNanos, bindWeightFee } from '../../crypto/levy.js';
-import {
-  BLOCK_SUBSIDY_NANOS,
-  GENESIS_BITS_PACKED,
-} from '../../crypto/asert.js';
-import { createStore } from '../src/store.js';
-import { mineTemplate } from '../src/chain.js';
+import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
+import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
+import { createRegtestStore } from './regtest_store.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 import {
   encodeWireBlock,
   decodeWireBlock,
@@ -31,9 +31,32 @@ import { setHashBackend } from '../../crypto/shear_hash.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
-function shareBitsOf(bits) {
-  const n = Number(bits) || 0;
-  return n >= 65536 ? Math.max(4, Math.floor(n / 65536)) : Math.max(4, n);
+/**
+ * A send output that carries its value opening (valueProof). Since e2bd74cf
+ * attachDummyOuts seals send outputs hidden, so the opening is built on purpose.
+ */
+function openedFlowVout(dest, nanos) {
+  const d20 = hash20FromAddress(dest);
+  let note = sealNote(nanos, { dest20: d20, kind: 'send' });
+  note.viewTag = viewTagOf(note.noteCommit);
+  note.dest20 = d20;
+  note.address = dest;
+  note = attachAdmitPub(note, { admitBase: admitBaseFromAddress(dest) });
+  assert.ok(note.valueProof && note.commit && note.admitPub);
+  return note;
+}
+
+// Regtest work (bits 4, about 16 hashes), mined off the main thread by
+// mine_worker.mjs, so the file's own timeout can fire. It used to mine at
+// testnet genesis bits (2^17 ShearHash light hashes) in a synchronous
+// mineTemplate loop: about 55 minutes at the CI hosts' 40 hashes a second,
+// heavy-tailed, and past every cap one run in three (Review, ruling D).
+const MAX_TRIES = 8_192;
+
+after(() => closeMineWorkers());
+
+function regtestStore(dir) {
+  return createRegtestStore(dir, { bits: 4 });
 }
 
 function wireIngest(store, block) {
@@ -42,10 +65,10 @@ function wireIngest(store, block) {
 }
 
 async function minePacked(store, dest, now) {
-  const packed = GENESIS_BITS_PACKED;
-  const sb = shareBitsOf(packed);
-  const { tpl } = store.template({ miner: dest, bits: packed, shareBits: sb, now });
-  const found = mineTemplate({ ...tpl, bits: packed }, { maxTries: 3_000_000, shareBits: sb, blockOnly: true });
+  const bits = regtestBitsOverride(MAGIC_REGTEST);
+  const { tpl } = store.template({ miner: dest, bits, shareBits: 4, now });
+  assert.equal(tpl.bits, bits, 'template must seal the regtest bits');
+  const found = await mineHeaderParallel(tpl.header, tpl.bits, MAX_TRIES, 1);
   assert.ok(found && found.block, 'need pow');
   const appended = await Promise.resolve(store.append({
     header: found.header,
@@ -81,7 +104,7 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
 
   it('queueTx of a truly unsigned Flow send stays unsigned', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-mp-'));
-    const store = createStore(dir);
+    const store = regtestStore(dir);
     const id = newIdentity();
     const box = spendBox(id);
     const dest = box.dest;
@@ -107,8 +130,8 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
     }
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-b-'));
-    const a = createStore(dirA);
-    const b = createStore(dirB);
+    const a = regtestStore(dirA);
+    const b = regtestStore(dirB);
     const id = newIdentity();
     const box = spendBox(id);
     const dest = box.dest;
@@ -153,10 +176,30 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
     bindWeightFee(sendTx);
     signSpendTx(sendTx, box.key);
     assert.equal(verifySpendSig(sendTx), true);
+    // Send outputs are hidden (e2bd74cf), so the full body reaches the version
+    // gate and the byte-2 stub is admit_version.
     const queued = a.queueTx(sendTx);
     assert.equal(queued.ok, false);
-    assert.equal(queued.reason, 'value_open', queued.reason);
+    assert.equal(queued.reason, 'admit_version', queued.reason);
     assert.equal(a.mempool.some((m) => m.id === 'ibd-flow-send'), false);
+    // The same send with its pay output opened is value_open before that gate.
+    const openedTx = {
+      ...sendTx,
+      id: 'ibd-flow-send-opened',
+      vin: sendTx.vin.map((v) => ({ ...v })),
+      vout: sendTx.vout.map((o) => ({ ...o })),
+      admit_proof: { ...sendTx.admit_proof },
+    };
+    openedTx.vout[0] = openedFlowVout(dest, sendNanos);
+    openedTx.excess = kernelExcess(openedTx.vout, openedTx.vin);
+    assert.ok(openedTx.excess);
+    bindWeightFee(openedTx);
+    signSpendTx(openedTx, box.key);
+    assert.equal(verifySpendSig(openedTx), true);
+    const openedQ = a.queueTx(openedTx);
+    assert.equal(openedQ.ok, false);
+    assert.equal(openedQ.reason, 'value_open', openedQ.reason);
+    assert.equal(a.mempool.some((m) => m.id === 'ibd-flow-send-opened'), false);
     const wired = a.queueTx(compactTx(sendTx));
     assert.equal(wired.ok, false);
     assert.equal(wired.reason, 'admit_version', wired.reason);

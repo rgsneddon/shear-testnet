@@ -177,6 +177,9 @@ export {
   compactChainBlock,
 } from '../../crypto/chronoflux.js';
 
+import { canonicalHash } from '../../crypto/canonical_row.js';
+import { compactTx } from '../../crypto/chronoflux.js';
+
 export const GENESIS_PREV = Buffer.alloc(32);
 
 /**
@@ -220,38 +223,6 @@ function ref32(x) {
   }
 }
 
-function lookupSpentVout(vin, block, prev, bodyIndex, history) {
-  const idx = Number(vin?.index || 0);
-  const want = ref32(vin?.prev);
-  const tryTx = (tx, blockHash) => {
-    const vout = (tx?.vout || [])[idx];
-    if (!vout?.commit) return null;
-    if (!want) return null;
-    const dig = digestTx(tx);
-    if (dig.equals(want)) return vout;
-    const bh = ref32(blockHash);
-    if (bh && bh.equals(want)) return vout;
-    if (tx?.id && String(tx.id) === String(vin.prev)) return vout;
-    return null;
-  };
-  const txs = Array.isArray(block?.txs) ? block.txs : [];
-  const last = Math.min(txs.length, 1 + Number(bodyIndex || 0));
-  for (let j = 0; j < last; j += 1) {
-    const hit = tryTx(txs[j], block.hash);
-    if (hit) return hit;
-  }
-  const chain = [];
-  if (Array.isArray(history) && history.length) chain.push(...history);
-  else if (prev) chain.push(prev);
-  for (const b of chain) {
-    for (const tx of b.txs || []) {
-      const hit = tryTx(tx, b.hash);
-      if (hit) return hit;
-    }
-  }
-  return null;
-}
-
 /** Non-negative safe-integer carry, 0 when absent. Null is not a carry. */
 export function canonicalCarry(tx) {
   if (tx == null || tx.carryNanos == null || tx.carryNanos === '') return 0;
@@ -260,7 +231,69 @@ export function canonicalCarry(tx) {
   return n;
 }
 
+/**
+ * A negative top-level amount. Only a kind whose compact body keeps nanos
+ * (reward-claim, non-negative only: chronoflux compactTx) can name one, so
+ * on an arrived block this stays a guard; the key is tested before it is
+ * read, as an absent amount is not a negative one.
+ */
+function negativeTopNanos(tx) {
+  if (!tx || typeof tx !== 'object' || !Object.prototype.hasOwnProperty.call(tx, 'nanos')) return false;
+  const n = tx.nanos;
+  return typeof n === 'bigint' ? n < 0n : typeof n === 'number' && n < 0;
+}
+
+/**
+ * The merkle leaf of one tx (TX_DIGEST=body-v2). Computed on compactTx(tx),
+ * the one form a block is validated in, stored in, served in and read back
+ * from disk in, so a full row and its compact copy are one digest and a
+ * field compaction drops reaches no digest. It binds the packed core and
+ * sha256 of the canonical encoding of the whole compact row
+ * (canonical_row.js), so every byte a validator reads is in the block hash,
+ * for every kind including the coinbase. The id is a label its sender picks
+ * and no signature covers, so it is not in the leaf: a relayed copy under a
+ * new id is the same tx (Russell 26 Oct). A withdraw signs its id
+ * (reserveDigestSuffix), so there it is body and stays in, as in the
+ * mempool body key (mempool.js txBodyKey).
+ */
 export function digestTx(tx) {
+  const body = { ...compactTx(tx) };
+  if (String(body.kind || '') !== 'withdraw') delete body.id;
+  return packDigest(Buffer.concat([
+    Buffer.from(TX_DIGEST_DOMAIN),
+    coreDigest(body),
+    canonicalHash('shear-tx-body-v2', body),
+  ]));
+}
+
+const TX_DIGEST_DOMAIN = 'shear-tx-digest-v2';
+
+/**
+ * A block's merkle leaves (digestTx), or null when two txs share a leaf.
+ * merkleRoot pairs an odd last leaf with itself, so [A, B, C] and
+ * [A, B, C, C] have one root and one block hash (the CVE-2012-2459 class):
+ * a repeated leaf is refused before the root is compared (Russell 26 Oct).
+ */
+export function blockLeaves(txs) {
+  const leaves = (Array.isArray(txs) ? txs : []).map(digestTx);
+  const seen = new Set();
+  for (const leaf of leaves) {
+    const hex = Buffer.from(leaf).toString('hex');
+    if (seen.has(hex)) return null;
+    seen.add(hex);
+  }
+  return leaves;
+}
+
+/**
+ * The packed core alone: the v1 merkle leaf. It binds no commitment, tag or
+ * proof of an FS-1 body, which is why it is no longer the leaf by itself.
+ */
+export function txCoreDigest(tx) {
+  return coreDigest(tx);
+}
+
+function coreDigest(tx) {
   const vins = (tx.vin || []).map((v, i) => {
     const prev = ref32(v.prev) || Buffer.alloc(32);
     const nc = ref32(v.noteCommit);
@@ -852,9 +885,9 @@ function propPayCandidates(leaves, feeBase, hinted, extraAmt, shareBatch, splitP
 
 /**
  * One non-hasher pot note: absent (0) or a bps of `wantPot` through
- * POOL_FEE_MAX_BPS. The published valueProof.v is only a hint. A missing,
- * high, or wrong v does not change the verdict: the note must open to a
- * legal subsidy fee.
+ * POOL_FEE_MAX_BPS. A published valueProof.v, when present, is the fee: it
+ * must open the note and be a legal subsidy fee, or the note is refused
+ * (COINBASE_V=opens). Only a note with no v is found by the bps search.
  */
 export function extraPotFeeNanos(extraVouts = [], wantPot) {
   const pot = Math.max(0, Math.floor(Number(wantPot) || 0));
@@ -862,15 +895,18 @@ export function extraPotFeeNanos(extraVouts = [], wantPot) {
   const extra = Array.isArray(extraVouts) ? extraVouts : [];
   if (!extra.length) return 0;
   if (extra.length !== 1 || !(pot > 0)) return null;
-  const claimed = Math.floor(Number(extra[0]?.valueProof?.v));
-  if (claimed > 0 && claimed <= maxFee) {
+  const raw = extra[0]?.valueProof?.v;
+  if (raw != null && raw !== '') {
+    const claimed = Math.floor(Number(raw));
+    if (!(claimed > 0 && claimed <= maxFee)) return null;
     for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
       if (Math.floor(pot * bps / 10000) === claimed && verifySealedNote(extra[0], claimed)) return claimed;
     }
+    return null;
   }
   for (let bps = 1; bps <= POOL_FEE_MAX_BPS; bps += 1) {
     const n = Math.floor(pot * bps / 10000);
-    if (n > 0 && n <= maxFee && n !== claimed && verifySealedNote(extra[0], n)) return n;
+    if (n > 0 && n <= maxFee && verifySealedNote(extra[0], n)) return n;
   }
   return null;
 }
@@ -1759,6 +1795,11 @@ function peekPreparedHeader(header) {
   return found ? Buffer.from(found) : null;
 }
 
+/** The hash assessHeader stashed for this header, or null. Read-only. */
+export function preparedHeaderHash(header) {
+  return header ? peekPreparedHeader(header) : null;
+}
+
 export function discardPreparedHeader(header) {
   if (header) dropPreparedHeader(header);
 }
@@ -2162,11 +2203,11 @@ export function assessHeader(block, prev, opts = {}) {
         return finish({ ok: false, reason: 'negative_mint' });
       }
     }
-    if (typeof tx?.nanos === 'bigint' ? tx.nanos < 0n : typeof tx?.nanos === 'number' && tx.nanos < 0) {
-      return finish({ ok: false, reason: 'negative_mint' });
-    }
+    if (negativeTopNanos(tx)) return finish({ ok: false, reason: 'negative_mint' });
   }
-  const merkle = merkleRoot(txs.map(digestTx));
+  const leaves = blockLeaves(txs);
+  if (!leaves) return finish({ ok: false, reason: 'duplicate_tx' });
+  const merkle = merkleRoot(leaves);
   if (!merkle.equals(decoded.merkleRoot)) return finish({ ok: false, reason: 'merkle' });
   let resolvedGenesisMs = 0;
   if (prev?.header) {
@@ -2364,29 +2405,103 @@ function parentSpendView(chain) {
   };
 }
 
-function verifyBlockConsensus(block, prev, opts = {}) {
-  const earlyTxs = Array.isArray(block?.txs) ? block.txs : [];
-  for (let i = 0; i < earlyTxs.length; i += 1) {
-    const feeHit = feeFieldRejected(earlyTxs[i]);
+/**
+ * A coinbase output's noteCommit names the dest a node credits it to
+ * (note_ledger.js), so on every output, hasher payouts included, it must be
+ * the one its own dest20 derives (noteCommitOfDest20), and a row with no
+ * dest20 carries none. Nothing derives or fills one in, and the verdict
+ * reads only the row: no share batch, so a pruned block is judged as it was
+ * live. Russell 26 Oct: from height 0, COINBASE_NC=dest-bound, with no
+ * hasher exemption (lane finding PS1, 83ea4352).
+ */
+export function coinbaseLabelRejected(vout) {
+  for (const o of Array.isArray(vout) ? vout : []) {
+    if (!o || typeof o !== 'object') continue;
+    if (o.noteCommit == null || o.noteCommit === '') continue;
+    let label;
+    try { label = Buffer.from(asU8(o.noteCommit)); } catch { return { ok: false, reason: 'coinbase_output' }; }
+    let d20 = null;
+    try { d20 = o.dest20 == null || o.dest20 === '' ? null : Buffer.from(asU8(o.dest20)); } catch { d20 = null; }
+    if (!d20 || d20.length !== 20) return { ok: false, reason: 'coinbase_output' };
+    if (!noteCommitOfDest20(d20).equals(label)) return { ok: false, reason: 'coinbase_output' };
+  }
+  return null;
+}
+
+/** The key opts.arrivedRows is read by: the header bytes as hex, however the block holds them. */
+export function arrivedRowsKey(block) {
+  try {
+    const h = Buffer.from(asU8(block?.header));
+    return h.length ? h.toString('hex') : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The row checks verifyBlock runs before proof of work: fee fields, a
+ * coinbase observe, stage 0, leaked and unsigned fields. They read the rows
+ * as given, so the store also runs them on the rows as they arrived
+ * (store.js arrivedRows): compaction strips some of what they name.
+ */
+export function earlyRowsRejected(block) {
+  const txs = Array.isArray(block?.txs) ? block.txs : [];
+  for (let i = 0; i < txs.length; i += 1) {
+    const feeHit = feeFieldRejected(txs[i]);
     if (feeHit) return feeHit;
-    const spendFee = bSpendFeeRejected(earlyTxs[i]);
+    const spendFee = bSpendFeeRejected(txs[i]);
     if (spendFee) return spendFee;
   }
   const earlyObserve = coinbaseObserveRejected(block?.txs);
   if (earlyObserve) return earlyObserve;
   const gated = chainStage0Rejected([block]);
   if (gated) return gated;
-  const bodyTxs = Array.isArray(block?.txs) ? block.txs : [];
-  for (let i = 0; i < bodyTxs.length; i += 1) {
-    const leakedVote = leafVoteLeakRejected(bodyTxs[i]);
+  for (let i = 0; i < txs.length; i += 1) {
+    const leakedVote = leafVoteLeakRejected(txs[i]);
     if (leakedVote) return leakedVote;
-    const leakedLock = compactLockLeakRejected(bodyTxs[i]);
+    const leakedLock = compactLockLeakRejected(txs[i]);
     if (leakedLock) return leakedLock;
-    const leakedWithdraw = withdrawLeakRejected(bodyTxs[i]);
+    const leakedWithdraw = withdrawLeakRejected(txs[i]);
     if (leakedWithdraw) return leakedWithdraw;
-    const unsignedField = unsignedBodyField(bodyTxs[i]);
+    const unsignedField = unsignedBodyField(txs[i]);
     if (unsignedField) return unsignedField;
   }
+  return null;
+}
+
+/**
+ * Refusals a later binary may lift (a pin bump or a native rebuild), which a
+ * peer notes as soft (p2p.js). Every other refusal is final.
+ */
+export const UPGRADEABLE_REASONS = Object.freeze(new Set(['evm', 'unsigned', 'admit_membership']));
+
+function upgradeable(r) {
+  return !!r && r.ok === false && UPGRADEABLE_REASONS.has(String(r.reason || ''));
+}
+
+function verifyBlockConsensus(block, prev, opts = {}) {
+  // The arrived rows' verdict first, at the place it held when verifyBlock
+  // read full rows, so a block keeps the reason its full body had. A final
+  // early verdict returns at once. An upgradeable one waits for the body:
+  // a final fault behind it is the verdict, so a block that fails a final
+  // check is never noted as soft (Russell 26 Oct).
+  const arrived = opts.arrivedRows?.get(arrivedRowsKey(block));
+  const own = earlyRowsRejected(block);
+  // A verdict only the arrived rows give, where the compact body the header
+  // commits passes the same checks, is the serving peer's fault: peerOnly
+  // (Russell 26 Oct). p2p scores that peer and never soft-notes the hash.
+  const peerEarly = arrived?.early && !own ? { ...arrived.early, peerOnly: true } : arrived?.early;
+  const earlies = [peerEarly, own].filter(Boolean);
+  const finalEarly = earlies.find((r) => !upgradeable(r));
+  if (finalEarly) return finalEarly;
+  if (!earlies.length) return verifyBlockBody(block, prev, opts);
+  const soft = earlies[0];
+  const settle = (body) => (body && body.ok === false && !upgradeable(body) ? body : soft);
+  const body = verifyBlockBody(block, prev, opts);
+  return body && typeof body.then === 'function' ? body.then(settle) : settle(body);
+}
+
+function verifyBlockBody(block, prev, opts = {}) {
   if (opts.offLoopPow && !opts.trustedPowHash) {
     return prepareOffLoopPow(block, prev, {
       skipSharePow: !!opts.skipSharePow,
@@ -2395,7 +2510,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       if (!ready.ok) return ready;
       let result;
       try {
-        result = verifyBlockConsensus(block, prev, { ...opts, offLoopPow: false });
+        result = verifyBlockBody(block, prev, { ...opts, offLoopPow: false });
       } catch (err) {
         ready.cleanup?.();
         throw err;
@@ -2463,9 +2578,7 @@ function verifyBlockConsensus(block, prev, opts = {}) {
         return { ok: false, reason: 'negative_mint' };
       }
     }
-    if (typeof tx?.nanos === 'bigint' ? tx.nanos < 0n : typeof tx?.nanos === 'number' && tx.nanos < 0) {
-      return { ok: false, reason: 'negative_mint' };
-    }
+    if (negativeTopNanos(tx)) return { ok: false, reason: 'negative_mint' };
   }
   for (let i = 0; i < txs.length; i += 1) {
     if (txs[i]?.reports == null) continue;
@@ -2816,6 +2929,10 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       return { ok: false, reason: r.reason === 'dest' ? 'miner_addr' : r.reason };
     }
   }
+  // COINBASE_NC=dest-bound: a label names its payee only as its own dest20
+  // derives it, on every row, read from the row alone.
+  const labelled = coinbaseLabelRejected(txs[0].vout);
+  if (labelled) return labelled;
   if (block.miner) {
     const minerHrp = checkAddressField(block.miner, { allowEmpty: true });
     if (!minerHrp.ok) return { ok: false, reason: minerHrp.reason };
@@ -2867,10 +2984,18 @@ function verifyBlockConsensus(block, prev, opts = {}) {
     }
     return null;
   };
+  // Compaction strips a hidden output's opening, so the store reads it on
+  // the rows as they arrived (store.js arrivedRows) and it keeps its place
+  // as this first body check.
+  const arrivedOpen = opts.arrivedRows?.get(arrivedRowsKey(block))?.opening;
+  let ownOpen = null;
   for (const tx of txs) {
-    const earlyOpen = openingBeforeCarry(tx);
-    if (earlyOpen) return earlyOpen;
+    ownOpen = openingBeforeCarry(tx);
+    if (ownOpen) break;
   }
+  // An opening only the arrived rows carry is the serving peer's fault.
+  if (arrivedOpen) return ownOpen ? arrivedOpen : { ...arrivedOpen, peerOnly: true };
+  if (ownOpen) return ownOpen;
   const coinbaseCarry = (txs[0]?.coinbase || String(txs[0]?.kind || '') === 'coinbase')
     ? unboundMembershipCarry(txs[0])
     : { ok: true };
@@ -2978,12 +3103,21 @@ function verifyBlockConsensus(block, prev, opts = {}) {
       }
     }
     const unfunded = !bareVote && (!Array.isArray(tx.vin) || tx.vin.length === 0 || tx.mint);
+    // A wrapped-SHE programme never mints. Its programId arm is live for any
+    // v12 kind. Its kind arm (wrap, wshe, ...) and its ticker arm are refused
+    // first today, as kind (v12KindRejected) and unsigned (unsignedBodyField);
+    // they stay as a backstop if either gate moves.
     if (wrapMintForbidden(tx)) {
       return { ok: false, reason: 'mint_forbidden' };
     }
+    // The join programme is gone. Its programId arm is live for any v12 kind.
+    // The join-genesis kind is refused first as kind (v12KindRejected); that
+    // arm stays as a backstop if the kind gate moves.
     if (String(tx.programId || '') === JOIN_PROGRAM || String(tx.kind || '') === JOIN_KIND_GENESIS) {
       return { ok: false, reason: 'join_removed' };
     }
+    // Live: an unfunded body (no vin, or mint set) that is not the Reserve's
+    // own extra-mint, such as a fee-paying vote with no input.
     if ((unfunded || tx.mint) && !extraMintAllowed(tx.programId, { kind: tx.kind })) {
       return { ok: false, reason: 'mint_forbidden' };
     }
@@ -3265,7 +3399,9 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
       fresh = true;
     }
   } catch (e) {
-    return { ok: false, reason: 'evm', error: String(e?.message || e) };
+    // The node could not start its own EVM: a local fault, not a verdict on
+    // the block, so it is never noted against the block or its peer.
+    return { ok: false, reason: 'evm_local', error: String(e?.message || e) };
   }
   const genesisMs = evmClockGenesis(consensus, block, opts);
   if (fresh && Array.isArray(opts.evmHistory)) {
@@ -3276,7 +3412,8 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
         magic: opts.magic || MAGIC_TESTNET,
       });
       if (!replayed.ok) {
-        return { ok: false, reason: 'evm', error: `replay:${replayed.reason}` };
+        // Our own stored history did not replay: local, as above.
+        return { ok: false, reason: 'evm_local', error: `replay:${replayed.reason}` };
       }
     }
   }
@@ -3286,16 +3423,34 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   const owedRoot = opts.reserveState ? coinbaseRewardRoot(opts.reserveState, headerMs) : undefined;
   const vaultBind = vaultCoinbaseBind(opts.reserveState, block.txs || []);
   const structural = Math.floor(Number(consensus?.height) || 0);
-  const ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot, vaultBind, {
-    height: structural > 0 ? structural : Math.floor(Number(block?.height) || 0),
-    magic: opts.magic || MAGIC_TESTNET,
-  });
-  if (!ran.ok) return { ok: false, reason: 'evm', error: ran.reason };
+  // The store's session is the node's EVM state. Its calls for this block run
+  // inside a checkpoint: a failed block, or a probe, leaves no call applied,
+  // and an append commits only once the block is stored (store.js).
+  const probe = opts.probeBody === true;
+  const sm = (opts.evmCheckpoint === true || probe) ? session?.evm?.stateManager : null;
+  if (sm) await sm.checkpoint();
+  let ran;
+  try {
+    ran = await executeBlockEvm(session, block.txs || [], headerMs, genesisMs, owedRoot, vaultBind, {
+      height: structural > 0 ? structural : Math.floor(Number(block?.height) || 0),
+      magic: opts.magic || MAGIC_TESTNET,
+    });
+  } catch (err) {
+    // A throw is a refused block too: its partial calls never stay applied.
+    if (sm) await sm.revert();
+    throw err;
+  }
+  if (!ran.ok) {
+    if (sm) await sm.revert();
+    return { ok: false, reason: 'evm', error: ran.reason };
+  }
+  if (sm && probe) await sm.revert();
   return {
     ...consensus,
     evmRan: ran.calls > 0,
     evm: ran,
     evmSession: session,
+    evmOpen: !!sm && !probe,
   };
 }
 
@@ -3636,7 +3791,9 @@ function stepLoaded(state, list, i) {
   }
   const txs = Array.isArray(block.txs) ? block.txs : [];
   if (!txs.length || !txs[0]?.coinbase) return { ok: false, reason: 'coinbase' };
-  const merkle = merkleRoot(txs.map(digestTx));
+  const leaves = blockLeaves(txs);
+  if (!leaves) return { ok: false, reason: 'duplicate_tx' };
+  const merkle = merkleRoot(leaves);
   if (!merkle.equals(decoded.merkleRoot)) return { ok: false, reason: 'merkle' };
   const prevBlock = i === 0 ? null : list[i - 1];
   // A pruned block a proven-work header chain buried keeps that tip for

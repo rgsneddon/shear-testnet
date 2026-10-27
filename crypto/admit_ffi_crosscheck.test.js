@@ -32,13 +32,22 @@ function canon(byte) {
 
 function ensureBuilt() {
   assert.equal(nativeLoaded(), true, 'shearadmit.node must be built (npm run build:admit)');
+  // The wallet cdylib (no admit-v3) is a debug build that no CI step makes.
+  // Build it here, as admit_wallet_symbols.test.js does, so this file does not
+  // depend on which test ran first in its shard.
+  const cargo = spawnSync(
+    'cargo',
+    ['build', '--lib', '--manifest-path', path.join(root, 'crypto/native/admit/Cargo.toml')],
+    { timeout: 600_000, encoding: 'utf8' },
+  );
+  assert.equal(cargo.status, 0, cargo.stderr || cargo.stdout);
   assert.equal(fs.existsSync(so), true, `missing ${so}`);
-  const cc = spawnSync('cc', ['-O2', '-o', harness, harnessSrc, '-ldl'], { encoding: 'utf8' });
+  const cc = spawnSync('cc', ['-O2', '-o', harness, harnessSrc, '-ldl'], { timeout: 600_000, encoding: 'utf8' });
   assert.equal(cc.status, 0, cc.stderr || cc.stdout);
 }
 
 function runOld(req) {
-  const r = spawnSync(process.execPath, [mjs], {
+  const r = spawnSync(process.execPath, [mjs], { timeout: 600_000,
     input: JSON.stringify(req),
     encoding: 'utf8',
   });
@@ -50,7 +59,7 @@ function runOld(req) {
 }
 
 function runNew(v, rHex) {
-  const r = spawnSync(harness, [so, 'range', String(v), rHex], { encoding: 'utf8' });
+  const r = spawnSync(harness, [so, 'range', String(v), rHex], { timeout: 600_000, encoding: 'utf8' });
   assert.equal(r.status, 0, `ffi path failed ${r.status}\n${r.stderr}\n${r.stdout}`);
   const line = r.stdout.trim();
   assert.equal(line.startsWith('proof '), true, line);
@@ -86,7 +95,7 @@ describe('in-process range FFI matches the node range oracle', () => {
   });
 
   it('prove_spend stays fail-closed until FS-1', () => {
-    const r = spawnSync(process.execPath, [mjs], {
+    const r = spawnSync(process.execPath, [mjs], { timeout: 600_000,
       input: JSON.stringify({ op: 'prove_spend' }),
       encoding: 'utf8',
     });

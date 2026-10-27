@@ -352,9 +352,11 @@ describe('wallet fluxset RPC', () => {
     const leafNc = noteCommitOfDest20(hash20FromAddress(hasher));
     // No poolDest, empty shareBatch, pot dest20 stripped: sealedPotIsCustody misses
     // and paysFromALeaves would PROP pot-after-fee onto the hasher leaf.
-    const propBlock = (i) => {
+    // A labelled pot with no dest20 is refused on chain (COINBASE_NC=dest-bound)
+    // and credited to nobody; keepDest is the honest row, the pool's in full.
+    const propBlock = (i, { keepDest = false } = {}) => {
       const pot = sealCoinbaseNote(rest, { dest20: hash20FromAddress(pool), kind: 'pot' });
-      delete pot.dest20;
+      if (!keepDest) delete pot.dest20;
       return {
         height: i + 1,
         hash: Buffer.from([0x71, i + 1, ...Buffer.alloc(30)]),
@@ -387,7 +389,15 @@ describe('wallet fluxset RPC', () => {
         blocks: [...found, { height: tipH, hash: Buffer.alloc(32, 0x72), txs: [] }],
         tip: () => ({ height: tipH }),
         mempool: [],
-      }, pool).spendableNanos, n * rest);
+      }, pool).spendableNanos, 0, `unbound pot N=${n}`);
+      const honest = Array.from({ length: n }, (_, i) => propBlock(i, { keepDest: true }));
+      const view = {
+        blocks: [...honest, { height: tipH, hash: Buffer.alloc(32, 0x72), txs: [] }],
+        tip: () => ({ height: tipH }),
+        mempool: [],
+      };
+      assert.equal(reconstructOwner(view, pool).spendableNanos, n * rest, `honest pot N=${n}`);
+      assert.equal(reconstructOwner(view, hasher).spendableNanos, n * hashNanos, `honest hasher N=${n}`);
     }
 
     // Painted `to` with nanos = 0.99 and no noteCommit: matureSpendable > 0, which
@@ -413,7 +423,7 @@ describe('wallet fluxset RPC', () => {
       const got = reconstructOwner(store, hasher);
       assert.equal(got.spendableNanos, n * hashNanos, `painted grow N=${n}`);
       assert.notEqual(got.spendableNanos, n * rest);
-      assert.equal(reconstructOwner(store, pool).spendableNanos, n * rest);
+      assert.equal(reconstructOwner(store, pool).spendableNanos, 0, `unbound pot N=${n}`);
       store.blocks.pop();
     }
     fs.rmSync(dir, { recursive: true, force: true });
@@ -700,6 +710,58 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(posted[0].to, undefined);
     assert.equal(posted[0].spendPub, undefined);
     assert.equal(posted[0].portalId, 'ab'.repeat(32));
+  });
+
+  it('the pool relays only the compact FS-1 lock and never builds one', () => {
+    const store = storeWith({});
+    const alice = newIdentity();
+    const silent = spendDestOf(alice.spendPub);
+    const dest20 = Buffer.alloc(20, 7);
+    const commit = Buffer.alloc(32, 3);
+    const posted = [];
+    const send = (body) => handleWalletApi(url('/api/wallet/send'), 'POST', body, {
+      store,
+      miners: new Map(),
+      queueSend: (t) => {
+        posted.push(t);
+        return { id: 'lock-x', ...t };
+      },
+    });
+    // A signed address lock with no `to` used to fall through to a draft
+    // built from lockTx({ from, to }), which every node refuses as vote_leak.
+    const signed = spendSig({ from: silent, to: silent, amount: 1, identity: alice, kind: 'lock' });
+    const addressLock = send({
+      from: silent,
+      amount: 1,
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      sig: signed.sig,
+      spendPub: signed.spendPub,
+      vout: signed.vout,
+    });
+    assert.equal(addressLock.status, 400);
+    assert.equal(addressLock.json.reason, 'bad_send');
+    // A compact lock missing its FS-1 blob is not the relayed shape either.
+    const noBlob = send({
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      portalId: 'ab'.repeat(32),
+      dest20: dest20.toString('hex'),
+      vin: [{ commit }],
+      vout: [{ kind: 'lock', dest20, commit }],
+    });
+    assert.equal(noBlob.status, 400);
+    assert.equal(noBlob.json.reason, 'bad_send');
+    // Two lock outputs are one portal credit too many.
+    const twice = send({
+      kind: 'lock',
+      programId: RESERVE_PROGRAM,
+      from: silent,
+      vout: [{ kind: 'lock', dest20, commit }, { kind: 'lock', dest20, commit }],
+    });
+    assert.equal(twice.status, 400);
+    assert.equal(twice.json.reason, 'portal_exists');
+    assert.equal(posted.length, 0, 'no lock body was built or queued');
   });
 
   it('a hidden lock that carries payoutPortalId is vote_leak and is not queued', () => {
@@ -1121,10 +1183,17 @@ describe('pool send reconstruct and Join vault', () => {
       genesisMs: t0,
       height: 1,
     });
-    assert.equal(applied.ok, true, `${label} ${applied.reason || ''}`);
-    const id = String(body.portalId || '').toLowerCase();
-    assert.ok(state.portals[id], label);
-    assert.ok(state.portals[id].tranches.length >= 1, label);
+    // This body is the pool draft sealSignReserveWire emits. The lock the
+    // wallet posts (send -> _sendSealedLock -> sealWalletLockTx) attaches the
+    // π proof after FS-1 proving; test_dart_withdraw_queue_v12 mines that real
+    // lock and withdraws it end to end. A draft with no π proof is the
+    // stripped lock 2461ec67 refuses: nothing is indexed and nothing booked.
+    const lockOut = rows.find((row) => String(row?.kind || '') === 'lock');
+    assert.equal(lockOut?.fundProof, undefined, `${label} draft carries no π proof`);
+    assert.equal(applied.ok, false, label);
+    assert.equal(applied.reason, 'stake_reward', `${label} ${applied.reason || ''}`);
+    assert.equal((state.vaultLockNotes || []).length, 0, label);
+    assert.equal(BigInt(state.openedLockNanos || 0), 0n, label);
   }
 
   it('a wallet-built lock keeps lockAuth, ownerPub, and vaultLockNote on the draft', () => {

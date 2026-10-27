@@ -81,6 +81,7 @@ import {
 import { admitPub } from './admit.js';
 import { G, commit, pointBytes, pointFrom, proveRange, proveValue, randomScalar, scalarFrom, sealHiddenNote, verifySealedNote } from './note.js';
 import { admitMempool, emptyMempool } from './mempool.js';
+import { compactTx, reserveNanosRejected } from './chronoflux.js';
 import { blockBudget, fs1VerifyWeight, txVerifyWeight, W_OUT, W_TX, W_VAULT_EXTRA } from './block_budget.js';
 import { consensusFingerprint, MAX_BLOCK_VAULT_CLAIMS } from './asert.js';
 
@@ -708,6 +709,8 @@ describe('vault-lock reward proof', () => {
     });
     first.vaultLockNote = ownerLeaf.note;
     first.vin = [{ commit: ownerFunded, rangeProof: ownerRange }];
+    // The π proof a wallet attaches with the note, last (2461ec67 refuses a lock without it).
+    assert.ok(attachLockEquality(first, state.magic), 'π proof');
     const opened = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, first] },
@@ -720,6 +723,7 @@ describe('vault-lock reward proof', () => {
     });
     second.vaultLockNote = ownerLeaf.note;
     second.vin = [{ commit: ownerFunded, rangeProof: ownerRange }];
+    assert.ok(attachLockEquality(second, state.magic), 'π proof');
     const changed = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, second] },
@@ -885,7 +889,13 @@ describe('vault-lock reward proof', () => {
     assert.match(copy, /proveVaultLockRewardWire/);
     assert.match(copy, /'rootEpoch': p\.lockEpoch/);
     assert.match(copy, /'earnEpoch': p\.lockEpoch/);
-    assert.match(pack, /shear-reward-owner-v1/);
+    // The lock digest suffix carries the raw owner pub, as JS
+    // reserveDigestSuffix does (rewardOwnerPub). The owner commit
+    // sha256(shear-reward-owner-v1 || pub) lives in the reward leaf, not here.
+    assert.equal(pack.includes('shear-reward-owner-v1'), false);
+    assert.match(pack, /That owner word is the word JS `rewardOwnerPub` appends/);
+    assert.match(pack, /if \(kind == 'lock'\) \{\r?\n\s*final pub = Uint8List\(32\);/);
+    assert.match(pack, /chunks\.addAll\(pub\);\r?\n\s*chunks\.addAll\(sha256\.convert\(piProof \?\? Uint8List\(0\)\)\.bytes\);/);
   });
 
   it('refuses a proof moved onto another payout', () => {
@@ -1669,6 +1679,8 @@ describe('vault-lock reward proof', () => {
       from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, blind, ownerPub: owner.pub, id: 'boundary-lock',
     });
     tx.vaultLockNote = leaf.note;
+    // The π proof a wallet attaches with the note, last (2461ec67 refuses a lock without it).
+    assert.ok(attachLockEquality(tx, state.magic), 'π proof');
     const locked = applyReserveBlock({
       state,
       block: { height: blocks, txs: [{ coinbase: true, vout: [] }, tx] },
@@ -1692,6 +1704,7 @@ describe('vault-lock reward proof', () => {
       from: nextOwner.dest, to: nextOwner.dest, nanos: PI_SHE_NANOS, blind: 29n, ownerPub: nextOwner.pub, id: 'later-lock',
     });
     laterTx.vaultLockNote = laterLeaf.note;
+    assert.ok(attachLockEquality(laterTx, state.magic), 'π proof');
     const frozen = state.epochStartRoots['1'];
     const later = applyReserveBlock({
       state,
@@ -1720,6 +1733,8 @@ describe('vault-lock reward proof', () => {
       from: owner.dest, to: owner.dest, nanos: PI_SHE_NANOS, blind, ownerPub: owner.pub, id: 'bound-lock',
     });
     action.vaultLockNote = leaf.note;
+    // The π proof a wallet attaches with the note, last (2461ec67 refuses a lock without it).
+    assert.ok(attachLockEquality(action, state.magic), 'π proof');
     const locked = applyReserveBlock({
       state,
       block: { height: lockHeight, txs: [{ coinbase: true, vout: [] }, action] },
@@ -1836,15 +1851,21 @@ describe('vault-lock reward proof', () => {
     }];
     assert.equal(verifySealedNote(fatWd.vout[0], bigger), true);
     assert.equal(verifySealedNote(fatWd.vout[0], payNanos), false);
+    // Naming payNanos over a note that opens to more is refused at admission;
+    // compaction drops tx.nanos, so in a block the amount is the note's own
+    // (bigger), and no owner signed a withdraw of that.
+    assert.deepEqual(reserveNanosRejected(fatWd), { ok: false, reason: 'amount_field' });
+    const fatBlock = compactTx(fatWd);
+    assert.equal(Object.prototype.hasOwnProperty.call(fatBlock, 'nanos'), false);
     const overWd = applyReserveBlock({
       state: cloneVault(state),
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, fatWd] },
+      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, fatBlock] },
       nowMs: T0 + mainEpoch,
       height: HEIGHT,
       genesisMs: T0,
     });
     assert.equal(overWd.ok, false);
-    assert.equal(overWd.reason, 'stake_reward');
+    assert.equal(overWd.reason, 'unsigned');
     const unsigned = applyReserveBlock({
       state: cloneVault(state),
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, tx] },

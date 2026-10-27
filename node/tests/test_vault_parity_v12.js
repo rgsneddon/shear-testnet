@@ -604,7 +604,10 @@ describe('vault parity', { timeout: fileCapMs(import.meta.url) }, () => {
     const tagged = { ...send, choice: VOTE_INCREASE };
     assert.equal(reserveDigestSuffix(send), null);
     assert.equal(txDigestV3(send).equals(txDigestV3(tagged)), true);
-    assert.equal(digestTx(send).equals(digestTx(tagged)), true);
+    // The block leaf binds every byte a block carries (TX_DIGEST=body-v2):
+    // a choice field on a send is ignored by the send, but a relayer cannot
+    // add or strip it under the same block hash.
+    assert.equal(digestTx(send).equals(digestTx(tagged)), false);
     assert.equal(spendPackDigest(send).equals(spendPackDigest(tagged)), true);
   });
 

@@ -1,7 +1,7 @@
 /**
- * A withdraw receipt opens to principal only. Interest is not minted on
- * withdraw (it waits for the ZK claim). Snap fill and the supply step both
- * reject a note that is not the locked principal.
+ * A withdraw receipt opens to principal plus the leaf's arrival stub.
+ * Interest is not minted on withdraw (it waits for the ZK claim). Snap fill
+ * and the supply step both reject a note that is not that receipt.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,7 +26,7 @@ import {
   HASH_BONUS_NANOS_FLOOR,
 } from '../../crypto/asert.js';
 import { interestNanos } from '../../crypto/reserve_oracle.js';
-import { sealCoinbaseNote, addExcess, excessOf } from '../../crypto/note.js';
+import { sealCoinbaseNote, addExcess, excessOf, randomScalar } from '../../crypto/note.js';
 import { reserveFeeDest } from '../../crypto/levy.js';
 import {
   voteTx,
@@ -39,10 +39,22 @@ import {
   provePrincipalOpen,
   lockWitnessOf,
   portalIdFromDest,
+  applyReserveBlock,
+  chainPeriodIndex,
+  consensusUnlockPeriod,
+  emptyVault,
+  leafEpochsToBurn,
+  leafStubNanos,
+  lockUnlockOf,
+  rewardCommitment,
+  signWithdrawReward,
+  withdrawSignedDest,
 } from '../../crypto/reserve_vault.js';
-import { lockTx, withdrawTx } from '../../crypto/owned_portal.js';
+import { lockTx, ownerFor, withdrawTx } from '../../crypto/owned_portal.js';
+import { txDigestV3 } from '../../crypto/admit_v3.js';
+import { proveLeafRetire, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { explicitTypedKindRejected, boundReserveWithdraw } from '../../crypto/spend.js';
-import { compactTx } from '../../crypto/chronoflux.js';
+import { compactTx, reserveNanosRejected } from '../../crypto/chronoflux.js';
 import { walletAnchor, checkAdmitAnchor } from '../../crypto/admit_v3.js';
 import { coinbaseTx, verifyBlock, digestTx } from '../src/chain.js';
 import { createStore } from '../src/store.js';
@@ -84,7 +96,12 @@ function potAt(ts) {
   return potSubsidyAt({ nowMs: ts, genesisMs: GENESIS, magic: MAGIC_TESTNET });
 }
 
-function blockAt(ts, miner, notes, moreTxs, observe) {
+// Every block names its height, as a store or wire block does. The fold, the
+// supply step, the snap fill and the audit all replay a block that omits it at
+// i+1 (test_supply_walk_heights_v12 pins that they agree).
+// A lock at height 0 is on a period start (stub 0); at height 1 it earns an
+// arrival stub.
+function blockAt(ts, miner, notes, moreTxs, observe, height = 1) {
   const potNotes = notes.filter((n) => n.kind !== 'finder-fee' && n.kind !== 'reserve-fee' && n.kind !== 'hash');
   const shares = potNotes.map((n) => ({
     address: n.address || miner,
@@ -112,21 +129,30 @@ function blockAt(ts, miner, notes, moreTxs, observe) {
   }
   if (observe) tx.observe = observe;
   return {
+    height,
     header: header(ts),
     txs: [tx, ...(moreTxs || [])],
     shareBatch: [],
   };
 }
 
-function potBlock(ts, miner, more, observe) {
-  return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], more, observe);
+function potBlock(ts, miner, more, observe, height = 1) {
+  return blockAt(ts, miner, [{ nanos: potAt(ts), kind: 'pot' }], more, observe, height);
 }
 
+// Since d5529d81 a lock with no vaultLockNote is stake_reward, and only a π
+// leaf can carry one. Each lock here is a π vault lock note bound by its
+// equality proof. A withdraw opens that leaf with a principal proof and a
+// retire proof, and the portal owner signs over the receipt dest20
+// (withdrawSignedDest, a5760821). The receipt is π plus the leaf's arrival
+// stub (cfe93bf5). Supply counts that stub as minted interest.
 const LOCK_BY_PORTAL = new Map();
+const LEAF_OF = new WeakMap();
 
 function resetLocks() {
   LOCK_BY_PORTAL.clear();
 }
+
 
 function lockOf(miner, portal, stake, id, at = GENESIS) {
   const tx = lockTx({ from: miner, to: portal, nanos: stake, id });
@@ -138,52 +164,127 @@ function lockOf(miner, portal, stake, id, at = GENESIS) {
     valueProof: sealed.valueProof,
     rangeProof: sealed.rangeProof,
   }];
+  const held = lockWitnessOf(tx);
+  const stamp = lockUnlockOf({ genesisMs: GENESIS, magic: MAGIC_TESTNET }, at);
+  const unlock = consensusUnlockPeriod(stamp.epoch);
+  const scalar = randomScalar();
+  // A leaf note exists only for a π leaf. A non-π lock carries none and is refused.
+  const leaf = vaultLockNote(held.amount, scalar, held.blind, unlock);
+  if (leaf) {
+    tx.vaultLockNote = leaf.note;
+    LEAF_OF.set(tx, {
+      note: leaf.note,
+      commit: leaf.note.subarray(32, 64),
+      scalar,
+      blind: held.blind,
+      unlock,
+    });
+  }
   if (!attachLockEquality(tx)) throw new Error(`lock equality ${id}`);
-  const epoch = Math.max(0, Math.floor((at - GENESIS) / EPOCH_MS));
-  const end = GENESIS + (epoch + 1) * EPOCH_MS;
-  const remainMs = Math.max(0, end - at);
   const list = LOCK_BY_PORTAL.get(portal) || [];
-  list.push({ tx, at, epoch, remainMs, stake });
+  list.push({ tx, at, stake });
   LOCK_BY_PORTAL.set(portal, list);
   return tx;
 }
 
-function drawOf(portal, miner, nanos, id, bind = null) {
-  const nowMs = bind?.nowMs ?? DRAW;
-  const locks = LOCK_BY_PORTAL.get(portal) || [];
-  const drawEpoch = Math.max(0, Math.floor((nowMs - GENESIS) / EPOCH_MS));
-  const matured = locks.filter((row) => row.epoch < drawEpoch && row.stake === nanos);
-  const lock = matured[matured.length - 1]
-    || [...locks].reverse().find((row) => row.stake === nanos)
-    || locks[locks.length - 1]
-    || null;
-  const tranches = bind?.tranches || (lock ? [{
-    commit: lock.tx.vout.find((row) => row?.kind === 'lock')?.commit || lock.tx.vout[0].commit,
-    epoch: lock.epoch,
-    remainMs: lock.remainMs,
-    noteIsPrincipal: false,
-  }] : null);
-  const tx = withdrawTx({
-    from: portal,
-    to: miner,
-    nanos,
-    id,
-    nowMs,
-    authBind: tranches ? {
-      genesisMs: GENESIS,
-      nowMs,
-      dest: portal,
-      tranches,
-      ...(bind || {}),
-    } : bind,
-  });
-  const held = lock ? lockWitnessOf(lock.tx) : null;
-  const leaf = held && Array.isArray(held.leaves) && held.leaves.length ? held.leaves[0] : held;
-  const commit = lock?.tx?.vout?.find((row) => row?.kind === 'lock')?.commit;
-  if (leaf?.blind != null && commit) {
-    tx.principalProof = provePrincipalOpen(commit, nanos, leaf.blind, tx, portalIdFromDest(portal));
+/** Vault after `blocks`, replayed as snap fill replays it. */
+function vaultAfter(blocks) {
+  let vault = null;
+  for (let i = 0; i < blocks.length; i += 1) {
+    const got = vaultAfterBlock(vault, blocks[i], blocks.slice(0, i), {
+      requireStakeReward: true,
+      magic: MAGIC_TESTNET,
+    });
+    assert.equal(got.ok, true, `vault replay ${i}`);
+    vault = got.vault;
   }
+  return vault;
+}
+
+/** The newest leaf of `portal` whose tranche has matured in `state` at `nowMs`, else its newest leaf. */
+function leafFor(state, portal, nowMs) {
+  const rows = [...(LOCK_BY_PORTAL.get(portal) || [])].reverse();
+  const tranches = state?.portals?.[portalIdFromDest(portal)]?.tranches || [];
+  const chain = Math.floor((Number(nowMs) - Number(state?.genesisMs || GENESIS)) / EPOCH_MS);
+  for (const row of rows) {
+    const leaf = LEAF_OF.get(row.tx);
+    if (!leaf) continue;
+    const hex = leaf.commit.toString('hex');
+    const tranche = tranches.find((t) => String(t.commit) === hex);
+    if (tranche && chain > Math.floor(Number(tranche.epoch) || 0)) return leaf;
+  }
+  for (const row of rows) {
+    const leaf = LEAF_OF.get(row.tx);
+    if (leaf) return leaf;
+  }
+  return null;
+}
+
+/** Arrival stub the matured leaf of `portal` earns. */
+function stubFor(state, portal, nowMs = DRAW) {
+  const leaf = leafFor(state, portal, nowMs);
+  if (!state || !leaf) return 0n;
+  return leafStubNanos(state, [leaf.commit.toString('hex')]);
+}
+
+/** π plus the arrival stub: the one receipt the vault pays. */
+function dueFor(state, portal, nowMs = DRAW) {
+  return PI_SHE_NANOS + Number(stubFor(state, portal, nowMs));
+}
+
+/**
+ * A withdraw of `nanos` against the matured leaf of `portal` in `state`.
+ * Fields in `extra` are set before the proofs, so the proofs bind them.
+ */
+function drawOf(state, portal, miner, nanos, id, { nowMs = DRAW, extra = null } = {}) {
+  const tx = withdrawTx({ from: portal, to: miner, nanos, id });
+  if (extra) Object.assign(tx, extra);
+  const leaf = state ? leafFor(state, portal, nowMs) : null;
+  if (!leaf) return tx;
+  const portalId = portalIdFromDest(portal);
+  const proof = provePrincipalOpen(leaf.commit, PI_SHE_NANOS, leaf.blind, tx, portalId, state.magic, leaf.unlock);
+  assert.ok(proof, `${id} principal proof`);
+  tx.principalProof = proof;
+  const period = chainPeriodIndex(state, nowMs);
+  const retire = proveLeafRetire({
+    scalar: leaf.scalar,
+    epochs: leafEpochsToBurn(state, leaf.note.toString('hex'), period),
+    leaf: leaf.note,
+    txBind: txDigestV3(tx, state.magic),
+    unlockEpoch: period,
+    magic: state.magic,
+  });
+  if (retire) tx.retireProof = retire.proof;
+  signWithdrawReward(tx, ownerFor(portal).key, {
+    portalId,
+    nanos: PI_SHE_NANOS,
+    dest: withdrawSignedDest(tx, reserveAction(tx)),
+    state,
+    nowMs,
+  });
   return tx;
+}
+
+/**
+ * The next pot block after `prefix`. `make(vault)` builds its txs from the
+ * parent vault. A coinbase commits the reward root when one is due.
+ */
+function nextBlock(prefix, ts, miner, make) {
+  const vault = prefix.length ? vaultAfter(prefix) : null;
+  const block = potBlock(ts, miner, make ? make(vault) : [], undefined, prefix.length + 1);
+  if (vault) {
+    const plan = rewardCommitment(vault, ts);
+    if (plan.rows.length) block.txs[0].rewardRoot = plan.root;
+  }
+  return block;
+}
+
+/** Reason the parent vault gives `txs` alone at `nowMs`. */
+function vaultReason(vault, txs, nowMs, action) {
+  const state = cloneVault(vault);
+  const applied = applyReserveBlock({ state, block: { txs: [{ coinbase: true, vout: [] }, ...txs] }, nowMs, genesisMs: GENESIS });
+  const row = (applied || []).find((r) => r && r.action === action && r.ok === false);
+  return row ? row.reason : '';
 }
 
 function foldOpts() {
@@ -231,19 +332,20 @@ describe('principal-only withdraw receipts', () => {
         const miner = minerDest();
         const portals = Array.from({ length: count }, () => portalDest());
         const locks = portals.map((portal, i) => lockOf(miner, portal, PI_SHE_NANOS, `L${count}-${row.name}-${i}`));
-        const draws = portals.map((portal, i) => drawOf(
+        const first = potBlock(GENESIS, miner, locks);
+        const parent = vaultAfter([first]);
+        let stubs = 0n;
+        for (const portal of portals) stubs += stubFor(parent, portal);
+        const draw = nextBlock([first], DRAW, miner, (vault) => portals.map((portal, i) => drawOf(
+          vault,
           portal,
           miner,
-          PI_SHE_NANOS + row.delta,
+          dueFor(vault, portal) + row.delta,
           `W${count}-${row.name}-${i}`,
-        ));
-        const chain = [
-          potBlock(GENESIS, miner, locks),
-          potBlock(DRAW, miner, draws),
-        ];
+        )));
         const label = `${count} ${row.name}`;
-        if (row.ok) expectVerified(chain, 0, label);
-        else expectSupplyReject(chain, label);
+        if (row.ok) expectVerified([first, draw], Number(stubs), label);
+        else expectSupplyReject([first, draw], label);
       }
     }
   });
@@ -252,20 +354,17 @@ describe('principal-only withdraw receipts', () => {
     const miner = minerDest();
     const a = portalDest();
     const b = portalDest();
-    const honest = PI_SHE_NANOS;
+    const first = potBlock(GENESIS, miner, [
+      lockOf(miner, a, PI_SHE_NANOS, 'off-a'),
+      lockOf(miner, b, PI_SHE_NANOS, 'off-b'),
+    ]);
     const chain = [
-      potBlock(GENESIS, miner, [
-        lockOf(miner, a, PI_SHE_NANOS, 'off-a'),
-        lockOf(miner, b, PI_SHE_NANOS, 'off-b'),
-      ]),
-      potBlock(DRAW, miner, [
-        drawOf(a, miner, honest + 5, 'off-wa'),
-        drawOf(b, miner, honest - 5, 'off-wb'),
+      first,
+      nextBlock([first], DRAW, miner, (vault) => [
+        drawOf(vault, a, miner, dueFor(vault, a) + 5, 'off-wa'),
+        drawOf(vault, b, miner, dueFor(vault, b) - 5, 'off-wb'),
       ]),
     ];
-    const openedA = honest + 5 - PI_SHE_NANOS;
-    const openedB = honest - 5 - PI_SHE_NANOS;
-    assert.equal(openedA + openedB, 0);
     expectSupplyReject(chain, 'offset');
     const parent = vaultAfterBlock(null, chain[0]);
     assert.equal(parent.ok, true);
@@ -278,7 +377,8 @@ describe('principal-only withdraw receipts', () => {
 
   it('pays zero interest on dust and the rounding boundary, and no stake on a last-quarter lock', () => {
     // Smallest stake whose floor(stake * bps / 10000) is 1, and the unit below it.
-    // The schedule still computes that unit. A withdraw pays the principal only.
+    // The schedule still computes that unit. A vault leaf is exactly π, so a
+    // dust or a π-plus-boundary principal is not a receipt the vault pays.
     const boundary = Math.ceil(10000 / GENESIS_BPS);
     const dust = boundary - 1;
     assert.equal(interestNanos(dust, GENESIS_BPS), 0);
@@ -291,34 +391,48 @@ describe('principal-only withdraw receipts', () => {
     const edgeStake = PI_SHE_NANOS + boundary;
     const edgeInterest = interestNanos(edgeStake, GENESIS_BPS);
     assert.equal(edgeInterest, sponsorInterest + 1);
-    const chain = [
-      potBlock(GENESIS, miner, [
-        lockOf(miner, sponsor, PI_SHE_NANOS, 'z-sponsor'),
-        lockOf(miner, low, dust, 'z-dust'),
-        lockOf(miner, edge, edgeStake, 'z-edge'),
-      ]),
-      potBlock(DRAW, miner, [
-        drawOf(sponsor, miner, PI_SHE_NANOS, 'z-ws'),
-        drawOf(low, miner, dust, 'z-wl'),
-        drawOf(edge, miner, edgeStake, 'z-we'),
-      ]),
-    ];
-    expectSupplyReject(chain, 'dust-boundary');
+    // A dust lock has no π leaf note, so it never lands (d5529d81).
+    const dustBlock = potBlock(GENESIS, miner, [lockOf(miner, low, dust, 'z-dust')]);
+    assert.equal(vaultAfterBlock(null, dustBlock).ok, false);
+    const blank = emptyVault();
+    blank.magic = MAGIC_TESTNET;
+    blank.genesisMs = GENESIS;
+    assert.equal(vaultReason(blank, [dustBlock.txs[1]], GENESIS, 'lock'), 'stake_reward');
+    const dustSnap = fillSnapInterest([{}], [dustBlock]);
+    assert.equal(dustSnap.ok, false);
+    assert.equal(dustSnap.reason, 'supply');
+    // The π sponsor is paid π plus its stub and no interest.
+    const sponsored = potBlock(GENESIS, miner, [lockOf(miner, sponsor, PI_SHE_NANOS, 'z-sponsor')]);
+    const sponsorStub = stubFor(vaultAfter([sponsored]), sponsor);
+    expectVerified([
+      sponsored,
+      nextBlock([sponsored], DRAW, miner, (vault) => [drawOf(vault, sponsor, miner, dueFor(vault, sponsor), 'z-ws')]),
+    ], Number(sponsorStub), 'sponsor');
+    // A receipt that asks the π-plus-boundary stake is refused.
+    const edgeLock = potBlock(GENESIS, miner, [lockOf(miner, edge, edgeStake, 'z-edge')]);
+    expectSupplyReject([
+      edgeLock,
+      potBlock(DRAW, miner, [drawOf(null, edge, miner, edgeStake, 'z-we')], undefined, 2),
+    ], 'dust-boundary');
 
     const late = GENESIS + EPOCH_MS - joinCutoffMs(MAGIC_TESTNET) + 1000;
     assert.ok(late < GENESIS + EPOCH_MS);
-    const idleStake = PI_SHE_NANOS;
     const idleMiner = minerDest();
     const parked = portalDest();
+    const opened = potBlock(GENESIS, idleMiner, [lockOf(idleMiner, portalDest(), PI_SHE_NANOS, 'idle-open')]);
+    const parkedLock = nextBlock([opened], late, idleMiner, () => [lockOf(idleMiner, parked, PI_SHE_NANOS, 'idle-lock', late)]);
+    const atLate = vaultAfter([opened, parkedLock]);
+    const parkedPortal = atLate.portals[portalIdFromDest(parked)];
+    assert.equal(Number(parkedPortal.staked) + Number(parkedPortal.idle), 0);
+    const idleStub = stubFor(atLate, parked);
     const idleChain = [
-      potBlock(GENESIS, idleMiner, [lockOf(idleMiner, portalDest(), PI_SHE_NANOS, 'idle-open')]),
-      potBlock(late, idleMiner, [lockOf(idleMiner, parked, idleStake, 'idle-lock', late)]),
-      potBlock(DRAW, idleMiner, [drawOf(parked, idleMiner, idleStake, 'idle-draw', {
-        nowMs: DRAW,
-        locks: [{ nanos: idleStake, at: late }],
-      })]),
+      opened,
+      parkedLock,
+      nextBlock([opened, parkedLock], DRAW, idleMiner, (vault) => [
+        drawOf(vault, parked, idleMiner, dueFor(vault, parked), 'idle-draw'),
+      ]),
     ];
-    expectVerified(idleChain, 0, 'idle');
+    expectVerified(idleChain, Number(idleStub), 'idle');
   });
 
   it('keeps the genesis bps across epochs; an observe is not a rate', () => {
@@ -331,21 +445,20 @@ describe('principal-only withdraw receipts', () => {
       observedAtMs: GENESIS,
     });
     assert.equal(vaultAfterBlock(null, observed).ok, false);
-    const chain = [
-      potBlock(GENESIS, miner, [lockOf(miner, first, stake, 'bps-a')]),
-      potBlock(GENESIS + 1000, miner, []),
-      potBlock(DRAW, miner, [
-        drawOf(first, miner, stake, 'bps-wa'),
-      ]),
-      potBlock(GENESIS + 2 * EPOCH_MS, miner, [lockOf(miner, second, stake, 'bps-b', GENESIS + 2 * EPOCH_MS)]),
-      potBlock(GENESIS + 3 * EPOCH_MS, miner, [
-        drawOf(second, miner, stake, 'bps-wb', {
-          nowMs: GENESIS + 3 * EPOCH_MS,
-          locks: [{ nanos: stake, at: GENESIS + 2 * EPOCH_MS }],
-        }),
-      ]),
-    ];
-    expectVerified(chain, 0, 'genesis-rate');
+    resetLocks();
+    const chain = [potBlock(GENESIS, miner, [lockOf(miner, first, stake, 'bps-a')])];
+    chain.push(nextBlock(chain, GENESIS + 1000, miner, () => []));
+    const firstStub = stubFor(vaultAfter(chain), first);
+    chain.push(nextBlock(chain, DRAW, miner, (vault) => [drawOf(vault, first, miner, dueFor(vault, first), 'bps-wa')]));
+    chain.push(nextBlock(chain, GENESIS + 2 * EPOCH_MS, miner, () => [
+      lockOf(miner, second, stake, 'bps-b', GENESIS + 2 * EPOCH_MS),
+    ]));
+    const third = GENESIS + 3 * EPOCH_MS;
+    const secondStub = stubFor(vaultAfter(chain), second, third);
+    chain.push(nextBlock(chain, third, miner, (vault) => [
+      drawOf(vault, second, miner, dueFor(vault, second, third), 'bps-wb', { nowMs: third }),
+    ]));
+    expectVerified(chain, Number(firstStub + secondStub), 'genesis-rate');
     let vault = vaultAfterBlock(null, chain[0]);
     assert.equal(vault.ok, true);
     vault = vaultAfterBlock(vault.vault, chain[1]);
@@ -362,9 +475,10 @@ describe('principal-only withdraw receipts', () => {
     const opened = potBlock(GENESIS, floorMiner, [lockOf(floorMiner, voter, stake, 'floor-lock')]);
     const down = potBlock(GENESIS + 1000, floorMiner, [
       voteTx({ from: floorMiner, dest: voter, choice: VOTE_DECREASE, id: 'floor-down' }),
-    ]);
+    ], undefined, 2);
     assert.equal(HASH_BONUS_NANOS_FLOOR, 1);
     const seated = vaultAfterBlock(null, opened);
+    assert.equal(seated.ok, true);
     const denied = vaultAfterBlock(seated.vault, down);
     assert.equal(denied.ok, false);
     expectSupplyReject([opened, down], 'unit-floor');
@@ -375,10 +489,12 @@ describe('principal-only withdraw receipts', () => {
     const miner = minerDest();
     const portal = portalDest();
     const interest = interestNanos(PI_SHE_NANOS, GENESIS_BPS);
+    const midLock = potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'mid-lock')]);
+    const midAt = GENESIS + Math.floor(EPOCH_MS / 2);
     const mid = [
-      potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'mid-lock')]),
-      potBlock(GENESIS + Math.floor(EPOCH_MS / 2), miner, [
-        drawOf(portal, miner, PI_SHE_NANOS, 'mid-draw'),
+      midLock,
+      nextBlock([midLock], midAt, miner, (vault) => [
+        drawOf(vault, portal, miner, dueFor(vault, portal, midAt), 'mid-draw', { nowMs: midAt }),
       ]),
     ];
     expectSupplyReject(mid, 'mid-epoch');
@@ -386,52 +502,57 @@ describe('principal-only withdraw receipts', () => {
     const again = minerDest();
     const who = portalDest();
     // Smallest top-up that lifts floor((π + added) * bps / 10000) by one nanos.
-    // The gap is the distance from this principal's remainder up to the next
-    // multiple of 10000, so the count moves with GENESIS_BPS.
     const rem = (PI_SHE_NANOS * GENESIS_BPS) % 10000;
     const gap = rem === 0 ? 10000 : 10000 - rem;
     const added = Math.ceil(gap / GENESIS_BPS);
     const withLock = interestNanos(PI_SHE_NANOS + added, GENESIS_BPS);
     assert.equal(withLock, interest + 1);
-    // A top-up opens in the new epoch. That credit stays locked. Taking it,
-    // or paying it this epoch's interest, is refused. The earlier principal
-    // is payable in the same block.
+    // One credit per portal (cb733226). A top-up of the same portal is
+    // portal_exists, before or after its withdraw in the block, so neither
+    // the top-up nor any interest on it is paid.
     resetLocks();
-    const before = [
-      potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock')]),
-      potBlock(DRAW, again, [
-        lockOf(again, who, PI_SHE_NANOS, 'pre-add', DRAW),
-        drawOf(who, again, PI_SHE_NANOS + added + withLock, 'pre-draw'),
+    const preLock = potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock')]);
+    const preVault = vaultAfter([preLock]);
+    const topUp = lockOf(again, who, PI_SHE_NANOS, 'pre-add', DRAW);
+    assert.equal(vaultReason(preVault, [topUp], DRAW, 'lock'), 'portal_exists');
+    expectSupplyReject([
+      preLock,
+      nextBlock([preLock], DRAW, again, (vault) => [
+        topUp,
+        drawOf(vault, who, again, PI_SHE_NANOS + added + withLock, 'pre-draw'),
       ]),
-    ];
-    expectSupplyReject(before, 'lock-then-withdraw-old');
-    resetLocks();
-    const honest = [
-      potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'pre-lock-ok')]),
-      potBlock(DRAW, again, [
+    ], 'lock-then-withdraw-old');
+    expectSupplyReject([
+      preLock,
+      nextBlock([preLock], DRAW, again, (vault) => [
         lockOf(again, who, PI_SHE_NANOS, 'pre-add-ok', DRAW),
-        drawOf(who, again, PI_SHE_NANOS + added + interest, 'pre-draw-ok'),
+        drawOf(vault, who, again, dueFor(vault, who), 'pre-draw-ok'),
       ]),
-    ];
-    expectSupplyReject(honest, 'lock-then-withdraw');
-    resetLocks();
-    const released = [
-      potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'own-lock')]),
-      potBlock(DRAW, again, [
-        lockOf(again, who, PI_SHE_NANOS, 'own-add', DRAW),
-        drawOf(who, again, PI_SHE_NANOS, 'own-draw'),
-      ]),
-    ];
-    expectVerified(released, 0, 'old-principal-while-top-up-open');
-    resetLocks();
-    const after = [
-      potBlock(GENESIS, again, [lockOf(again, who, PI_SHE_NANOS, 'post-lock')]),
-      potBlock(DRAW, again, [
-        drawOf(who, again, PI_SHE_NANOS, 'post-draw'),
+    ], 'lock-then-withdraw');
+    expectSupplyReject([
+      preLock,
+      nextBlock([preLock], DRAW, again, (vault) => [
+        drawOf(vault, who, again, dueFor(vault, who), 'post-draw'),
         lockOf(again, who, PI_SHE_NANOS, 'post-add', DRAW),
       ]),
-    ];
-    expectVerified(after, 0, 'withdraw-then-lock');
+    ], 'withdraw-then-lock');
+    // A same-block lock on a fresh portal lands and earns nothing this block.
+    // The earlier principal is payable in that block, before or after it.
+    const stub = stubFor(preVault, who);
+    expectVerified([
+      preLock,
+      nextBlock([preLock], DRAW, again, (vault) => [
+        lockOf(again, portalDest(), PI_SHE_NANOS, 'own-add', DRAW),
+        drawOf(vault, who, again, dueFor(vault, who), 'own-draw'),
+      ]),
+    ], Number(stub), 'old-principal-beside-fresh-lock');
+    expectVerified([
+      preLock,
+      nextBlock([preLock], DRAW, again, (vault) => [
+        drawOf(vault, who, again, dueFor(vault, who), 'own-draw-first'),
+        lockOf(again, portalDest(), PI_SHE_NANOS, 'own-add-after', DRAW),
+      ]),
+    ], Number(stub), 'withdraw-then-fresh-lock');
   });
 
   it('rejects a value above 2^53, and a principal withdraw does not move a full u64 book', () => {
@@ -441,46 +562,70 @@ describe('principal-only withdraw receipts', () => {
     assert.ok(one > 0);
     const miner = minerDest();
     const portal = portalDest();
+    const safeLock = potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'safe-lock')]);
+    const safeStub = stubFor(vaultAfter([safeLock]), portal);
     const honest = [
-      potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'safe-lock')]),
-      potBlock(DRAW, miner, [drawOf(portal, miner, PI_SHE_NANOS, 'safe-draw')]),
+      safeLock,
+      nextBlock([safeLock], DRAW, miner, (vault) => [drawOf(vault, portal, miner, dueFor(vault, portal), 'safe-draw')]),
     ];
-    expectVerified(honest, 0, 'near-2^53');
+    expectVerified(honest, Number(safeStub), 'near-2^53');
 
-    const high = drawOf(portal, miner, PI_SHE_NANOS, 'high-draw');
-    high.nanos = ABOVE_SAFE.toString();
+    resetLocks();
+    const highLock = potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'high-lock')]);
+    let high = null;
     const above = [
-      potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'high-lock')]),
-      potBlock(DRAW, miner, [high]),
+      highLock,
+      nextBlock([highLock], DRAW, miner, (vault) => {
+        high = drawOf(vault, portal, miner, dueFor(vault, portal), 'high-draw');
+        // A top-level amount is refused at arrival and dropped by
+        // compaction; the amount a block carries is the receipt's own.
+        assert.deepEqual(reserveNanosRejected({ ...high, nanos: ABOVE_SAFE.toString() }), { ok: false, reason: 'amount_field' });
+        const at = high.vout.findIndex((o) => String(o?.kind || '') === 'withdraw');
+        high.vout[at] = { ...high.vout[at], valueProof: { ...high.vout[at].valueProof, v: ABOVE_SAFE.toString() } };
+        return [high];
+      }),
     ];
     assert.equal(reserveAction(high).opened, false);
     expectSupplyReject(above, 'above-2^53');
 
-    const parent = foldSupply([honest[0]], foldOpts());
-    assert.equal(parent.ok, true);
-    parent.state.mintedInterest = U64;
-    parent.state.permittedInterest = U64;
     const vault = vaultAfterBlock(null, honest[0]);
-    const stepped = supplyStep(parent.state, honest[1], {
-      magic: MAGIC_TESTNET,
-      unit: HASH_BONUS_NANOS,
-      tipHeight: 2,
-      height: 2,
-      genesisMs: GENESIS,
-      vault: vault.vault,
-    });
-    assert.equal(stepped.ok, true, stepped.reason);
-    assert.equal(stepped.state.mintedInterest, U64);
-    assert.equal(stepped.state.permittedInterest, U64);
+    assert.equal(vault.ok, true);
+    const stepFrom = (book) => {
+      const parent = foldSupply([honest[0]], foldOpts());
+      assert.equal(parent.ok, true);
+      parent.state.mintedInterest = book;
+      parent.state.permittedInterest = book;
+      return supplyStep(parent.state, honest[1], {
+        magic: MAGIC_TESTNET,
+        unit: HASH_BONUS_NANOS,
+        tipHeight: 2,
+        height: 2,
+        genesisMs: GENESIS,
+        vault: vault.vault,
+      });
+    };
+    // The lock is at height 1, past its period start, so it earns an arrival
+    // stub. The receipt mints exactly that stub and no principal or epoch
+    // interest: a book one stub short of u64 ends full, not over.
+    assert.ok(safeStub > 0n, 'height-1 lock earns an arrival stub');
+    const filled = stepFrom(U64 - safeStub);
+    assert.equal(filled.ok, true, filled.reason);
+    assert.equal(filled.state.mintedInterest, U64);
+    assert.equal(filled.state.permittedInterest, U64);
+    // A full book cannot take that stub. The step refuses it, it does not wrap.
+    const full = stepFrom(U64);
+    assert.equal(full.ok, false);
+    assert.equal(full.reason, 'supply');
   });
 
   it('a reorg that drops the withdraw does not keep the minted interest', () => {
     const miner = minerDest();
     const portal = portalDest();
     const lock = potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 're-lock')]);
-    const draw = potBlock(DRAW, miner, [drawOf(portal, miner, PI_SHE_NANOS, 're-draw')]);
-    const empty = potBlock(DRAW, miner, []);
-    expectVerified([lock, draw], 0, 'withdraw-fork');
+    const stub = stubFor(vaultAfter([lock]), portal);
+    const draw = nextBlock([lock], DRAW, miner, (vault) => [drawOf(vault, portal, miner, dueFor(vault, portal), 're-draw')]);
+    const empty = nextBlock([lock], DRAW, miner, () => []);
+    expectVerified([lock, draw], Number(stub), 'withdraw-fork');
     expectVerified([lock, empty], 0, 'reorg-fork');
     const rows = [{}, {}];
     const snap = fillSnapInterest(rows, [lock, empty]);
@@ -495,19 +640,20 @@ describe('principal-only withdraw receipts', () => {
     const miner = minerDest();
     const portal = portalDest();
     const lock = potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'cons-lock')]);
-    const draw = potBlock(DRAW, miner, [drawOf(portal, miner, PI_SHE_NANOS, 'cons-draw')]);
+    const draw = nextBlock([lock], DRAW, miner, (vault) => [drawOf(vault, portal, miner, dueFor(vault, portal), 'cons-draw')]);
     const parent = vaultAfterBlock(null, lock);
     assert.equal(parent.ok, true, parent.reason);
+    const stub = stubFor(parent.vault, portal);
     const honest = blockWithdrawInterest(parent.vault, draw, DRAW);
     assert.equal(honest.ok, true, honest.reason);
-    assert.equal(honest.nanos, 0n);
+    assert.equal(honest.nanos, stub);
 
     // Plaintext totalLockedNanos is not the note book. Zeroing it still pays.
     const plain = cloneVault(parent.vault);
     plain.totalLockedNanos = 0n;
     const plainWalk = blockWithdrawInterest(plain, draw, DRAW);
     assert.equal(plainWalk.ok, true, plainWalk.reason);
-    assert.equal(plainWalk.nanos, 0n);
+    assert.equal(plainWalk.nanos, stub);
     // The note book is openedLockNanos. A book of 0 under this receipt is short.
     const short = cloneVault(parent.vault);
     short.openedLockNanos = 0n;
@@ -528,40 +674,43 @@ describe('principal-only withdraw receipts', () => {
     over.totalLockedNanos = BigInt(PI_SHE_NANOS) + 5n;
     const still = blockWithdrawInterest(over, draw, DRAW);
     assert.equal(still.ok, true, still.reason);
-    assert.equal(still.nanos, 0n);
+    assert.equal(still.nanos, stub);
   });
 
   it('rejects a multi-note withdraw, a note-less withdraw, and a kindless note', () => {
     const miner = minerDest();
     const portal = portalDest();
-    const payout = PI_SHE_NANOS;
     const lock = potBlock(GENESIS, miner, [lockOf(miner, portal, PI_SHE_NANOS, 'note-lock')]);
+    const parent = vaultAfterBlock(null, lock);
+    assert.equal(parent.ok, true);
+    const payout = dueFor(parent.vault, portal);
 
-    const multi = drawOf(portal, miner, payout, 'note-multi');
-    multi.vout.push(drawOf(portal, miner, payout, 'note-multi-2').vout[0]);
+    const multi = drawOf(parent.vault, portal, miner, payout, 'note-multi');
+    multi.vout.push(drawOf(parent.vault, portal, miner, payout, 'note-multi-2').vout[0]);
     assert.equal(reserveAction(multi).opened, false);
-    expectSupplyReject([lock, potBlock(DRAW, miner, [multi])], 'multi-note');
+    expectSupplyReject([lock, nextBlock([lock], DRAW, miner, () => [multi])], 'multi-note');
 
-    const bare = drawOf(portal, miner, payout, 'note-bare');
+    const bare = drawOf(parent.vault, portal, miner, payout, 'note-bare');
     delete bare.vout[0].commit;
     delete bare.vout[0].valueProof;
     assert.equal(reserveAction(bare).opened, false);
-    expectSupplyReject([lock, potBlock(DRAW, miner, [bare])], 'no-note');
+    expectSupplyReject([lock, nextBlock([lock], DRAW, miner, () => [bare])], 'no-note');
 
-    const hidden = drawOf(portal, miner, payout, 'note-kind');
+    const hidden = drawOf(parent.vault, portal, miner, payout, 'note-kind');
     delete hidden.vout[0].kind;
     assert.equal(reserveAction(hidden).opened, false);
     assert.equal(explicitTypedKindRejected(hidden)?.reason, 'kind');
-    expectSupplyReject([lock, potBlock(DRAW, miner, [hidden])], 'no-kind');
+    expectSupplyReject([lock, nextBlock([lock], DRAW, miner, () => [hidden])], 'no-kind');
 
-    const beside = drawOf(portal, miner, payout, 'note-beside');
+    // The leaf proofs bind the body. A kindless note added after them fails
+    // the kind gate on the block, and the proofs no longer open the leaf.
+    const beside = drawOf(parent.vault, portal, miner, payout, 'note-beside');
     beside.vout.push({ commit: beside.vout[0].commit });
     assert.equal(reserveAction(beside).opened, true);
     assert.equal(explicitTypedKindRejected(beside)?.reason, 'kind');
-    const parent = vaultAfterBlock(null, lock);
     const bound = boundReserveWithdraw(beside, parent.vault, null, DRAW);
     assert.equal(bound.ok, false);
-    assert.equal(bound.reason, 'insufficient');
+    assert.equal(bound.reason, 'stake_reward');
   });
 
   it('verifyBlock does not reach supply until vault funding lands', async () => {
@@ -588,7 +737,6 @@ describe('principal-only withdraw receipts', () => {
     assert.equal(checkAdmitAnchor({ anchor }, height).ok, true);
     const parentTs = Number(decodeHeader(Buffer.from(parent.header)).timestamp);
 
-    const payout = PI_SHE_NANOS;
     const portal = portalDest();
     const other = portalDest();
     const lock = potBlock(GENESIS, chainMiner, [
@@ -597,6 +745,8 @@ describe('principal-only withdraw receipts', () => {
     ]);
     const vault = vaultAfterBlock(null, lock);
     assert.equal(vault.ok, true, vault.reason);
+    const payout = dueFor(vault.vault, portal);
+    const stub = stubFor(vault.vault, portal);
 
     async function verdictFor(rows) {
       const { tpl } = store.template({ miner: chainMiner, now: parentTs + 90_000 });
@@ -630,28 +780,18 @@ describe('principal-only withdraw receipts', () => {
       });
     }
 
-    function atAnchor(tx, who) {
-      tx.anchor = anchor;
-      const locks = LOCK_BY_PORTAL.get(who) || [];
-      const row = [...locks].reverse().find((item) => item.stake === Number(tx.nanos)) || locks[locks.length - 1];
-      const held = row ? lockWitnessOf(row.tx) : null;
-      const leaf = held && Array.isArray(held.leaves) && held.leaves.length ? held.leaves[0] : held;
-      const commit = row?.tx?.vout?.find((o) => o?.kind === 'lock')?.commit;
-      if (leaf?.blind != null && commit) {
-        tx.principalProof = provePrincipalOpen(commit, tx.nanos, leaf.blind, tx, portalIdFromDest(who));
-      }
-      return tx;
-    }
+    // The leaf proofs bind the anchor, so it is set before they are taken.
+    const atAnchor = (who, nanos, id) => drawOf(vault.vault, who, chainMiner, nanos, id, { extra: { anchor } });
 
-    const honest = atAnchor(drawOf(portal, chainMiner, payout, 'vb-honest'), portal);
-    const plus = atAnchor(drawOf(portal, chainMiner, payout + 1, 'vb-plus'), portal);
-    const minus = atAnchor(drawOf(portal, chainMiner, payout - 1, 'vb-minus'), portal);
-    const high = atAnchor(drawOf(portal, chainMiner, payout + 5, 'vb-off-high'), portal);
-    const low = atAnchor(drawOf(other, chainMiner, payout - 5, 'vb-off-low'), other);
-    expectVerified([lock, potBlock(DRAW, chainMiner, [honest])], 0, 'vb-honest');
-    expectSupplyReject([lock, potBlock(DRAW, chainMiner, [plus])], 'vb-plus');
-    expectSupplyReject([lock, potBlock(DRAW, chainMiner, [minus])], 'vb-minus');
-    expectSupplyReject([lock, potBlock(DRAW, chainMiner, [high, low])], 'vb-offset');
+    const honest = atAnchor(portal, payout, 'vb-honest');
+    const plus = atAnchor(portal, payout + 1, 'vb-plus');
+    const minus = atAnchor(portal, payout - 1, 'vb-minus');
+    const high = atAnchor(portal, payout + 5, 'vb-off-high');
+    const low = atAnchor(other, dueFor(vault.vault, other) - 5, 'vb-off-low');
+    expectVerified([lock, nextBlock([lock], DRAW, chainMiner, () => [honest])], Number(stub), 'vb-honest');
+    expectSupplyReject([lock, nextBlock([lock], DRAW, chainMiner, () => [plus])], 'vb-plus');
+    expectSupplyReject([lock, nextBlock([lock], DRAW, chainMiner, () => [minus])], 'vb-minus');
+    expectSupplyReject([lock, nextBlock([lock], DRAW, chainMiner, () => [high, low])], 'vb-offset');
 
     for (const row of [
       { name: 'honest', txs: [honest] },
@@ -664,12 +804,12 @@ describe('principal-only withdraw receipts', () => {
       assert.equal(got.reason, 'admit_version', `${row.name} ${got.reason}`);
     }
 
-    const unanchored = drawOf(portal, chainMiner, payout, 'vb-window');
+    const unanchored = drawOf(vault.vault, portal, chainMiner, payout, 'vb-window');
     const windowed = await verdictFor([unanchored]);
     assert.equal(windowed.ok, false);
     assert.equal(windowed.reason, 'admit_version', windowed.reason);
 
-    const funded = drawOf(portal, chainMiner, payout, 'vb-fund');
+    const funded = drawOf(vault.vault, portal, chainMiner, payout, 'vb-fund');
     const ct = Buffer.alloc(32, 7);
     funded.anchor = anchor;
     funded.vin = [{ commit: ct }];
@@ -681,7 +821,7 @@ describe('principal-only withdraw receipts', () => {
     assert.equal(stage0.ok, false);
     assert.equal(stage0.reason, 'vault_unavailable', stage0.reason);
 
-    const bare = atAnchor(drawOf(portal, chainMiner, payout, 'vb-bare'));
+    const bare = atAnchor(portal, payout, 'vb-bare');
     delete bare.vout[0].commit;
     delete bare.vout[0].valueProof;
     const noteLess = await verdictFor([bare]);

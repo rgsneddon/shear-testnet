@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:typed_data';
 
@@ -22,6 +23,25 @@ const int kFs1RecordBytes = 321;
 const int kFs1InputMax = 8;
 const int kFs1NoteBytes = 64;
 const String kFs1DigestDst = 'shear-admit-fs1-txd';
+
+/// Tags the signed top-level memo envelope (FS1_MEMO=bound).
+const String kFs1MemoDst = 'shear-fs1-memo-v1';
+
+/// The canonical encoding JS `canonicalEncode` gives a JSON value: keys
+/// sorted, no spaces. A memo envelope is a map of strings and an int.
+String _canonicalJson(Object? v) {
+  if (v is Map) {
+    // JSON has no undefined, so every key is kept, as canonicalEncode keeps a null.
+    final keys = v.keys.map((k) => k.toString()).toList()..sort();
+    return '{${keys.map((k) => '${jsonEncode(k)}:${_canonicalJson(v[k])}').join(',')}}';
+  }
+  if (v is List) return '[${v.map(_canonicalJson).join(',')}]';
+  return jsonEncode(v);
+}
+
+/// sha256 of a memo envelope's canonical encoding: the bytes the spend signs.
+Uint8List fs1MemoDigest(Map<String, dynamic> memoCt) =>
+    Uint8List.fromList(sha256.convert(utf8Bytes(_canonicalJson(memoCt))).bytes);
 
 /// No FS-1 prover in the loaded library.
 const String kErrFs1Prover = 'fs1_prover_unavailable';
@@ -93,6 +113,7 @@ Uint8List fs1BodyDigest({
   Uint8List? withdrawNonce,
   String oneTimePub = '',
   Uint8List? piProof,
+  Map<String, dynamic>? memoCt,
 }) {
   final b = BytesBuilder(copy: false)
     ..add(utf8Bytes(kFs1DigestDst))
@@ -139,6 +160,13 @@ Uint8List fs1BodyDigest({
       oneTimePub: oneTimePub,
       piProof: piProof,
     ));
+  }
+  // The top-level memo envelope is signed (FS1_MEMO=bound): stripped,
+  // swapped or added after, the spend fails.
+  if (memoCt != null) {
+    b
+      ..add(utf8Bytes(kFs1MemoDst))
+      ..add(fs1MemoDigest(memoCt));
   }
   return Uint8List.fromList(sha256.convert(b.takeBytes()).bytes);
 }

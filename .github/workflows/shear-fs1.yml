@@ -38,7 +38,12 @@ jobs:
       - name: Release tests, depth 7 and 2^20 trees, chain tree vector, dudect timing
         run: cargo test -p shear-fs1 --release --features insecure-test-generators
   node-routes:
-    runs-on: ubuntu-latest
+    # ubuntu-latest (the ubuntu-26.04 image) sets APT::Architecture-Variants
+    # "amd64v3", so its gcc defaults to x86-64-v3 and its static libstdc++ and
+    # libgcc are AVX2 builds that no -march flag can undo. ubuntu-24.04 builds
+    # at the x86-64 baseline; scripts/isa_scan.py fails the job if that drifts.
+    # Proven fallback: the ubuntu:26.04 container (baseline toolchain).
+    runs-on: ubuntu-24.04
     # Adopt, parity, frontier burial, and the full p2p file are each a
     # long native run. 60 minutes no longer covers them with the lane tests.
     timeout-minutes: 360
@@ -53,9 +58,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake python3
-          cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
-          cmake --build crypto/randomx/build -j"$(nproc)"
+          bash scripts/randomx_build.sh
           make -C crypto/native -j"$(nproc)"
+          python3 scripts/isa_scan.py crypto/randomx/build/librandomx.a crypto/native/shearhash.node crypto/native/shearadmit.node
           node -e 'const r = require("module").createRequire(process.cwd() + "/"); for (const m of ["shearhash", "shearadmit"]) { const n = r("./crypto/native/" + m + ".node"); if (!n || !Object.keys(n).length) throw new Error(m); }'
       - name: Vault qualification, autocredit, and FS-1 lock identity, with shearadmit
         run: node --test --test-concurrency=1 --test-timeout=180000 crypto/reserve_vault.test.js crypto/reserve_autocredit.test.js
@@ -77,6 +82,8 @@ jobs:
           SHEAR_FS1_TREE_BIN: ${{ github.workspace }}/crypto/native/vendor/monero-oxide-77788c3/target/release/fs1_tree
         run: node --test node/tests/test_fs1_tree.js
       - run: node --test crypto/fs1_pin.test.js
+      - name: FS-1 verify and root caches refuse stale passes
+        run: node --test crypto/fs1_verify_cache.test.js crypto/fs1_spend.test.js
       - name: Shipped withdraws, one past the retire cap
         run: node --test node/tests/test_withdraw_ship_v12.js
       - name: Fresh peer sync and restart across lock, claim, vote, and withdraw

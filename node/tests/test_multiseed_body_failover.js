@@ -4,6 +4,7 @@ import net from 'node:net';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { createP2p, fingerprintHelloHash, GETBLOCK_MISS_LIMIT } from '../src/p2p.js';
 import { nodeStatus } from '../src/status.js';
+import { shearHash } from '../../crypto/shear_hash.js';
 
 function listenSeed(onLine) {
   const sockets = new Set();
@@ -75,7 +76,16 @@ describe('multi-seed body-proven failover', () => {
       },
     };
     const hollowHash = 'ab'.repeat(32);
-    const bodyHash = '22'.repeat(32);
+    // The served body is a full header under its own ShearHash, so the claim
+    // check passes and the body reaches ingest.
+    const bodyHeader = Buffer.alloc(128, 0x11);
+    // Its parent is our tip, as the next block a seed serves is. A body under
+    // an unknown parent is answered prev before ingest (p2p parentKnown).
+    hash.copy(bodyHeader, 4);
+    // bits 0: a target any hash meets, as a real block's id meets its own
+    // header's target. The claim check refuses a claim that misses it unhashed.
+    bodyHeader.writeUInt32LE(0, 108);
+    const bodyHash = shearHash(bodyHeader).toString('hex');
     let hollowAsked = false;
     let hollowNacked = false;
     let earlyOk = false;
@@ -134,7 +144,7 @@ describe('multi-seed body-proven failover', () => {
           type: 'block',
           magic: MAGIC_TESTNET,
           block: {
-            header: '11'.repeat(64),
+            header: bodyHeader.toString('hex'),
             hash: bodyHash,
             height: 5,
             txs: [],

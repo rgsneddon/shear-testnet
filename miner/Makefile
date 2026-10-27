@@ -19,13 +19,21 @@ else
 endif
 
 SCALAR_OBJS := src/shear_miner.o src/shear_hash.o src/sha256.o src/sha256_dispatch.o
-UNAME_M := $(shell uname -m)
-ifeq ($(UNAME_M),arm64)
-  ISA_OBJS := src/sha256_isa_stub.o
-else ifeq ($(UNAME_M),aarch64)
+UNAME_M := $(shell uname -m 2>/dev/null)
+# cmd or PowerShell with mingw32-make has no uname: the CPU is PROCESSOR_ARCHITECTURE.
+ifeq ($(strip $(UNAME_M)),)
+  UNAME_M := $(PROCESSOR_ARCHITECTURE)
+endif
+ifneq ($(filter arm64 aarch64 ARM64,$(UNAME_M)),)
   ISA_OBJS := src/sha256_isa_stub.o
 else
   ISA_OBJS := src/sha256_ni.o src/sha256_avx2.o
+endif
+# x86_64 public builds pin the ISA baseline (scripts/randomx_build.sh says
+# why). The SHA-NI and AVX2 kernels add their own flags and run only after
+# sha256_dispatch.c checks cpuid. scripts/isa_scan.py checks the binary.
+ifneq ($(filter x86_64 amd64 AMD64,$(UNAME_M)),)
+  X86_BASELINE := -march=x86-64 -mtune=generic
 endif
 
 .PHONY: all clean selftest
@@ -33,16 +41,16 @@ endif
 all: $(BIN)
 
 src/%.o: src/%.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(X86_BASELINE) $(CFLAGS) -c -o $@ $<
 
 src/sha256_ni.o: src/sha256_ni.c src/sha256.h
-	$(CC) $(CFLAGS) -msse4.1 -msha -c -o $@ src/sha256_ni.c
+	$(CC) $(X86_BASELINE) $(CFLAGS) -msse4.1 -msha -c -o $@ src/sha256_ni.c
 
 src/sha256_avx2.o: src/sha256_avx2.c src/sha256.h
-	$(CC) $(CFLAGS) -mavx2 -DSHEAR_ALLOW_AVX2 -c -o $@ src/sha256_avx2.c
+	$(CC) $(X86_BASELINE) $(CFLAGS) -mavx2 -DSHEAR_ALLOW_AVX2 -c -o $@ src/sha256_avx2.c
 
 $(BIN): $(SCALAR_OBJS) $(ISA_OBJS)
-	$(CC) $(CFLAGS) -o $@ $(SCALAR_OBJS) $(ISA_OBJS) $(LIBS) $(WIN_STATIC_RT) $(LINUX_STATIC_RT)
+	$(CC) $(X86_BASELINE) $(CFLAGS) -o $@ $(SCALAR_OBJS) $(ISA_OBJS) $(LIBS) $(WIN_STATIC_RT) $(LINUX_STATIC_RT)
 ifdef GCC_RT_CHECK
 	$(GCC_RT_CHECK) $@
 endif

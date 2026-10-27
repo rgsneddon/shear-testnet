@@ -92,6 +92,15 @@ class PodfileLockTest(unittest.TestCase):
 
 
 class ReleaseNoticesTest(unittest.TestCase):
+    def test_a_binary_on_another_drive_is_not_inside_the_checkout(self):
+        # wallet-windows Zip, 26 Oct: the runner's node.exe on C:, the checkout on D:.
+        import ntpath
+        import posixpath
+        self.assertFalse(release_notices.path_inside(r"C:\hostedtoolcache\node\node.exe", r"D:\a\shear-testnet", ntpath))
+        self.assertTrue(release_notices.path_inside(r"D:\a\shear-testnet\runtime\node.exe", r"D:\a\shear-testnet", ntpath))
+        self.assertTrue(release_notices.path_inside("/repo/runtime/node", "/repo", posixpath))
+        self.assertFalse(release_notices.path_inside("/usr/bin/node", "/repo", posixpath))
+
     def test_zip_gets_every_notice(self):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:

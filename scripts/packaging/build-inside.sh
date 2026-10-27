@@ -77,8 +77,7 @@ npm ci --no-audit --no-fund --ignore-scripts
 log "randomx"
 RX="${SRC}/crypto/randomx"
 rm -rf "${RX}/build"
-cmake -S "${RX}" -B "${RX}/build" -DCMAKE_BUILD_TYPE=Release -DARCH=default
-cmake --build "${RX}/build" -j"${JOBS}"
+bash "${SRC}/scripts/randomx_build.sh"
 test -f "${RX}/build/librandomx.a"
 
 log "ShearK miner"
@@ -90,6 +89,11 @@ bash "${SRC}/crypto/native/build-linux-admit-so.sh" --locked
 make -C "${SRC}/crypto/native" shearhash.node shearadmit.node
 test -f "${SRC}/crypto/native/shearhash.node"
 test -f "${SRC}/crypto/native/shearadmit.node"
+# No AVX2+ in baseline code of anything this image packs (scripts/isa_scan.py).
+python3 "${SRC}/scripts/isa_scan.py" "${RX}/build/librandomx.a" \
+  "${SRC}"/sheark-miner/src/*.o "${SRC}/sheark-miner/ShearK-Miner" \
+  "${SRC}/crypto/native/shearhash.node" "${SRC}/crypto/native/shearadmit.node" \
+  "${SRC}/crypto/native/admit/target/release/libshear_admit.so"
 node -e 'const r=require("module").createRequire("/src/package.json"); const h=r("/src/crypto/native/shearhash.node"); const a=r("/src/crypto/native/shearadmit.node"); if (typeof h.hash!=="function"||typeof a.noteH!=="function") process.exit(1); console.log("built", h.backend());'
 
 log "wallet CLI"
@@ -114,8 +118,23 @@ fi
 
 if [ "${SHEAR_PACK_DESKTOP:-1}" = "1" ]; then
   log "wallet desktop"
+  # The desktop build runs as builder and reconfigures RandomX through
+  # scripts/randomx_build.sh (wallet/native/build-shear-v3.sh) and builds the
+  # admit cdylib, so the build trees root made above must be builder's.
+  chown -R builder:builder "${RX}/build" "${SRC}/crypto/native/admit/target"
   su -s /bin/bash builder -c '/usr/local/bin/as-builder flutter build linux --release'
   test -x "${SRC}/wallet/build/linux/x64/release/bundle/shear_wallet"
+  # The desktop build rebuilt RandomX, libshear_v3.so and the admit cdylib
+  # after the scan above. Scan everything built here that the bundle ships, as
+  # stage_packs copies it: the runner, our two libraries and every plugin.
+  # Not libflutter_linux_gtk.so (Flutter's prebuilt engine) or libapp.so (Dart
+  # AOT code from gen_snapshot): Flutter builds those, not this image.
+  BUNDLE="${SRC}/wallet/build/linux/x64/release/bundle"
+  BUNDLE_LIB="${BUNDLE}/lib"
+  test -f "${BUNDLE_LIB}/libshear_v3.so"
+  test -f "${BUNDLE_LIB}/libshear_admit.so"
+  python3 "${SRC}/scripts/isa_scan.py" "${RX}/build/librandomx.a" "${BUNDLE}/shear_wallet" \
+    $(find "${BUNDLE_LIB}" -maxdepth 1 -type f -name '*.so' ! -name 'libflutter_linux_gtk.so' ! -name 'libapp.so' | sort)
 fi
 
 log "stage packs"

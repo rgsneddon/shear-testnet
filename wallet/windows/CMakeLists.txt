@@ -59,7 +59,13 @@ include(flutter/generated_plugins.cmake)
 
 # In-process range prover. Loaded from beside the executable.
 set(SHEAR_ADMIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/admit")
-set(SHEAR_ADMIT_DLL "${SHEAR_ADMIT_DIR}/target/release/shear_admit.dll")
+# The Windows release step builds std from source (-Zbuild-std), which needs
+# an explicit target: cargo then writes under target/<triple>/release.
+if(DEFINED ENV{CARGO_BUILD_TARGET} AND NOT "$ENV{CARGO_BUILD_TARGET}" STREQUAL "")
+  set(SHEAR_ADMIT_DLL "${SHEAR_ADMIT_DIR}/target/$ENV{CARGO_BUILD_TARGET}/release/shear_admit.dll")
+else()
+  set(SHEAR_ADMIT_DLL "${SHEAR_ADMIT_DIR}/target/release/shear_admit.dll")
+endif()
 add_custom_target(shear_admit_cdylib
   COMMAND cargo build --release --manifest-path "${SHEAR_ADMIT_DIR}/Cargo.toml"
   COMMAND python "${CMAKE_CURRENT_SOURCE_DIR}/../../crypto/native/stamp_admit_pin.py" "${SHEAR_ADMIT_DLL}"

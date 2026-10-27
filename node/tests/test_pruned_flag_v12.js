@@ -211,7 +211,16 @@ describe('samplesPruned does not forge hash credits', () => {
     });
     assert.equal(tall.ok, false, tall.reason);
     assert.equal(tall.reason, 'samples_pruned');
-    const wired = decodeWireBlock(encodeWireBlock({ ...forged, hash: easyPow(3) }));
+    // PR 130's claim check: a wire id that is not the hash the store proved
+    // (here the caller's trusted hash) is hash_claim before burial is judged.
+    const lied = decodeWireBlock(encodeWireBlock({ ...forged, hash: easyPow(3) }));
+    assert.equal(lied.samplesPruned, true);
+    const viaLie = store.ingest([lied], { trustedPowHash: easyPow(4), skipSharePow: true });
+    assert.equal(viaLie.ok, false, viaLie.reason);
+    assert.equal(viaLie.reason, 'hash_claim');
+    assert.equal(store.tip().height, tipBefore);
+    // The same flagged block under the id the store proved reaches burial.
+    const wired = decodeWireBlock(encodeWireBlock({ ...forged, hash: easyPow(4) }));
     assert.equal(wired.samplesPruned, true);
     const viaWire = store.ingest([wired], { trustedPowHash: easyPow(4), skipSharePow: true });
     assert.equal(viaWire.ok, false, viaWire.reason);

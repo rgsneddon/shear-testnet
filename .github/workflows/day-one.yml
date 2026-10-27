@@ -5,7 +5,12 @@ on:
   pull_request:
 jobs:
   node:
-    runs-on: ubuntu-latest
+    # ubuntu-latest (the ubuntu-26.04 image) sets APT::Architecture-Variants
+    # "amd64v3", so its gcc defaults to x86-64-v3 and its static libstdc++ and
+    # libgcc are AVX2 builds that no -march flag can undo. ubuntu-24.04 builds
+    # at the x86-64 baseline; scripts/isa_scan.py fails the job if that drifts.
+    # Proven fallback: the ubuntu:26.04 container (baseline toolchain).
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -19,9 +24,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake python3
-          cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
-          cmake --build crypto/randomx/build -j"$(nproc)"
+          bash scripts/randomx_build.sh
           make -C crypto/native shearhash.node shearadmit.node
+          python3 scripts/isa_scan.py crypto/randomx/build/librandomx.a crypto/native/shearhash.node crypto/native/shearadmit.node
       - name: RPC, solo, datadir lock, process guard, mine worker, p2p idle
         run: >
           node --test --test-concurrency=1 --test-timeout=180000
@@ -32,6 +37,8 @@ jobs:
           node/tests/test_mine_worker_fault.js
           node/tests/test_p2p_idle.js
           node/tests/test_feed_fault.js
+          node/tests/test_fork_claim_loop_v12.js
+          node/tests/test_book_magic_admit_v12.js
           pool/tests/test_pool_datadir.js
   cli:
     runs-on: ubuntu-latest

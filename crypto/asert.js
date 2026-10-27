@@ -214,7 +214,7 @@ export function shareCreditMaxBits(maxUnits = MAX_HASH_UNITS_PER_BLOCK) {
   const log = Math.floor(Math.log2(cap));
   return Math.min(52, Math.max(SHARE_FLOOR_BITS, log));
 }
-/** Median of last 11 header timestamps. Future skew 2 h (Bitcoin-class).
+/** Median of last 11 header timestamps. Future skew 2 h.
  *  15 min left only ~3 s of legal header time when the tip sat near the
  *  cap; ASERT then saw a 3 s interval and hardened +2 every round. */
 export const MTP_WINDOW = 11;
@@ -319,10 +319,22 @@ export const VAULT_FS1_ACTIVATION_HEIGHT = 17;
 /** Unweighted mean of the attested 14-bank policy basket. */
 export const ORACLE_LAW = 'basket-mean-14';
 export const POT_PROP = 'shareBatch';
+/** chain.js digestTx: the packed core plus sha256 of the canonical compact body. */
+export const TX_DIGEST_LAW = 'body-v2';
+/** note.js coinbaseVoutsBound: a coinbase row's published valueProof.v, when present, opens its commitment. */
+export const COINBASE_V_LAW = 'opens';
+/** chain.js coinbaseLabelRejected: every coinbase row's noteCommit is the one its own dest20 derives. */
+export const COINBASE_NC_LAW = 'dest-bound';
+/** fs1_spend.js txBodyDigestFs1: an FS-1 spend signs its top-level memo envelope. */
+export const FS1_MEMO_LAW = 'bound';
 export const POOL_WITHDRAW_LAW = 'eip712-spend-bound';
 /** Chain magics are reserve_books.js. This module re-exports them. */
-/** Mainnet genesis. BST on 18 Sep 2026. Do not invent a different datetime. */
-export const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';
+/**
+ * Mainnet genesis: 21 Dec 2026 at 14:00 UK time (GMT), after the v12 cut and
+ * its stressnet floor (Russell, 25 Oct 2026). The public countdown is this
+ * instant. Reaching it does not emit: mainnetMayEmit also needs both env keys.
+ */
+export const GENESIS_MAINNET = '2026-12-21T14:00:00+00:00';
 export const GENESIS_MAINNET_MS = Date.parse(GENESIS_MAINNET);
 export const HASH_FN = 'ShearHash-v3';
 export const RX_SALT = 'ShearHash-v3/rx';
@@ -488,6 +500,18 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `FS1_SPEND_IDENTITY=${FS1_SPEND_IDENTITY_LAW}`,
     'HASH_BONUS_CEIL=none',
     'P2P_HELLO=fingerprint',
+    // The merkle leaf binds the whole compact body (chain.js digestTx). A
+    // node on the older digest refuses this book at hello, not at a merkle.
+    `TX_DIGEST=${TX_DIGEST_LAW}`,
+    // A coinbase row's published v, when present, is its commitment's
+    // opening (and the value consensus derives for a row it opens itself).
+    `COINBASE_V=${COINBASE_V_LAW}`,
+    // A coinbase label credits the dest it names, so it is bound to the
+    // row's own dest20, hasher payouts included.
+    `COINBASE_NC=${COINBASE_NC_LAW}`,
+    // An FS-1 spend signs its top-level memo envelope, so a relayer cannot
+    // strip or swap it.
+    `FS1_MEMO=${FS1_MEMO_LAW}`,
     `COMPACT_TO=${COMPACT_TO}`,
     `VAULT_GAP=${VAULT_GAP_LAW}`,
     `POT_PROP=${POT_PROP}`,

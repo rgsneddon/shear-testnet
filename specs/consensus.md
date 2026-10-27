@@ -2,7 +2,7 @@
 
 Network magic (testnet, ADMITv3 book): `shear-testnet-v12`  
 Frozen previous books: `shear-testnet-v11`, `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, `shear-testnet-v3` (ADMITv1 LSAG), `shear-testnet-v2`. A v11, v9, or v8 payload does not load on this book (no soft-merge). Quarantine v8/v9-wrong packs and git head `6054186`.  
-Mainnet magic (`shear-v1`) genesis is `2026-09-18T21:00:00+01:00`. Do not merge v3 into frozen v2 or into v1 until the operator cuts over.
+Mainnet magic (`shear-v1`) genesis is `2026-12-21T14:00:00+00:00`. Do not merge v3 into frozen v2 or into v1 until the operator cuts over.
 
 Difficulty is network-wide. Every node sets the next header's bits from the canonical genesis header with genesis-anchored aserti3-2d. A pool, a solo miner, shareBits vardiff, or `SHEAR_BITS` cannot publish a private target. Hashrate fluctuates. It is not a constant and it is not linear. `T=90000` and `τ=2h` (`ASERT_TAU_MS=7200000`). `GENESIS_BITS=17` is the anchor (v10 seeded 15, v11 used a median-11 step). It is not a lasting equilibrium and not `log2(H×90)`. 288 blocks is not a Ready bar. This cut does not relax invent-must-not-return.
 

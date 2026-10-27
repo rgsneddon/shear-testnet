@@ -64,7 +64,7 @@ export function potCreditAfterFeeNanos(potNanos) {
   return pot - fee;
 }
 
-/** Hash-bonus credit. No pool fee. Unit is clamped ≥ 1. */
+/** Hash-bonus credit. No pool fee. A voted unit of 0 pays nothing (bonus off); a malformed unit clamps to the floor of 1 (hashBonusUnitNanos). */
 export function hashCreditNanos(units, unit) {
   const u = Math.max(0, Math.floor(Number(units) || 0));
   return u * hashBonusUnitNanos(unit);

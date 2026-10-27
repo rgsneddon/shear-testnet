@@ -16,9 +16,11 @@ function ncHex(buf) {
 }
 
 /**
- * Coinbase compact drops `v` on a pool-fee note. The commitment still opens
- * at the sealed amount: the claimed v, this pool's 1%, any fee up to 2% of the subsidy, or
- * the whole pot.
+ * The amount a coinbase note opens to, for readers (the explorer, balances).
+ * Compact keeps a pool-fee note's v (chronoflux compactVout). A note with
+ * no v is found by trying this pool's 1%, any fee up to 2% of the subsidy,
+ * or the whole pot. A v that does not open is not shown: consensus refuses
+ * that row (note.js coinbaseVoutsBound, COINBASE_V=opens).
  */
 export function openedCoinbaseNanos(vout, potNanos = BLOCK_SUBSIDY_NANOS) {
   if (!vout?.commit || !vout?.valueProof) return 0;
@@ -415,7 +417,11 @@ export function noteCommitSpendableNanos(blocks, address, tipHeight, {
         const kind = String(o.kind || tx.kind || '');
         // A lock or vote receipt is vault principal, not a second coin.
         if (kind === 'lock' || kind === 'vote') continue;
-        const byNote = !!(o.noteCommit && noteCommitEq(o.noteCommit, want));
+        // A coinbase label names its payee only as the row's own dest20
+        // derives it (COINBASE_NC=dest-bound; node note_ledger.js does the
+        // same), so a label painted onto another dest's row credits nobody.
+        const byNote = !!(o.noteCommit && noteCommitEq(o.noteCommit, want))
+          && (!tx.coinbase || sameDest20(o.dest20, dest20));
         const byDest = kind === 'pool-withdraw' && sameDest20(o.dest20, dest20);
         if (!byNote && !byDest) continue;
         if (byNote) {

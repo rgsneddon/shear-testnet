@@ -4,6 +4,7 @@ import net from 'node:net';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { createP2p, fingerprintHelloHash, shouldClearWantOnNextZero } from '../src/p2p.js';
 import { nodeStatus } from '../src/status.js';
+import { shearHash } from '../../crypto/shear_hash.js';
 
 function readJsonLines(sock, min, ms) {
   return new Promise((resolve, reject) => {
@@ -47,6 +48,23 @@ function collect(sock) {
     }
   });
   return lines;
+}
+
+// Polls until done() is true. A timeout clears the poll as well, so a failed
+// wait cannot keep the test process alive.
+function waitFor(done, ms, why) {
+  return new Promise((resolve, reject) => {
+    const tick = setInterval(() => {
+      if (!done()) return;
+      clearInterval(tick);
+      clearTimeout(timer);
+      resolve();
+    }, 20);
+    const timer = setTimeout(() => {
+      clearInterval(tick);
+      reject(new Error(typeof why === 'function' ? why() : why));
+    }, ms);
+  });
 }
 
 async function connectPeer(port) {
@@ -94,45 +112,38 @@ describe('empty want recovers from an eligible peer', () => {
       sock.write(`${JSON.stringify({
         type: 'tip', magic: MAGIC_TESTNET, height: 11, hash: '99'.repeat(32), work: '0x55',
       })}\n`);
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('probe headers')), 2000);
-        const tick = setInterval(() => {
-          if (lines.some((m) => m.type === 'getheaders')) {
-            clearInterval(tick);
-            clearTimeout(timer);
-            resolve();
-          }
-        }, 20);
-      });
+      await waitFor(() => lines.some((m) => m.type === 'getheaders'), 2000, 'probe headers');
       const before = lines.filter((m) => m.type === 'getheaders').length;
       assert.equal(p2p.syncSnapshot().syncEligiblePeers, 0);
+      // A full header that claims its own ShearHash, so the claim check
+      // passes and the block reaches ingest.
+      const header = Buffer.alloc(128, 0x33);
+      // Its parent is our tip, as the next block a peer serves is. A body under
+      // an unknown parent is answered prev before ingest (p2p parentKnown).
+      hash.copy(header, 4);
+      // bits 0: a target any hash meets, as a real block's id meets its own
+      // header's target. The claim check refuses a claim that misses it unhashed.
+      header.writeUInt32LE(0, 108);
       sock.write(`${JSON.stringify({
         type: 'block',
         magic: MAGIC_TESTNET,
         block: {
-          header: '33'.repeat(64),
-          hash: '44'.repeat(32),
+          header: header.toString('hex'),
+          hash: shearHash(header).toString('hex'),
           height: 4,
           txs: [],
           shareBatch: [],
         },
       })}\n`);
       const started = Date.now();
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`no recovery headers ${JSON.stringify(lines)}`)), 1000);
-        const tick = setInterval(() => {
-          const snap = p2p.syncSnapshot();
-          const headers = lines.filter((m) => m.type === 'getheaders').length;
-          const rec = [...p2p.peers.values()].find((r) => r.syncEligible === true);
-          const pendingN = rec?.pending instanceof Set ? rec.pending.size : 0;
-          const wantN = Array.isArray(rec?.want) ? rec.want.length : 0;
-          if (snap.syncEligiblePeers === 1 && snap.syncPeerHeight === height && snap.syncPeerHeight !== 11 && headers > before && pendingN + wantN >= 0) {
-            clearInterval(tick);
-            clearTimeout(timer);
-            resolve();
-          }
-        }, 20);
-      });
+      await waitFor(() => {
+        const snap = p2p.syncSnapshot();
+        const headers = lines.filter((m) => m.type === 'getheaders').length;
+        const rec = [...p2p.peers.values()].find((r) => r.syncEligible === true);
+        const pendingN = rec?.pending instanceof Set ? rec.pending.size : 0;
+        const wantN = Array.isArray(rec?.want) ? rec.want.length : 0;
+        return snap.syncEligiblePeers === 1 && snap.syncPeerHeight === height && snap.syncPeerHeight !== 11 && headers > before && pendingN + wantN >= 0;
+      }, 1000, () => `no recovery headers ${JSON.stringify(lines)}`);
       assert.ok(Date.now() - started < 1000);
       const snap = p2p.syncSnapshot();
       assert.equal(snap.peerMaxHeight, 11);
@@ -164,32 +175,16 @@ describe('empty want recovers from an eligible peer', () => {
         hash: Buffer.from(hash).toString('hex'),
         work: '0x10',
       })}\n`);
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('peer record')), 2000);
-        const tick = setInterval(() => {
-          if (p2p.peers.size === 1) {
-            clearInterval(tick);
-            clearTimeout(timer);
-            resolve();
-          }
-        }, 20);
-      });
+      await waitFor(() => p2p.peers.size === 1, 2000, 'peer record');
       const rec = [...p2p.peers.values()][0];
       rec.want = ['ab'.repeat(32)];
       rec.wantHeight = 6;
       rec.syncing = true;
       const started = Date.now();
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('stale want stayed')), 1000);
-        const tick = setInterval(() => {
-          const row = nodeStatus({ store, p2p });
-          if (row.want === 0 && row.ibd === false) {
-            clearInterval(tick);
-            clearTimeout(timer);
-            resolve();
-          }
-        }, 20);
-      });
+      await waitFor(() => {
+        const row = nodeStatus({ store, p2p });
+        return row.want === 0 && row.ibd === false;
+      }, 1000, 'stale want stayed');
       assert.ok(Date.now() - started < 1000);
       const row = nodeStatus({ store, p2p });
       assert.equal(row.height, 5);
@@ -222,32 +217,14 @@ describe('empty want recovers from an eligible peer', () => {
       short.write(`${JSON.stringify({
         type: 'tip', magic: MAGIC_TESTNET, height: 5, hash: 'cd'.repeat(32), work: '0x10',
       })}\n`);
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('tall headers')), 2000);
-        const tick = setInterval(() => {
-          if (tallLines.some((m) => m.type === 'getheaders')) {
-            clearInterval(tick);
-            clearTimeout(timer);
-            resolve();
-          }
-        }, 20);
-      });
+      await waitFor(() => tallLines.some((m) => m.type === 'getheaders'), 2000, 'tall headers');
       const missing = 'ef'.repeat(32);
       tall.write(`${JSON.stringify({
         type: 'headers',
         magic: MAGIC_TESTNET,
         headers: [{ hash: missing, height: 6 }],
       })}\n`);
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('tall getblock')), 2000);
-        const tick = setInterval(() => {
-          if (tallLines.some((m) => m.type === 'getblock')) {
-            clearInterval(tick);
-            clearTimeout(timer);
-            resolve();
-          }
-        }, 20);
-      });
+      await waitFor(() => tallLines.some((m) => m.type === 'getblock'), 2000, 'tall getblock');
       const tallRec = [...p2p.peers.values()].find((r) => r.adHeight === 15);
       assert.equal(tallRec.wantHeight, 6);
       const held = (tallRec.want || []).includes(missing) || tallRec.pending?.has(missing);

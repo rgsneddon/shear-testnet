@@ -12,12 +12,14 @@
  * Matrix: junk ratio {0, 50%, 99%} x {1, 4} honest peers x {jit-full, light}.
  * Junk here is the expensive kind: full-length forged runs that pass the cheap
  * check and only fail a real ShearHash. Each block brings fresh attacker ids.
- * The test chain's honest headers are stand-ins, not ShearHash work, so their
- * hashes are passed as trustedHeaderHashes. Every junk header is hashed for
- * real in the selected mode: jit-full and light (jit) off-loop lanes, and the
- * in-process light interpreter on the sync path.
+ * The test chain is a regtest book (bits 4): every honest header carries a
+ * real nonce and is stored under its own ShearHash, with no trusted hash. The
+ * honest run is hashed for real once (PRUNE headers for the first block, then
+ * the one new top header per block) and that count is taken off before the
+ * junk bound. Every header is hashed in the selected mode: jit-full and light
+ * (jit) off-loop lanes, and in process on the sync path.
  */
-import { before, describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -26,11 +28,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
-import { SAMPLE_PRUNE_CONFIRMATIONS, SHARE_FLOOR_BITS, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { SAMPLE_PRUNE_CONFIRMATIONS, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { decodeWireBlock, encodeWireBlock, selectHeadersAfterLocator } from '../src/p2p.js';
-import { createStore, OFFER_PEER_CAP, OFFER_PEER_SLOTS } from '../src/store.js';
+import { OFFER_PEER_CAP, OFFER_PEER_SLOTS } from '../src/store.js';
+import { DATADIR_CLAIM_NAME, DATADIR_LOCK_NAME } from '../src/datadir_lock.js';
+import { createRegtestStore } from './regtest_store.js';
+import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 
 const PRUNE = SAMPLE_PRUNE_CONFIRMATIONS;
 const STEP = TARGET_BLOCK_INTERVAL_MS;
@@ -46,13 +51,17 @@ const MODES = {
 const MODE = process.env.BURIAL_OFFERS_MODE || '';
 const SOURCE = process.env.BURIAL_OFFERS_SOURCE || '';
 const self = fileURLToPath(import.meta.url);
+// Regtest work: about 16 hashes a header. Source, unit and cell stores share it.
+const REGTEST_BITS = 4;
+const REGTEST_TRIES = 8_192;
 
-let powTag = 1;
-function easyPow() {
-  const h = Buffer.alloc(32);
-  h.writeUInt32LE(powTag >>> 0, 4);
-  powTag += 1;
-  return h;
+function openBook(dir) {
+  return createRegtestStore(dir, { bits: REGTEST_BITS, fastSync: true });
+}
+
+/** Honest headers each block's burial hashes for real: the whole run once, then the new top. */
+function honestHashedAt(b) {
+  return b === 0 ? PRUNE : 1;
 }
 
 function hex(b) {
@@ -67,12 +76,14 @@ function headerTime(block) {
   return Number(decodeHeader(Buffer.from(block.header)).timestamp);
 }
 
-function sealNext(store, dest) {
+async function sealNext(store, dest) {
   const t = store.tip();
   const now = t ? headerTime(t) + STEP : 1_700_000_000_000;
-  const { tpl } = store.template({ miner: dest, now, shareBits: SHARE_FLOOR_BITS, shareBatch: [] });
-  return store.append({
-    header: tpl.header,
+  const { tpl } = store.template({ miner: dest, now, shareBits: REGTEST_BITS, shareBatch: [] });
+  const found = await mineHeaderParallel(tpl.header, tpl.bits, REGTEST_TRIES, 1);
+  assert.ok(found && found.block, 'regtest pow');
+  return Promise.resolve(store.append({
+    header: found.header,
     txs: tpl.txs,
     samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
@@ -82,15 +93,15 @@ function sealNext(store, dest) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
-  }, { trustedPowHash: easyPow(), skipSharePow: true });
+  }));
 }
 
-function buildSource(dir) {
+async function buildSource(dir) {
   const id = newIdentity();
   const dest = destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-  const store = createStore(dir, { fastSync: true });
+  const store = openBook(dir);
   for (let h = 1; h <= TIP; h += 1) {
-    const got = sealNext(store, dest);
+    const got = await sealNext(store, dest);
     assert.equal(got.ok, true, `${got.reason} at ${h}`);
   }
   return store;
@@ -144,18 +155,20 @@ function pagesOf(rows) {
 if (!MODE) {
   describe('v12 burial header offers', () => {
     const net = {};
-    before(() => {
+    after(() => closeMineWorkers());
+    before(async () => {
       net.dir = tmp('source');
-      net.S = buildSource(net.dir);
+      net.S = await buildSource(net.dir);
       net.page = selectHeadersAfterLocator(net.S.blocks, { locator: [] });
       assert.equal(net.page.length, TIP);
+      for (const b of net.S.blocks) assert.equal(Buffer.from(b.hash).length, 32);
       assert.equal(net.S.blocks[PRUNED - 1].samplesPruned, true);
       assert.notEqual(net.S.blocks[PRUNED].samplesPruned, true);
     });
 
     it('checks work cheaply before caching, drops a peer on a bad link, and bounds each peer', async () => {
       const { page, S } = net;
-      const E = createStore(tmp('unit'), { fastSync: true });
+      const E = openBook(tmp('unit'));
       const bent = (i, edit) => {
         const d = decodeHeader(Buffer.from(page[i].header, 'hex'));
         return { ...page[i], header: encodeHeader({ ...d, ...edit }).toString('hex') };
@@ -197,17 +210,14 @@ if (!MODE) {
       assert.equal(E.burialView().offerPeerRows.honest, TIP, 'small sybil buckets go before a full run');
 
       // The forged runs fail their first real hash, and the honest run proves.
-      const trusted = new Set(page.map((r) => r.hash));
+      // The block and its burial run are hashed for real: no trusted hash.
       const block = wire(S.servableBlock(S.blocks[0]));
-      const got = await E.append(block, {
-        trustedPowHash: Buffer.from(block.hash),
-        skipSharePow: true,
-        trustedHeaderHashes: trusted,
-        nowMs: Date.now(),
-      });
+      const got = await E.append(block, { nowMs: Date.now() });
       assert.equal(got.ok, true, got.reason);
       const after = E.burialView();
-      assert.ok(after.hashed <= OFFER_PEER_SLOTS + 1, `hashed ${after.hashed}`);
+      assert.ok(after.hashed >= honestHashedAt(0), `hashed ${after.hashed}`);
+      const junkHashed = after.hashed - honestHashedAt(0);
+      assert.ok(junkHashed <= OFFER_PEER_SLOTS + 1, `junk hashed ${junkHashed}`);
       assert.equal(after.offerPeerRows.flood, undefined, 'the flooding peer is dropped');
       assert.ok(after.droppedPeers.includes('flood'));
       assert.ok(after.offerPeers <= OFFER_PEER_SLOTS);
@@ -225,7 +235,7 @@ if (!MODE) {
       it(`junk ratio x peers in ${mode} mode`, { timeout: 3_600_000 }, () => {
         const env = { ...process.env, BURIAL_OFFERS_MODE: mode, BURIAL_OFFERS_SOURCE: net.dir, SHEAR_HASH_BACKEND: backend };
         delete env.NODE_TEST_CONTEXT;
-        const run = spawnSync(process.execPath, [self], {
+        const run = spawnSync(process.execPath, [self], { timeout: 600_000,
           env,
           encoding: 'utf8',
           maxBuffer: 64 * 1024 * 1024,
@@ -241,10 +251,17 @@ if (!MODE) {
   describe(`v12 burial header offers, ${MODE}`, () => {
     const net = {};
     before(() => {
-      net.S = createStore(SOURCE, { fastSync: true });
+      // The parent still holds SOURCE's datadir lock (d5e84bb4): one process
+      // per datadir. This child reads its own copy of the book, lock files left out.
+      const copy = tmp('copy');
+      fs.cpSync(SOURCE, copy, {
+        recursive: true,
+        filter: (src) => ![DATADIR_LOCK_NAME, DATADIR_CLAIM_NAME].includes(path.basename(src)),
+      });
+      // Reopening verifies every stored header's ShearHash against regtest work.
+      net.S = openBook(copy);
       assert.equal(net.S.tip().height, TIP);
       net.page = selectHeadersAfterLocator(net.S.blocks, { locator: [] });
-      net.trusted = new Set(net.page.map((r) => r.hash));
       net.served = net.S.blocks.slice(0, PRUNED).map((b) => wire(net.S.servableBlock(b)));
       for (const b of net.served) assert.equal(b.samplesPruned, true);
     });
@@ -253,8 +270,8 @@ if (!MODE) {
       for (const ratio of RATIOS) {
         for (const peers of PEERS) {
           it(`${how}: junk ${ratio * 100}% with ${peers} honest peer(s)`, async () => {
-            const { page, trusted, served } = net;
-            const E = createStore(tmp('cell'), { fastSync: true });
+            const { page, served } = net;
+            const E = openBook(tmp('cell'));
             const honest = Array.from({ length: peers }, (_, i) => `honest${i}`);
             // Junk is `ratio` of the rows offered for each block, in full-length forged runs.
             const junkRows = Math.round((page.length * peers * ratio) / (1 - ratio));
@@ -284,14 +301,14 @@ if (!MODE) {
               assert.ok(view.offerPeers <= OFFER_PEER_SLOTS);
               const before = view.hashed;
               const got = await E.append(served[b], {
-                trustedPowHash: Buffer.from(served[b].hash),
-                skipSharePow: true,
                 offLoopPow: how === 'offloop',
-                trustedHeaderHashes: trusted,
                 nowMs: Date.now(),
               });
               assert.equal(got.ok, true, `${got.reason} at ${b + 1}`);
-              perBlock.push(E.burialView().hashed - before);
+              const hashedNow = E.burialView().hashed - before;
+              // The honest run is real work, hashed once. What is left is junk.
+              assert.ok(hashedNow >= honestHashedAt(b), `block ${b + 1} hashed ${hashedNow}`);
+              perBlock.push(hashedNow - honestHashedAt(b));
               attackersPerBlock.push(attackers.length);
             }
             const ms = performance.now() - t0;

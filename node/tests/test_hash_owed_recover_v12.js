@@ -41,6 +41,7 @@ import {
 import {
   VOTE_DECREASE,
   VOTE_INCREASE,
+  attachLockEquality,
   bonusUnitsBefore,
   consensusUnlockPeriod,
   lockTx,
@@ -431,6 +432,8 @@ describe('HASH_OWED_RECOVER_V1', () => {
         from, to: from, nanos: PI_SHE_NANOS, id, ownerPub: 'ab'.repeat(32), blind,
       });
       tx.vaultLockNote = leaf.note;
+      // The π proof a wallet attaches with the note, last (2461ec67 refuses a lock without it).
+      if (!attachLockEquality(tx)) throw new Error(`π proof ${id}`);
       return tx;
     };
     const extras = [

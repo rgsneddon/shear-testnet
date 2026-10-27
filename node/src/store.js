@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { blockArrivalRejected } from '../../crypto/arrival_fields.js';
 import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HASH_BONUS_NANOS, hashBonusUnitNanos, medianTimePast, MTP_WINDOW, GENESIS_BPS } from '../../crypto/asert.js';
 import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveRejected } from '../../crypto/reserve_oracle.js';
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
-import { hashHex } from '../../crypto/shear_hash.js';
+import { HEADER_LEN, hashHex } from '../../crypto/shear_hash.js';
+import { chainIndexOf, emptyChainIndex } from './chain_index.js';
 import { asCommitFault } from './process_guard.js';
 import { chainBSpendsRejected } from '../../crypto/clearing.js';
 import {
@@ -39,14 +41,45 @@ import {
   rootHeaderReason,
   discardPreparedHeader,
   holdPreparedHeader,
+  preparedHeaderHash,
   noteFromAnchor,
   OWED_CHECKPOINT_SPACING,
   keepsFrontier,
   frontierWindow,
   retainFrontierBlobs,
+  blockLeaves,
+  arrivedRowsKey,
+  earlyRowsRejected,
 } from './chain.js';
+import { merkleRoot } from '../../crypto/merkle.js';
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
+
+/**
+ * `a` is exactly `b`: the same keys (an undefined value is no key), the same
+ * prototypes, the same types (a Buffer is not a bare Uint8Array) and the
+ * same values, all the way down. Anything else, NaN included, is not the
+ * same, and the store then validates the compact copy (compactOrSame).
+ */
+export function sameCompactShape(a, b) {
+  if (a === b) return true;
+  if (Buffer.isBuffer(a) || Buffer.isBuffer(b)) return Buffer.isBuffer(a) && Buffer.isBuffer(b) && a.equals(b);
+  if (a instanceof Uint8Array || b instanceof Uint8Array) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) if (!sameCompactShape(a[i], b[i])) return false;
+    return true;
+  }
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+    const ka = Object.keys(a).filter((k) => a[k] !== undefined);
+    const kb = Object.keys(b).filter((k) => b[k] !== undefined);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) if (!Object.prototype.hasOwnProperty.call(b, k) || !sameCompactShape(a[k], b[k])) return false;
+    return true;
+  }
+  return false;
+}
 import { bookSealKeyFor } from './book_seal_key.js';
 import { ensureDatadir } from './datadir_acl.js';
 import { acquireDatadirLock } from './datadir_lock.js';
@@ -128,7 +161,7 @@ import {
 } from './bootstrap.js';
 import { createBurialHold, createBurialProof, settledHeight } from './burial_hold.js';
 import { blockWeight, custodialPullRejected } from '../../crypto/levy.js';
-import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool } from '../../crypto/mempool.js';
+import { admitMempool, emptyMempool, rememberMempoolTag, retargetMempool, txBodyKey, heldBodyKey, keepHeldKey, sealedFormOf } from '../../crypto/mempool.js';
 import { fluxsetFromBlocks, applyBlockToFluxset, appendFluxBlock, emptyFluxset, fluxWithLeaves, receiptAdmitRejected } from '../../crypto/admit.js';
 import {
   frameDigest,
@@ -182,15 +215,6 @@ function workOfBlock(block) {
   }
 }
 
-function indexByHex(list, hex) {
-  const want = String(hex || '').toLowerCase();
-  if (!want) return -1;
-  for (let i = list.length - 1; i >= 0; i -= 1) {
-    if (hex32(list[i].hash).toLowerCase() === want) return i;
-  }
-  return -1;
-}
-
 function commonPrefixLen(a, b) {
   const n = Math.min(a.length, b.length);
   let i = 0;
@@ -200,8 +224,71 @@ function commonPrefixLen(a, b) {
   return i;
 }
 
+/** The label a tx's sender picked. Reported, never a key: see txBodyKey. */
 function txIdOf(tx) {
   return String(tx?.id || '');
+}
+
+/** A vin's prev as its 32 bytes, from a Buffer, hex (with or without 0x) or {$hex}; null otherwise. */
+function prevBytes(prev) {
+  if (prev == null || prev === '') return null;
+  let raw = prev;
+  if (raw && typeof raw === 'object' && !Buffer.isBuffer(raw) && !(raw instanceof Uint8Array) && typeof raw.$hex === 'string') raw = raw.$hex;
+  if (typeof raw === 'string') {
+    const hex = raw.trim().replace(/^0x/i, '');
+    if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+    return Buffer.from(hex, 'hex');
+  }
+  try {
+    const b = Buffer.from(asU8(raw));
+    return b.length === 32 ? b : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A real outpoint a vin names, as one canonical key. An FS-1 vin names none (it is a C~ only). */
+function vinOutpoint(vin) {
+  const prev = prevBytes(vin?.prev);
+  const index = Number(vin?.index);
+  if (!prev || vin?.index == null || vin.index === '' || !Number.isSafeInteger(index) || index < 0) return '';
+  return `out:${prev.toString('hex')}:${index}`;
+}
+
+/**
+ * The notes `tx` spends, one canonical key each: `out:` a real outpoint
+ * (vinOutpoint), `tag:` a spend tag (an FS-1 input's nullifier). Two
+ * separate FS-1 vins never share a key; the same note does however its
+ * bytes are held.
+ */
+export function spentNoteKeys(tx) {
+  const keys = new Set();
+  for (const tag of txSpendTags(tx).tags) keys.add(`tag:${tag.toString('hex')}`);
+  for (const vin of tx?.vin || []) {
+    const out = vinOutpoint(vin);
+    if (out) keys.add(out);
+  }
+  return keys;
+}
+
+/**
+ * What a reorg's winning blocks spend (spentNoteKeys of their txs). The
+ * returned test is true when `tx` spends one of those notes.
+ */
+export function winnerSpends(connected) {
+  const spent = new Set();
+  for (const b of connected || []) {
+    for (const tx of (b?.txs || []).slice(1)) {
+      for (const k of spentNoteKeys(tx)) spent.add(k);
+    }
+  }
+  return (tx) => [...spentNoteKeys(tx)].some((k) => spent.has(k));
+}
+
+/** True when `tx` spends a note `held` spends: a shared spend tag or outpoint. */
+function spendsHeldNote(held, tx) {
+  const keys = spentNoteKeys(held);
+  return [...spentNoteKeys(tx)].some((k) => keys.has(k));
 }
 
 function spendLeafOf(tx) {
@@ -313,6 +400,15 @@ function faultHooksOpen(magic) {
   const ctx = String(process.env.NODE_TEST_CONTEXT || '');
   return ctx === 'child' || ctx === 'child-v8';
 }
+/** Open-round rows are a format-checked advertisement, not a proof. */
+export const OPEN_ROUND_CAP = 1024;
+/** Distinct tags one peer address may land in the open-round map. */
+export const OPEN_ROUND_PEER_TAGS = 64;
+/** Updates one peer address may land per window. The rest are dropped. */
+export const OPEN_ROUND_PEER_RATE = 64;
+export const OPEN_ROUND_PEER_WINDOW_MS = 30_000;
+const OPEN_ROUND_PEER_BUDGETS = 4096;
+
 /** Two headers pages per peer. A pruned block needs SAMPLE_PRUNE_CONFIRMATIONS of them. */
 export const OFFER_PEER_CAP = 4000;
 export const OFFER_PEER_SLOTS = 8;
@@ -324,6 +420,18 @@ export const OFFER_RATE_PER_SEC = 2000;
 const OFFER_DROPPED_CAP = 1024;
 const LOCAL_HEADER_INDEX = 4096;
 const PROOF_HASH_BATCH = 16;
+
+/** JSON with sorted object keys, so a digest does not depend on key order. */
+function canonicalJson(value) {
+  if (typeof value === 'bigint') return JSON.stringify(value.toString());
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v === undefined ? null : v)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value).filter((k) => value[k] !== undefined).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
+  }
+  const out = JSON.stringify(value);
+  return out === undefined ? 'null' : out;
+}
 
 export function createStore(dir, {
   pruneAfter = SAMPLE_PRUNE_CONFIRMATIONS,
@@ -376,6 +484,8 @@ export function createStore(dir, {
   const snapFile = path.join(dir, 'book.snap');
   const vaultSnapFile = path.join(dir, 'vault.snap');
   const blocks = [];
+  // Our chain by hash for locateFork and ingest; see chain_index.js.
+  const chainIndex = emptyChainIndex();
   const explorer = [];
   const spentB = new Set();
   const headers = new Map();
@@ -418,6 +528,8 @@ export function createStore(dir, {
   let segLive = [];
   let unprunedLive = null;
   let snapVaultRaw = null;
+  // Body digest the accepted book.snap bound for reserve.json (exact snap only).
+  let snapVaultBind = '';
   let frameTags = [];
   let frameStream = null;
   let frameAt = 0;
@@ -613,7 +725,7 @@ export function createStore(dir, {
     }
   } else if (resumed) {
     writeLoadSeal(blocks);
-    const folded = foldSupply(blocks, { burialOf: provenTipOf });
+    const folded = foldSupply(blocks, { burialOf: provenTipOf, magic: bookMagic });
     if (!folded.ok) throw new Error(folded.reason || 'supply');
     supplyTip = folded.state;
   }
@@ -742,14 +854,22 @@ export function createStore(dir, {
     return snap.diskDigest === legacyDiskDigest();
   }
 
-  function vaultCommitmentFromFile() {
+  // A snap boot installs reserve.json or vault.snap without a replay, so the
+  // snap binds every field of that body. vaultCommitment() covers only the seal
+  // fields (pot, stakes, epoch pins). mintedIds, votes, freezes, tranches, and
+  // the reward book sit outside it and must not ride in unbound.
+  function vaultBodyDigest(raw) {
+    if (!raw || typeof raw !== 'object' || !raw.portals) return '';
+    const body = { ...raw };
+    delete body.vaultSeal;
+    delete body.blankFork;
+    return createHash('sha256').update('shear-vault-body-v1').update(canonicalJson(body)).digest('hex');
+  }
+
+  function vaultBindFromFile() {
     if (!fs.existsSync(vaultFile)) return '';
     try {
-      const raw = JSON.parse(fs.readFileSync(vaultFile, 'utf8'));
-      if (!raw || typeof raw !== 'object' || !raw.portals) return '';
-      delete raw.vaultSeal;
-      delete raw.blankFork;
-      return vaultCommitment(raw);
+      return vaultBodyDigest(JSON.parse(fs.readFileSync(vaultFile, 'utf8')));
     } catch {
       return '';
     }
@@ -839,7 +959,7 @@ export function createStore(dir, {
   function vaultSnapBody(snap) {
     const saved = readVaultSnap();
     if (!saved || saved.height !== snap.height) return null;
-    if (vaultCommitment(saved.body) !== snap.vaultCommitment) return null;
+    if (vaultBodyDigest(saved.body) !== snap.vaultCommitment) return null;
     return saved.body;
   }
 
@@ -856,10 +976,11 @@ export function createStore(dir, {
     const vaultBody = vaultSnapBody(snap);
     if (!vaultBody) return null;
     snapVaultRaw = vaultBody;
-    const vaultNow = vaultCommitmentFromFile();
+    const vaultNow = vaultBindFromFile();
     if (snap.height === blocks.length) {
       if (!diskDigestMatches(snap)) return null;
       if (!vaultNow || vaultNow !== snap.vaultCommitment) return null;
+      snapVaultBind = vaultNow;
       return snap;
     }
     const prefix = blocks.slice(0, snap.height);
@@ -1323,7 +1444,7 @@ export function createStore(dir, {
       } catch { /* rebuild from chain */ }
     }
     // An exact snap already committed this file. Replaying it would walk every block.
-    if (loadMode === 'snap' && loaded && vaultCommitmentFromFile()) {
+    if (loadMode === 'snap' && loaded && snapVaultBind && vaultBodyDigest(loaded) === snapVaultBind) {
       installVault(loaded);
       syncBlankFlag();
       return;
@@ -1331,8 +1452,10 @@ export function createStore(dir, {
     // A shorter snap committed the prefix vault. Apply only the unsealed suffix.
     // reserve.json may already be at the tip; vault.snap is the prefix vault.
     // The index is the prior height vaultArgs uses to pin the chain genesis.
-    if (loadMode === 'suffix' && (snapVaultRaw || (loaded && vaultCommitmentFromFile()))) {
-      installVault(snapVaultRaw || loaded);
+    // acceptBookSnap sets snapVaultRaw for every suffix plan. reserve.json may be
+    // at the tip, so it is never the prefix vault.
+    if (loadMode === 'suffix' && snapVaultRaw) {
+      installVault(snapVaultRaw);
       const suffix = blocks.slice(prefixHeight);
       for (let s = 0; s < suffix.length; s += 1) {
         const b = suffix[s];
@@ -1749,7 +1872,7 @@ export function createStore(dir, {
     if (!blocks.length) return;
     if (acceptedSeries.length !== blocks.length || unitAt.length !== blocks.length) return;
     try {
-      const commit = vaultCommitmentFromFile();
+      const commit = vaultBindFromFile();
       const gms = genesisHeaderMs(blocks);
       const tipHash = Buffer.from(blocks[blocks.length - 1].hash);
       if (!commit || !gms || tipHash.length !== 32) return;
@@ -2645,24 +2768,20 @@ export function createStore(dir, {
   }
 
   function bounceMempool(disconnected, connected) {
-    const winnerIds = new Set();
-    const winnerInputs = new Set();
+    // By body key, not by the label a sender picks: a winner that only shares
+    // a held tx's id neither evicts it nor stops a loser's body coming back.
+    const winnerKeys = new Set();
     for (const b of connected || []) {
       for (const tx of (b.txs || []).slice(1)) {
-        const id = txIdOf(tx);
-        if (id) winnerIds.add(id);
-        for (const tag of txSpendTags(tx).tags) winnerInputs.add(tag.toString('hex'));
-        for (const vin of tx.vin || []) {
-          winnerInputs.add(`${vin.prev || ''}:${vin.index}`);
-        }
+        const key = txBodyKey(tx);
+        if (key) winnerKeys.add(key);
       }
     }
-    const tagSpent = (tx) => txSpendTags(tx).tags.some((tag) => winnerInputs.has(tag.toString('hex')));
+    const spentByWinner = winnerSpends(connected);
     for (let i = mempool.length - 1; i >= 0; i -= 1) {
       const tx = mempool[i];
-      const id = txIdOf(tx);
-      const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
-      if ((id && winnerIds.has(id)) || spent || tagSpent(tx)) mempool.splice(i, 1);
+      const key = heldBodyKey(tx);
+      if ((key && winnerKeys.has(key)) || spentByWinner(tx)) mempool.splice(i, 1);
     }
     let base = 1;
     const t = tip();
@@ -2678,14 +2797,14 @@ export function createStore(dir, {
     const book = emptyMempool();
     book.txs = mempool.slice();
     book.tagIndex = mempoolTags;
+    const heldKeys = new Set(mempool.map(heldBodyKey).filter(Boolean));
     for (const b of disconnected || []) {
       for (const tx of (b.txs || []).slice(1)) {
         if (tx?.coinbase) continue;
-        const id = txIdOf(tx);
-        if (id && winnerIds.has(id)) continue;
-        const spent = (tx.vin || []).some((v) => winnerInputs.has(`${v.prev || ''}:${v.index}`));
-        if (spent || tagSpent(tx)) continue;
-        if (id && mempool.some((m) => txIdOf(m) === id)) continue;
+        const key = txBodyKey(tx);
+        if (key && winnerKeys.has(key)) continue;
+        if (spentByWinner(tx)) continue;
+        if (key && heldKeys.has(key)) continue;
         const row = {
           ...tx,
           kind: tx.kind,
@@ -2849,6 +2968,9 @@ export function createStore(dir, {
       skipSharePow: probe ? true : !!extra.skipSharePow,
       offLoopPow: probe ? false : !!extra.offLoopPow,
       probeBody: probe,
+      // This block's EVM calls run in a checkpoint on the live session:
+      // reverted for a probe or a failure, committed once it is stored.
+      evmCheckpoint: true,
       grandparentHeader: grandparentHeader(blocks),
       sealedIntervalsMs: headerGapsMs(blocks),
       parentFluxset: liveFlux,
@@ -2861,15 +2983,43 @@ export function createStore(dir, {
         || (block?.miner && isDestAddress(block.miner) ? block.miner : null),
       owedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
+      arrivedRows: extra.arrivedRows,
     });
     return { check, spentBefore };
   }
 
+  /**
+   * The node has one live EVM session, and a block whose calls run on it
+   * (blockNeedsEvm) holds it from its checkpoint to its commit or revert.
+   * SimpleStateManager commit and revert act on the top layer, so an append
+   * and a probe that overlapped would merge or drop each other's calls. A
+   * block with no EVM calls never touches the session and runs as before.
+   */
+  let evmTail = Promise.resolve();
+  function evmExclusive(block, run) {
+    if (!blockNeedsEvm(block?.txs || [])) return run();
+    const go = evmTail.then(run, run);
+    evmTail = go.then(() => {}, () => {});
+    return go;
+  }
+
+  /**
+   * append's verdict on `block`, with nothing kept. The body is compacted
+   * first, as append does (arrivedBody), so a template probe and the real
+   * append judge the same bytes.
+   */
   function probeBlock(block) {
-    const { check, spentBefore } = verifyAgainstTip(block, { probeBody: true });
+    return evmExclusive(block, () => probeBlockNow(block));
+  }
+
+  function probeBlockNow(block) {
+    const refused = arrivalReason(block);
+    const { check, spentBefore } = verifyAgainstTip(arrivedBody(block), { probeBody: true, arrivedRows: arrivedRows(block) });
     const finish = (c) => {
       rollbackSpent(spentB, spentBefore);
       if (!c?.ok) return { ok: false, reason: c?.reason || 'append' };
+      // As append: the compact body verified, and a field it may not carry is refused.
+      if (refused) return { ok: false, reason: refused.reason, field: refused.field };
       return { ok: true, reason: '' };
     };
     if (check && typeof check.then === 'function') {
@@ -3371,6 +3521,107 @@ export function createStore(dir, {
   }
 
   /**
+   * A field an arrived block may not carry, read on the block as it arrived,
+   * before arrivedBody compacts it (crypto/arrival_fields.js): compaction
+   * strips secrets and local-only fields and never decides validity. The
+   * refusal rides in verifyOpts.arrivalRefusal and is applied once the
+   * compact body verifies, before anything is stored or staged, so a block
+   * that fails consensus keeps its own reason. Null when every row may be
+   * carried.
+   */
+  function arrivalReason(blocks) {
+    const list = Array.isArray(blocks) ? blocks : [blocks];
+    for (let i = 0; i < list.length; i += 1) {
+      const refused = blockArrivalRejected(list[i]);
+      if (refused) return { ok: false, reason: refused.reason, field: refused.field, at: i };
+    }
+    return null;
+  }
+
+  /**
+   * The verdicts verifyBlock gave on each arrived block's full rows, by
+   * header (chain.js arrivedRowsKey), or null: `early`, the row checks it
+   * ran before proof of work (chain.js earlyRowsRejected), and `opening`,
+   * its first body check (spend.js openingBeforeCarry). Compaction strips
+   * fields both read, so verifyBlock returns them from here at those same
+   * points: a block keeps the reason its full body had.
+   */
+  function arrivedRows(blocks) {
+    const list = Array.isArray(blocks) ? blocks : [blocks];
+    let out = null;
+    for (const b of list) {
+      const early = earlyRowsRejected(b);
+      let opening = null;
+      for (const tx of Array.isArray(b?.txs) ? b.txs : []) {
+        opening = openingBeforeCarry(tx);
+        if (opening) break;
+      }
+      if (!early && !opening) continue;
+      const key = arrivedRowsKey(b);
+      if (key) (out ||= new Map()).set(key, { early, opening });
+    }
+    return out;
+  }
+
+  /** verifyOpts carrying the arrival refusal and full-row verdicts of `arrived`, if it has them. */
+  function withArrival(arrived, verifyOpts = {}) {
+    if (verifyOpts?.arrivalRefusal || verifyOpts?.arrivedRows) return verifyOpts;
+    const refused = arrivalReason(arrived);
+    const rows = arrivedRows(arrived);
+    if (!refused && !rows) return verifyOpts;
+    return {
+      ...verifyOpts,
+      ...(refused ? { arrivalRefusal: refused } : {}),
+      ...(rows ? { arrivedRows: rows } : {}),
+    };
+  }
+
+  /**
+   * The arrival refusal as a result, for a block that verified. The compact
+   * body the header commits passed, so the fault is only in the rows the
+   * peer sent: peerOnly (p2p scores that peer and never soft-notes the hash).
+   */
+  function arrivalRefused(verifyOpts) {
+    const r = verifyOpts?.arrivalRefusal;
+    return r ? { ok: false, reason: r.reason, field: r.field, at: r.at, peerOnly: true, tip: tip() } : null;
+  }
+
+  /**
+   * A block as it is validated: its txs in the compact form it is stored,
+   * served, read back and hashed in (chain.js digestTx). A field compaction
+   * drops, added or changed by a relayer, so never reaches a check.
+   * Coinbase samples move to the block, as leanBlock stores them.
+   */
+  function arrivedBody(block) {
+    if (!block || typeof block !== 'object' || !Array.isArray(block.txs)) return block;
+    const cb = block.txs[0];
+    const samples = Array.isArray(block.samples) ? block.samples : (cb?.coinbase && Array.isArray(cb.samples) ? cb.samples : block.samples);
+    return { ...block, samples, txs: block.txs.map((tx) => {
+      if (tx?.coinbase) {
+        if (!Object.prototype.hasOwnProperty.call(tx, 'samples')) return compactOrSame(tx, compactTx(tx));
+        const { samples: _s, ...rest } = tx;
+        return compactTx({ ...rest, coinbase: true });
+      }
+      return compactOrSame(tx, compactTx(tx));
+    }) };
+  }
+
+  /**
+   * A row that arrived already compact (a peer's block, a block read back
+   * from disk) is validated as that object, not a byte-identical copy
+   * (Russell 26 Oct, ruling B: keep). It is that object only when
+   * sameCompactShape says it equals its compact form exactly, so the verdict
+   * is the one the copy would get: it can never make an invalid body valid.
+   * Why it is kept: the read walk (tests/compact_reads.js) watches the
+   * objects validators read, and on the reserve kinds a fresh copy hid
+   * those reads (two mutations went uncaught without it). Its cost is one
+   * strict deep compare per tx.
+   */
+  function compactOrSame(tx, compact) {
+    return sameCompactShape(tx, compact) ? tx : compact;
+  }
+
+  /**
    * Header rules and proof-of-work before any book walk. An invalid header
    * must not scan sealed hashes, decode every gap, or copy the owed series.
    * A trusted hash, an off-loop hash, or a pruned burial still uses the
@@ -3415,6 +3666,26 @@ export function createStore(dir, {
       consumePrepared: false,
     });
     if (assessed?.ok) return null;
+    let claimed = null;
+    try {
+      if (block?.hash != null) {
+        const raw = Buffer.from(block.hash);
+        if (raw.length === 32) claimed = raw;
+      }
+    } catch { claimed = null; }
+    if (claimed && block?.header) {
+      try {
+        const header = Buffer.from(block.header);
+        if (header.length === HEADER_LEN) {
+          // assessHeader stashed the hash when it got that far; hash once.
+          const got = preparedHeaderHash(header) || Buffer.from(headerHash(header));
+          if (!claimed.equals(got)) {
+            discardPreparedHeader(block.header);
+            return 'hash_claim';
+          }
+        }
+      } catch { /* keep the assess reason */ }
+    }
     discardPreparedHeader(block?.header);
     return assessed?.reason || 'pow';
   }
@@ -3467,7 +3738,9 @@ export function createStore(dir, {
     ));
   }
 
-  function append(block, verifyOpts = {}) {
+  function append(arrived, verifyOpts = {}) {
+    verifyOpts = withArrival(arrived, verifyOpts);
+    const block = arrivedBody(arrived);
     const early = unprovenAppendReason(block, verifyOpts);
     if (early) return { ok: false, reason: early, tip: tip() };
     // The off-loop path proves the header target here, so every caller of
@@ -3494,15 +3767,66 @@ export function createStore(dir, {
   }
 
   function appendProven(block, verifyOpts) {
-    const incoming = block?.hash != null ? Buffer.from(block.hash) : null;
-    if (incoming && incoming.length === 32) {
-      for (const b of blocks) {
-        if (b.hash && Buffer.from(b.hash).equals(incoming)) {
-          discardPreparedHeader(block?.header);
-          return { ok: false, reason: 'not_heavier', tip: tip() };
+    const claimedHash = () => {
+      try {
+        if (block?.hash == null) return null;
+        const raw = Buffer.from(block.hash);
+        return raw.length === 32 ? raw : null;
+      } catch {
+        return null;
+      }
+    };
+    // The id is the hash we computed. A present block.hash that differs is a
+    // claim lie, before the book treats that claim as a duplicate.
+    const judged = (computed) => {
+      const claimed = claimedHash();
+      if (claimed && computed && computed.length === 32 && !claimed.equals(computed)) {
+        discardPreparedHeader(block?.header);
+        return { ok: false, reason: 'hash_claim', tip: tip() };
+      }
+      if (computed && computed.length === 32) {
+        for (const b of blocks) {
+          if (b.hash && Buffer.from(b.hash).equals(computed)) {
+            discardPreparedHeader(block?.header);
+            return { ok: false, reason: 'not_heavier', tip: tip() };
+          }
         }
       }
+      return null;
+    };
+    const trusted = trustedHashFor(block, verifyOpts);
+    if (trusted && trusted.length === 32) {
+      const stop = judged(Buffer.from(trusted));
+      if (stop) return stop;
+      return appendProvenBody(block, verifyOpts);
     }
+    const claimed = claimedHash();
+    if (claimed) {
+      const provenHex = String(verifyOpts?.provenHeaderHash || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(provenHex)) {
+        const stop = judged(Buffer.from(provenHex, 'hex'));
+        if (stop) return stop;
+        return appendProvenBody(block, verifyOpts);
+      }
+      let header = null;
+      try { if (block?.header) header = Buffer.from(block.header); } catch { header = null; }
+      if (!header || header.length !== HEADER_LEN) {
+        discardPreparedHeader(block?.header);
+        return { ok: false, reason: 'hash_claim', tip: tip() };
+      }
+      const finish = (buf) => {
+        try { holdPreparedHeader(header, buf); } catch { /* verify hashes again */ }
+        const stop = judged(Buffer.from(buf));
+        if (stop) return stop;
+        return appendProvenBody(block, verifyOpts);
+      };
+      if (verifyOpts.offLoopPow) return hashHeaderOffLoop(header).then(finish);
+      return finish(headerHash(header));
+    }
+    return appendProvenBody(block, verifyOpts);
+  }
+
+  function appendProvenBody(block, verifyOpts) {
     if (block?.samplesPruned === true) {
       // No proven run is samples_pruned before any header hash. A height field
       // that is not this tip plus one still answers height first.
@@ -3550,24 +3874,70 @@ export function createStore(dir, {
   }
 
   function appendVerified(block, verifyOpts, burial) {
+    return evmExclusive(block, () => appendVerifiedNow(block, verifyOpts, burial));
+  }
+
+  function appendVerifiedNow(block, verifyOpts, burial) {
+    // The tip this block was verified against. An off-loop or EVM verify
+    // settles later, and an ingest or adopt may move the tip meanwhile.
+    const parentAtStart = tip();
     const { check, spentBefore } = verifyAgainstTip(block, {
       trustedPowHash: trustedHashFor(block, verifyOpts),
       skipSharePow: !!verifyOpts.skipSharePow,
       offLoopPow: !!verifyOpts.offLoopPow,
       poolDest: verifyOpts.poolDest,
+      arrivedRows: verifyOpts.arrivedRows,
       ...(burial ? { burialTip: burial.top } : {}),
     });
-    const after = (c) => {
+    // Test hook (node:test or the regtest book only, as the other fault
+    // hooks): an awaited step between verify and store, where a test moves
+    // the tip, so the tip re-check below is reached on demand.
+    const beforeStore = faultHooks && typeof verifyOpts.beforeStore === 'function' ? verifyOpts.beforeStore : null;
+    const after = (c) => (beforeStore && c?.ok
+      ? Promise.resolve(beforeStore()).then(() => storeChecked(c))
+      : storeChecked(c));
+    const storeChecked = (c) => {
+      let claimedNow = null;
+      try {
+        if (block?.hash != null) {
+          const raw = Buffer.from(block.hash);
+          if (raw.length === 32) claimedNow = raw;
+        }
+      } catch { claimedNow = null; }
+      let computedNow = null;
+      try {
+        if (c?.hash) {
+          const raw = Buffer.from(c.hash);
+          if (raw.length === 32) computedNow = raw;
+        }
+      } catch { computedNow = null; }
+      if (claimedNow && computedNow && !claimedNow.equals(computedNow)) {
+        rollbackSpent(spentB, spentBefore);
+        discardPreparedHeader(block?.header);
+        return { ok: false, reason: 'hash_claim', tip: tip() };
+      }
       // A failed consensus check keeps its own reason. The vault clock is a
       // second gate only after the block verifies.
       if (!c?.ok) {
         rollbackSpent(spentB, spentBefore);
         return c;
       }
+      // The tip moved while this block verified: it no longer extends the
+      // tip, so it is not stored on top of another chain. prev is retryable.
+      if (tip() !== parentAtStart) {
+        rollbackSpent(spentB, spentBefore);
+        return { ok: false, reason: 'prev', tip: tip() };
+      }
       // The proven header run hangs off the claimed hash. Verify hashed the header.
       if (burial && !(c.hash && Buffer.from(c.hash).equals(burial.claimed))) {
         rollbackSpent(spentB, spentBefore);
         return { ok: false, reason: 'pow', tip: tip() };
+      }
+      // A field the block may not carry, read before compaction.
+      const carried = arrivalRefused(verifyOpts);
+      if (carried) {
+        rollbackSpent(spentB, spentBefore);
+        return carried;
       }
       const vaultClock = blockTimeMs(block);
       for (const tx of (block.txs || []).slice(1)) {
@@ -3580,8 +3950,38 @@ export function createStore(dir, {
       block.bSpendIds = spentDelta(spentBefore, spentB);
       return settleCheck(c, (okCheck) => completeAppend(okCheck, block, burial));
     };
-    if (check && typeof check.then === 'function') return check.then(after);
-    return after(check);
+    // The block's EVM checkpoint (chain.js verifyBlockEvm) is committed only
+    // when the block is stored; any later refusal reverts it, so the node's
+    // EVM state never holds the calls of a block it did not append.
+    const settled = (c) => {
+      if (!c?.evmOpen) return after(c);
+      const sm = c.evmSession?.evm?.stateManager;
+      let out;
+      try {
+        out = after(c);
+      } catch (err) {
+        return Promise.resolve(sm.revert()).then(() => { throw err; });
+      }
+      const close = (o) => Promise.resolve(o?.ok ? sm.commit() : sm.revert()).then(() => o);
+      if (out && typeof out.then === 'function') {
+        return out.then(close, (err) => Promise.resolve(sm.revert()).then(() => { throw err; }));
+      }
+      return close(out);
+    };
+    if (check && typeof check.then === 'function') return check.then(settled);
+    return settled(check);
+  }
+
+  function stageFaultRow(i, block, verifyOpts) {
+    if (injectedFault !== 'stage') return null;
+    if (!Number.isInteger(verifyOpts?.stageAt) || verifyOpts.stageAt !== i) return null;
+    return {
+      ok: false,
+      reason: 'apply_stage',
+      at: i,
+      header: block?.header,
+      tip: tip(),
+    };
   }
 
   function completeAppend(check, block, burial = null) {
@@ -3590,12 +3990,20 @@ export function createStore(dir, {
       staged = stageAppend(check, block, burial);
     } catch (err) {
       // A throw here is local state, still before owedRows is replaced.
-      // Score the block and stay up. The log is its own event, not a peer ban line.
-      const reason = String(err?.message || 'apply').slice(0, 80);
+      // The block stays retryable and the node stays up. The peer is not
+      // scored: the same local bug would otherwise ban every relayer.
+      // The log is the ops signal. The reason the peer sees is stable.
+      const detail = String(err?.message || 'apply').slice(0, 80);
       try {
-        console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason }));
+        console.error(JSON.stringify({ event: 'apply_stage', ok: false, reason: detail }));
       } catch { /* ignore */ }
-      return { ok: false, reason, tip: tip() };
+      return {
+        ok: false,
+        reason: 'apply_stage',
+        at: 0,
+        header: block?.header,
+        tip: tip(),
+      };
     }
     if (!staged || staged.ready !== true) return staged;
     try {
@@ -3669,13 +4077,15 @@ export function createStore(dir, {
     noteAppendedBlock();
     rememberHeaders([stored], 'active');
     {
-      const sealedIds = new Set((stored.txs || []).map((t) => String(t.id || '')));
+      // The block's own bodies, by key: a sealed tx that only carries a held
+      // tx's id does not evict it. A held body whose note the block spent goes.
+      const sealedKeys = new Set((stored.txs || []).slice(1).map(txBodyKey).filter(Boolean));
       const spentNow = liveFlux?.spendTags || new Set();
       for (let i = mempool.length - 1; i >= 0; i -= 1) {
         const row = mempool[i];
-        const idHit = sealedIds.has(String(row?.id || ''));
+        const sealedHit = sealedKeys.has(heldBodyKey(row));
         const tagHit = txSpendTags(row).tags.some((tag) => spentNow.has(tag.toString('hex')));
-        if (idHit || tagHit) mempool.splice(i, 1);
+        if (sealedHit || tagHit) mempool.splice(i, 1);
       }
     }
     for (const tx of (stored.txs || []).slice(1)) {
@@ -3869,9 +4279,17 @@ export function createStore(dir, {
     const book = emptyMempool();
     book.txs = mempool;
     book.tagIndex = mempoolTags;
+    // A held body is known by its key (txBodyKey), not by the id its sender
+    // picks. The same body again is a duplicate. Another body under a held id
+    // that spends a note the held body spends is that sender changing a queued
+    // tx: refused, so an ok never tells a wallet its changed body is in. Any
+    // other body under that id is judged on its own: a label cannot keep a
+    // real tx out.
+    const bodyKey = txBodyKey(tx);
+    if (bodyKey && mempool.some((m) => heldBodyKey(m) === bodyKey)) return { ok: true, tx, duplicate: true };
     const id = String(tx?.id || '');
-    if (id && mempool.some((m) => String(m.id) === id)) {
-      return { ok: true, tx, duplicate: true };
+    if (id && mempool.some((m) => String(m.id) === id && spendsHeldNote(m, tx))) {
+      return { ok: false, reason: 'id_reused' };
     }
     const debitNow = fundedDebit(tx);
     // Chain notes minus every queued debit from this dest. paintedOwedNanos is the
@@ -3885,7 +4303,7 @@ export function createStore(dir, {
       && paintedSpendSig(tx)
       && chainHave < debitNow.nanos
       && chainHave + paintedOwedNanos >= debitNow.nanos);
-    const selfId = String(tx?.id || '');
+    const selfId = bodyKey;
     const chainTags = liveFlux.spendTags;
     const spentNow = {
       has(tag) {
@@ -4001,6 +4419,8 @@ export function createStore(dir, {
       ensureMempoolVault(stamp);
     }
     const live = liveFlux;
+    // The book's own magic, as block verify uses. FS-1 binds it into the
+    // spend digest; the verifier's MAGIC_TESTNET default is wrong off testnet.
     const admitOpts = {
       baseFee: base,
       fluxset: live,
@@ -4011,12 +4431,14 @@ export function createStore(dir, {
       nowMs: stamp,
       height: Number(t?.height || 0) + 1,
       blocks,
+      magic: bookMagic,
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
     };
     if (txIsReserveAction(tx)) {
       admitOpts.reserveCarried = mempoolVault;
       admitOpts.verifiedFund = fundVerdictFor(tx);
     }
+    admitOpts.selfKey = bodyKey;
     return insertMempool(() => {
       const got = admitMempool(book, tx, admitOpts);
       if (got && got.ok && got.vaultState) mempoolVault = got.vaultState;
@@ -4078,13 +4500,51 @@ export function createStore(dir, {
   }
 
   // A header run buries only the pruned block it stands above. The fork's
-  // own length stays the tip for every other block.
+  // own length stays the tip for every other block. The height also keeps
+  // the hash that run was proved against.
+  function burialAt(at, height) {
+    if (!at) return null;
+    const row = at[height];
+    if (row == null) return null;
+    if (typeof row === 'number') return Number.isInteger(row) ? { top: row, claimed: null } : null;
+    const top = Number(row.top);
+    if (!Number.isInteger(top)) return null;
+    let claimed = null;
+    try {
+      if (row.claimed != null) {
+        const raw = Buffer.from(row.claimed);
+        if (raw.length === 32) claimed = raw;
+      }
+    } catch { claimed = null; }
+    return { top, claimed };
+  }
+
   function headerRunTip(block, structuralH, chainTip, at) {
     if (block?.samplesPruned !== true || !at) return chainTip;
-    const own = Number(at[structuralH]);
+    const rec = burialAt(at, structuralH);
+    if (!rec) return chainTip;
+    const own = rec.top;
     if (!Number.isInteger(own) || !(own > chainTip)) return chainTip;
     if (!shouldPruneSamples(structuralH, own)) return chainTip;
     return own;
+  }
+
+  // The run was proved for the hash the block claimed. Verify's hash is the
+  // one the header produced. A borrowed burial is pow, on every entry.
+  // A failed verify that never produced a hash keeps its own reason.
+  function burialClaimPow(structuralH, computed, at, verifiedOk = true) {
+    const rec = burialAt(at, structuralH);
+    if (!rec?.claimed) return null;
+    let got = null;
+    try {
+      if (computed != null) {
+        const raw = Buffer.from(computed);
+        if (raw.length === 32) got = raw;
+      }
+    } catch { got = null; }
+    if (!got) return verifiedOk ? { ok: false, reason: 'pow' } : null;
+    if (!got.equals(rec.claimed)) return { ok: false, reason: 'pow' };
+    return null;
   }
 
   function verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession = null, trialVault = null, verifyOpts = {}) {
@@ -4150,8 +4610,14 @@ export function createStore(dir, {
       nowMs: verifyOpts.nowMs != null ? verifyOpts.nowMs : Date.now(),
       genesisMs: genesisHeaderMs(accepted) || Number(verifyOpts.genesisMs) || 0,
       magic: bookMagic,
+      arrivedRows: verifyOpts.arrivedRows,
     });
     const stamp = (c) => {
+      const lie = burialClaimPow(parentH + 1, c?.hash, verifyOpts.provenBurialAt, c?.ok === true);
+      if (lie) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return lie;
+      }
       if (!c?.ok) {
         rollbackSpent(trialSpent, beforeSpent);
         return c;
@@ -4233,7 +4699,7 @@ export function createStore(dir, {
     // A long prefix is a loop. Recursing once per block overflows on a
     // multi-thousand-block adopt, which hid the earlier body fault.
     const takeOne = (i, c) => {
-      if (!c?.ok) return { ok: false, reason: c.reason, at: i };
+      if (!c?.ok) return { ok: false, reason: c.reason, at: i, ...(c.peerOnly ? { peerOnly: true } : {}) };
       const lean = leanBlock({
         ...fork[i],
         magic: bookMagic,
@@ -4304,6 +4770,8 @@ export function createStore(dir, {
     const forkRun = forkRunState(fork);
     const burialTip = forkBurial(fork);
     for (let i = 0; i < fork.length; i += 1) {
+      const staged = stageFaultRow(i, fork[i], verifyOpts);
+      if (staged) return staged;
       const check = verifyOneForkBlock(fork, i, accepted, trialSpent, null, trialVault, {
         ...verifyOpts,
         noVault: !!noVault,
@@ -4312,7 +4780,7 @@ export function createStore(dir, {
         ...forkRun.opts(),
         burialTip,
       });
-      if (!check.ok) return { ok: false, reason: check.reason, at: i };
+      if (!check.ok) return { ok: false, reason: check.reason, at: i, ...(check.peerOnly ? { peerOnly: true } : {}) };
       stampCredits(fork[i], units[i]);
       const lean = leanBlock({
         ...fork[i],
@@ -4362,6 +4830,8 @@ export function createStore(dir, {
     const forkRun = forkRunState(fork);
     const burialTip = forkBurial(fork);
     for (let i = 0; i < fork.length; i += 1) {
+      const staged = stageFaultRow(i, fork[i], verifyOpts);
+      if (staged) return staged;
       const check = await Promise.resolve(
         verifyOneForkBlock(fork, i, accepted, trialSpent, trialSession, trialVault, {
           ...verifyOpts,
@@ -4373,7 +4843,7 @@ export function createStore(dir, {
         }),
       );
       if (check.evmSession) trialSession = check.evmSession;
-      if (!check.ok) return { ok: false, reason: check.reason, at: i };
+      if (!check.ok) return { ok: false, reason: check.reason, at: i, ...(check.peerOnly ? { peerOnly: true } : {}) };
       stampCredits(fork[i], units[i]);
       const lean = leanBlock({
         ...fork[i],
@@ -4520,13 +4990,22 @@ export function createStore(dir, {
    * overflowed the old per-block recursion inside adopt.
    */
   function gateForkHeaders(fork, parent, history, verifyOpts) {
+    const claimLie = (assessed, prev) => burialClaimPow(
+      (prev ? Number(prev.height || 0) : 0) + 1,
+      assessed.hash,
+      verifyOpts.provenBurialAt,
+    );
     const resume = async (start, assessed, prev) => {
       if (!assessed?.ok) return { ok: false, reason: assessed?.reason || 'pow', at: start };
+      const first = claimLie(assessed, prev);
+      if (first) return { ...first, at: start };
       let p = gatePrevFrom(fork[start], assessed.hash, prev);
       for (let i = start + 1; i < fork.length; i += 1) {
         const got = gateOneHeader(fork[i], p, history, verifyOpts);
         const next = got && typeof got.then === 'function' ? await got : got;
         if (!next?.ok) return { ok: false, reason: next?.reason || 'pow', at: i };
+        const lie = claimLie(next, p);
+        if (lie) return { ...lie, at: i };
         p = gatePrevFrom(fork[i], next.hash, p);
       }
       return { ok: true };
@@ -4540,6 +5019,8 @@ export function createStore(dir, {
         return got.then((assessed) => resume(at, assessed, parentHere));
       }
       if (!got?.ok) return { ok: false, reason: got?.reason || 'pow', at: i };
+      const lie = claimLie(got, prev);
+      if (lie) return { ...lie, at: i };
       prev = gatePrevFrom(fork[i], got.hash, prev);
     }
     return { ok: true };
@@ -4793,7 +5274,7 @@ export function createStore(dir, {
     const base = supplyAt[from];
     if (!base || base.owedKnown !== true || !supplyLinks(base, blocks[from])) return null;
     const burial = Number.isInteger(tipH) && tipH >= 0 ? tipH : (Number(blocks[endIdx]?.height) || endIdx + 1);
-    const carriedVault = vaultParent(blocks, from + 1);
+    const carriedVault = vaultParent(blocks, from + 1, bookMagic);
     if (!carriedVault.ok) return null;
     let vault = carriedVault.vault;
     let state = base;
@@ -4812,7 +5293,7 @@ export function createStore(dir, {
       });
       if (!stepped.ok) return null;
       state = stepped.state;
-      const advanced = vaultAfterBlock(vault, block);
+      const advanced = vaultAfterBlock(vault, block, [], { magic: bookMagic });
       if (!advanced.ok) return null;
       vault = advanced.vault;
     }
@@ -4906,7 +5387,7 @@ export function createStore(dir, {
           from = prefix;
         }
       }
-      const historyVault = vaultParent(rows, from);
+      const historyVault = vaultParent(rows, from, bookMagic);
       if (!historyVault.ok) return { ok: false, reason: 'supply' };
       let vault = historyVault.vault;
       // One prefix. A slice at every height made the reorg walk cost grow with the chain.
@@ -4925,7 +5406,7 @@ export function createStore(dir, {
         });
         if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
         supply = stepped.state;
-        const advanced = vaultAfterBlock(vault, viewed.block, chain);
+        const advanced = vaultAfterBlock(vault, viewed.block, chain, { magic: bookMagic });
         if (!advanced.ok) return { ok: false, reason: 'supply' };
         vault = advanced.vault;
         chain.push(rows[hi]);
@@ -4951,6 +5432,11 @@ export function createStore(dir, {
     });
     // Same rule as the header gate: a long suffix must not recurse per block.
     const takeOne = (i, c, beforeSpent, structuralH, blockTip) => {
+      const lie = burialClaimPow(structuralH, c?.hash, verifyOpts.provenBurialAt, c?.ok === true);
+      if (lie) {
+        rollbackSpent(trialSpent, beforeSpent);
+        return lie;
+      }
       if (!c?.ok) {
         rollbackSpent(trialSpent, beforeSpent);
         return c;
@@ -4995,6 +5481,8 @@ export function createStore(dir, {
     };
     const runFrom = (start) => {
       for (let i = start; i < fork.length; i += 1) {
+        const staged = stageFaultRow(i, fork[i], verifyOpts);
+        if (staged) return staged;
         const beforeSpent = new Set(trialSpent);
         const structuralH = (Number(prev?.height) || 0) + 1;
         const blockTip = headerRunTip(fork[i], structuralH, tipH, verifyOpts.provenBurialAt);
@@ -5060,6 +5548,8 @@ export function createStore(dir, {
     const checked = verifySuffix(fork, parent, history, verifyOpts);
     const apply = (verified) => {
       if (!verified?.ok) return verified;
+      const carried = arrivalRefused(verifyOpts);
+      if (carried) return carried;
       const staged = prior.concat(verified.blocks);
       if (staged.length > 8192) return { ok: false, reason: 'side_hold', tip: tip() };
       const candidate = blocks.slice(0, anchor + 1).concat(staged);
@@ -5258,8 +5748,12 @@ export function createStore(dir, {
     return { blankOnly: false, ckpt, unitAt: units, trial, seal };
   }
 
-  function adopt(fork, verifyOpts = {}) {
-    if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
+  function adopt(arrived, verifyOpts = {}) {
+    if (!Array.isArray(arrived) || !arrived.length) return { ok: false, reason: 'empty' };
+    verifyOpts = withArrival(arrived, verifyOpts);
+    const fork = arrived.map(arrivedBody);
+    const knownBad = knownHashBodyReason(fork);
+    if (knownBad) return { ...knownBad, tip: tip() };
     const verified = verifyOpts.offLoopPow ? verifyForkAsync(fork, verifyOpts) : verifyFork(fork, verifyOpts);
     const take = (v) => finishAdopt(v, verifyOpts);
     if (verified && typeof verified.then === 'function') return verified.then(take);
@@ -5268,7 +5762,14 @@ export function createStore(dir, {
 
   function finishAdopt(verified, verifyOpts = {}) {
     if (!verified.ok) return verified;
-    const accepted = verified.accepted;
+    const carried = arrivalRefused(verifyOpts);
+    if (carried) return carried;
+    // The shared prefix is our own block objects: supply, flux and the vault
+    // carry from them below, so the chain written to disk is those same
+    // blocks, not a peer's copies (knownHashBodyReason held them to our
+    // headers and merkle roots; their other fields are not taken).
+    const shared = commonPrefixLen(blocks, verified.accepted);
+    const accepted = shared > 0 ? blocks.slice(0, shared).concat(verified.accepted.slice(shared)) : verified.accepted;
     rememberFork(accepted, 'valid-fork');
     if (!shouldAdopt(blocks, accepted)) {
       const holdAt = commonPrefixLen(blocks, accepted);
@@ -5349,7 +5850,7 @@ export function createStore(dir, {
         }
         adoptedSupply = supplyAt.slice(0, lca);
         let carriedSupply = prefixSupply;
-        const openedVault = vaultParent(accepted, lca);
+        const openedVault = vaultParent(accepted, lca, bookMagic);
         if (!openedVault.ok) {
           clearReorgMarkers();
           return { ok: false, reason: 'supply', tip: tip() };
@@ -5378,7 +5879,7 @@ export function createStore(dir, {
             return { ok: false, reason: stepped.ok ? 'supply' : (stepped.reason || 'supply'), tip: tip() };
           }
           carriedSupply = stepped.state;
-          const advanced = vaultAfterBlock(carriedVault, block);
+          const advanced = vaultAfterBlock(carriedVault, block, [], { magic: bookMagic });
           if (!advanced.ok) {
             clearReorgMarkers();
             return { ok: false, reason: 'supply', tip: tip() };
@@ -5401,8 +5902,9 @@ export function createStore(dir, {
         return { ok: false, reason: 'share_credit_bind', tip: tip() };
       }
       const image = captureAdoptImage();
+      // Same gate as bookFault. A production book ignores the option.
       const fault = (stage) => {
-        if (verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
+        if (faultHooks && verifyOpts.throwAfterPublish === stage) throw new Error(`adopt_throw_${stage}`);
       };
       try {
         if (injectedFault === 'reorg' || injectedFault === 'reorg-restore') throw new Error('reorg_fault');
@@ -5492,9 +5994,18 @@ export function createStore(dir, {
     let noted = false;
     for (const b of list || []) {
       const h = Number(b?.height) || 0;
-      const own = Number(at[h]);
-      if (b?.samplesPruned !== true) continue;
+      const rec = burialAt(at, h);
+      if (!rec || b?.samplesPruned !== true) continue;
+      const own = rec.top;
       if (!Number.isInteger(own) || !(own > floor) || !shouldPruneSamples(h, own)) continue;
+      if (rec.claimed) {
+        let got = null;
+        try {
+          const raw = Buffer.from(b.hash);
+          if (raw.length === 32) got = raw;
+        } catch { got = null; }
+        if (!got || !got.equals(rec.claimed)) continue;
+      }
       if (provenTipOf(b) != null) continue;
       burialProof.note(blockHex(b), h, own);
       noted = true;
@@ -5507,24 +6018,26 @@ export function createStore(dir, {
     try { decoded = decodeHeader(Buffer.from(fork[0].header)); } catch { return null; }
     const t = tip();
     const prev = decoded.prevBlockHash;
+    // The prefix is built only when a pruned block needs its history: a copy
+    // of the chain per ingested block made IBD quadratic.
     if (t ? prev.equals(Buffer.from(t.hash)) : prev.equals(GENESIS_PREV)) {
-      return { parentH: Number(t?.height) || 0, prefix: blocks.slice() };
+      return { parentH: Number(t?.height) || 0, prefixOf: () => blocks.slice() };
     }
     const prevHex = Buffer.from(prev).toString('hex').toLowerCase();
-    const anchorIdx = indexByHex(blocks, prevHex);
+    const anchorIdx = chainIndexOf(chainIndex, blocks, prevHex);
     if (anchorIdx >= 0) {
       const parent = blocks[anchorIdx];
       return {
         parentH: Number(parent?.height) || (anchorIdx + 1),
-        prefix: blocks.slice(0, anchorIdx + 1),
+        prefixOf: () => blocks.slice(0, anchorIdx + 1),
       };
     }
     if (sideBlocks.length && prevHex === sideTipHash()) {
       const chain = sideChain();
       const last = chain[chain.length - 1];
-      return { parentH: Number(last?.height) || chain.length, prefix: chain };
+      return { parentH: Number(last?.height) || chain.length, prefixOf: () => chain };
     }
-    if (prev.equals(GENESIS_PREV)) return { parentH: 0, prefix: [] };
+    if (prev.equals(GENESIS_PREV)) return { parentH: 0, prefixOf: () => [] };
     return null;
   }
 
@@ -5547,7 +6060,7 @@ export function createStore(dir, {
   function ensurePrunedBurial(fork, verifyOpts) {
     const located = locateFork(fork);
     if (!located) return { ok: true, verifyOpts };
-    const { parentH, prefix } = located;
+    const { parentH, prefixOf } = located;
     const forkTip = parentH + fork.length;
     const need = [];
     for (let i = 0; i < fork.length; i += 1) {
@@ -5564,13 +6077,23 @@ export function createStore(dir, {
       need.push({ block, structuralH, index: i });
     }
     if (!need.length) return { ok: true, verifyOpts };
+    const prefix = prefixOf();
     const proveAt = (n, at) => {
       if (n >= need.length) return { ok: true, verifyOpts: { ...verifyOpts, provenBurialAt: at } };
       const item = need[n];
       const history = prefix.concat(fork.slice(0, item.index));
       const proved = proveBurial(item.block, verifyOpts, burialAnchor(item.block, item.structuralH, history));
       const take = (p) => {
-        const next = p?.ok ? { ...at, [item.structuralH]: p.top } : at;
+        let claimed = null;
+        try {
+          if (p?.ok && p.claimed != null) {
+            const raw = Buffer.from(p.claimed);
+            if (raw.length === 32) claimed = raw;
+          }
+        } catch { claimed = null; }
+        const next = claimed
+          ? { ...at, [item.structuralH]: { top: p.top, claimed } }
+          : at;
         return proveAt(n + 1, next);
       };
       if (proved && typeof proved.then === 'function') return proved.then(take);
@@ -5588,8 +6111,36 @@ export function createStore(dir, {
 
   let offLoopGate = Promise.resolve();
 
-  function ingestInner(fork, verifyOpts = {}) {
-    if (!Array.isArray(fork) || !fork.length) return { ok: false, reason: 'empty' };
+  /**
+   * A block under a hash this chain already holds is that block only if it
+   * carries our header bytes and its body rebuilds the merkle root that
+   * header seals. Otherwise it is refused, never taken as ours: a known hash
+   * does not stand in for a body check.
+   */
+  function knownHashBodyReason(fork) {
+    for (let i = 0; i < fork.length; i += 1) {
+      const b = fork[i];
+      const hex = blockHex(b);
+      const at = hex ? chainIndexOf(chainIndex, blocks, hex) : -1;
+      if (at < 0) continue;
+      let header;
+      try { header = Buffer.from(b.header); } catch { return { ok: false, reason: 'bad_header', at: i }; }
+      if (!header.equals(Buffer.from(blocks[at].header))) return { ok: false, reason: 'known_hash_header', at: i };
+      let sealed;
+      try { sealed = Buffer.from(decodeHeader(header).merkleRoot); } catch { return { ok: false, reason: 'bad_header', at: i }; }
+      const leaves = blockLeaves(b.txs || []);
+      if (!leaves) return { ok: false, reason: 'duplicate_tx', at: i };
+      if (!merkleRoot(leaves).equals(sealed)) return { ok: false, reason: 'merkle', at: i };
+    }
+    return null;
+  }
+
+  function ingestInner(arrived, verifyOpts = {}) {
+    if (!Array.isArray(arrived) || !arrived.length) return { ok: false, reason: 'empty' };
+    verifyOpts = withArrival(arrived, verifyOpts);
+    const fork = arrived.map(arrivedBody);
+    const knownBad = knownHashBodyReason(fork);
+    if (knownBad) return { ...knownBad, tip: tip() };
     const stage0 = chainStage0Rejected(fork);
     if (stage0) return stage0;
     const t = tip();
@@ -5629,7 +6180,7 @@ export function createStore(dir, {
       return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, blocks.length - 1));
     }
     const prevHex = Buffer.from(decoded.prevBlockHash).toString('hex').toLowerCase();
-    const anchorIdx = indexByHex(blocks, prevHex);
+    const anchorIdx = chainIndexOf(chainIndex, blocks, prevHex);
     if (anchorIdx >= 0 || (sideBlocks.length && prevHex === sideTipHash())) {
       return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, anchorIdx));
     }
@@ -5745,22 +6296,84 @@ export function createStore(dir, {
   let mempoolVault = null;
   const openRound = new Map();
   const OPEN_ROUND_TTL_MS = 180_000;
+  const peerRoundBudget = new Map();
 
-  function noteOpenRound(rows = [], { source = 'local' } = {}) {
-    const now = Date.now();
-    for (const r of rows || []) {
-      const tag = String(r.tag || '').trim().toLowerCase();
+  function dropOldestPeerRound() {
+    let oldestKey = '';
+    let oldestAt = Infinity;
+    for (const [key, row] of openRound) {
+      if (row.source === 'local') continue;
+      if (row.at < oldestAt) {
+        oldestAt = row.at;
+        oldestKey = key;
+      }
+    }
+    if (!oldestKey) return false;
+    openRound.delete(oldestKey);
+    return true;
+  }
+
+  function peerBudget(peer, now) {
+    const key = String(peer || '');
+    let row = peerRoundBudget.get(key);
+    if (row) peerRoundBudget.delete(key);
+    if (!row) {
+      while (peerRoundBudget.size >= OPEN_ROUND_PEER_BUDGETS) {
+        const oldest = peerRoundBudget.keys().next().value;
+        if (oldest == null) break;
+        peerRoundBudget.delete(oldest);
+      }
+      row = { windowStart: now, used: 0, tags: new Set() };
+    } else if (now - row.windowStart >= OPEN_ROUND_PEER_WINDOW_MS) {
+      row.windowStart = now;
+      row.used = 0;
+      row.tags.clear();
+    }
+    peerRoundBudget.set(key, row);
+    return row;
+  }
+
+  function noteOpenRound(rows = [], { source = 'local', peer = '', now = Date.now() } = {}) {
+    const local = source === 'local';
+    const inspect = local ? OPEN_ROUND_CAP : OPEN_ROUND_PEER_TAGS * 4;
+    const list = Array.isArray(rows) ? rows.slice(0, inspect) : [];
+    const budget = local ? null : peerBudget(peer, now);
+    const accepted = [];
+    for (const [key, row] of openRound) {
+      if (now - row.at > OPEN_ROUND_TTL_MS) {
+        openRound.delete(key);
+        const owner = peerRoundBudget.get(row.peer);
+        if (owner) owner.tags.delete(key);
+      }
+    }
+    for (const r of list) {
+      const tag = String(r?.tag || '').trim().toLowerCase();
       if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
       const count = Math.floor(Number(r.count) || 0);
       if (count < 1) continue;
-      const prev = openRound.get(tag);
-      if (!prev || source === 'local' || count >= prev.count || (now - prev.at) > 12_000) {
-        openRound.set(tag, { tag, count, at: now, source: String(source || 'peer') });
+      if (budget) {
+        const known = budget.tags.has(tag);
+        if (!known && budget.tags.size >= OPEN_ROUND_PEER_TAGS) continue;
+        if (budget.used >= OPEN_ROUND_PEER_RATE) continue;
       }
+      const prev = openRound.get(tag);
+      const take = !prev || local || count >= prev.count || (now - prev.at) > 12_000;
+      if (!take) continue;
+      if (!prev && openRound.size >= OPEN_ROUND_CAP && !(local && dropOldestPeerRound())) continue;
+      openRound.set(tag, {
+        tag,
+        count,
+        at: now,
+        source: local ? 'local' : 'peer',
+        peer: local ? '' : String(peer || ''),
+      });
+      if (budget) {
+        budget.used += 1;
+        budget.tags.add(tag);
+      }
+      if (!prev || count > prev.count) accepted.push({ tag, count });
     }
-    for (const [k, v] of openRound) {
-      if (now - v.at > OPEN_ROUND_TTL_MS) openRound.delete(k);
-    }
+    return accepted;
   }
 
   function clearOpenRound() {
@@ -5841,15 +6454,8 @@ export function createStore(dir, {
     }
     for (const idx of walk) {
       const raw = mempool[idx];
-      const m = reviveTx(raw);
-      const dest = destForLogin(m.to, { continuityRoot: lag1, height }) || m.to;
-      const tx = {
-        ...m,
-        to: dest,
-        bFlag: m.kind === 'b-spend' || m.bFlag,
-        vin: m.vin || [{ address: m.from }],
-        vout: m.vout || [{ address: dest, nanos: m.nanos, kind: m.kind, memoCt: m.memoCt }],
-      };
+      const m = keepHeldKey(reviveTx(raw), raw);
+      const tx = sealedFormOf(m, { continuityRoot: lag1, height });
       if (pause.poolWithdraw && tx.kind === 'pool-withdraw') continue;
       const bucket = v3BucketProofRejected(tx);
       if (bucket) {
@@ -5964,6 +6570,7 @@ export function createStore(dir, {
         nowMs: now,
         height,
         blocks,
+        magic: bookMagic,
         noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       };
       if (txIsReserveAction(tx)) {
@@ -5976,6 +6583,7 @@ export function createStore(dir, {
         // Mark the leaf now. One tree rebuild, after this walk, covers the body.
         admitOpts.deferVaultRoot = true;
       }
+      admitOpts.selfKey = heldBodyKey(raw);
       const got = admitMempool(book, tx, admitOpts);
       if (got.ok) {
         pendingTxs.push(got.tx);
@@ -6103,6 +6711,7 @@ export function createStore(dir, {
     const allowTrust = verifyOpts?.trusted === true;
     const claimed = powHash ? Buffer.from(String(powHash), 'hex') : null;
     const okHash = allowTrust && claimed && claimed.length === 32 ? claimed : null;
+    if (claimed && claimed.length === 32) block.hash = claimed;
     void skipSharePow;
     void trustedPowHash;
     return append(block, { trustedPowHash: okHash, skipSharePow: !!okHash });
@@ -6131,6 +6740,28 @@ export function createStore(dir, {
     template,
     submitHeader,
     probeBlock,
+    /**
+     * A digest (hex) of the live Reserve EVM state: every account, code and
+     * storage slot the session holds, in key order. Null before the first EVM
+     * block. Read-only. The session's SimpleStateManager keeps no trie, so
+     * this hashes its live maps instead of asking for a state root.
+     */
+    evmStateDigest() {
+      const sm = evmSession?.evm?.stateManager;
+      if (!sm || typeof sm.topAccountStack !== 'function') return null;
+      const h = createHash('sha256').update('shear-evm-state-digest-v1');
+      const part = (tag, map, enc) => {
+        for (const key of [...map.keys()].sort()) {
+          const v = enc(map.get(key));
+          h.update(`${tag}:${key}:${v.length}:`).update(v);
+        }
+      };
+      const bytes = (v) => (v == null ? Buffer.alloc(0) : Buffer.from(v));
+      part('a', sm.topAccountStack(), (a) => (a == null ? Buffer.from('-') : Buffer.from(a.serialize())));
+      part('c', sm.topCodeStack(), bytes);
+      part('s', sm.topStorageStack(), bytes);
+      return h.digest('hex');
+    },
     jobs,
     mempool,
     spentB,

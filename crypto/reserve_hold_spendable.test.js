@@ -96,7 +96,9 @@ describe('reserve principal is not spendable', () => {
       const lock = signSpendTx(raw, id.privateKey);
       const queued = live.queueTx(lock);
       assert.equal(queued.ok, false, queued.reason || 'queue');
-      assert.equal(queued.reason, 'admit_version');
+      // A plaintext lock names from/to. Since a5760821 the mempool refuses that
+      // address leak (compactLockLeakRejected) before the admit-version gate.
+      assert.equal(queued.reason, 'vote_leak');
       const heldSeal = await seal(live, miner, t0 + 10 * step, 11);
       assert.equal(heldSeal.ok, true, heldSeal.reason || 'lock seal');
       const held = live.spendableNanos(miner);

@@ -8,7 +8,8 @@ import { buildTemplate, verifyBlock, GENESIS_PREV } from '../src/chain.js';
 import { GENESIS_BITS_PACKED, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { newIdentity, freshStealthDest, hash20FromAddress, ed25519SeedOf } from '../../crypto/address.js';
 import { sealNote } from '../../crypto/note.js';
-import { signSpendTx } from '../../crypto/spend.js';
+import { signSpendTx, verifySpendSig } from '../../crypto/spend.js';
+import { compactLockLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   ANCHOR_QUANTUM,
   anchorRejectReason,
@@ -43,6 +44,9 @@ describe('ADMITv3 anchor on queue and verify', () => {
     const store = createStore(dir);
     const Q = ANCHOR_QUANTUM;
     const amounts = [1, 1_000_000_000];
+    // A lock names its owner by dest20 only. `from`, `to`, and an ssa1 address
+    // on a lock are vote_leak, which runs before the anchor gate.
+    const d20 = Buffer.from(hash20FromAddress(who.dest));
     const anchors = [0, 1, Q - 1, Q + 1, -Q, Q, Q * 2, Q * (SPENDABLE_CONFIRMATIONS + 1)];
     try {
       for (const nanos of amounts) {
@@ -50,13 +54,12 @@ describe('ADMITv3 anchor on queue and verify', () => {
           const tx = {
             id: `lock-${nanos}-${A}`,
             kind: 'lock',
-            from: who.dest,
-            to: who.dest,
             nanos,
             anchor: A,
             vin: [{}],
-            vout: [{ kind: 'lock', nanos, address: who.dest }],
+            vout: [{ kind: 'lock', nanos, dest20: d20 }],
           };
+          assert.equal(compactLockLeakRejected(tx), null, `${nanos} ${A} leak`);
           const queued = store.queueTx(tx);
           assert.equal(queued.ok, false, `${nanos} ${A} ${queued.reason}`);
           assert.equal(queued.reason, anchorRejectReason(A, 1), `${nanos} ${A}`);
@@ -67,8 +70,9 @@ describe('ADMITv3 anchor on queue and verify', () => {
           nanos,
           anchor: Q,
           vin: [{ anchor: Q * 2 }],
-          vout: [{ kind: 'lock', nanos, address: who.dest }],
+          vout: [{ kind: 'lock', nanos, dest20: d20 }],
         };
+        assert.equal(compactLockLeakRejected(split), null, `${nanos} split leak`);
         // `anchor` is not a signed vin key. queueTx and verifyBlock reject
         // that key as unsigned before checkAdmitAnchor. Reordering those
         // gates would change the consensus reason. The quantum split is
@@ -77,24 +81,28 @@ describe('ADMITv3 anchor on queue and verify', () => {
         const queuedSplit = store.queueTx(split);
         assert.equal(queuedSplit.ok, false, String(nanos));
         assert.equal(queuedSplit.reason, 'unsigned', String(nanos));
-        const note = sealNote(nanos, { dest20: hash20FromAddress(who.dest), kind: 'lock' });
+        const note = sealNote(nanos, { dest20: d20, kind: 'lock' });
         const unanchored = {
           id: `plain-${nanos}`,
           kind: 'lock',
-          from: who.dest,
-          to: who.dest,
           nanos,
-          vin: [{ commit: note.commit, address: who.dest }],
-          vout: [{ ...note, kind: 'lock', address: who.dest }],
+          vin: [{ commit: note.commit, dest20: d20 }],
+          vout: [{ ...note, kind: 'lock', dest20: d20 }],
         };
+        // The spend signature binds vin dest20. This lock has no FS-1 blob,
+        // so spendPub and sig are not the FS-1 identity leak.
         signSpendTx(unanchored, who.key);
+        assert.equal(verifySpendSig(unanchored), true, `${nanos} sig`);
+        assert.equal(compactLockLeakRejected(unanchored), null, `${nanos} plain leak`);
         const queuedPlain = store.queueTx(unanchored);
         assert.equal(queuedPlain.reason, 'admit_membership', `${nanos} ${queuedPlain.reason}`);
       }
       const later = SPENDABLE_CONFIRMATIONS + Q;
       const mature = { kind: 'lock', anchor: Q, vin: [{}], vout: [] };
       assert.equal(checkAdmitAnchor(mature, later).ok, true);
-      assert.equal(store.queueTx({ ...mature, id: 'later', nanos: 1 }).reason, 'admit_anchor_window');
+      // No top-level nanos: with no lock row to open, a stated amount is
+      // amount_field (reserveNanosRejected) before the anchor window.
+      assert.equal(store.queueTx({ ...mature, id: 'later' }).reason, 'admit_anchor_window');
       for (const A of [1, Q]) {
         const tx = {
           id: `block-${A}`,
@@ -102,7 +110,7 @@ describe('ADMITv3 anchor on queue and verify', () => {
           nanos: 1,
           anchor: A,
           vin: [{}],
-          vout: [{ kind: 'lock', nanos: 1, address: who.dest }],
+          vout: [{ kind: 'lock', nanos: 1, dest20: d20 }],
         };
         const tpl = buildTemplate({
           prev: GENESIS_PREV,

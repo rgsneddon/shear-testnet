@@ -53,6 +53,19 @@ function commitHex(v) {
   }
 }
 
+/**
+ * A coinbase row's label, only when it is the one its own dest20 derives
+ * (noteCommitOfDest20). Consensus refuses any other (chain.js, coinbase_output);
+ * this is the second guard: a label naming another dest never credits that
+ * dest's Spendable. Empty when the row has no dest20 or the label differs.
+ */
+function ownCoinbaseLabel(o) {
+  const label = commitHex(o?.noteCommit);
+  const d20 = dest20Hex(o?.dest20);
+  if (!label || !d20) return '';
+  return noteCommitOfDest20(Buffer.from(d20, 'hex')).toString('hex') === label ? label : '';
+}
+
 function dest20Hex(field) {
   if (!field) return '';
   try {
@@ -152,7 +165,7 @@ export function createNoteLedger({ digestsOf = null } = {}) {
           index,
           block,
           tx,
-          commitHex: commitHex(o?.noteCommit),
+          commitHex: coinbase ? ownCoinbaseLabel(o) : commitHex(o?.noteCommit),
           dest20Hex: kind === 'pool-withdraw' ? dest20Hex(o?.dest20) : '',
           opened: undefined,
         };

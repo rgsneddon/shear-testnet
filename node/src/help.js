@@ -48,7 +48,7 @@ function sectionEnv() {
     '  SHEAR_STRATUM       solo stratum port (default 1111)',
     '  SHEAR_STRATUM_BIND  solo stratum bind (default 127.0.0.1)',
     '  SHEARK_MINER        optional path to ShearK-Miner 2.8 if shearhash.node is missing',
-    '  SHEAR_MAINNET_EMIT  do not set. The 16 Nov countdown is display only and does not emit.',
+    '  SHEAR_MAINNET_EMIT  do not set. The 21 Dec countdown is genesis; reaching it does not emit.',
     '  SHEAR_MAINNET_EMIT_CONFIRM  do not set.',
   ];
 }
@@ -60,7 +60,7 @@ function sectionRpc() {
     '  GET /api/network | /network synced nodes, tip hash, proven round hashes. No dest, amount, or claimed hash rate',
     '  GET /header?height=N        one header',
     '  GET /headers?from=&to=      header window',
-    '  GET /block?height=N         compact block',
+    '  GET /block?height=N         compact block (&wire=1: the p2p frame, as HTTP follow reads it)',
     '  GET /blocks?from=&to=       compact window',
     '  GET /chaintips /reorgs /policy /jroot /fingerprint /fluxset',
     '  Notes, balance, and history are owner-side: scan /blocks, open amtCt. No route returns an amount.',
@@ -163,7 +163,7 @@ export function printHelp(topic) {
   const tail = [
     '',
     'RPC is loopback. Do not bind RPC to the public internet.',
-    'Mainnet shear-v1 is not live. The public countdown is 16th November 2026 at 1400hrs UK time. That countdown is a display date and does not emit. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET.',
+    'Mainnet shear-v1 is not live. The public countdown is 21st December 2026 at 1400hrs UK time, the genesis instant. Reaching it does not emit. SHEAR_NETWORK=shear-v1 prints clock_wait unless SHEAR_MAINNET_EMIT=1 and SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET.',
     'Build native addons on this box: cmake randomx, then make -C crypto/native',
   ];
   const body = {

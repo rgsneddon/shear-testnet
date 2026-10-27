@@ -31,9 +31,29 @@ void main() {
         fee: c['fee'] as int,
         nIn: c['nIn'] as int,
         vout: [for (final o in (c['vout'] as List)) Map<String, dynamic>.from(o as Map)],
+        memoCt: c['memoCt'] == null ? null : Map<String, dynamic>.from(c['memoCt'] as Map),
       );
       expect(_toHex(got), c['digest']);
     }
+  });
+
+  test('the wallet signs the memo envelope the node signs; stripped or swapped, the digest moves', () {
+    final c = cases.firstWhere((c) => c['memoCt'] != null);
+    final memo = Map<String, dynamic>.from(c['memoCt'] as Map);
+    expect(_toHex(fs1MemoDigest(memo)), c['memoDigest']);
+    final vout = [for (final o in (c['vout'] as List)) Map<String, dynamic>.from(o as Map)];
+    String d(Map<String, dynamic>? m) => _toHex(fs1BodyDigest(
+          magic: kBookMagic,
+          kind: c['kind'] as String,
+          anchor: c['anchor'] as int,
+          fee: c['fee'] as int,
+          nIn: c['nIn'] as int,
+          vout: vout,
+          memoCt: m,
+        ));
+    expect(d(memo), c['digest']);
+    expect(d(null), cases.first['digest']);
+    expect(d({...memo, 'ct': 'R' * (memo['ct'] as String).length}), isNot(c['digest']));
   });
 
   test('a changed fee or anchor changes the digest', () {

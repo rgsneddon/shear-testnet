@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
-import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
+import { admitMempool, emptyMempool, heldBodyKey } from '../../crypto/mempool.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { levyNanos } from '../../crypto/levy.js';
 import {
@@ -108,9 +108,13 @@ describe('v12 mempool tag parse stays linear', () => {
       largest = book;
     }
     assert.equal(largest.tagIndex.size, largest.txs.length);
+    // The index names a held row by its body key, not the id its sender
+    // picked (txBodyKey), so a resent body under a new id is the same row.
     for (const tx of largest.txs) {
+      const key = heldBodyKey(tx);
+      assert.ok(key);
       const before = txSpendTagParses();
-      assert.equal(largest.tagIndex.get(tagHexOf(tx)), String(tx.id));
+      assert.equal(largest.tagIndex.get(tagHexOf(tx)), key);
       assert.equal(txSpendTagParses(), before, 'index read does not parse');
     }
 

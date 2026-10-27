@@ -1,6 +1,10 @@
 # Windows shear_v3.dll. shear_hash.c uses pthread, so this is MinGW, and
 # libgcc, libstdc++, and winpthread are linked statically. The Flutter
 # release zip must not contain those runtime DLLs.
+# x86_64 builds pin the ISA baseline, -march=x86-64 -mtune=generic, as
+# scripts/randomx_build.sh does for every other pack: a MinGW gcc can default
+# higher. librandomx.a is always (re)configured with it, never reused from an
+# earlier build. scripts/isa_scan.py checks the DLL.
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = (Resolve-Path (Join-Path $Here '..\..')).Path
@@ -33,13 +37,13 @@ $env:PATH = "$Bin;$env:PATH"
 $env:CC = $Gcc
 $env:CXX = $Gxx
 
+$Base = @('-march=x86-64', '-mtune=generic')
 $RxLib = Join-Path $Build 'librandomx.a'
-if (-not (Test-Path $RxLib)) {
-  & cmake -S $Rx -B $Build -G 'MinGW Makefiles' -DARCH=default -DCMAKE_BUILD_TYPE=Release
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  & cmake --build $Build --target randomx -j
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
+& cmake -S $Rx -B $Build -G 'MinGW Makefiles' -DARCH=default -DCMAKE_BUILD_TYPE=Release `
+  "-DCMAKE_C_FLAGS=$($Base -join ' ')" "-DCMAKE_CXX_FLAGS=$($Base -join ' ')"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& cmake --build $Build --target randomx -j
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (-not (Test-Path $RxLib)) {
   Write-Error "librandomx.a missing under $Build"
 }
@@ -51,7 +55,7 @@ $Obj = Join-Path $Here 'build\win'
 New-Item -ItemType Directory -Force -Path $Obj | Out-Null
 $Inc = @('-I', $Miner, '-I', (Join-Path $Rx 'src'))
 function Compile-C([string]$Src, [string]$Name) {
-  & $Gcc -O2 -Wall @Inc -c -o (Join-Path $Obj $Name) $Src
+  & $Gcc @Base -O2 -Wall @Inc -c -o (Join-Path $Obj $Name) $Src
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 Compile-C (Join-Path $Here 'shear_v3_export.c') 'shear_v3_export.o'
@@ -59,13 +63,13 @@ Compile-C (Join-Path $Miner 'shear_hash.c') 'shear_hash.o'
 Compile-C (Join-Path $Miner 'sha512.c') 'sha512.o'
 Compile-C (Join-Path $Miner 'sha256.c') 'sha256.o'
 # C sources stay C. g++ only links, so libstdc++ and winpthread stay static.
-& $Gxx -shared -O2 -static -static-libgcc -static-libstdc++ `
+& $Gxx @Base -shared -O2 -static -static-libgcc -static-libstdc++ `
   -o $Out `
   (Join-Path $Obj 'shear_v3_export.o') `
   (Join-Path $Obj 'shear_hash.o') `
   (Join-Path $Obj 'sha512.o') `
   (Join-Path $Obj 'sha256.o') `
   $RxLib `
-  -Wl,-Bstatic -lpthread -Wl,-Bdynamic
+  '-Wl,-Bstatic' '-lpthread' '-Wl,-Bdynamic'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "built $Out"

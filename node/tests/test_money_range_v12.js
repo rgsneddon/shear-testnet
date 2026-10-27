@@ -13,10 +13,13 @@ import { boundReserveWithdraw, verifyFundedBody } from '../../crypto/spend.js';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { RESERVE_EPOCH_MS, RESERVE_PROGRAM } from '../../crypto/asert.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { portalIdFromDest, compactLockLeakRejected, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
 
 const KINDS = ['lock', 'vote', 'withdraw', 'vortice-register', 'evm-value', 'pool-withdraw'];
 const ADDRESS_KINDS = new Set(['vortice-register', 'evm-value', 'pool-withdraw']);
+// A lock or withdraw on the wire names dest20 only. from, to, payer, and an
+// ssa1 address on it are vote_leak, which runs before the range check.
+const COMPACT_KINDS = new Set(['lock', 'withdraw']);
 
 function minerDest() {
   const id = newIdentity();
@@ -61,15 +64,37 @@ function plainTx(kind, dest, nanos) {
   };
 }
 
+/** The same plaintext output in the shape a peer posts. Lock and withdraw carry no address. */
+function wireTx(kind, dest, nanos) {
+  if (!COMPACT_KINDS.has(kind)) return plainTx(kind, dest, nanos);
+  const d20 = Buffer.from(hash20FromAddress(dest));
+  const tx = {
+    kind,
+    nanos,
+    fee: 0,
+    vin: [{ dest20: d20 }],
+    vout: [{ kind, nanos, dest20: d20 }],
+  };
+  assert.equal(compactLockLeakRejected(tx), null, `${kind} lock leak`);
+  assert.equal(withdrawLeakRejected(tx), null, `${kind} withdraw leak`);
+  return tx;
+}
+
 describe('v12 money outputs are range-proven and withdraws are funded', () => {
   it('rejects an unproven output and an unfunded withdraw for any amount', () => {
     const dest = minerDest();
     for (const nanos of [1, 2_000_000_000, 100_000_000_000]) {
       for (const kind of KINDS) {
-        const tx = plainTx(kind, dest, nanos);
+        const tx = wireTx(kind, dest, nanos);
         const parked = admitMempool(emptyMempool(), tx, { baseFee: 1 });
         assert.equal(parked.ok, false, kind);
-        const want = ADDRESS_KINDS.has(kind) ? 'kind' : 'range_proof';
+        // The mempool refuses a portal vote outright (vote_retired) before any
+        // output check. verifyBlock below still holds a vote to range_proof.
+        let want = ADDRESS_KINDS.has(kind) ? 'kind' : 'range_proof';
+        if (kind === 'vote') want = 'vote_retired';
+        // A pool withdraw is custodial_pull on every network (f9897d50), before
+        // any kind or output check. The pool never pays out of custody.
+        if (kind === 'pool-withdraw') want = 'custodial_pull';
         assert.equal(parked.reason, want, `${kind} ${nanos}`);
       }
       const bare = plainTx('withdraw', dest, nanos);
@@ -79,15 +104,21 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         portals: { [dest]: { staked: nanos - 1, idle: 0, ownerPub: '11'.repeat(32) } },
       });
       if (nanos > 1) assert.equal(over.reason, 'insufficient');
-      const exact = boundReserveWithdraw(bare, {
+      // The portal is keyed by its id, so the body names it. Without it the
+      // lookup finds no portal and stops at owner_missing (ac3951ea).
+      const exact = boundReserveWithdraw({ ...bare, portalId: portalIdFromDest(dest) }, {
         epochBps: 0,
         genesisMs: LUMP_GENESIS,
         portals: { [portalIdFromDest(dest)]: dueLump(nanos) },
       }, null, LUMP_CLOCK);
       assert.equal(exact.ok, false, String(nanos));
       assert.equal(exact.reason, 'mint_forbidden', `${nanos} ${exact.reason}`);
+      // Same portal lookup as `exact` (a5760821: the portal id is the carried
+      // one, not a hash of from). With the portal found and the program
+      // right, a plaintext label is not an amount: mint_amount.
       const unlabeled = boundReserveWithdraw({
         ...bare,
+        portalId: portalIdFromDest(dest),
         programId: RESERVE_PROGRAM,
       }, {
         epochBps: 0,
@@ -125,18 +156,19 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
     const cases = [];
     for (const nanos of amounts) {
       for (const kind of KINDS) {
-        cases.push({ name: `${kind}-${nanos}`, tx: plainTx(kind, dest, nanos), reason: 'range_proof' });
+        const reason = kind === 'pool-withdraw' ? 'custodial_pull' : 'range_proof';
+        cases.push({ name: `${kind}-${nanos}`, tx: wireTx(kind, dest, nanos), reason });
       }
-      const note = sealNote(nanos, { dest20: hash20FromAddress(dest), kind: 'withdraw' });
+      const d20 = Buffer.from(hash20FromAddress(dest));
+      const note = sealNote(nanos, { dest20: d20, kind: 'withdraw' });
       cases.push({
         name: `sealed-unfunded-${nanos}`,
         tx: {
           kind: 'withdraw',
-          from: dest,
           nanos,
           fee: 0,
-          vin: [{ address: dest }],
-          vout: [{ ...note, kind: 'withdraw', address: dest }],
+          vin: [{ dest20: d20 }],
+          vout: [{ ...note, kind: 'withdraw', dest20: d20 }],
         },
         reason: 'admit_version',
         reserveState: { portals: {}, epochBps: 0 },
@@ -145,11 +177,10 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
         name: `sealed-over-${nanos}`,
         tx: {
           kind: 'withdraw',
-          from: dest,
           nanos,
           fee: 0,
-          vin: [{ address: dest }],
-          vout: [{ ...note, kind: 'withdraw', address: dest }],
+          vin: [{ dest20: d20 }],
+          vout: [{ ...note, kind: 'withdraw', dest20: d20 }],
         },
         reason: 'admit_version',
         reserveState: {
@@ -159,6 +190,7 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
       });
     }
     for (const row of cases) {
+      assert.equal(withdrawLeakRejected(row.tx), null, `${row.name} leak`);
       const txs = tpl.txs.concat([row.tx]);
       const decoded = decodeHeader(Buffer.from(tpl.header));
       decoded.merkleRoot = merkleRoot(txs.map(digestTx));

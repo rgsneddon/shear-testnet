@@ -21,9 +21,11 @@ import {
   buildFundedWithdraw,
   compactLockLeakRejected,
   emptyVault,
+  withdrawLeakRejected,
   withdrawRewardRejected,
 } from '../../crypto/reserve_vault.js';
 import { GENESIS_PREV, buildTemplate, digestTx, verifyBlock } from '../src/chain.js';
+import { createRpc } from '../src/rpc.js';
 import { createStore } from '../src/store.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
@@ -248,6 +250,42 @@ describe('withdraw leak gate', () => {
       if (!accepted.ok) assert.notEqual(accepted.reason, 'vote_leak', accepted.reason);
     } finally {
       fs.rmSync(dir3, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses spendPub, sig, and signature on an FS-1 withdraw on p2p, RPC, the mempool, and in a block', async () => {
+    // An FS-1 withdraw is authorised by the SAL and the owner rewardSig, so a
+    // stray identity signature is never checked; it would let anyone holding
+    // a candidate spendPub link the withdraw to that wallet.
+    const dir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-wd-identity-'));
+    const book = createStore(dir4);
+    const rpc = createRpc({ store: book, port: 0, host: '127.0.0.1' });
+    const cases = [
+      ['spendPub', { spendPub: 'ee'.repeat(32) }],
+      ['sig', { sig: 'ab'.repeat(64) }],
+      ['signature', { signature: 'cd'.repeat(64) }],
+    ];
+    try {
+      for (const [name, extra] of cases) {
+        const tx = body({ fs1: Buffer.from([0xf1, 1, 2, 3]), rewardSig: 'aa'.repeat(64), ownerPub: '11'.repeat(32), ...extra });
+        const pooled = admitMempool(emptyMempool(), tx, { height: 2, reserveState: emptyVault() });
+        assert.equal(pooled.reason, 'vote_leak', `${name} mempool ${pooled.reason}`);
+        // p2p: a peer's tx arrives as JSON (hex bytes) and goes to queueTx.
+        const wire = JSON.parse(JSON.stringify({ ...tx, fs1: 'f1010203' }));
+        const fromPeer = book.queueTx(wire);
+        assert.equal(fromPeer.reason, 'vote_leak', `${name} p2p ${fromPeer.reason}`);
+        const viaRpc = await Promise.resolve(rpc.dispatch('queuetx', { tx: structuredClone(wire) }));
+        assert.equal(viaRpc.reason, 'vote_leak', `${name} rpc ${viaRpc.reason}`);
+        const block = verifyBlock(carry(who, tx), null, { probeBody: true, magic: 'shear-testnet-v12' });
+        assert.equal(block.reason, 'vote_leak', `${name} block ${block.reason}`);
+      }
+      // The same fields with no FS-1 blob are not this rule.
+      const plain = body({ sig: 'ab'.repeat(64), signature: 'cd'.repeat(64) });
+      assert.equal(withdrawLeakRejected(plain), null);
+      // A clean FS-1 withdraw passes the leak gate.
+      assert.equal(withdrawLeakRejected(body({ fs1: Buffer.from([0xf1, 1]), rewardSig: 'aa'.repeat(64) })), null);
+    } finally {
+      fs.rmSync(dir4, { recursive: true, force: true });
     }
   });
 

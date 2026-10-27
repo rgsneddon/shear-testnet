@@ -16,9 +16,11 @@ import {
   MAGIC_TESTNET_V7,
   MAGIC_TESTNET_V8,
   MAGIC_TESTNET_V9,
-  medianIntervalMs,
+  asertNextBits,
+  ASERT_EMERGENCY_GAP_FACTOR,
 } from './asert.js';
 import { decodeHeader, encodeHeader } from './header.js';
+import { nonceWithShareTarget } from './share_batch.js';
 import { createStore } from '../node/src/store.js';
 import { judgeShare, createPool } from '../pool/src/pool.js';
 
@@ -53,6 +55,10 @@ function meanGaps(store) {
   return { gaps, mean: sum / gaps.length };
 }
 
+// v12 work is genesis-anchored aserti3-2d (7b50960a). The v8 median step and
+// its ±1 lid are retired: nextBits is 0-lidded on testnet and does not move.
+// The 90 s rule pool and solo share is now asertNextBits from the genesis
+// header, with the own-timestamp emergency window for a late block.
 describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
   it('a 90000 ms chain stays at genesis work and eight fast gaps from a later parent add a bit', () => {
     const live = consensusFingerprint();
@@ -69,7 +75,10 @@ describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-v8-'));
     const store = createStore(dir);
     const miner = dest();
-    const t0 = 1_700_000_000_000;
+    // The pool stamps its job with the wall clock. Seat the chain so the late
+    // template below lands a minute before that clock, inside MTP + 2 h.
+    const span = 8 * TARGET_BLOCK_INTERVAL_MS + 8 * 2_000 + 20 * TARGET_BLOCK_INTERVAL_MS;
+    const t0 = Date.now() - span - 60_000;
     for (let i = 0; i < 9; i += 1) {
       const got = seal(store, { miner, now: t0 + i * TARGET_BLOCK_INTERVAL_MS, pow: powHex(i + 1) });
       assert.equal(got.ok, true, `90s seal ${i} ${got.reason}`);
@@ -94,26 +103,43 @@ describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
     const tip = decodeHeader(Buffer.from(store.tip().header));
     const prev = decodeHeader(Buffer.from(store.blocks[store.blocks.length - 2].header));
     assert.equal(Number(tip.timestamp) - Number(prev.timestamp), 2_000);
-    const gaps = [];
+    const genesis = decodeHeader(Buffer.from(store.blocks[0].header));
+    assert.equal(genesis.bits, GENESIS_BITS_PACKED);
+    const quoteAt = (height, ts, parentTs) => asertNextBits({
+      anchorBits: genesis.bits,
+      anchorTimeMs: Number(genesis.timestamp),
+      anchorHeight: 1,
+      blockTimeMs: ts,
+      blockHeight: height,
+      parentTimeMs: parentTs,
+    });
     for (let i = 1; i < store.blocks.length; i += 1) {
       const a = decodeHeader(Buffer.from(store.blocks[i - 1].header));
       const b = decodeHeader(Buffer.from(store.blocks[i].header));
-      gaps.push(Number(b.timestamp) - Number(a.timestamp));
+      const q = quoteAt(store.blocks[i].height, Number(b.timestamp), Number(a.timestamp));
+      assert.equal(q.ok, true);
+      assert.equal(q.easeBits, 0);
+      assert.equal(b.bits, q.packed, `height ${store.blocks[i].height} seals the ASERT quote`);
     }
-    const seen = medianIntervalMs(gaps);
-    const want = nextBits(tip.bits, seen);
-    assert.equal(seen, 2_000);
-    assert.ok(unpackBits(want) > unpackBits(parentBits), `fast median must harden, got ${unpackBits(want)}`);
-    assert.ok(unpackBits(want) > GENESIS_BITS);
+    // Eight 2 s gaps put the chain 8·88 s ahead of schedule: +704000/τ bits.
+    assert.ok(unpackBits(tip.bits) > unpackBits(parentBits), `fast gaps must harden, got ${unpackBits(tip.bits)}`);
+    assert.ok(unpackBits(tip.bits) > GENESIS_BITS);
+    assert.equal(nextBits(tip.bits, 2_000), tip.bits);
 
     const longNow = Number(tip.timestamp) + TARGET_BLOCK_INTERVAL_MS * 20;
-    const eased = nextBits(tip.bits, longNow - Number(tip.timestamp));
+    assert.ok(longNow - Number(tip.timestamp) > ASERT_EMERGENCY_GAP_FACTOR * TARGET_BLOCK_INTERVAL_MS);
+    const quote = quoteAt(store.tip().height + 1, longNow, Number(tip.timestamp));
+    assert.equal(quote.ok, true);
+    assert.ok(quote.easeBits > 0, 'a 20·T gap opens the emergency window');
+    const want = quote.packed;
+    const eased = quote.eased;
+    assert.ok(unpackBits(want) < unpackBits(tip.bits), 'a late block is easier');
     assert.ok(unpackBits(eased) < unpackBits(want));
 
     const soloJob = store.template({ miner, shareBits: 8, now: longNow }).job;
+    assert.equal(Number(soloJob.timestamp), longNow);
     assert.equal(soloJob.blockBits, want);
     assert.notEqual(soloJob.blockBits, eased);
-    assert.equal(Number(soloJob.timestamp) > Number(tip.timestamp), true);
 
     const pool = createPool({
       dataDir: dir,
@@ -124,20 +150,48 @@ describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
       lockBits: true,
     });
     const poolJob = pool.issueJob();
-    assert.equal(Number(poolJob.blockBits), want);
-    assert.equal(Number(poolJob.blockBits), Number(soloJob.blockBits));
+    assert.ok(poolJob, 'pool issues a job on this tip');
+    // Same rule, the pool's own stamp: the full quote, never the eased one.
+    const poolTs = Number(decodeHeader(Buffer.from(poolJob.header, 'hex')).timestamp);
+    assert.ok(poolTs > longNow);
+    const poolQuote = quoteAt(store.tip().height + 1, poolTs, Number(tip.timestamp));
+    assert.equal(Number(poolJob.blockBits), poolQuote.packed);
+    assert.notEqual(Number(poolJob.blockBits), poolQuote.eased);
 
     const miss = Buffer.alloc(32, 0xff);
     miss[0] = 0;
     assert.equal(meetsTarget(miss, 8), true);
     assert.equal(meetsTarget(miss, want), false);
+    assert.equal(meetsTarget(miss, Number(poolJob.blockBits)), false);
+    // Share credit is the nonce high byte (b0d0b030). The issued job header
+    // carries nonce 0, which names no legal share width, so it earns nothing.
+    const poolHdr = decodeHeader(Buffer.from(poolJob.header, 'hex'));
+    const shareHeader = (nonce) => encodeHeader({
+      version: poolHdr.version,
+      prevBlockHash: poolHdr.prevBlockHash,
+      merkleRoot: poolHdr.merkleRoot,
+      continuityRoot: poolHdr.continuityRoot,
+      timestamp: poolHdr.timestamp,
+      bits: poolHdr.bits,
+      nonce,
+      baseFee: poolHdr.baseFee,
+    });
+    const unnamed = judgeShare({
+      job: { ...poolJob, shareBits: 8 },
+      hash: miss,
+      header: shareHeader(0n),
+      dest: '',
+    });
+    assert.equal(unnamed.ok, false);
+    assert.equal(unnamed.reason, 'share_target');
     const judged = judgeShare({
       job: { ...poolJob, shareBits: 8 },
       hash: miss,
-      header: Buffer.from(poolJob.header, 'hex'),
+      header: shareHeader(nonceWithShareTarget(0n, 8)),
       dest: '',
     });
-    assert.equal(judged.ok, true);
+    assert.equal(judged.ok, true, judged.reason);
+    assert.equal(judged.creditedShareBits, 8);
     assert.equal(judged.block, false);
 
     const offered = store.template({
@@ -156,7 +210,8 @@ describe('shear-testnet-v8 pool and solo share the 90s rule', () => {
       merkleRoot: decoded.merkleRoot,
       continuityRoot: decoded.continuityRoot,
       timestamp: decoded.timestamp,
-      bits: eased,
+      // One unit under the emergency window at this stamp.
+      bits: eased - 1,
       nonce: 0n,
       baseFee: decoded.baseFee,
     });

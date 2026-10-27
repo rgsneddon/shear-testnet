@@ -23,14 +23,31 @@ const hangPrefix = laneTest ? (process.env.SHEAR_TEST_HANG_HEADER_PREFIX || '') 
 const delayPrefix = laneTest ? (process.env.SHEAR_TEST_DELAY_HEADER_PREFIX || '') : '';
 const delayMs = laneTest ? (Number(process.env.SHEAR_TEST_DELAY_MS) || 0) : 0;
 
+let pipeClosed = false;
+function onPipeClosed(err) {
+  if (err?.code !== 'EPIPE' || pipeClosed) return;
+  pipeClosed = true;
+  process.exit(0);
+}
+process.stdout.on('error', onPipeClosed);
+process.stdin.on('error', onPipeClosed);
+
+function writeLine(line) {
+  if (pipeClosed || !process.stdout.writable || process.stdout.destroyed) {
+    onPipeClosed({ code: 'EPIPE' });
+    return;
+  }
+  process.stdout.write(line);
+}
+
 function answer(id, hex) {
   try {
     const raw = Buffer.from(hex, 'hex');
     const hash = shearHash(raw);
-    process.stdout.write(`${id}\t${Buffer.from(hash).toString('hex')}\n`);
+    writeLine(`${id}\t${Buffer.from(hash).toString('hex')}\n`);
   } catch (err) {
     const msg = String(err?.message || err).replace(/\s+/g, ' ').slice(0, 180);
-    process.stdout.write(`${id}\tERR\t${msg}\n`);
+    writeLine(`${id}\tERR\t${msg}\n`);
   }
 }
 

@@ -7,13 +7,21 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, freshStealthDest, ed25519SeedOf, stealthKey } from '../../crypto/address.js';
-import { attachDummyOuts } from '../../crypto/dummy.js';
+import {
+  newIdentity,
+  freshStealthDest,
+  ed25519SeedOf,
+  stealthKey,
+  hash20FromAddress,
+  admitBaseFromAddress,
+} from '../../crypto/address.js';
+import { attachDummyOuts, viewTagOf } from '../../crypto/dummy.js';
 import {
   openedCoinbaseNanos,
   flowInputsBound,
   txSpendTags,
   kernelExcess,
+  sealNote,
 } from '../../crypto/note.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { levyNanos } from '../../crypto/levy.js';
@@ -23,6 +31,7 @@ import {
   emptyFluxset,
   fluxsetFromBlocks,
   fluxsetIndexOf,
+  attachAdmitPub,
 } from '../../crypto/admit.js';
 import { attachStubAdmitV2, stubAdmitV2 } from './stub_admit_v2.js';
 import { verifyTypedAdmitFunding } from '../../crypto/admit_v3.js';
@@ -147,6 +156,33 @@ function sendBody({ id, dest, notes, pay, fee, change }) {
       { address: dest, nanos: change, kind: 'send' },
     ],
   }, { spent: notes.length === 1 ? notes[0] : notes });
+}
+
+/**
+ * A send output that carries its value opening (valueProof). Since e2bd74cf
+ * sealFlowVout seals send outputs hidden, so a spend built by sendBody has no
+ * opening. This builds the opened output the way sealFlowVout did before.
+ */
+function openedFlowVout(dest, nanos) {
+  const d20 = hash20FromAddress(dest);
+  let note = sealNote(nanos, { dest20: d20, kind: 'send' });
+  note.viewTag = viewTagOf(note.noteCommit);
+  note.dest20 = d20;
+  note.address = dest;
+  note = attachAdmitPub(note, { admitBase: admitBaseFromAddress(dest) });
+  assert.ok(note.valueProof && note.commit && note.admitPub);
+  return note;
+}
+
+/** The same spend with its pay output opened, balanced, and signed again. */
+function withOpenedPay(tx, id, nanos, key) {
+  const opened = cloneSpend(tx, id);
+  opened.vout[0] = openedFlowVout(tx.vout[0].address, nanos);
+  opened.excess = kernelExcess(opened.vout, opened.vin);
+  assert.ok(opened.excess);
+  signSpendTx(opened, key);
+  omitTags(opened);
+  return opened;
 }
 
 function tagHex(tx) {
@@ -305,10 +341,20 @@ describe('v12 spend tags come from the proof bytes', () => {
     signSpendTx(spend, key);
     const real = blobTag(spend.admit_proof);
     omitTags(spend);
+    // Send outputs are hidden (e2bd74cf), so the full body reaches the
+    // version gate: the byte-2 stub is admit_version, and no tag is recorded.
     const queued = store.queueTx(spend);
     assert.equal(queued.ok, false);
-    assert.equal(queued.reason, 'value_open', queued.reason);
+    assert.equal(queued.reason, 'admit_version', queued.reason);
     assert.equal(store.mempool.some((m) => m.id === 'omit'), false);
+    assert.equal(store.fluxset().spendTags.has(real.toString('hex')), false);
+    // A send output that carries its opening is value_open before the version gate.
+    const opened = withOpenedPay(spend, 'omit-opened', pay, key);
+    assert.equal(opened.admit_proof.blob[0], 2);
+    const openedQ = store.queueTx(opened);
+    assert.equal(openedQ.ok, false);
+    assert.equal(openedQ.reason, 'value_open', openedQ.reason);
+    assert.equal(store.mempool.some((m) => m.id === 'omit-opened'), false);
     assert.equal(store.fluxset().spendTags.has(real.toString('hex')), false);
     const wired = store.queueTx(compactTx(spend));
     assert.equal(wired.ok, false);
@@ -521,9 +567,19 @@ describe('v12 spend tags come from the proof bytes', () => {
     const tags = proofs.map((proof) => blobTag(proof).toString('hex'));
     assert.equal(new Set(tags).size, tags.length);
     omitTags(tx);
+    // Hidden send outputs (e2bd74cf): the full body reaches the version gate.
     const queued = store.queueTx(tx);
-    assert.equal(queued.reason, 'value_open', queued.reason);
+    assert.equal(queued.ok, false);
+    assert.equal(queued.reason, 'admit_version', queued.reason);
     assert.equal(store.mempool.some((m) => m.id === 'two'), false);
+    for (const hex of tags) assert.equal(store.fluxset().spendTags.has(hex), false);
+    // The same two-input spend with an opened pay output is value_open first.
+    const openedTx = withOpenedPay(tx, 'two-opened', pay, key);
+    assert.equal(openedTx.admit_proofs.length, 2);
+    const openedQ = store.queueTx(openedTx);
+    assert.equal(openedQ.ok, false);
+    assert.equal(openedQ.reason, 'value_open', openedQ.reason);
+    assert.equal(store.mempool.some((m) => m.id === 'two-opened'), false);
     for (const hex of tags) assert.equal(store.fluxset().spendTags.has(hex), false);
     const wired = store.queueTx(compactTx(tx));
     assert.equal(wired.ok, false);

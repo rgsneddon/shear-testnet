@@ -6,7 +6,7 @@ import path from 'node:path';
 import { newIdentity, encodeDest, hash20FromAddress } from '../../crypto/address.js';
 import { bindWeightFee, levyNeed } from '../../crypto/levy.js';
 import { signSpendTx } from '../../crypto/spend.js';
-import { lockTx, VOTE_HOLD, portalIdFromDest } from '../../crypto/reserve_vault.js';
+import { lockTx, VOTE_HOLD, portalIdFromDest, portalIdFromDest20 } from '../../crypto/reserve_vault.js';
 import { createStore } from '../../node/src/store.js';
 import { attachPoolIpc, attachSidecarIpc } from '../../node/src/p2p_ipc.js';
 import { createPool } from '../src/pool.js';
@@ -24,20 +24,24 @@ function userIds(store, job) {
 
 function publicReceipt(who, kind, id) {
   const d20 = Buffer.from(hash20FromAddress(who.dest));
+  // A compact lock names its portal as H(tag, dest20) and carries no
+  // payoutPortalId (cb733226). Those fields are vote_leak, which would hide
+  // the public_receipt refusal this suite checks.
+  const portalId = kind === 'lock' ? portalIdFromDest20(d20) : portalIdFromDest(who.dest);
   const tx = {
     id,
     kind,
     nanos: kind === 'vote' ? 0 : 1,
-    portalId: portalIdFromDest(who.dest),
-    payoutPortalId: portalIdFromDest(who.dest),
+    portalId,
     vin: [{ dest20: d20 }],
     vout: [{
       kind,
       dest20: d20,
-      portalId: portalIdFromDest(who.dest),
+      portalId,
       valueProof: { v: kind === 'vote' ? 0 : 1 },
     }],
   };
+  if (kind !== 'lock') tx.payoutPortalId = portalIdFromDest(who.dest);
   if (kind === 'vote') tx.choice = VOTE_HOLD;
   tx.fee = 0;
   for (let i = 0; i < 6; i += 1) {
@@ -111,7 +115,9 @@ describe('admitted txs enter the live miner template', () => {
       bad.maxLevy = bad.fee;
       const refused = pool.store.queueTx(bad);
       assert.equal(refused.ok, false);
-      assert.equal(refused.reason, 'admit_version');
+      // A plaintext lock names from and to, which the leak gate refuses first
+      // (a5760821, 325b50f5), before the admit-version check.
+      assert.equal(refused.reason, 'vote_leak');
       assert.equal(pool.store.mempool.some((m) => m.id === 'lock-rejected'), false);
 
       pool.store.mempool.push({

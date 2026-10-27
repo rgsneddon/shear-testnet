@@ -72,7 +72,9 @@ describe('Dart withdraw verifies in JS', () => {
         encoding: 'utf8',
         timeout: 300_000,
       });
-    assert.equal(ran.status, 0, ran.stderr || ran.stdout || 'dart withdraw');
+    // A missing flutter is ran.error ENOENT with status null and no output.
+    const spawnErr = ran.error ? String(ran.error.message || ran.error) : '';
+    assert.equal(ran.status, 0, spawnErr || ran.stderr || ran.stdout || 'dart withdraw');
     const line = String(ran.stdout || '').split(/\r?\n/).map((row) => row.trim()).filter((row) => row.startsWith('{')).pop();
     assert.ok(line, ran.stdout || ran.stderr || 'no withdraw json');
     const tx = revive(JSON.parse(line));

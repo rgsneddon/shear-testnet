@@ -6,8 +6,12 @@
  * if the arrival-epoch gate were removed.
  *
  * The fork check (verifyOneForkBlock) calls verifyReservePayout before the
- * body. A public lock never lands, so the fork withdraw has no portal and
- * the payout reason is empty. The same receipt is public_receipt on append.
+ * body. A public lock never lands, so the book vault has no portal and that
+ * call's reason is empty. verifyFork walks the hash-bonus units first, and
+ * that walk applies each block's reserve rows (unitsAlongChain, c2df8c2a).
+ * The public withdraw does not open, so the apply refuses it as stake_reward
+ * at the last fork block before the per-tx check runs. The same receipt is
+ * public_receipt on append.
  * The open-arrival refusal is verifyReservePayout on a credited vault.
  * payoutOnTip stays the post-verify call. A receipt the body already
  * rejects never reaches it.
@@ -113,8 +117,9 @@ function publicLock(dest, d20) {
     programId: RESERVE_PROGRAM,
     kind: 'lock',
     nanos: PI_SHE_NANOS,
+    // A lock that names payoutPortalId is vote_leak (cb733226). This
+    // receipt carries only the portal id, so the receipt gate names it.
     portalId: portalIdFromDest(dest),
-    payoutPortalId: portalIdFromDest(dest),
     vin: [{ dest20: d20 }],
     vout: [{ kind: 'lock', dest20: d20, valueProof: { v: PI_SHE_NANOS } }],
   };
@@ -130,8 +135,9 @@ function publicWithdraw(dest, d20) {
     kind: 'withdraw',
     mint: true,
     nanos: PI_SHE_NANOS,
+    // A withdraw names its lock by portalId only. payoutPortalId is
+    // vote_leak (325b50f5) and would hide the receipt and epoch reasons.
     portalId: portalIdFromDest(dest),
-    payoutPortalId: portalIdFromDest(dest),
     vin: [{ dest20: d20 }],
     vout: [{ kind: 'withdraw', dest20: d20, valueProof: { v: PI_SHE_NANOS } }],
   };
@@ -203,13 +209,19 @@ describe('P2-L early withdraw payout', () => {
       parentBlocks: store.blocks,
     });
     const block = { ...asBlock(built), miner: dest, hash: easyPowHash() };
+    // The per-tx payout call on the book vault: no portal landed.
+    const noPortal = verifyReservePayout(store.reserveVault, early, drawAt);
+    assert.equal(noPortal.ok, false);
+    assert.equal(noPortal.reason, 'empty');
     const fork = store.blocks.concat([block]);
     const checked = await Promise.resolve(store.verifyFork(fork, {
       trustBlockHash: true,
       skipSharePow: true,
     }));
+    // The units walk applies the reserve rows first. An unopened public
+    // withdraw is stake_reward there, at the withdraw block.
     assert.equal(checked.ok, false);
-    assert.equal(checked.reason, 'empty');
+    assert.equal(checked.reason, 'stake_reward');
     assert.equal(checked.at, fork.length - 1);
 
     const appended = await Promise.resolve(store.append(block, {

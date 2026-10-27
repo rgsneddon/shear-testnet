@@ -13,7 +13,7 @@ import zipfile
 _PACK_DIR = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(_PACK_DIR, "..", "..", "node", "pack")))
 sys.path.insert(0, os.path.abspath(os.path.join(_PACK_DIR, "..", "..", "scripts", "licenses")))
-from bundle_modules import assert_zip_has_modules, write_missing_required  # noqa: E402
+from bundle_modules import assert_zip_has_modules, ships_prebuild, write_missing_required  # noqa: E402
 import release_notices  # noqa: E402
 
 _PACK = os.path.abspath(os.path.dirname(__file__))
@@ -164,6 +164,9 @@ def main() -> int:
                 for fn in fns:
                     p = os.path.join(dp, fn)
                     rel = os.path.relpath(p, node_root).replace("\\", "/")
+                    # Only koffi's win32_x64 build: the others never load here.
+                    if not ships_prebuild(rel, "windows"):
+                        continue
                     z.write(p, rel)
                     bundled += 1
             print("bundled node_modules files", bundled)
@@ -178,7 +181,7 @@ def main() -> int:
             release_notices.assert_no_mingw_runtime(
                 [os.path.join(native, n) for n in ("shearhash.node", "shearadmit.node") if os.path.isfile(os.path.join(native, n))]
             )
-            write_missing_required(z, node_root)
+            write_missing_required(z, node_root, "windows")
             print("bundled Shear Sentinel v18 beside Continuum")
 
     size = os.path.getsize(out)
@@ -228,7 +231,7 @@ def main() -> int:
     if any(n.startswith("node_modules/solc/") for n in names):
         sys.exit("wallet zip must not ship the development-only solc compiler")
     release_notices.assert_has_notices(names, node_root)
-    assert_zip_has_modules(names, node_root)
+    assert_zip_has_modules(names, node_root, "windows")
     banned = []
     for n in names:
         base = n.replace("\\", "/").rstrip("/").split("/")[-1].lower()

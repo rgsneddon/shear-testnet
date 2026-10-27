@@ -25,6 +25,7 @@ import {
   V12_GENESIS_BLOCK_HASH,
   buildTemplate,
   chainLoadSeal,
+  coinbaseLabelRejected,
   digestTx,
 } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
@@ -424,6 +425,30 @@ describe('foreign load checks the block body before the vault boots', () => {
     };
     const swapped = pruned.map((b) => (b.height === forged.height ? forged : b));
     expectLoad(swapped, /hash_owed/);
+    // COINBASE_NC=dest-bound reads only the row (Russell 26 Oct: no hasher
+    // exemption, no share batch), so a pot labelled with another dest's
+    // noteCommit beside its own dest20 has one verdict whether the block is
+    // reloaded at the tip with its share batch or buried and pruned without
+    // it. test_coinbase_label_v12 refuses the same row live, on append.
+    const relabel = (b) => {
+      const cb = b.txs[0];
+      const at = cb.vout.findIndex((o) => String(o.kind || '') === 'pot');
+      assert.ok(at >= 0, `block ${b.height} pays a pot`);
+      const vout = cb.vout.map((o, i) => (i === at ? { ...o, noteCommit: noteCommitOfDest20(Buffer.alloc(20, 0x6b)) } : o));
+      return withTxs(b, [{ ...cb, vout }, ...b.txs.slice(1)]);
+    };
+    const atTip = relabel(pruned[pruned.length - 1]);
+    assert.equal(atTip.samplesPruned === true, false);
+    expectLoad([...pruned.slice(0, -1), atTip], /coinbase_output/);
+    const deep = relabel(buried);
+    assert.equal(deep.samplesPruned, true);
+    expectLoad(pruned.map((b) => (b.height === deep.height ? deep : b)), /coinbase_output/);
+    for (const b of [atTip, deep]) {
+      const full = snap[b.height - 1];
+      assert.deepEqual(coinbaseLabelRejected(b.txs[0].vout), { ok: false, reason: 'coinbase_output' });
+      assert.equal(coinbaseLabelRejected(full.txs[0].vout), null, `honest block ${b.height}`);
+      assert.equal(coinbaseLabelRejected(pruneSamples(full).txs[0].vout), null, `honest block ${b.height}, pruned`);
+    }
     for (const n of lengths) {
       if (n === want) continue;
       const tipAt = pruned[n - 1].height;

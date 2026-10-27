@@ -256,9 +256,11 @@ export function vaultAfterBlock(vault, block, prior = [], applyOpts = {}) {
 /**
  * Parent vault for `blocks[index]`. Null when the list has no reserve tx.
  * Null when a prefix apply fails. An empty vault is the parent of the first
- * reserve block, and is not null.
+ * reserve block, and is not null. `magic` is the book's: a note lock's π
+ * proof binds txDigestV3 at that magic, so a vault rebuilt at another magic
+ * refuses an honest lock (reorg and supply carry run through here).
  */
-export function vaultBefore(blocks, index) {
+export function vaultBefore(blocks, index, magic = MAGIC_TESTNET) {
   const list = Array.isArray(blocks) ? blocks : [];
   let needs = false;
   for (let i = 0; i < list.length; i += 1) {
@@ -267,17 +269,18 @@ export function vaultBefore(blocks, index) {
   if (!needs) return null;
   const end = Math.max(0, Math.min(Number(index) || 0, list.length));
   let vault = emptyVault();
+  vault.magic = magic;
   for (let i = 0; i < end; i += 1) {
-    const applied = vaultApply(vault, list[i], priorForOracle(list, i, MAGIC_TESTNET));
+    const applied = vaultApply(vault, list[i], priorForOracle(list, i, magic), { magic });
     if (!applied || applied.ok !== true) return null;
   }
   return vault;
 }
 
 /** `{ ok, vault }` so a failed prefix is not the same as a coinbase-only list. */
-export function vaultParent(blocks, index) {
+export function vaultParent(blocks, index, magic = MAGIC_TESTNET) {
   const list = Array.isArray(blocks) ? blocks : [];
-  const vault = vaultBefore(list, index);
+  const vault = vaultBefore(list, index, magic);
   if (vault) return { ok: true, vault };
   for (let i = 0; i < list.length; i += 1) {
     if (blockNeedsReserve(list[i])) return { ok: false, vault: null };
@@ -586,9 +589,13 @@ export function fillSnapInterest(rows, blocks, opts = {}) {
     if (!row) return { ok: false, reason: 'supply_state' };
     const ts = headerMs(list[i]);
     if (!(ts > 0)) return { ok: false, reason: 'header' };
-    const got = blockWithdrawInterest(vault, list[i], ts);
+    // Same height foldSupply replays at. A block that omits height is i+1;
+    // the withdraw walk and the vault replay both see that height, so an
+    // epoch or ballot boundary is decided the same way in each.
+    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: i + 1 };
+    const got = blockWithdrawInterest(vault, vaultBlock, ts);
     if (!got.ok) return { ok: false, reason: got.reason || 'supply' };
-    const allowed = blockPermittedInterest(vault, list[i], ts);
+    const allowed = blockPermittedInterest(vault, vaultBlock, ts);
     if (!allowed.ok) return { ok: false, reason: allowed.reason || 'supply' };
     interest += got.nanos;
     permitted += allowed.nanos;
@@ -596,7 +603,7 @@ export function fillSnapInterest(rows, blocks, opts = {}) {
     if (interest !== permitted) return { ok: false, reason: 'supply' };
     row.mintedInterest = interest;
     row.permittedInterest = permitted;
-    const advanced = vaultAfterBlock(vault, list[i], priorForOracle(list, i, magic), replay);
+    const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, i, magic), replay);
     if (!advanced.ok) return { ok: false, reason: 'supply' };
     vault = advanced.vault;
     const principal = replayedPrincipal(vault);
@@ -926,7 +933,10 @@ export function foldSupply(blocks, opts = {}) {
     const h = Number(list[i]?.height) || (i + 1);
     // A pruned block a proven-work header chain buried keeps that tip.
     const own = typeof opts.burialOf === 'function' ? opts.burialOf(list[i]) : null;
-    const stepped = supplyStep(state, list[i], {
+    // A wire block often omits height. The step (and its withdraw walk) and
+    // the vault replay below all see the same stamped height.
+    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: h };
+    const stepped = supplyStep(state, vaultBlock, {
       magic: opts.magic,
       unit: units[i] == null ? HASH_BONUS_NANOS : units[i],
       tipHeight: Number.isInteger(own) && own > tipHeight ? own : tipHeight,
@@ -937,9 +947,6 @@ export function foldSupply(blocks, opts = {}) {
     });
     if (!stepped.ok) return stepped;
     state = stepped.state;
-    // Same height the supply step stamped. A wire block often omits height;
-    // replaying the vault at 0 records a different arrival stub than the step.
-    const vaultBlock = Number(list[i]?.height) > 0 ? list[i] : { ...list[i], height: h };
     // Same prior and stake-reward rule as the store's vault apply.
     const foldMagic = opts.magic || MAGIC_TESTNET;
     const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, i, foldMagic), {
@@ -1185,7 +1192,9 @@ export function auditCirculatingSupply(blocks, opts = {}) {
   let claimedUnfunded = 0n;
   for (let bi = 0; bi < list.length; bi += 1) {
     const h = Number(list[bi]?.height);
-    const next = accountBlock(state, list[bi], {
+    // Same stamped height for the step, the withdraw walk and the replay.
+    const vaultBlock = Number.isInteger(h) && h > 0 ? list[bi] : { ...list[bi], height: bi + 1 };
+    const next = accountBlock(state, vaultBlock, {
       magic,
       unit: units[bi] == null ? HASH_BONUS_NANOS : units[bi],
       tipHeight: auditTip,
@@ -1211,11 +1220,11 @@ export function auditCirculatingSupply(blocks, opts = {}) {
       vault = broken;
     } else {
       state = next.state;
-      const split = lockPrincipalSplit(list[bi]);
-      const withdrawn = openedWithdrawPrincipal(list[bi], vault, headerMs(list[bi]));
+      const split = lockPrincipalSplit(vaultBlock);
+      const withdrawn = openedWithdrawPrincipal(vaultBlock, vault, headerMs(vaultBlock));
       // prior is the prefix this block was applied on. An empty prior
       // installs this header as genesis and skips the epoch boundary.
-      const advanced = vaultAfterBlock(vault, list[bi], priorForOracle(list, bi, magic), {
+      const advanced = vaultAfterBlock(vault, vaultBlock, priorForOracle(list, bi, magic), {
         requireStakeReward: true,
         magic,
       });

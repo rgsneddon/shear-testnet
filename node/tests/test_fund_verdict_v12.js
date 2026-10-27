@@ -705,7 +705,7 @@ function fs1LockOf(store, who, saved) {
   return tx;
 }
 
-/** A new spend tag on the first proof. The merkle suffix does not bind that tag. */
+/** A new spend tag on the first proof. The leaf binds it (TX_DIGEST=body-v2). */
 function retagProof(tx, nanos = null) {
   const copy = reviveTx(tx);
   const tag = randomBytes(32);
@@ -806,26 +806,28 @@ describe('v12 fund verdict is the funding witness', { timeout: fileCapMs(import.
         const clones = [];
         for (let i = 0; i < k; i += 1) {
           const clone = retagProof(real);
-          // Current law: the reserve suffix binds nanos, not the spend tag.
-          // A tag change keeps the merkle leaf and still misses the verdict.
-          assert.equal(digestTx(clone).toString('hex'), liveDigest, 'retag changed the merkle leaf');
+          // The leaf is the whole compact body (TX_DIGEST=body-v2), the
+          // spend tag in the proof blob included, so a retag is another leaf.
+          // It still misses the verdict.
+          assert.notEqual(digestTx(clone).toString('hex'), liveDigest, 'a retag kept the merkle leaf');
           assert.notEqual(tagHexOf(clone), liveTag);
           clones.push(clone);
         }
         const priced = retagProof(real, (k * 1000) + 1);
-        assert.notEqual(digestTx(priced).toString('hex'), liveDigest, 'nanos left the merkle leaf');
+        assert.notEqual(digestTx(priced).toString('hex'), liveDigest, 'a retag with an amount kept the merkle leaf');
         seenNanos.add(priced.nanos);
         clones.push(priced);
         // The retag still spends the proved lock's note. Queue names that
-        // before the sum, so both the tag copy and the nanos edit are
-        // admit_link_tag and neither is funded again. The template names the
-        // sum first, so the nanos edit is commit_sum there.
+        // before the sum, so the tag copy is admit_link_tag. The nanos edit
+        // names a plaintext amount on a hidden lock, which queue refuses
+        // first as amount_field (reserveNanosRejected), and so does the
+        // template's own admission check. Neither is funded again.
         const tagRefused = store.queueTx(clones[0], { nowMs: stamp });
         assert.equal(tagRefused.ok, false, tagRefused.reason || 'retag');
         assert.equal(tagRefused.reason, 'admit_link_tag', tagRefused.reason);
         const pricedRefused = store.queueTx(priced, { nowMs: stamp });
         assert.equal(pricedRefused.ok, false, pricedRefused.reason || 'nanos');
-        assert.equal(pricedRefused.reason, 'admit_link_tag', pricedRefused.reason);
+        assert.equal(pricedRefused.reason, 'amount_field', pricedRefused.reason);
         store.mempool.push(...clones);
         resetFs1VerifyCache();
         const skips = [];
@@ -844,7 +846,7 @@ describe('v12 fund verdict is the funding witness', { timeout: fileCapMs(import.
         assert.equal(ids.has(real.id), true, `k=${k} dropped the proved lock`);
         for (const clone of clones) assert.equal(ids.has(clone.id), false, clone.id);
         assert.match(skips.find((line) => line.includes(clones[0].id)) || '', /admit_link_tag/);
-        assert.match(skips.find((line) => line.includes(priced.id)) || '', /commit_sum/);
+        assert.match(skips.find((line) => line.includes(priced.id)) || '', /amount_field/);
         assert.equal(flowProofVerifyCount(), 0, `k=${k} funded a refused body`);
         for (const clone of clones) dropId(store, clone.id);
         resetFs1VerifyCache();

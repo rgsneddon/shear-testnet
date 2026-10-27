@@ -615,7 +615,7 @@ const BODY_KEYS = new Set([
   'epochStartRoot', 'epochStartCommits', 'epochCensusCommit', 'vaultLockRoot',
   'nullifier',
   'ownerPub',
-  'piProof', 'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
+  'piProof', 'vaultLockNote', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
   'lockAuth',
   'retireProof', 'retireProofs', 'principalProof', 'principalProofs',
   'voteProof', 'voteProofs', 'voteSeq', 'voteParam', 'voteOutput',
@@ -748,6 +748,10 @@ function membersFieldRejected(holder) {
  */
 export function unsignedBodyField(tx) {
   if (!tx || typeof tx !== 'object' || Buffer.isBuffer(tx) || Array.isArray(tx)) return null;
+  // v12 has no partial lock: a lock is whole π leaves, with any remainder as
+  // ordinary hidden change. A remainder commitment or its opening is refused
+  // by name on every path (mempool, queue, block), not left to fail later.
+  if (remainderLockField(tx)) return { ok: false, reason: 'remainder_lock' };
   if (uncoveredKey(tx, BODY_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredKey(tx.leaf, LEAF_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.proof, MERKLE_PROOF_KEYS)) return { ok: false, reason: 'unsigned' };
@@ -778,6 +782,12 @@ export function unsignedBodyField(tx) {
   if (uncoveredList(tx.hashOwedLocal, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
   if (uncoveredList(tx.hashCredits, LEDGER_ROW_KEYS)) return { ok: false, reason: 'unsigned' };
   return null;
+}
+
+/** A remainder-lock field (remainCommit, remainProof) on the body, present at any value. */
+export function remainderLockField(tx) {
+  if (!tx || typeof tx !== 'object') return false;
+  return Object.prototype.hasOwnProperty.call(tx, 'remainCommit') || Object.prototype.hasOwnProperty.call(tx, 'remainProof');
 }
 
 const EXPLICIT_OUTPUT_KINDS = new Set(['lock', 'vote', 'withdraw']);

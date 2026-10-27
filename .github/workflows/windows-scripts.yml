@@ -1,0 +1,19 @@
+# Every tracked .ps1 parses under Windows PowerShell 5.1, the powershell.exe
+# that Flutter's Windows CMake target runs build-shear-v3.ps1 with. Builds
+# nothing; publishes nothing.
+name: windows-scripts
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  parse:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse every .ps1 with Windows PowerShell 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ps1_parse_check.ps1

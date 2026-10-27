@@ -762,12 +762,16 @@ bool spendableNote(
       '';
   if (tag.isNotEmpty && spentTags.contains(tag)) return false;
   if (lockNoteIsLocked(Map<String, dynamic>.from(note), tipMs)) return false;
+  // Spendable is only what a send can use now: a note mined at a known
+  // height with the required confirmations. A note with no height (fresh
+  // change, a remembered session row) is Pending until a chain read gives it
+  // one. [ignoreConfs] skips only the confirmation count, never the height:
+  // no header sync gives an unmined note a height.
+  final h = note['height'];
+  if (h is! num || h < 1) return false;
   if (!ignoreConfs) {
-    final h = note['height'];
-    if (h is num && h >= 1) {
-      final height = h.toInt();
-      if (tip < height || (tip - height + 1) < confirmations) return false;
-    }
+    final height = h.toInt();
+    if (tip < height || (tip - height + 1) < confirmations) return false;
   }
   final nanos = noteNanosExact(note);
   if (nanos == null || nanos <= BigInt.zero) return false;
@@ -3157,7 +3161,8 @@ Map<String, Object?>? sealWalletLockTx({
     final body = <String, Object?>{
       'id': id,
       'kind': 'lock',
-      'nanos': 0,
+      // No top-level nanos: the amount is hidden in the lock commit, and the
+      // node refuses a plaintext copy beside it (reserveNanosRejected).
       'portalId': portalId,
       'programId': 'shear-reserve-v1',
       'ownerPub': ownerHex,
@@ -3813,6 +3818,16 @@ const kErrNoSealedNote =
 
 /// Header depth is still unknown. Not a balance shortfall.
 const kErrHeaderSync = 'waiting for header sync';
+
+/// The send needs this wallet's own change, which is not mined yet. Pending,
+/// not a balance shortfall: it becomes spendable once it has a height.
+const kErrChangePending = 'waiting for your change to be mined';
+
+/// A Vault lock is one π leaf. Any other amount is refused before anything is posted.
+const kErrLockAmount = 'A Vault lock is exactly 3.14159265358 SHE (one π leaf)';
+
+/// True when [amountShe] is exactly one π leaf in protocol units.
+bool isOnePiLeaf(double amountShe) => (amountShe * kUnitsPerShe).round() == kPiSheNanos;
 
 /// Pool answered with an HTML error page (or other non-JSON). Never surface FormatException.
 const kErrPoolHtml = 'pool returned HTML';
@@ -5760,6 +5775,17 @@ class ShearLedger implements ReadProofSink {
         spendableSum + 1e-12 < amount &&
         withDepth + 1e-12 >= amount) {
       return StateError(kErrHeaderSync);
+    }
+    // This wallet's own unmined change would cover it: Pending, not short.
+    final changePending = _unminedNoteShe({
+      for (final n in _notes) ...{
+        (n['address'] ?? n['dest'])?.toString() ?? '',
+      },
+    }..remove(''));
+    if (changePending > 0 &&
+        spendableSum + 1e-12 < amount &&
+        withDepth + changePending + 1e-12 >= amount) {
+      return StateError(kErrChangePending);
     }
     if (anySpendable) return StateError('insufficient');
     if (headerDepthPending &&
@@ -7977,7 +8003,7 @@ class ShearLedger implements ReadProofSink {
   /// Per-dest pending, or the wallet total when [address] is a rest-frame / she1.
   /// Money dests are destCommit(spendPub) and stealth dests in [_stealthShared].
   double pending(String address, {String? paymentCode}) {
-    if (isDestAddress(address)) return _pending[address] ?? 0;
+    if (isDestAddress(address)) return (_pending[address] ?? 0) + _unminedNoteShe({payKey(address), address});
     var n = 0.0;
     final seen = <String>{};
     void add(String k) {
@@ -7990,7 +8016,41 @@ class ShearLedger implements ReadProofSink {
     for (final d in moneyDests(address, paymentCode: paymentCode)) {
       add(d);
     }
-    return n;
+    return n + _unminedNoteShe({for (final d in seen) ...{d, payKey(d)}});
+  }
+
+  /// This wallet's own change not yet mined, over every money dest it owns:
+  /// the home screen shows it as Pending (gate 3). It is never Spendable and
+  /// becomes Spendable once a chain read gives it a height with its
+  /// confirmations.
+  double unminedChangeShe(String restFrame, {String? paymentCode}) {
+    final dests = <String>{};
+    for (final d in moneyDests(restFrame, paymentCode: paymentCode)) {
+      if (d.isEmpty) continue;
+      dests
+        ..add(d)
+        ..add(payKey(d));
+    }
+    return _unminedNoteShe(dests);
+  }
+
+  /// This wallet's own notes not yet mined (no block height): change from a
+  /// posted lock or send. Never Spendable (spendableNote needs a height);
+  /// shown as Pending until a chain read gives them one.
+  double _unminedNoteShe(Set<String> dests) {
+    var total = BigInt.zero;
+    for (final n in _notes) {
+      if (n['spent'] == true || n['reorged'] == true || n['verified'] != true) continue;
+      if (isVaultLockNote(n) || (n['kind'] ?? '').toString() == 'lock') continue;
+      final h = n['height'];
+      if (h is num && h >= 1) continue;
+      final addr = (n['address'] ?? n['dest'])?.toString() ?? '';
+      if (addr.isEmpty || !(dests.contains(addr) || dests.contains(payKey(addr)))) continue;
+      final nanos = noteNanosExact(n);
+      if (nanos == null || nanos <= BigInt.zero) continue;
+      total += nanos;
+    }
+    return _sheOfNanos(total);
   }
 
   /// Accrue 0.00000000001 SHE per hash this open round. Live pending row (lean: one
@@ -9300,12 +9360,13 @@ class ShearLedger implements ReadProofSink {
     return addr == dest || payKey(addr) == payKey(dest);
   }
 
-  /// Confirmed enough to spend. A missing height is already in the mature book.
+  /// Confirmed enough to spend. A note with no height is not mature: the
+  /// planner counts what Spendable counts (spendableNote needs a height).
   /// Same floor as the Flow picker, counted from [bookTip].
   bool _noteMature(Map<String, dynamic> note, {bool ignoreConfs = false}) {
-    if (ignoreConfs) return true;
     final h = (note['height'] as num?)?.toInt();
-    if (h == null || h < 1) return true;
+    if (h == null || h < 1) return false;
+    if (ignoreConfs) return true;
     return confirmationsOf(h) >= spendableConfirmations;
   }
 
@@ -9605,11 +9666,20 @@ class ShearLedger implements ReadProofSink {
     SendPort? partials,
   }) async {
     final known = <String>{..._acceptedCommits};
+    final heightless = <String>{};
     for (final n in _notes) {
       if (n['verified'] != true) continue;
       final commit = _noteBytes(n['commit']);
-      if (commit != null && commit.isNotEmpty) known.add(_bytesHex(commit));
+      if (commit == null || commit.isEmpty) continue;
+      known.add(_bytesHex(commit));
+      final h = n['height'];
+      if (h is! num || h < 1) heightless.add(_bytesHex(commit));
     }
+    // A held note with no block height yet (this wallet's own change, posted
+    // but not read back mined) is read again: its mined copy is the only one
+    // that carries the height Spendable needs (gate 3), and rememberNote
+    // merges that height onto the note.
+    known.removeAll(heightless);
     final vouts = notesNotYetAccepted(
       List<dynamic>.from(raw['vouts'] as List? ?? const []),
       known,
@@ -11654,6 +11724,7 @@ class ShearLedger implements ReadProofSink {
     String id = '',
     Uint8List? withdrawNonce,
     int? reserveNanos,
+    Map<String, dynamic>? memoCt,
   }) async {
     if (notes.isEmpty || notes.length > kFs1InputMax)
       throw StateError('fs1_inputs');
@@ -11710,6 +11781,7 @@ class ShearLedger implements ReadProofSink {
       id: id,
       withdrawNonce: withdrawNonce,
       reserveNanos: reserveNanos,
+      memoCt: memoCt,
     );
     Map<String, dynamic> proved;
     try {
@@ -12250,6 +12322,7 @@ class ShearLedger implements ReadProofSink {
       sealed: sealed,
       fee: feeUnits,
       spendSeed: spendSeed,
+      memoCt: memoCt,
     );
     final vin = spend.vin;
     final proofs = spend.proofs;
@@ -12914,6 +12987,9 @@ class ShearLedger implements ReadProofSink {
     if (sendKind != 'vote' && sendKind != 'roll' && amount <= 0) {
       throw ArgumentError('amount');
     }
+    // A lock is one π leaf (the node refuses any other amount); a note larger
+    // than that keeps the rest as hidden change in the same tx.
+    if (sendKind == 'lock' && !isOnePiLeaf(amount)) throw StateError(kErrLockAmount);
     if (isShearAddress(from)) {
       throw ArgumentError('rest_frame');
     }
@@ -13402,6 +13478,7 @@ class ShearLedger implements ReadProofSink {
           sealed: vouts,
           fee: flowFee,
           spendSeed: spendSeed,
+          memoCt: memoCt,
         );
         vin = spend.vin;
         excess = spend.excess;
@@ -13578,6 +13655,7 @@ class ShearLedger implements ReadProofSink {
             sealed: vouts,
             fee: flowFee,
             spendSeed: spendSeed,
+            memoCt: memoCt,
           );
           vin = spend.vin;
           excess = spend.excess;

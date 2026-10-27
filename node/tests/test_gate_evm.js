@@ -4,7 +4,8 @@ import { newIdentity, freshStealthDest, ed25519SeedOf } from '../../crypto/addre
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { levyNanos, levyNeed, mempoolDepthBytes } from '../../crypto/levy.js';
 import { RESERVE_PROGRAM, PI_SHE_NANOS, RESERVE_EPOCH_MS, BLOCK_SUBSIDY_NANOS, GENESIS_BITS_PACKED } from '../../crypto/asert.js';
-import { emptyVault } from '../../crypto/reserve_vault.js';
+import { emptyVault, compactLockLeakRejected, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
+import { v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { lockTx, withdrawTx, deposit } from '../../crypto/owned_portal.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
 import { sealNote, verifyRange } from '../../crypto/note.js';
@@ -29,6 +30,27 @@ import {
   PHASE_B_GATE,
   phaseBGate,
 } from '../src/chain.js';
+
+/**
+ * A lock or withdraw on the wire names dest20 only. from, to, payer,
+ * payoutPortalId, and an ssa1 address on it are vote_leak (a5760821,
+ * cb733226), which verifyBlock checks before the admit gate this file pins.
+ * Nor does it carry a top-level nanos: compaction drops it, and a hidden
+ * lock's plaintext amount is amount_field (reserveNanosRejected).
+ */
+function compactReserve(tx) {
+  for (const key of ['from', 'to', 'payer', 'payoutPortalId', 'nanos']) delete tx[key];
+  const strip = (row) => {
+    if (!row || typeof row !== 'object') return row;
+    const { address, ...rest } = row;
+    return rest;
+  };
+  tx.vin = (tx.vin || []).map(strip);
+  tx.vout = (tx.vout || []).map(strip);
+  assert.equal(compactLockLeakRejected(tx), null, `${tx.id} lock leak`);
+  assert.equal(withdrawLeakRejected(tx), null, `${tx.id} withdraw leak`);
+  return tx;
+}
 
 function mine(tpl) {
   return {
@@ -91,7 +113,9 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
       ],
     }, { spent });
     attachStubAdmitV2(sendTx);
-    const lock = lockTx({ from: destA, to: destA, nanos: lockNanos, id: 'reserve-lock' });
+    // The byte-2 send itself is the admit_version refusal.
+    assert.equal(v12FlowVersionRejected(compactTx(sendTx))?.reason, 'admit_version');
+    const lock = compactReserve(lockTx({ from: destA, to: destA, nanos: lockNanos, id: 'reserve-lock' }));
     lock.fee = levyNeed(lock, [sendTx]);
     const evmTx = {
       id: 'evm-value',
@@ -154,7 +178,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const dest = pay.dest;
     const key = { type: 'ed25519-stealth', seed: ed25519SeedOf(id.privateKey), shared: pay.shared };
     const t0 = 1_700_000_000_000;
-    const lock = lockTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'lock-p' });
+    const lock = compactReserve(lockTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'lock-p' }));
     lock.fee = levyNeed(lock, []);
     lock.maxLevy = lock.fee;
     signSpendTx(lock, key);
@@ -174,7 +198,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const state = emptyVault();
     deposit({ state, dest, nanos: PI_SHE_NANOS, nowMs: t0 });
     const want = PI_SHE_NANOS;
-    const wd = withdrawTx({ from: dest, to: dest, nanos: want, id: 'wd-p' });
+    const wd = compactReserve(withdrawTx({ from: dest, to: dest, nanos: want, id: 'wd-p' }));
     wd.fee = 0;
     signSpendTx(wd, key);
     const b2 = mine(buildTemplate({
@@ -188,7 +212,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const empty = await verifyBlock(b2, null, { trustedPowHash: TRUSTED });
     assert.equal(empty.ok, false);
     assert.equal(empty.reason, 'admit_version');
-    const unbound = withdrawTx({ from: dest, to: dest, nanos: want + 1, id: 'wd-over' });
+    const unbound = compactReserve(withdrawTx({ from: dest, to: dest, nanos: want + 1, id: 'wd-over' }));
     unbound.fee = 0;
     const over = mine(buildTemplate({
       prev: GENESIS_PREV,

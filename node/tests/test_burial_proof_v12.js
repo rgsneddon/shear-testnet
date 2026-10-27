@@ -35,6 +35,7 @@ import { readChainBin, writeChainBin } from '../../crypto/chainbin.js';
 import { shouldPruneSamples } from '../../crypto/chronoflux.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
+import { shearHash } from '../../crypto/shear_hash.js';
 import {
   nonceWithShareTarget,
   noteCommitOfShare,
@@ -462,24 +463,53 @@ describe('v12 proven burial', () => {
     assert.deepEqual(whole.map((f) => f.type), ['ipc_block']);
     assert.equal(whole[0].block.samplesPruned, false);
 
-    const pool = createStore(tmp('ipc'), { fastSync: true });
-    const got = [];
-    for (const f of frames.slice(0, 2)) {
-      if (f.type === 'ipc_headers') {
-        assert.equal(pool.offerHeaders(f.headers, { peer: 'ipc' }).accepted, PRUNE + 1);
-        assert.equal(pool.burialView().offered, PRUNE + 1);
-      } else {
-        got.push(await applyVerifiedIpcBlock(pool, JSON.parse(JSON.stringify(f))));
-      }
+    // Each case offers the run, then sends the pruned block, on its own store.
+    async function sendRun(name, headers, block) {
+      const pool = createStore(tmp(name), { fastSync: true });
+      assert.equal(pool.offerHeaders(headers, { peer: 'ipc' }).accepted, PRUNE + 1);
+      assert.equal(pool.burialView().offered, PRUNE + 1);
+      return { pool, got: await applyVerifiedIpcBlock(pool, block) };
     }
-    // IPC never trusts a hash. These test headers are not ShearHash work, so
-    // the store refuses the burial instead of the old flag check, and drops
-    // the peer that sent the bad link.
-    assert.equal(got[0].ok, false);
-    assert.equal(got[0].reason, 'samples_pruned');
-    assert.equal(pool.tip(), null);
-    assert.equal(pool.burialView().offered, 0);
-    assert.equal(pool.offerPeerDropped('ipc'), true);
+    const [runFrame, blockFrame] = frames.slice(0, 2).map((f) => JSON.parse(JSON.stringify(f)));
+
+    // As sent: the block's id is the run's first id, a stand-in that is not its
+    // ShearHash. PR 130's claim check refuses it before any burial work.
+    const sent = await sendRun('ipc-sent', runFrame.headers, blockFrame);
+    assert.equal(sent.got.ok, false);
+    assert.equal(sent.got.reason, 'hash_claim');
+    assert.equal(sent.pool.tip(), null);
+
+    // An honest-looking run: every header links to the one before by its real
+    // ShearHash and claims its own ShearHash. None of these headers is mined,
+    // so each real hash misses its target. The store checks the claimed hash
+    // against the target at offer (rootHeaderReason, headerLinkReason), so it
+    // refuses the run there and drops the peer. The pruned block then has no
+    // proven run to stand on. IPC never trusts a hash.
+    const headers = [];
+    let prev = null;
+    for (const row of runFrame.headers) {
+      const decoded = decodeHeader(Buffer.from(row.header, 'hex'));
+      const header = prev ? encodeHeader({ ...decoded, prevBlockHash: prev }) : Buffer.from(row.header, 'hex');
+      const hash = shearHash(header);
+      headers.push({ ...row, header: header.toString('hex'), hash: hash.toString('hex') });
+      prev = hash;
+    }
+    const real = headers[0].hash;
+    assert.equal(blockFrame.block.header, headers[0].header, 'the run starts at the pruned block');
+    const judgedPool = createStore(tmp('ipc-judged'), { fastSync: true });
+    const offered = judgedPool.offerHeaders(headers, { peer: 'ipc' });
+    assert.equal(offered.accepted, 0);
+    assert.equal(offered.dropped, true);
+    assert.equal(judgedPool.burialView().offered, 0);
+    assert.equal(judgedPool.offerPeerDropped('ipc'), true);
+    const judged = await applyVerifiedIpcBlock(judgedPool, {
+      ...blockFrame,
+      powHash: real,
+      block: { ...blockFrame.block, hash: real },
+    });
+    assert.equal(judged.ok, false);
+    assert.equal(judged.reason, 'samples_pruned');
+    assert.equal(judgedPool.tip(), null);
 
     const src = fs.readFileSync(new URL('../src/p2p_ipc.js', import.meta.url), 'utf8');
     assert.doesNotMatch(src, /shouldPruneSamples\(structuralH/);

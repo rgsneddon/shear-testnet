@@ -108,7 +108,7 @@ def pack(path, arch=False):
         for src, arc in sodium_licenses():
             z.write(src, arc)
         write_release_sidecar(z, repo, flavor="linux", extra_runtime=sodium_system_libs())
-        write_missing_required(z, repo)
+        write_missing_required(z, repo, "linux")
     print("wrote", path, os.path.getsize(path))
     return path
 
@@ -164,7 +164,7 @@ for name in outs:
     release_notices.assert_has_notices(names, repo)
     # runtime/ is the prebuilt node (and Fedora's libnode). It loads the system libstdc++.
     release_notices.assert_linux_zip_clean(name, exempt=("runtime/*",))
-    assert_zip_has_modules(names, repo)
+    assert_zip_has_modules(names, repo, "linux")
 print("ok")
 PY
 echo "LINUX_PACK_OK $VER"

@@ -2,6 +2,14 @@
 cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
 
+# Packs ship at the x86-64 baseline (scripts/randomx_build.sh says why). A
+# distro compiler can default higher, so the runner and every plugin built
+# below get the flag too; scripts/isa_scan.py scans what the bundle ships.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  string(APPEND CMAKE_C_FLAGS " -march=x86-64 -mtune=generic")
+  string(APPEND CMAKE_CXX_FLAGS " -march=x86-64 -mtune=generic")
+endif()
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 set(BINARY_NAME "shear_wallet")

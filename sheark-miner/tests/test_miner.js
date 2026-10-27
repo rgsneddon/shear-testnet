@@ -7,38 +7,30 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const dist = path.join(root, '..', 'dist');
 const bin = process.platform === 'win32'
   ? path.join(root, 'ShearK-Miner.exe')
   : path.join(root, 'ShearK-Miner');
 
-function pythonBin() {
-  const candidates = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
-  for (const c of candidates) {
-    const r = spawnSync(c, ['-c', 'import zipfile,sys; sys.stdout.write("ok")'], { encoding: 'utf8' });
-    if (r.status === 0 && r.stdout.includes('ok')) return c;
-  }
-  throw new Error('python with zipfile not found');
-}
-
-function zipNamelist(zipPath) {
-  const py = spawnSync(pythonBin(), ['-c',
-    'import zipfile,sys; print("\\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))', zipPath],
-    { encoding: 'utf8' });
-  assert.equal(py.status, 0, py.stderr);
-  return py.stdout.split(/\r?\n/).map((s) => s.replace(/\\/g, '/').trim()).filter(Boolean);
-}
-
-function zipMemberHead(zipPath, member, n) {
-  const py = spawnSync(pythonBin(), ['-c',
-    'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2])[:int(sys.argv[3])].hex())',
-    zipPath, member, String(n)], { encoding: 'utf8' });
-  assert.equal(py.status, 0, py.stderr);
-  return py.stdout.trim();
-}
-
 function stripAnsi(s) {
   return String(s || '').replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// A spawn that fails (ENOENT) emits 'error' and need not emit 'close'.
+// Waiting on 'close' alone, with the stub pool still listening, hung the file
+// until the 45-minute runner cap. `done` is armed at spawn and rejects on
+// 'error'. The stub pool is unref'd so a failed case cannot pin the loop.
+function spawnMiner(args) {
+  const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  child.done = new Promise((resolve, reject) => {
+    child.once('close', resolve);
+    child.once('error', reject);
+  });
+  child.done.catch(() => {});
+  return child;
+}
+
+function needBin() {
+  assert.equal(fs.existsSync(bin), true, `missing ${bin}: build it with make -C sheark-miner`);
 }
 
 function jsonFromProc(s) {
@@ -50,10 +42,10 @@ function jsonFromProc(s) {
 describe('ShearK-Miner', () => {
   it('selftest and print-config are ShearHash-v3 light', () => {
     assert.equal(fs.existsSync(bin), true, `missing ${bin}`);
-    const st = spawnSync(bin, ['--backend', 'interpreter', '--selftest'], { encoding: 'utf8' });
+    const st = spawnSync(bin, ['--backend', 'interpreter', '--selftest'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(st.status, 0, st.stderr + st.stdout);
     assert.match(st.stdout, /selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
-    const stJit = spawnSync(bin, ['--backend', 'jit', '--selftest'], { encoding: 'utf8' });
+    const stJit = spawnSync(bin, ['--backend', 'jit', '--selftest'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(stJit.status, 0, stJit.stderr + stJit.stdout);
     assert.match(stJit.stdout, /selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
     assert.match(stJit.stdout, /backend=(jit|interpreter)/);
@@ -66,7 +58,7 @@ describe('ShearK-Miner', () => {
     assert.match(st.stdout, /personalisation=ShearHash-v3/);
     assert.equal(st.stdout.includes('5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066'), false);
     assert.equal(st.stdout.toLowerCase().includes('feeless'), false);
-    const cfg = spawnSync(bin, ['--backend', 'interpreter', '--print-config'], { encoding: 'utf8' });
+    const cfg = spawnSync(bin, ['--backend', 'interpreter', '--print-config'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(cfg.status, 0, cfg.stderr);
     const j = jsonFromProc(cfg.stdout);
     assert.equal(j.name, 'ShearK-Miner');
@@ -87,7 +79,7 @@ describe('ShearK-Miner', () => {
     const longCfg = spawnSync(bin, [
       '--backend', 'interpreter', '--print-config',
       '--user', `${longDest}.P7`,
-    ], { encoding: 'utf8' });
+    ], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(longCfg.status, 0, longCfg.stderr);
     const lj = jsonFromProc(longCfg.stdout);
     assert.equal(lj.destBound, true, longCfg.stdout);
@@ -100,7 +92,7 @@ describe('ShearK-Miner', () => {
     assert.ok(j.backend === 'interpreter' || j.backend === 'jit' || j.backend === 'jit-full', j.backend);
     assert.equal(j.backend, 'interpreter');
     assert.equal(typeof j.hugePages, 'boolean');
-    const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
+    const help = spawnSync(bin, ['--help'], { timeout: 600_000, encoding: 'utf8' });
     assert.match(help.stdout, /ShearK-Miner 2\.9 \(ShearHash-v3 light\)/);
     assert.match(help.stdout, /stratum\+ssl:\/\//);
     assert.match(help.stdout, /ShearHash-v3 light/);
@@ -220,40 +212,8 @@ describe('ShearK-Miner', () => {
     }
   });
 
-  it('2.5 windows zip is only ShearK-Miner.exe + example.bat (MZ)', (t) => {
-    const zip = path.join(dist, 'ShearK-Miner-2.5-windows.zip');
-    if (!fs.existsSync(zip)) {
-      t.skip('2.5 windows zip is packed on Windows, not this linux box');
-      return;
-    }
-    assert.deepEqual(zipNamelist(zip).sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
-    assert.equal(zipMemberHead(zip, 'ShearK-Miner.exe', 2), '4d5a');
-  });
-
-  it('2.5 linux zip is ELF, never Darwin Mach-O', (t) => {
-    const zip = path.join(dist, 'ShearK-Miner-2.5-linux.zip');
-    if (!fs.existsSync(zip)) {
-      t.skip('2.5 linux zip is packed on the linux box, not this Windows cut');
-      return;
-    }
-    const py = spawnSync(pythonBin(), ['-c',
-      'import zipfile,sys\n'
-      + 'z=zipfile.ZipFile(sys.argv[1])\n'
-      + 'print("\\n".join(z.namelist()))\n'
-      + 'b=z.read("ShearK-Miner")[:4]\n'
-      + 'print("MAGIC", b.hex())\n'
-      + 'print("MODE", oct((z.getinfo("ShearK-Miner").external_attr >> 16) & 0o777))',
-      zip], { encoding: 'utf8' });
-    assert.equal(py.status, 0, py.stderr);
-    const out = py.stdout;
-    assert.match(out, /ShearK-Miner/);
-    assert.match(out, /example\.sh/);
-    assert.match(out, /MAGIC 7f454c46/);
-    assert.equal(/MAGIC cffaedfe/.test(out), false);
-    assert.ok(/MODE 0o755/.test(out) || /MODE 0755/.test(out), out);
-  });
-
   it('login status=OK does not bump accepted; status line prints hashes and job bits', async () => {
+    needBin();
     const header = Buffer.alloc(128);
     header[0] = 1;
     const job = {
@@ -276,14 +236,15 @@ describe('ShearK-Miner', () => {
     });
     server.on('error', () => {});
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    server.unref();
     const port = server.address().port;
-    const child = spawn(bin, [
+    const child = spawnMiner([
       '--backend', 'interpreter',
       '--pool', `127.0.0.1:${port}`,
       '--notls',
       '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
       '--threads', '1',
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ]);
     let out = '';
     child.stdout.on('data', (d) => { out += d.toString(); });
     child.stderr.on('data', (d) => { out += d.toString(); });
@@ -296,7 +257,7 @@ describe('ShearK-Miner', () => {
       await new Promise((r) => setTimeout(r, 150));
     }
     child.kill('SIGTERM');
-    await new Promise((r) => child.once('close', r));
+    await child.done;
     server.close();
     assert.match(loginLine, /"name":"ShearK-Miner"/);
     assert.match(loginLine, /"version":"2\.9"/);
@@ -316,6 +277,7 @@ describe('ShearK-Miner', () => {
   });
 
   it('she1 login with owned ssa1 --dest still gets a 256-hex job', async () => {
+    needBin();
     const header = Buffer.alloc(128);
     header[0] = 1;
     const job = {
@@ -338,16 +300,17 @@ describe('ShearK-Miner', () => {
     });
     server.on('error', () => {});
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    server.unref();
     const port = server.address().port;
     const dest = 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z';
-    const child = spawn(bin, [
+    const child = spawnMiner([
       '--backend', 'interpreter',
       '--pool', `127.0.0.1:${port}`,
       '--notls',
       '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
       '--dest', dest,
       '--threads', '1',
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ]);
     let out = '';
     child.stdout.on('data', (d) => { out += d.toString(); });
     child.stderr.on('data', (d) => { out += d.toString(); });
@@ -356,7 +319,7 @@ describe('ShearK-Miner', () => {
       await new Promise((r) => setTimeout(r, 150));
     }
     child.kill('SIGTERM');
-    await new Promise((r) => child.once('close', r));
+    await child.done;
     server.close();
     assert.match(loginLine, /"version":"2\.9"/);
     assert.match(loginLine, new RegExp(`"dest":"${dest}"`));
@@ -365,6 +328,7 @@ describe('ShearK-Miner', () => {
   });
 
   it('two hash threads complete more hashes than one against the same job', async () => {
+    needBin();
     const header = Buffer.alloc(128);
     header[0] = 1;
     const job = {
@@ -385,19 +349,20 @@ describe('ShearK-Miner', () => {
       });
       server.on('error', () => {});
       await new Promise((r) => server.listen(0, '127.0.0.1', r));
+      server.unref();
       const port = server.address().port;
-      const child = spawn(bin, [
+      const child = spawnMiner([
         '--backend', 'interpreter',
         '--pool', `127.0.0.1:${port}`,
         '--notls',
         '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
         '--threads', String(n),
-      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      ]);
       let out = '';
       child.stdout.on('data', (d) => { out += d.toString(); });
       await new Promise((r) => setTimeout(r, 4500));
       child.kill('SIGTERM');
-      await new Promise((r) => child.once('close', r));
+      await child.done;
       server.close();
       const lines = out.split('\n').filter((l) => l.includes('hashes='));
       assert.ok(lines.length >= 1, out);
@@ -411,77 +376,44 @@ describe('ShearK-Miner', () => {
     assert.ok(two > one, `1-thread hashes=${one} 2-thread hashes=${two}`);
   });
 
-  it('2.5 windows zip root is PE + example.bat', (t) => {
-    const win = path.join(dist, 'ShearK-Miner-2.5-windows.zip');
-    if (!fs.existsSync(win)) {
-      t.skip('2.5 windows zip is packed on Windows, not this linux box');
-      return;
-    }
-    const names = zipNamelist(win);
-    assert.deepEqual(names.sort(), ['ShearK-Miner.exe', 'example.bat'].sort());
-    assert.equal(zipMemberHead(win, 'ShearK-Miner.exe', 2), '4d5a');
-    const bat = spawnSync(pythonBin(), ['-c',
-      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.bat").decode("utf-8"))',
-      win], { encoding: 'utf8' });
-    assert.equal(bat.status, 0, bat.stderr);
-    assert.match(bat.stdout, /ShearK-Miner-2\.5-windows\.zip/);
-    assert.match(bat.stdout, /shear-testnet-v4/);
-    assert.match(bat.stdout, /--user YOUR_SSA1\.worker/);
-    assert.match(bat.stdout, /--backend jit-full/);
-  });
-
   it('requireTls refuses a cleartext pool url in either flag order', () => {
+    needBin();
     const user = 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul';
     const first = spawnSync(bin, [
       '--require-tls', '--pool', 'stratum+tcp://127.0.0.1:1111',
       '--user', user, '--print-config',
-    ], { encoding: 'utf8' });
+    ], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(first.status, 2, first.stdout + first.stderr);
     assert.match(first.stderr, /requireTls: refusing cleartext/);
     const second = spawnSync(bin, [
       '--pool', 'stratum+tcp://127.0.0.1:1111', '--require-tls',
       '--user', user, '--print-config',
-    ], { encoding: 'utf8' });
+    ], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(second.status, 2, second.stdout + second.stderr);
     assert.match(second.stderr, /requireTls: refusing cleartext/);
     const bare = spawnSync(bin, [
       '--require-tls', '--pool', '127.0.0.1:1111', '--notls',
       '--user', user, '--print-config',
-    ], { encoding: 'utf8' });
+    ], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(bare.status, 2, bare.stdout + bare.stderr);
     assert.match(bare.stderr, /requireTls: refusing cleartext/);
   });
 
-  it('2.9 windows zip bundles the OpenSSL DLLs the exe imports', (t) => {
-    if (process.platform !== 'win32') {
-      t.skip('2.9 windows zip is packed on Windows');
-      return;
+  // The zips themselves are built and checked per OS by pack_linux.js and
+  // pack_windows.js in sheark-packs.yml, never skipped here.
+  it('sheark-packs runs the Linux and Windows pack checks on their own OS', () => {
+    const wf = fs.readFileSync(path.join(root, '..', '.github', 'workflows', 'sheark-packs.yml'), 'utf8');
+    const job = (name) => wf.split(new RegExp(`^  ${name}:`, 'm'))[1].split(/^ {2}\w[\w-]*:/m)[0];
+    assert.match(job('linux'), /runs-on: ubuntu-/);
+    assert.match(job('linux'), /node sheark-miner\/tests\/pack_linux\.js/);
+    assert.match(job('windows'), /runs-on: windows-/);
+    assert.match(job('windows'), /node sheark-miner\/tests\/pack_windows\.js/);
+    assert.equal(/ShearK-Miner-2\.[0-8]-/.test(wf), false, 'stale pack version in sheark-packs.yml');
+    for (const f of ['pack_linux.js', 'pack_windows.js']) {
+      const src = fs.readFileSync(path.join(root, 'tests', f), 'utf8');
+      assert.match(src, /assert\.equal\(process\.platform, '(linux|win32)'/);
+      assert.equal(/\.skip\(|SKIP/.test(src), false, `${f} must fail, not skip`);
     }
-    const pack = path.join(root, 'pack', 'zip_windows.py');
-    const built = spawnSync(pythonBin(), [pack], { encoding: 'utf8', cwd: root });
-    assert.equal(built.status, 0, built.stdout + built.stderr);
-    const zip = path.join(dist, 'ShearK-Miner-2.9-windows.zip');
-    assert.equal(fs.existsSync(zip), true, zip);
-    const names = zipNamelist(zip);
-    for (const need of ['ShearK-Miner.exe', 'example.bat', 'example.sh', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll']) {
-      assert.ok(names.includes(need), names.join(','));
-    }
-    assert.equal(zipMemberHead(zip, 'ShearK-Miner.exe', 2), '4d5a');
-    const bat = spawnSync(pythonBin(), ['-c',
-      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.bat").decode("utf-8"))',
-      zip], { encoding: 'utf8' });
-    assert.equal(bat.status, 0, bat.stderr);
-    assert.match(bat.stdout, /ShearK-Miner-2\.9-windows\.zip/);
-    assert.match(bat.stdout, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
-    assert.match(bat.stdout, /libcrypto-3-x64\.dll/);
-    const sh = spawnSync(pythonBin(), ['-c',
-      'import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read("example.sh").decode("utf-8"))',
-      zip], { encoding: 'utf8' });
-    assert.equal(sh.status, 0, sh.stderr);
-    assert.match(sh.stdout, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
-    assert.match(sh.stdout, /--backend jit-full/);
-    const exeOnly = names.filter((n) => n === 'ShearK-Miner.exe' || n === 'example.bat');
-    assert.ok(names.length > exeOnly.length, 'exe+bat alone is not a 2.9 pack');
   });
 
   it('unix pack script keeps a sample bat and shell launcher in every flavor', () => {
@@ -506,9 +438,13 @@ describe('ShearK-Miner', () => {
     const linux = mk.split('ifeq ($(UNAME),Linux)')[1].split('endif')[0];
     assert.equal(linux.includes('-march=native'), false);
     assert.match(mk, /ifeq \(\$\(SHEARK_NATIVE\),1\)[\s\S]*-march=native/);
-    assert.match(mk, /-DARCH=\$\(RX_ARCH\)/);
     assert.equal(mk.includes('-DARCH=native'), false);
-    assert.match(mk, /RX_ARCH := default/);
+    // RandomX comes from the shared script, which pins the x86_64 baseline.
+    assert.match(mk, /SHEARK_NATIVE=\$\(SHEARK_NATIVE\) RANDOMX_BUILD_DIR=\$\(RXBUILD\) bash \.\.\/scripts\/randomx_build\.sh/);
+    assert.match(mk, /X86_BASELINE := -march=x86-64 -mtune=generic/);
+    const rx = fs.readFileSync(path.join(root, '..', 'scripts', 'randomx_build.sh'), 'utf8');
+    assert.match(rx, /ARCH=default/);
+    assert.match(rx, /-march=x86-64 -mtune=generic/);
   });
 
   it('sheark-v4-afk defaults take the worker from the host file', () => {

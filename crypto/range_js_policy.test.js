@@ -14,7 +14,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 function runPolicy(env, script) {
   const childEnv = { ...process.env, ...env };
   if (!Object.prototype.hasOwnProperty.call(env, 'SHEAR_RANGE_JS')) delete childEnv.SHEAR_RANGE_JS;
-  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+  return spawnSync(process.execPath, ['--input-type=module', '-e', script], { timeout: 600_000,
     cwd: root,
     env: childEnv,
     encoding: 'utf8',

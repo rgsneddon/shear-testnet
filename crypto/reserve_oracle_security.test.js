@@ -91,7 +91,7 @@ for vec in json.load(sys.stdin):
     out.append(None if got is None else int(got))
 json.dump(out, sys.stdout)
 `;
-  const res = spawnSync('python3', ['-c', script], {
+  const res = spawnSync('python3', ['-c', script], { timeout: 600_000,
     input: JSON.stringify(vectors),
     cwd: fileURLToPath(new URL('..', import.meta.url)),
     encoding: 'utf8',
@@ -151,7 +151,9 @@ describe('oracle security pack (attester keys held)', () => {
     assert.equal(halfUpDiv(15, 10), 2);
   });
 
-  it('O0-b pays hidden principal as integer 0 and rejects a published release', () => {
+  // An unindexed hidden tranche (a plain deposit, no lock-note leaf) is not a
+  // withdraw receipt since cf0b715f. It is refused, not paid as integer 0.
+  it('O0-b never publishes hidden principal and refuses every release of an unindexed tranche', () => {
     const stakes = [PI_SHE_NANOS, PI_SHE_NANOS * 3, 2 ** 40];
     for (const stake of stakes) {
       const who = newIdentity();
@@ -165,11 +167,11 @@ describe('oracle security pack (attester keys held)', () => {
       assert.equal(String(portal.tranches[0].commit).length, 64);
       assert.equal(Number(state.totalLockedNanos), 0);
       const paid = withdraw({ state, dest, nowMs: END });
-      assert.equal(paid.ok, true, paid.reason);
-      assert.equal(paid.reward, 0);
-      assert.equal(paid.payout, 0);
-      assert.equal(paid.principal, 0);
-      assert.equal(state.pendingWithdraw.length, 1);
+      assert.equal(paid.ok, false);
+      assert.equal(paid.reason, 'stake_reward');
+      assert.equal((state.pendingWithdraw || []).length, 0);
+      assert.equal(Number(state.mintBankNanos || 0), 0);
+      assert.equal(Number(state.totalLockedNanos), 0);
       for (const published of [1, Math.min(NANOS_PER_SHE, stake), stake, stake + 1]) {
         const again = emptyVault();
         again.genesisMs = T0;
@@ -177,8 +179,9 @@ describe('oracle security pack (attester keys held)', () => {
         again.epochBps = 0;
         const tx = withdrawTx({ from: dest, to: dest, nanos: published, id: `pub-${published}` });
         const got = verifyReservePayout(again, tx, END);
+        // A published amount with no principal opening does not open the tranche.
         assert.equal(got.ok, false, String(published));
-        assert.equal(got.reason, 'over_mint');
+        assert.equal(got.reason, 'stake_reward', String(published));
       }
       const hidden = emptyVault();
       hidden.genesisMs = T0;
@@ -187,7 +190,9 @@ describe('oracle security pack (attester keys held)', () => {
       const quiet = verifyReservePayout(hidden, withdrawTx({
         from: dest, to: dest, nanos: 0, id: 'hidden',
       }), END);
-      assert.equal(quiet.ok, true, quiet.reason);
+      // A zero release of a matured hidden tranche is not a receipt either.
+      assert.equal(quiet.ok, false);
+      assert.equal(quiet.reason, 'mint_amount');
     }
   });
 

@@ -17,7 +17,7 @@ import { emptyMempool, admitMempool } from './mempool.js';
 import { BODY_SECRET_KEYS, MEMBER_KEYS, unsignedBodyField } from './spend.js';
 import { createStore } from '../node/src/store.js';
 import { bookSealKeyFor, bookSealKeyPath } from '../node/src/book_seal_key.js';
-import { GENESIS_PREV, chainLoadSeal, digestTx, verifyBlock, verifyLoadedChain } from '../node/src/chain.js';
+import { GENESIS_PREV, UPGRADEABLE_REASONS, chainLoadSeal, digestTx, earlyRowsRejected, verifyBlock, verifyLoadedChain } from '../node/src/chain.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WHEN = 1_700_000_000_000;
@@ -182,12 +182,21 @@ describe('FS-1 member key acceptance', () => {
     };
     for (const tx of [secretRow, notArray, notObject, listed]) {
       assert.equal(admitMempool(emptyMempool(), tx).reason, 'unsigned');
-      assert.equal(verifyBlock({ txs: [tx] }, null).reason, 'unsigned');
-      assert.equal(verifyLoadedChain([reloadBlock(tx)], {
+      // The pre-PoW row check names the member fault. The headerless block
+      // also fails a final check, and a final fault is the verdict over an
+      // upgradeable one (Russell 26 Oct), so verifyBlock names that.
+      assert.equal(earlyRowsRejected({ txs: [tx] })?.reason, 'unsigned');
+      assert.equal(verifyBlock({ txs: [tx] }, null).reason, 'no_header');
+      // The reload fixture's stored hash is a stand-in that fails a final
+      // check; that is its verdict with or without the member fault.
+      const reload = (body) => verifyLoadedChain([reloadBlock(body)], {
         trustStoredHash: true,
         nowMs: WHEN,
         genesisHash: '',
-      }).reason, 'unsigned');
+      }).reason;
+      const bare = reload({ members: [row()] });
+      assert.equal(UPGRADEABLE_REASONS.has(bare), false, `bare reload ${bare}`);
+      assert.equal(reload(tx), bare);
     }
 
     const gated = v3Send({ members: [{ seed: 'leaked', privateKey: 'k' }] });
@@ -220,14 +229,27 @@ describe('FS-1 member key acceptance', () => {
       fs.rmSync(book, { recursive: true, force: true });
     }
 
-    const unsignedBook = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-member-book-unsigned-'));
-    const keyFile = bookSealKeyPath(unsignedBook);
-    try {
-      writeSealedBook(unsignedBook, reloadBlock(notObject));
-      assert.throws(() => createStore(unsignedBook, { loadNowMs: WHEN }), /unsigned/);
-    } finally {
-      fs.rmSync(unsignedBook, { recursive: true, force: true });
-      fs.rmSync(keyFile, { force: true });
-    }
+    // A sealed book refuses to load. Its stand-in hash fails a final check,
+    // which is the verdict with or without the member fault (no masking).
+    const loadError = (body) => {
+      const sealed = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-member-book-sealed-'));
+      const keyFile = bookSealKeyPath(sealed);
+      try {
+        writeSealedBook(sealed, reloadBlock(body));
+        try {
+          createStore(sealed, { loadNowMs: WHEN });
+        } catch (err) {
+          return String(err?.message || err);
+        }
+        return '';
+      } finally {
+        fs.rmSync(sealed, { recursive: true, force: true });
+        fs.rmSync(keyFile, { force: true });
+      }
+    };
+    const bareLoad = loadError({ members: [row()] });
+    assert.notEqual(bareLoad, '', 'the stand-in book never loads');
+    assert.doesNotMatch(bareLoad, /unsigned|admit_membership|evm/);
+    assert.equal(loadError(notObject), bareLoad);
   });
 });

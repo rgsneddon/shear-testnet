@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { GENESIS_BPS, MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS, RESERVE_PROGRAM, VAULT_FS1_ACTIVATION_HEIGHT } from './asert.js';
-import { newIdentity, hash20FromAddress } from './address.js';
+import { destCommitFromSpendPub, newIdentity, hash20FromAddress } from './address.js';
 import { vaultDest } from './flow_sheet.js';
 import {
   commit,
@@ -26,19 +26,19 @@ import {
   appendVaultLockNote,
   applyReserveBlock,
   chainPeriodIndex,
-  consensusRemainMs,
   deposit,
   emptyVault,
   consensusUnlockPeriod,
   leafEpochsToBurn,
   leafStubNanos,
+  attachLockEquality,
   lockFundingRejected,
+  proveLockEquality,
   lockUnlockContext,
   lockUnlockOf,
   lockTx,
-  proveRemainOpen,
-  verifyRemainOpen,
   portalIdFromDest,
+  portalIdFromDest20,
   provePrincipalOpen,
   rewardClaimTx,
   rewardOwnerCommit,
@@ -445,16 +445,20 @@ describe('hidden vault claims', () => {
       vaultLockNote: blinded,
       vout: [{ kind: 'lock', commit: funded, rangeProof: range }],
     };
+    // A reblinded leaf (funded + unlock·U + H·s) is refused, even with a
+    // valid leaf-output equality proof in fundProof. That field is the π proof
+    // lockNotePrincipal checks, and one proof cannot show both, so a
+    // reblinded lock could never be booked; before 2461ec67 one was indexed
+    // with its π never booked (Vault lane F4, PR 130).
     sameValue.vout[0].fundProof = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT, MAGIC_TESTNET, unlock);
-    assert.equal(lockFundingRejected(sameValue, ctx), null);
+    assert.equal(lockFundingRejected(sameValue, ctx)?.reason, 'stake_reward', 'reblinded with a valid equality proof');
+    assert.equal(lockFundingRejected(sameValue, { height: HEIGHT + 1, magic: MAGIC_TESTNET, unlock })?.reason, 'stake_reward');
     sameValue.vout[0].fundProof = fundProof(locked, funded, randomScalar(), sameValue, HEIGHT, MAGIC_TESTNET, unlock);
-    assert.equal(lockFundingRejected(sameValue, ctx).reason, 'stake_reward');
-    const bound = fundProof(locked, funded, Fn.sub(rLock, rIn), sameValue, HEIGHT, MAGIC_TESTNET, unlock);
-    sameValue.vout[0].fundProof = bound;
-    assert.equal(lockFundingRejected(sameValue, ctx), null);
-    assert.equal(lockFundingRejected(sameValue, { height: HEIGHT + 1, magic: MAGIC_TESTNET, unlock }), null);
-    assert.equal(lockFundingRejected({ ...sameValue, id: 'renamed-id' }, ctx), null);
-    assert.equal(lockFundingRejected({ ...sameValue, portalId: 'ab'.repeat(32) }, ctx).reason, 'stake_reward');
+    assert.equal(lockFundingRejected(sameValue, ctx)?.reason, 'stake_reward');
+    delete sameValue.vout[0].fundProof;
+    assert.equal(lockFundingRejected(sameValue, ctx)?.reason, 'stake_reward');
+    // The exact leaf beside it is still accepted.
+    assert.equal(lockFundingRejected(tx, ctx), null);
 
     const state = emptyVault();
     state.genesisMs = T0;
@@ -469,6 +473,8 @@ describe('hidden vault claims', () => {
     });
     action.vaultLockNote = note;
     action.vin = [{ commit: funded, rangeProof: range, address: who.dest }];
+    // The π proof a wallet attaches last, once every digest-bound field is set.
+    assert.ok(attachLockEquality(action), 'π proof');
     const applied = applyReserveBlock({
       state,
       block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, action] },
@@ -995,67 +1001,6 @@ describe('hidden vault claims', () => {
     assert.ok(empty.gasUsed > 0n, `empty commitRewards gas ${empty.gasUsed}`);
   });
 
-  it('a remain commitment opens to the consensus remainder and not the full span', () => {
-    const who = dest20();
-    const now = T0 + 3_600_000;
-    const r = randomScalar();
-    assert.equal(vaultLockNote(PI_SHE_NANOS + 1, 3n, r), null);
-    const note = vaultLockNote(PI_SHE_NANOS, 3n, r, consensusUnlockPeriod(0)).note;
-    const build = () => {
-      const action = lockTx({
-        from: who.dest,
-        to: who.dest,
-        nanos: PI_SHE_NANOS,
-        blind: r,
-        ownerPub: who.id.spendPub.toString('hex'),
-        id: 'remain-lock',
-      });
-      action.vaultLockNote = note;
-      return action;
-    };
-    const state = emptyVault();
-    state.genesisMs = T0;
-    state.magic = MAGIC_TESTNET;
-    const remain = consensusRemainMs(state, now);
-    assert.ok(remain > 0);
-    assert.ok(remain < span);
-    const spanTx = build();
-    const spanOpen = proveRemainOpen(span, randomScalar(), spanTx, MAGIC_TESTNET);
-    assert.ok(spanOpen);
-    spanTx.remainCommit = spanOpen.commit.toString('hex');
-    spanTx.remainProof = spanOpen;
-    const tooWide = applyReserveBlock({
-      state,
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, spanTx] },
-      nowMs: now,
-      height: HEIGHT,
-      genesisMs: T0,
-    });
-    assert.equal(tooWide.ok, false);
-    assert.equal(tooWide.reason, 'stake_reward');
-
-    const openTx = build();
-    const open = proveRemainOpen(remain, randomScalar(), openTx, MAGIC_TESTNET);
-    assert.ok(open);
-    openTx.remainCommit = open.commit.toString('hex');
-    openTx.remainProof = open;
-    const fresh = emptyVault();
-    fresh.genesisMs = T0;
-    fresh.magic = MAGIC_TESTNET;
-    const paid = applyReserveBlock({
-      state: fresh,
-      block: { height: HEIGHT, txs: [{ coinbase: true, vout: [] }, openTx] },
-      nowMs: now,
-      height: HEIGHT,
-      genesisMs: T0,
-    });
-    assert.equal(paid.ok, true, paid.reason);
-    const renamed = { ...openTx, id: 'other-remain-id' };
-    assert.equal(verifyRemainOpen(renamed.remainCommit, remain, renamed.remainProof, renamed, MAGIC_TESTNET), true);
-    const retarget = { ...openTx, portalId: 'cd'.repeat(32) };
-    assert.equal(verifyRemainOpen(retarget.remainCommit, remain, retarget.remainProof, retarget, MAGIC_TESTNET), false);
-  });
-
   it('does not consult a lock cap, and refuses a reward that is not the product', () => {
     const row = proveLock(PI_SHE_NANOS, 0);
     const lock = row.proved.locks[0];
@@ -1135,18 +1080,25 @@ describe('hidden vault claims', () => {
     const unlock = consensusUnlockPeriod(0);
     const note = vaultLockNote(PI_SHE_NANOS, 3n, rIn, unlock).note;
     const who = dest20();
+    // The EVM keys a lock by its vout dest20 (cb733226). The dest20 is the
+    // lockAuth key's commit and the portal id is H(tag, dest20).
+    const lockD20 = destCommitFromSpendPub(who.id.spendPub);
     const tx = {
       id: 'evm-unlock',
       kind: 'lock',
       programId: RESERVE_PROGRAM,
       nanos: 0,
-      portalId: '11'.repeat(32),
+      portalId: portalIdFromDest20(lockD20),
       ownerPub: who.id.spendPub.toString('hex'),
       vaultLockNote: note,
-      vout: [{ kind: 'lock', commit: funded, rangeProof: range }],
+      vout: [{ kind: 'lock', commit: funded, rangeProof: range, dest20: lockD20 }],
     };
     const session = await bootReserveEvm();
     attachLockAuth(tx, who.id.privateKey);
+    assert.ok(tx.lockAuth, 'lockAuth');
+    // The π proof over the funded output (blind rIn), as a wallet attaches it.
+    tx.vout[0].fundProof = proveLockEquality(funded, PI_SHE_NANOS, rIn, tx, MAGIC_TESTNET);
+    assert.ok(tx.vout[0].fundProof, 'π proof');
     const good = await executeBlockEvm(
       session,
       [{ coinbase: true, vout: [] }, tx],
@@ -1161,6 +1113,7 @@ describe('hidden vault claims', () => {
     const badTx = { ...tx, id: 'evm-unlock-bad', vaultLockNote: badNote };
     delete badTx.lockAuth;
     attachLockAuth(badTx, who.id.privateKey);
+    assert.ok(badTx.lockAuth, 'bad lockAuth');
     // A second lock on the session that already took the good one is
     // portal_exists. The unlock check is the first lock of a fresh book.
     const badBook = await bootReserveEvm();

@@ -23,7 +23,8 @@ import { expectedCoinbasePays, matchSealedCoinbaseVout, paysFromALeaves, custody
 import { poolFeeDest } from './levy.js';
 import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags, AMOUNT_CT_BYTES, noteCommitOfDest20 } from './note.js';
 import { encodeDest, hash20FromAddress } from './address.js';
-import { canonicalReserveFields } from './reserve_vault.js';
+import { memoEnvelopeRejected } from './flow_sheet.js';
+import { canonicalReserveFields, reserveRowNanos } from './reserve_vault.js';
 import { compactHashLedger, freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
@@ -344,8 +345,24 @@ const SEALED_SECRET_KEYS = new Set([
   '_origNoteCommit',
 ]);
 
+/**
+ * Every byte view in a compact body as a Buffer. JSON writes a bare
+ * Uint8Array as an object of indices, so without this a block read back from
+ * disk would carry other bytes than the block that was validated.
+ */
+function viewsAsBuffers(v) {
+  if (v == null || typeof v !== 'object' || Buffer.isBuffer(v)) return v;
+  if (v instanceof Uint8Array) return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
+  if (Array.isArray(v)) return v.map(viewsAsBuffers);
+  const out = {};
+  for (const [k, x] of Object.entries(v)) out[k] = viewsAsBuffers(x);
+  return out;
+}
+
 function compactValue(v) {
   if (v == null || typeof v !== 'object' || Buffer.isBuffer(v)) return v;
+  // Bytes, not an object of indices: JSON and the body digest read a Buffer.
+  if (v instanceof Uint8Array) return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
   if (Array.isArray(v)) return v.map(compactValue);
   const out = {};
   for (const [k, val] of Object.entries(v)) {
@@ -369,6 +386,8 @@ export const COMPACT_TX_KEYS = Object.freeze([
   'id', 'kind', 'from', 'to', 'fee', 'vin', 'vout', 'sig', 'signature',
   'memo', 'memoH', 'memoCt', 'bFlag', 'bExtra', 'unit', 'nonce', 'tag', 'dest20',
   'portalId', 'payoutPortalId', 'programId', 'choice', 'rewardSig', 'ownerPub', 'piProof',
+  // remainCommit is kept only so a block naming it is refused (spend.js
+  // remainderLockField) rather than scrubbed into another body.
   'vaultLockNote', 'remainCommit', 'vaultProof', 'earnEpoch', 'rootEpoch', 'capProof',
   'retireProof', 'retireProofs', 'principalProof', 'principalProofs',
   'voteProof', 'voteProofs', 'voteSeq', 'voteParam', 'voteOutput',
@@ -403,10 +422,15 @@ function portalIdFromOpen(o) {
   return /^[0-9a-f]{64}$/.test(pid) ? pid : '';
 }
 
+/**
+ * The amount a reserve row publishes, read as consensus reads it
+ * (reserve_vault.js reserveRowNanos): its valueProof.v, or its nanos only on
+ * a row with no commitment. A nanos beside a commitment is a hidden amount
+ * in clear: compaction strips it and never turns it into an opening.
+ */
 function claimedReserveV(o) {
-  if (o?.valueProof?.v != null) return Math.floor(Number(o.valueProof.v));
-  if (o?.nanos != null) return Math.floor(Number(o.nanos));
-  return 0;
+  const raw = reserveRowNanos(o);
+  return raw == null ? 0 : Math.floor(Number(raw));
 }
 
 function attachLockTime(row, o) {
@@ -528,7 +552,42 @@ export function valueOpenRejected(tx) {
     if (outputMayCarryValueOpen(tx, o)) continue;
     return { ok: false, reason: 'value_open' };
   }
-  return amountFieldRejected(tx);
+  return amountFieldRejected(tx) || reserveNanosRejected(tx) || memoCtRejected(tx);
+}
+
+/**
+ * A lock or withdraw names its amount only on its reserve output. A
+ * top-level nanos is a plaintext copy the compact body drops: it must equal
+ * that output's public opening, and with a hidden output (a commit and no
+ * opening) it must be absent, so a hidden amount never travels in clear.
+ */
+export function reserveNanosRejected(tx) {
+  if (!tx || typeof tx !== 'object' || tx.coinbase) return null;
+  const kind = String(tx.kind || '');
+  if (kind !== 'lock' && kind !== 'withdraw') return null;
+  if (!hasKey(tx, 'nanos')) return null;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  const o = outs.find((row) => String(row?.kind || '') === kind);
+  const opened = reserveRowNanos(o);
+  if (opened == null) return { ok: false, reason: 'amount_field' };
+  let same = false;
+  try { same = BigInt(String(tx.nanos)) === BigInt(String(opened)); } catch { same = false; }
+  return same ? null : { ok: false, reason: 'amount_field' };
+}
+
+/**
+ * A memo envelope sits only at the top level, in the fixed slot size
+ * (flow_sheet.js). An output memoCt is refused: it would mark which output
+ * is the payee's (Russell 26 Oct).
+ */
+export function memoCtRejected(tx) {
+  if (!tx || typeof tx !== 'object') return null;
+  for (const o of Array.isArray(tx.vout) ? tx.vout : []) {
+    if (o && typeof o === 'object' && o.memoCt != null) return { ok: false, reason: 'memo_output' };
+  }
+  if (tx.memoCt == null) return null;
+  const reason = memoEnvelopeRejected(tx.memoCt);
+  return reason ? { ok: false, reason } : null;
 }
 
 function compactVout(o, tx) {
@@ -775,7 +834,7 @@ export function compactTx(tx) {
       row.issuedJobKeys = tx.issuedJobKeys.map((id) => String(id).toLowerCase());
     }
     compactHashLedger(tx, row);
-    return row;
+    return viewsAsBuffers(row);
   }
   const out = {};
   for (const k of COMPACT_TX_KEYS) {
@@ -908,7 +967,7 @@ export function compactTx(tx) {
   if (kind === 'withdraw') delete out.payoutPortalId;
   // The EVM lock checks this signature. A compact body that drops it cannot replay.
   if (kind === 'lock' && tx.lockAuth) out.lockAuth = compactValue(tx.lockAuth);
-  return out;
+  return viewsAsBuffers(out);
 }
 
 function blobIsFs1Wire(value) {

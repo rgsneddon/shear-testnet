@@ -12,7 +12,9 @@
 import { createHash } from 'node:crypto';
 import { MAGIC_TESTNET } from './asert.js';
 import { asU8, pointBytes, scalarBytes } from './note.js';
+import { jroot as bookJroot } from './admit.js';
 import { reserveDigestSuffix } from './reserve_vault.js';
+import { canonicalEncode } from './canonical_row.js';
 import {
   fs1BlobCap,
   fs1NativeLoaded,
@@ -30,6 +32,13 @@ export const FS1_RECORD_BYTES = 321;
 export const FS1_DEPTH = 7;
 export const FS1_INPUT_MAX = 8;
 export const FS1_DIGEST_DST = 'shear-admit-fs1-txd';
+/** Tags the signed top-level memo envelope (FS1_MEMO=bound). */
+export const FS1_MEMO_DST = 'shear-fs1-memo-v1';
+
+/** sha256 of a memo envelope's canonical encoding: the bytes the spend signs. */
+export function fs1MemoDigest(memoCt) {
+  return createHash('sha256').update(canonicalEncode(memoCt)).digest();
+}
 
 function bytesOf(v) {
   if (v == null || v === '' || v === false) return null;
@@ -165,6 +174,13 @@ export function txBodyDigestFs1(tx, magic = MAGIC_TESTNET) {
   parts.push(lenPref(Buffer.from(String(tx?.payoutPortalId || '').toLowerCase())));
   const reserveSuffix = reserveDigestSuffix(tx);
   if (reserveSuffix) parts.push(reserveSuffix);
+  // The top-level memo envelope is signed (Russell 26 Oct, FS1_MEMO=bound).
+  // A tx with no memo keeps its digest, so adding a memo to it changes the
+  // digest as stripping or swapping one does: each fails the spend.
+  if (tx?.memoCt != null) {
+    parts.push(Buffer.from(FS1_MEMO_DST));
+    parts.push(fs1MemoDigest(tx.memoCt));
+  }
   return createHash('sha256').update(Buffer.concat(parts)).digest();
 }
 
@@ -204,7 +220,8 @@ function sameCommit(a, b) {
  * One native tree follows the longest admit-set prefix asked for. A request
  * keeps the common prefix, truncates the rest, and appends what it needs.
  * Roots are cached by (n, jroot), so a mempool or block re-check does not
- * touch the tree.
+ * touch the tree. A root is cached only when the row's notes hash to its
+ * jroot, so a row whose label names other notes cannot poison that label.
  */
 const tree = { handle: null, pubs: [], commits: [] };
 const rootCache = new Map();
@@ -242,11 +259,19 @@ export function fs1RootAt(live) {
   if (!syncTree(n, pubs, commits)) return null;
   const root = fs1TreeRoot(tree.handle);
   if (!root) return null;
-  if (key) {
+  if (key && labelNamesNotes(live.jroot, n, pubs, commits)) {
     if (rootCache.size >= ROOT_CACHE_MAX) rootCache.delete(rootCache.keys().next().value);
     rootCache.set(key, root);
   }
   return root;
+}
+
+/** True when `label` is the admit-set jroot of exactly the first `n` notes. */
+function labelNamesNotes(label, n, pubs, commits) {
+  const want = bytes32(label);
+  if (!want) return false;
+  const got = bookJroot({ pubs: pubs.slice(0, n), commits: commits.slice(0, n) });
+  return !!(got && Buffer.from(got).equals(want));
 }
 
 /** Bring the shared tree to exactly the first `n` notes. */
@@ -340,16 +365,23 @@ export function resetFs1VerifyCache() {
   verifyCalls = 0;
 }
 
+const VERIFY_KEY_DST = 'shear-fs1-verify-cache-v1';
+
 /**
  * Verify one spend. A result is cached by the hash of every input to the
  * check, so a mempool re-check after a block is not a second proof verify.
+ * Each input is length-prefixed, so moving bytes between the blob and the
+ * records cannot reuse another split's result. A reorg needs no flush: the
+ * root is in the key, and the anchor window and spent tags are checked by
+ * the caller on every call.
  */
 export function fs1VerifySpend({ fs1, records, root, digest, anchor }) {
   const key = createHash('sha256')
-    .update(fs1)
-    .update(records)
-    .update(root)
-    .update(digest)
+    .update(lenPref(Buffer.from(VERIFY_KEY_DST)))
+    .update(lenPref(Buffer.from(asU8(fs1))))
+    .update(lenPref(Buffer.from(asU8(records))))
+    .update(lenPref(Buffer.from(asU8(root))))
+    .update(lenPref(Buffer.from(asU8(digest))))
     .update(u64le(anchor))
     .digest('hex');
   if (verifyCache.has(key)) return true;

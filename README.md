@@ -28,7 +28,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Pool: https://pool.shear.digital
 - Chain: `shear-testnet-v12`
 
-Mainnet `shear-v1` is **not live**. The public countdown is 16th November 2026 at 1400hrs UK time. That countdown is a display date. It is not genesis and it does not emit. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not set those env vars.
+Mainnet `shear-v1` is **not live**. The public countdown is 21st December 2026 at 1400hrs UK time, the mainnet genesis instant. Reaching it does not emit. Clients refuse to emit unless `SHEAR_MAINNET_EMIT=1` **and** `SHEAR_MAINNET_EMIT_CONFIRM=I_UNDERSTAND_SHEAR_MAINNET`. Fingerprint must include `POT_SCHED` + `EPOCH_DAYS=400` + oracle policy before emit. Do not set those env vars.
 
 Block pot starts at **1.00 SHE** and falls **0.01 SHE per Vortex epoch** to a **0.20 SHE** floor. Testnet epochs are **4 days** (so rollovers can be watched); mainnet epochs are **400 days**. Hash bonus stays governance-voted. The lock issuance rate is frozen when an epoch opens. A vote does not set it. The amount paid on withdraw is the Reserve reward. Reserve rewards are newly minted by the protocol in each block's coinbase at the lock issuance rate. They don't come from any pool or pot of existing Shear, and nobody holds your coins. The pot schedule is not votable.
 

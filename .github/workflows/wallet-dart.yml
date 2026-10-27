@@ -34,6 +34,26 @@ jobs:
       - name: UI leaf vote posts a real proof
         working-directory: wallet
         run: flutter test test/leaf_vote_wire_test.dart test/vault_fix_v12_test.dart
+      - name: Lock amount and memo slot
+        working-directory: wallet
+        # A lock is one π leaf, refused in the wallet before posting; every
+        # memo envelope is one fixed size, in the shape the node admits.
+        run: flutter test test/lock_amount_test.dart test/privacy_walk_test.dart test/spendable_never_painted_test.dart
+      - name: Own change has a height before it is spendable
+        working-directory: wallet
+        # Gate 3: a held note with no height is read again until it has one;
+        # until then it is Pending on home and the planner does not count it.
+        run: flutter test test/change_height_test.dart
+      - name: A coinbase label painted onto another dest is never its note
+        working-directory: wallet
+        # COINBASE_NC=dest-bound, the wallet's own guard under it.
+        run: flutter test test/coinbase_label_paint_test.dart
+      - name: The FS-1 digest the wallet signs is the one the node checks
+        working-directory: wallet
+        # The Dart side of crypto/vectors/fs1_digest_v1.json (memo bound,
+        # FS1_MEMO=bound) and of the Reserve suffix; fs1_spend.test.js runs
+        # the JS side of the same vectors.
+        run: flutter test test/fs1_digest_v1_test.dart test/reserve_suffix_parity_test.dart
       - name: Install node deps
         run: npm ci --ignore-scripts
       - name: Build shearadmit.node

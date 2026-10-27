@@ -212,6 +212,16 @@ def bundled_license_files(binary: str, repo: str) -> list[str]:
     return []
 
 
+def path_inside(path: str, root: str, pathmod=os.path) -> bool:
+    """True when path is root or below it. A path on another drive (Windows:
+    the runner's node.exe on C:, the checkout on D:) is not inside, rather
+    than commonpath's ValueError."""
+    try:
+        return pathmod.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
 def license_files_for(binary: str, repo: str | None) -> list[str]:
     """The host's licence files for binary, else the copy kept under LICENSES/third-party/.
 
@@ -222,7 +232,7 @@ def license_files_for(binary: str, repo: str | None) -> list[str]:
     inside_repo = False
     if repo is not None:
         root = os.path.realpath(repo)
-        inside_repo = os.path.commonpath([os.path.realpath(binary), root]) == root
+        inside_repo = path_inside(os.path.realpath(binary), root)
     if not (inside_repo and bundled):
         try:
             return host_license_files(binary)

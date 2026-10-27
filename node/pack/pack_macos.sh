@@ -19,8 +19,7 @@ if [ ! -d node_modules ]; then
   echo "missing node_modules — run npm ci --ignore-scripts before packing" >&2
   exit 1
 fi
-cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native
-cmake --build crypto/randomx/build -j"$(sysctl -n hw.ncpu)"
+bash scripts/randomx_build.sh
 make -C crypto/native
 python3 node/pack/zip_node.py macos
 test -f "dist/shear-node-$LABEL-macos.zip"

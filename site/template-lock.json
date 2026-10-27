@@ -41,7 +41,7 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/index.html": {
-      "skeleton": "ec52c77e8e5ddbaf4eb4f1437a654ef13c2399b59696fca98ef8785acd8bf674",
+      "skeleton": "aaa21ebe517919dcba20601d4480610ee841a0ec0f7e8517a70b4722ae358fa3",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/docs/index.html": {
@@ -73,7 +73,7 @@
       "style": "5aae7de3b4d1515b536ef53d3bf66676a1ae9230dc5f9c773e7754d56e2d2fcc"
     },
     "site/wallet/index.html": {
-      "skeleton": "8a1d1c63bf749fe1cd0fac188de52f674222e5c0a0182dfb317b1903abf64dce",
+      "skeleton": "b8756031f6fee0ecbf2c80d72d95fd6d9a4738ccff8ad74f731dc3bc3b02438a",
       "style": "4a410ccd78e0094693bde09c7fc8dcf9472c96fa67b4dbd3141e1ef411503ba7"
     },
     "site/whitepaper/index.html": {

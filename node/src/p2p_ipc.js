@@ -16,6 +16,7 @@ import {
 import { admitWireTx } from '../../crypto/chronoflux.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { txWeight } from '../../crypto/levy.js';
+import { heldBodyKey } from '../../crypto/mempool.js';
 import { reviveBytes } from '../../crypto/note.js';
 import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
 import { decodeWireBlock, encodeWireBlock, headerPrevHash } from './p2p.js';
@@ -43,6 +44,9 @@ export function networkMempoolWire(store, p2p) {
     const bFlag = m?.kind === 'b-spend' || m?.bFlag ? 1 : 0;
     txs.push({
       id,
+      // The body key (a hash of the public body): the pool matches rows by it,
+      // not by the id a sender picks.
+      key: heldBodyKey(m),
       kind: String(m.kind || 'send'),
       fee: Number(m.fee) || 0,
       weight: txWeight({ vouts, memoChunks: memo, bFlag }),

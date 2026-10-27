@@ -562,7 +562,9 @@ Uint8List reserveCommitOf(List<Map<String, dynamic>> vout, String kind) {
   return raw.length == 32 && hit['commit'] != null ? raw : Uint8List(0);
 }
 
-/// Opened nanos JS `canonicalReserveFields` reads from the kind output.
+/// Opened nanos JS `canonicalReserveFields` reads from the kind output, as
+/// `reserveRowNanos` does: valueProof.v, or nanos only on a row with no
+/// commitment, so a full row and its compact copy sign the same digest.
 int reserveOpenedNanos(List<Map<String, dynamic>> vout, String kind) {
   Map<String, dynamic>? hit;
   for (final o in vout) {
@@ -574,8 +576,8 @@ int reserveOpenedNanos(List<Map<String, dynamic>> vout, String kind) {
   hit ??= vout.isEmpty ? null : vout.first;
   if (hit == null) return 0;
   final vp = hit['valueProof'];
-  if (vp is Map && vp['v'] != null) return jsSafeInt(vp['v']);
-  if (hit['nanos'] != null) return jsSafeInt(hit['nanos']);
+  if (vp is Map && vp['v'] != null && vp['v'] != '') return jsSafeInt(vp['v']);
+  if (hit['commit'] == null && hit['nanos'] != null && hit['nanos'] != '') return jsSafeInt(hit['nanos']);
   return 0;
 }
 
