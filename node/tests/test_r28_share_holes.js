@@ -30,7 +30,7 @@ import {
   verifyShareBatch,
 } from '../../crypto/share_batch.js';
 import { P2P_MAX_FRAME, encodeWireBlock, decodeWireBlock } from '../src/p2p.js';
-import { GENESIS_PREV, buildTemplate, potSharesFromBatch, verifyBlock } from '../src/chain.js';
+import { GENESIS_PREV, buildTemplate, canonicalCarry, potSharesFromBatch, verifyBlock } from '../src/chain.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -120,7 +120,8 @@ function child(parents, { shareBatch = [], hashSpill = [], issuedHeaders = null,
   });
   assert.equal(q.ok, true, q.reason);
   const subsidy = potSubsidyNanos(0);
-  const potShares = potSharesFromBatch(shareBatch, FEE, subsidy, 0);
+  // The parent's unminted pot carries in, as a node's template does.
+  const potShares = potSharesFromBatch(shareBatch, FEE, subsidy, canonicalCarry(prevBlock.txs[0]) || 0);
   const parentFlux = fluxsetFromBlocks(parents);
   const tpl = buildTemplate({
     prev: prevBlock.hash,
@@ -152,9 +153,9 @@ function child(parents, { shareBatch = [], hashSpill = [], issuedHeaders = null,
     weight: tpl.weight,
     height,
   };
-  if (wire) block = { ...decodeWireBlock(encodeWireBlock(block)), height };
   const tag = Buffer.alloc(32);
   tag.writeUInt32LE(height, 4);
+  if (wire) block = { ...decodeWireBlock(encodeWireBlock({ ...block, hash: tag })), height };
   const verdict = verifyBlock(block, prevBlock, {
     trustedPowHash: tag,
     nowMs: when + 1_000,
