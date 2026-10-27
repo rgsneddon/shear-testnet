@@ -9,7 +9,7 @@ Last updated: 2026-10-26 by Claude.
 
 | Agent  | State                     | Items it may work on |
 |--------|---------------------------|----------------------|
-| Claude | active                    | rows it owns, one at a time |
+| Claude | active                    | rows it owns, one at a time; when otherwise idle, Grok-owned rows R03, R04, R11, R13, R14a (rule 14) |
 | Grok   | inactive (credits reset Thu 16:27 BST / 15:27 GMT) | none |
 | other  | inactive                  | none |
 
@@ -124,10 +124,22 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
     - Nothing on the path under test is a fake: no mock HTTP client, stub
       route, fake pool or hand-built chain state in place of the real one.
     - The Review records the run ID, the host and the head it ran on.
-    - The model is R01b's two-holder e2e (`test_dart_withdraw_queue_v12`):
+    - The in-process two-holder test (`test_dart_withdraw_queue_v12`) does not
+      meet this rule (Russell 27 Oct); it is a labelled unit test. The model is
+      R01b's multi-process e2e (real node, pool and miner processes, the real
+      wallet library over HTTP). The in-process test, for reference:
       Dart-built locks for two holders are mined by a real store. The
       wallet reads the frozen lists from the node's real RPC and checks
       them against its own synced blocks. Its claim and vote are mined.
+
+14. **Idle pick-up of Grok rows (Russell 2026-10-27).** Claude may take a
+    Grok-owned row (R03, R04, R11, R13, R14a) whenever it would otherwise be
+    idle.
+    - The owner change is written in the row here and in the workbook when
+      the row is taken.
+    - A consensus (Y) row Claude does is cross-reviewed by Grok, as rule 7
+      requires.
+    - Grok is reassigned to other rows or to reviews.
 
 ## Rows
 
