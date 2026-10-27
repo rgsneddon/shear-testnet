@@ -128,6 +128,7 @@ import {
   unpackShareBatch,
   u64le,
   shareSlotRoot,
+  bluSlotRoot,
   shareSlotDigestSuffix,
   shareSlotCommitment,
 } from '../../crypto/pack.js';
