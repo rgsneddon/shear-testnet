@@ -144,6 +144,9 @@ function child(parents, { shareBatch = [], hashSpill = [], issuedHeaders = null,
     txs: tpl.txs,
     shareBatch: tpl.shareBatch || [],
     hashSpill: tpl.hashSpill || [],
+    // The sealed credit columns a node stores and relays with the block.
+    ...(Array.isArray(tpl.hashCredits) ? { hashCredits: tpl.hashCredits } : {}),
+    ...(Array.isArray(tpl.hashSpillCredits) ? { hashSpillCredits: tpl.hashSpillCredits } : {}),
     miner: FEE,
     poolDest: FEE,
     aLeaves: tpl.aLeaves,
@@ -225,18 +228,19 @@ describe('R28 share holes (each fails on feat 2f6e9962)', () => {
 
   it('H4: a kin share paid in block N is not paid again in N+1', () => {
     // A sibling template of genesis: same round family, a later timestamp.
+    // The pool hands each kin share with its claimed slot, as it does live.
     const kin = Buffer.from(g.header);
     kin.writeBigUInt64LE(decodeHeader(kin).timestamp + 1n, 100);
     const s = mineShare(minerDest(), kin);
-    const b2 = child([g], { shareBatch: [s], issuedHeaders: [kin] });
+    const b2 = child([g], { shareBatch: [{ ...s, proofSlot: 0 }], issuedHeaders: [kin] });
     assert.equal(b2.verdict.ok, true, b2.verdict.reason);
     assert.equal(b2.block.shareBatch.length, 1);
     // Control: a different kin share on the same sibling is paid in block 3.
     const other = mineShare(minerDest(), kin);
-    const ok3 = child([g, b2.block], { shareBatch: [other], issuedHeaders: [kin] });
+    const ok3 = child([g, b2.block], { shareBatch: [{ ...other, proofSlot: 1 }], issuedHeaders: [kin] });
     assert.equal(ok3.verdict.ok, true, ok3.verdict.reason);
     assert.equal(ok3.block.shareBatch.length, 1);
-    const b3 = child([g, b2.block], { shareBatch: [s], issuedHeaders: [kin] });
+    const b3 = child([g, b2.block], { shareBatch: [{ ...s, proofSlot: 1 }], issuedHeaders: [kin] });
     assert.equal(b3.verdict.ok, false, 'a kin share paid in block 2 was paid again in block 3');
   });
 
