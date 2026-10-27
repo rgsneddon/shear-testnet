@@ -2941,6 +2941,7 @@ export function createStore(dir, {
       bLeaves: prev.bLeaves,
       weight: prev.weight,
       shareBatch: prev.shareBatch,
+      blunoteRecord: prev.blunoteRecord,
     } : null, {
       spentB,
       tipHeight,
@@ -3650,6 +3651,7 @@ export function createStore(dir, {
       bLeaves: prev.bLeaves,
       weight: prev.weight,
       shareBatch: prev.shareBatch,
+      blunoteRecord: prev.blunoteRecord,
     } : null, {
       mtpTimestamps: blocks.slice(-11).map((b) => {
         try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
@@ -4022,6 +4024,8 @@ export function createStore(dir, {
       ...block,
       magic: bookMagic,
       hash: check.hash,
+      // R28: the block's compact record, from its own verify.
+      ...(check.blunoteRecord ? { blunoteRecord: check.blunoteRecord } : {}),
       height: prev ? prev.height + 1 : 1,
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
     };
@@ -4923,6 +4927,7 @@ export function createStore(dir, {
       bLeaves: block.bLeaves,
       weight: block.weight,
       shareBatch: block.shareBatch,
+      blunoteRecord: block.blunoteRecord,
     };
   }
 
@@ -4931,6 +4936,7 @@ export function createStore(dir, {
       ...block,
       magic: bookMagic,
       hash: check.hash,
+      ...(check.blunoteRecord ? { blunoteRecord: check.blunoteRecord } : {}),
       height: prev ? Number(prev.height || 0) + 1 : 1,
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
     });
@@ -6408,7 +6414,7 @@ export function createStore(dir, {
     };
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null, feeKey = null, feeBps = 0 } = {}) {
     void hashBonusCustodyDest;
     const t = tip();
     const height = t ? t.height + 1 : 1;
@@ -6648,6 +6654,9 @@ export function createStore(dir, {
       hashOwedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
+      // R28: the pool's own one-time fee key and fee rate (no address).
+      feeKey,
+      feeBps,
       prepareCoinbase: (cb) => {
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;

@@ -794,6 +794,31 @@ function compactEpochCensus(list) {
 }
 
 /** Strip a tx down to the sealed fields. No openings, view material, IP, or memo plaintext. */
+function bluHex(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'string' && /^[0-9a-fA-F]{64}$/.test(v)) return v.toLowerCase();
+  try {
+    const b = Buffer.from(v);
+    return b.length === 32 ? b.toString('hex') : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The coinbase blunote fields as plain values: bps, tag, and 32-byte hex keys. */
+function compactBlunote(b) {
+  if (!b || typeof b !== 'object' || Buffer.isBuffer(b)) return null;
+  const out = { feeBps: Math.floor(Number(b.feeBps) || 0) };
+  const R = bluHex(b.feeR);
+  const P = bluHex(b.feeP);
+  if (R) out.feeR = R;
+  if (P) out.feeP = P;
+  if (b.feeTag != null) out.feeTag = Math.floor(Number(b.feeTag) || 0) & 0xff;
+  const prev = bluHex(b.prev);
+  if (prev) out.prev = prev;
+  return out;
+}
+
 export function compactTx(tx) {
   if (!tx) return tx;
   if (tx.coinbase) {
@@ -833,6 +858,9 @@ export function compactTx(tx) {
     if (Array.isArray(tx.issuedJobKeys) && tx.issuedJobKeys.length) {
       row.issuedJobKeys = tx.issuedJobKeys.map((id) => String(id).toLowerCase());
     }
+    // R28: the digest binds these fields, so disk and wire keep them.
+    const blu = compactBlunote(tx.blunote);
+    if (blu) row.blunote = blu;
     compactHashLedger(tx, row);
     return viewsAsBuffers(row);
   }
