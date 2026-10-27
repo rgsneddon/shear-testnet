@@ -1294,11 +1294,7 @@ int main(int argc, char **argv) {
       char R[65], P[65];
       blu_hex32(k.R, R);
       blu_hex32(k.P, P);
-      printf("R %s
-P %s
-tag %u
-bind %llu
-", R, P, (unsigned)k.tag, (unsigned long long)blu_bind(hdr, &k));
+      printf("R %s\nP %s\ntag %u\nbind %llu\n", R, P, (unsigned)k.tag, (unsigned long long)blu_bind(hdr, &k));
       return 0;
     }
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) want_help = 1;
