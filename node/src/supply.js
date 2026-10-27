@@ -777,10 +777,13 @@ function accountBluBlock(state, block, cb, { ts, blockHeight, opts, potMinted, c
     if (hashHere > BigInt(budget)) hashHere = BigInt(budget);
   }
   const split = splitLevy(Number(levy));
+  // An empty block with no fee key paid its finder levy with the reserve note.
+  const noFeeKey = rec.feeP.equals(Buffer.alloc(32));
+  const reserveExtra = rec.n === 0 && noFeeKey ? BigInt(split.finder) : 0n;
   const { piece } = drawPieces(rec.T, BLUNOTE_WINNERS);
   let paid = rec.feeV;
   for (const w of rec.winners) paid += piece * BigInt(w.m);
-  if (paid !== potMinted + BigInt(split.finder) + hashHere) {
+  if (paid !== potMinted + BigInt(split.finder) - reserveExtra + hashHere) {
     state.carry = carryOut;
     return { reason: 'supply', state };
   }
@@ -798,7 +801,7 @@ function accountBluBlock(state, block, cb, { ts, blockHeight, opts, potMinted, c
     potMinted,
     mintedHashHere: hashHere,
     levy,
-    publicTotal: BigInt(split.reserve),
+    publicTotal: BigInt(split.reserve) + reserveExtra,
     unit,
   });
 }

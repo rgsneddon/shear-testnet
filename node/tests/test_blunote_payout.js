@@ -38,7 +38,7 @@ describe('BluNotes payout', () => {
         unitNanos: UNIT,
         budgetNanos: t % 3 === 0 ? 1000n : null,
       });
-      assert.equal(got.minted + got.carryOut, pot + got.hashNanos);
+      assert.equal(got.minted + got.carryOut + got.reserveExtra, pot + got.hashNanos);
       assert.equal(got.winners.reduce((a, w) => a + w.m, 0), BLUNOTE_WINNERS);
       for (const w of got.winners) assert.equal(w.v, got.piece * BigInt(w.m));
       assert.ok(got.carryOut < BigInt(BLUNOTE_WINNERS));
@@ -88,22 +88,31 @@ describe('BluNotes payout', () => {
     assert.equal(free.hashNanos, 10n << 20n);
   });
 
-  it('forfeits a winner whose key is not a point to carry, and conserves', () => {
+  it('refuses to pay a key that is not a point (admission and the coinbase rule refuse them first)', () => {
     const r = rows(1);
     r[0].shareP = Buffer.alloc(32, 0xff);
-    const got = blunoteSettle({ shares: r, powHash: randomBytes(32), potPayable: 1_600n, unitNanos: UNIT });
-    assert.equal(got.winners.length, 0);
-    assert.equal(got.minted, 0n);
-    assert.equal(got.carryOut, 1_600n + got.hashNanos);
-  });
-
-  it('a fee key that is not a point forfeits the fee to the miners', () => {
-    const got = blunoteSettle({
+    assert.throws(() => blunoteSettle({ shares: r, powHash: randomBytes(32), potPayable: 1_600n, unitNanos: UNIT }));
+    assert.throws(() => blunoteSettle({
       shares: rows(4), powHash: randomBytes(32), potPayable: 16_000n, feeNanos: 160n,
       feeKey: { R: randomBytes(32), P: Buffer.alloc(32, 0xff), viewTag: 0 }, unitNanos: UNIT,
-    });
-    assert.equal(got.notes.filter((n) => n.kind === 'pool-fee').length, 0);
-    assert.equal(got.minted + got.carryOut, 16_000n + got.hashNanos);
+    }));
+  });
+
+  it('the finder levy joins the draw, or in an empty block the fee or reserve note, never the carry', () => {
+    const pool = wallet();
+    const fee = oneTimeKey({ B: pool.B, Y: pool.Y });
+    const feeKey = { R: fee.R, P: fee.P, viewTag: fee.tag };
+    const drawn = blunoteSettle({ shares: rows(5), powHash: randomBytes(32), potPayable: 16_000n, feeNanos: 160n, feeKey, finderLevy: 900n, unitNanos: UNIT });
+    assert.equal(drawn.T, 16_000n - 160n + 900n + drawn.hashNanos);
+    assert.ok(drawn.carryOut < 16n);
+    const emptyFee = blunoteSettle({ shares: [], powHash: randomBytes(32), potPayable: 16_000n, feeNanos: 160n, feeKey, finderLevy: 900n, unitNanos: UNIT });
+    assert.equal(emptyFee.feeV, 160n + 900n);
+    assert.equal(emptyFee.carryOut, 16_000n - 160n);
+    assert.equal(emptyFee.reserveExtra, 0n);
+    const emptyNoKey = blunoteSettle({ shares: [], powHash: randomBytes(32), potPayable: 16_000n, finderLevy: 900n, unitNanos: UNIT });
+    assert.equal(emptyNoKey.minted, 0n);
+    assert.equal(emptyNoKey.carryOut, 16_000n);
+    assert.equal(emptyNoKey.reserveExtra, 900n);
   });
 
   it('only the miner finds its winner notes', () => {
