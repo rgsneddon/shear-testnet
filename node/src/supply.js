@@ -28,6 +28,8 @@ import {
   shareWorkKey,
 } from '../../crypto/share_batch.js';
 import { canonicalCarry } from './chain.js';
+import { BLUNOTE_WINNERS, decodeRecord, drawPieces } from '../../crypto/blunote.js';
+import { splitLevy } from '../../crypto/levy.js';
 import {
   freshForBlock,
   spillForBlock,
@@ -703,6 +705,104 @@ function accountBLocked(state, block) {
  * so a later reconcile sees the same first reason and the same difference.
  * The caller decides whether to stop.
  */
+/**
+ * The part of a block's account both share paths share: the vault reward,
+ * the coinbase commitment sum, interest, levy and the u64 bounds.
+ * `publicTotal` is what the coinbase's explicit outputs must sum to.
+ */
+function accountTail(state, block, cb, { ts, blockHeight, opts, potMinted, mintedHashHere, levy, publicTotal, unit }) {
+  const reward = stakeRewardSupply(
+    opts.vault,
+    block,
+    ts,
+    Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : block?.height,
+  );
+  if (!reward.ok) return { reason: reward.reason || 'supply', state };
+  // stakeRewardSupply returns claimed 0. Claim nanos live in reward.minted,
+  // and applyRewardClaim accepts them only when they equal the proof reward.
+  const claimedReward = reward.claimed || 0n;
+  // A claim mint is the claim output, not a coinbase output. Counting it
+  // here made the first honest claim block fail the coinbase sum.
+  const rememberRange = opts.rememberRange !== false;
+  if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
+    return { reason: 'supply', state };
+  }
+  const interest = blockWithdrawInterest(opts.vault, block, ts, opts.oracle);
+  if (!interest.ok) return { reason: interest.reason || 'supply', state };
+  // Schedule allowance is staked × epochBps per epoch, not a copy of the receipt.
+  const allowed = blockPermittedInterest(opts.vault, block, ts, opts.oracle);
+  if (!allowed.ok) return { reason: allowed.reason || 'supply', state };
+  state.mintedPot += potMinted;
+  state.mintedHash += mintedHashHere;
+  state.mintedLevy += levy;
+  if (state.mintedInterest + interest.nanos + reward.minted + claimedReward > U64) return { reason: 'supply', state };
+  if (state.permittedInterest + allowed.nanos + reward.permitted + claimedReward > U64) return { reason: 'supply', state };
+  state.mintedInterest += interest.nanos + reward.minted + claimedReward;
+  state.permittedInterest += allowed.nanos + reward.permitted + claimedReward;
+  const bReason = accountBLocked(state, block);
+  if (bReason) return { reason: bReason, state };
+  state.liveUnit = unit;
+  state.height = blockHeight;
+  state.owedKnown = true;
+  const hashBytes = opts.blockHash || block?.hash;
+  state.blockHash = hashBytes ? Buffer.from(hashBytes) : state.blockHash;
+  if (!fitsU64(state.schedulePot) || !fitsU64(state.carry) || !fitsU64(state.mintedPot)
+    || !fitsU64(state.mintedHash) || !fitsU64(state.mintedLevy) || !fitsU64(state.bLocked)
+    || !fitsU64(state.mintedInterest) || !fitsU64(state.permittedInterest)
+    || !fitsU64(state.vaultPrincipal || 0n)
+    || !fitsU64(state.permittedHashAll)
+    || !fitsU64(state.acceptedHash) || !fitsU64(state.dust) || !fitsU64(state.overflow)) {
+    return { reason: 'supply', state };
+  }
+  return { reason: '', state };
+}
+
+/**
+ * R28 BluNotes. The record names what the block paid by draw. Every node
+ * re-derives those notes, so the check here is the account: the notes plus
+ * the carry are the subsidy, the parent carry, the finder levy and the
+ * hash bonus (scaled in the block, D2; no owed ledger). The coinbase's
+ * explicit outputs are the reserve levy only.
+ */
+function accountBluBlock(state, block, cb, { ts, blockHeight, opts, potMinted, carryOut, levy }) {
+  const raw = block.blunoteRecord;
+  const rec = decodeRecord(Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw), 'hex'));
+  if (!rec) { state.carry = carryOut; return { reason: 'blunote_record', state }; }
+  const unit = hashBonusUnitNanos(opts.unit == null ? state.liveUnit : opts.unit);
+  let hashHere = 0n;
+  if (rec.n > 0) {
+    const budget = hashBudgetNanos(state.acceptedSeries, unit);
+    if (budget == null) { state.carry = carryOut; return { reason: 'hash_owed', state }; }
+    hashHere = rec.W * BigInt(unit);
+    if (hashHere > BigInt(budget)) hashHere = BigInt(budget);
+  }
+  const split = splitLevy(Number(levy));
+  const { piece } = drawPieces(rec.T, BLUNOTE_WINNERS);
+  let paid = rec.feeV;
+  for (const w of rec.winners) paid += piece * BigInt(w.m);
+  if (paid !== potMinted + BigInt(split.finder) + hashHere) {
+    state.carry = carryOut;
+    return { reason: 'supply', state };
+  }
+  state.acceptedHash += hashHere;
+  state.permittedHashAll += hashHere;
+  state.acceptedSeries.push(rec.n > 0 ? rec.W : 0n);
+  state.owedRows = [];
+  state.dust = 0n;
+  state.overflow = 0n;
+  state.carry = carryOut;
+  return accountTail(state, block, cb, {
+    ts,
+    blockHeight,
+    opts,
+    potMinted,
+    mintedHashHere: hashHere,
+    levy,
+    publicTotal: BigInt(split.reserve),
+    unit,
+  });
+}
+
 function accountBlock(prev, block, opts = {}) {
   const state = copySupply(prev);
   const ts = headerMs(block);
@@ -729,6 +829,9 @@ function accountBlock(prev, block, opts = {}) {
   if (!hash.ok || levy == null) {
     state.carry = carryOut;
     return { reason: hash.reason || 'supply', state };
+  }
+  if (block?.blunoteRecord != null && block.blunoteRecord !== '') {
+    return accountBluBlock(state, block, cb, { ts, blockHeight, opts, potMinted, carryOut, levy });
   }
   let shares = null;
   try {
@@ -816,51 +919,7 @@ function accountBlock(prev, block, opts = {}) {
   state.dust = settled.dust;
   state.overflow = settled.overflow;
   state.carry = carryOut;
-  const reward = stakeRewardSupply(
-    opts.vault,
-    block,
-    ts,
-    Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : block?.height,
-  );
-  if (!reward.ok) return { reason: reward.reason || 'supply', state };
-  // stakeRewardSupply returns claimed 0. Claim nanos live in reward.minted,
-  // and applyRewardClaim accepts them only when they equal the proof reward.
-  const claimedReward = reward.claimed || 0n;
-  // A claim mint is the claim output, not a coinbase output. Counting it
-  // here made the first honest claim block fail the coinbase sum.
-  const publicTotal = potMinted + mintedHashHere + levy;
-  const rememberRange = opts.rememberRange !== false;
-  if (!commitmentsMatch(cb?.vout || [], publicTotal, cb?.excess, rememberRange)) {
-    return { reason: 'supply', state };
-  }
-  const interest = blockWithdrawInterest(opts.vault, block, ts, opts.oracle);
-  if (!interest.ok) return { reason: interest.reason || 'supply', state };
-  // Schedule allowance is staked × epochBps per epoch, not a copy of the receipt.
-  const allowed = blockPermittedInterest(opts.vault, block, ts, opts.oracle);
-  if (!allowed.ok) return { reason: allowed.reason || 'supply', state };
-  state.mintedPot += potMinted;
-  state.mintedHash += mintedHashHere;
-  state.mintedLevy += levy;
-  if (state.mintedInterest + interest.nanos + reward.minted + claimedReward > U64) return { reason: 'supply', state };
-  if (state.permittedInterest + allowed.nanos + reward.permitted + claimedReward > U64) return { reason: 'supply', state };
-  state.mintedInterest += interest.nanos + reward.minted + claimedReward;
-  state.permittedInterest += allowed.nanos + reward.permitted + claimedReward;
-  const bReason = accountBLocked(state, block);
-  if (bReason) return { reason: bReason, state };
-  state.liveUnit = unit;
-  state.height = blockHeight;
-  state.owedKnown = true;
-  const hashBytes = opts.blockHash || block?.hash;
-  state.blockHash = hashBytes ? Buffer.from(hashBytes) : state.blockHash;
-  if (!fitsU64(state.schedulePot) || !fitsU64(state.carry) || !fitsU64(state.mintedPot)
-    || !fitsU64(state.mintedHash) || !fitsU64(state.mintedLevy) || !fitsU64(state.bLocked)
-    || !fitsU64(state.mintedInterest) || !fitsU64(state.permittedInterest)
-    || !fitsU64(state.vaultPrincipal || 0n)
-    || !fitsU64(state.permittedHashAll)
-    || !fitsU64(state.acceptedHash) || !fitsU64(state.dust) || !fitsU64(state.overflow)) {
-    return { reason: 'supply', state };
-  }
-  return { reason: '', state };
+  return accountTail(state, block, cb, { ts, blockHeight, opts, potMinted, mintedHashHere, levy, publicTotal: potMinted + mintedHashHere + levy, unit });
 }
 
 /**

@@ -250,19 +250,24 @@ export function batchSumRoot(frames, weights) {
 
 /**
  * The per-block record kept after the frames are pruned:
- * batchRoot 32 | n u32 | W u64 | T u64 | fee R 32 | fee P 32 | count u8 | count x (R 32 | P 32 | m u8).
+ * batchRoot 32 | n u32 | W u64 | T u64 | fee v u64 | fee R 32 | fee P 32 |
+ * count u8 | count x (R 32 | P 32 | m u8). A block with no fee key has zero
+ * fee bytes. The notes the block paid are derivable from this alone.
  */
-export function encodeRecord({ batchRoot, n, W, T, feeR, feeP, winners }) {
+const REC_HEAD = 32 + 4 + 8 + 8 + 8 + 64 + 1;
+
+export function encodeRecord({ batchRoot, n, W, T, feeV = 0n, feeR, feeP, winners }) {
   const list = Array.isArray(winners) ? winners : [];
   if (list.length > 255) throw new Error('too many winners');
-  const head = Buffer.alloc(32 + 4 + 8 + 8 + 64 + 1);
+  const head = Buffer.alloc(REC_HEAD);
   buf32(batchRoot, 'batchRoot').copy(head, 0);
   head.writeUInt32LE(Number(n), 32);
   head.writeBigUInt64LE(BigInt(W), 36);
   head.writeBigUInt64LE(BigInt(T), 44);
-  buf32(feeR, 'feeR').copy(head, 52);
-  buf32(feeP, 'feeP').copy(head, 84);
-  head.writeUInt8(list.length, 116);
+  head.writeBigUInt64LE(BigInt(feeV), 52);
+  buf32(feeR || Buffer.alloc(32), 'feeR').copy(head, 60);
+  buf32(feeP || Buffer.alloc(32), 'feeP').copy(head, 92);
+  head.writeUInt8(list.length, REC_HEAD - 1);
   const rows = list.map((w) => {
     const r = Buffer.alloc(65);
     buf32(w.R, 'R').copy(r, 0);
@@ -275,12 +280,12 @@ export function encodeRecord({ batchRoot, n, W, T, feeR, feeP, winners }) {
 
 export function decodeRecord(bytes) {
   const b = Buffer.from(bytes);
-  if (b.length < 117) return null;
-  const count = b.readUInt8(116);
-  if (b.length !== 117 + count * 65) return null;
+  if (b.length < REC_HEAD) return null;
+  const count = b.readUInt8(REC_HEAD - 1);
+  if (b.length !== REC_HEAD + count * 65) return null;
   const winners = [];
   for (let i = 0; i < count; i += 1) {
-    const at = 117 + i * 65;
+    const at = REC_HEAD + i * 65;
     winners.push({ R: b.subarray(at, at + 32), P: b.subarray(at + 32, at + 64), m: b.readUInt8(at + 64) });
   }
   return {
@@ -288,10 +293,34 @@ export function decodeRecord(bytes) {
     n: b.readUInt32LE(32),
     W: b.readBigUInt64LE(36),
     T: b.readBigUInt64LE(44),
-    feeR: b.subarray(52, 84),
-    feeP: b.subarray(84, 116),
+    feeV: b.readBigUInt64LE(52),
+    feeR: b.subarray(60, 92),
+    feeP: b.subarray(92, 124),
     winners,
   };
+}
+
+/**
+ * The notes a block paid, from its record alone: the pool fee (when its
+ * value is not zero) then each winner, m equal pieces of T. Order is fixed,
+ * so every node appends them to the admit set the same way.
+ */
+export function notesFromRecord(bytes, k = BLUNOTE_WINNERS) {
+  const rec = decodeRecord(bytes);
+  if (!rec) throw new Error('blunote_record');
+  const out = [];
+  if (rec.feeV > 0n) {
+    const fee = blunoteNote(rec.feeP, rec.feeV);
+    if (!fee) throw new Error('blunote_record');
+    out.push({ ...fee, R: Buffer.from(rec.feeR), kind: 'pool-fee' });
+  }
+  const { piece } = drawPieces(rec.T, k);
+  for (const w of rec.winners) {
+    const note = blunoteNote(w.P, piece * BigInt(w.m));
+    if (!note) throw new Error('blunote_record');
+    out.push({ ...note, R: Buffer.from(w.R), kind: 'blunote', m: w.m });
+  }
+  return out;
 }
 
 export function recordRoot(bytes) {

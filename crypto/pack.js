@@ -7,6 +7,8 @@ import { sha256 } from './shear_hash.js';
 import { hash20FromAddress } from './address.js';
 import { noteCommitOfDest20 } from './note.js';
 
+import { batchSumRoot } from './blunote.js';
+
 export const ENC_MAGIC = Buffer.from('shear-enc-v1');
 export const ENC_A = 1;
 export const ENC_B = 2;
@@ -291,6 +293,13 @@ export function unpackShareBlu(packed) {
   return row;
 }
 
+/** Merkle-sum root over BluNotes frames and their weights 2^bits. */
+export function bluSlotRoot(shares = []) {
+  const frames = packShareBatch(shares);
+  const weights = frames.map((f) => 1n << BigInt(unpackShareBlu(f).shareBits));
+  return batchSumRoot(frames, weights);
+}
+
 function isBluShare(s) {
   return !!(s && typeof s === 'object' && !Buffer.isBuffer(s) && s.shareR != null && s.shareP != null);
 }
@@ -313,6 +322,11 @@ function slotRootBytes(v) {
  * Frames are the disk form: a dest with no noteCommit still packs as work when it has bits. */
 export function shareSlotRoot(shares = []) {
   const list = (Array.isArray(shares) ? shares : []).map(shareForPack);
+  // R28: a BluNotes batch commits frames and weights in a Merkle-sum root,
+  // the batchRoot its compact record keeps after pruning.
+  if (list.length && list.every((r) => isBluShare(r) || (Buffer.isBuffer(r) && [ENC_SHARE_BLU, ENC_SHARE_BLU_KIN].includes(r[ENC_MAGIC.length])))) {
+    return bluSlotRoot(list).root;
+  }
   const frames = packShareBatch(list);
   const h = createHash('sha256');
   h.update(Buffer.from('shareslot1'));

@@ -15,6 +15,7 @@ import {
   drawWinners,
   encodeRecord,
   jobBytes,
+  notesFromRecord,
   oneTimeKey,
   oneTimeSpendScalar,
   recogniseOneTime,
@@ -199,22 +200,27 @@ describe('BluNotes compact record', () => {
     assert.equal(sum.total, 1024n);
     const fee = oneTimeKey({ B: me.B, Y: me.Y });
     const winners = [0, 1].map((i) => ({ ...oneTimeKey({ B: me.B, Y: me.Y }), m: i + 1 }));
-    const rec = { batchRoot: sum.root, n: 3, W: sum.total, T: 1_000_000n, feeR: fee.R, feeP: fee.P, winners };
+    const rec = { batchRoot: sum.root, n: 3, W: sum.total, T: 1_000_000n, feeV: 5_000n, feeR: fee.R, feeP: fee.P, winners };
     const bytes = encodeRecord(rec);
-    assert.equal(bytes.length, 117 + 2 * 65);
+    assert.equal(bytes.length, 125 + 2 * 65);
     const back = decodeRecord(bytes);
     assert.deepEqual(back.batchRoot, Buffer.from(sum.root));
     assert.equal(back.n, 3);
     assert.equal(back.W, 1024n);
     assert.equal(back.T, 1_000_000n);
+    assert.equal(back.feeV, 5_000n);
+    // The paid notes come back from the record alone: the fee, then each winner.
+    const notes = notesFromRecord(bytes);
+    assert.deepEqual(notes.map((x) => x.v), [5_000n, 62_500n, 125_000n]);
+    assert.deepEqual(notes[0].admitPub, Buffer.from(fee.P));
     assert.deepEqual(back.winners.map((w) => w.m), [1, 2]);
     const flipped = Buffer.from(bytes);
     flipped[100] ^= 1;
     assert.notDeepEqual(recordRoot(flipped), recordRoot(bytes));
     assert.equal(decodeRecord(bytes.subarray(0, bytes.length - 1)), null);
-    // 16 winners is the 1,157-byte record the design note sizes.
+    // 16 winners: 125 + 16 x 65 = 1,165 bytes (the design note's 1,156 B plus the fee value).
     const full = encodeRecord({ ...rec, winners: Array.from({ length: 16 }, () => ({ ...winners[0], m: 1 })) });
-    assert.equal(full.length, 117 + 16 * 65);
+    assert.equal(full.length, 125 + 16 * 65);
   });
 
   it('the Merkle-sum root commits to weights as well as frames', () => {

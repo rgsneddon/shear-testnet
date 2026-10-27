@@ -9,6 +9,7 @@ import { RistrettoPoint, ristretto255_hasher } from '@noble/curves/ed25519.js';
 import { hashToScalar, randomScalar, scalarBytes, scalarFrom, pointBytes, pointFrom, G, asU8, wrapNoteBlind, txSpendTags } from './note.js';
 import { fs1Leaf, fs1LeafFor, fs1OutputNote } from './fs1_leaf.js';
 import { merkleRoot } from './merkle.js';
+import { notesFromRecord } from './blunote.js';
 import { nativeJroot, nativeJrootPoint, nativeFrontierAppend, nativeProveV3, nativeVerifyV3, noteH } from './native_admit.js';
 
 const Point = RistrettoPoint;
@@ -347,6 +348,17 @@ function absorbFluxBlock(pubs, commits, spendTags, block) {
       if (!outputJoinsAdmitSet(tx, o)) continue;
       const note = fs1OutputNote(o);
       if (!fs1LeafFor(o)) throw new Error('admit_note_point');
+      pubs.push(pubFromAdmit(note.admitPub));
+      commits.push(Buffer.from(note.commit));
+    }
+  }
+  // R28: the notes a block paid by draw join after its own outputs. They are
+  // derived from the block's record, which needs the block's PoW hash, so
+  // they first appear in the next block's jroot.
+  const rec = block?.blunoteRecord;
+  if (rec != null && rec !== '') {
+    const bytes = Buffer.isBuffer(rec) ? rec : Buffer.from(String(rec), 'hex');
+    for (const note of notesFromRecord(bytes)) {
       pubs.push(pubFromAdmit(note.admitPub));
       commits.push(Buffer.from(note.commit));
     }
