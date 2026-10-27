@@ -160,7 +160,7 @@ describe('brand pages', () => {
     assert.match(chromeSrc, /toggleShearTheme|theme-toggle/);
     const chromeLabels = [...chromeSrc.matchAll(/label:\s*'([^']+)'/g)].map((m) => m[1]);
     assert.deepEqual(chromeLabels.slice(0, chromeLabels.length / 2), [
-      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'TEAM', 'DOCS',
+      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'BLU', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'TEAM', 'DOCS',
     ]);
     for (const p of pages) {
       assert.match(p, /<head>[\s\S]*theme\.js[\s\S]*<\/head>/);
@@ -186,7 +186,7 @@ describe('brand pages', () => {
       const nav = p.match(/id="shear-nav"[\s\S]*?<\/nav>/);
       assert.ok(nav, 'missing shear-nav');
       const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
-      assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
+      assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'BLU', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
       assert.equal(labels.includes('WHITEPAPER'), false);
       if (!p.includes('id="shear-hero"')) {
         assert.equal(/GNFP|gnfp|feeless/i.test(p), false);

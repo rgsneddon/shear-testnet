@@ -111,7 +111,7 @@ describe('shear.digital/docs', () => {
     const labels = navLabels(docs);
     assert.deepEqual(labels, chromeProductLabels());
     assert.equal(labels.includes('WHITEPAPER'), false);
-    assert.equal(labels.includes('DAG'), true);
+    assert.equal(labels.includes('BLU'), true);
     assert.equal(labels.includes('VORTICES'), true);
     assert.match(docs, /id="shear-chrome-root" data-active="DOCS"/);
     assert.match(docs, /shared\/shear-chrome\.js/);
@@ -263,7 +263,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
     assert.ok(pdf.length > 50_000);
     const labels = navLabels(paper);
-    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
+    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'BLU', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
     assert.equal(labels.includes('WHITEPAPER'), false);
     assert.match(paper, /href="https:\/\/shear\.digital\/docs\/">DOCS</);
     assert.match(paper, /overflow-x:hidden/);
@@ -276,7 +276,7 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /shear-testnet-v10/);
     assert.doesNotMatch(paper, /#eef3f8/);
     assert.doesNotMatch(paper, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
-    assert.match(paper, /href="https:\/\/dag\.shear\.digital\/">DAG</);
+    assert.match(paper, /href="https:\/\/blunote\.shear\.digital\/">BLU</);
     assert.doesNotMatch(paper, /width:min\(210mm/);
     assert.equal(labels[labels.length - 1], 'DOCS');
     assert.equal(labels[labels.length - 2], 'VORTICES');
