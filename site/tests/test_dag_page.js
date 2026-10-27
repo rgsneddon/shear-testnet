@@ -13,7 +13,7 @@ function navLabels(html) {
 }
 
 describe('BluNotes page (blunote.shear.digital; was dag.shear.digital)', () => {
-  it('is SaaS dark, states the blue-set mint, and lists DAG in the navbar', () => {
+  it('is SaaS dark, states the blue-set mint, and lists BLU in the navbar', () => {
     assert.match(page, /data-theme="dark"/);
     assert.match(page, /Domain=\.shear\.digital/);
     assert.match(page, /saas-dark\.css/);
