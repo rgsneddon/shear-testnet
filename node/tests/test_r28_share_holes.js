@@ -22,6 +22,7 @@ import {
   potSubsidyNanos,
 } from '../../crypto/asert.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
+import { freshCreditsFromShares } from '../../crypto/hash_owed.js';
 import {
   clearLiveSharePow,
   destBoundShareHash,
@@ -144,9 +145,6 @@ function child(parents, { shareBatch = [], hashSpill = [], issuedHeaders = null,
     txs: tpl.txs,
     shareBatch: tpl.shareBatch || [],
     hashSpill: tpl.hashSpill || [],
-    // The sealed credit columns a node stores and relays with the block.
-    ...(Array.isArray(tpl.hashCredits) ? { hashCredits: tpl.hashCredits } : {}),
-    ...(Array.isArray(tpl.hashSpillCredits) ? { hashSpillCredits: tpl.hashSpillCredits } : {}),
     miner: FEE,
     poolDest: FEE,
     aLeaves: tpl.aLeaves,
@@ -156,6 +154,10 @@ function child(parents, { shareBatch = [], hashSpill = [], issuedHeaders = null,
     weight: tpl.weight,
     height,
   };
+  // The sealed credit columns, stamped as the store does before it relays
+  // a block (stampCredits, node/src/store.js).
+  block.hashCredits = Array.isArray(tpl.hashCredits) ? tpl.hashCredits : freshCreditsFromShares(block.shareBatch);
+  if (block.hashSpill.length) block.hashSpillCredits = freshCreditsFromShares(block.hashSpill);
   const tag = Buffer.alloc(32);
   tag.writeUInt32LE(height, 4);
   if (wire) block = { ...decodeWireBlock(encodeWireBlock({ ...block, hash: tag })), height };
