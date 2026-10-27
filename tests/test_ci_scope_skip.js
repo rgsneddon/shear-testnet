@@ -22,7 +22,7 @@ describe('ci scope skip', () => {
     for (const kept of ['node/tests/test_vort1_register.js', 'crypto/vortex.test.js']) {
       assert.equal(run.filter((f) => f === kept).length, 1, kept);
     }
-    const out = spawnSync(process.execPath, [shardJs, '--check'], { encoding: 'utf8' });
+    const out = spawnSync(process.execPath, [shardJs, '--check'], { encoding: 'utf8', timeout: 60_000 });
     assert.equal(out.status, 0, out.stderr);
     assert.match(out.stdout, /^skipped SCOPE node\/tests\/test_vortice\.js: /m);
   });

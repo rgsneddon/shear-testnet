@@ -39,7 +39,7 @@ function pinTree(version, pkgver) {
 function resolve(file, ...args) {
   const env = { ...process.env };
   delete env.GITHUB_ENV;
-  return spawnSync('bash', [file, ...args], { encoding: 'utf8', env });
+  return spawnSync('bash', [file, ...args], { encoding: 'utf8', env, timeout: 60_000 });
 }
 
 describe('wallet pack dispatch inputs', () => {
