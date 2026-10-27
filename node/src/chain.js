@@ -75,6 +75,7 @@ import {
   receiptAdmitRejected,
   jroot as jrootOf,
   extendZeroRoot,
+  admitPubIndex,
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
@@ -1010,7 +1011,7 @@ export function parentRecordRoot(prevBlock) {
  * Canonical template batch: BluNotes rows only, a decodable P, no repeated
  * work key or P, canonical order, and the share byte cap.
  */
-export function bluTemplateBatch(rows) {
+export function bluTemplateBatch(rows, knownPubs = null) {
   const out = [];
   const seenWork = new Set();
   const seenP = new Set();
@@ -1023,6 +1024,7 @@ export function bluTemplateBatch(rows) {
     const P = Buffer.from(r.shareP);
     try { pointFrom(P); } catch { continue; }
     const pk = P.toString('hex');
+    if (knownPubs && knownPubs.has(pk)) continue;
     const wk = `${r.kinHeader && r.verifiedHeader ? Buffer.from(r.verifiedHeader).toString('hex') : r.proofSlot}:${BigInt(r.nonce || 0)}`;
     if (seenP.has(pk) || seenWork.has(wk)) continue;
     const size = bluFrameBytes(r);
@@ -1623,9 +1625,10 @@ export function buildTemplate({
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
     : null;
+  const knownPubs = parentFluxset && !Array.isArray(parentFluxset) ? admitPubIndex(parentFluxset) : null;
   const batch = bluTemplateBatch(bindShareProofSlots(selected, prevHeader, priorBlock?.header || null, {
     keepClaim: true,
-  }).slotted);
+  }).slotted, knownPubs);
   const spillBatch = [];
   // R28: shares pay by draw, not per payee, so tree A has no payee leaves.
   const collated = [];
@@ -2861,6 +2864,16 @@ function verifyBlockBody(block, prev, opts = {}) {
           jroot: rebuilt.jroot,
         }
       : rebuilt;
+  }
+  // R28 (attack 8): a share whose one-time key is already a note would make
+  // two notes share a key image, so it is refused; so is a fee key that is.
+  {
+    const known = admitPubIndex(live);
+    for (const r of bluRows) {
+      if (known.has(Buffer.from(r.shareP).toString('hex'))) return { ok: false, reason: 'share_key' };
+    }
+    const fk = blunoteFields(txs[0])?.feeKey;
+    if (fk && known.has(Buffer.from(fk.P).toString('hex'))) return { ok: false, reason: 'share_key' };
   }
   const pubs = (live.pubs || []).slice();
   const commits = (live.commits || []).slice();

@@ -302,6 +302,9 @@ export function emptyFluxset() {
     pubs: [],
     commits: [],
     spendTags: new Set(),
+    // R28: hex of every admit-set P, so a share key that is already a note
+    // is refused (two notes on one P would share a key image).
+    pubHex: new Set(),
     jroot: blank?.root || jroot({ pubs: [], commits: [] }),
     frontier: blank?.frontier || null,
     zeroFrontier: zero?.frontier || null,
@@ -336,7 +339,18 @@ export function receiptAdmitRejected(tx) {
   return null;
 }
 
-function absorbFluxBlock(pubs, commits, spendTags, block) {
+/** The admit-set key index of `live`, built once from its pubs when missing. */
+export function admitPubIndex(live) {
+  if (live?.pubHex instanceof Set) return live.pubHex;
+  const out = new Set();
+  for (const p of live?.pubs || []) {
+    try { out.add(Buffer.from(pointBytes(pubFromAdmit(p))).toString('hex')); } catch { /* not a point */ }
+  }
+  if (live && typeof live === 'object') live.pubHex = out;
+  return out;
+}
+
+function absorbFluxBlock(pubs, commits, spendTags, block, pubHex = null) {
   for (const tx of block?.txs || []) {
     // Blob bytes win. Record them even when a JSON field disagrees, so a stored lie cannot un-spend the note.
     const parsed = txSpendTags(tx);
@@ -350,6 +364,7 @@ function absorbFluxBlock(pubs, commits, spendTags, block) {
       if (!fs1LeafFor(o)) throw new Error('admit_note_point');
       pubs.push(pubFromAdmit(note.admitPub));
       commits.push(Buffer.from(note.commit));
+      if (pubHex) pubHex.add(Buffer.from(note.admitPub).toString('hex'));
     }
   }
   // R28: the notes a block paid by draw join after its own outputs. They are
@@ -361,6 +376,7 @@ function absorbFluxBlock(pubs, commits, spendTags, block) {
     for (const note of notesFromRecord(bytes)) {
       pubs.push(pubFromAdmit(note.admitPub));
       commits.push(Buffer.from(note.commit));
+      if (pubHex) pubHex.add(Buffer.from(note.admitPub).toString('hex'));
     }
   }
 }
@@ -371,6 +387,7 @@ export function applyBlockToFluxset(live, block) {
     pubs: Array.isArray(live?.pubs) ? live.pubs.slice() : [],
     commits: Array.isArray(live?.commits) ? live.commits.slice() : [],
     spendTags: new Set(live?.spendTags || []),
+    pubHex: new Set(admitPubIndex(live || {})),
     jroot: live?.jroot || null,
     frontier: live?.frontier || null,
     zeroFrontier: live?.zeroFrontier || null,
@@ -478,7 +495,7 @@ export function appendFluxBlock(live, block) {
     ? live
     : emptyFluxset();
   const before = dest.pubs.length;
-  absorbFluxBlock(dest.pubs, dest.commits, dest.spendTags, block);
+  absorbFluxBlock(dest.pubs, dest.commits, dest.spendTags, block, admitPubIndex(dest));
   // A block that adds no notes leaves the frontier bytes alone. Calling the
   // native append anyway is what made a long run of empty ancestors quadratic.
   if (dest.pubs.length === before) return dest;

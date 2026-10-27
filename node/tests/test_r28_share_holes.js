@@ -10,7 +10,7 @@
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { fluxsetFromBlocks, admitBasePub } from '../../crypto/admit.js';
+import { fluxsetFromBlocks, admitBasePub, emptyFluxset } from '../../crypto/admit.js';
 import { setHashBackend, shearHash, meetsTarget, leadingZeroBits } from '../../crypto/shear_hash.js';
 import { decodeHeader, setNonce } from '../../crypto/header.js';
 import {
@@ -81,7 +81,7 @@ function mineShare(owner, header, { slot = 0, kin = false, bits = BITS } = {}) {
 }
 
 /** Build and verify a block as a node would, and keep its record as the store does. */
-function child(parents, { shareBatch = [], hashSpill = [], issuedHeaders = null, wire = false, mutate = null } = {}) {
+function child(parents, { shareBatch = [], hashSpill = [], issuedHeaders = null, wire = false, mutate = null, templateFlux = null } = {}) {
   const prevBlock = parents.length ? parents[parents.length - 1] : null;
   const grand = parents.length >= 2 ? parents[parents.length - 2] : null;
   const height = prevBlock ? prevBlock.height + 1 : 1;
@@ -113,7 +113,7 @@ function child(parents, { shareBatch = [], hashSpill = [], issuedHeaders = null,
     issuedHeaders,
     poolDest: MINER,
     parentBlocks: parents,
-    parentFluxset: parentFlux,
+    parentFluxset: templateFlux || parentFlux,
     feeKey: poolFeeKey(),
     feeBps: POOL_FEE_BPS,
   });
@@ -292,6 +292,34 @@ describe('R28 BluNotes blocks', () => {
       },
     });
     assert.equal(b2.verdict.ok, false);
+  });
+
+  it('refuses a share whose one-time key is already a note (attack 8)', () => {
+    // The genesis pool-fee note is in the admit set after genesis connects.
+    const feeP = decodeRecord(Buffer.from(g.blunoteRecord, 'hex')).feeP;
+    assert.ok(!feeP.equals(Buffer.alloc(32)));
+    const owner = wallet();
+    let reused = null;
+    for (let c = 0; c < 256 * 64 && !reused; c += 1) {
+      const R = oneTimeKey(owner).R;
+      for (let n = 0; n < 256 && !reused; n += 1) {
+        const nonce = bindNonce(g.header, R, feeP, n, BITS);
+        const rx = shearHash(setNonce(Buffer.from(g.header), nonce));
+        if (meetsTarget(rx, BITS)) {
+          reused = { shareR: R, shareP: Buffer.from(feeP), viewTag: 0, nonce, lz: leadingZeroBits(rx), shareBits: BITS, proofSlot: 0, verifiedHeader: Buffer.from(g.header) };
+        }
+      }
+    }
+    assert.ok(reused);
+    // A template that knows the admit set leaves the share out.
+    const kept = child([g], { shareBatch: [reused] });
+    assert.equal(kept.verdict.ok, true, kept.verdict.reason);
+    assert.equal(kept.block.shareBatch.length, 0);
+    // A block that seats it anyway is refused by every node.
+    const forced = child([g], { shareBatch: [reused], templateFlux: emptyFluxset() });
+    assert.equal(forced.block.shareBatch.length, 1);
+    assert.equal(forced.verdict.ok, false);
+    assert.equal(forced.verdict.reason, 'share_key');
   });
 
   it('an empty block carries the pot minus the fee and mints no floor note (R34)', () => {
