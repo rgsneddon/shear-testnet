@@ -299,7 +299,8 @@ describe('brand pages', () => {
     assert.match(poolHtml, /class="she-private-lockup">Shear testnet</);
     assert.doesNotMatch(poolHtml, /onfidential amounts|private cryptocurrency/);
     assert.match(poolHtml, /ADMITv2 membership/);
-    assert.match(poolHtml, /DINS-DAG/);
+    assert.match(poolHtml, /DINS settles each round/);
+    assert.doesNotMatch(poolHtml, /DINS-DAG/);
     assert.match(poolHtml, /blue set/);
     assert.match(poolHtml, /spine pot plus the hash nanos, once/);
     assert.match(poolHtml, /PoW elects the tip/);

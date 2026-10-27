@@ -182,8 +182,11 @@ describe('shear.digital/docs', () => {
     assert.match(content, /com\.shear\.shear_wallet/);
     assert.match(content, /Stem then fluff/);
     assert.match(content, /ADMITv2/);
-    assert.ok(content.indexOf("id: 'dins-dag'") > content.indexOf("id: 'admit'"));
-    assert.match(content, /P\['dins-dag'\]/);
+    assert.ok(content.indexOf("id: 'dins'") > content.indexOf("id: 'admit'"));
+    assert.match(content, /P\['dins'\] = \{/);
+    // The old anchor still opens the page.
+    assert.match(content, /P\['dins-dag'\] = P\['dins'\];/);
+    assert.match(content, /Deterministic In-Node Shares/);
     assert.match(content, /blue set, sorted by identity/);
     assert.match(content, /not paid again from a second hash leg/);
     assert.match(content, /Connect bare/);
@@ -272,7 +275,8 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /data-theme="dark"/);
     assert.match(paper, /Domain=\.shear\.digital/);
     assert.match(paper, /css\/saas-dark\.css/);
-    assert.match(paper, /DINS-DAG/);
+    assert.match(paper, /DINS is how this testnet settles a round/);
+    assert.doesNotMatch(paper, /DINS-DAG/);
     assert.match(paper, /shear-testnet-v10/);
     assert.doesNotMatch(paper, /#eef3f8/);
     assert.doesNotMatch(paper, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);

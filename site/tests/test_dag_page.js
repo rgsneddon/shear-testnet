@@ -19,7 +19,8 @@ describe('BluNotes page (blunote.shear.digital; was dag.shear.digital)', () => {
     assert.match(page, /saas-dark\.css/);
     assert.match(page, /background:#07090c/);
     assert.doesNotMatch(page, /#eef3f8/);
-    assert.match(page, /DINS-DAG/);
+    assert.match(page, /<h1>DINS<\/h1>/);
+    assert.doesNotMatch(page, /DINS-DAG/);
     assert.match(page, /blue set, sorted by identity/);
     assert.match(page, /not paid a second time/);
     assert.match(page, /Continuum 0\.71/);
@@ -31,11 +32,11 @@ describe('BluNotes page (blunote.shear.digital; was dag.shear.digital)', () => {
     assert.match(page, /ShearK 2\.8/);
     assert.match(page, /shear-testnet-v11/);
     assert.doesNotMatch(page, /shear-testnet-v6/);
-    assert.match(page, /DAG is a link in the client navbar/);
+    assert.match(page, /BluNotes \(BLU\) is a link in the client navbar/);
     assert.match(page, /href="https:\/\/blunote\.shear\.digital\/">BLU</);
     assert.match(page, /href="https:\/\/vortices\.shear\.digital\/"/);
     assert.doesNotMatch(page, /not a button in the client navbar/);
-    assert.match(page, /docs\/#\/dins-dag/);
+    assert.match(page, /docs\/#\/dins"/);
     assert.match(page, /id="dag"/);
     assert.match(page, /https:\/\/explorer\.shear\.digital\/api\/stats/);
     assert.match(page, /Math\.log\(1 \+ n\)/);
