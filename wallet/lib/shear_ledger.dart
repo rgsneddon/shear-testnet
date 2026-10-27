@@ -19,6 +19,7 @@ import 'shear_pack.dart';
 import 'shear_public_confirm.dart';
 import 'shear_admit.dart';
 import 'shear_admit_ffi.dart';
+import 'shear_blunote.dart';
 import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
@@ -1389,6 +1390,7 @@ Future<Map<String, dynamic>> creditFollowWorker(
   if (pool != null && publicConsent) pool.publicConsent = true;
   final ledger = ShearLedger(pool: pool);
   ledger._stampSpendTagsInline = true;
+  ledger.bluScanInline = true;
   ledger._v3HashInline = true;
   final sessionPath = spec['sessionPath']?.toString() ?? '';
   final headerStore = verifiedHeaderStorePath(sessionPath);
@@ -4840,6 +4842,110 @@ class ShearLedger implements ReadProofSink {
     }
   }
 
+  /// R28 "This wallet mines" (Russell D4). Off by default. Only when on are
+  /// block records scanned for this wallet's winner and fee notes.
+  final BluMiningScanner blu = BluMiningScanner();
+
+  /// Scan in place. The credit worker is already off the UI isolate, and
+  /// tests read the result at once.
+  bool bluScanInline = false;
+
+  /// The scan still running off the UI isolate, if any.
+  Future<void>? bluScanInFlight;
+
+  bool get bluMining => blu.enabled;
+
+  /// Turn the mining scan on or off. On forgets what was scanned and rescans
+  /// the blocks already read, from [birthHeight] (0 is the whole chain).
+  /// Off stops new scans; notes already found are real coins and stay.
+  void setBluMining(bool on, {int? birthHeight}) {
+    if (birthHeight != null && birthHeight >= 0) blu.birthHeight = birthHeight;
+    final was = blu.enabled;
+    blu.enabled = on;
+    if (!on || was) return;
+    blu.reset();
+    // The blocks the last read handed this book (all read blocks on the
+    // node sync path). Later reads scan the rest.
+    if (_nodeBodies.isNotEmpty) ingestBluRecords(List<Map<String, dynamic>>.from(_nodeBodies));
+  }
+
+  /// Record notes of [blocks] that belong to this wallet join the book as
+  /// FS-1 notes on the home dest. A note at a height whose record changed
+  /// (a reorg) is marked reorged and leaves Spendable.
+  void ingestBluRecords(List blocks) {
+    final keys = bluRecordKeysByHeight(blocks);
+    if (keys.isNotEmpty) {
+      for (final n in _notes) {
+        if (!isBluNoteKind(n['kind'] as String?)) continue;
+        final h = (n['height'] as num?)?.toInt() ?? 0;
+        final now = keys[h];
+        if (now == null) continue;
+        n['reorged'] = now != n['bluRecord'];
+      }
+    }
+    final seed = spendSeed;
+    if (!blu.enabled || seed == null || seed.length != 32) return;
+    final todo = blu.pending(blocks);
+    if (todo.isEmpty) return;
+    blu.markScanned(todo);
+    final input = <String, dynamic>{
+      'seed': Uint8List.fromList(seed),
+      'records': [
+        for (final t in todo) {'height': t['height'], 'record': t['record']},
+      ],
+    };
+    if (bluScanInline) {
+      _applyBluRows(scanBluRecordsWire(input));
+      return;
+    }
+    final prior = bluScanInFlight ?? Future<void>.value();
+    bluScanInFlight = prior.then((_) async {
+      final rows = await Isolate.run(() => scanBluRecordsWire(input));
+      _applyBluRows(rows);
+    }).catchError((Object _) {
+      // The scan did not finish: scan these records again on the next read.
+      blu.reset();
+    });
+  }
+
+  void _applyBluRows(List<Map<String, dynamic>> rows) {
+    final frame = _restFrame;
+    if (rows.isEmpty || frame == null || frame.isEmpty) return;
+    final dest = homeDest(frame);
+    if (!isDestAddress(dest)) return;
+    for (final w in rows) {
+      final v = BigInt.parse(w['v'] as String);
+      final kind = w['kind'] as String;
+      final row = <String, dynamic>{
+        'kind': kind,
+        'address': dest,
+        'dest': dest,
+        'height': w['height'],
+        'commit': w['C'],
+        'admitPub': w['P'],
+        'noteCommit': w['R'],
+        'r': w['rho'],
+        'nanos': v.bitLength < 63 ? v.toInt() : v.toString(),
+        'amount': v.toDouble() / kUnitsPerShe,
+        'verified': true,
+        'bluRecord': w['recordKey'],
+        'reorged': false,
+        if ((w['m'] as int? ?? 0) > 0) 'bluM': w['m'],
+      };
+      final have = _notes.any((n) {
+        final c = _noteBytes(n['commit']);
+        return c != null && _bytesEq(c, w['C'] as Uint8List);
+      });
+      // A note this book already holds keeps its spent flag.
+      if (!have) row['spent'] = false;
+      rememberNote(row);
+      _creditNoteToShearview(row);
+    }
+    rememberDest(dest);
+    _proofCheckedDests.add(payKey(dest));
+    recheckRestFrameSpendable(frame);
+  }
+
   void rememberNote(Map<String, dynamic> note) {
     final incoming = Map<String, dynamic>.from(note);
     final commit = _noteBytes(incoming['commit']);
@@ -4877,6 +4983,7 @@ class ShearLedger implements ReadProofSink {
         if (block is Map && block['txs'] is List)
           for (final tx in block['txs'] as List) tx,
     ], dest: dest);
+    ingestBluRecords(blocks);
     final frame = (dest != null && dest.isNotEmpty) ? dest : (_restFrame ?? '');
     if (frame.isEmpty && open.opened.every((n) => n.dest.isEmpty)) return;
     final fallback = frame.isEmpty
@@ -5157,6 +5264,8 @@ class ShearLedger implements ReadProofSink {
       if (t.to != dest) return false;
       if ((t.height ?? 0) != (h ?? 0)) return false;
       if (isBlock) return isWalletBlockKind(t.kind);
+      // Two record notes at one height are two coins: match by id only.
+      if (isBluNoteKind(kind)) return t.id == 'note:$h:$dest:$tag';
       return t.kind == 'receive' || t.kind == kind || t.kind == 'send';
     });
     final id = existing >= 0
@@ -11510,6 +11619,8 @@ class ShearLedger implements ReadProofSink {
       'pool-withdraw',
       'withdraw',
       'pool-fee',
+      kBluKindWinner,
+      kBluKindFee,
     };
     var n = 0.0;
     final covered = <String>{};

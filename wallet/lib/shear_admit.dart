@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'shear_blunote.dart' show isBluNoteKind, bluDeltaFromSeed;
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 
@@ -52,7 +53,15 @@ Scalar admitDelta(Map<String, dynamic> note) {
   ]);
 }
 
+/// x of an owned note. An R28 record note (kind blunote or blunote-fee)
+/// keeps its one-time R as noteCommit: x = x_base + H(y·R).
 Scalar admitScalarFromSeed(Uint8List spendSeed, Map<String, dynamic> note) {
+  if (isBluNoteKind(note['kind'] as String?)) {
+    final r = note['noteCommit'];
+    final delta = r is Uint8List ? bluDeltaFromSeed(spendSeed, r) : null;
+    if (delta == null) throw StateError('blunote_r');
+    return scalarAdd(admitBaseScalar(spendSeed), delta);
+  }
   return scalarAdd(admitBaseScalar(spendSeed), admitDelta(note));
 }
 

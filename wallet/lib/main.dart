@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'shear_blunote.dart' show bluMiningAddress;
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_licenses.dart';
@@ -914,11 +915,50 @@ class ShearWalletAppState extends State<ShearWalletApp>
       session.identity = imported;
       await session.setPassword(pw);
       await _enterWallet(pw);
+      unawaited(_askDidThisWalletMine());
     } catch (_) {
       setState(
         () => _lockError = 'Import failed. Check the file and password.',
       );
     }
+  }
+
+  /// Restore (Russell D4): a wallet that mined has winner notes only the
+  /// record scan finds. Yes turns "This wallet mines" on and rescans.
+  Future<void> _askDidThisWalletMine() async {
+    final ctx = _nav.currentContext;
+    if (ctx == null || !mounted) return;
+    final yes = await showDialog<bool>(
+      context: ctx,
+      builder: (c) => AlertDialog(
+        key: const Key('restore-did-mine'),
+        title: const Text('Did this wallet mine?'),
+        content: const Text(
+          'Yes scans the chain for share payouts to this wallet. '
+          'You can change this later in Settings.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('restore-did-mine-no'),
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('No'),
+          ),
+          FilledButton(
+            key: const Key('restore-did-mine-yes'),
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Yes'),
+          ),
+        ],
+      ),
+    );
+    if (yes == true) await _setBluMining(true);
+  }
+
+  Future<void> _setBluMining(bool on) async {
+    session.bluMining = on;
+    ledger.setBluMining(on);
+    if (mounted) setState(() {});
+    await session.persist();
   }
 
   Future<bool> _sealBiometricsOn(BuildContext context) async {
@@ -1074,6 +1114,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
       genesis: session.rememberedChainGenesis,
     );
     ledger.restoreOpenedProofs(session.rememberedOpenedProofs);
+    ledger.setBluMining(session.bluMining);
     if (session.rememberedTxs.isNotEmpty) {
       await applyUserArchiveOffUi(ledger, {
         'dests': session.rememberedDests,
@@ -5681,6 +5722,34 @@ class ShearWalletAppState extends State<ShearWalletApp>
                 if (mounted) setState(() {});
               },
       ),
+      SwitchListTile(
+        key: const Key('settings-blu-mining'),
+        contentPadding: EdgeInsets.zero,
+        title: const Text('This wallet mines'),
+        subtitle: const Text(
+          'Scans each block for share payouts to this wallet. Off if you do not mine.',
+        ),
+        value: session.bluMining,
+        onChanged: (on) => unawaited(_setBluMining(on)),
+      ),
+      if (session.bluMining) ...[
+        const Text('Mining address (rig --blu)'),
+        SelectableText(
+          bluMiningAddress(hexToBytes(ident.seedHex)),
+          key: const Key('settings-blu-address'),
+          style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            key: const Key('settings-blu-address-copy'),
+            onPressed: () => Clipboard.setData(
+              ClipboardData(text: bluMiningAddress(hexToBytes(ident.seedHex))),
+            ),
+            child: const Text('Copy mining address'),
+          ),
+        ),
+      ],
       const SizedBox(height: 8),
       const Text(
         'Password seals shewall.bin (AES-256-GCM). Export that file and the '

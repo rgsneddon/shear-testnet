@@ -236,6 +236,10 @@ class ShearSession {
   /// True after the first-run screen or a Settings change. A revoke stays false
   /// for [publicNodeConsent] and does not ask again on the next launch.
   bool publicNodeChoiceMade = false;
+
+  /// R28 "This wallet mines". Off by default. On scans block records for
+  /// this wallet's winner notes.
+  bool bluMining = false;
   bool darkMode = false;
   List<String> rememberedDests = const [];
   List<Map<String, dynamic>> rememberedTxs = const [];
@@ -387,6 +391,7 @@ class ShearSession {
         if (ownNodeUrl.isNotEmpty) 'ownNodeUrl': ownNodeUrl,
         'publicNodeConsent': publicNodeConsent,
         'publicNodeChoiceMade': publicNodeChoiceMade,
+        if (bluMining) 'bluMining': true,
         'dests': rememberedDests.where((d) => d.startsWith('ssa1')).toList(),
         'destCount': rememberedDestCount,
         'destIndex': rememberedDestIndex,
@@ -416,6 +421,7 @@ class ShearSession {
     rememberedChainGenesis = null;
     publicNodeConsent = false;
     publicNodeChoiceMade = false;
+    bluMining = false;
     ownNodeUrl = '';
     rememberedReserve = null;
     deployedVortices = const [];
@@ -439,6 +445,7 @@ class ShearSession {
     ownNodeUrl = parseOwnNodeUrl(j['ownNodeUrl']?.toString() ?? '') ?? '';
     publicNodeConsent = j['publicNodeConsent'] == true;
     publicNodeChoiceMade = j['publicNodeChoiceMade'] == true;
+    bluMining = j['bluMining'] == true;
     rememberedDests = ((use['dests'] as List?) ?? const [])
         .map((e) => e.toString())
         .where((d) => d.startsWith('ssa1'))
