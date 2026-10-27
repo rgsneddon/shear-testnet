@@ -25,6 +25,7 @@ import { setNonce } from './header.js';
 import { packShareV5, unpackShareBatch } from './pack.js';
 import { isDestAddress, bech32Hrp, encodeDest, hash20FromAddress } from './address.js';
 import { noteCommitOfDest20 } from './note.js';
+import { SHARE_BYTES_MAX, bindingOk } from './blunote.js';
 
 export const SHARE_DEST_DST = Buffer.from('shear-share-dest-v1');
 
@@ -557,13 +558,12 @@ export function paidWorkKeys(shares, provedOnHeader) {
   }
   for (const s of rows) {
     const slot = s?.proofSlot;
-    const vh = shareJobKey(s?.verifiedHeader);
-    if (vh && vh !== want) continue;
     if (slot === 1 || slot === '1') continue;
-    if (vh === want || slot === 0 || slot === '0' || slot == null || slot === '') {
-      const key = shareWorkKey(provedOnHeader, s?.nonce);
-      if (key) out.add(key);
-    }
+    // A kin row proved on its own sibling header; key it there (R28, H4).
+    // An exact or unmarked row proved on provedOnHeader.
+    const kin = s?.kinHeader && headerWorkBuf(s?.verifiedHeader);
+    const key = shareWorkKey(kin || provedOnHeader, s?.nonce);
+    if (key) out.add(key);
   }
   return out;
 }
@@ -1100,6 +1100,13 @@ export function verifyShareBatch({
   issuedJobKeys = null,
 } = {}) {
   const raw = Array.isArray(shares) ? shares : [];
+  // R28: a share names a one-time key, never an address. Payee-commit
+  // frames (v4, v5, work, kin) are refused in a block.
+  if (raw.length) {
+    return verifyBluShareBatch({
+      parentHeader, priorHeader, excludeNonces, shares: raw, floorBits, skipPow, trustWork, issuedJobKeys,
+    });
+  }
   const linked = [];
   for (const src of raw) {
     const row = unpackShareBatch([src])[0];
@@ -1225,6 +1232,147 @@ export function verifyShareBatch({
     byDest: collateShareUnits(account.bound, account.room, account.retained),
     aLeaves: aLeavesFromShares(account.bound, account.room, account.retained),
   };
+}
+
+/** Packed bytes of one BluNotes frame. */
+export function bluFrameBytes(row) {
+  return 13 + 76 + (row?.kinHeader ? 128 : 0);
+}
+
+/** Canonical BluNotes order: P, then nonce, then the proven header. */
+export function compareBluShares(a, b) {
+  const c = Buffer.from(a.shareP).compare(Buffer.from(b.shareP));
+  if (c !== 0) return c;
+  const na = BigInt(a.nonce || 0);
+  const nb = BigInt(b.nonce || 0);
+  if (na !== nb) return na < nb ? -1 : 1;
+  const ha = a.kinHeader && a.verifiedHeader ? Buffer.from(a.verifiedHeader).toString('hex') : '';
+  const hb = b.kinHeader && b.verifiedHeader ? Buffer.from(b.verifiedHeader).toString('hex') : '';
+  return ha < hb ? -1 : (ha > hb ? 1 : 0);
+}
+
+function proveBluShareOn(headerBuf, { nonce, nk, R, P, payeeHex, claimedBits, frameLz, skipPow, trustWork }) {
+  // The payee is fixed before the hash: 48 nonce bits name (job, R, P).
+  if (!bindingOk(headerBuf, nonce, R, P)) return { ok: false, reason: 'share_bind' };
+  const jobKey = shareJobKey(headerBuf);
+  const cached = jobKey ? liveSharePow.get(`${jobKey}:${nk}`) : null;
+  if (cached) {
+    if (payeeHex !== cached.noteCommit || claimedBits !== cached.bits) {
+      return { ok: false, reason: 'share_pow', contradict: true };
+    }
+    if ((Number(cached.lz) & 0xff) !== frameLz) return { ok: false, reason: 'share_lz' };
+    return { ok: true, lz: frameLz };
+  }
+  let stamped;
+  try { stamped = setNonce(Buffer.from(headerBuf), nonce); } catch {
+    return { ok: false, reason: 'share_pow' };
+  }
+  const prepared = takeSharePow(stamped);
+  if (prepared) preparedSharePowUses += 1;
+  if (!prepared && trustWork) return { ok: true, lz: frameLz, trusted: true };
+  if (!prepared && skipPow) return { ok: false, reason: 'share_pow', cold: true };
+  if (!prepared) syncSharePowHashes += 1;
+  const hash = prepared || shearHash(stamped);
+  // The target is on the RandomX digest itself; no post-hash payee step.
+  if (!meetsTarget(hash, claimedBits)) return { ok: false, reason: 'share_pow' };
+  const lz = leadingZeroBits(hash) & 0xff;
+  // R33: lz is the digest's, so a frame cannot vary it.
+  if (lz !== frameLz) return { ok: false, reason: 'share_lz' };
+  return { ok: true, lz };
+}
+
+/**
+ * R28 share batch. Every frame is a BluNotes frame in canonical order, the
+ * frames fit SHARE_BYTES_MAX, each nonce binds its (R, P) on the header it
+ * names, and the RandomX digest meets the nonce's width. A work key is the
+ * proven header plus the nonce; one already paid in the parent block, or
+ * seen twice here, is refused. Returns each proven row with its weight 2^b
+ * for the draw.
+ */
+export function verifyBluShareBatch({
+  parentHeader,
+  priorHeader = null,
+  excludeNonces = null,
+  shares = [],
+  floorBits = SHARE_FLOOR_BITS,
+  skipPow = false,
+  trustWork = false,
+  issuedJobKeys = null,
+} = {}) {
+  const list = [];
+  let bytes = 0;
+  for (const src of Array.isArray(shares) ? shares : []) {
+    let row;
+    try { row = unpackShareBatch([src])[0]; } catch { return { ok: false, reason: 'share_frame' }; }
+    if (!row || row.shareR == null || row.shareP == null) return { ok: false, reason: 'share_frame' };
+    if (row.proofSlot !== 0 && row.proofSlot !== 1) return { ok: false, reason: 'share_slot' };
+    // H7: the byte cap is checked before any hash.
+    bytes += bluFrameBytes(row);
+    if (bytes > SHARE_BYTES_MAX) return { ok: false, reason: 'share_bytes' };
+    list.push(row);
+  }
+  if (!list.length) return { ok: true, shares: [], units: 0, weights: [] };
+  for (let i = 1; i < list.length; i += 1) {
+    if (compareBluShares(list[i - 1], list[i]) >= 0) return { ok: false, reason: 'share_order' };
+  }
+  if (!parentHeader) return { ok: false, reason: 'parent_header' };
+  const issued = issuedKeySet(issuedJobKeys);
+  if (issued == null) return { ok: false, reason: 'share_slot' };
+  const job = Buffer.from(parentHeader);
+  const priorBuf = headerWorkBuf(priorHeader);
+  const paid = nonceKeySet(excludeNonces);
+  const seenWork = new Set();
+  const proven = [];
+  let units = 0;
+  for (const s of list) {
+    const nonce = BigInt(s.nonce || 0);
+    const nk = nonce.toString();
+    const credit = creditBitsForShare(s, floorBits, { strict: true });
+    if (!credit.ok) return { ok: false, reason: credit.reason };
+    const canonical = s.proofSlot === 1 ? priorBuf : job;
+    if (!canonical) return { ok: false, reason: 'share_slot' };
+    let hdr = canonical;
+    if (s.kinHeader) {
+      const own = headerWorkBuf(s.verifiedHeader);
+      if (!own || shareHeaderSlot(own, canonical, issued) !== 'issued') return { ok: false, reason: 'share_slot' };
+      hdr = own;
+    }
+    const key = shareWorkKey(hdr, nonce);
+    if (!key) return { ok: false, reason: 'share_pow' };
+    if (seenWork.has(key)) return { ok: false, reason: 'dup_share' };
+    if (paidBlocks(paid, hdr, nk)) return { ok: false, reason: 'paid_share' };
+    const R = Buffer.from(s.shareR);
+    const P = Buffer.from(s.shareP);
+    const attempt = proveBluShareOn(hdr, {
+      nonce,
+      nk,
+      R,
+      P,
+      payeeHex: P.toString('hex'),
+      claimedBits: credit.bits,
+      frameLz: Number(s.lz) & 0xff,
+      skipPow,
+      trustWork: !!trustWork,
+    });
+    if (!attempt.ok) return { ok: false, reason: attempt.reason || 'share_pow' };
+    seenWork.add(key);
+    const u = unitsForShare(credit.bits);
+    units += u;
+    proven.push({
+      shareR: R,
+      shareP: P,
+      viewTag: Number(s.viewTag || 0) & 0xff,
+      nonce,
+      lz: attempt.lz,
+      proofSlot: s.proofSlot,
+      shareBits: credit.bits,
+      units: u,
+      weight: 1n << BigInt(credit.bits),
+      workKey: key,
+      ...(s.kinHeader ? { verifiedHeader: Buffer.from(s.verifiedHeader), kinHeader: true } : {}),
+    });
+  }
+  return { ok: true, shares: proven, units, weights: proven.map((r) => r.weight) };
 }
 
 /** Seal-escape row check. skipPow is fixed so the pool thread never hashes. */
