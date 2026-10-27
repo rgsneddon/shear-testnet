@@ -25,7 +25,7 @@ const val = (keys, name) => keys.find((l) => l.startsWith(`Environment=${name}=`
 function bash(args, env = {}) {
   const e = { ...process.env, ...env };
   delete e.SHEAR_TEARDOWN_GO;
-  return spawnSync('bash', args, { encoding: 'utf8', env: { ...e, ...env } });
+  return spawnSync('bash', args, { encoding: 'utf8', env: { ...e, ...env }, timeout: 60_000 });
 }
 
 describe('mainnet host files', () => {
@@ -109,7 +109,7 @@ describe('mainnet host files', () => {
     assert.equal(got.status, 1);
     assert.match(got.stdout, /^refused: --apply needs SHEAR_TEARDOWN_GO=/);
     assert.equal(/would run|rm -rf/.test(got.stdout), false);
-    const host = spawnSync('hostname', { encoding: 'utf8' }).stdout.trim();
+    const host = spawnSync('hostname', { encoding: 'utf8', timeout: 60_000 }).stdout.trim();
     const fixture = bash([file('scripts/teardown.sh'), '--apply'], { SHEAR_TEARDOWN_GO: host, SHEAR_TEARDOWN_ROOT: os.tmpdir() });
     assert.equal(fixture.status, 1, 'never --apply on a fixture root');
     assert.match(fixture.stdout, /refused: --apply with a fixture root/);
