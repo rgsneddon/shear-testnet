@@ -20,7 +20,7 @@ function compile() {
   const cc = spawnSync('gcc', [
     '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-o', out,
     path.join(here, 'blunote_vector_main.c'),
-    path.join(src, 'blunote.c'), path.join(src, 'sha256.c'), path.join(src, 'sha512.c'),
+    path.join(src, 'blunote.c'), path.join(src, 'sha256.c'),
     '-lsodium',
   ], { timeout: 600_000, encoding: 'utf8' });
   assert.equal(cc.status, 0, cc.stderr || cc.stdout);

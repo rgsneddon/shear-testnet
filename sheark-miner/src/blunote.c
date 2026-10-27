@@ -1,7 +1,6 @@
 /* BluNotes (R28) rig keys and binding. See blunote.h. */
 #include "blunote.h"
 #include "sha256.h"
-#include "sha512.h"
 #include <sodium.h>
 #include <string.h>
 
@@ -58,7 +57,7 @@ int blu_key_from_r(const unsigned char r[32], BluKey *out) {
   unsigned char m1[sizeof(DELTA_DST) - 1 + 32];
   memcpy(m1, DELTA_DST, sizeof(DELTA_DST) - 1);
   memcpy(m1 + sizeof(DELTA_DST) - 1, S, 32);
-  shear_sha512(m1, sizeof(m1), h);
+  crypto_hash_sha512(h, m1, sizeof(m1));
   crypto_core_ristretto255_scalar_reduce(delta, h);
   if (crypto_scalarmult_ristretto255_base(D, delta) != 0) return -1;
   if (crypto_core_ristretto255_add(out->P, g_B, D) != 0) return -1;
