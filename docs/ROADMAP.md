@@ -117,6 +117,17 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
       conditions now. Any place it sends a view key or asks a node about
       specific notes is a pre-mainnet bug: a root-cause fix with a test
       before v12.
+13. **Real-path end-to-end test (Russell 2026-10-27).** Every row's merge
+    ask includes at least one end-to-end test that runs a real wallet
+    against a real node, and the pool too where the row touches it, on a
+    server.
+    - Nothing on the path under test is a fake: no mock HTTP client, stub
+      route, fake pool or hand-built chain state in place of the real one.
+    - The Review records the run ID, the host and the head it ran on.
+    - The model is R01b's two-holder e2e (`test_dart_withdraw_queue_v12`):
+      Dart-built locks for two holders are mined by a real store. The
+      wallet reads the frozen lists from the node's real RPC and checks
+      them against its own synced blocks. Its claim and vote are mined.
 
 ## Rows
 
@@ -204,6 +215,16 @@ tree at the cut; none of these steps has run. Every step needs Russell's GO.
    units; release artefacts at the x86-64 baseline (`isa_scan` clean);
    shear-dev parameters must not leak into v12; the v12 and mainnet pins
    are checked again at the cut.
+5. **Painted-number sweep (Russell 27 Oct).** Report what is found before
+   fixing anything.
+   1. Grep the wallet, node and pool for every fallback that turns missing
+      data into a number that is shown or used. Missing data means a 404,
+      403, timeout, null or unscanned state. Each one either fails closed
+      or shows "syncing".
+   2. Wire up or delete the 35 pre-existing Dart test failures (the R23
+      list), so none stays silently unwired.
+   3. Find every test that uses a fake HTTP client on a money or Spendable
+      path, and give each one a real-path counterpart (rule 13).
 
 ## R18a and R18b detail: mainnet hosts and OS split
 
