@@ -51,7 +51,7 @@ ifeq ($(OS),Windows_NT)
   # Do not -static and do not -L the MSYS lib dir: that steals libmingw32
   # (_gnu_exception_handler) and cannot link MSYS OpenSSL. Link the DLLs
   # by path. sheark-miner/pack/zip_windows.py copies them beside the exe.
-  LIBS ?= -lws2_32 -lcrypt32 -pthread
+  LIBS ?= -lws2_32 -lcrypt32 -pthread -lsodium
   # The GCC runtime and winpthreads are static so their DLLs never ship
   # (docs/licensing-audit.md decision 4). --whole-archive because the driver
   # appends a dynamic -lpthread after these flags.
@@ -63,7 +63,8 @@ ifeq ($(OS),Windows_NT)
   OPENSSL_DLLS := $(OPENSSL_BIN)/libssl-3-x64.dll $(OPENSSL_BIN)/libcrypto-3-x64.dll
 else
   BIN := ShearK-Miner
-  LIBS ?= -pthread -lm -lssl -lcrypto
+  # R28 BluNotes: libsodium's ristretto255 for the rig's one-time keys.
+  LIBS ?= -pthread -lm -lssl -lcrypto -lsodium
   CMAKE_GEN ?=
   OPENSSL_DLLS :=
   WIN_STATIC_RT :=
@@ -75,7 +76,7 @@ ifneq ($(OPENSSL_PREFIX),)
   LIBS += -L$(OPENSSL_PREFIX)/lib
 endif
 
-OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o src/stratum_tls.o
+OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o src/stratum_tls.o src/blunote.o
 
 .PHONY: all clean selftest randomx
 

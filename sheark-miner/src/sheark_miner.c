@@ -14,6 +14,7 @@
 #include "shear_hash.h"
 #include "job_bits.h"
 #include "stratum_tls.h"
+#include "blunote.h"
 #include "../../crypto/share_stamp.h"
 
 #include <ctype.h>
@@ -108,6 +109,9 @@ typedef struct {
   int share_bits;
   int gen;
   char hash[65];
+  /* R28: the one-time key this nonce binds (BluNotes). */
+  int have_key;
+  BluKey key;
 } Share;
 
 static pthread_mutex_t g_q_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -331,6 +335,7 @@ static int share_or_block_hit(const unsigned char hash[32], uint64_t nonce) {
   /* Share credit is the byte in this nonce, not a later vardiff dial.
    * dest-bound submit only when the job says shareBind=dest. */
   if (sb < 0) return 0;
+  if (blu_enabled()) return shear_meets_target(hash, sb);
   if (atomic_load_explicit(&g_share_bind_dest, memory_order_relaxed) && g_have_note) {
     unsigned char bound[32];
     shear_share_bind(hash, g_note_commit, bound);
@@ -594,14 +599,20 @@ static int send_stats(Conn *c, const char *login, int threads) {
   return conn_write(c, line, n);
 }
 
-static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce, const char *hash) {
-  char ident[1400], line[3600];
+static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce, const char *hash, const BluKey *key) {
+  char ident[1400], line[3900], keys[200] = "";
   identity_json(ident, sizeof(ident), login, threads);
+  if (key) {
+    char R[65], P[65];
+    blu_hex32(key->R, R);
+    blu_hex32(key->P, P);
+    snprintf(keys, sizeof(keys), ",\"shareR\":\"%s\",\"shareP\":\"%s\",\"viewTag\":%u", R, P, (unsigned)key->tag);
+  }
   int n = snprintf(line, sizeof(line),
-                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"},"
-                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"}\n",
-                   ident, jobId, (unsigned long long)nonce, hash,
-                   ident, jobId, (unsigned long long)nonce, hash);
+                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"%s},"
+                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"%s}\n",
+                   ident, jobId, (unsigned long long)nonce, hash, keys,
+                   ident, jobId, (unsigned long long)nonce, hash, keys);
   return conn_write(c, line, n);
 }
 
@@ -862,7 +873,7 @@ static int copy_main_job(JobSnap *out) {
   return ok;
 }
 
-static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char hash[32], int gen) {
+static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char hash[32], int gen, const BluKey *key) {
   pthread_mutex_lock(&g_q_mu);
   int next = (g_qtail + 1) % QCAP;
   if (next == g_qhead) {
@@ -876,6 +887,8 @@ static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char 
   s->nonce = nonce;
   s->gen = gen;
   s->share_bits = credit_bits_of_nonce(nonce);
+  s->have_key = key != NULL;
+  if (key) s->key = *key;
   shear_hash_hex(hash, s->hash);
   snprintf(g_last_job, sizeof(g_last_job), "%s", jobId);
   g_last_nonce = nonce;
@@ -936,6 +949,15 @@ static void *hash_worker(void *arg) {
   unsigned char primed_hdr[SHEAR_HEADER_LEN];
   int primed = 0;
   uint64_t primed_n = 0;
+  /* R28 BluNotes: each key binds at most 256 nonces on one header; a hit
+   * or a header change moves on, so no two shares share a key. */
+  BluKey key, primed_key;
+  int have_key = 0;
+  unsigned ctr = 0;
+  uint64_t bind = 0;
+  int bind_ok = 0;
+  memset(&key, 0, sizeof(key));
+  memset(&primed_key, 0, sizeof(primed_key));
   while (!g_stop) {
     int seq = atomic_load_explicit(&g_job_seq, memory_order_acquire);
     unsigned stamp = atomic_load_explicit(&g_stamp_seq, memory_order_acquire);
@@ -950,6 +972,8 @@ static void *hash_worker(void *arg) {
       memcpy(header, job.header, SHEAR_HEADER_LEN);
       shear_bind(header);
       n = g_origin + (uint64_t)tid;
+      bind_ok = 0;
+      have_key = 0;
     } else if (stamp != last_stamp) {
       unsigned char live[SHEAR_HEADER_LEN];
       pthread_mutex_lock(&g_job_mu);
@@ -966,8 +990,27 @@ static void *hash_worker(void *arg) {
        * that digest against the live header is pool bad_hash. */
       primed = 0;
       memcpy(header, live, SHEAR_HEADER_LEN);
+      bind_ok = 0;
+      have_key = 0;
     }
     uint64_t stamped = stamp_share_nonce(n);
+    if (blu_enabled()) {
+      if (!have_key || ctr >= 256) {
+        if (blu_new_key(&key) != 0) {
+          usleep(1000);
+          continue;
+        }
+        have_key = 1;
+        ctr = 0;
+        bind_ok = 0;
+      }
+      if (!bind_ok) {
+        bind = blu_bind(header, &key);
+        bind_ok = 1;
+      }
+      stamped = blu_nonce(stamped, bind, ctr);
+      ctr++;
+    }
     shear_set_nonce(header, stamped);
     if (!primed) {
       if (shear_hash_first(header) != 0) {
@@ -976,13 +1019,15 @@ static void *hash_worker(void *arg) {
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
         if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
             && share_or_block_hit(hash, stamped)) {
-          enqueue_share(job.jobId, stamped, hash, job.gen);
+          enqueue_share(job.jobId, stamped, hash, job.gen, blu_enabled() ? &key : NULL);
+          have_key = 0;
         }
         n += (uint64_t)g_threads;
         continue;
       }
       primed = 1;
       primed_n = stamped;
+      primed_key = key;
       memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
       n += (uint64_t)g_threads;
       continue;
@@ -1002,14 +1047,17 @@ static void *hash_worker(void *arg) {
         if (!share_or_block_hit(hash, primed_n)) {
           g_dropped++;
           primed_n = stamped;
+          primed_key = key;
           memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
           n += (uint64_t)g_threads;
           continue;
         }
       }
-      enqueue_share(job.jobId, primed_n, hash, job.gen);
+      enqueue_share(job.jobId, primed_n, hash, job.gen, blu_enabled() ? &primed_key : NULL);
+      if (blu_enabled() && memcmp(primed_key.P, key.P, 32) == 0) have_key = 0;
     }
     primed_n = stamped;
+    primed_key = key;
     memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
     n += (uint64_t)g_threads;
   }
@@ -1056,7 +1104,7 @@ static void flush_shares(Conn *mainc) {
       enqueue_front(&s);
       return;
     }
-    int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce, s.hash);
+    int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce, s.hash, s.have_key ? &s.key : NULL);
     if (wr == 1) {
       enqueue_front(&s);
       return;
@@ -1236,6 +1284,23 @@ int main(int argc, char **argv) {
   device_inventory();
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) backend_arg = argv[++i];
+    if (strcmp(argv[i], "--blu-vector") == 0 && i + 3 < argc) {
+      /* R28 known-answer check against crypto/blunote.js: one key from a given r, and its binding. */
+      BluKey k;
+      unsigned char r[32], hdr[SHEAR_HEADER_LEN];
+      if (blu_init() != 0 || blu_set_address(argv[i + 1]) != 0) return 2;
+      if (blu_hex_bytes(argv[i + 2], r, 32) != 0 || blu_hex_bytes(argv[i + 3], hdr, SHEAR_HEADER_LEN) != 0) return 2;
+      if (blu_key_from_r(r, &k) != 0) return 3;
+      char R[65], P[65];
+      blu_hex32(k.R, R);
+      blu_hex32(k.P, P);
+      printf("R %s
+P %s
+tag %u
+bind %llu
+", R, P, (unsigned)k.tag, (unsigned long long)blu_bind(hdr, &k));
+      return 0;
+    }
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) want_help = 1;
   }
   if (want_help) {
@@ -1286,6 +1351,11 @@ int main(int argc, char **argv) {
       g_user = argv[++i];
     } else if (strcmp(argv[i], "--dest") == 0 && i + 1 < argc) {
       snprintf(g_dest, sizeof(g_dest), "%s", argv[++i]);
+    } else if (strcmp(argv[i], "--blu") == 0 && i + 1 < argc) {
+      if (blu_init() != 0 || blu_set_address(argv[++i]) != 0) {
+        fprintf(stderr, "--blu: need 128 hex chars, the mining address B||Y (two ristretto255 points)\n");
+        return 2;
+      }
     } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
       g_threads = atoi(argv[++i]);
       if (g_threads < 1) g_threads = 1;
