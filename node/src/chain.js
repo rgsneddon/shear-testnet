@@ -952,10 +952,16 @@ function hex32(v) {
  * { feeBps: 0 }. A fee key names the pool's own one-time key (R, P, tag);
  * prev is the parent block's record root.
  */
+const BLUNOTE_FIELD_KEYS = new Set(['feeBps', 'feeR', 'feeP', 'feeTag', 'prev']);
+
 export function blunoteFields(tx) {
   const b = tx?.blunote;
   if (b == null) return { feeBps: 0, feeKey: null, prev: null };
-  if (typeof b !== 'object') return null;
+  if (typeof b !== 'object' || Buffer.isBuffer(b) || Array.isArray(b)) return null;
+  // Only the fields the digest binds; anything else would be unbound bytes.
+  for (const key of Object.keys(b)) {
+    if (!BLUNOTE_FIELD_KEYS.has(key)) return null;
+  }
   const feeBps = Number(b.feeBps ?? 0);
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > POOL_FEE_MAX_BPS) return null;
   const R = hex32(b.feeR);
