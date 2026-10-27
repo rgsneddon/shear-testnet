@@ -136,6 +136,11 @@ export function dest20OfShare(share) {
 }
 
 export function noteCommitOfShare(share) {
+  // R28: a BluNotes row's payee id is its one-time key P. Sorting, the live
+  // PoW cache and slot binding then key on P exactly as they keyed on a
+  // noteCommit, and P names no address.
+  const bluP = asBuf(share?.shareP, 32);
+  if (bluP) return bluP;
   const fromField = asBuf(share?.noteCommit, 32);
   if (fromField) return fromField;
   const d20 = dest20OfShare(share);

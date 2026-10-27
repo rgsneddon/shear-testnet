@@ -10,11 +10,13 @@ import { Worker } from 'node:worker_threads';
 import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
-import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
+import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, admitBaseFromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
 import { payeeDecodeOk, payeeFs1Ok, payeeWillProbe } from '../../crypto/n1.js';
 import { heldBodyKey } from '../../crypto/mempool.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { destBoundShareHash, noteCommitOfShare, shareTargetByte } from '../../crypto/share_batch.js';
+import { bindingOk, oneTimeKey } from '../../crypto/blunote.js';
+import { pointFrom } from '../../crypto/note.js';
 import {
   BLOCK_SUBSIDY_NANOS,
   POOL_FEE_BPS,
@@ -1885,11 +1887,24 @@ export function readCappedBody(req, cap = HTTP_BODY_MAX) {
   });
 }
 
+/** The rig's one-time key from a submit, or null. R and P are 32-byte hex; P must be a point. */
+export function bluSubmitKey(params) {
+  const R = typeof params?.shareR === 'string' && /^[0-9a-fA-F]{64}$/.test(params.shareR) ? Buffer.from(params.shareR, 'hex') : null;
+  const P = typeof params?.shareP === 'string' && /^[0-9a-fA-F]{64}$/.test(params.shareP) ? Buffer.from(params.shareP, 'hex') : null;
+  const tag = Number(params?.viewTag ?? 0);
+  if (!R || !P || !Number.isInteger(tag) || tag < 0 || tag > 255) return null;
+  try { pointFrom(P); } catch { return null; }
+  return { R, P, tag };
+}
+
 export function createPool({
   dataDir,
   stratumPort = 1111,
   httpPort = 8088,
   stratumBind = process.env.SHEAR_STRATUM_BIND || '127.0.0.1',
+  // R28: the fee wallet's scan key Y (hex). With the fee dest's admit base B
+  // it makes a fresh one-time fee key per template. Absent: no pool fee.
+  feeScanPub = process.env.SHEAR_POOL_FEE_SCAN_PUB || '',
   requireLoginAuth = String(process.env.SHEAR_STRATUM_AUTH || '') === '1',
   tlsCert = process.env.SHEAR_STRATUM_TLS_CERT || '',
   tlsKey = process.env.SHEAR_STRATUM_TLS_KEY || '',
@@ -2611,7 +2626,8 @@ export function createPool({
       const split = ctx.parentHeader
         ? splitDeferWindow(kept, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued)
         : { seal: kept, carry: [], owe: [], stale: [] };
-      if (split.owe.length) admitWindowSpill(split.owe);
+      // R28 (D2): spill is retired; expiring overflow is not owed.
+    if (split.owe.length) disposeUnpayable(split.owe, 'over_cap');
       if (split.carry.length) deferredShares = sortShares(split.carry);
       if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
       const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
@@ -2963,7 +2979,8 @@ export function createPool({
       unpayable.push(s);
     }
     const split = splitDeferWindow(trusted, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued);
-    if (split.owe.length) admitWindowSpill(split.owe);
+    // R28 (D2): spill is retired; expiring overflow is not owed.
+    if (split.owe.length) disposeUnpayable(split.owe, 'over_cap');
     if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
     const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
     lag1Shares = split.seal;
@@ -3648,6 +3665,18 @@ export function createPool({
     return missing;
   }
 
+  function poolFeeKey(feeDest) {
+    const Y = /^[0-9a-fA-F]{64}$/.test(String(feeScanPub || '')) ? Buffer.from(feeScanPub, 'hex') : null;
+    const B = feeDest && isDestAddress(feeDest) ? admitBaseFromAddress(feeDest) : null;
+    if (!Y || !B) return null;
+    try {
+      const k = oneTimeKey({ B: Buffer.from(B), Y });
+      return { R: k.R, P: k.P, viewTag: k.tag };
+    } catch {
+      return null;
+    }
+  }
+
   function creditAcceptedShare(rec) {
     const opened = bindAcceptedShare(openShares, rec);
     if (opened.ok) {
@@ -3669,7 +3698,8 @@ export function createPool({
     const split = ctx.parentHeader
       ? splitDeferWindow(openShares, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued)
       : { seal: [], carry: openShares.slice(), owe: [], stale: [] };
-    if (split.owe.length) admitWindowSpill(split.owe);
+    // R28 (D2): spill is retired; expiring overflow is not owed.
+    if (split.owe.length) disposeUnpayable(split.owe, 'over_cap');
     if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
     if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
     const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
@@ -3912,7 +3942,9 @@ export function createPool({
         potShares,
         shareBits: sb,
         shareBatch: lag1Shares,
-        hashSpill: pendingSpill.slice(),
+        hashSpill: [],
+        feeKey: poolFeeKey(feeTo),
+        feeBps: POOL_FEE_BPS,
         poolDest: poolPay,
         feeDest: feeTo,
         finderDest: '',
@@ -4390,13 +4422,17 @@ export function createPool({
       return;
     }
     const closedRound = !!resolved.closedRound;
-    const destPay = hasherPayoutDest(session?.login, {
-      dest: session?.payoutDest,
-      height: Number(store.tip()?.height || 0) + 1,
-    });
+    // R28 BluNotes: the rig sends its one-time key (R, P, tag) with the share.
+    // The nonce binds it, the target is on the RandomX digest itself, and the
+    // pool never learns a payout address.
+    const blu = bluSubmitKey(params);
+    if (!blu) {
+      rejectSubmit(sock, session, msg, 'need_key');
+      return;
+    }
     let scored;
     try {
-      scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn, dest: destPay });
+      scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn, dest: '' });
     } catch (e) {
       const reason = hashWorkerRejectReason(e);
       // A share already accepted can still have a sibling hash in flight.
@@ -4459,10 +4495,15 @@ export function createPool({
     }
     const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
     const creditedBits = Number(scored.creditedShareBits) || 0;
-    if (session && isDestAddress(destPay) && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
+    if (creditedBits >= SHARE_FLOOR_BITS && !bindingOk(scored.header, params.nonce, blu.R, blu.P)) {
+      rejectSubmit(sock, session, msg, 'share_bind');
+      return;
+    }
+    if (session && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
       const rec = {
-        dest: destPay,
-        dest20: hash20FromAddress(destPay),
+        shareR: blu.R,
+        shareP: blu.P,
+        viewTag: blu.tag,
         nonce: BigInt(params.nonce),
         hash: String(scored.hash || ''),
         jobId: String(job?.jobId || ''),
