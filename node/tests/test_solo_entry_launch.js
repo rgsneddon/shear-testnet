@@ -8,6 +8,11 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { encodeDest } from '../../crypto/address.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
+import { encodeMiningAddress } from '../../crypto/address.js';
+import { bluWallet } from './support/blunote_mine.js';
+
+const BLU = bluWallet();
+const BLU_ADDR = encodeMiningAddress({ B: BLU.B, Y: BLU.Y });
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -112,7 +117,9 @@ function login(port, dest) {
       sock.write(`${JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login: `${dest}.solo`, threads: 1 },
+        // R28 option 2: a worker name, plus the miner's mining address for the
+        // solo pot (option b).
+        params: { login: 'rig1', threads: 1, bluAddr: BLU_ADDR },
       })}\n`);
     });
     sock.on('data', (chunk) => {

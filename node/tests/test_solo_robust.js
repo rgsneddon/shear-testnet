@@ -15,6 +15,13 @@ import {
   SOLO_MAX_CONN,
   soloShareLogFields,
 } from '../src/solo_stratum.js';
+import { encodeMiningAddress } from '../../crypto/address.js';
+import { bluWallet } from './support/blunote_mine.js';
+
+// R28 option 2: a solo login is a worker name plus the mining address
+// the solo pot (option b) pays.
+const BLU = bluWallet();
+const BLU_ADDR = encodeMiningAddress({ B: BLU.B, Y: BLU.Y });
 
 function readLines(sock, ms = 500) {
   return new Promise((resolve) => {
@@ -201,7 +208,7 @@ describe('solo stratum bad input', () => {
         logged.once('connect', resolve);
         logged.once('error', reject);
       });
-      logged.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: `${dest}.solo` } })}\n`);
+      logged.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: 'rig1', bluAddr: BLU_ADDR } })}\n`);
       const silent = net.connect(bound.port, '127.0.0.1');
       const silentLines = [];
       silent.on('data', (chunk) => {
