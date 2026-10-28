@@ -335,7 +335,7 @@ SOFTWARE.
 
 ================================================================================
 PACKAGES: libsodium
-COMPONENTS: libsodium Android: 1.0.22, pinned in wallet/android/libsodium.lock.json; Linux: the packing host's libsodium.so.23/.so.26, exact version recorded in each pack's RUNTIME-VERSIONS.txt (bundled runtime)
+COMPONENTS: libsodium Android: 1.0.22, pinned in wallet/android/libsodium.lock.json; Linux: the packing host's libsodium.so.23/.so.26, exact version recorded in each pack's RUNTIME-VERSIONS.txt; ShearK-Miner: the packing host's libsodium (Homebrew on macOS, MSYS2 on Windows), recorded in RUNTIME-VERSIONS.txt (bundled runtime)
 LICENSE: ISC
 FILE: LICENSES/third-party/libsodium/LICENSE
 --------------------------------------------------------------------------------
