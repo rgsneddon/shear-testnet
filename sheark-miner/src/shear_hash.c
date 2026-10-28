@@ -223,22 +223,38 @@ static void drop_cache_locked(void) {
   atomic_fetch_add_explicit(&g_gen, 1, memory_order_release);
 }
 
-static randomx_flags flags_interpreter(void) {
+/* What this CPU has, from randomx_get_flags() at run time: AES-NI or the
+ * ARMv8 crypto extension, Argon2 SSSE3/AVX2. SHEARK_TEST_SOFT_AES (bench
+ * builds only) hides hardware AES so the soft-AES path can be checked
+ * against the golden corpus on any host. */
+static randomx_flags cpu_flags(void) {
   randomx_flags f = randomx_get_flags();
+#if defined(SHEARK_TEST_SOFT_AES)
+  f = (randomx_flags)(f & ~RANDOMX_FLAG_HARD_AES);
+#endif
+  return f;
+}
+
+static randomx_flags flags_interpreter(void) {
+  randomx_flags f = cpu_flags();
   f = (randomx_flags)(f & ~RANDOMX_FLAG_FULL_MEM);
   f = (randomx_flags)(f & ~RANDOMX_FLAG_JIT);
   f = (randomx_flags)(f | RANDOMX_FLAG_LARGE_PAGES);
   return f;
 }
 
-/* Fastest path this book will accept: compiled light VM + AES-NI + 2 MiB
- * pages over the 128 MiB cache. jit-full is the 260 MiB dataset; RandomX
- * light-verify is the same digest (selftest matches). Keep
- * RANDOMX_FLAG_SECURE when get_flags set it (Apple aarch64 W^X). */
+/* Fastest path this book will accept: compiled light VM + hardware AES +
+ * 2 MiB pages over the 128 MiB cache. jit-full is the 260 MiB dataset;
+ * RandomX light-verify is the same digest (selftest matches). Keep
+ * RANDOMX_FLAG_SECURE when get_flags set it (Apple aarch64 W^X).
+ * R41: hardware AES only when the CPU has it. Forcing the flag ran AES-NI
+ * (or ARMv8 AES) instructions on a CPU without them: SIGILL, e.g. on a
+ * Raspberry Pi 4 or a VM whose CPU model hides AES. Soft AES is the same
+ * digest. */
 static randomx_flags flags_jit_light(void) {
-  randomx_flags f = randomx_get_flags();
+  randomx_flags f = cpu_flags();
   f = (randomx_flags)(f & ~RANDOMX_FLAG_FULL_MEM);
-  f = (randomx_flags)(f | RANDOMX_FLAG_JIT | RANDOMX_FLAG_HARD_AES | RANDOMX_FLAG_LARGE_PAGES);
+  f = (randomx_flags)(f | RANDOMX_FLAG_JIT | RANDOMX_FLAG_LARGE_PAGES);
   return f;
 }
 
@@ -487,6 +503,10 @@ const char *shear_hash_backend(void) {
 
 int shear_hash_huge_pages(void) {
   return (g_flags & RANDOMX_FLAG_LARGE_PAGES) ? 1 : 0;
+}
+
+int shear_hash_hard_aes(void) {
+  return (g_flags & RANDOMX_FLAG_HARD_AES) ? 1 : 0;
 }
 
 static int init_cache_locked(const unsigned char k[32]) {

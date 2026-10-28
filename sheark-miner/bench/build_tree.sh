@@ -15,9 +15,19 @@ mk=(make -C sheark-miner CC=gcc CXX=g++ -j"$JOBS")
 "${mk[@]}"
 mkdir -p "$M/bench"
 case "$(uname -m)" in x86_64) BASE="-march=x86-64 -mtune=generic" ;; *) BASE="" ;; esac
-gcc $BASE -O3 -Wall -Wextra -std=c11 -pthread -I"$M/src" -I"$T/crypto/randomx/src" -c -o "$M/bench/rxbench.o" "$RXB"
+DEF=""
+grep -q shear_hash_hard_aes "$M/src/shear_hash.h" && DEF="-DRXBENCH_HAVE_HARD_AES"
+gcc $BASE -O3 -Wall -Wextra -std=c11 -pthread $DEF -I"$M/src" -I"$T/crypto/randomx/src" -c -o "$M/bench/rxbench.o" "$RXB"
 g++ $BASE -O3 -pthread -o "$M/bench/rxbench" "$M/bench/rxbench.o" "$M/src/shear_hash.o" "$M/src/sha256.o" "$M/src/sha512.o" \
   "$T/crypto/randomx/build/librandomx.a" -lm -static-libgcc -static-libstdc++
+# R41 trees: a second rxbench whose shear_hash.c hides hardware AES, so the
+# soft-AES path (CPUs without AES-NI or ARMv8 AES) meets the golden corpus here.
+if [ -n "$DEF" ]; then
+  gcc $BASE -O3 -Wall -Wextra -std=c11 -pthread -DSHEARK_TEST_SOFT_AES -I"$M/src" -I"$T/crypto/randomx/src" \
+    -c -o "$M/bench/shear_hash_softaes.o" "$M/src/shear_hash.c"
+  g++ $BASE -O3 -pthread -o "$M/bench/rxbench-softaes" "$M/bench/rxbench.o" "$M/bench/shear_hash_softaes.o" "$M/src/sha256.o" "$M/src/sha512.o" \
+    "$T/crypto/randomx/build/librandomx.a" -lm -static-libgcc -static-libstdc++
+fi
 # The node addon (it compiles this tree's shear_hash.c): the loopback pool
 # verifies shares in-process with it, as the live pool does, instead of
 # spawning ShearK-Miner --verify per share.

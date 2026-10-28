@@ -67,6 +67,12 @@ if has golden; then
     "${pre[@]}" "$M/bench/rxbench" --backend $b --golden "$BENCH/golden_v12.txt" --threads 0 > "$OUT/golden-$b.txt" 2>&1
     log "golden $b rc=$? $(grep -E '^golden' "$OUT/golden-$b.txt")"
   done
+  if [ -x "$M/bench/rxbench-softaes" ]; then
+    for b in jit jit-full; do
+      "${pre[@]}" "$M/bench/rxbench-softaes" --backend $b --golden "$BENCH/golden_v12.txt" --threads 1 --secs 10 --warm 2 > "$OUT/golden-softaes-$b.txt" 2>&1
+      log "golden soft-AES $b rc=$? $(grep -E '^(init|golden|point)' "$OUT/golden-softaes-$b.txt" | tr '\n' ' ' | cut -c1-600)"
+    done
+  fi
 fi
 if has rx; then
   log "rx jit-full threads=$THREADS load=$(cut -d' ' -f1 /proc/loadavg)"

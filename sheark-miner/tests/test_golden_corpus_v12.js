@@ -56,6 +56,23 @@ describe('ShearK-Miner golden corpus (R41)', { timeout: 1_800_000 }, () => {
       const run = spawnSync(rxbench, ['--backend', backend, '--golden', corpus, '--threads', '0'], { encoding: 'utf8', timeout: 900_000 });
       assert.equal(run.status, 0, run.stdout + run.stderr);
       assert.match(run.stdout, /golden n=64 pipelined=56 bad=0 .* ok/);
+      assert.match(run.stdout, /hardaes=(0|1)/);
+    }
+  });
+
+  // R41: hardware AES is used only when the CPU has it. The soft-AES build
+  // (bench/build_tree.sh) stands in for a CPU without AES-NI or ARMv8 AES.
+  it('the soft-AES path gives the same digests (hardaes=0)', (t) => {
+    const soft = path.join(dir, 'bench', `rxbench-softaes${exe}`);
+    if (!fs.existsSync(soft)) {
+      t.skip('bench/rxbench-softaes not built (sheark-miner/bench/build_tree.sh)');
+      return;
+    }
+    for (const backend of ['jit', 'jit-full']) {
+      const run = spawnSync(soft, ['--backend', backend, '--golden', corpus, '--threads', '0'], { encoding: 'utf8', timeout: 900_000 });
+      assert.equal(run.status, 0, run.stdout + run.stderr);
+      assert.match(run.stdout, /hardaes=0/);
+      assert.match(run.stdout, /golden n=64 pipelined=56 bad=0 .* ok/);
     }
   });
 });

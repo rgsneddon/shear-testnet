@@ -37,6 +37,13 @@
 
 #define MAXT 256
 
+/* shear_hash_hard_aes() is R41; a base (R28) shear_hash.o lacks it. */
+#if defined(RXBENCH_HAVE_HARD_AES)
+#define RX_HARD_AES() shear_hash_hard_aes()
+#else
+#define RX_HARD_AES() -1
+#endif
+
 /* Defined in shear_hash.c; not in shear_hash.h. */
 extern const char SHEAR_SELFTEST_HASH[];
 
@@ -371,8 +378,8 @@ int main(int argc, char **argv) {
   double t1 = now_s();
   shear_hash_hex(out, hex);
   int ok = strcmp(hex, SHEAR_SELFTEST_HASH) == 0;
-  printf("init backend=%s active=%s got=%s init_s=%.3f hugepages=%d selftest=%s\n", backend,
-         shear_hash_backend(), hex, t1 - t0, shear_hash_huge_pages(), ok ? "ok" : "FAIL");
+  printf("init backend=%s active=%s got=%s init_s=%.3f hugepages=%d hardaes=%d selftest=%s\n", backend,
+         shear_hash_backend(), hex, t1 - t0, shear_hash_huge_pages(), RX_HARD_AES(), ok ? "ok" : "FAIL");
   if (!ok) return 1;
   int rc = 0;
   if (golden) rc |= run_golden(golden);

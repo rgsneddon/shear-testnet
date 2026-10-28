@@ -129,7 +129,8 @@ jobs:
           export OPENSSL_INC="$(cygpath -m /mingw64/include)"
           powershell -NoProfile -Command "Get-CimInstance Win32_Processor | Format-List Name,NumberOfCores,NumberOfLogicalProcessors,L2CacheSize,L3CacheSize,MaxClockSpeed; (Get-CimInstance Win32_OperatingSystem).Caption"
           rxb() {
-            gcc -march=x86-64 -mtune=generic -O3 -std=c11 -pthread -I"$1/sheark-miner/src" -I"$1/crypto/randomx/src" -c -o "$1/sheark-miner/bench-rxbench.o" sheark-miner/bench/rxbench.c
+            def=""; grep -q shear_hash_hard_aes "$1/sheark-miner/src/shear_hash.h" && def=-DRXBENCH_HAVE_HARD_AES
+            gcc -march=x86-64 -mtune=generic -O3 -std=c11 -pthread $def -I"$1/sheark-miner/src" -I"$1/crypto/randomx/src" -c -o "$1/sheark-miner/bench-rxbench.o" sheark-miner/bench/rxbench.c
             g++ -march=x86-64 -mtune=generic -O3 -pthread -o "$1/sheark-miner/bench/rxbench.exe" "$1/sheark-miner/bench-rxbench.o" \
               "$1/sheark-miner/src/shear_hash.o" "$1/sheark-miner/src/sha256.o" "$1/sheark-miner/src/sha512.o" "$1/crypto/randomx/build/librandomx.a" \
               -static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic

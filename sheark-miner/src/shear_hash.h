@@ -36,6 +36,7 @@ int shear_selftest(char got_hex[65]);
 int shear_verify_header_hex(const char *header_hex, char digest_hex[65], char k_hex[65]);
 const char *shear_hash_backend(void);
 int shear_hash_huge_pages(void);
+int shear_hash_hard_aes(void);
 int shear_hash_set_backend(const char *name);
 
 #ifdef __cplusplus
