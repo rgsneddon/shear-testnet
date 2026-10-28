@@ -66,6 +66,7 @@ import {
 import {
   activateBallot,
   censusOf,
+  censusRoot,
   commitCensus,
   proposalId,
   recordVote,
@@ -2420,11 +2421,9 @@ function portalOf(state, destOrId) {
 }
 
 function applyEpochOpen(state, nowMs, idx) {
-  if (!state.epochStartRoots) state.epochStartRoots = Object.create(null);
-  const rootKey = String(idx);
-  if (!Object.prototype.hasOwnProperty.call(state.epochStartRoots, rootKey)) {
-    state.epochStartRoots[rootKey] = String(state.vaultLockRoot || '');
-  }
+  // epochStartRoots is keyed by period (snapshotPeriodRoot). An epoch index
+  // written here took the claim slot of period idx whenever the epoch opened
+  // before block 240·idx. The epoch's vote root is frozen with its census.
   const magic = state.magic || MAGIC_TESTNET;
   const activationHeight = state.oracleActivationHeight === undefined
     ? ORACLE_ACTIVATION_HEIGHT
@@ -2510,15 +2509,40 @@ function applyEpochOpen(state, nowMs, idx) {
   void MAGIC_MAINNET;
 }
 
-/** Leaf count for this epoch, once. Later blocks do not rewrite it. */
+/**
+ * Root of the live leaves now. A withdraw earlier in this block only marked
+ * its leaf, so a dirty tree is rebuilt on a scratch handle. The state's root
+ * and handle are not touched: the period snapshot keeps its own timing.
+ */
+function liveVaultRootHex(state) {
+  const live = liveVaultNotes(state);
+  if (!live.length) return EMPTY_VAULT_ROOT;
+  if (!state?.vaultLockDirty) {
+    const hex = String(state?.vaultLockRoot || '');
+    if (/^[0-9a-f]{64}$/.test(hex)) return hex;
+  }
+  const handle = fs1TreeNew();
+  if (!handle) return null;
+  if (!fs1TreeAppend(handle, Buffer.concat(live.map((hex) => Buffer.from(hex, 'hex'))))) return null;
+  const root = fs1TreeRoot(handle);
+  return root && root.length === 32 ? root.toString('hex') : null;
+}
+
+/**
+ * Leaf count and vote root for this epoch, once, at the same point. Later
+ * blocks do not rewrite them. The vote root is keyed by the epoch index;
+ * epochStartRoots is the claim root and is keyed by period.
+ */
 function ensureEpochCensus(state, height) {
   if (!(Number(state?.epochStartMs) > 0)) return;
   const idx = Math.floor(Number(state.currentEpoch) || 0);
   if (censusOf(state, idx)) return;
   const leaves = liveVaultNotes(state).length;
   if (leaves < 1) return;
+  const root = liveVaultRootHex(state);
+  if (!root) return;
   const openH = Math.max(0, Math.floor(Number(height) || 0));
-  commitCensus(state, idx, leaves, openH);
+  commitCensus(state, idx, leaves, openH, root);
 }
 
 /** Prospective and append-only. A second write does not rewrite a frozen rate. */
@@ -4516,8 +4540,10 @@ export function applyLeafVote(state, tx, blockHeight) {
   if (!voteWindowOpen(census.openHeight, blockHeight, magic)) {
     return { ok: false, reason: 'epoch_closed' };
   }
-  const rootHex = String(state?.epochStartRoots?.[String(epoch)] || '');
-  if (!/^[0-9a-f]{64}$/.test(rootHex)) return { ok: false, reason: 'not_voter' };
+  // earnEpoch on a leaf vote is the epoch index the proof binds, not a
+  // period. Its root is the one frozen with that epoch's census.
+  const rootHex = censusRoot(state, epoch);
+  if (!rootHex) return { ok: false, reason: 'not_voter' };
   const proof = tx?.voteProof;
   if (!proof) return { ok: false, reason: 'unsigned' };
   const pid = proposalId(epoch, param);

@@ -587,6 +587,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'VOTE_FEE=owned-note',
     'VOTE_VETO=none',
     'VOTE_CAP=64',
+    // Vault Y row (a), 28 Oct: a leaf vote proves against the root frozen
+    // with its epoch's census, keyed by epoch. The claim root stays per period.
+    'VOTE_ROOT=census-epoch',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,

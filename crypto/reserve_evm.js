@@ -237,12 +237,17 @@ export function encodeNoteBlockHeight(height) {
   return concat(selector('noteBlockHeight(uint256)'), pad32(Math.max(0, Math.floor(Number(height) || 0))));
 }
 
-export function encodeCommitEpochCensus(epoch, leafCount, openHeight) {
+/** Census of an epoch with the vote root frozen at that same point. */
+export function encodeCommitEpochCensus(epoch, leafCount, openHeight, rootHex) {
+  const word = new Uint8Array(32);
+  const raw = String(rootHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
   return concat(
-    selector('commitEpochCensus(uint256,uint256,uint256)'),
+    selector('commitEpochCensus(uint256,uint256,uint256,bytes32)'),
     pad32(epoch),
     pad32(leafCount),
     pad32(openHeight),
+    word,
   );
 }
 
@@ -1205,10 +1210,12 @@ function epochCensusRows(cb) {
     const epoch = Math.floor(Number(item?.epoch));
     const leafCount = Math.floor(Number(item?.leafCount));
     const openHeight = Math.floor(Number(item?.openHeight));
+    const root = hex32Of(item?.root);
     if (!Number.isInteger(epoch) || epoch < 0) continue;
     if (!Number.isInteger(leafCount) || leafCount < 1) continue;
     if (!Number.isInteger(openHeight) || openHeight < 0) continue;
-    out.push({ epoch, leafCount, openHeight });
+    if (!root) continue;
+    out.push({ epoch, leafCount, openHeight, root });
   }
   return out;
 }
@@ -1297,13 +1304,15 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
       const wantCensus = vaultBind.census || {};
       for (const row of censusListed) {
         const want = wantCensus[String(row.epoch)];
-        if (!want || want.leafCount !== row.leafCount || want.openHeight !== row.openHeight) {
+        if (!want || want.leafCount !== row.leafCount || want.openHeight !== row.openHeight
+          || want.root !== row.root) {
           return fail('stake_reward');
         }
       }
       for (const [epoch, want] of Object.entries(wantCensus)) {
         const got = censusListed.find((row) => String(row.epoch) === epoch);
-        if (!got || got.leafCount !== want.leafCount || got.openHeight !== want.openHeight) {
+        if (!got || got.leafCount !== want.leafCount || got.openHeight !== want.openHeight
+          || got.root !== want.root) {
           return fail('stake_reward');
         }
       }
@@ -1317,7 +1326,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
       evm.calls += 1;
     }
     for (const row of censusListed) {
-      const noted = await callReserve(session, encodeCommitEpochCensus(row.epoch, row.leafCount, row.openHeight));
+      const noted = await callReserve(session, encodeCommitEpochCensus(row.epoch, row.leafCount, row.openHeight, row.root));
       if (!noted.ok) return fail(noted.reason || 'stake_reward');
       evm.calls += 1;
     }

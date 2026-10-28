@@ -267,21 +267,39 @@ function slotKey(epoch, proposal) {
   return `${Math.floor(Number(epoch) || 0)}:${pid.toString('hex')}`;
 }
 
-export function commitCensus(state, epoch, leafCount, openHeight) {
+/**
+ * The census of epoch e: its leaf count, the height it opened, and the vote
+ * root. The root is the live vault root at that same point, so the leaves it
+ * counts are the leaves that can prove a vote. It is keyed by the epoch
+ * index. It is not the claim root, which is keyed by period.
+ */
+export function commitCensus(state, epoch, leafCount, openHeight, voteRoot = null) {
   const idx = Math.floor(Number(epoch));
   const leaves = Math.floor(Number(leafCount));
   const openH = Math.floor(Number(openHeight));
   if (!Number.isInteger(idx) || idx < 0) return { ok: false, reason: 'bad_amount' };
   if (!Number.isInteger(leaves) || leaves < 0) return { ok: false, reason: 'bad_amount' };
   if (!Number.isInteger(openH) || openH < 0) return { ok: false, reason: 'bad_amount' };
+  const root = voteRoot == null ? '' : String(voteRoot).toLowerCase();
+  if (root && !/^[0-9a-f]{64}$/.test(root)) return { ok: false, reason: 'bad_amount' };
   const book = censusMap(state);
   const key = String(idx);
   const prior = book[key];
-  if (prior && prior.known && (prior.leafCount !== leaves || prior.openHeight !== openH)) {
+  if (prior && prior.known && (prior.leafCount !== leaves || prior.openHeight !== openH
+    || String(prior.root || '') !== root)) {
     return { ok: false, reason: 'bad_amount' };
   }
-  book[key] = { known: true, leafCount: leaves, openHeight: openH };
+  const row = { known: true, leafCount: leaves, openHeight: openH };
+  if (root) row.root = root;
+  book[key] = row;
   return { ok: true };
+}
+
+/** The vote root frozen with epoch e's census. Empty when there is none. */
+export function censusRoot(state, epoch) {
+  const row = censusOf(state, epoch);
+  const root = String(row?.root || '');
+  return /^[0-9a-f]{64}$/.test(root) ? root : '';
 }
 
 export function censusOf(state, epoch) {

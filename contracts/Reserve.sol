@@ -164,6 +164,9 @@ contract Reserve {
     mapping(uint256 => bytes32) internal epochStartRootOf;
     /// Bit 255 set once the leaf count and open height are committed.
     mapping(uint256 => uint256) internal epochCensus;
+    /// Vote root of an epoch, frozen with its census. Keyed by epoch index.
+    /// epochStartRootOf is the claim root and is keyed by period.
+    mapping(uint256 => bytes32) internal voteRootOf;
     /// epoch → proposal → tag → seq | (choice << 8). Choice 1 up, 2 down, 3 hold.
     mapping(uint256 => mapping(bytes32 => mapping(bytes32 => uint256))) internal ballotOf;
     /// epoch → proposal → hold<<128 | down<<64 | up.
@@ -1118,14 +1121,19 @@ contract Reserve {
         return root;
     }
 
-    /// Leaf count committed with the frozen root, and the height that root opened.
-    /// A second commit must match. Height 0 is a real open, so the high bit is the flag.
-    function commitEpochCensus(uint256 epoch, uint256 leafCount, uint256 openHeight) external onlyShear {
+    /// Leaf count, the height the census opened, and the vote root frozen at
+    /// that same point. A second commit must match. Height 0 is a real open,
+    /// so the high bit is the flag.
+    function commitEpochCensus(uint256 epoch, uint256 leafCount, uint256 openHeight, bytes32 root) external onlyShear {
         if (leafCount > type(uint64).max || openHeight > type(uint64).max) revert BadAmount();
+        if (root == bytes32(0)) revert BadAmount();
         uint256 packed = (uint256(1) << 255) | (leafCount << 64) | openHeight;
         uint256 prior = epochCensus[epoch];
         if (prior != 0 && prior != packed) revert BadAmount();
+        bytes32 priorRoot = voteRootOf[epoch];
+        if (priorRoot != bytes32(0) && priorRoot != root) revert BadAmount();
         epochCensus[epoch] = packed;
+        voteRootOf[epoch] = root;
     }
 
     function castVote(
@@ -1144,7 +1152,7 @@ contract Reserve {
         uint256 openH = census & ((uint256(1) << 64) - 1);
         uint256 closeH = openH + _voteCloseDay() * 960;
         if (height < openH || height > closeH) revert EpochClosed();
-        if (epochStartRootOf[epoch] == bytes32(0)) revert NotVoter();
+        if (voteRootOf[epoch] == bytes32(0)) revert NotVoter();
         bytes32 pid = _proposalId(epoch, paramId);
         uint256 code = _voteCode(proof, output, epoch, choice, seq, pid);
         if (code == 2) revert BadAmount();
@@ -1312,7 +1320,7 @@ contract Reserve {
         bytes32 pid
     ) internal view returns (uint256) {
         if (proof.length < 2 || proof[0] != 0x56 || output.length < 96) return 0;
-        bytes32 root = epochStartRootOf[epoch];
+        bytes32 root = voteRootOf[epoch];
         if (root == bytes32(0)) return 2;
         bytes1 cb = choice < 0 ? bytes1(0xff) : bytes1(uint8(int8(choice)));
         bytes memory book = _magicBook();

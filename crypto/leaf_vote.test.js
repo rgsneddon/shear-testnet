@@ -151,9 +151,9 @@ function bindVoteFee(tx) {
 }
 
 function arm(state, epoch, proved, leaves) {
-  if (!state.epochStartRoots) state.epochStartRoots = Object.create(null);
-  state.epochStartRoots[String(epoch)] = proved.rootHex;
-  const census = commitCensus(state, epoch, leaves, openHeight(epoch));
+  // The vote root is frozen with the census, keyed by epoch. epochStartRoots
+  // is the per-period claim root and a vote does not read it.
+  const census = commitCensus(state, epoch, leaves, openHeight(epoch), proved.rootHex);
   assert.equal(census.ok, true, census.reason);
   state.magic = MAGIC_TESTNET;
   state.epochBps = GENESIS_BPS;
@@ -370,9 +370,19 @@ describe('one proof per live leaf', () => {
 
     const session = await bootReserveEvm();
     const root = base.rootHex;
-    assert.equal((await callReserve(session, encodeCommitEpochStartRoot(1, root))).ok, true);
-    assert.equal((await callReserve(session, encodeCommitEpochCensus(1, 20, openHeight(1)))).ok, true);
     const packed = packVaultOutput(base.note);
+    // The period-1 claim root alone does not open epoch 1's ballot: a vote
+    // reads the root committed with the epoch's census (Vault Y row (a)).
+    assert.equal((await callReserve(session, encodeCommitEpochStartRoot(1, root))).ok, true);
+    const noCensus = await callReserve(session, encodeCastVote({
+      proof: base.blob, output: packed, paramId: 1, choice: 1, seq: 1, height: day0, epoch: 1,
+    }));
+    assert.equal(noCensus.ok, false, 'no census root yet');
+    // A census commit without a root is refused.
+    assert.equal((await callReserve(session, encodeCommitEpochCensus(1, 20, openHeight(1)))).ok, false);
+    assert.equal((await callReserve(session, encodeCommitEpochCensus(1, 20, openHeight(1), root))).ok, true);
+    // A second census commit with another root is refused.
+    assert.equal((await callReserve(session, encodeCommitEpochCensus(1, 20, openHeight(1), 'ab'.repeat(32)))).ok, false);
     const cast = await callReserve(session, encodeCastVote({
       proof: base.blob,
       output: packed,
@@ -657,7 +667,7 @@ describe('hash-bonus rho through mined blocks', () => {
       assert.equal(decodeTallyStep(got.returnValue), want, `${current} ${dir}`);
     }
     assert.equal((await callReserve(session, encodeCommitEpochStartRoot(1, up.proved.rootHex))).ok, true);
-    assert.equal((await callReserve(session, encodeCommitEpochCensus(1, 1, up.open))).ok, true);
+    assert.equal((await callReserve(session, encodeCommitEpochCensus(1, 1, up.open, up.proved.rootHex))).ok, true);
     const evmCast = await callReserve(session, encodeCastVote({
       proof: up.proved.blob,
       output: packVaultOutput(up.proved.note),
@@ -678,7 +688,7 @@ describe('hash-bonus rho through mined blocks', () => {
 
     const downSession = await bootReserveEvm();
     assert.equal((await callReserve(downSession, encodeCommitEpochStartRoot(1, down.proved.rootHex))).ok, true);
-    assert.equal((await callReserve(downSession, encodeCommitEpochCensus(1, 1, down.open))).ok, true);
+    assert.equal((await callReserve(downSession, encodeCommitEpochCensus(1, 1, down.open, down.proved.rootHex))).ok, true);
     const downOnly = await callReserve(downSession, encodeCastVote({
       proof: down.proved.blob,
       output: packVaultOutput(down.proved.note),

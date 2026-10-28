@@ -3379,13 +3379,20 @@ function vaultCoinbaseBind(state, txs) {
     if (kind === 'leaf-vote' && !tx.voteProof) continue;
     need = true;
     const earn = String(Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0));
-    const start = String(state.epochStartRoots?.[earn] || '').toLowerCase();
-    if (/^[0-9a-f]{64}$/.test(start)) roots[earn] = start;
-    if (kind !== 'leaf-vote') continue;
+    if (kind === 'reward-claim') {
+      // Period-keyed claim root.
+      const start = String(state.epochStartRoots?.[earn] || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(start)) roots[earn] = start;
+      continue;
+    }
+    // Epoch-keyed census and vote root.
     const row = state.epochCensus?.[earn];
     const leaves = Math.floor(Number(row?.leafCount) || 0);
     const openH = Math.floor(Number(row?.openHeight) || 0);
-    if (row?.known && leaves >= 1 && openH >= 0) census[earn] = { leafCount: leaves, openHeight: openH };
+    const voteRoot = String(row?.root || '').toLowerCase();
+    if (row?.known && leaves >= 1 && openH >= 0 && /^[0-9a-f]{64}$/.test(voteRoot)) {
+      census[earn] = { leafCount: leaves, openHeight: openH, root: voteRoot };
+    }
   }
   return need ? { roots, census } : undefined;
 }
