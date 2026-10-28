@@ -19,7 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 function arg(name, dflt) {
@@ -42,10 +42,12 @@ const warmSecs = Number(arg('warm', '30'));
 const outFile = arg('out', '');
 const restartCheck = flag('restart');
 
-const { encodeDest } = await import(path.join(root, 'crypto/address.js'));
-const { pointBytes } = await import(path.join(root, 'crypto/note.js'));
-const { admitBasePub } = await import(path.join(root, 'crypto/admit.js'));
-const { scanPub } = await import(path.join(root, 'crypto/blunote.js'));
+// A file URL, so a Windows drive path imports too.
+const load = (rel) => import(pathToFileURL(path.join(root, rel)).href);
+const { encodeDest } = await load('crypto/address.js');
+const { pointBytes } = await load('crypto/note.js');
+const { admitBasePub } = await load('crypto/admit.js');
+const { scanPub } = await load('crypto/blunote.js');
 
 function miningAddress() {
   const seed = randomBytes(32);
@@ -125,14 +127,14 @@ async function proxy(upPort) {
 async function startStratum(kind) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `r41-${kind}-`));
   if (kind === 'pool') {
-    const { createPool } = await import(path.join(root, 'pool/src/pool.js'));
+    const { createPool } = await load('pool/src/pool.js');
     const dest = encodeDest(Buffer.alloc(20, 7));
     const pool = createPool({ dataDir: dir, stratumPort: 0, httpPort: 0, tlsPort: 0, stratumBind: '127.0.0.1', miner: dest, shareBits, bits });
     const heard = await pool.listen();
     return { port: heard.stratumPort, close: () => pool.close(), dir };
   }
-  const { createStore } = await import(path.join(root, 'node/src/store.js'));
-  const { createSoloStratum } = await import(path.join(root, 'node/src/solo_stratum.js'));
+  const { createStore } = await load('node/src/store.js');
+  const { createSoloStratum } = await load('node/src/solo_stratum.js');
   const store = createStore(dir);
   const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1' });
   const bound = await stratum.listen();
