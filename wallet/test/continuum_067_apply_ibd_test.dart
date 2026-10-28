@@ -8,11 +8,14 @@ import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_session.dart';
 
 /// Apply's credit follow, after unlock has finished sealing the session.
-/// SHEAR_NODE_BIN must be a process that starts (so the sidecar is in IBD)
-/// and is not the live shear node.
+/// Apply starts a real process that is not a shear node and never answers
+/// RPC, so the sidecar is in IBD. It starts through the wallet's own
+/// node-start hook: no environment variable, no datadir.
 void main() {
   testWidgets('Apply during node IBD uses the balances follow, off the UI isolate', (tester) async {
-    expect(Platform.environment['SHEAR_NODE_BIN'], isNotNull);
+    Process? stand;
+    final started = <List<String>>[];
+    addTearDown(() => stand?.kill(ProcessSignal.sigkill));
     tester.view.physicalSize = const Size(800, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -38,6 +41,8 @@ void main() {
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await tester.runAsync(() async {
       await session.loadOrCreate();
+      // Connect bare reads a public node only after the IP choice (22 Oct).
+      session.publicNodeConsent = true;
       await session.setPassword('test-pass-1');
     });
     final ledger = ShearLedger(pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}'));
@@ -46,6 +51,11 @@ void main() {
       ledger: ledger,
       startUnlocked: true,
       skipPoolSync: false,
+      nodeBinary: 'sleep',
+      startNode: (binary, env, args) async {
+        started.add([binary, ...args]);
+        stand = await Process.start(binary, const ['600']);
+      },
     ));
     await tester.pump();
     final caller = identityHashCode(Isolate.current).toString();
@@ -78,6 +88,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
       await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
     }
+    expect(started, hasLength(1), reason: 'Apply started the process');
+    expect(stand, isNotNull);
     expect(debugCreditFollowRuns, greaterThan(before));
     final addedKinds = debugCreditFollowKinds.sublist(before);
     final addedStamps = debugCreditFollowStamps.sublist(before);
