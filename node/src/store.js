@@ -123,7 +123,7 @@ import {
   hasLiveSharePow,
   sharePowCounters,
 } from '../../crypto/share_batch.js';
-import { advanceHashOwed, replayHashOwed, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
+import { advanceHashOwed, replayHashOwed, retiredOwedField, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
 import { unpackShareBatchBytes } from '../../crypto/pack.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { isDestAddress } from '../../crypto/address.js';
@@ -3658,6 +3658,9 @@ export function createStore(dir, {
     if (observed) return observed.reason || 'observe_unattested';
     const stage0 = chainStage0Rejected([block]);
     if (stage0) return stage0.reason || 'stage0';
+    // R28 (D2): the retired owed and hash-credit fields before any PoW.
+    const owedField = retiredOwedField(block);
+    if (owedField) return owedField.reason;
     for (const tx of block?.txs || []) {
       const unsignedField = unsignedBodyField(tx);
       if (unsignedField) return unsignedField.reason || 'unsigned';
@@ -4220,6 +4223,9 @@ export function createStore(dir, {
     const owedRaw = Number(opts && opts.paintedOwedNanos);
     const paintedOwedNanos = Number.isFinite(owedRaw) && owedRaw > 0 ? Math.floor(owedRaw) : 0;
     tx = reviveTx(tx);
+    // R28 (D2): no tx carries an owed-ledger or hash-credit field (blunote_owed).
+    const owedField = retiredOwedField({ txs: [tx] });
+    if (owedField) return { ...owedField, field: owedField.field.replace(/^txs\[0\]\./, '') };
     const feeHit = feeFieldRejected(tx);
     if (feeHit) return feeHit;
     const spendFee = bSpendFeeRejected(tx);

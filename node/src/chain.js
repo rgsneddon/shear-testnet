@@ -1553,7 +1553,7 @@ export function buildTemplate({
   feeBps = 0,
   potToFee = false,
 }) {
-  txs = (Array.isArray(txs) ? txs : []).filter((tx) => !tx?.coinbase && !txNoteRuleRejected(tx, 1) && !feeFieldRejected(tx) && !bSpendFeeRejected(tx));
+  txs = (Array.isArray(txs) ? txs : []).filter((tx) => !tx?.coinbase && !retiredOwedField({ txs: [tx] }) && !txNoteRuleRejected(tx, 1) && !feeFieldRejected(tx) && !bSpendFeeRejected(tx));
   // R28: spill is retired (D2); a slot-1 share is simply a share.
   void hashSpill;
   const selected = Array.isArray(shareBatch) ? shareBatch : [];

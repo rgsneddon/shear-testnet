@@ -15,6 +15,7 @@ import { sealedVinLinkField, valueOpenRejected, bSpendVinRejected, compactTx } f
 import { paintedSpendSig, verifyPoolWithdrawBound, typedCommitSum, typedClockRejected, boundReserveWithdraw, reserveWithdrawMintId, typedCommitRejected, v12KindRejected, userCoinbaseRejected, explicitTypedKindRejected, openingBeforeCarry, unsignedBodyField, feeFieldRejected, bSpendFeeRejected, postedFeeNanos } from './spend.js';
 import { receiptAdmitRejected } from './admit.js';
 import { txNoteRuleRejected } from './n1.js';
+import { retiredOwedField } from './hash_owed.js';
 import { verifyTypedAdmitFunding, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, v12FlowVersionRejected, membershipShapeOnly } from './admit_v3.js';
 import { trialReserveApply, txIsReserveAction, RESERVE_ACTION_CAP, rewardClaimRejected, retireBlobRejected, leafVoteLeakRejected, compactLockLeakRejected, withdrawLeakRejected } from './reserve_vault.js';
 import { v3BucketProofRejected } from './fs1_send_gate.js';
@@ -206,6 +207,10 @@ export function admitMempool(pool, tx, opts = {}) {
   if (leakedLock) return leakedLock;
   const leakedWithdraw = withdrawLeakRejected(tx);
   if (leakedWithdraw) return leakedWithdraw;
+  // R28 (D2): an owed-ledger or hash-credit field is refused on any tx, as
+  // a block refuses it (blunote_owed), so no template can carry one.
+  const owed = retiredOwedField({ txs: [tx] });
+  if (owed) return { ...owed, field: owed.field.replace(/^txs\[0\]\./, '') };
   const feeHit = feeFieldRejected(tx);
   if (feeHit) return feeHit;
   const spendFee = bSpendFeeRejected(tx);
