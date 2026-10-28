@@ -10305,7 +10305,10 @@ class ShearLedger implements ReadProofSink {
     if (plan.from != null && plan.from != home) return plan.from!;
     final miss = lockFundingShortfall(plan);
     if (miss.isNotEmpty) throw StateError(miss);
-    if (plan.from == home) {
+    // No dest holds coins and none is needed (a vote has no principal): there
+    // is nothing to fold. Post from home as a covered plan would, never a raw
+    // "No element" from an empty source list.
+    if (plan.from == home || plan.sources.isEmpty) {
       if (keepHome) return home;
       if (_paintedFundDest == home && spendable(home) + 1e-9 >= needShe)
         return home;
@@ -12167,7 +12170,7 @@ class ShearLedger implements ReadProofSink {
       throw StateError('fs1_inputs');
     final cols = await _fluxColumns();
     if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length)
-      throw StateError('fluxset');
+      throw _fluxPageError ?? StateError('fluxset');
     final spent = <Map<String, dynamic>>[];
     final indices = <int>[];
     for (final note in notes) {
@@ -12292,6 +12295,7 @@ class ShearLedger implements ReadProofSink {
 
   Future<({List<Uint8List> pubs, List<Uint8List> commits})>
   _fluxColumns() async {
+    _fluxPageError = null;
     if (pool == null)
       return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
     try {
@@ -12319,10 +12323,19 @@ class ShearLedger implements ReadProofSink {
       }
       _fs1Anchors = fs1AnchorsOf(live['anchors']);
       return (pubs: pubs, commits: commits);
-    } catch (_) {
+    } catch (e) {
+      // The pool served its own error page. A send that needs the set says
+      // that, not a bare "fluxset".
+      if (e is StateError && e.message.startsWith('pool returned an error page')) {
+        _fluxPageError = e;
+      }
       return (pubs: const <Uint8List>[], commits: const <Uint8List>[]);
     }
   }
+
+  /// Why the last fluxset read came back empty, when the pool answered with
+  /// an error page. Null for any other cause.
+  StateError? _fluxPageError;
 
   /// Non-ssa1 rest-frame rewards join the coin ledger. ssa1 coinbase notes stay
   /// put until [consolidateSpendableNotes] merges them on chain.
@@ -13269,7 +13282,7 @@ class ShearLedger implements ReadProofSink {
     } catch (_) {}
     final lockIndex = _nextLockIndex();
     final cols = await _fluxColumns();
-    if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length) throw StateError('fluxset');
+    if (cols.pubs.isEmpty || cols.commits.length != cols.pubs.length) throw _fluxPageError ?? StateError('fluxset');
     final picked = <Map<String, dynamic>>[];
     var have = 0;
     final need = kPiSheNanos + kLevyCapNanos + 1;
@@ -13279,7 +13292,9 @@ class ShearLedger implements ReadProofSink {
       if (!noteHasSealedSpendBytes(note)) continue;
       // Ruling 6: only the notes Spendable counts may fund the lock.
       if (_bodyProofRequired && !_noteIsSpendable(note)) continue;
-      final units = tryU64Units(note['nanos']);
+      // A note read off the chain carries its opened value as verifiedNanos,
+      // not nanos. Spendable counts it, so the lock must fund from it too.
+      final units = noteNanosExact(note);
       if (units == null || units <= BigInt.zero || units.bitLength > 63) continue;
       final commit = _noteBytes(note['commit']);
       final pub = _noteBytes(note['admitPub']);
@@ -14140,6 +14155,12 @@ class ShearLedger implements ReadProofSink {
       }
       if (sendKind == 'lock') _rememberTimeLock(vouts, destTo);
       chosen?['spent'] = true;
+      // The change this send built is held now that the pool took the body:
+      // verified, no height, so home shows it as Pending until a chain read
+      // gives it a height (gate 3). It is never Spendable before that.
+      if (sendKind == 'send' && changeDest != null) {
+        _holdBuiltChange(changeDest, vouts);
+      }
       if (sendKind == 'lock' && _verifiedConfirmedShe(src) != null) {
         // The pool balance below is already net. Debit only when Spendable
         // shows the opened-note cap, which is the gross sum.
@@ -14158,11 +14179,15 @@ class ShearLedger implements ReadProofSink {
       // is the spent output, not the other confirmed notes on this dest.
       // Debit the send from the local sum and park only this note's change.
       if (sendKind == 'send') {
-        final left = spendable(src) - needShe;
-        _spendable[src] = left <= 1e-18 ? 0 : left;
         if (changeUnits != null) {
+          // The whole spent note leaves src. Its change is a new note on
+          // changeDest; leaving it on src too would paint it twice.
+          final rest = spendable(src) - fundedShe;
+          _spendable[src] = rest <= 1e-18 ? 0 : rest;
           _rememberBuiltChange(changeDest, changeUnits);
         } else {
+          final left = spendable(src) - needShe;
+          _spendable[src] = left <= 1e-18 ? 0 : left;
           final noteChange = fundedShe - needShe;
           _parkChange(
             src,
@@ -14232,6 +14257,19 @@ class ShearLedger implements ReadProofSink {
     );
     _txs.add(tx);
     return tx;
+  }
+
+  void _holdBuiltChange(String changeDest, List<Map<String, dynamic>> vouts) {
+    for (final o in vouts) {
+      if ((o['address'] as String?) != changeDest) continue;
+      final c = _noteBytes(o['commit']);
+      if (c == null) continue;
+      for (final n in _notes) {
+        if (n['height'] != null || n['spent'] == true) continue;
+        final have = _noteBytes(n['commit']);
+        if (have != null && _bytesEq(have, c)) n['verified'] = true;
+      }
+    }
   }
 
   void _rememberBuiltChange(String? changeDest, BigInt? changeUnits) {
