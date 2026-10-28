@@ -3860,6 +3860,10 @@ function stepLoaded(state, list, i) {
   if (!body || typeof body.then === 'function' || body.ok !== true) {
     return { ok: false, reason: body?.reason || 'pow' };
   }
+  // R28: the record this verify derived is the block's record from here on
+  // (the owed step, the admit set, the next block's parent check). A stored
+  // record that disagrees is replaced, so a tampered trailer cannot survive.
+  if (body.blunoteRecord) block.blunoteRecord = body.blunoteRecord;
   if (!body.supplyState || !supplyLinks(body.supplyState, { height, hash: link })) {
     return { ok: false, reason: 'supply_state' };
   }
@@ -3915,6 +3919,9 @@ function finishLoaded(begun) {
     supply: state.supply,
     supplyAt: state.supplyAt,
     anchors: state.anchors,
+    // R28: each block's record as this load derived it, by height - 1. A
+    // worker-thread load returns them so the parent's blocks carry them too.
+    records: begun.list.map((b) => (b && b.blunoteRecord != null && b.blunoteRecord !== '' ? String(b.blunoteRecord) : null)),
   };
 }
 

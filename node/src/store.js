@@ -85,6 +85,14 @@ import { ensureDatadir } from './datadir_acl.js';
 import { acquireDatadirLock } from './datadir_lock.js';
 import { chainStateError } from './process_guard.js';
 
+/** R28: carry the records a load derived onto the loaded blocks (both load paths). */
+function attachLoadedRecords(list, records) {
+  if (!Array.isArray(records)) return;
+  for (let i = 0; i < list.length && i < records.length; i += 1) {
+    if (records[i]) list[i].blunoteRecord = records[i];
+  }
+}
+
 function throwBookFault(message) {
   const msg = String(message || '');
   let code = '';
@@ -654,6 +662,7 @@ export function createStore(dir, {
         },
       });
       if (!checked.ok) throwBookFault(checked.reason || 'pow');
+      attachLoadedRecords(blocks, checked.records);
       if (!checked.supply) throwBookFault('supply_state');
       supplyTip = checked.supply;
       supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
@@ -683,6 +692,7 @@ export function createStore(dir, {
         oracleActivationHeight,
       }).then((checked) => {
         if (!checked.ok) throwBookFault(checked.reason || 'pow');
+      attachLoadedRecords(blocks, checked.records);
         return createStore(dir, {
           pruneAfter,
           reorgHaltDepth,
@@ -717,6 +727,7 @@ export function createStore(dir, {
         oracleActivationHeight,
       });
       if (!checked.ok) throwBookFault(checked.reason || 'pow');
+      attachLoadedRecords(blocks, checked.records);
       if (!checked.supply) throwBookFault('supply_state');
       supplyTip = checked.supply;
       supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
