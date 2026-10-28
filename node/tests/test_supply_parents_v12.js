@@ -57,6 +57,8 @@ function parentView(block) {
     shareBatch: block.shareBatch,
     rootA: block.rootA,
     rootB: block.rootB,
+    // R28: the child's coinbase binds this record's root.
+    blunoteRecord: block.blunoteRecord,
   };
 }
 
@@ -73,11 +75,16 @@ function cloneBlocks(blocks) {
   }));
 }
 
+/**
+ * R28: a coinbase carries no pot note; an empty round carries its pot as
+ * carryNanos. Raising that carry by one nano is a parent that claims pot the
+ * schedule never minted.
+ */
 function withPotFlipped(blocks, index) {
   const copy = cloneBlocks(blocks);
-  const pot = (copy[index]?.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-  assert.ok(pot?.commit?.length > 0, `pot commit at ${index}`);
-  pot.commit[0] ^= 0xff;
+  const cb = copy[index]?.txs?.[0];
+  assert.ok(Number(cb?.carryNanos) > 0, `pot carry at ${index}`);
+  cb.carryNanos = Number(cb.carryNanos) + 1;
   return copy;
 }
 

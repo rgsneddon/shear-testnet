@@ -106,23 +106,20 @@ describe('the finder levy joins the draw and is never a public note', () => {
       const rec = decodeRecord(Buffer.from(got.blunoteRecord, 'hex'));
       assert.equal(rec.n, 0);
       assert.equal(rec.feeV, 0n, `fee ${fee}: no key, no fee note`);
-      // The coinbase alone: the fee bank is credited by the reserve note,
-      // not by reading the body's claim.
+      // The reserve note pays the reserve's own dest. The vault's fee bank is
+      // retired (reserve_vault.js creditFeeBank keeps it at 0), so the note,
+      // not a bank counter, is what the reserve holds.
       const state = emptyVault();
       applyReserveBlock({ state, block: { txs: [cb] }, nowMs: NOW });
-      assert.equal(Number(state.feeBankNanos), fee, `fee ${fee}: the reserve note credits the fee bank`);
+      assert.equal(Number(state.feeBankNanos), 0, `fee ${fee}: no fee bank counter`);
       if (fee === 0) continue;
-      // The reserve note redirected to a finder: the bank is not credited,
-      // and verify refuses the coinbase.
+      // The reserve note redirected to a finder: verify refuses the coinbase.
       const finder = minerDest();
       // Sealed to the finder's own dest20, so its label is its own: only the
       // levy rule can refuse it.
       const toFinder = sealCoinbaseNote(fee, { kind: 'reserve-fee', dest20: dest20(finder) });
       const stolenVout = cb.vout.map((o) => (o.kind === 'reserve-fee' ? toFinder : o));
       const stolenCb = { ...cb, vout: stolenVout, excess: excessOf(stolenVout) };
-      const stolenState = emptyVault();
-      applyReserveBlock({ state: stolenState, block: { txs: [stolenCb] }, nowMs: NOW });
-      assert.equal(Number(stolenState.feeBankNanos), 0, `fee ${fee}`);
       const stolen = verifyBlock(resealed(tpl, [stolenCb, ...tpl.txs.slice(1)]), null, { trustedPowHash: TRUSTED });
       assert.equal(stolen.ok, false, `fee ${fee}`);
       assert.equal(stolen.reason, 'levy_split', `fee ${fee}`);

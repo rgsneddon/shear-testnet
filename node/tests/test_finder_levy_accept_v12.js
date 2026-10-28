@@ -143,7 +143,7 @@ async function grow(store, who, n) {
     assert.equal(got.ok, true, `height ${i + 1} ${got.reason || ''}`);
     if (i === 0) {
       opening = soloCoin(who.blu, store.tip());
-      assert.ok(opening, 'the solo round paid its pot to the miner's key');
+      assert.ok(opening, "the solo round paid its pot to the miner's key");
     }
   }
   return opening;

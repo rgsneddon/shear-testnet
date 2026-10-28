@@ -28,6 +28,7 @@ import { stubAdmitV2 } from './stub_admit_v2.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { levyNanos, LEVY_CAP_NANOS } from '../../crypto/levy.js';
 import { newIdentity, freshStealthDest, ed25519SeedOf, stealthKey } from '../../crypto/address.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -48,6 +49,8 @@ function identityDest() {
   return {
     dest: pay.dest,
     spendSeed,
+    // R28: the wallet a solo option (b) round pays its pot to.
+    blu: bluWallet(spendSeed),
     key: stealthKey(pay.shared, spendSeed),
   };
 }
@@ -79,23 +82,24 @@ function withTxs(tpl, txs) {
 
 describe('v12 membership proofs are bound 1:1', () => {
   it('rejects an extra proof and a carried tag for any opened amount and any vin count', async () => {
-    const { dest, spendSeed, key } = identityDest();
+    const { dest, key, blu } = identityDest();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-n28-'));
     const store = createStore(dir);
     const notes = [];
     try {
       for (let i = 0; i < 4; i += 1) {
-        const { tpl } = store.template({ miner: dest, shareBits: 4, now: T0 + i * 90_000 });
-        const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-        const opened = openedCoinbaseNanos(pot);
-        assert.ok(pot?.commit && pot.r && pot.noteCommit, `pot ${i} is a sealed note`);
-        assert.equal(typeof opened, 'number');
-        assert.ok(Number.isSafeInteger(opened) && opened > 1, `opened pot ${i}`);
+        // R28: a solo option (b) round pays its pot to a one-time key of the
+        // miner's wallet; the wallet finds it in the record with its scan key.
+        const { tpl } = store.template({ miner: dest, shareBits: 4, now: T0 + i * 90_000, ...soloPay(blu) });
         const got = await Promise.resolve(store.append(asBlock(tpl), {
           trustedPowHash: easyPowHash(),
           skipSharePow: true,
         }));
         assert.equal(got.ok, true, `${got.reason || 'seal'} ${got.error || ''}`);
+        const pot = soloCoin(blu, store.tip());
+        assert.ok(pot?.commit && pot.r && pot.admitPub, `pot ${i} is the miner's record note`);
+        const opened = pot.opened;
+        assert.ok(Number.isSafeInteger(opened) && opened > 1, `opened pot ${i}`);
         notes.push({ ...pot, opened });
       }
       assert.equal(store.fluxset().spendTags.size, 0);
@@ -139,7 +143,7 @@ describe('v12 membership proofs are bound 1:1', () => {
         const proofs = [];
         for (let i = 0; i < spec.notes.length; i += 1) {
           const note = spec.notes[i];
-          const index = fluxsetIndexOf(flux.pubs, spendSeed, note);
+          const index = flux.pubs.findIndex((p) => Buffer.from(p?.toBytes ? p.toBytes() : p).equals(note.admitPub));
           assert.ok(index >= 0, `${spec.id} owns note ${i}`);
           const proof = stubAdmitV2({
             cTilde: tx.vin[i].commit,

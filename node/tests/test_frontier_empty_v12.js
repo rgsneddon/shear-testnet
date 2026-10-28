@@ -13,8 +13,9 @@ import { GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/aser
 import { fluxsetFromBlocks } from '../../crypto/admit.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { meetsTarget } from '../../crypto/shear_hash.js';
-import { GENESIS_PREV, buildTemplate } from '../src/chain.js';
+import { GENESIS_PREV, buildTemplate, verifyBlock } from '../src/chain.js';
 import { createStore } from '../src/store.js';
+import { bluWallet, soloPay } from './support/blunote_mine.js';
 
 const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-frontier-keys-'));
 process.env.SHEAR_SEAL_KEY_DIR = keyDir;
@@ -91,6 +92,11 @@ describe('empty-block frontier parity', () => {
     const forkMiner = minerDest(2);
     const t0 = 1_700_000_000_000;
     const store = createStore(dir);
+    // R28: a coinbase carries no pot note. Each round here is a solo option
+    // (b) round, so it pays one implicit note (the record's fee note) that
+    // the frontier holds.
+    const mainBlu = bluWallet();
+    const forkBlu = bluWallet();
     const mainTpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -98,6 +104,7 @@ describe('empty-block frontier parity', () => {
       bits: GENESIS_BITS_PACKED,
       now: t0,
       txs: [],
+      ...soloPay(mainBlu),
     });
     const main = fromTpl(mainTpl, mainMiner, 1, tagHash(1));
     const seeded = store.append(main, { trustedPowHash: main.hash, skipSharePow: true });
@@ -111,8 +118,13 @@ describe('empty-block frontier parity', () => {
       bits: GENESIS_BITS_PACKED,
       now: t0,
       txs: [],
+      ...soloPay(forkBlu),
     });
     const fork1 = fromTpl(fork1Tpl, forkMiner, 1, tagHash(2));
+    // fork2's coinbase binds fork1's record, as fork1's own verify derives it.
+    const fork1Got = verifyBlock(fork1, null, { trustedPowHash: fork1.hash, skipSharePow: true });
+    assert.equal(fork1Got.ok, true, fork1Got.reason);
+    fork1.blunoteRecord = fork1Got.blunoteRecord;
     const fork2Tpl = buildTemplate({
       prev: fork1.hash,
       prevHeader: fork1.header,
@@ -123,6 +135,7 @@ describe('empty-block frontier parity', () => {
       bits: GENESIS_BITS_PACKED,
       now: t0 + TARGET_BLOCK_INTERVAL_MS,
       txs: [],
+      ...soloPay(forkBlu),
     });
     const fork2 = fromTpl(fork2Tpl, forkMiner, 2, tagHash(3));
     const adopted = store.ingest([fork1, fork2], { trustBlockHash: true, skipSharePow: true });
