@@ -7871,6 +7871,7 @@ void main() {
     session.publicNodeChoiceMade = true;
     session.publicNodeConsent = true;
     await tester.runAsync(() => session.persist());
+    await tester.runAsync(() => session.persist());
     await tester.pumpWidget(
       ShearWalletApp(
         session: session,
@@ -10205,16 +10206,21 @@ void main() {
         await session.persist();
       });
       final locked = ShearSession(store: session.store);
+      // Read the sealed store from disk outside the fake clock.
+      await tester.runAsync(() => locked.loadOrCreate());
       final bio = MemoryBiometrics();
       await bio.rememberPassword(kGatePassword);
       final appKey = GlobalKey<ShearWalletAppState>();
-      await tester.pumpWidget(
-        ShearWalletApp(
-          key: appKey,
-          session: locked,
-          ledger: ShearLedger(),
-          biometrics: bio,
-          skipPoolSync: true,
+      // Boot reads the sealed store from disk: start it on the real clock.
+      await tester.runAsync(
+        () => tester.pumpWidget(
+          ShearWalletApp(
+            key: appKey,
+            session: locked,
+            ledger: ShearLedger(),
+            biometrics: bio,
+            skipPoolSync: true,
+          ),
         ),
       );
       await tester.pump();
@@ -12382,6 +12388,7 @@ void main() {
     // A reopened wallet: its first-run node choice (public, consented) is made.
     session.publicNodeChoiceMade = true;
     session.publicNodeConsent = true;
+    await tester.runAsync(() => session.persist());
     final ident = session.identity!;
     final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
     // Two locks, each exactly one π leaf.
@@ -12570,6 +12577,7 @@ void main() {
     // A reopened wallet: its first-run node choice (public, consented) is made.
     session.publicNodeChoiceMade = true;
     session.publicNodeConsent = true;
+    await tester.runAsync(() => session.persist());
     final ident = session.identity!;
     final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
     // Two locks, each exactly one π leaf.
@@ -12758,6 +12766,12 @@ void main() {
     expect(find.textContaining('Not Continuum spendable'), findsWidgets);
     await tester.tap(find.byKey(const Key('continuum-in-reserve')));
     await tester.pump();
+    // Your sums sits below the epoch table on the Vortex list.
+    await tester.scrollUntilVisible(
+      find.text('Your sums'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('Your sums'), findsOneWidget);
     expect(find.text('Staked  ${formatShe(kPiShe)} SHE'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
