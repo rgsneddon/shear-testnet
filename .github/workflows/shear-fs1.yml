@@ -104,8 +104,6 @@ jobs:
         run: cargo build --release --manifest-path crypto/native/admit/Cargo.toml
       - name: Dart-built withdraw is accepted by the node queue
         run: node --test --test-concurrency=1 --test-timeout=1800000 node/tests/test_dart_withdraw_queue_v12.js
-      - name: Hash-bonus unit stays the law clamp, and a retired vote does not move it
-        run: node --test --test-concurrency=1 --test-timeout=180000 node/tests/test_hash_owed_recover_v12.js
       - name: Privacy walk, including the compact reserve key check
         run: node --test --test-concurrency=1 tests/privacy.walk.js
       - name: Pool refuses a lock that carries to

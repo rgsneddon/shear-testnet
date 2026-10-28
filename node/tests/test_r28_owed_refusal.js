@@ -22,7 +22,8 @@ import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
-import { packHashCreditBytes, packSpillCreditBytes, advanceHashOwed, replayHashOwed } from '../../crypto/hash_owed.js';
+import { packHashCreditBytes, packSpillCreditBytes, advanceHashOwed, replayHashOwed, hashBudgetUnits } from '../../crypto/hash_owed.js';
+import { HASH_OWED_SCALE_K, HASH_OWED_SCALE_WINDOW, MAX_HASH_UNITS_PER_BLOCK } from '../../crypto/asert.js';
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
@@ -298,5 +299,36 @@ describe('R28 refuses the retired owed ledger and hash-credit record', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// Kept from test_hash_owed_frame_v12.js (retired with the owed ledger): the
+// hash budget R28 keeps, max(floor, K * lower median) over the window.
+describe('R28 hash budget', () => {
+  it('scales mint capacity from sealed accepted units and never under the floor', () => {
+    const floor = BigInt(MAX_HASH_UNITS_PER_BLOCK);
+    const k = BigInt(HASH_OWED_SCALE_K);
+    assert.ok(HASH_OWED_SCALE_WINDOW >= 2);
+    assert.ok(k >= 1n);
+    assert.equal(hashBudgetUnits(undefined), floor);
+    assert.equal(hashBudgetUnits([]), floor);
+    const quiet = [];
+    for (let i = 0; i < HASH_OWED_SCALE_WINDOW; i += 1) quiet.push(i % 2 === 0 ? 0n : floor);
+    assert.equal(hashBudgetUnits(quiet), floor);
+    assert.equal(hashBudgetUnits(quiet), hashBudgetUnits([...quiet].reverse()));
+    const hot = [];
+    for (let i = 0; i < HASH_OWED_SCALE_WINDOW; i += 1) hot.push(floor + 1n + BigInt(i % 5));
+    const lifted = hashBudgetUnits(hot);
+    assert.equal(lifted, hashBudgetUnits(hot.slice()));
+    assert.ok(lifted > floor);
+    const tail = [];
+    for (let i = 0; i < HASH_OWED_SCALE_WINDOW * 3; i += 1) {
+      tail.push(i < HASH_OWED_SCALE_WINDOW * 2 ? 0n : floor + 9n);
+    }
+    assert.equal(hashBudgetUnits(tail), k * (floor + 9n));
+    const above = 1n << 60n;
+    assert.equal(hashBudgetUnits([above]), k * above);
+    assert.equal(hashBudgetUnits([0n, above]), floor);
+    assert.equal(hashBudgetUnits(['nope']), null);
   });
 });
