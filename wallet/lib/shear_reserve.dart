@@ -501,6 +501,31 @@ String? _leafCommitHex(Map<String, Object?> leaf) {
   return _commitHex(leaf['commit']);
 }
 
+/// What the Reserve pane shows when the portal read fails.
+String vaultReadErrorCopy(String why) =>
+    'Vault read failed ($why). Reserve figures are not shown until the vault answers.';
+
+/// The portal the Reserve pane paints (GET /api/vault/reserve, a pool route).
+/// A refused or failed read is not an empty portal: it returns no portal and
+/// the error the pane shows (ruling 6: an own node answers that route 400).
+Future<({Map<String, dynamic>? portal, String error})> readVaultPortal(
+  ShearPoolClient pool,
+  String dest,
+) async {
+  try {
+    final json = Map<String, dynamic>.from(await pool.reservePortal(dest));
+    if (json['ok'] == false) {
+      final why = json['reason']?.toString() ?? '';
+      return (portal: null, error: vaultReadErrorCopy(why.isEmpty ? 'refused' : why));
+    }
+    return (portal: json, error: '');
+  } catch (e) {
+    var why = e.toString();
+    if (why.startsWith('Bad state: ')) why = why.substring('Bad state: '.length);
+    return (portal: null, error: vaultReadErrorCopy(why));
+  }
+}
+
 /// Rows from GET /api/vault/reserve?view=tranches, or from a portal object.
 List<Map<String, Object?>> tranchesFromNode(Object? raw) {
   Object? source = raw;

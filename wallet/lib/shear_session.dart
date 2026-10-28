@@ -34,6 +34,7 @@ Map<String, dynamic> scrubStaleBookCache(Map<String, dynamic> plain) {
   next['openedProofs'] = <dynamic>[];
   next['notes'] = <dynamic>[];
   next['notesCovered'] = 0;
+  next['bodyScanTo'] = 0;
   next['bookCacheGen'] = kLiveBookCacheGen;
   return next;
 }
@@ -254,6 +255,12 @@ class ShearSession {
   /// credit follow encodes byte fields. A restart paints from this list.
   List<Map<String, dynamic>> rememberedNotes = const [];
   int rememberedNotesCovered = 0;
+
+  /// Ruling 6 body scan: on once the node had no notes route, and the
+  /// highest height whose proven body this book has scanned. Saved with the
+  /// notes it found.
+  bool rememberedBodyProof = false;
+  int rememberedBodyScanTo = 0;
   String? rememberedChainGenesis;
   Map<String, dynamic>? rememberedReserve;
   List<Vortice> deployedVortices = const [];
@@ -400,6 +407,8 @@ class ShearSession {
         if (rememberedOpenedProofs.isNotEmpty) 'openedProofs': rememberedOpenedProofs,
         if (rememberedNotes.isNotEmpty) 'notes': rememberedNotes,
         if (rememberedNotesCovered > 0) 'notesCovered': rememberedNotesCovered,
+        if (rememberedBodyProof) 'bodyProof': true,
+        if (rememberedBodyScanTo > 0) 'bodyScanTo': rememberedBodyScanTo,
         if (rememberedChainGenesis != null && rememberedChainGenesis!.isNotEmpty)
           'chainGenesis': rememberedChainGenesis,
         'txs': rememberedTxs,
@@ -418,6 +427,8 @@ class ShearSession {
     rememberedOpenedProofs = const [];
     rememberedNotes = const [];
     rememberedNotesCovered = 0;
+    rememberedBodyProof = false;
+    rememberedBodyScanTo = 0;
     rememberedChainGenesis = null;
     publicNodeConsent = false;
     publicNodeChoiceMade = false;
@@ -459,6 +470,8 @@ class ShearSession {
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
     rememberedNotesCovered = (use['notesCovered'] as num?)?.toInt() ?? 0;
+    rememberedBodyProof = use['bodyProof'] == true;
+    rememberedBodyScanTo = (use['bodyScanTo'] as num?)?.toInt() ?? 0;
     rememberedChainGenesis = use['chainGenesis']?.toString();
     rememberedTxs = ((use['txs'] as List?) ?? const [])
         .whereType<Map>()

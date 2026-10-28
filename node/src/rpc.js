@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
 import { mempoolPressure } from '../../crypto/levy.js';
-import { compactChainBlock } from '../../crypto/chronoflux.js';
+import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
 import { encodeWireBlock, jsonWire } from './p2p.js';
+import { txCoreDigest } from './chain.js';
 import { MAGIC_TESTNET, HASH_TX_LIVE, consensusFingerprint, hashBonusUnitNanos } from '../../crypto/asert.js';
 import { fs1AnchorRows } from '../../crypto/admit_v3.js';
 import { isDestAddress, encodeDest } from '../../crypto/address.js';
@@ -63,6 +64,23 @@ function compactBlockJson(b) {
     // R28: the notes this block paid by draw. A wallet scans the winners'
     // (R, P, tag) with its scan key; the record names no address.
     ...(rec != null && rec !== '' ? { blunoteRecord: Buffer.isBuffer(rec) ? rec.toString('hex') : String(rec) } : {}),
+  });
+}
+
+/**
+ * The packed-core half of each tx's merkle leaf, in block order. chain.js
+ * digestTx is sha256(domain || core || sha256(canonical compact body)). A
+ * wallet that reads the wire frame hashes the canonical body itself and
+ * checks the root against a header it verified, so this core is only the
+ * other half of the leaf: a wrong core fails that proof and cannot pass a
+ * changed body. The body is the one digestTx hashes: the compact row,
+ * without its id unless it is a withdraw.
+ */
+export function wireTxCores(txs) {
+  return (Array.isArray(txs) ? txs : []).map((tx) => {
+    const body = { ...compactTx(tx) };
+    if (String(body.kind || '') !== 'withdraw') delete body.id;
+    return txCoreDigest(body).toString('hex');
   });
 }
 
@@ -524,7 +542,7 @@ export function createRpc({
       if (String(params.wire || '') === '1') {
         const served = typeof store.servableBlock === 'function' ? store.servableBlock(b) : b;
         if (!served) return { ok: false, reason: 'unknown_block' };
-        return { ok: true, ...JSON.parse(jsonWire(encodeWireBlock(served))) };
+        return { ok: true, ...JSON.parse(jsonWire(encodeWireBlock(served))), txCores: wireTxCores(served.txs) };
       }
       return { ok: true, ...compactBlockJson(b) };
     }
