@@ -135,7 +135,7 @@ def main() -> None:
         "There is no premine and no sale of SHE by the developers. The rest-frame identity never appears on "
         "the book; holders offer a silent ID and the chain writes revolving dests. "
         "Proof of work is ShearHash-v3, a RandomX light-mode parameterisation. A found block pays the epoch pot "
-        "plus a per-dest hash bonus. DINS-DAG is that settlement: one mint, the spine pot plus hash nanos, once per "
+        "plus a per-dest hash bonus. DINS is that settlement: one mint, the spine pot plus hash nanos, once per "
         "eligible share. The only programme allowed to mint extra SHE is The Reserve. On this testnet a Reserve epoch "
         "is 4 days. Mainnet’s epoch length is 400 days, and mainnet is not live. This note states the goals and the "
         "architecture of shear-testnet-v10.",
@@ -145,7 +145,7 @@ def main() -> None:
     pdf.multi_cell(
         0,
         5,
-        "Keywords: Shear, SHE, shear-testnet-v10, DINS-DAG, ShearHash-v3, RandomX, continuity-tethered Flow, Vortex, vort1, The Reserve, CPU mining",
+        "Keywords: Shear, SHE, shear-testnet-v10, DINS, ShearHash-v3, RandomX, continuity-tethered Flow, Vortex, vort1, The Reserve, CPU mining",
         new_x=XPos.LMARGIN,
         new_y=YPos.NEXT,
     )
@@ -219,10 +219,10 @@ def main() -> None:
         "The official hasher is ShearK-Miner 2.8.",
     )
 
-    h2(pdf, "2.4  DINS-DAG")
+    h2(pdf, "2.4  DINS")
     body(
         pdf,
-        "DINS-DAG is how shear-testnet-v10 settles a round. The consensus fingerprint of this book carries "
+        "DINS is how shear-testnet-v10 settles a round. The consensus fingerprint of this book carries "
         "DINS=pot+hash and ROOTA=pot-spine+dag-fluxset. Eligible shares are the blue set, sorted by share identity. "
         "Arrival order is stored and is not membership. Each eligible share is counted once. The mint on that seal is "
         "the spine pot plus the hash nanos of those shares. The same work is not paid again from a second hash leg. "
@@ -231,7 +231,7 @@ def main() -> None:
     body(
         pdf,
         "That mint is what miners receive on this testnet. The epoch pot is in the coinbase. The hash bonus is paid "
-        "to the hasher dest on the next sealed block. DAG is a link in the client navbar. "
+        "to the hasher dest on the next sealed block. BluNotes (BLU) is a link in the client navbar. "
         "The rule is the book’s, and it is the settlement this testnet runs.",
     )
 
@@ -245,7 +245,7 @@ def main() -> None:
         "floor share, paid to the hasher dest that produced it. Public pages show nine fractional digits, so a single "
         "hash looks like dust; the unit is still written. Third, The Reserve: interest on staked SHE at the oracle rate, "
         "minted only by programme id shear-reserve-v1. Any other vortice that wants to pay rewards must top them up from "
-        "coin already in circulation. DINS-DAG is the single mint of the first path and the second. It does not replace "
+        "coin already in circulation. DINS is the single mint of the first path and the second. It does not replace "
         "Reserve interest, and Reserve interest does not replace it.",
     )
 
@@ -310,7 +310,7 @@ def main() -> None:
     h1(pdf, "3.  Publication")
     body(
         pdf,
-        "This is a testnet preprint for shear-testnet-v10. Constants here match the live fingerprint: epoch pot from 1.00 SHE down to a 0.20 SHE floor, DINS-DAG as one pot-plus-hash mint, 10^-11 SHE per proven floor share "
+        "This is a testnet preprint for shear-testnet-v10. Constants here match the live fingerprint: epoch pot from 1.00 SHE down to a 0.20 SHE floor, DINS as one pot-plus-hash mint, 10^-11 SHE per proven floor share "
         "paid per hasher dest, nine-confirmation spendable floor, ASERT 90 s, ShearHash-v3 light, chain id 2701 for pool withdraw signatures. How-to pages — "
         "installing the wallet, pointing ShearK at the pool, opening The Reserve, minting a vort1 key — live at "
         "shear.digital/docs. The clients are the WALLET, MINER, and NODE buttons on shear.digital.",
@@ -339,7 +339,7 @@ def main() -> None:
     pdf.set_title("Shear: Continuity-settled Proof of Work")
     pdf.set_author("Shear")
     pdf.set_subject("Testnet whitepaper. Continuum 0.69. ShearK-Miner 2.8. Public stratum stratum+ssl://pool.shear.digital:443.")
-    pdf.set_keywords("shear-testnet-v10 ADMITv2 wallet-0.69 ShearK-2.8 DINS-DAG ShearHash-v3 Vortex vort1 The Reserve")
+    pdf.set_keywords("shear-testnet-v10 ADMITv2 wallet-0.69 ShearK-2.8 DINS ShearHash-v3 Vortex vort1 The Reserve")
     pdf.set_creator("Shear whitepaper builder")
     OUT.write_bytes(pdf.output())
     print("wrote", OUT, OUT.stat().st_size)

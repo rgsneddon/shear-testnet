@@ -111,7 +111,7 @@ describe('shear.digital/docs', () => {
     const labels = navLabels(docs);
     assert.deepEqual(labels, chromeProductLabels());
     assert.equal(labels.includes('WHITEPAPER'), false);
-    assert.equal(labels.includes('DAG'), true);
+    assert.equal(labels.includes('BLU'), true);
     assert.equal(labels.includes('VORTICES'), true);
     assert.match(docs, /id="shear-chrome-root" data-active="DOCS"/);
     assert.match(docs, /shared\/shear-chrome\.js/);
@@ -182,8 +182,11 @@ describe('shear.digital/docs', () => {
     assert.match(content, /com\.shear\.shear_wallet/);
     assert.match(content, /Stem then fluff/);
     assert.match(content, /ADMITv2/);
-    assert.ok(content.indexOf("id: 'dins-dag'") > content.indexOf("id: 'admit'"));
-    assert.match(content, /P\['dins-dag'\]/);
+    assert.ok(content.indexOf("id: 'dins'") > content.indexOf("id: 'admit'"));
+    assert.match(content, /P\['dins'\] = \{/);
+    // The old anchor still opens the page.
+    assert.match(content, /P\['dins-dag'\] = P\['dins'\];/);
+    assert.match(content, /Deterministic In-Node Shares/);
     assert.match(content, /blue set, sorted by identity/);
     assert.match(content, /not paid again from a second hash leg/);
     assert.match(content, /Connect bare/);
@@ -263,7 +266,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
     assert.ok(pdf.length > 50_000);
     const labels = navLabels(paper);
-    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
+    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'BLU', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
     assert.equal(labels.includes('WHITEPAPER'), false);
     assert.match(paper, /href="https:\/\/shear\.digital\/docs\/">DOCS</);
     assert.match(paper, /overflow-x:hidden/);
@@ -272,11 +275,12 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /data-theme="dark"/);
     assert.match(paper, /Domain=\.shear\.digital/);
     assert.match(paper, /css\/saas-dark\.css/);
-    assert.match(paper, /DINS-DAG/);
+    assert.match(paper, /DINS is how this testnet settles a round/);
+    assert.doesNotMatch(paper, /DINS-DAG/);
     assert.match(paper, /shear-testnet-v10/);
     assert.doesNotMatch(paper, /#eef3f8/);
     assert.doesNotMatch(paper, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
-    assert.match(paper, /href="https:\/\/dag\.shear\.digital\/">DAG</);
+    assert.match(paper, /href="https:\/\/blunote\.shear\.digital\/">BLU</);
     assert.doesNotMatch(paper, /width:min\(210mm/);
     assert.equal(labels[labels.length - 1], 'DOCS');
     assert.equal(labels[labels.length - 2], 'VORTICES');

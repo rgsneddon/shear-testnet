@@ -13,7 +13,7 @@ function navLabels(html) {
 }
 
 describe('boot.shear.digital page', () => {
-  it('is SaaS dark with pool-style navbar including DAG and downloadable latest pair', () => {
+  it('is SaaS dark with pool-style navbar including BLU and downloadable latest pair', () => {
     assert.match(boot, /data-theme="dark"/);
     assert.match(boot, /Domain=\.shear\.digital/);
     assert.match(boot, /saas-dark\.css/);
@@ -29,10 +29,10 @@ describe('boot.shear.digital page', () => {
     assert.match(boot, /never hooks a bootstrap|do not pull this automatically|does not pull a bootstrap|never pull/i);
     assert.doesNotMatch(boot, /applies the snapshot once; a recorded tip resumes and does not pull/);
     assert.doesNotMatch(boot, /#eef3f8/);
-    assert.match(boot, /href="https:\/\/dag\.shear\.digital\/"/);
+    assert.match(boot, /href="https:\/\/blunote\.shear\.digital\/">BLU</);
     assert.match(boot, /href="https:\/\/vortices\.shear\.digital\/"/);
     assert.deepEqual(navLabels(boot), [
-      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS',
+      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'BLU', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS',
     ]);
   });
 });

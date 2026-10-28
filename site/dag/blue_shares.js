@@ -1,5 +1,5 @@
 /**
- * Open-round blue set for the DINS-DAG page.
+ * Open-round blue set for the DINS page.
  * A worker is in the set only while this round has proven hashes.
  * Count is those hashes at the published share bits (2^bits per share).
  * Order is miner identity. Arrival order and session accepted totals are not membership.
