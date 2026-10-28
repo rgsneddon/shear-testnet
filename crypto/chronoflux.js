@@ -1061,10 +1061,10 @@ export function compactChainBlock(block) {
   const row = {
     magic: block.magic,
     height: block.height,
-    miner: block.miner,
     samplesPruned,
     bLeavesPruned,
-    samples: samplesPruned ? [] : collateSamples(block.samples || []),
+    // R28: a block carries no samples (blunote_samples).
+    samples: [],
     aLeaves: (Array.isArray(block.aLeaves) ? block.aLeaves : []).map((l) => ({
       noteCommit: l.noteCommit,
       count: Number(l.count) || 0,
