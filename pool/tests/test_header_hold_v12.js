@@ -23,6 +23,7 @@ import {
   headerHoldExpired,
   transientHeaderFault,
 } from '../src/pool.js';
+import { bluWallet, mineBluShare } from '../../node/tests/support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -72,28 +73,27 @@ function liveNonces(pool) {
   return out;
 }
 
+// R28: shares are BluNotes frames, real ShearHash work under a one-time key
+// of each row's wallet, bound into the nonce. One wallet per row dest.
 async function plant(pool, rows) {
   const genesis = pool.issueJob(undefined, { force: true });
   assert.ok(genesis?.jobId, 'genesis job');
   const header = Buffer.from(genesis.header, 'hex');
+  const wallets = new Map();
   for (let i = 0; i < rows.length; i += 1) {
     const row = rows[i];
-    const nonce = nonceWithShareTarget(BigInt(row.low), row.bits);
-    const share = {
-      dest: row.dest,
-      nonce,
-      lz: row.bits,
-      shareBits: row.bits,
-      creditedShareBits: row.bits,
-      verifiedHeader: header,
-      hash: '11',
-    };
-    assert.equal(rememberLiveSharePow(header, nonce, {
-      noteCommit: noteCommitOfShare(share),
-      shareBits: row.bits,
-      lz: row.bits,
-    }), true);
-    const got = pool.creditAcceptedShare(share);
+    if (!wallets.has(row.dest)) wallets.set(row.dest, bluWallet());
+    const s = mineBluShare(wallets.get(row.dest), header);
+    const got = pool.creditAcceptedShare({
+      shareR: s.shareR,
+      shareP: s.shareP,
+      viewTag: s.viewTag,
+      nonce: s.nonce,
+      lz: s.lz,
+      shareBits: s.shareBits,
+      jobId: String(genesis.jobId),
+      verifiedHeader: header.toString('hex'),
+    });
     assert.equal(got.ok, true, got.reason || 'credit');
     if ((i + 1) % 2048 === 0) {
       await new Promise((resolve) => setImmediate(resolve));
