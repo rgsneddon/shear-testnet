@@ -22,6 +22,8 @@ export { destCommitFromSpendPub, stealthSpendPubFrom, isStealthKey, stealthSign,
 export const HRP = 'shear';
 export const HRP_DEST = 'ssa';
 export const HRP_PAY = 'she';
+/** R28 mining address (Russell 28 Oct, option 2): bech32 `shm` of B‖Y. */
+export const HRP_MINING = 'shm';
 
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
@@ -231,6 +233,61 @@ export function decodeBech32Payload(address) {
   const bytes = convertBits(vals.slice(0, -6).slice(1), 5, 8, false);
   if (!bytes || !bytes.length) return null;
   return Buffer.from(bytes);
+}
+
+/**
+ * The R28 mining address: `shm1…`, bech32 (the ssa checksum) of the 64 bytes
+ * B‖Y, the admit base point and the scan pub. A rig needs only these two
+ * public keys to make one-time share keys; it is never sent to a pool.
+ */
+export function encodeMiningAddress({ B, Y }) {
+  const b = Buffer.from(asU8(B));
+  const y = Buffer.from(asU8(Y));
+  if (b.length !== 32 || y.length !== 32) throw new Error('mining address keys must be 32 bytes');
+  pointFrom(b);
+  pointFrom(y);
+  return encodeHrp(HRP_MINING, Buffer.concat([b, y]));
+}
+
+/**
+ * { B, Y } from a mining address, or null for a bad checksum, length, prefix
+ * or a key that is not a point. allowHex also takes 128 raw hex characters
+ * (no checksum; testnet only, callers decide by network).
+ */
+export function decodeMiningAddress(s, { allowHex = false } = {}) {
+  const t = String(s || '').trim();
+  let bytes = null;
+  if (/^[0-9a-fA-F]{128}$/.test(t)) {
+    if (!allowHex) return null;
+    bytes = Buffer.from(t, 'hex');
+  } else if (bech32Hrp(t) === HRP_MINING && t === t.toLowerCase()) {
+    bytes = decodeBech32Payload(t);
+  }
+  if (!bytes || bytes.length !== 64) return null;
+  const B = Buffer.from(bytes.subarray(0, 32));
+  const Y = Buffer.from(bytes.subarray(32));
+  try {
+    pointFrom(B);
+    pointFrom(Y);
+  } catch {
+    return null;
+  }
+  return { B, Y };
+}
+
+/**
+ * True when any dot-separated part of `s` names a wallet: an ssa1, she1,
+ * shear1 or shm1 string with a valid checksum, or a raw 32- or 64-byte hex
+ * key. A pool login must be a worker name only (R28 option 2).
+ */
+export function namesAnAddress(s) {
+  for (const part of String(s ?? '').trim().split('.')) {
+    if (!part) continue;
+    if (/^[0-9a-fA-F]{64}$/.test(part) || /^[0-9a-fA-F]{128}$/.test(part)) return true;
+    const hrp = bech32Hrp(part);
+    if ((hrp === HRP || hrp === HRP_DEST || hrp === HRP_PAY || hrp === HRP_MINING) && decodeBech32Payload(part)) return true;
+  }
+  return false;
 }
 
 export function hash20FromAddress(address) {
