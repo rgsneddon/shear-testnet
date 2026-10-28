@@ -12443,7 +12443,9 @@ void main() {
       await tester.runAsync(() async {
         await Future<void>.delayed(const Duration(milliseconds: 250));
       });
-      await tester.pump();
+      // Fake time must move too: the unlock sync yields one zero-length timer
+      // before its credit read, and pump() alone never fires a timer.
+      await tester.pump(const Duration(milliseconds: 50));
     }
     expect(find.byType(NavigationBar), findsOneWidget);
     expect(
@@ -12621,7 +12623,8 @@ void main() {
       await tester.runAsync(() async {
         await Future<void>.delayed(const Duration(milliseconds: 250));
       });
-      await tester.pump();
+      // Fake time must move too (see the Reserve sync test above).
+      await tester.pump(const Duration(milliseconds: 50));
     }
     expect(find.byType(NavigationBar), findsOneWidget);
     expect(
