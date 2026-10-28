@@ -1733,6 +1733,21 @@ static void mkdir_parent(const char *path) {
   }
 }
 
+/* 1-minute load average before tuning (Linux), or -1. */
+static double load1(void) {
+#if defined(__linux__)
+  FILE *f = fopen("/proc/loadavg", "r");
+  double v = -1;
+  if (f) {
+    if (fscanf(f, "%lf", &v) != 1) v = -1;
+    fclose(f);
+  }
+  return v;
+#else
+  return -1;
+#endif
+}
+
 /* Which thread count is fastest on this device, measured, cached per
  * device and re-measured when the hardware or limits change. */
 static int choose_threads(int dflt, const char *dflt_why) {
@@ -1753,6 +1768,11 @@ static int choose_threads(int dflt, const char *dflt_why) {
         if (strcmp(line, key) != 0) continue;
         int t = atoi(tab + 1);
         char *table = strchr(tab + 1, '\t');
+        char *when = table ? strchr(table + 1, '\t') : NULL;
+        long long at = when ? atoll(when + 1) : 0;
+        /* A result older than 7 days is measured again. */
+        if (at <= 0 || (long long)time(NULL) - at > 7LL * 86400) continue;
+        if (when) *when = 0;
         if (t >= 1 && t <= dflt) {
           fclose(f);
           if (table) {
@@ -1779,7 +1799,12 @@ static int choose_threads(int dflt, const char *dflt_why) {
     snprintf(g_threads_why, sizeof(g_threads_why), "%s (one candidate: nothing to tune)", dflt_why);
     return dflt;
   }
-  outl(stdout, "auto-tune: measuring %d thread counts on this device (once; cached in %s)\n", nc, path[0] ? path : "nowhere");
+  double busy = load1();
+  /* Busy: more than a quarter of the usable CPUs (at least one) already in use. */
+  double busy_cap = g_rig.allowed > 0 && g_rig.allowed / 4.0 > 1.0 ? g_rig.allowed / 4.0 : 1.0;
+  int busy_box = busy >= 0 && busy > busy_cap;
+  outl(stdout, "auto-tune: measuring %d thread counts on this device (%s)\n", nc,
+       busy_box ? "the CPU is busy, so the result is not cached" : path[0] ? path : "not cached");
   double best = -1;
   int best_k = dflt;
   double rates[5];
@@ -1801,7 +1826,12 @@ static int choose_threads(int dflt, const char *dflt_why) {
     if (strlen(g_tune_table) + strlen(part) < sizeof(g_tune_table)) strcat(g_tune_table, part);
   }
   snprintf(g_threads_why, sizeof(g_threads_why), "auto-tune measured fastest; ceiling %s", dflt_why);
-  if (path[0]) {
+  if (busy_box) {
+    char tail[64];
+    snprintf(tail, sizeof(tail), "; load %.2f at start: not cached", busy);
+    if (strlen(g_threads_why) + strlen(tail) < sizeof(g_threads_why)) strcat(g_threads_why, tail);
+  }
+  if (path[0] && !busy_box) {
     mkdir_parent(path);
     /* Keep other devices' lines; replace this key's. */
     char *keep = NULL;
@@ -1823,7 +1853,7 @@ static int choose_threads(int dflt, const char *dflt_why) {
     f = fopen(path, "w");
     if (f) {
       if (keep) fputs(keep, f);
-      fprintf(f, "%s\t%d\t%s\n", key, best_k, g_tune_table);
+      fprintf(f, "%s\t%d\t%s\t%lld\n", key, best_k, g_tune_table, (long long)time(NULL));
       fclose(f);
     }
     free(keep);

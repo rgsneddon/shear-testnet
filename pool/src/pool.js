@@ -1998,6 +1998,13 @@ export function createPool({
   const prefixLoginAt = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
+  // R41: resolves once the hash worker thread has exited. close() returns
+  // it, so a caller that exits the process afterwards never leaves the
+  // worker inside native RandomX code while Node tears the process down
+  // (exit 139 seen at shutdown in pool-mode R41 runs, never in solo mode,
+  // which has no hash worker).
+  let hashWorkerGone = Promise.resolve();
+  let hashWorkerThreads = 0;
   let hashSeq = 0;
   let hashLive = 0;
   const hashWait = new Map();
@@ -2017,6 +2024,9 @@ export function createPool({
   function bootHashWorker() {
     if (hashWorker) return hashWorker;
     const w = new Worker(HASH_WORKER);
+    let gone;
+    hashWorkerGone = new Promise((resolve) => { gone = resolve; });
+    hashWorkerThreads += 1;
     w.on('message', (msg) => {
       const pending = hashWait.get(msg.id);
       if (pending && !pending.settled) {
@@ -2042,7 +2052,7 @@ export function createPool({
       hashWait.clear();
     };
     w.on('error', drop);
-    w.on('exit', drop);
+    w.on('exit', () => { hashWorkerThreads -= 1; drop(); gone(); });
     hashWorker = w;
     return w;
   }
@@ -6080,6 +6090,10 @@ export function createPool({
     try { stratumTls?.close(); } catch { /* ignore */ }
     try { httpServer.closeAllConnections?.(); } catch { /* ignore */ }
     try { httpServer.close(); } catch { /* ignore */ }
+    // The worker finishes its in-flight hash, then releaseHashWorker
+    // terminates it. A hung worker cannot hold shutdown past the cap.
+    const cap = new Promise((resolve) => { const t = setTimeout(resolve, HASH_WORKER_TIMEOUT_MS); t.unref?.(); });
+    return Promise.race([hashWorkerGone, cap]);
   }
 
   // The first /api/stats read is the snap. A listen-time setImmediate is too
@@ -6130,6 +6144,8 @@ export function createPool({
     get pendingPayout() { return pendingPayout; },
     get prevJob() { return prevJob; },
     get paused() { return paused; },
+    /** Hash worker threads still running (0 once close() has resolved). */
+    get hashWorkerThreads() { return hashWorkerThreads; },
     adminOps,
     pullBook,
   };

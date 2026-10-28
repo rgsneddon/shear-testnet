@@ -225,7 +225,7 @@ async function mine(kind) {
     restart.stop = await stopMiner(again);
   }
   px.close();
-  strat.close();
+  if (process.env.R41_OLD_CLOSE) strat.close(); else await strat.close();
   const hsList = samples.map((s) => s.hs);
   const mean = hsList.length ? hsList.reduce((a, b) => a + b, 0) / hsList.length : null;
   const sd = hsList.length > 1 ? Math.sqrt(hsList.reduce((a, b) => a + (b - mean) ** 2, 0) / (hsList.length - 1)) : null;
@@ -281,7 +281,7 @@ async function refusals() {
       });
       sock.on('connect', () => sock.write(JSON.stringify({ id: 1, method: 'login', params: { login: 'nokey', name: 'ShearK-Miner', client: 'ShearHash', version: '2.9', algorithm: 'ShearHash' } }) + '\n'));
     });
-    strat.close();
+    await strat.close();
     const err = String(reply?.error?.message || reply?.error || '');
     res.need_key = {
       minerExit: run.status, minerSays: run.stderr.trim().split('\n')[0], poolReply: err,
@@ -298,7 +298,7 @@ async function refusals() {
     res.need_blu = { loginErr: px.stats.loginErr, minerSaw: /need_blu/.test(child.tail), accepted: px.stats.ok, pass: (/need_blu/.test(px.stats.loginErr) || /need_blu/.test(child.tail)) && px.stats.ok === 0 };
     await stopMiner(child);
     px.close();
-    strat.close();
+    await strat.close();
   }
   // 3. --solo without --blu exits 2 before mining.
   {
