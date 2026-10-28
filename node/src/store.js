@@ -4564,6 +4564,8 @@ export function createStore(dir, {
       bLeaves: accepted[i - 1].bLeaves,
       weight: accepted[i - 1].weight,
       shareBatch: accepted[i - 1].shareBatch,
+      // R28: the parent's compact record, from its own verify in this walk.
+      blunoteRecord: accepted[i - 1].blunoteRecord,
     };
     const parentH = i === 0 ? 0 : Number(accepted[i - 1].height || i);
     const rows = Array.isArray(verifyOpts.explorerRows) ? verifyOpts.explorerRows : [];
@@ -4708,6 +4710,7 @@ export function createStore(dir, {
         ...fork[i],
         magic: bookMagic,
         hash: c.hash,
+        ...(c.blunoteRecord ? { blunoteRecord: c.blunoteRecord } : {}),
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
         bSpendIds: Array.isArray(c.bSpendIds) ? c.bSpendIds : [],
@@ -4790,6 +4793,7 @@ export function createStore(dir, {
         ...fork[i],
         magic: bookMagic,
         hash: check.hash,
+        ...(check.blunoteRecord ? { blunoteRecord: check.blunoteRecord } : {}),
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
         bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
@@ -4853,6 +4857,7 @@ export function createStore(dir, {
         ...fork[i],
         magic: bookMagic,
         hash: check.hash,
+        ...(check.blunoteRecord ? { blunoteRecord: check.blunoteRecord } : {}),
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
         bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
