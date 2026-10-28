@@ -73,13 +73,16 @@ export function assertLaunchers(zipPath, ver) {
     assert.match(text, new RegExp(`ShearK-Miner ${esc(ver)} `));
     assert.match(text, /shear-testnet-v12/);
     assert.match(text, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
-    assert.match(text, /--user YOUR_SSA1\.worker/);
+    assert.match(text, /--user YOUR_SSA1\.worker --blu YOUR_MINING_ADDRESS/);
+    // R28: solo names the mining address with --solo, to the user's own node.
+    assert.match(text, /--pool 127\.0\.0\.1:1111 --user YOUR_SSA1\.solo --blu YOUR_MINING_ADDRESS --solo/);
     assert.match(text, /--backend jit-full/);
     assert.doesNotMatch(text, /--tls-insecure|--tls-pin/);
   }
   assert.match(bat, new RegExp(`ShearK-Miner-${esc(ver)}-windows\\.zip`));
   assert.match(bat, /libssl-3-x64\.dll/);
   assert.match(bat, /libcrypto-3-x64\.dll/);
+  assert.match(bat, /libsodium-26\.dll/);
 }
 
 export function assertNotices(names) {
