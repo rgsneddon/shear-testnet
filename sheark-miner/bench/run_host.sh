@@ -46,7 +46,7 @@ if has vectors; then
   log "vectors"
   ( cd "$TREE" && "${pre[@]}" node --test --test-concurrency=1 \
       sheark-miner/tests/test_sha512_fips_v12.js sheark-miner/tests/test_blunote_vectors_v12.js \
-      crypto/shear_hash.test.js sheark-miner/tests/test_miner.js ) > "$OUT/vectors.tap" 2>&1
+      crypto/shear_hash.test.js sheark-miner/tests/test_miner.js \n      "$BENCH/../tests/test_golden_corpus_v12.js" ) > "$OUT/vectors.tap" 2>&1
   log "vectors rc=$? $(grep -E '^# (pass|fail)' "$OUT/vectors.tap" | tr '\n' ' ')"
 fi
 if has suite; then

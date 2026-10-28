@@ -371,7 +371,7 @@ int main(int argc, char **argv) {
   double t1 = now_s();
   shear_hash_hex(out, hex);
   int ok = strcmp(hex, SHEAR_SELFTEST_HASH) == 0;
-  printf("init backend=%s want=%s got=%s init_s=%.3f hugepages=%d selftest=%s\n", backend,
+  printf("init backend=%s active=%s got=%s init_s=%.3f hugepages=%d selftest=%s\n", backend,
          shear_hash_backend(), hex, t1 - t0, shear_hash_huge_pages(), ok ? "ok" : "FAIL");
   if (!ok) return 1;
   int rc = 0;
