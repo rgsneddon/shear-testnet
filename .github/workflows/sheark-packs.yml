@@ -150,7 +150,15 @@ jobs:
           for b in interpreter jit jit-full; do ./sheark-miner/bench/rxbench.exe --backend $b --golden sheark-miner/bench/golden_v12.txt --threads 0; done
           npm ci --ignore-scripts --no-audit --no-fund
           node --test --test-concurrency=1 sheark-miner/tests/test_golden_corpus_v12.js sheark-miner/tests/test_sha512_fips_v12.js sheark-miner/tests/test_blunote_vectors_v12.js sheark-miner/tests/test_miner.js
-          node sheark-miner/bench/stratum_bench.mjs --mode pool --miner "$(pwd)/sheark-miner/ShearK-Miner.exe" --secs 180 --sample 30 || echo "stratum bench (pool) failed on Windows"
+          # Before vs after end to end: the same loopback pool, the base miner then this one.
+          # R28 option 2 logins, so the before exe is the R28 head's (it speaks --user worker).
+          git fetch --no-tags --depth=1 origin 1eb2414708f984b85789f426bcb9d3a8a8c45a8a
+          git worktree add ../r41-r28 FETCH_HEAD
+          mingw32-make -C ../r41-r28/sheark-miner CC=gcc CXX=g++
+          for m in ../r41-r28/sheark-miner/ShearK-Miner.exe sheark-miner/ShearK-Miner.exe; do
+            echo "== e2e $m"
+            node sheark-miner/bench/stratum_bench.mjs --mode pool --miner "$(cygpath -m "$(realpath "$m")")" --secs 180 --sample 30 --warm 45 || echo "stratum bench (pool) failed on Windows for $m"
+          done
           node sheark-miner/bench/stratum_bench.mjs --mode refusals --miner "$(pwd)/sheark-miner/ShearK-Miner.exe" || echo "stratum bench (refusals) failed on Windows"
           node sheark-miner/bench/win_acl_diag.mjs || echo "acl diag failed"
       - uses: actions/upload-artifact@v4

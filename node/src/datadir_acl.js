@@ -333,6 +333,32 @@ function ownerFromSddl(sddl) {
   return normalizeSid(end < 0 ? rest : rest.slice(0, end));
 }
 
+/**
+ * SDDL writes a few machine-relative SIDs as two-letter aliases: LA is the
+ * built-in Administrator (RID 500), LG the Guest (RID 501). Windows uses LA
+ * for the owner and an ACE when the account is RID 500, as on a GitHub
+ * Windows runner (runneradmin) or a Windows Server VPS left on Administrator,
+ * so "O:LA ... (A;OICI;FA;;;LA)" is the current user and the check refused a
+ * correct DACL (datadir_acl:verify, R41). The aliases resolve against the
+ * current user's machine prefix; for any other user LA is another account
+ * and still fails closed.
+ */
+export function resolveMachineAliases(sddl, sid) {
+  const user = normalizeSid(sid);
+  const m = /^(S-1-5-21-\d+-\d+-\d+)-\d+$/.exec(user);
+  if (!m) return String(sddl || '');
+  const map = { LA: `${m[1]}-500`, LG: `${m[1]}-501` };
+  return String(sddl || '')
+    .replace(/([OG]:)(LA|LG)(?=[GDS]:|$)/g, (_, k, a) => `${k}${map[a]}`)
+    .replace(/;(LA|LG)\)/g, (_, a) => `;${map[a]})`);
+}
+
+function withAliases(rows, sid) {
+  if (!rows) return rows;
+  const owner = (o) => (/^(LA|LG)$/i.test(String(o || '').trim()) ? ownerFromSddl(resolveMachineAliases(`O:${String(o).trim().toUpperCase()}`, sid)) : o);
+  return rows.map((row) => ({ ...row, owner: owner(row.owner), sddl: resolveMachineAliases(row.sddl, sid) }));
+}
+
 function readOne(readSecurity, target) {
   let got;
   try {
@@ -458,11 +484,12 @@ function ensureWindows(dir, {
   } catch (err) {
     if (err?.message !== 'datadir_acl:acl') throw err;
   }
+  current = withAliases(current, sid);
   if (current && aclMatches(current, targets, sid)) {
     return { applied: false, sid, shewall };
   }
   applyWindows(dir, sid, execFileSync, systemDir, systemRoot, realpathSync);
-  const after = targets.map((target) => readOne(readSecurity, target));
+  const after = withAliases(targets.map((target) => readOne(readSecurity, target)), sid);
   if (!aclMatches(after, targets, sid)) throw fail('datadir_acl:verify');
   return { applied: true, sid, shewall };
 }
