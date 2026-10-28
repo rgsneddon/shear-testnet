@@ -29,6 +29,11 @@ STRAT_SECS=${STRAT_SECS:-300}
 pre=()
 [ -n "${CPUSET:-}" ] && pre+=(taskset -c "$CPUSET")
 [ -n "${NICE:-}" ] && pre+=(nice -n "$NICE")
+# A local libsodium (hosts without libsodium-dev): the vector tests compile with -lsodium.
+if [ -n "${SODIUM_PREFIX:-}" ]; then
+  export CPATH="$SODIUM_PREFIX/include${CPATH:+:$CPATH}"
+  export LIBRARY_PATH="$SODIUM_PREFIX/lib/x86_64-linux-gnu:$SODIUM_PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+fi
 has() { case " $PHASES " in *" $1 "*) return 0;; esac; return 1; }
 log() { echo "[$(date -u +%T)] $*" | tee -a "$OUT/run.log"; }
 
