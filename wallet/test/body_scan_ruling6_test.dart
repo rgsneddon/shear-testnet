@@ -102,6 +102,8 @@ ShearIdentity _id() => createIdentity(Uint8List.fromList(_seed));
 String _homeOf(ShearIdentity id) =>
     (ShearLedger()..bindIdentity(id)).homeDest(id.address, paymentCode: id.paymentCode);
 
+String _payeeDest() => _homeOf(createIdentity());
+
 ShearPoolClient _client(_Node node) =>
     ShearPoolClient(baseUrl: node.base, http: HttpClient());
 
@@ -303,6 +305,74 @@ void main() {
     ledger.noteSpendableReadFailed();
     expect(ledger.spendableReadError, 'headers below the checkpoint do not link to it');
     expect(ledger.bodyScanTo, 0, reason: 'no body below the pin was read');
+    pool.close();
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
+  test('while the walk below the checkpoint runs: "syncing", nothing painted, a send waits for header sync', () async {
+    final pool = _client(node);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.installCheckpoint(node.pin);
+    final pinH = node.pin.height;
+    final gate = Completer<void>();
+    final paused = Completer<void>();
+    Future<List<({int height, Uint8List header})>> headers(int from, int to) async {
+      if (from == 1 && !gate.isCompleted) {
+        if (!paused.isCompleted) paused.complete();
+        await gate.future;
+      }
+      final out = <({int height, Uint8List header})>[];
+      for (var h = from; h <= to; h++) {
+        final j = await pool.headerAt(h);
+        final hex = j['header'] as String;
+        out.add((height: h, header: Uint8List.fromList([
+          for (var i = 0; i < hex.length; i += 2) int.parse(hex.substring(i, i + 2), radix: 16),
+        ])));
+      }
+      return out;
+    }
+
+    final sw = Stopwatch()..start();
+    final scan = ledger.scanVerifiedBodies(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      hostTip: node.tip,
+      fetchHeaders: headers,
+    );
+    await paused.future;
+    // Mid-walk: the figure is not ready, the line names the walk, and a
+    // send is refused as waiting for header sync, not as insufficient.
+    expect(ledger.headerVerifyLine, 'Verifying checkpoint headers 0/$pinH');
+    final ready = ledger.spendableFigureReady(id.address, paymentCode: id.paymentCode);
+    expect(ready, isFalse);
+    expect(
+      spendableFigureText(sourceBlocked: false, ready: ready, spendShe: ledger.spendableOwned(id.address, paymentCode: id.paymentCode)),
+      kSpendableSyncing,
+    );
+    expect(ledger.fundsRefusal(1).message, kErrHeaderSync);
+    Object? refused;
+    try {
+      await ledger.send(
+        from: home,
+        to: _payeeDest(),
+        amount: 1,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        spendSeed: _seed,
+        allowPublicHttp: true,
+      );
+    } catch (e) {
+      refused = e;
+    }
+    expect('$refused', contains(kErrHeaderSync));
+    expect('$refused', isNot(contains('insufficient')));
+    sw.reset();
+    gate.complete();
+    expect(await scan, isTrue, reason: ledger.spendableReadError);
+    final ms = sw.elapsedMilliseconds;
+    // ignore: avoid_print
+    print('WALK_BELOW_PIN headers=$pinH total_ms=$ms per_header_ms=${(ms / pinH).toStringAsFixed(1)} (includes the scan above the pin)');
+    expect(ledger.headerVerifyLine, isNull);
+    expect(ledger.bodyScanTo, node.tip);
     pool.close();
   }, timeout: const Timeout(Duration(minutes: 10)));
 

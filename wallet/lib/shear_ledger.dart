@@ -5776,6 +5776,11 @@ class ShearLedger implements ReadProofSink {
   /// would, are the same wait — not a short balance.
   StateError fundsRefusal([double amount = 0]) {
     if (bookTip < 1) return StateError(kErrHeaderSync);
+    // Body mode: the bodies are not proven up to the verified headers yet
+    // (or the walk below the checkpoint is running). A coin may be there.
+    if (_bodyProofRequired && (_belowPinTotal > _belowPinDone || _bodyScanTo < _chainTip)) {
+      return StateError(kErrHeaderSync);
+    }
     var spendableSum = 0.0;
     var depthSum = 0.0;
     var anySpendable = false;
@@ -5852,6 +5857,10 @@ class ShearLedger implements ReadProofSink {
   /// First-run catch-up. Null once the checked chain has reached the host.
   /// A missing native hasher is its own line, not a stuck `0/N`.
   String? get headerVerifyLine {
+    // The walk below the checkpoint: one ShearHash per header, pin down.
+    if (_belowPinTotal > 0 && _belowPinDone < _belowPinTotal) {
+      return 'Verifying checkpoint headers $_belowPinDone/$_belowPinTotal';
+    }
     final pin = _pin;
     final host = _headerHostTip;
     final behind = pin != null && host > bookTip && host > pin.height;
@@ -9959,7 +9968,7 @@ class ShearLedger implements ReadProofSink {
     // Blocks at and below the pin: their headers are proven by hash links
     // down from the pin's own hash, then their bodies scanned like any other.
     if (_bodyScanTo < pin.height) {
-      final linked = await _proveBelowPin(pin, fetchHeaders);
+      final linked = await _proveBelowPin(pin, fetchHeaders, from: _bodyScanTo + 1);
       if (!linked) {
         return _bodyScanFail('headers below the checkpoint do not link to it');
       }
@@ -10012,16 +10021,44 @@ class ShearLedger implements ReadProofSink {
   /// this ledger's life; the pin never moves under it.
   Map<int, ({Uint8List hash, Uint8List root, int timeMs})>? _belowPin;
 
+  /// Progress of the walk below the checkpoint, for [headerVerifyLine].
+  int _belowPinDone = 0;
+  int _belowPinTotal = 0;
+
   Future<bool> _proveBelowPin(
     CheckpointPin pin,
     Future<List<({int height, Uint8List header})>> Function(int from, int to)?
-    fetchHeaders,
-  ) async {
-    if (_belowPin != null) return true;
+    fetchHeaders, {
+    int from = 1,
+  }) async {
+    // Only the range the body scan still needs: from the cursor up to the
+    // pin. Each header is still hashed and linked; nothing is skipped.
+    final lowest = from < 1 ? 1 : from;
+    final have = _belowPin;
+    if (have != null && have.containsKey(lowest)) return true;
     final want = _hexToBytes(pin.hashHex.toLowerCase());
     if (want == null) return false;
+    _belowPinTotal = pin.height - lowest + 1;
+    _belowPinDone = 0;
+    _paintHeaderProgress(_headerHostTip);
+    try {
+      return await _walkBelowPin(pin, fetchHeaders, lowest, want);
+    } finally {
+      _belowPinTotal = 0;
+      _belowPinDone = 0;
+      _paintHeaderProgress(_headerHostTip);
+    }
+  }
+
+  Future<bool> _walkBelowPin(
+    CheckpointPin pin,
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetchHeaders,
+    int lowest,
+    Uint8List want,
+  ) async {
     final byHeight = <int, Uint8List>{};
-    for (var from = 1; from <= pin.height; from += _kHeaderBackfillCap) {
+    for (var from = lowest; from <= pin.height; from += _kHeaderBackfillCap) {
       final to = from + _kHeaderBackfillCap - 1 > pin.height
           ? pin.height
           : from + _kHeaderBackfillCap - 1;
@@ -10032,7 +10069,7 @@ class ShearLedger implements ReadProofSink {
     }
     final out = <int, ({Uint8List hash, Uint8List root, int timeMs})>{};
     var link = want;
-    for (var h = pin.height; h >= 1; h--) {
+    for (var h = pin.height; h >= lowest; h--) {
       final header = byHeight[h];
       if (header == null || header.length != shearHeaderLen) return false;
       final digest = await _hashHeader(header);
@@ -10041,6 +10078,8 @@ class ShearLedger implements ReadProofSink {
       if (root == null) return false;
       out[h] = (hash: digest, root: root, timeMs: headerTimestampMs(header) ?? 0);
       link = Uint8List.fromList(header.sublist(4, 36));
+      _belowPinDone++;
+      if (_belowPinDone % 16 == 0) _paintHeaderProgress(_headerHostTip);
     }
     _belowPin = out;
     return true;
