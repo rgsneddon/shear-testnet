@@ -143,8 +143,10 @@ async function startStratum(kind) {
   return { port: bound.port, close: () => stratum.close(), dir };
 }
 
-function runMiner(port, extra) {
-  const args = ['--backend', backend, '--pool', `127.0.0.1:${port}`, '--notls', ...extra, ...minerArgs];
+function runMiner(port, extra, tag = '') {
+  // A restarted miner writes its stats file beside the first run's, not over it.
+  const margs = tag ? minerArgs.map((a, i) => (minerArgs[i - 1] === '--stats-file' ? `${a}.${tag}` : a)) : minerArgs;
+  const args = ['--backend', backend, '--pool', `127.0.0.1:${port}`, '--notls', ...extra, ...margs];
   if (threads) args.push('--threads', threads);
   const child = spawn(minerBin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NO_COLOR: '1' } });
   child.out = '';
@@ -221,7 +223,7 @@ async function mine(kind) {
   const stop = await stopMiner(child);
   if (restartCheck && !crashed) {
     const okBefore = px.stats.ok;
-    const again = runMiner(px.port, extra);
+    const again = runMiner(px.port, extra, 'restart');
     const r0 = Date.now();
     while (Date.now() - r0 < 300_000 && px.stats.ok === okBefore && again.exitCode == null) await sleep(500);
     restart = { firstAcceptS: px.stats.ok > okBefore ? (Date.now() - r0) / 1000 : null, exit: again.exitCode };
