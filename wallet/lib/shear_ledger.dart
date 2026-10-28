@@ -4915,9 +4915,13 @@ class ShearLedger implements ReadProofSink {
     if (_bodyScanTo < _birthHeight - 1) _bodyScanTo = _birthHeight - 1;
   }
 
-  /// The tip of the header chain this ledger verified itself, or 0 when it
-  /// has none (no checkpoint, or no header checked above it yet).
-  int get verifiedHeaderTip => _pin == null ? 0 : _chainTip;
+  /// The tip of the header chain this ledger verified itself: at least the
+  /// release checkpoint when the build ships one (so a new wallet is born
+  /// ten under it and walks at most ten headers below it), or 0 with none.
+  int get verifiedHeaderTip {
+    _installReleaseCheckpoint();
+    return _pin == null ? 0 : _chainTip;
+  }
 
   /// Record notes of [blocks] that belong to this wallet join the book as
   /// FS-1 notes on the home dest. A note at a height whose record changed
@@ -5988,6 +5992,11 @@ class ShearLedger implements ReadProofSink {
   /// would, are the same wait — not a short balance.
   StateError fundsRefusal([double amount = 0]) {
     if (bookTip < 1) return StateError(kErrHeaderSync);
+    // Body mode: the bodies are not proven up to the verified headers yet
+    // (or the walk below the checkpoint is running). A coin may be there.
+    if (_bodyProofRequired && (_belowPinTotal > _belowPinDone || _bodyScanTo < _chainTip)) {
+      return StateError(kErrHeaderSync);
+    }
     var spendableSum = 0.0;
     var depthSum = 0.0;
     var anySpendable = false;
@@ -6064,6 +6073,10 @@ class ShearLedger implements ReadProofSink {
   /// First-run catch-up. Null once the checked chain has reached the host.
   /// A missing native hasher is its own line, not a stuck `0/N`.
   String? get headerVerifyLine {
+    // The walk below the checkpoint: one ShearHash per header, pin down.
+    if (_belowPinTotal > 0 && _belowPinDone < _belowPinTotal) {
+      return 'Verifying checkpoint headers $_belowPinDone/$_belowPinTotal';
+    }
     final pin = _pin;
     final host = _headerHostTip;
     final behind = pin != null && host > bookTip && host > pin.height;
@@ -10231,17 +10244,42 @@ class ShearLedger implements ReadProofSink {
   /// this ledger's life; the pin never moves under it.
   Map<int, ({Uint8List hash, Uint8List root, int timeMs})>? _belowPin;
 
+  /// Progress of the walk below the checkpoint, for [headerVerifyLine].
+  int _belowPinDone = 0;
+  int _belowPinTotal = 0;
+
   Future<bool> _proveBelowPin(
     CheckpointPin pin,
     Future<List<({int height, Uint8List header})>> Function(int from, int to)?
     fetchHeaders, {
     int from = 1,
   }) async {
+    // Only the range the body scan still needs: from the cursor up to the
+    // pin. Each header is still hashed and linked; nothing is skipped.
     final lowest = from < 1 ? 1 : from;
     final have = _belowPin;
     if (have != null && have.containsKey(lowest)) return true;
     final want = _hexToBytes(pin.hashHex.toLowerCase());
     if (want == null) return false;
+    _belowPinTotal = pin.height - lowest + 1;
+    _belowPinDone = 0;
+    _paintHeaderProgress(_headerHostTip);
+    try {
+      return await _walkBelowPin(pin, fetchHeaders, lowest, want);
+    } finally {
+      _belowPinTotal = 0;
+      _belowPinDone = 0;
+      _paintHeaderProgress(_headerHostTip);
+    }
+  }
+
+  Future<bool> _walkBelowPin(
+    CheckpointPin pin,
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetchHeaders,
+    int lowest,
+    Uint8List want,
+  ) async {
     final byHeight = <int, Uint8List>{};
     for (var from = lowest; from <= pin.height; from += _kHeaderBackfillCap) {
       final to = from + _kHeaderBackfillCap - 1 > pin.height
@@ -10263,6 +10301,8 @@ class ShearLedger implements ReadProofSink {
       if (root == null) return false;
       out[h] = (hash: digest, root: root, timeMs: headerTimestampMs(header) ?? 0);
       link = Uint8List.fromList(header.sublist(4, 36));
+      _belowPinDone++;
+      if (_belowPinDone % 16 == 0) _paintHeaderProgress(_headerHostTip);
     }
     _belowPin = out;
     return true;
