@@ -139,7 +139,8 @@ void main() {
     final ledger = bookWithOwed(id, chain: 0.02, owed: 22.58, pool: pool);
     final notes = chainNoteSum(ledger, id.address, paymentCode: id.paymentCode);
     final painted = paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode);
-    const she = 3.2;
+    // A lock is exactly one π leaf (Russell, 25 Oct 14:20).
+    const she = kPiShe;
     final need = she + levyNanos((she * kUnitsPerShe).round(), depth: 0) / kUnitsPerShe;
     expect(notes, lessThan(need));
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), lessThan(need));
@@ -181,7 +182,9 @@ void main() {
     final id = createIdentity();
     final ledger = bookWithOwed(id, chain: 0.01, owed: 0.02);
     final painted = paintedContinuumSpendable(ledger, id.address, paymentCode: id.paymentCode);
-    const she = 1.0;
+    // A lock is exactly one π leaf (Russell, 25 Oct 14:20): the refusal under
+    // test is the funding one, so the amount is π.
+    const she = kPiShe;
     expect(painted, lessThan(she));
     final owedBefore = ledger.owedTowardPi(id.address, paymentCode: id.paymentCode);
     final chainBefore = ledger.spendableOwned(id.address, paymentCode: id.paymentCode);
@@ -236,7 +239,7 @@ void main() {
       restFrame: id.address,
       paymentCode: id.paymentCode,
       dest: dest,
-      she: 3.2,
+      she: kPiShe,
       depth: 0,
       spendSeed: hexToBytes(id.seedHex),
       local: local,
@@ -374,8 +377,10 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 6)));
 
   test('a second send does not queue from remaining pool owed', () async {
-    const owed = 5.0;
-    const she = 1.9;
+    // A lock is exactly one π leaf (Russell, 25 Oct 14:20); the owed figure
+    // still covers two of these and not three.
+    const owed = 7.0;
+    const she = kPiShe;
     final need = she + levyNanos((she * kUnitsPerShe).round(), depth: 0) / kUnitsPerShe;
     expect(owed, greaterThanOrEqualTo(need + need));
     expect(owed, lessThan((2 * need) + need));
