@@ -692,7 +692,9 @@ export function createStore(dir, {
         oracleActivationHeight,
       }).then((checked) => {
         if (!checked.ok) throwBookFault(checked.reason || 'pow');
-      attachLoadedRecords(blocks, checked.records);
+        // The reopen reads chain.bin again, so the records this verify
+        // derived travel in the resume token (a book whose chain.bin lacks
+        // them would otherwise reopen without them and fail hash_owed).
         return createStore(dir, {
           pruneAfter,
           reorgHaltDepth,
@@ -713,6 +715,7 @@ export function createStore(dir, {
           verified: true,
           height,
           tipHash,
+          records: Array.isArray(checked.records) ? checked.records : null,
         });
       });
     } else {
@@ -735,6 +738,8 @@ export function createStore(dir, {
       if (!trustStoredHash) writeLoadSeal(blocks);
     }
   } else if (resumed) {
+    // The same blocks the async verify checked (height and tip matched above).
+    attachLoadedRecords(blocks, resume.records);
     writeLoadSeal(blocks);
     const folded = foldSupply(blocks, { burialOf: provenTipOf, magic: bookMagic });
     if (!folded.ok) throw new Error(folded.reason || 'supply');
