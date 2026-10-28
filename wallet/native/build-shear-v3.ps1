@@ -55,7 +55,8 @@ $Obj = Join-Path $Here 'build\win'
 New-Item -ItemType Directory -Force -Path $Obj | Out-Null
 $Inc = @('-I', $Miner, '-I', (Join-Path $Rx 'src'))
 function Compile-C([string]$Src, [string]$Name) {
-  & $Gcc @Base -O2 -Wall @Inc -c -o (Join-Path $Obj $Name) $Src
+  # Light interpreter only (Russell, 28 Oct): no JIT or full-dataset selection.
+  & $Gcc @Base -O2 -Wall -DSHEAR_HASH_INTERPRETER_ONLY @Inc -c -o (Join-Path $Obj $Name) $Src
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 Compile-C (Join-Path $Here 'shear_v3_export.c') 'shear_v3_export.o'

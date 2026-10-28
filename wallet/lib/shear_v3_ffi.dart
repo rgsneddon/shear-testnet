@@ -10,9 +10,11 @@ typedef _BackendC = Pointer<Utf8> Function();
 
 Pointer<Utf8> Function()? _backendFn;
 
-/// The backend libshear_v3 hashes with: "jit" once it reproduced the
-/// interpreter's digests at load, else "interpreter". Null when the library
-/// did not load or predates the probe.
+/// The backend libshear_v3 hashes with: always "interpreter" (light mode,
+/// Russell 28 Oct; the wallet never selects the JIT or the full dataset), or
+/// "none" if the library could not stand the interpreter up and refuses to
+/// hash. Null when the library did not load or predates the export. The
+/// library logs the mode once at load (logcat tag shear_v3 on Android).
 String? shearV3Backend() {
   if (_load() == null) return null;
   final fn = _backendFn;
