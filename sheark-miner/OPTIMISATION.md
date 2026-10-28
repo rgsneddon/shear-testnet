@@ -18,7 +18,7 @@ Russell, 28 Oct 2026. Goal: the fastest, most stable ShearHash-v3 miner on every
 - RandomX flags come from `randomx_get_flags()` at run time: JIT, hardware AES, and Argon2 SSSE3/AVX2.
 - The interpreter is the fallback when JIT allocation fails. Apple aarch64 uses `RANDOMX_FLAG_SECURE`.
 - Large pages are tried first, falling back to 4K with a message.
-- `--backend jit-full` uses the 2 GiB dataset, the same digest as light.
+- `--backend jit-full` uses the 260 MiB dataset (RANDOMX_DATASET_BASE_SIZE 256 MiB + 4 MiB extra), the same digest as light.
 - Threads are pinned (`pthread_setaffinity_np`, `g_cpu_map`).
 - Release builds target the x86-64 baseline (`-march=x86-64`). `SHEARK_NATIVE=1` is a local opt-in only.
 
