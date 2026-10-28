@@ -74,3 +74,4 @@ pool-spend.seed
 crypto/native/phone-bench-*.jsonl
 sheark-miner/bench/rxbench
 sheark-miner/bench/rxbench.exe
+sheark-miner/bench/micro

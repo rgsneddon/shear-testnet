@@ -28,6 +28,11 @@ if [ -n "$DEF" ]; then
   g++ $BASE -O3 -pthread -o "$M/bench/rxbench-softaes" "$M/bench/rxbench.o" "$M/bench/shear_hash_softaes.o" "$M/src/sha256.o" "$M/src/sha512.o" \
     "$T/crypto/randomx/build/librandomx.a" -lm -static-libgcc -static-libstdc++
 fi
+# micro: the miner's per-hash additions (shear_key, BluNotes keys and binding).
+SINC=""; SLIB=""
+[ -n "${SODIUM_PREFIX:-}" ] && SINC="-I$SODIUM_PREFIX/include" && SLIB="-L$SODIUM_PREFIX/lib/x86_64-linux-gnu -L$SODIUM_PREFIX/lib"
+gcc $BASE -O3 -Wall -Wextra -std=c11 -pthread $SINC -I"$M/src" -c -o "$M/bench/micro.o" "$(dirname "$RXB")/micro.c"
+g++ $BASE -O3 -pthread -o "$M/bench/micro" "$M/bench/micro.o" "$M/src/shear_hash.o" "$M/src/sha256.o" "$M/src/sha512.o" "$M/src/blunote.o"   "$T/crypto/randomx/build/librandomx.a" $SLIB -lsodium -lm -static-libgcc -static-libstdc++
 # The node addon (it compiles this tree's shear_hash.c): the loopback pool
 # verifies shares in-process with it, as the live pool does, instead of
 # spawning ShearK-Miner --verify per share.

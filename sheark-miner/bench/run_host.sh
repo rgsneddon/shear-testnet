@@ -86,6 +86,10 @@ if has pin; then
     grep -E '^point' "$OUT/rx-pin-$p.txt" >> "$OUT/run.log"
   done
 fi
+if has micro && [ -x "$M/bench/micro" ]; then
+  "${pre[@]}" "$M/bench/micro" --backend jit-full --secs 10 > "$OUT/micro.txt" 2>&1
+  log "micro $(grep -E '^micro' "$OUT/micro.txt")"
+fi
 if has epochs; then
   for b in jit-full jit; do
     "${pre[@]}" "$M/bench/rxbench" --backend $b --epochs 5 --threads 0 > "$OUT/epochs-$b.txt" 2>&1
