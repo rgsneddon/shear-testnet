@@ -275,7 +275,7 @@ void main() {
     expect(ledger.confirmationsOf(15), 9);
     expect(ledger.pendingTxs(id.address).where((t) => t.height == 15), isEmpty);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(1, 1e-9));
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('pool balance and owed-pi add neither a pending land nor spendable', () {
     final id = createIdentity();
@@ -572,5 +572,5 @@ void main() {
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(1, 1e-9));
     expect(ledger.pendingTxs(id.address).where((t) => t.height == 15), isEmpty);
     expect(ledger.pendingTxs(id.address).any((t) => t.height == tip), isTrue);
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

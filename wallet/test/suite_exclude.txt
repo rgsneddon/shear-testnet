@@ -20,3 +20,5 @@ test/android_apk_test.dart android-admit.yml (NDK-built arm64 libraries)
 # Vortice scope, Russell 26 Oct: only the Vault/Reserve vortice is in scope;
 # the RPMail vortice and its privacy browser are paused remnants.
 test/rx_rpmail_vortice_test.dart SCOPE vortice scope ruling, Russell 26 Oct
+# An empty placeholder ("Replaced by shear_wallet_test.dart"): no tests to run.
+test/widget_test.dart empty placeholder, replaced by shear_wallet_test.dart
