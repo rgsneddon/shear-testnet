@@ -15,8 +15,18 @@ Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache). TLS-awar
 Paid login is an owned `ssa1` dest (wallet **Copy dest**). Copy dest is dest20-sized (~43 chars); long dest20||B still verifies. 2.3 dest-binds both; 2.1 fails the long form (`low_diff`). Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. Share floor is dest-bound (`sha256("shear-share-dest-v1" || rx || noteCommit)`), so a pool cannot restamp dest on a stolen nonce. The 128-byte job is unchanged.
 
 ```
-ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user YOUR_SSA1.worker --backend jit-full --threads 8
+ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user YOUR_SSA1.worker --blu YOUR_MINING_ADDRESS --backend jit-full --threads 8
 ```
+
+R28 BluNotes: `--blu` is the 128-hex mining address B||Y your wallet shows ("This wallet mines"). Every share carries a fresh one-time key; the pool never learns a payout address, and a submit without a key is refused (`need_key`).
+
+Solo, on your own node (`npm run solo`, cleartext stratum on 127.0.0.1:1111):
+
+```
+ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --blu YOUR_MINING_ADDRESS --solo --threads 8
+```
+
+`--solo` sends the mining address to your node at login so an empty round's pot is paid to a one-time key of it; without it the node refuses the login (`need_blu`). `--solo` without `--blu` exits 2. Never pass `--solo` to a public pool.
 
 A `she1` login needs `--dest YOUR_SSA1` so the bonus can land on Copy dest. Rest-frame `shear1` stays off stratum.
 
