@@ -90,8 +90,15 @@ all: $(BIN)
 
 randomx: $(RXLIB)
 
-$(RXLIB):
+# R41: librandomx.a depends on the RandomX sources, so an edit under
+# crypto/randomx rebuilds it (cmake --build is incremental). Without this an
+# existing tree kept linking the old library. A no-op cmake build leaves the
+# library's mtime alone, so a tree with older-looking sources relinks once.
+RXSRC := $(wildcard $(RX)/CMakeLists.txt $(RX)/src/*.c $(RX)/src/*.cpp $(RX)/src/*.h $(RX)/src/*.hpp $(RX)/src/*.S $(RX)/src/blake2/*.c $(RX)/src/blake2/*.h)
+
+$(RXLIB): $(RXSRC)
 	SHEARK_NATIVE=$(SHEARK_NATIVE) RANDOMX_BUILD_DIR=$(RXBUILD) bash ../scripts/randomx_build.sh $(CMAKE_GEN)
+	touch $@
 
 src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h
 	$(CC) $(X86_BASELINE) $(CFLAGS) $(INCLUDES) -c -o $@ $<
