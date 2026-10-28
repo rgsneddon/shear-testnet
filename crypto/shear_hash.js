@@ -141,6 +141,27 @@ export function shearKey(header) {
   return Buffer.from(m[1], 'hex');
 }
 
+/** The backend this process hashes with now (native call with no argument does not change it). */
+export function currentHashBackend() {
+  if (native?.backend) return String(native.backend() || 'interpreter');
+  return 'interpreter';
+}
+
+/**
+ * R39 (Russell 28 Oct): never a silent interpreter fallback. One line,
+ * `slow_verify`, names where verify runs on the RandomX interpreter.
+ */
+export function slowVerifyLine(where, backend, requested = '') {
+  return JSON.stringify({
+    event: 'slow_verify',
+    where,
+    backend,
+    requested,
+    message: 'SLOW VERIFY: ShearHash is on the RandomX interpreter (JIT unavailable here). '
+      + 'Share and block verify run several times slower (R39: 299 ms vs 37 ms per share on a 2-core EPYC-Rome).',
+  });
+}
+
 export function setHashBackend(name) {
   if (native?.backend) return native.backend(String(name || 'interpreter'));
   return 'interpreter';
