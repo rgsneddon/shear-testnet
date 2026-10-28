@@ -215,17 +215,17 @@ export const HASH_OWED_DRAIN_DEN = 2;
 export function hashOwedDustNanos(unit = HASH_BONUS_NANOS) {
   return (1n << BigInt(SHARE_FLOOR_BITS)) * BigInt(hashBonusUnitNanos(unit));
 }
-/**
- * Highest share width a validator may credit. A lone share above this is
- * retained at the unit cap, so its expected units per hash would fall below 1.
- * B_MAX = min(52, floor(log2(MAX_HASH_UNITS_PER_BLOCK))). At 2^28 that is 28.
- */
 /** Lowest share width a block of these bits may carry (packed or integer bits). */
 export function shareFloorBits(blockBits) {
   const b = Math.ceil(unpackBits(blockBits));
   return Math.max(SHARE_FLOOR_BITS, b - SHARE_FLOOR_SPAN_BITS);
 }
 
+/**
+ * Highest share width a validator may credit. A lone share above this is
+ * retained at the unit cap, so its expected units per hash would fall below 1.
+ * B_MAX = min(52, floor(log2(MAX_HASH_UNITS_PER_BLOCK))). At 2^28 that is 28.
+ */
 export function shareCreditMaxBits(maxUnits = MAX_HASH_UNITS_PER_BLOCK) {
   const cap = Number(maxUnits);
   if (!Number.isFinite(cap) || cap < 2) return SHARE_FLOOR_BITS;
