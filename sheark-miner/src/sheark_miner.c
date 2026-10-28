@@ -383,7 +383,7 @@ static void device_inventory(void) {
     CPU_ZERO(&allowed);
     int have_allowed = sched_getaffinity(0, sizeof(allowed), &allowed) == 0;
     long l3_bytes = 0;
-    char l3_seen[16][64];
+    char l3_seen[64][64];
     int l3_n = 0;
     int all_seen[256], all_uniq = 0;
     memset(all_seen, 0, sizeof(all_seen));
@@ -416,7 +416,7 @@ static void device_inventory(void) {
       fclose(lf);
       int dup = 0;
       for (int k = 0; k < l3_n; k++) if (strcmp(l3_seen[k], list) == 0) dup = 1;
-      if (dup || l3_n >= 16) continue;
+      if (dup || l3_n >= 64) continue;
       snprintf(l3_seen[l3_n++], sizeof(l3_seen[0]), "%s", list);
       snprintf(lp, sizeof(lp), "/sys/devices/system/cpu/cpu%d/cache/index3/size", cpu);
       lf = fopen(lp, "r");
