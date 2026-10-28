@@ -18,6 +18,9 @@
 #else
 #include <unistd.h>
 #endif
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 static const char V1_SELFTEST[] =
     "5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066";
@@ -229,7 +232,7 @@ static randomx_flags flags_interpreter(void) {
 }
 
 /* Fastest path this book will accept: compiled light VM + AES-NI + 2 MiB
- * pages over the 128 MiB cache. jit-full is the 2 GiB dataset; RandomX
+ * pages over the 128 MiB cache. jit-full is the 260 MiB dataset; RandomX
  * light-verify is the same digest (selftest matches). Keep
  * RANDOMX_FLAG_SECURE when get_flags set it (Apple aarch64 W^X). */
 static randomx_flags flags_jit_light(void) {
@@ -243,6 +246,41 @@ static randomx_flags flags_jit_full(void) {
   randomx_flags f = flags_jit_light();
   f = (randomx_flags)(f | RANDOMX_FLAG_FULL_MEM);
   return f;
+}
+
+/* R41: with no reserved 2 MiB pages (hugetlb), the dataset falls back to 4K
+ * pages. Ask the kernel for transparent huge pages on it before it is first
+ * written, so the random dataset reads stop missing the TLB. Advice only: the
+ * kernel may decline (THP "never"), and the bytes are the same either way. */
+static void advise_thp(void *p, size_t n) {
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+  const uintptr_t huge = (uintptr_t)2 << 20;
+  uintptr_t a = ((uintptr_t)p + huge - 1) & ~(huge - 1);
+  uintptr_t e = ((uintptr_t)p + n) & ~(huge - 1);
+  if (p && e > a) (void)madvise((void *)a, (size_t)(e - a), MADV_HUGEPAGE);
+#else
+  (void)p;
+  (void)n;
+#endif
+}
+
+/* The 4K fallback message says what the dataset gets instead. */
+static void note_no_hugepages(void) {
+#if defined(__linux__)
+  char mode[128] = "";
+  FILE *f = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
+  if (f) {
+    if (!fgets(mode, sizeof(mode), f)) mode[0] = 0;
+    fclose(f);
+  }
+  if (strstr(mode, "[never]")) {
+    fprintf(stderr, "ShearK-Miner: huge pages unavailable (none reserved) and transparent huge pages are off; using 4K pages\n");
+  } else {
+    fprintf(stderr, "ShearK-Miner: huge pages unavailable (none reserved); using 4K pages with transparent huge pages\n");
+  }
+#else
+  fprintf(stderr, "ShearK-Miner: huge pages unavailable, using 4K pages\n");
+#endif
 }
 
 static randomx_cache *alloc_cache(randomx_flags flags) {
@@ -270,9 +308,10 @@ static int init_dataset_on(randomx_cache *cache, randomx_dataset **ds_out) {
   if (!cache || !ds_out) return -1;
   randomx_dataset *ds = *ds_out;
   if (!ds) {
-    ds = randomx_alloc_dataset(g_flags);
-    if (!ds && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+    ds = (g_flags & RANDOMX_FLAG_LARGE_PAGES) ? randomx_alloc_dataset(g_flags) : NULL;
+    if (!ds) {
       ds = randomx_alloc_dataset((randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES));
+      if (ds) advise_thp(randomx_get_dataset_memory(ds), (size_t)randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE);
     }
   }
   if (!ds) {
@@ -351,7 +390,7 @@ int shear_hash_set_backend(const char *name) {
     next = flags_jit_full();
     label = "jit-full";
     want_full = 1;
-    fprintf(stderr, "ShearK-Miner: jit-full uses the 2 GiB dataset; pool/node still light-verify (same digest)\n");
+    fprintf(stderr, "ShearK-Miner: jit-full uses the 260 MiB dataset; pool/node still light-verify (same digest)\n");
   } else if (name && strcmp(name, "interpreter") == 0) {
     next = flags_interpreter();
     label = "interpreter";
@@ -366,7 +405,7 @@ int shear_hash_set_backend(const char *name) {
     if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
       g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
       g_cache = alloc_cache(g_flags);
-      fprintf(stderr, "ShearK-Miner: huge pages unavailable, using 4K pages\n");
+      note_no_hugepages();
     }
     if (!g_cache && (g_flags & RANDOMX_FLAG_JIT)) {
       g_flags = flags_interpreter();
@@ -456,7 +495,7 @@ static int init_cache_locked(const unsigned char k[32]) {
     if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
       g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
       g_cache = alloc_cache(g_flags);
-      fprintf(stderr, "ShearK-Miner: huge pages unavailable, using 4K pages\n");
+      note_no_hugepages();
     }
     if (!g_cache && (g_flags & RANDOMX_FLAG_JIT)) {
       g_flags = flags_interpreter();
