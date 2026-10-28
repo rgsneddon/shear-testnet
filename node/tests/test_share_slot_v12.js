@@ -281,6 +281,10 @@ describe('v12 proofSlot is bound by the block', () => {
     assert.equal(tip.samplesPruned, false);
     const parent = reloaded.blocks[reloaded.blocks.length - 2];
     const pruned = pruneSamples(tip);
+    // R28: the payout record survives pruning; the frames do not.
+    assert.equal(pruned.blunoteRecord, tip.blunoteRecord);
+    assert.equal(pruned.shareBatch.length, 0);
+    assert.throws(() => pruneSamples({ ...tip, blunoteRecord: undefined, txs: [{ ...tip.txs[0], vout: [] }] }), /prune_refuses_empty_coinbase/);
     const buried = verifyBlock(pruned, {
       hash: parent.hash,
       header: parent.header,
