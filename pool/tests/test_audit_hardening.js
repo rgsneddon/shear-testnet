@@ -39,38 +39,52 @@ function destOf() {
 }
 
 describe('A1 stratum auth gate', () => {
-  it('auth on rejects dest-only; auth off accepts dest-only', () => {
-    const dest = destOf();
-    const params = { login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION };
+  // R28 option 2 (Russell 28 Oct): a login is a worker name only. The gate
+  // signs over that name; an address login is refused before any auth.
+  const WORKER = 'rig1';
+
+  it('auth on rejects an unsigned worker login; auth off accepts it; an address login is refused', () => {
+    const params = { login: WORKER, client: 'ShearHash', version: SHEARK_MINER_VERSION };
     const off = gateStratumLogin(params, { requireLoginAuth: false });
-    assert.equal(off.ok, true);
+    assert.equal(off.ok, true, off.reason);
     const on = gateStratumLogin(params, { requireLoginAuth: true });
     assert.equal(on.ok, false);
     assert.equal(on.reason, 'need_auth');
     assert.equal(typeof on.challenge, 'string');
+    for (const requireLoginAuth of [false, true]) {
+      const addr = gateStratumLogin({ ...params, login: destOf() }, { requireLoginAuth });
+      assert.equal(addr.ok, false);
+      assert.equal(addr.reason, 'login_address');
+    }
   });
 
   it('signed ed25519 login passes when auth is on', () => {
-    const dest = destOf();
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const chal = makeLoginChallenge();
-    const msg = Buffer.from(`shear-stratum-login-v1:${chal}:${dest}`);
+    const msg = Buffer.from(`shear-stratum-login-v1:${chal}:${WORKER}`);
     const sig = signEd(null, msg, privateKey);
     const spki = publicKey.export({ type: 'spki', format: 'der' });
     const pub = spki.subarray(spki.length - 32).toString('hex');
-    const ok = verifyStratumLoginAuth({ dest, challenge: chal, sig: sig.toString('hex'), pub });
+    const ok = verifyStratumLoginAuth({ dest: WORKER, challenge: chal, sig: sig.toString('hex'), pub });
     assert.equal(ok, true);
     const unbound = gateStratumLogin({
-      login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION,
+      login: WORKER, client: 'ShearHash', version: SHEARK_MINER_VERSION,
       challenge: chal, authSig: sig.toString('hex'), authPub: pub,
     }, { requireLoginAuth: true });
     assert.equal(unbound.ok, false);
     assert.equal(unbound.reason, 'auth_pub_unbound');
     const gated = gateStratumLogin({
-      login: dest, client: 'ShearHash', version: SHEARK_MINER_VERSION,
+      login: WORKER, client: 'ShearHash', version: SHEARK_MINER_VERSION,
       challenge: chal, authSig: sig.toString('hex'), authPub: pub,
     }, { requireLoginAuth: true, boundAuthPub: pub });
-    assert.equal(gated.ok, true);
+    assert.equal(gated.ok, true, gated.reason);
+    // A signature over another worker name does not pass.
+    const other = gateStratumLogin({
+      login: 'rig2', client: 'ShearHash', version: SHEARK_MINER_VERSION,
+      challenge: chal, authSig: sig.toString('hex'), authPub: pub,
+    }, { requireLoginAuth: true, boundAuthPub: pub });
+    assert.equal(other.ok, false);
+    assert.equal(other.reason, 'need_auth');
   });
 });
 

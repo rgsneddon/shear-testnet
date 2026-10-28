@@ -49,7 +49,8 @@ import {
 import { admitClient, bindAcceptedShare, SHEARK_MINER_VERSION } from '../../pool/src/pool.js';
 import { createPullBook } from '../../pool/src/pull_book.js';
 import { evaluateSoloSubmit, parseSoloLogin } from '../src/solo_stratum.js';
-import { bluWallet } from './support/blunote_mine.js';
+import { bluWallet, mineBluShare } from './support/blunote_mine.js';
+import { notesFromRecord } from '../../crypto/blunote.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -387,16 +388,12 @@ describe('N-1 gate order', () => {
     assert.equal(accepted.list.length, 1);
     assert.equal(accepted.list[0].dest, who);
 
+    // R28: shares are BluNotes frames. An honest share template, seated on
+    // the parent's record, verifies with the share's real ShearHash work.
+    parent.blunoteRecord = okParent.blunoteRecord;
     const now = T0 + 90_000;
     const ph = decodeHeader(parent.header);
-    const row = {
-      dest: who,
-      dest20: dest20OfShare({ dest: who }),
-      nonce,
-      lz: SHARE_FLOOR_BITS,
-      shareBits: SHARE_FLOOR_BITS,
-      proofSlot: 0,
-    };
+    const share = mineBluShare(bluWallet(), parent.header);
     const childTpl = buildTemplate({
       prev: okParent.hash,
       prevHeader: parent.header,
@@ -406,35 +403,21 @@ describe('N-1 gate order', () => {
       miner: who,
       bits: bitsForBlock(ph.bits, ph.timestamp, now),
       now,
-      shareBatch: [row],
+      shareBatch: [share],
     });
-    assert.ok(childTpl.shareBatch.length > 0);
-    clearLiveSharePow();
-    assert.equal(rememberLiveSharePow(parent.header, nonce, {
-      noteCommit: noteCommitOfShare(row),
-      shareBits: SHARE_FLOOR_BITS,
-      lz: SHARE_FLOOR_BITS,
-    }), true);
-    const child = viewOf(childTpl);
-    const got = verifyBlock(child, { ...parent, hash: okParent.hash, height: 1 }, {
-      probeBody: true,
-      skipSharePow: true,
-    });
+    assert.equal(childTpl.shareBatch.length, 1);
+    const got = verifyBlock(viewOf(childTpl), { ...parent, hash: okParent.hash, height: 1 }, { probeBody: true });
     assert.equal(got.ok, true, got.reason || '');
-
-    const cb = childTpl.txs[0];
-    const pot = cb.vout.find((o) => o.kind === 'pot');
-    assert.ok(pot);
-    const carryBefore = canonicalCarry(cb);
-    pot.admitPub = Buffer.alloc(32, 0xab);
-    assert.throws(() => dropBrokenCoinbaseNotes(cb, { shares: true }), /admit_note_point/);
-    assert.equal(canonicalCarry(cb), carryBefore);
-    assert.equal(cb.vout.some((o) => Buffer.from(o.admitPub).equals(Buffer.alloc(32, 0xab))), true);
+    // Its payout is an implicit note to the share's key: no coinbase payee
+    // note exists for N-1 to drop, and the record names a point.
+    assert.equal(childTpl.txs[0].vout.some((o) => o.kind === 'pot' || o.kind === 'hash'), false);
+    const notes = notesFromRecord(Buffer.from(got.blunoteRecord, 'hex'));
+    assert.ok(notes.length >= 1);
+    for (const n of notes) assert.ok(fs1LeafFor({ admitPub: n.admitPub, commit: n.commit }), 'every paid key is an FS-1 leaf');
   });
 
-  it('evicts a broken share payee and rebuilds a template that verifies', () => {
+  it('evicts a share whose one-time key is not a point, and the rebuilt template verifies', () => {
     const who = minerDest();
-    const other = minerDest();
     const parentTpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -445,18 +428,13 @@ describe('N-1 gate order', () => {
     const parent = viewOf(parentTpl);
     const okParent = verifyBlock(parent, null, { probeBody: true });
     assert.equal(okParent.ok, true, okParent.reason || '');
+    parent.blunoteRecord = okParent.blunoteRecord;
     const now = T0 + 90_000;
     const ph = decodeHeader(parent.header);
-    const row = (dest, low) => ({
-      dest,
-      dest20: dest20OfShare({ dest }),
-      nonce: nonceWithShareTarget(low, SHARE_FLOOR_BITS),
-      lz: SHARE_FLOOR_BITS,
-      shareBits: SHARE_FLOOR_BITS,
-      proofSlot: 0,
-    });
-    const broken = row(other, 2n);
-    const bad20 = Buffer.from(broken.dest20).toString('hex');
+    const good = mineBluShare(bluWallet(), parent.header);
+    // A payee key that is no point could never be spent (N-1): the template
+    // leaves it out instead of seating a note nobody can open.
+    const broken = { ...mineBluShare(bluWallet(), parent.header), shareP: Buffer.alloc(32, 0xff) };
     const tpl = buildTemplate({
       prev: okParent.hash,
       prevHeader: parent.header,
@@ -466,29 +444,11 @@ describe('N-1 gate order', () => {
       miner: who,
       bits: bitsForBlock(ph.bits, ph.timestamp, now),
       now,
-      shareBatch: [row(who, 1n), broken],
-      prepareCoinbase(cb) {
-        const victim = (cb.vout || []).find((o) => (
-          o.kind === 'pot' && Buffer.from(o.dest20).toString('hex') === bad20
-        ));
-        assert.ok(victim);
-        victim.admitPub = Buffer.alloc(32, 0xab);
-      },
+      shareBatch: [good, broken],
     });
     assert.equal(tpl.shareBatch.length, 1);
-    assert.equal(Buffer.from(dest20OfShare(tpl.shareBatch[0])).toString('hex'), Buffer.from(dest20OfShare({ dest: who })).toString('hex'));
-    assert.equal(tpl.txs[0].vout.some((o) => Buffer.from(o.admitPub || Buffer.alloc(0)).equals(Buffer.alloc(32, 0xab))), false);
-    clearLiveSharePow();
-    const kept = tpl.shareBatch[0];
-    assert.equal(rememberLiveSharePow(parent.header, kept.nonce, {
-      noteCommit: noteCommitOfShare(kept),
-      shareBits: SHARE_FLOOR_BITS,
-      lz: SHARE_FLOOR_BITS,
-    }), true);
-    const got = verifyBlock(viewOf(tpl), { ...parent, hash: okParent.hash, height: 1 }, {
-      probeBody: true,
-      skipSharePow: true,
-    });
+    assert.ok(Buffer.from(tpl.shareBatch[0].shareP).equals(Buffer.from(good.shareP)));
+    const got = verifyBlock(viewOf(tpl), { ...parent, hash: okParent.hash, height: 1 }, { probeBody: true });
     assert.equal(got.ok, true, got.reason || '');
   });
 

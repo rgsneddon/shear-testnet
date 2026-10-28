@@ -528,16 +528,20 @@ describe('folded-row inventory', () => {
     assert.equal(miner.threadHonesty, undefined);
   });
 
-  it('keys the book by dest.worker, not dest-only', () => {
+  it('keys the book by worker name, and an address login is refused', () => {
+    // R28 option 2 (Russell 28 Oct): a login is a worker name only.
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;
-    assert.equal(workerKey(`${dest}.alpha`), `${dest}.alpha`);
-    assert.notEqual(workerKey(`${dest}.alpha`), workerKey(`${dest}.beta`));
-    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: `${dest}.alpha`, client: 'ShearHash' }).workerKey, `${dest}.alpha`);
-    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: `${dest}.alpha`, client: 'ShearHash' }).login, dest);
+    assert.equal(workerKey('alpha'), 'alpha');
+    assert.notEqual(workerKey('alpha'), workerKey('beta'));
+    const alpha = admitClient({ version: SHEARK_MINER_VERSION, login: 'alpha', client: 'ShearHash' });
+    assert.equal(alpha.ok, true, alpha.reason);
+    assert.equal(alpha.workerKey, 'alpha');
+    assert.equal(alpha.login, 'alpha');
+    assert.equal(admitClient({ version: SHEARK_MINER_VERSION, login: `${dest}.alpha`, client: 'ShearHash' }).reason, 'login_address');
   });
 
-  it('two sockets on one worker sum; dest.other is a separate row', async () => {
+  it('two sockets on one worker sum; another worker name is a separate row', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hon-'));
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;
@@ -568,11 +572,11 @@ describe('folded-row inventory', () => {
       sock.on('error', reject);
       setTimeout(() => reject(new Error('login_timeout')), 5000);
     });
-    const a = await login(`${dest}.rig`, 200, 256);
-    const b = await login(`${dest}.rig`, 200, 256);
-    const other = await login(`${dest}.other`, 4, 8);
-    const rig = pool.miners.get(`${dest}.rig`);
-    const oth = pool.miners.get(`${dest}.other`);
+    const a = await login('rig', 200, 256);
+    const b = await login('rig', 200, 256);
+    const other = await login('other', 4, 8);
+    const rig = pool.miners.get('rig');
+    const oth = pool.miners.get('other');
     assert.ok(rig);
     assert.ok(oth);
     assert.notEqual(rig, oth);
@@ -619,7 +623,7 @@ describe('folded-row inventory', () => {
           id: 1,
           method: 'login',
           params: {
-            login: `${dest}.EP01`,
+            login: 'EP01',
             client: 'ShearHash',
             name: 'ShearK-Miner',
             version: SHEARK_MINER_VERSION,
@@ -635,7 +639,7 @@ describe('folded-row inventory', () => {
     });
     const a = await login(32, 32);
     const b = await login(230, 256);
-    const row = pool.miners.get(`${dest}.EP01`);
+    const row = pool.miners.get('EP01');
     assert.equal(row.threads, 262);
     assert.equal(row.cpuThreads, 288);
     const now = Date.now();
