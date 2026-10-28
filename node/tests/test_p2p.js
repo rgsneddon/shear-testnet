@@ -960,6 +960,9 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     const seeded = createStore(seedDir);
     const funded = await fundAnchor(seeded, id);
     const minerDest = encodeDest(hash20FromAddress(box.dest), id.admitBase);
+    // R28: this test's own box dest (spendBox draws a fresh one) mines solo
+    // with option (b) too, so its later rounds pay record coins to id's wallet.
+    soloWallets.set(minerDest, bluWallet(id.spendSeed));
     const tipMs = (store) => Number(decodeHeader(Buffer.from(store.tip().header)).timestamp);
     const portals = portalsFromSeed(id.spendSeed, 2);
     assert.equal(portals.length, 2, 'two portals');

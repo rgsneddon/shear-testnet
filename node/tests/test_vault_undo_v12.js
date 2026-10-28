@@ -41,6 +41,7 @@ import { levyNeed } from '../../crypto/levy.js';
 import { v3BucketVaultRejected } from '../../crypto/fs1_send_gate.js';
 import { rememberFundVerdict } from '../../crypto/fund_verdict.js';
 import { walletAnchor, readyHeight } from '../../crypto/admit_v3.js';
+import { bluWallet, soloPay } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -232,7 +233,9 @@ describe('v12 vault trial does not clone per reserve tx', () => {
       while ((store.tip()?.height || 0) + 1 < includeAt) {
         const tip = store.tip();
         const now = tip ? headerTime(tip) + STEP : T0;
-        const { tpl } = store.template({ miner: who.dest, now });
+        // R28: a coinbase carries no pot note; a solo option (b) round pays
+        // one implicit note, so the anchor holds notes and has a jroot.
+        const { tpl } = store.template({ miner: who.dest, now, ...soloPay(bluWallet(who.spendSeed || who.id.spendSeed)) });
         const pow = easyPow();
         const got = await store.append(blockFrom(tpl, pow), { trustedPowHash: pow, skipSharePow: true });
         assert.equal(got.ok, true, `${got.reason || 'seal'} at ${(tip?.height || 0) + 1}`);

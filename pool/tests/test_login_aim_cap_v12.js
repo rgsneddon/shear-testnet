@@ -145,8 +145,9 @@ describe('PSA-5a56-3 login cap and one finder seal per turn', () => {
       seededTpl.levyBind.finderNanos = 500;
       resetFinderAimSeals();
       const known = [];
+      // R28 option 2: a login is a worker name only.
       for (let i = 0; i < LOGIN_PER_IP_MAX; i += 1) {
-        const d = dest();
+        const d = `rig${i}`;
         const got = await login(port, d);
         assert.equal(got.msg.result?.status, 'OK', got.msg.error || 'login');
         assert.equal(got.msg.job?.jobId, pool.lastJob.jobId);
@@ -154,7 +155,7 @@ describe('PSA-5a56-3 login cap and one finder seal per turn', () => {
         sockets.push(got.sock);
       }
       assert.equal(pool.miners.size, LOGIN_PER_IP_MAX);
-      const extra = dest();
+      const extra = 'rig-extra';
       const before = pool.miners.size;
       const seals = finderAimSeals();
       const refused = await login(port, extra);
