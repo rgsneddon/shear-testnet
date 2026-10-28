@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart' show kSpendableSyncing, spendableFigureText;
 import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_blunote.dart' show kBluAwaitingRecord;
 import 'package:shear_wallet/shear_body_scan.dart';
 import 'package:shear_wallet/shear_checkpoint.dart';
 import 'package:shear_wallet/shear_identity.dart';
@@ -92,7 +93,7 @@ Future<_Node> _startNode(String dest) async {
   unawaited(proc.exitCode.then((code) {
     if (!first.isCompleted) first.completeError(StateError('node exited $code: $err'));
   }));
-  final line = await first.future.timeout(const Duration(minutes: 8));
+  final line = await first.future.timeout(const Duration(minutes: 15));
   return _Node(proc, jsonDecode(line) as Map<String, dynamic>);
 }
 
@@ -130,6 +131,8 @@ void main() {
     final pool = _client(node);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.installCheckpoint(node.pin);
+    // R28: the wallet is paid by its shares' draw; it scans block records.
+    ledger.setBluMining(true);
     final pinH = node.pin.height;
 
     // The node no longer answers notes (AL-5): the read is the body scan.
@@ -140,21 +143,25 @@ void main() {
     await notes.drain<void>();
 
     await ledger.populateSpendableFromNode(id.address, paymentCode: id.paymentCode);
+    await ledger.bluScanInFlight;
     expect(ledger.bodyProofRequired, isTrue);
     expect(ledger.spendableReadFailed, isFalse, reason: ledger.spendableReadError);
     expect(ledger.bodyScanTo, node.tip, reason: 'every body up to the verified tip');
     expect(ledger.bookTip, node.tip);
 
     final pays = node.payments;
-    expect(pays.length, 3);
+    expect(pays.length, 4);
     var deep = 0;
     var young = 0;
     for (final p in pays) {
       expect(_commitsAt(ledger, p.height), containsAll(p.commits), reason: 'h=${p.height} found');
+      // The tip's record is named by no block yet: ruling 7 keeps it out.
+      final named = p.height < node.tip;
       for (final n in ledger.notes) {
         if ((n['height'] as num?)?.toInt() != p.height) continue;
-        expect(n['bodyProven'], isTrue, reason: 'h=${p.height} proven');
+        expect(n['bodyProven'] == true, named, reason: 'h=${p.height} proven');
       }
+      if (!named) continue;
       if (ledger.confirmationsOf(p.height) >= ShearLedger.spendableConfirmations) {
         deep += p.nanos;
       } else {
@@ -167,7 +174,8 @@ void main() {
     expect(_units(ledger.spendableOwned(id.address, paymentCode: id.paymentCode)), deep,
         reason: 'Spendable is exactly the proven, confirmed coins');
     expect(_units(ledger.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode)), young,
-        reason: 'the coin short of 9 confirmations is Pending');
+        reason: 'the coin short of 9 confirmations is Pending, and the unnamed record paints no figure');
+    expect(ledger.bluAwaitingRecord, pays.last.commits.length, reason: kBluAwaitingRecord);
     expect(
       spendableFigureText(sourceBlocked: false, ready: true, spendShe: deep / kUnitsPerShe),
       '${formatShe(deep / kUnitsPerShe)} SHE',
@@ -191,6 +199,7 @@ void main() {
     final pool = _client(node);
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.installCheckpoint(node.pin);
+    ledger.setBluMining(true);
     final pinH = node.pin.height;
     final paid = node.payments.first;
 
@@ -209,17 +218,17 @@ void main() {
         (block['txs'] as List).cast<Map<String, dynamic>>().firstWhere((t) => t['coinbase'] == true);
 
     final tampers = <String, void Function(Map<String, dynamic>)>{
-      // A changed output: the amount the coinbase publishes.
+      // A changed amount: the pot the coinbase carries.
       'output amount': (b) {
-        final o = (coinbaseOf(b)['vout'] as List).first as Map<String, dynamic>;
-        final vp = o['valueProof'] as Map<String, dynamic>;
-        vp['v'] = (vp['v'] as num).toInt() + 1;
+        final cb = coinbaseOf(b);
+        cb['carryNanos'] = ((cb['carryNanos'] as num?)?.toInt() ?? 0) + 1;
       },
-      // A changed output: its commitment.
-      'output commit': (b) {
-        final o = (coinbaseOf(b)['vout'] as List).first as Map<String, dynamic>;
-        final c = (o['commit'] as Map)[r'$hex'] as String;
-        o['commit'] = {r'$hex': '${c.substring(0, 62)}${c.endsWith('00') ? '01' : '00'}'};
+      // A changed byte field: the coinbase kernel excess (an R28 coinbase
+      // that pays the draw has no output of its own).
+      'tx bytes': (b) {
+        final cb = coinbaseOf(b);
+        final c = (cb['excess'] as Map)[r'$hex'] as String;
+        cb['excess'] = {r'$hex': '${c.substring(0, 62)}${c.endsWith('00') ? '01' : '00'}'};
       },
       // A tx the header does not commit to, paying the wallet.
       'extra tx': (b) {
@@ -270,6 +279,7 @@ void main() {
       hostTip: node.tip,
     );
     expect(ok, isTrue);
+    await ledger.bluScanInFlight;
     expect(_commitsAt(ledger, paid.height), containsAll(paid.commits));
     pool.close();
   }, timeout: const Timeout(Duration(minutes: 10)));
@@ -295,6 +305,7 @@ void main() {
     // 2. Verified headers, but the node does not send a body.
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.installCheckpoint(node.pin);
+    ledger.setBluMining(true);
     final cut = node.payments[1].height;
     final ok = await ledger.scanVerifiedBodies(
       restFrame: id.address,
@@ -303,6 +314,7 @@ void main() {
       fetch: (h) async => h >= cut ? null : pool.wireBlock(h),
     );
     expect(ok, isFalse);
+    await ledger.bluScanInFlight;
     ledger.noteSpendableReadFailed();
     expect(ledger.spendableReadError, 'block $cut: the node did not send its body');
     final ready2 = ledger.spendableFigureReady(id.address, paymentCode: id.paymentCode);

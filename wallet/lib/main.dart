@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'shear_blunote.dart' show bluMiningAddress;
+import 'shear_blunote.dart' show bluMiningAddress, kBluAwaitingRecord;
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_licenses.dart';
@@ -929,6 +929,9 @@ class ShearWalletAppState extends State<ShearWalletApp>
         onVortices: (v) => session.deployedVortices = v,
       );
       session.identity = imported;
+      // A restored wallet's birth is unknown: "Did this wallet mine?" yes
+      // scans from height 0 (ruling 7).
+      session.bluBirthMs = 0;
       await session.setPassword(pw);
       await _enterWallet(pw);
       unawaited(_askDidThisWalletMine());
@@ -972,7 +975,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
 
   Future<void> _setBluMining(bool on) async {
     session.bluMining = on;
-    ledger.setBluMining(on);
+    ledger.setBluMining(on, birthMs: session.bluBirthMs);
     if (mounted) setState(() {});
     await session.persist();
   }
@@ -1130,7 +1133,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
       genesis: session.rememberedChainGenesis,
     );
     ledger.restoreOpenedProofs(session.rememberedOpenedProofs);
-    ledger.setBluMining(session.bluMining);
+    ledger.setBluMining(session.bluMining, birthMs: session.bluBirthMs);
     if (session.rememberedTxs.isNotEmpty) {
       await applyUserArchiveOffUi(ledger, {
         'dests': session.rememberedDests,
@@ -3307,6 +3310,10 @@ class ShearWalletAppState extends State<ShearWalletApp>
         'Each pending transfer stays on this list. Tap a row to open it in Shearview. One vortex point turns yellow per confirmation; at ${ShearLedger.spendableConfirmations} confs the row drops and the coins are spendable. Hash rewards sit inside a found block, not as their own rows.',
         style: TextStyle(color: shearMutedOf(context), fontSize: 12),
       ),
+      // Ruling 7: a record note whose next block's record is not proven yet.
+      // Pending, and no figure is painted for it.
+      if (ledger.bluAwaitingRecord > 0)
+        const Text(kBluAwaitingRecord, key: Key('pending-blu-awaiting')),
       for (final t in pending)
         InkWell(
           key: ValueKey('pending-row-${t.id}'),

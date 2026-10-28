@@ -241,6 +241,11 @@ class ShearSession {
   /// R28 "This wallet mines". Off by default. On scans block records for
   /// this wallet's winner notes.
   bool bluMining = false;
+
+  /// Ruling 7: when this wallet was made on this device (ms). A new wallet
+  /// cannot have mined before it, so older records are not scanned. 0 is
+  /// unknown: an imported or restored wallet scans from height 0.
+  int bluBirthMs = 0;
   bool darkMode = false;
   List<String> rememberedDests = const [];
   List<Map<String, dynamic>> rememberedTxs = const [];
@@ -295,6 +300,7 @@ class ShearSession {
     if (identity != null && sealed && _password != null) return identity;
     if (!store.existsSync()) {
       identity = createIdentity();
+      bluBirthMs = DateTime.now().millisecondsSinceEpoch;
       sealed = false;
       _envelope = null;
       _password = null;
@@ -305,6 +311,7 @@ class ShearSession {
     debugSessionLoadStamp = wire['stamp']?.toString() ?? '';
     if (wire['missing'] == true || wire['empty'] == true) {
       identity = createIdentity();
+      bluBirthMs = DateTime.now().millisecondsSinceEpoch;
       sealed = false;
       _envelope = null;
       _password = null;
@@ -329,7 +336,10 @@ class ShearSession {
   Future<void> setPassword(String password, {String? confirm}) async {
     final err = walletPasswordError(password, confirm: confirm);
     if (err != null) throw FormatException(err);
-    identity ??= createIdentity();
+    if (identity == null) {
+      identity = createIdentity();
+      bluBirthMs = DateTime.now().millisecondsSinceEpoch;
+    }
     _password = password;
     sealed = true;
     await persist();
@@ -399,6 +409,7 @@ class ShearSession {
         'publicNodeConsent': publicNodeConsent,
         'publicNodeChoiceMade': publicNodeChoiceMade,
         if (bluMining) 'bluMining': true,
+        if (bluBirthMs > 0) 'bluBirthMs': bluBirthMs,
         'dests': rememberedDests.where((d) => d.startsWith('ssa1')).toList(),
         'destCount': rememberedDestCount,
         'destIndex': rememberedDestIndex,
@@ -419,6 +430,7 @@ class ShearSession {
   /// Explicit reset: drop a v3 shewall and mint a new identity on this book.
   Future<ShearIdentity> resetForNewBook({String? password}) async {
     identity = createIdentity();
+    bluBirthMs = DateTime.now().millisecondsSinceEpoch;
     rememberedDests = const [];
     rememberedTxs = const [];
     rememberedDestCount = 1;
@@ -457,6 +469,7 @@ class ShearSession {
     publicNodeConsent = j['publicNodeConsent'] == true;
     publicNodeChoiceMade = j['publicNodeChoiceMade'] == true;
     bluMining = j['bluMining'] == true;
+    bluBirthMs = (j['bluBirthMs'] as num?)?.toInt() ?? 0;
     rememberedDests = ((use['dests'] as List?) ?? const [])
         .map((e) => e.toString())
         .where((d) => d.startsWith('ssa1'))

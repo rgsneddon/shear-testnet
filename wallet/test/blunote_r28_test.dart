@@ -176,6 +176,17 @@ void main() {
       expect(s.scanBlocks([block], seedOf('alice')).length, 2, reason: 'reset rescans');
       final late = BluMiningScanner(enabled: true, birthHeight: 4);
       expect(late.scanBlocks([block], seedOf('alice')), isEmpty, reason: 'below birth height');
+      // Ruling 7 birth: a new wallet made at birthMs skips a record whose
+      // verified header is over a day older, and scans one inside the day.
+      const born = 1800000000000;
+      final fresh = BluMiningScanner(enabled: true, birthMs: born);
+      final old = {...block, 'timeMs': born - kBluBirthMarginMs - 1};
+      final near = {...block, 'height': 4, 'timeMs': born - kBluBirthMarginMs + 1};
+      expect(fresh.scanBlocks([old], seedOf('alice')), isEmpty, reason: 'before birth');
+      expect(fresh.scanBlocks([near], seedOf('alice')).length, 2, reason: 'within the margin');
+      // Unknown birth (a restore): every record is scanned.
+      final restored = BluMiningScanner(enabled: true);
+      expect(restored.scanBlocks([old], seedOf('alice')).length, 2);
     });
 
     test('a new session has the switch off; it survives a seal and unlock', () async {
@@ -191,6 +202,26 @@ void main() {
       await again.loadOrCreate();
       await again.unlock('correct horse battery staple 1');
       expect(again.bluMining, isTrue);
+      dir.deleteSync(recursive: true);
+    });
+
+    test('ruling 7 birth: a new wallet records when it was made, kept across a seal', () async {
+      final dir = Directory.systemTemp.createTempSync('shear-blu-birth-');
+      final before = DateTime.now().millisecondsSinceEpoch;
+      final session = ShearSession(store: File('${dir.path}/session.json'));
+      await session.loadOrCreate();
+      final after = DateTime.now().millisecondsSinceEpoch;
+      expect(session.bluBirthMs, inInclusiveRange(before, after), reason: 'a new wallet');
+      await session.setPassword('correct horse battery staple 1');
+      final born = session.bluBirthMs;
+      final again = ShearSession(store: File('${dir.path}/session.json'));
+      await again.loadOrCreate();
+      expect(again.bluBirthMs, 0, reason: 'a sealed file is not a new wallet');
+      await again.unlock('correct horse battery staple 1');
+      expect(again.bluBirthMs, born, reason: 'kept across a seal and unlock');
+      final ledger = ShearLedger()..bindIdentity(again.identity!);
+      ledger.setBluMining(true, birthMs: again.bluBirthMs);
+      expect(ledger.blu.birthMs, born);
       dir.deleteSync(recursive: true);
     });
   });
@@ -213,7 +244,10 @@ void main() {
       return (ledger.spendableOwned(id.address, paymentCode: id.paymentCode) * kUnitsPerShe).round();
     }
 
-    /// Block h with [rec], and block h+1 whose coinbase names its root.
+    /// Block h with [rec], and block h+1 whose coinbase names its root, as
+    /// compact rows a node sends. Ruling 7: such a row is not proven against
+    /// a verified header, so it binds nothing (the proven path is
+    /// blunote_r28_coinbase_proof_test.dart).
     List<Map<String, dynamic>> bound(Uint8List rec, {String? prev}) => [
           {'height': h, 'blunoteRecord': _h(rec)},
           {
@@ -244,7 +278,7 @@ void main() {
       expect(spendableUnits(ledger, id), 0);
     });
 
-    test('on: own winners only; Pending until 9 confirmations, then exactly Spendable', () {
+    test('on: own winners only; from compact rows alone they wait for the next record, with no figure', () {
       final id = createIdentity();
       final seed = _seedOf(id);
       final stranger = _seedOf(createIdentity());
@@ -264,7 +298,8 @@ void main() {
       expect(spendableUnits(shallow, id), 0);
       final pendingUnits =
           (shallow.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode) * kUnitsPerShe).round();
-      expect(pendingUnits, (piece * BigInt.from(4)).toInt());
+      expect(pendingUnits, 0, reason: 'an unbound record note paints no figure');
+      expect(shallow.bluAwaitingRecord, 2, reason: kBluAwaitingRecord);
 
       // Header depth unknown (the verified tip is below the note): Pending.
       final noHeaders = ledgerAt(id, h - 1);
@@ -272,11 +307,13 @@ void main() {
       noHeaders.ingestBluRecords(blocks);
       expect(spendableUnits(noHeaders, id), 0);
 
-      // Nine confirmations (h .. h+8): Spendable is exactly the two notes.
+      // Nine confirmations (h .. h+8), and a compact h+1 that names the
+      // root: still not Spendable, as that row is not proven (ruling 7).
       final deep = ledgerAt(id, h + 8);
       deep.setBluMining(true);
       deep.ingestBluRecords(blocks);
-      expect(spendableUnits(deep, id), (piece * BigInt.from(4)).toInt());
+      expect(spendableUnits(deep, id), 0);
+      expect(deep.bluAwaitingRecord, 2);
 
       for (final n in deep.notes.where((n) => isBluNoteKind(n['kind'] as String?))) {
         final x = admitScalarFromSeed(seed, Map<String, dynamic>.from(n));
@@ -288,7 +325,7 @@ void main() {
       }
     });
 
-    test('a record note is never Spendable until block h+1 names its record root', () {
+    test('ruling 7: a coinbase row the node sends never binds its record, right root or wrong', () {
       final id = createIdentity();
       final seed = _seedOf(id);
       final rec = _record(T: T, winners: [winnerFor(seed, 1, 2)]);
@@ -302,9 +339,12 @@ void main() {
       ]);
       expect(unbound.notes.where((n) => isBluNoteKind(n['kind'] as String?)).length, 1);
       expect(spendableUnits(unbound, id), 0);
-      // Block h+1 arrives and names the root: now Spendable.
+      // Block h+1 arrives as a compact row naming the right root: it is not
+      // proven against a verified header, so the note still waits.
       unbound.ingestBluRecords(bound(rec));
-      expect(spendableUnits(unbound, id), two);
+      expect(spendableUnits(unbound, id), 0);
+      expect(two, greaterThan(0));
+      expect(unbound.notes.where((n) => isBluNoteKind(n['kind'] as String?)).single['verified'], isFalse);
 
       // A coinbase that names another root: never Spendable.
       final wrong = ledgerAt(id, h + 8);
@@ -313,20 +353,23 @@ void main() {
       expect(spendableUnits(wrong, id), 0);
     });
 
-    test('a replaced record (reorg) takes its notes out of Spendable', () {
+    test('a replaced record (reorg) marks its notes reorged', () {
       final id = createIdentity();
       final seed = _seedOf(id);
       final ledger = ledgerAt(id, h + 8);
       ledger.setBluMining(true);
       ledger.ingestBluRecords(bound(_record(T: T, winners: [winnerFor(seed, 1, 2)])));
-      expect(spendableUnits(ledger, id), (piece * BigInt.from(2)).toInt());
+      Map<String, dynamic> note() => ledger.notes.where((n) => isBluNoteKind(n['kind'] as String?)).single;
+      expect(note()['reorged'], isFalse);
       // A row sent without its record is not a replaced block.
       ledger.ingestBluRecords([
         {'height': h},
       ]);
-      expect(spendableUnits(ledger, id), (piece * BigInt.from(2)).toInt());
+      expect(note()['reorged'], isFalse);
       ledger.ingestBluRecords(bound(_record(T: T, winners: const [], salt: 1)));
+      expect(note()['reorged'], isTrue);
       expect(spendableUnits(ledger, id), 0);
+      expect(ledger.bluAwaitingRecord, 0, reason: 'a replaced note is not waiting for a record');
     });
 
     test('the fee note of a record is found when the fee key is ours', () {
@@ -341,7 +384,8 @@ void main() {
       final notes = ledger.notes.where((n) => n['kind'] == kBluKindFee).toList();
       expect(notes.length, 1);
       expect(notes.single['nanos'], 777);
-      expect(spendableUnits(ledger, id), 777);
+      expect(spendableUnits(ledger, id), 0, reason: 'its record is not proven yet');
+      expect(ledger.bluAwaitingRecord, 1);
     });
   });
 }

@@ -28,6 +28,14 @@ const String kBluKindFee = 'blunote-fee';
 
 bool isBluNoteKind(String? kind) => kind == kBluKindWinner || kind == kBluKindFee;
 
+/// Pending line for a record note whose next block's record root is not
+/// proven yet (ruling 7). It names no figure.
+const String kBluAwaitingRecord = "Waiting for next block's record";
+
+/// Slack before a new wallet's birth: a header time can trail the wall
+/// clock, and a clock can be wrong. One day of blocks is still scanned.
+const int kBluBirthMarginMs = 24 * 60 * 60 * 1000;
+
 /// Scan scalar y = H("shear-blunote-scan-v1" || spendSeed).
 Scalar bluScanScalar(Uint8List spendSeed) => hashToScalar([_scanDst, spendSeed]);
 
@@ -355,10 +363,16 @@ List<Map<String, dynamic>> scanBluRecordsWire(Map<String, dynamic> input) {
 /// wallet scan block records for winners, from [birthHeight] up. A record
 /// already scanned under the same key is not scanned again.
 class BluMiningScanner {
-  BluMiningScanner({this.enabled = false, this.birthHeight = 0});
+  BluMiningScanner({this.enabled = false, this.birthHeight = 0, this.birthMs = 0});
 
   bool enabled;
   int birthHeight;
+
+  /// Ruling 7 birth (Russell, 28 Oct): when a new wallet was made. A block
+  /// whose verified header time is more than [kBluBirthMarginMs] before it
+  /// cannot pay this wallet, so its record is not scanned. 0 is unknown (a
+  /// restore): every record is scanned, from height 0.
+  int birthMs;
   final Set<String> _scanned = {};
 
   int get scannedCount => _scanned.length;
@@ -375,6 +389,8 @@ class BluMiningScanner {
       final h = raw['height'];
       final height = h is num ? h.toInt() : int.tryParse('$h') ?? 0;
       if (height < 1 || height < birthHeight) continue;
+      final t = raw['timeMs'];
+      if (birthMs > 0 && t is num && t > 0 && t < birthMs - kBluBirthMarginMs) continue;
       final rec = bluRecordOfBlock(raw);
       if (rec == null) continue;
       final key = bluRecordKey(height, rec);

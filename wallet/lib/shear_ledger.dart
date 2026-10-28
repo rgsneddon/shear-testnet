@@ -1469,6 +1469,13 @@ void noteUiHeavy(String label) {
   debugUiHeavyCount += 1;
 }
 
+/// [scanBluRecordsWire] in [Isolate.run]. Top level, so the closure carries
+/// only [input]: one made inside a ledger method also captured the ledger
+/// (its HTTP client cannot be sent), the run threw, and the records were
+/// never scanned.
+Future<List<Map<String, dynamic>>> scanBluRecordsOffUi(Map<String, dynamic> input) =>
+    Isolate.run(() => scanBluRecordsWire(input));
+
 /// Stamp of this isolate. [sealSignReserveWire] returns the worker's stamp.
 final String reserveIsolateStamp =
     '${identityHashCode(Isolate.current)}-${DateTime.now().microsecondsSinceEpoch}';
@@ -4861,8 +4868,9 @@ class ShearLedger implements ReadProofSink {
   /// Turn the mining scan on or off. On forgets what was scanned and rescans
   /// the blocks already read, from [birthHeight] (0 is the whole chain).
   /// Off stops new scans; notes already found are real coins and stay.
-  void setBluMining(bool on, {int? birthHeight}) {
+  void setBluMining(bool on, {int? birthHeight, int? birthMs}) {
     if (birthHeight != null && birthHeight >= 0) blu.birthHeight = birthHeight;
+    if (birthMs != null && birthMs >= 0) blu.birthMs = birthMs;
     final was = blu.enabled;
     blu.enabled = on;
     if (!on || was) return;
@@ -4894,7 +4902,7 @@ class ShearLedger implements ReadProofSink {
     }
     final prior = bluScanInFlight ?? Future<void>.value();
     bluScanInFlight = prior.then((_) async {
-      final rows = await Isolate.run(() => scanBluRecordsWire(input));
+      final rows = await scanBluRecordsOffUi(input);
       _applyBluRows(rows, blocks);
     }).catchError((Object _) {
       // The scan did not finish: scan these records again on the next read.
@@ -4902,21 +4910,74 @@ class ShearLedger implements ReadProofSink {
     });
   }
 
+  /// Coinbase `blunote.prev` roots from bodies this ledger proved against a
+  /// verified header (ruling 7, Russell 28 Oct), by that block's height. A
+  /// compact row the node sends is not trusted: only a proven row binds.
+  final Map<int, String> _provenBluPrev = {};
+
+  /// Ruling 7: the record root block h+1 names, read from a coinbase row
+  /// [proveWireBody] accepted. Null when the row names none.
+  static String? _coinbaseBluPrev(List<Map<String, dynamic>> provenTxs) {
+    for (final tx in provenTxs) {
+      if (tx['coinbase'] != true) continue;
+      final blu = tx['blunote'];
+      if (blu is! Map) return null;
+      final raw = blu['prev'];
+      final bytes = wireByteContainer(raw);
+      if (bytes != null) return bytes.length == 32 ? _bytesHex(bytes) : null;
+      if (raw is String && RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(raw)) {
+        return raw.toLowerCase();
+      }
+      return null;
+    }
+    return null;
+  }
+
+  bool _bluNoteVerified(Uint8List commit) {
+    for (final n in _notes) {
+      final c = _noteBytes(n['commit']);
+      if (c != null && _bytesEq(c, commit)) return n['verified'] == true;
+    }
+    return false;
+  }
+
+  /// Record notes waiting for block h+1's proven record root. Pending, with
+  /// no figure: "Waiting for next block's record".
+  int get bluAwaitingRecord {
+    var n = 0;
+    for (final note in _notes) {
+      if (!isBluNoteKind(note['kind'] as String?)) continue;
+      if (note['verified'] == true || note['reorged'] == true || note['spent'] == true) continue;
+      n++;
+    }
+    return n;
+  }
+
   /// A record note counts only once block h+1's coinbase names its record
   /// root (`blunote.prev`), so the record is under PoW, and only while the
-  /// record at h is still the one it came from. Otherwise it is not verified:
-  /// it is Pending and never Spendable.
+  /// record at h is still the one it came from. Ruling 7: that coinbase row
+  /// counts only once its body is proven against the header this ledger
+  /// verified ([_provenBluPrev]); the row as the node sends it is not
+  /// trusted. Until then the note is Pending with no figure, never
+  /// Spendable.
   void _bluBindPass(List blocks) {
     final keys = bluRecordKeysByHeight(blocks);
-    final prevs = bluPrevRootsByHeight(blocks);
-    if (keys.isEmpty && prevs.isEmpty) return;
+    if (keys.isEmpty && _provenBluPrev.isEmpty) return;
     for (final n in _notes) {
       if (!isBluNoteKind(n['kind'] as String?)) continue;
       final h = (n['height'] as num?)?.toInt() ?? 0;
       final now = keys[h];
       if (now != null) n['reorged'] = now != n['bluRecord'];
-      final prev = prevs[h + 1];
-      if (prev != null) n['verified'] = prev == n['bluRoot'];
+      final prev = _provenBluPrev[h + 1];
+      if (prev == null) continue;
+      final ok = prev == n['bluRoot'];
+      final was = n['verified'] == true;
+      n['verified'] = ok;
+      n['bodyProven'] = ok;
+      // The proven row names another record: this note is not the chain's.
+      // It is not waiting for anything, and it never counts.
+      if (!ok) n['reorged'] = true;
+      if (ok && !was) _creditNoteToShearview(n);
     }
   }
 
@@ -4957,7 +5018,9 @@ class ShearLedger implements ReadProofSink {
         row['spent'] = false;
       }
       rememberNote(row);
-      _creditNoteToShearview(row);
+      // An unbound note is not painted anywhere: Pending shows only that it
+      // waits for the next block's record ([bluAwaitingRecord]).
+      if (have && _bluNoteVerified(w['C'] as Uint8List)) _creditNoteToShearview(row);
     }
     _bluBindPass(blocks);
     rememberDest(dest);
@@ -9993,11 +10056,17 @@ class ShearLedger implements ReadProofSink {
   /// A reorg below the scan cursor: bodies above [height] are scanned again,
   /// and a note from them is Pending until its new body is proven.
   void _rewindBodyScan(int height) {
+    _provenBluPrev.removeWhere((h, _) => h > height);
     if (_bodyScanTo <= height) return;
     _bodyScanTo = height;
     for (final n in _notes) {
       final h = n['height'];
       if (h is num && h > height && n['bodyProven'] == true) {
+        n['bodyProven'] = false;
+      }
+      // A record note at h is bound by block h+1, which is above the floor.
+      if (h is num && h >= height && isBluNoteKind(n['kind'] as String?)) {
+        n['verified'] = false;
         n['bodyProven'] = false;
       }
     }
@@ -10097,6 +10166,7 @@ class ShearLedger implements ReadProofSink {
     final rows = <Map<String, dynamic>>[];
     final provenTxs = <Map<String, dynamic>>[];
     final provenAt = <String, int>{};
+    final provenRecords = <Map<String, dynamic>>[];
     var last = from - 1;
     String? stop;
     for (var h = from; h <= to; h++) {
@@ -10132,6 +10202,15 @@ class ShearLedger implements ReadProofSink {
         provenAt[c] = h;
       }
       provenTxs.addAll(proof.txs);
+      // Ruling 7: block h's coinbase names block h-1's record root. Only a
+      // proven row is kept. The record bytes ride on the frame; a note from
+      // them binds only when its root is the one the proven row names.
+      final prevRoot = _coinbaseBluPrev(proof.txs);
+      if (prevRoot != null) _provenBluPrev[h] = prevRoot;
+      final rec = wire['blunoteRecord'];
+      if (rec is String && rec.isNotEmpty) {
+        provenRecords.add({'height': h, 'blunoteRecord': rec, 'timeMs': row.timeMs});
+      }
       last = h;
       await Future<void>.delayed(Duration.zero);
     }
@@ -10143,6 +10222,11 @@ class ShearLedger implements ReadProofSink {
       home: home,
       partials: partials,
     );
+    if (provenRecords.isNotEmpty) {
+      ingestBluRecords(provenRecords);
+    } else {
+      _bluBindPass(const []);
+    }
     if (last > _bodyScanTo) _bodyScanTo = last;
     if (stop != null) return _bodyScanFail(stop);
     return true;
@@ -10527,6 +10611,8 @@ class ShearLedger implements ReadProofSink {
       'notesCovered': _notesCovered,
       'bodyProof': _bodyProofRequired,
       'bodyScanTo': _bodyScanTo,
+      'bluMining': blu.enabled,
+      'bluBirthMs': blu.birthMs,
       if (_bodyScanError.isNotEmpty) 'bodyScanError': _bodyScanError,
       if (networkHashrate != null) 'networkHashrate': networkHashrate,
       if (circulatingNanos != null) 'circulatingNanos': circulatingNanos,
@@ -10714,6 +10800,9 @@ class ShearLedger implements ReadProofSink {
     }
     // The worker's cursor is the book's, including one a reorg moved back.
     if (spec['bodyProof'] == true) _bodyProofRequired = true;
+    if (spec.containsKey('bluMining')) blu.enabled = spec['bluMining'] == true;
+    final birth = spec['bluBirthMs'];
+    if (birth is num && birth >= 0) blu.birthMs = birth.toInt();
     final scanTo = spec['bodyScanTo'];
     if (scanTo is num && scanTo >= 0) _bodyScanTo = scanTo.toInt();
     _bodyScanError = spec['bodyScanError']?.toString() ?? '';
@@ -10931,6 +11020,9 @@ class ShearLedger implements ReadProofSink {
       'notesCovered': _notesCovered,
       'bodyProof': _bodyProofRequired,
       'bodyScanTo': _bodyScanTo,
+      // R28: the worker scans records only when this wallet mines.
+      'bluMining': blu.enabled,
+      'bluBirthMs': blu.birthMs,
       'acceptedCommits': <String>[
         for (final n in _notes)
           if (n['verified'] == true)

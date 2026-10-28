@@ -7,11 +7,14 @@
 // trusted hash (the wallet starts from the pin, as a release wallet does).
 // Every block above the pin is mined: its ShearHash meets the ASERT bits the
 // template set, so the wallet's own header checks are the ones that run.
-// The wallet's dest mines some of those blocks, so their coinbase pays it.
+// R28: a coinbase pays no miner. The wallet is paid through its own shares
+// (mined with real ShearHash on the parent header) in the block's draw, so
+// its notes are that block's record notes, named by the next block's
+// coinbase (blunote.prev).
 //
 // Prints one JSON line: the RPC port, the checkpoint pin, the tip, and each
-// payment the wallet's seed opens (height, commits, nanos). The node keeps
-// serving until stdin closes.
+// payment the wallet's seed opens (height, commits, nanos, kind). The node
+// keeps serving until stdin closes.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,9 +22,8 @@ import { createStore } from '../../../node/src/store.js';
 import { createRpc } from '../../../node/src/rpc.js';
 import { decodeHeader, setNonce } from '../../../crypto/header.js';
 import { shearHash, meetsTarget } from '../../../crypto/shear_hash.js';
-import { encodeDest, hash20FromAddress } from '../../../crypto/address.js';
-import { admitBaseScalar } from '../../../crypto/admit.js';
-import { asU8, noteCommitOfDest20, openedCoinbaseNanos, openNoteAmount } from '../../../crypto/note.js';
+import { encodeDest } from '../../../crypto/address.js';
+import { bluWallet, mineBluShares, ownBluNotes } from '../../../node/tests/support/blunote_mine.js';
 
 const [walletDest, seedHex] = process.argv.slice(2);
 if (!walletDest || !/^[0-9a-f]{64}$/.test(seedHex || '')) {
@@ -30,15 +32,16 @@ if (!walletDest || !/^[0-9a-f]{64}$/.test(seedHex || '')) {
 }
 const FLOOR_BITS = 4 * 65536;
 const ABOVE_PIN = 12;
-// Wallet-mined heights above the pin: two deep enough to spend at the tip,
-// one still short of 9 confirmations.
-const PAID_ABOVE_PIN = [1, 2, ABOVE_PIN - 2];
+// Heights above the pin whose draw pays the wallet: two deep enough to
+// spend at the tip, one still short of 9 confirmations, and the tip, whose
+// record no block names yet.
+const PAID_ABOVE_PIN = [1, 2, ABOVE_PIN - 2, ABOVE_PIN];
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-body-scan-'));
 const store = createStore(dir);
 const other = encodeDest(Buffer.alloc(20, 3));
-const want = noteCommitOfDest20(hash20FromAddress(walletDest));
-const xBase = admitBaseScalar(Buffer.from(seedHex, 'hex'));
+// The dest is not paid under R28; the seed's mining keys (B, Y) are.
+const who = bluWallet(Buffer.from(seedHex, 'hex'));
 
 let fakeSeq = 1;
 function fakeHash() {
@@ -65,7 +68,8 @@ async function appendTpl(tpl, header, hash, miner) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
-  }, { trustedPowHash: hash, skipSharePow: true }));
+  // Shares are always checked: their ShearHash is recomputed on append.
+  }, { trustedPowHash: hash, skipSharePow: !(tpl.shareBatch || []).length }));
   if (!got || got.ok !== true) throw new Error(`append h=${tpl.height} ${got?.reason || ''}`);
 }
 
@@ -89,8 +93,10 @@ const pinHeight = pinBlock.height;
 const payments = [];
 for (let i = 1; i <= ABOVE_PIN; i += 1) {
   at = stampOf(store.tip()) + 90_000;
-  const miner = PAID_ABOVE_PIN.includes(i) ? walletDest : other;
-  const { tpl } = store.template({ miner, now: at });
+  const paid = PAID_ABOVE_PIN.includes(i);
+  const shareBatch = paid ? mineBluShares(who, store.tip().header, 1) : [];
+  const miner = other;
+  const { tpl } = store.template({ miner, now: at, shareBatch });
   const bits = decodeHeader(Buffer.from(tpl.header)).bits;
   let header = null;
   let hash = null;
@@ -105,23 +111,13 @@ for (let i = 1; i <= ABOVE_PIN; i += 1) {
   }
   if (!header) throw new Error(`no nonce at h=${tpl.height}`);
   await appendTpl(tpl, header, hash, miner);
-  if (miner !== walletDest) continue;
+  if (!paid) continue;
   const block = store.tip();
-  const commits = [];
-  let nanos = 0n;
-  for (const tx of block.txs || []) {
-    for (const o of tx.vout || []) {
-      if (!o?.noteCommit || !Buffer.from(asU8(o.noteCommit)).equals(Buffer.from(want))) continue;
-      // A coinbase row publishes v that opens its commitment (COINBASE_V);
-      // a hidden output opens only with the wallet's admit base.
-      const v = openedCoinbaseNanos(o) ?? openNoteAmount(o, xBase)?.v;
-      if (v == null) continue;
-      commits.push(Buffer.from(asU8(o.commit)).toString('hex'));
-      nanos += BigInt(v);
-    }
-  }
-  if (!commits.length) throw new Error(`the wallet opens nothing at h=${block.height}`);
-  payments.push({ height: block.height, commits, nanos: nanos.toString() });
+  const own = ownBluNotes(who, block.blunoteRecord);
+  if (!own.length) throw new Error(`the draw paid the wallet nothing at h=${block.height}`);
+  const commits = own.map((n) => Buffer.from(n.commit).toString('hex'));
+  const nanos = own.reduce((s, n) => s + BigInt(n.v), 0n);
+  payments.push({ height: block.height, commits, nanos: nanos.toString(), kind: 'blunote' });
 }
 
 const times = store.blocks.map((b) => stampOf(b));
