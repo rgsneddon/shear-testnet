@@ -76,7 +76,7 @@ void main() {
         expect(_h(admitBaseBytes(seed)), w['B'], reason: '${w['label']} B');
         final addr = bluMiningAddress(seed);
         expect(addr, w['miningAddress']);
-        expect(addr.length, 128);
+        expect(addr.length, 114, reason: 'shm1 + bech32 of B‖Y');
       }
     });
 

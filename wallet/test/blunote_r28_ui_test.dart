@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_blunote.dart';
@@ -55,10 +56,36 @@ void main() {
     expect(session.bluMining, isTrue);
     expect(ledger.bluMining, isTrue);
     final addr = bluMiningAddress(hexToBytes(session.identity!.seedHex));
-    expect(addr.length, 128);
+    expect(addr, startsWith('shm1'));
+    expect(addr.length, 114);
     final shown = tester.widget<SelectableText>(find.byKey(const Key('settings-blu-address')));
     expect(shown.data, addr);
-    expect(find.byKey(const Key('settings-blu-address-copy')), findsOneWidget);
+
+    // Each button copies exactly its string (Russell, 28 Oct).
+    final copied = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copied.add((call.arguments as Map)['text'] as String);
+      }
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    for (final k in ['settings-blu-address-copy', 'settings-blu-pool-command', 'settings-blu-solo-command']) {
+      final b = find.byKey(Key(k));
+      await tester.ensureVisible(b);
+      await tester.pump();
+      await tester.tap(b);
+      await tester.pump();
+    }
+    expect(copied, [
+      addr,
+      './ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user rig1 --blu $addr --threads 8',
+      './ShearK-Miner --pool 127.0.0.1:1111 --user rig1 --blu $addr --solo --threads 8',
+    ]);
+    for (final c in copied) {
+      expect(c.contains('ssa1'), isFalse, reason: 'no ssa1 in a mining command');
+    }
+    expect(decodeMiningAddress(addr), isNotNull);
   });
 
   testWidgets('Restore asks "Did this wallet mine?"; yes turns the scan on', (tester) async {

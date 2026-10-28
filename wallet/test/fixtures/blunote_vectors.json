@@ -10,7 +10,7 @@
       "Y": "221890d581fdcd339ff585a783612834755f8a94a85e9528078b4754b4794366",
       "xBase": "59585682478ec853b78349042ad865088e9fe3e1e0b76a59cdb4654381db0b0a",
       "B": "aab76ae7e51d942e87686673c9199f564066ecbc7abe4ebcde77f6db114d973e",
-      "miningAddress": "aab76ae7e51d942e87686673c9199f564066ecbc7abe4ebcde77f6db114d973e221890d581fdcd339ff585a783612834755f8a94a85e9528078b4754b4794366"
+      "miningAddress": "shm1q42mk4el9rk2zapmgveeujxvl2eqxdm9u02lya0x7wlmdky2djulzyxys6kqlmnfnnl6ctfurvy5rga2l3222sh549qrck365k3u5xespearsl"
     },
     {
       "label": "bob",
@@ -19,7 +19,7 @@
       "Y": "220f8a50d9b5a75df26a77b4795873bb467fda09ff8dca15c8e384374d802901",
       "xBase": "2bbfa1ec9f63a0533728a7ee052e29f49ad4b85e7744df1250e6629d537e2904",
       "B": "786a2437866e773e67e046dacd7fdf8446129c7fa530e1d9a56bddbf62817627",
-      "miningAddress": "786a2437866e773e67e046dacd7fdf8446129c7fa530e1d9a56bddbf62817627220f8a50d9b5a75df26a77b4795873bb467fda09ff8dca15c8e384374d802901"
+      "miningAddress": "shm1q0p4zgduxdemnuelqgmdv6l7ls3rp98rl55cwrkd9d0wm7c5pwcnjyru22rvmtf6a7f480dretpemk3nlmgyllrw2zhyw8pphfkqzjqgszwxuw"
     },
     {
       "label": "stranger",
@@ -28,7 +28,7 @@
       "Y": "6856c6524882d287ef591c08386ca53abf50fc616b6804ac2ee8f56eee635d63",
       "xBase": "4774ea34a5a6cff163be41b0515da565e06938afe75d19ead001bfb079a5110c",
       "B": "804eb1dc6144bcc322bfd15ed652e29119a28cb185736509e1e83de6afbf0a21",
-      "miningAddress": "804eb1dc6144bcc322bfd15ed652e29119a28cb185736509e1e83de6afbf0a216856c6524882d287ef591c08386ca53abf50fc616b6804ac2ee8f56eee635d63"
+      "miningAddress": "shm1qsp8trhrpgj7vxg4l690dv5hzjyv69r93s4ek2z0paq77dtalpgsks4kx2fyg9558aav3czpcdjjn406sl3skk6qy4shw3atwae346ccq0ja59"
     }
   ],
   "oneTime": [

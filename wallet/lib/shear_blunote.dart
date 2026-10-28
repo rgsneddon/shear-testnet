@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart' show sha256;
 
 import 'shear_admit.dart';
+import 'shear_identity.dart' show bech32Hrp, decodeBech32Payload, encodeHrp;
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
 
@@ -59,10 +60,60 @@ Uint8List _unhex(String s) {
   return out;
 }
 
-/// The mining address the rig takes as `--blu`: hex(B) || hex(Y), 128 hex.
+/// Human-readable part of the R28 mining address (crypto/address.js HRP_MINING).
+const String kMiningHrp = 'shm';
+
+/// crypto/address.js encodeMiningAddress: `shm1…`, bech32 with the ssa
+/// checksum, of the 64 bytes B‖Y (admit base point, scan pub). Both must
+/// be points. It holds no secret.
+String encodeMiningAddress(Uint8List B, Uint8List Y) {
+  if (B.length != 32 || Y.length != 32) {
+    throw ArgumentError('mining address keys must be 32 bytes');
+  }
+  pointFrom(B);
+  pointFrom(Y);
+  return encodeHrp(kMiningHrp, Uint8List.fromList([...B, ...Y]));
+}
+
+/// crypto/address.js decodeMiningAddress: (B, Y), or null for a bad
+/// checksum, length, prefix, case, or a key that is not a point.
+/// [allowHex] also takes 128 raw hex characters (no checksum; off mainnet).
+({Uint8List B, Uint8List Y})? decodeMiningAddress(String s, {bool allowHex = false}) {
+  final t = s.trim();
+  Uint8List? bytes;
+  if (RegExp(r'^[0-9a-fA-F]{128}$').hasMatch(t)) {
+    if (!allowHex) return null;
+    bytes = _unhex(t);
+  } else if (bech32Hrp(t) == kMiningHrp && t == t.toLowerCase()) {
+    bytes = decodeBech32Payload(t);
+    // The node's decoder refuses non-zero padding; the one string that
+    // re-encodes to itself is the only one it accepts.
+    if (bytes != null && bytes.length == 64 && encodeHrp(kMiningHrp, bytes) != t) bytes = null;
+  }
+  if (bytes == null || bytes.length != 64) return null;
+  final B = Uint8List.fromList(bytes.sublist(0, 32));
+  final Y = Uint8List.fromList(bytes.sublist(32));
+  try {
+    pointFrom(B);
+    pointFrom(Y);
+  } catch (_) {
+    return null;
+  }
+  return (B: B, Y: Y);
+}
+
+/// The mining address the rig takes as `--blu`: `shm1…` of B‖Y.
 /// Both halves are public keys. It holds no secret.
 String bluMiningAddress(Uint8List spendSeed) =>
-    _hex(admitBaseBytes(spendSeed)) + _hex(bluScanPub(spendSeed));
+    encodeMiningAddress(admitBaseBytes(spendSeed), bluScanPub(spendSeed));
+
+/// The pool command the mining screen copies, exactly (Russell, 28 Oct).
+String bluPoolCommand(String miningAddress) =>
+    './ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user rig1 --blu $miningAddress --threads 8';
+
+/// The solo command the mining screen copies, exactly (Russell, 28 Oct).
+String bluSoloCommand(String miningAddress) =>
+    './ShearK-Miner --pool 127.0.0.1:1111 --user rig1 --blu $miningAddress --solo --threads 8';
 
 /// The keys one wallet scans with. [y] and [xBase] are secrets: they stay in
 /// memory and are never written to the session or a log.

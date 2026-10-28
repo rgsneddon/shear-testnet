@@ -1,0 +1,75 @@
+{
+  "spec": "crypto/address.js encodeMiningAddress / decodeMiningAddress (R28)",
+  "hrp": "shm",
+  "good": [
+    {
+      "label": "alice",
+      "seed": "49e043aa800c07ac1b1d450d59fe3d41ad30b72754a93fb55ccd507d447a504b",
+      "B": "4a7437de222cbde6796428c7f0b852c737e64a65219a51e3cbe8fe28a9c1a175",
+      "Y": "dae57aa23dd007a1c34cf929694f49c5f01074c0ab8bffc33446f9ed4f389515",
+      "address": "shm1qff6r0h3z9j77v7ty9rrlpwzjcum7vjn9yxd9rc7tarlz32wp596a4et65g7aqpapcdx0j2tffayutuqswnq2hzllcv6yd70dfuuf29ggkfks2"
+    },
+    {
+      "label": "bob",
+      "seed": "32daae0033b3e236ba08c82f7f0814feb1b6cde8e91eb285e90b26b66b14b369",
+      "B": "32d8b913595e4ada8abe0f85cb3f2d70b38d2ac86dabcdc9e702f98dfe11f005",
+      "Y": "b43dc98458b659ce93cbd16af7c18b5788bfcd677a65dfe8fd86790516751529",
+      "address": "shm1qxtvtjy6ete9d4z47p7zuk0edwzec62kgdk4umj08qtucmls37qzmg0wfs3vtvkwwj09az6hhcx940z9le4nh5ewlar7cv7g9ze6322geqjqa7"
+    },
+    {
+      "label": "carol",
+      "seed": "7b397fac18b63303cb96238717b7cc079c12e758dace082434e66975f94ef633",
+      "B": "b85ec068fbad4cae58c19a6db1ff87acce23807e7f1b4aea063a4870a9f4fb47",
+      "Y": "3e89e7b1338853378a682d6d4a7f8b6eea4ab6bb29cf0108290a9677cdb29673",
+      "address": "shm1qhp0vq68m44x2ukxpnfkmrlu84n8z8qr70ud546sx8fy8p205ldrnaz08kyecs5eh3f5z6m22079ka6j2k6ajnncppq5s49nhekefvuc8pg6hj"
+    }
+  ],
+  "bad": [
+    {
+      "name": "bad checksum (last character)",
+      "s": "shm1qff6r0h3z9j77v7ty9rrlpwzjcum7vjn9yxd9rc7tarlz32wp596a4et65g7aqpapcdx0j2tffayutuqswnq2hzllcv6yd70dfuuf29ggkfkst"
+    },
+    {
+      "name": "bad checksum (a data character)",
+      "s": "shm1qff6r0h3z9j77v7t99rrlpwzjcum7vjn9yxd9rc7tarlz32wp596a4et65g7aqpapcdx0j2tffayutuqswnq2hzllcv6yd70dfuuf29ggkfks2"
+    },
+    {
+      "name": "truncated",
+      "s": "shm1qff6r0h3z9j77v7ty9rrlpwzjcum7vjn9yxd9rc7tarlz32wp596a4et65g7aqpapcdx0j2tffayutuqswnq2hzllcv6yd70dfuuf29ggkfks"
+    },
+    {
+      "name": "uppercase",
+      "s": "SHM1QFF6R0H3Z9J77V7TY9RRLPWZJCUM7VJN9YXD9RC7TARLZ32WP596A4ET65G7AQPAPCDX0J2TFFAYUTUQSWNQ2HZLLCV6YD70DFUUF29GGKFKS2"
+    },
+    {
+      "name": "ssa prefix on the same keys",
+      "s": "ssa1qff6r0h3z9j77v7ty9rrlpwzjcum7vjn9yxd9rc7tarlz32wp596a4et65g7aqpapcdx0j2tffayutuqswnq2hzllcv6yd70dfuuf29gvx9h82"
+    },
+    {
+      "name": "a dest",
+      "s": "ssa1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrx5wdx0"
+    },
+    {
+      "name": "raw hex without allowHex",
+      "s": "4a7437de222cbde6796428c7f0b852c737e64a65219a51e3cbe8fe28a9c1a175dae57aa23dd007a1c34cf929694f49c5f01074c0ab8bffc33446f9ed4f389515"
+    },
+    {
+      "name": "B not a point",
+      "s": "shm1qllllllllllllllllllllllllllllllllllllllllllllllllllla4et65g7aqpapcdx0j2tffayutuqswnq2hzllcv6yd70dfuuf29g790en0"
+    },
+    {
+      "name": "Y not a point",
+      "s": "shm1qff6r0h3z9j77v7ty9rrlpwzjcum7vjn9yxd9rc7tarlz32wp596lllllllllllllllllllllllllllllllllllllllllllllllllllcd7un87"
+    },
+    {
+      "name": "raw hex not a point",
+      "s": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "allowHex": true
+    },
+    {
+      "name": "32 bytes, not 64",
+      "s": "shm1qff6r0h3z9j77v7ty9rrlpwzjcum7vjn9yxd9rc7tarlz32wp596senytee"
+    }
+  ],
+  "hexAllowed": "4a7437de222cbde6796428c7f0b852c737e64a65219a51e3cbe8fe28a9c1a175dae57aa23dd007a1c34cf929694f49c5f01074c0ab8bffc33446f9ed4f389515"
+}

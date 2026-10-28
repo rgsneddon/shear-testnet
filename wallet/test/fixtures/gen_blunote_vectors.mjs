@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { RistrettoPoint } from '@noble/curves/ed25519.js';
 import { G, H, hashToScalar, pointBytes, scalarBytes } from '../../../crypto/note.js';
 import { admitBaseScalar, admitBasePub } from '../../../crypto/admit.js';
+import { encodeMiningAddress } from '../../../crypto/address.js';
 import {
   BLUNOTE_WINNERS,
   blunoteNote,
@@ -113,7 +114,7 @@ const out = {
     Y: hex(w.Y),
     xBase: hex(scalarBytes(w.xBase)),
     B: hex(w.B),
-    miningAddress: hex(w.B) + hex(w.Y),
+    miningAddress: encodeMiningAddress({ B: w.B, Y: w.Y }),
   })),
   oneTime,
   record: {

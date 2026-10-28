@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'shear_blunote.dart' show bluMiningAddress, kBluAwaitingRecord;
+import 'shear_blunote.dart' show bluMiningAddress, bluPoolCommand, bluSoloCommand, kBluAwaitingRecord;
 import 'shear_identity.dart';
 import 'shear_ledger.dart';
 import 'shear_licenses.dart';
@@ -3541,6 +3541,31 @@ class ShearWalletAppState extends State<ShearWalletApp>
     ]);
   }
 
+  /// "This wallet mines" on: the one mining address (shm1…) and the two
+  /// rig commands, copied exactly (Russell, 28 Oct). No ssa1 is in them.
+  List<Widget> _miningAddressPane(ShearIdentity ident) {
+    final addr = bluMiningAddress(hexToBytes(ident.seedHex));
+    Widget copy(String key, String label, String text) => Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            key: Key(key),
+            onPressed: () => Clipboard.setData(ClipboardData(text: text)),
+            child: Text(label),
+          ),
+        );
+    return [
+      const Text('Mining address'),
+      SelectableText(
+        addr,
+        key: const Key('settings-blu-address'),
+        style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+      ),
+      copy('settings-blu-address-copy', 'Copy', addr),
+      copy('settings-blu-pool-command', 'Copy pool command', bluPoolCommand(addr)),
+      copy('settings-blu-solo-command', 'Copy solo command', bluSoloCommand(addr)),
+    ];
+  }
+
   Widget _flow(BuildContext context, ShearIdentity ident) {
     return _card([
       const Text('Flow  J^μ', style: TextStyle(fontWeight: FontWeight.w700)),
@@ -3550,6 +3575,10 @@ class ShearWalletAppState extends State<ShearWalletApp>
       SelectableText(
         _offerReceiveDest(ident),
         key: const Key('flow-receive-dest'),
+      ),
+      const Text(
+        'ssa1 is for receiving payments, not for mining.',
+        key: Key('flow-receive-dest-not-mining'),
       ),
       const SizedBox(height: 8),
       OutlinedButton(
@@ -5782,24 +5811,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
         value: session.bluMining,
         onChanged: (on) => unawaited(_setBluMining(on)),
       ),
-      if (session.bluMining) ...[
-        const Text('Mining address (rig --blu)'),
-        SelectableText(
-          bluMiningAddress(hexToBytes(ident.seedHex)),
-          key: const Key('settings-blu-address'),
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-        ),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton(
-            key: const Key('settings-blu-address-copy'),
-            onPressed: () => Clipboard.setData(
-              ClipboardData(text: bluMiningAddress(hexToBytes(ident.seedHex))),
-            ),
-            child: const Text('Copy mining address'),
-          ),
-        ),
-      ],
+      if (session.bluMining) ..._miningAddressPane(ident),
       const SizedBox(height: 8),
       const Text(
         'Password seals shewall.bin (AES-256-GCM). Export that file and the '
