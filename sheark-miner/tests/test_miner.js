@@ -181,12 +181,12 @@ describe('ShearK-Miner', () => {
     assert.match(src, /pthread_setaffinity_np/);
     assert.match(src, /g_cpu_map/);
     assert.match(src, /s\.gen != live_gen/);
-    assert.match(src, /enqueue_share\(job\.jobId, stamped, hash, job\.gen\)/);
+    assert.match(src, /enqueue_share\(job\.jobId, stamped, hash, job\.gen, blu_enabled\(\) \? &key : NULL\)/);
     assert.match(src, /never submit a digest for the previous header/);
     assert.match(src, /g_stale\+\+/);
     assert.match(src, /strstr\(low, "stale"\)/);
     assert.equal(/Do not bump gen \(that aborts/.test(src), false);
-    assert.match(src, /enqueue_share\(job\.jobId, primed_n, hash, job\.gen\)/);
+    assert.match(src, /enqueue_share\(job\.jobId, primed_n, hash, job\.gen, blu_enabled\(\) \? &primed_key : NULL\)/);
     assert.match(src, /g_stamp_seq/);
     assert.match(src, /stamp != last_stamp/);
     assert.match(src, /#define IN_FLIGHT_MAX 1/);

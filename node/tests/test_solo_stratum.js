@@ -480,7 +480,8 @@ describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, 
       // Option (b): the empty round's pot went to a one-time key that only
       // the solo miner's wallet recognises, and nothing was carried.
       const rec = decodeRecord(Buffer.from(store.tip().blunoteRecord, 'hex'));
-      assert.equal(rec.count, 0);
+      assert.equal(rec.winners.length, 0);
+      assert.equal(rec.n, 0);
       assert.ok(rec.feeV > 0n, `feeV ${rec.feeV}`);
       assert.ok(recogniseOneTime({ y: SOLO.y, B: SOLO.B }, rec.feeR, rec.feeP) != null);
       const stranger = bluWallet();
