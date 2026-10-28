@@ -7,7 +7,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { encodeDest } from '../../crypto/address.js';
+import { encodeDest, encodeMiningAddress } from '../../crypto/address.js';
 import { startNode } from '../src/node.js';
 import {
   parseSoloLogin,
@@ -27,10 +27,13 @@ import { bluWallet } from './support/blunote_mine.js';
 
 // R28 solo payout (b): the solo miner's BluNotes wallet and mining address B||Y.
 const SOLO = bluWallet();
-const BLU_ADDR = Buffer.concat([Buffer.from(SOLO.B), Buffer.from(SOLO.Y)]).toString('hex');
+// The checksummed shm1 form; raw hex is accepted off mainnet only.
+const BLU_ADDR = encodeMiningAddress({ B: SOLO.B, Y: SOLO.Y });
+const BLU_HEX = Buffer.concat([Buffer.from(SOLO.B), Buffer.from(SOLO.Y)]).toString('hex');
 
+// R28 option 2: a solo login is a worker name, never an address.
 function destMiner() {
-  return encodeDest(Buffer.alloc(20, 5));
+  return 'rig1';
 }
 
 function minerDir() {
@@ -182,19 +185,24 @@ describe('thin solo stratum', { timeout: fileCapMs(import.meta.url) }, () => {
     assert.match(help, /npm run solo/);
     assert.match(help, /thin local stratum/);
     assert.doesNotMatch(help, /2\. npm run pool/);
-    const dest = destMiner();
-    const ok = parseSoloLogin(`${dest}.solo`, BLU_ADDR);
+    const ok = parseSoloLogin('rig1.solo', BLU_ADDR);
     assert.equal(ok.ok, true);
-    assert.equal(ok.dest, dest);
-    assert.equal(ok.worker, 'solo');
+    assert.equal(ok.worker, 'rig1.solo');
     assert.ok(Buffer.from(ok.blu.B).equals(Buffer.from(SOLO.B)));
-    const bare = parseSoloLogin(dest, BLU_ADDR);
-    assert.equal(bare.ok, true);
-    assert.equal(bare.worker, '');
-    // R28: no mining address, or one that is not two points, is never paid.
-    assert.equal(parseSoloLogin(`${dest}.solo`).reason, 'need_blu');
-    assert.equal(parseSoloLogin(`${dest}.solo`, BLU_ADDR.slice(2)).reason, 'need_blu');
-    assert.equal(parseSoloLogin(`${dest}.solo`, 'ff'.repeat(64)).reason, 'need_blu');
+    assert.ok(Buffer.from(ok.blu.Y).equals(Buffer.from(SOLO.Y)));
+    // Raw hex off mainnet only; never on mainnet.
+    assert.equal(parseSoloLogin('rig1', BLU_HEX).ok, true);
+    assert.equal(parseSoloLogin('rig1', BLU_HEX, { allowHex: false }).reason, 'need_blu');
+    // R28 option 2: a login that names a wallet is refused.
+    for (const login of [`${encodeDest(Buffer.alloc(20, 5))}.solo`, `rig.${BLU_ADDR}`, BLU_HEX.slice(0, 64)]) {
+      assert.equal(parseSoloLogin(login, BLU_ADDR).reason, 'login_address', login);
+    }
+    // No mining address, a bad checksum, or keys that are not points: never paid.
+    const flip = BLU_ADDR.slice(-1) === 'q' ? 'p' : 'q';
+    assert.equal(parseSoloLogin('rig1').reason, 'need_blu');
+    assert.equal(parseSoloLogin('rig1', `${BLU_ADDR.slice(0, -1)}${flip}`).reason, 'need_blu');
+    assert.equal(parseSoloLogin('rig1', BLU_HEX.slice(2)).reason, 'need_blu');
+    assert.equal(parseSoloLogin('rig1', 'ff'.repeat(64)).reason, 'need_blu');
     assert.equal(parseBluAddr('ff'.repeat(64)), null);
     const ahead = new Map([['peer', { height: 100, hash: 'ab'.repeat(32) }]]);
     assert.equal(soloMaySeal({ height: 70, hash: 'cd'.repeat(32), peers: ahead }), false);
@@ -214,7 +222,7 @@ describe('thin solo stratum', { timeout: fileCapMs(import.meta.url) }, () => {
       peers: behind,
       blockHashAt: () => 'aa'.repeat(32),
     }), false);
-    assert.equal(parseSoloLogin('not-a-dest.solo', BLU_ADDR).ok, false);
+    assert.equal(parseSoloLogin('not a worker', BLU_ADDR).reason, 'bad_login');
   });
 
   it('login is rejected while a live peer is ahead, and a job is issued at matching tip', async () => {
@@ -352,7 +360,8 @@ describe('thin solo stratum', { timeout: fileCapMs(import.meta.url) }, () => {
     try {
       assert.equal(bound.host, '127.0.0.1');
       const dest = destMiner();
-      const job = stratum.issueJob(dest, parseBluAddr(BLU_ADDR));
+      void dest;
+      const job = stratum.issueJob(parseBluAddr(BLU_ADDR));
       assert.ok(job.jobId);
       assert.match(job.header, /^[0-9a-f]+$/i);
     } finally {
@@ -413,7 +422,7 @@ describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, 
         '--backend', 'jit',
         '--pool', `127.0.0.1:${bound.port}`,
         '--notls',
-        '--user', `${dest}.solo`,
+        '--user', dest,
         '--blu', BLU_ADDR,
         '--solo',
         '--threads', '4',

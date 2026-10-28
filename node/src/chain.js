@@ -1807,15 +1807,17 @@ export function buildTemplate({
     baseFee,
     weight: blockWeight(bodyTxs, bLeaves),
     txs: bodyTxs,
-    samples: Array.isArray(samples) && samples.length ? collateSamples(samples) : collated,
+    // R28: no samples and no miner on a block (blunote_samples, blunote_miner).
+    samples: [],
     shareBatch: batch,
     hashSpill: spillBatch,
-    miner,
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashCredits: [],
     levyBind: {
-      finderNanos: split.finder,
+      // R28: the finder levy is in the draw (or the coinbase key / reserve
+      // note), so no finder-fee note exists to aim at a login dest.
+      finderNanos: 0,
       reserveNanos: split.reserve,
       poolDest: poolDest && isDestAddress(poolDest) ? poolDest : '',
       feeDest: feeDest && isDestAddress(feeDest) ? feeDest : '',
@@ -2725,9 +2727,14 @@ function verifyBlockBody(block, prev, opts = {}) {
   if (!Number.isSafeInteger(payablePot) || !Number.isSafeInteger(mintedPot) || mintedPot < 0) {
     return { ok: false, reason: 'pot_sched' };
   }
-  const samples = collateSamples(
-    Array.isArray(block.samples) ? block.samples : (txs[0].samples || []),
-  );
+  // R28 privacy (Russell 28 Oct, option 2): no public-chain field names a
+  // miner. A block names no miner and carries no samples (they listed each
+  // hasher's address and work); work is the share batch, paid by the draw.
+  if (block.miner != null && block.miner !== '') return { ok: false, reason: 'blunote_miner' };
+  if ((Array.isArray(block.samples) && block.samples.length) || (Array.isArray(txs[0].samples) && txs[0].samples.length)) {
+    return { ok: false, reason: 'blunote_samples' };
+  }
+  const samples = [];
   const shareBatchEarly = Array.isArray(block.shareBatch) ? block.shareBatch : [];
   if (!block.samplesPruned && !shareBatchEarly.length && sampleCapExceeded(samples, decoded.bits)) {
     return { ok: false, reason: 'sample_cap' };

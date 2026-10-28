@@ -1,5 +1,7 @@
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
-import { hashBackendKind } from '../../crypto/shear_hash.js';
+import { currentHashBackend, hashBackendKind } from '../../crypto/shear_hash.js';
+import { p2pHashLaneBackend } from '../../crypto/hash_offloop.js';
+import { sharePowCounters } from '../../crypto/share_batch.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 
 function hex32(h) {
@@ -100,6 +102,19 @@ export function isInitialBlockDownload({ height = 0, peers } = {}) {
   return false;
 }
 
+/**
+ * R39 (Russell 28 Oct): where verify hashes, and whether any of it is on the
+ * RandomX interpreter. The verify lanes report their own backend; shares
+ * hashed on this thread (no lane digest) use this thread's backend.
+ */
+export function verifyBackendStatus() {
+  const lane = p2pHashLaneBackend();
+  const main = currentHashBackend();
+  const syncShareHashes = Number(sharePowCounters()?.sync || 0);
+  const slowVerify = lane === 'interpreter' || (syncShareHashes > 0 && main === 'interpreter');
+  return { verifyLane: lane || '-', verifyMain: main, syncShareHashes, slowVerify };
+}
+
 /** Truthful one-shot view of a running or on-disk node. */
 export function nodeStatus({ store, p2p, extra = {} } = {}) {
   const tip = typeof store?.tip === 'function' ? store.tip() : store?.tip || null;
@@ -123,6 +138,7 @@ export function nodeStatus({ store, p2p, extra = {} } = {}) {
     syncPeerHeight: best.syncPeerHeight,
     syncEligiblePeers: best.syncEligiblePeers,
     hashBackend: backend,
+    ...verifyBackendStatus(),
     ...extra,
     admitNative: nativeLoaded() ? 'loaded' : 'missing',
   };
@@ -144,9 +160,14 @@ export function printNodeStatus(args) {
     `hashBackend=${row.hashBackend}`,
     `admitNative=${row.admitNative}`,
   ];
+  line.push(`verifyLane=${row.verifyLane}`);
   if (row.stratum != null) line.push(`stratum=${row.stratum}`);
   if (row.miners != null) line.push(`miners=${row.miners}`);
   console.error(`status ${line.join(' ')}`);
+  // Never silent: a slow verify path is its own loud line on every status tick.
+  if (row.slowVerify) {
+    console.error(`WARNING SLOW VERIFY: ShearHash verify is on the RandomX interpreter (lane=${row.verifyLane} main=${row.verifyMain} syncShareHashes=${row.syncShareHashes}). Expect verify several times slower; enable JIT (W^X) on this host. See R39.`);
+  }
   return row;
 }
 

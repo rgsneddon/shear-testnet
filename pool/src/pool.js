@@ -10,7 +10,7 @@ import { Worker } from 'node:worker_threads';
 import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
-import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, admitBaseFromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
+import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, admitBaseFromAddress, namesAnAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
 import { payeeDecodeOk, payeeFs1Ok, payeeWillProbe } from '../../crypto/n1.js';
 import { heldBodyKey } from '../../crypto/mempool.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
@@ -489,12 +489,37 @@ export function parseLogin(login) {
   return raw.split('.')[0];
 }
 
-/** Pool page / stats: opaque tag. Never she1, dest, IP, or worker personal data. */
+/**
+ * R28 option 2: the per-pool random salt behind every public miner tag, so a
+ * tag is stable on this pool and unlinkable across pools. createPool loads
+ * it from the datadir (MINER_TAG_SALT_FILE).
+ */
+let minerTagSalt = Buffer.alloc(0);
+export const MINER_TAG_SALT_FILE = 'miner-tag.salt';
+export function setMinerTagSalt(salt) {
+  minerTagSalt = Buffer.from(salt || []);
+}
+
+/** The datadir's tag salt, made once (32 random bytes, 0600). */
+export function loadMinerTagSalt(dataDir) {
+  if (!dataDir) return randomBytes(32);
+  const file = path.join(dataDir, MINER_TAG_SALT_FILE);
+  try {
+    const got = fs.readFileSync(file);
+    if (got.length === 32) return got;
+  } catch { /* first start */ }
+  const fresh = randomBytes(32);
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(file, fresh, { mode: 0o600 });
+  return fresh;
+}
+
+/** Pool page / stats: opaque tag of the worker name, salted per pool. Never an address or IP. */
 export function publicMinerTag(login) {
-  const dest = parseLogin(login);
   const hex = createHash('sha256')
-    .update('shear-miner-tag-v1')
-    .update(dest)
+    .update('shear-miner-tag-v2')
+    .update(minerTagSalt)
+    .update(String(login || '').trim())
     .digest('hex')
     .slice(0, 8);
   return `m${hex}`;
@@ -637,29 +662,16 @@ export function admitClient(params, { leaf = true } = {}) {
       message: `ShearK ${SHEARK_MINER_VERSION} or newer is required on ${MAGIC_TESTNET}. This client is ${got}.`,
     };
   }
+  void payeeOk;
   const raw = String(params?.login || params?.user || '').trim();
-  const dest = parseLogin(raw);
   if (!raw) return { ok: false, reason: 'bad_login' };
-  if (isShearAddress(dest)) return { ok: false, reason: 'bad_login' };
-  if (!isMineLogin(dest)) {
-    return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
-  }
-  const payout = hasherPayoutDest(dest, { dest: params?.dest || params?.payout });
-  const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
-  if (isPaymentCode(dest)) {
-    if (!payout) return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
-    if (!payeeOk(payout)) return { ok: false, reason: 'admit_note_point' };
-    return {
-      ok: true,
-      login: payout,
-      workerKey: `${payout}.${worker}`,
-      payoutDest: payout,
-      ramAlias: true,
-    };
-  }
-  const payee = payout || (isDestAddress(dest) ? dest : '');
-  if (payee && !payeeOk(payee)) return { ok: false, reason: 'admit_note_point' };
-  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payee };
+  // R28 option 2 (Russell 28 Oct): the login is a worker name only. Shares
+  // carry one-time keys, so nothing that names a wallet ever reaches the pool;
+  // an address in the login or a payout field is refused, not dropped.
+  const dest = String(params?.dest ?? params?.payout ?? '').trim();
+  if (namesAnAddress(raw) || dest !== '') return { ok: false, reason: 'login_address' };
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(raw)) return { ok: false, reason: 'bad_login' };
+  return { ok: true, login: raw, workerKey: raw, payoutDest: '' };
 }
 
 /** Wrong-algo login or a submit that is not a ShearHash-v3 digest. */
@@ -1929,6 +1941,8 @@ export function createPool({
   const store = createStore(dataDir);
   const pullBook = createPullBook(dataDir);
   const miners = new Map();
+  // R28 option 2: public miner tags are salted per pool.
+  setMinerTagSalt(loadMinerTagSalt(dataDir));
   const destShareBits = loadDestShareBitsMap(dataDir);
   const destVarWindows = new Map();
   console.log(JSON.stringify({
@@ -3109,9 +3123,7 @@ export function createPool({
     return {
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: tpl.miner,
       poolDest: tpl.poolDest || '',
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,

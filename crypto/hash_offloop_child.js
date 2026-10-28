@@ -9,12 +9,16 @@
  */
 import readline from 'node:readline';
 import { hashLaneBackend } from './hash_lane.js';
-import { setHashBackend, shearHash } from './shear_hash.js';
+import { setHashBackend, shearHash, slowVerifyLine } from './shear_hash.js';
 
 const laneBackend = hashLaneBackend();
-try { setHashBackend(laneBackend); } catch { /* interpreter stays */ }
+// R39: log the backend actually in use, not the one asked for. A failed JIT
+// leaves the interpreter, and that must never be silent.
+let laneActual = 'interpreter';
+try { laneActual = String(setHashBackend(laneBackend) || 'interpreter'); } catch { laneActual = 'interpreter'; }
 try {
-  console.error(JSON.stringify({ event: 'hash_lane', backend: laneBackend }));
+  console.error(JSON.stringify({ event: 'hash_lane', backend: laneActual, requested: laneBackend }));
+  if (laneActual === 'interpreter') console.error(slowVerifyLine('hash_lane', laneActual, laneBackend));
 } catch { /* ignore */ }
 
 const laneTest = process.env.SHEAR_HASH_LANE_TEST === '1';
@@ -50,6 +54,9 @@ function answer(id, hex) {
     writeLine(`${id}\tERR\t${msg}\n`);
   }
 }
+
+// The parent learns this lane's backend from the first line (status: slowVerify).
+writeLine(`BACKEND\t${laneActual}\n`);
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on('line', (line) => {

@@ -19,6 +19,7 @@ import { asU8, scalarBytes } from '../../crypto/note.js';
 import { walletAnchor } from '../../crypto/admit_v3.js';
 import { fs1NativeLoaded } from '../../crypto/native_admit.js';
 import { buildSend, hiddenOut } from './fs1_send_kit.js';
+import { templateForFinder } from '../src/chain.js';
 import { bluWallet, mineBluShares, ownBluNotes } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
@@ -117,6 +118,16 @@ describe('R28 winner notes are spendable', { concurrency: false }, () => {
     assert.equal(parked.ok, true, `mempool ${parked.reason}`);
     const queued = store.queueTx(tx);
     assert.equal(queued.ok, true, `queue ${queued.reason}`);
+    // The spend pays a fee, so this block has a finder levy. Under R28 it
+    // joins the draw: there is no public finder-fee note for a pool to aim
+    // at a login dest (that note would be refused blunote_vout, and would
+    // publish the finder).
+    const { tpl: feeTpl } = store.template({ miner: host.dest, bits: regtestBits(), now: Math.max(T0, lastStamp(store) + 90_000) });
+    assert.ok(feeTpl.txs.some((row) => row.id === tx.id), 'the fee tx is in the template');
+    assert.equal(feeTpl.levyBind.finderNanos, 0);
+    const aimed = templateForFinder(feeTpl, payee.dest);
+    assert.equal(aimed, feeTpl, 'nothing to aim');
+    assert.equal(aimed.txs[0].vout.some((o) => o.kind === 'finder-fee'), false);
     const tpl = await mine(store, host.dest);
     assert.ok(tpl.txs.some((row) => row.id === tx.id), 'the spend was sealed');
     const tags = store.fluxset().spendTags;

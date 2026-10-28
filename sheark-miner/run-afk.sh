@@ -7,6 +7,7 @@ if [ "$threads" -lt 1 ]; then threads=1; fi
 exec /opt/shear-v4/sheark-miner/ShearK-Miner \
   --pool "${SHEARK_POOL:?}" \
   --user "${SHEARK_USER:?}" \
+  --blu "${SHEARK_BLU:?}" \
   --backend "${SHEARK_BACKEND:-jit}" \
   --threads "$threads" \
   --require-tls
