@@ -85,7 +85,8 @@ describe('fee dest, auth pub, certify, public stats', () => {
     assert.equal(authPubGate({ requireAuth: true, boundPub: '', presentedPub: 'ab'.repeat(32) }).reason, 'auth_pub_unbound');
     const pub = '11'.repeat(32);
     const gated = gateStratumLogin({
-      login: 'ssa1q8flwjptadua9u7qtpvs7t26aarenstew938zlcgclzvthv5v4e03hsv4j8uf2pr73w8arp0krf0mhry6f5gqff4fl9',
+      // R28 option 2: a login is a worker name only.
+      login: 'rig1',
       client: 'ShearHash',
       version: SHEARK_MINER_VERSION,
       authPub: pub,
@@ -195,7 +196,7 @@ describe('stratum TLS job to share', () => {
           id: 1,
           method: 'login',
           params: {
-            login: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.tls',
+            login: 'tls',
             client: 'ShearHash',
             version: SHEARK_MINER_VERSION,
           },
@@ -215,7 +216,7 @@ describe('stratum TLS job to share', () => {
     assert.match(jobLine, /"jobId"/);
     const clear = await new Promise((resolve) => {
       const s = net.connect(bound.stratumPort, '127.0.0.1', () => {
-        s.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.clear', client: 'ShearHash', version: SHEARK_MINER_VERSION } })}\n`);
+        s.write(`${JSON.stringify({ id: 1, method: 'login', params: { login: 'clear', client: 'ShearHash', version: SHEARK_MINER_VERSION } })}\n`);
       });
       let buf = '';
       s.on('data', (c) => { buf += c.toString(); });

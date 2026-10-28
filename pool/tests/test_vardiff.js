@@ -622,7 +622,7 @@ describe('share vardiff', () => {
         id: 1,
         method: 'login',
         params: {
-          login: dest + '.var',
+          login: 'var',
           client: 'ShearHash',
           version: SHEARK_MINER_VERSION,
           threads: 1,
