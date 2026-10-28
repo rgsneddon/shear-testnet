@@ -1,6 +1,6 @@
 // A real v12 node for the wallet body-scan tests (Russell ruling 6, 28 Oct).
 //
-//   node test/fixtures/body_scan_node.mjs <walletDest> <walletSeedHex>
+//   node test/fixtures/body_scan_node.mjs <walletDest> <walletSeedHex> [pinHeight]
 //
 // Builds a chain in a fresh regtest store (the node's 4-bit seed, so every
 // block can be mined in a test) with the node's own template and append,
@@ -32,7 +32,8 @@ if (!walletDest || !/^[0-9a-f]{64}$/.test(seedHex || '')) {
 }
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 const FLOOR_BITS = 4 * 65536;
-const PIN_HEIGHT = 12;
+// An optional third argument sets a deeper pin (a longer walk below it).
+const PIN_HEIGHT = Number(process.argv[4]) > 12 ? Math.floor(Number(process.argv[4])) : 12;
 const ABOVE_PIN = 12;
 // Wallet-mined heights above the pin: two deep enough to spend at the tip,
 // one still short of 9 confirmations.

@@ -106,3 +106,36 @@ bool releaseCheckpointMissing() {
   if (!const bool.fromEnvironment('dart.vm.product')) return false;
   return !releaseCheckpointReady();
 }
+
+/// A pin handed to the credit worker, which checks the same chain from it.
+Map<String, Object> checkpointPinToJson(CheckpointPin pin) => {
+      'network': pin.network,
+      'height': pin.height,
+      'hashHex': pin.hashHex,
+      'timeMs': pin.timeMs,
+      'bits': pin.bits,
+      'anchorHeight': pin.anchorHeight,
+      'anchorTimeMs': pin.anchorTimeMs,
+      'anchorBits': pin.anchorBits,
+      'priorTimesMs': List<int>.from(pin.priorTimesMs),
+    };
+
+/// Null unless every field is there and the pin is well formed.
+CheckpointPin? checkpointPinFromJson(Map<String, dynamic> j) {
+  try {
+    final pin = CheckpointPin(
+      network: j['network'] as String,
+      height: (j['height'] as num).toInt(),
+      hashHex: j['hashHex'] as String,
+      timeMs: (j['timeMs'] as num).toInt(),
+      bits: (j['bits'] as num).toInt(),
+      anchorHeight: (j['anchorHeight'] as num).toInt(),
+      anchorTimeMs: (j['anchorTimeMs'] as num).toInt(),
+      anchorBits: (j['anchorBits'] as num).toInt(),
+      priorTimesMs: [for (final t in j['priorTimesMs'] as List) (t as num).toInt()],
+    );
+    return checkpointPinWellFormed(pin) ? pin : null;
+  } catch (_) {
+    return null;
+  }
+}
