@@ -8,7 +8,6 @@ import { packShareBatchBytes, unpackShareBatchBytes } from './pack.js';
 import { compactTx } from './chronoflux.js';
 import { reviveBytes } from './note.js';
 import {
-  packHashCreditBytes,
   packSpillBytes,
   packSpillCreditBytes,
   unpackHashCreditBytes,
@@ -74,12 +73,6 @@ export function packEpochBlock(block) {
     n.writeUInt32LE(body.length, 0);
     chunks.push(n, body);
   }
-  if (Array.isArray(block.hashCredits)) {
-    const body = packHashCreditBytes(block.hashCredits);
-    const n = Buffer.alloc(4);
-    n.writeUInt32LE(body.length, 0);
-    chunks.push(n, body);
-  }
   if (Array.isArray(block.hashSpill) && block.hashSpill.length) {
     const body = packSpillBytes(block.hashSpill);
     const n = Buffer.alloc(4);
@@ -125,8 +118,6 @@ export function unpackEpochBlock(buf) {
   let shareBatch = [];
   let bSpendIds;
   let sawSpendIds = false;
-  let hashCredits;
-  let sawCredits = false;
   let hashSpill;
   let sawSpill = false;
   let hashSpillCredits;
@@ -149,10 +140,9 @@ export function unpackEpochBlock(buf) {
           o += 4 + nLen;
           continue;
         }
-        const credits = unpackHashCreditBytes(body);
-        if (credits) {
-          hashCredits = credits;
-          sawCredits = true;
+        // R28 (D2): a hash-credit trailer an older build wrote is skipped,
+        // not loaded. Nothing reads hash credits, and this writer omits them.
+        if (unpackHashCreditBytes(body)) {
           o += 4 + nLen;
           continue;
         }
@@ -199,7 +189,6 @@ export function unpackEpochBlock(buf) {
     weight: b.readUInt32LE(232),
   };
   if (sawSpendIds) block.bSpendIds = bSpendIds;
-  if (sawCredits) block.hashCredits = hashCredits;
   if (sawSpill) block.hashSpill = hashSpill;
   if (sawSpillCredits) block.hashSpillCredits = hashSpillCredits;
   if (blunoteRecord) block.blunoteRecord = blunoteRecord;

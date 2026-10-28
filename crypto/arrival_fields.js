@@ -5,7 +5,8 @@
  * field a body is not allowed to carry is refused here, on every path
  * (mempool admission, append, ingest, adopt, probe), not dropped there.
  *
- * Order: a value whose encoding is another's (canonical_alias), a she1 or
+ * Order: a retired R28 owed or hash-credit field (blunote_owed), a value
+ * whose encoding is another's (canonical_alias), a she1 or
  * shear1 address (chainAddressFrameRejected), then the
  * named refusals admission already gives (a coinbase observe,
  * amount, published v, or membership carry, an unsigned field, a reserve leak, a value opening on a hidden output, a
@@ -21,6 +22,7 @@ import { noteU64, unboundMembershipCarry } from './note.js';
 import { bech32Hrp } from './address.js';
 import { canonicalAliasPath } from './canonical_row.js';
 import { compactLockLeakRejected, withdrawLeakRejected, leafVoteLeakRejected } from './reserve_vault.js';
+import { retiredOwedField } from './hash_owed.js';
 
 /**
  * The strip list: secrets, client hints, and local-only rows. Compaction
@@ -31,7 +33,6 @@ export const STRIP_ANYWHERE = Object.freeze([
   'open', 'portalOpen', 'viewKey', 'view', 'V', 'C', 'closure', 'closureCommit', 'paymentCode',
   'scanPub', 'spendHash20', 'seed', 'seedHex', 'privateKey', 'ip', 'remoteAddress', 'peerIp',
   'userAgent', 'user-agent', 'ua', 'memoPlain', 'login', 'spendPub', 'r', 't', '_origCommit', '_origNoteCommit',
-  'hashOwedLocal',
 ]);
 
 /** Top-level addresses and client amount hints. A vortice-register keeps its address. */
@@ -57,16 +58,15 @@ const REBUILT = Object.freeze({
   'admit_proofs[].members': 'membersFieldRejected decides it; the anchor proof carries the set',
 });
 
-/** Coinbase fields compaction moves or folds: the samples ride on the block, ledger rows fold into their roots. */
+/**
+ * Coinbase fields compaction moves or folds: the samples ride on the block.
+ * R28 (D2): the owed-ledger fields are not folded any more; a row carrying
+ * one is refused as blunote_owed (hash_owed.js retiredOwedField).
+ */
 const COINBASE_REBUILT = Object.freeze({
   samples: 'moved to the block (store.js arrivedBody)',
   'vin[].coinbase': 'rewritten as {coinbase:true,height} from tx.height',
   'vin[].height': 'rewritten as {coinbase:true,height} from tx.height',
-  hashOwed: 'folded into hashOwedRoot (hash_owed.js compactHashLedger)',
-  hashOwedRest: 'folded into hashOwedRoot (hash_owed.js compactHashLedger)',
-  hashCredits: 'folded into hashCreditRoot (hash_owed.js compactHashLedger)',
-  hashDustNanos: 'folded into the ledger roots (hash_owed.js compactHashLedger)',
-  hashOwedOverflowNanos: 'folded into the ledger roots (hash_owed.js compactHashLedger)',
   carryNanos: 'a zero carry is dropped; canonicalCarry reads an absent carry as 0',
 });
 
@@ -196,6 +196,8 @@ export function chainAddressFrameRejected(tx) {
  */
 export function arrivalFieldRejected(tx) {
   if (!tx || typeof tx !== 'object' || isBytes(tx) || Array.isArray(tx)) return null;
+  const owed = retiredOwedField({ txs: [tx] });
+  if (owed) return { ...owed, field: owed.field.replace(/^txs\[0\]\./, '') };
   const alias = canonicalAliasPath(tx);
   if (alias) return { ok: false, reason: 'canonical_alias', field: alias };
   const framed = chainAddressFrameRejected(tx);

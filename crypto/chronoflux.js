@@ -25,7 +25,7 @@ import { verifySealedNote, asU8, canonicalSpendTag, txSpendTags, AMOUNT_CT_BYTES
 import { encodeDest, hash20FromAddress } from './address.js';
 import { memoEnvelopeRejected } from './flow_sheet.js';
 import { canonicalReserveFields, reserveRowNanos } from './reserve_vault.js';
-import { compactHashLedger, freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
+import { freshCreditsFromShares, packHashCreditBytes } from './hash_owed.js';
 
 export { SAMPLE_PRUNE_CONFIRMATIONS, SPENDABLE_CONFIRMATIONS };
 
@@ -766,6 +766,16 @@ function unsealedBSpendVin(v) {
   return row;
 }
 
+/** A 32-byte root as bytes (Buffer, Uint8Array, 64 hex chars or {$hex}), or null. */
+function root32(v) {
+  if (v == null || v === '') return null;
+  if (Buffer.isBuffer(v) && v.length === 32) return Buffer.from(v);
+  if (v instanceof Uint8Array && v.length === 32) return Buffer.from(v);
+  if (typeof v === 'string' && /^[0-9a-fA-F]{64}$/.test(v)) return Buffer.from(v, 'hex');
+  if (v && typeof v === 'object' && typeof v.$hex === 'string') return root32(v.$hex);
+  return null;
+}
+
 function hex32Field(value) {
   if (typeof value !== 'string' || !/^[0-9a-f]{64}$/i.test(value)) return '';
   return value.toLowerCase();
@@ -867,7 +877,12 @@ export function compactTx(tx) {
     // R28: the digest binds these fields, so disk and wire keep them.
     const blu = compactBlunote(tx.blunote);
     if (blu) row.blunote = blu;
-    compactHashLedger(tx, row);
+    // R28 (D2): the owed ledger and hash-credit fields are retired. Compaction
+    // keeps none of them; a row that carries one is refused as blunote_owed on
+    // the rows as they arrived (hash_owed.js retiredOwedField).
+    const slotRoot = root32(tx.shareSlotRoot);
+    if (slotRoot) row.shareSlotRoot = slotRoot;
+    else delete row.shareSlotRoot;
     return viewsAsBuffers(row);
   }
   const out = {};
@@ -1081,9 +1096,6 @@ export function compactChainBlock(block) {
   }
   if (Array.isArray(block.hashSpillCredits) && block.hashSpillCredits.length) {
     row.hashSpillCreditPacked = packHashCreditBytes(block.hashSpillCredits).toString('hex');
-  }
-  if (Array.isArray(block.hashCredits)) {
-    row.hashCreditPacked = packHashCreditBytes(block.hashCredits).toString('hex');
   }
   return row;
 }

@@ -22,7 +22,6 @@ import { nativeLoaded } from '../../crypto/native_admit.js';
 import { canonicalBLeaf, derivedBLeaves, sameBLeaves } from '../../crypto/clearing.js';
 import { unpackShareBatch } from '../../crypto/pack.js';
 import {
-  unitsForShare,
   accountShareUnits,
   creditBitsForShare,
   shareWorkKey,
@@ -30,14 +29,7 @@ import {
 import { canonicalCarry } from './chain.js';
 import { BLUNOTE_WINNERS, decodeRecord, drawPieces } from '../../crypto/blunote.js';
 import { splitLevy } from '../../crypto/levy.js';
-import {
-  freshForBlock,
-  spillForBlock,
-  hashBudgetNanos,
-  hashLedgerIdle,
-  sameHashLedger,
-  settleHashOwed,
-} from '../../crypto/hash_owed.js';
+import { hashBudgetNanos } from '../../crypto/hash_owed.js';
 import {
   supplyUnits,
   unitsAlongChain,
@@ -313,22 +305,6 @@ function publicLevy(block) {
     if (n > MAX_SAFE) return null;
   }
   return n;
-}
-
-function leafHex(leaf) {
-  try {
-    if (leaf?.noteCommit) {
-      const b = Buffer.from(leaf.noteCommit);
-      if (b.length === 32 && !b.equals(Buffer.alloc(32))) return b.toString('hex');
-    }
-  } catch { /* dest20 below */ }
-  try {
-    if (leaf?.dest20) {
-      const d = Buffer.from(leaf.dest20);
-      if (d.length === 20) return noteCommitOfDest20(d).toString('hex');
-    }
-  } catch { /* no commit */ }
-  return '';
 }
 
 /**
@@ -808,6 +784,10 @@ function accountBluBlock(state, block, cb, { ts, blockHeight, opts, potMinted, c
 
 function accountBlock(prev, block, opts = {}) {
   const state = copySupply(prev);
+  // R28 (D2, Russell 28 Oct): every block is accounted from its own record.
+  // A block with no record is refused outright; the retired owed ledger is
+  // not a fallback, and an audit names the refusal instead of a blank.
+  if (block?.blunoteRecord == null || block.blunoteRecord === '') return { reason: 'blunote_record', state };
   const ts = headerMs(block);
   if (!(ts > 0)) return { reason: 'header', state };
   const blockHeight = Number(opts.height) || Number(block?.height) || 0;
@@ -833,96 +813,7 @@ function accountBlock(prev, block, opts = {}) {
     state.carry = carryOut;
     return { reason: hash.reason || 'supply', state };
   }
-  if (block?.blunoteRecord != null && block.blunoteRecord !== '') {
-    return accountBluBlock(state, block, cb, { ts, blockHeight, opts, potMinted, carryOut, levy });
-  }
-  let shares = null;
-  try {
-    shares = unpackShareBatch(Array.isArray(block?.shareBatch) ? block.shareBatch : []);
-  } catch {
-    shares = null;
-  }
-  if (shares == null) {
-    state.carry = carryOut;
-    return { reason: 'hash_bonus', state };
-  }
-  const unit = hashBonusUnitNanos(opts.unit == null ? state.liveUnit : opts.unit);
-  if (shares.length && hash.account && Array.isArray(block?.aLeaves) && block.aLeaves.length) {
-    const seen = new Set();
-    for (const leaf of block.aLeaves) {
-      const count = Math.floor(Number(leaf?.count) || 0);
-      if (count <= 0) continue;
-      const hex = leafHex(leaf);
-      if (!hex || (hash.account.retained.get(hex) || 0) !== count) {
-        state.carry = carryOut;
-        return { reason: 'hash_bonus', state };
-      }
-      seen.add(hex);
-    }
-    for (const [hex, kept] of hash.account.retained) {
-      if (kept > 0 && !seen.has(hex)) {
-        state.carry = carryOut;
-        return { reason: 'hash_bonus', state };
-      }
-    }
-  }
-  const tipHeight = Number(opts.tipHeight) > 0 ? Number(opts.tipHeight) : blockHeight;
-  const gotFresh = freshForBlock(block, unit, tipHeight);
-  if (!gotFresh.ok) {
-    state.carry = carryOut;
-    return { reason: 'hash_owed', state };
-  }
-  const gotSpill = spillForBlock(block, unit, tipHeight);
-  if (!gotSpill.ok) {
-    state.carry = carryOut;
-    return { reason: 'hash_owed', state };
-  }
-  const fresh = gotFresh.fresh;
-  const budget = hashBudgetNanos(state.acceptedSeries, unit);
-  if (budget == null) {
-    state.carry = carryOut;
-    return { reason: 'hash_owed', state };
-  }
-  const settled = settleHashOwed({
-    owedIn: state.owedRows,
-    dustIn: state.dust,
-    overflowIn: state.overflow,
-    fresh,
-    spill: gotSpill.fresh,
-    height: Number.isInteger(blockHeight) && blockHeight >= 0 ? blockHeight : 0,
-    unit,
-    budget,
-  });
-  if (!settled.ok || !sameHashLedger(cb, settled)) {
-    state.carry = carryOut;
-    return { reason: 'hash_owed', state };
-  }
-  const rowsOut = (settled.owed || []).concat(settled.owedRest || []);
-  const parentIdle = state.owedRows.length === 0 && state.dust === 0n && state.overflow === 0n;
-  const idle = parentIdle && hashLedgerIdle(settled, fresh.length);
-  let mintedHashHere = settled.minted;
-  const hashVouts = (cb?.vout || []).filter((o) => String(o?.kind || '') === 'hash');
-  if (!shares.length && idle) {
-    if (hashVouts.length === 0) mintedHashHere = 0n;
-    else if (hashVouts.length === 1) mintedHashHere = BigInt(unitsForShare()) * BigInt(hashBonusUnitNanos(unit));
-    else {
-      state.carry = carryOut;
-      return { reason: 'hash_bonus', state };
-    }
-  }
-  const freshNanos = fresh.reduce((n, row) => n + row.nanos, 0n);
-  const spillNanos = (gotSpill.fresh || []).reduce((n, row) => n + row.nanos, 0n);
-  // Spill is proven work entering the owed map on this block. It stays out of
-  // acceptedUnits, so the hash budget does not move. Minted plus still-owed
-  // has to equal accepted hash, so the witness is ingress.
-  state.acceptedHash += freshNanos + spillNanos + (mintedHashHere - settled.minted);
-  state.permittedHashAll += mintedHashHere;
-  state.owedRows = rowsOut.slice();
-  state.acceptedSeries.push(settled.acceptedUnits == null ? 0n : settled.acceptedUnits);
-  state.dust = settled.dust;
-  state.overflow = settled.overflow;
-  state.carry = carryOut;
-  return accountTail(state, block, cb, { ts, blockHeight, opts, potMinted, mintedHashHere, levy, publicTotal: potMinted + mintedHashHere + levy, unit });
+  return accountBluBlock(state, block, cb, { ts, blockHeight, opts, potMinted, carryOut, levy });
 }
 
 /**

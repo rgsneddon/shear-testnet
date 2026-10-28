@@ -136,21 +136,10 @@ import {
   shareSlotCommitment,
 } from '../../crypto/pack.js';
 import {
-  freshCreditsFromShares,
-  freshForBlock,
-  spillForBlock,
   sealedCreditsBuried,
   hashBudgetNanos,
-  hashDustFromTx,
-  hashLedgerIdle,
-  hashOwedDigestSuffix,
-  hashOwedFromTx,
-  hashOwedRootAgrees,
-  hashOverflowFromTx,
   advanceHashOwed,
-  sameHashLedger,
-  settleHashOwed,
-  writeHashLedger,
+  retiredOwedField,
 } from '../../crypto/hash_owed.js';
 import { buildDualTree, bindBSpend, derivedBLeaves, sameBLeaves, bLeafAskRejected } from '../../crypto/clearing.js';
 import {
@@ -337,7 +326,6 @@ function coreDigest(tx) {
   // so a paid-out coinbase keeps the previous digest. A peer who changes the
   // carry changes the merkle root.
   const carry = tx?.coinbase ? canonicalCarry(tx) : 0;
-  const owedSuffix = tx?.coinbase ? hashOwedDigestSuffix(tx) : Buffer.alloc(0);
   const slotSuffix = tx?.coinbase ? shareSlotDigestSuffix(tx) : Buffer.alloc(0);
   const issuedSuffix = tx?.coinbase ? issuedJobDigestSuffix(tx) : Buffer.alloc(0);
   const bluSuffix = tx?.coinbase ? blunoteDigestSuffix(tx) : Buffer.alloc(0);
@@ -352,13 +340,12 @@ function coreDigest(tx) {
   const rewardSuffix = rootHex && rootHex !== 'bad'
     ? Buffer.from(`rewardroot1${rootHex}`)
     : (rootHex === 'bad' ? Buffer.from('rewardroot-bad') : null);
-  if (tx?.coinbase && (owedSuffix == null || slotSuffix == null || issuedSuffix == null || bluSuffix == null)) {
+  if (tx?.coinbase && (slotSuffix == null || issuedSuffix == null || bluSuffix == null)) {
     return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
   }
-  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (bluSuffix && bluSuffix.length) || (observeSuffix && observeSuffix.length) || (reportSuffix && reportSuffix.length) || (rateSuffix && rateSuffix.length) || (rewardSuffix && rewardSuffix.length))) {
+  if (tx?.coinbase && (carry || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (bluSuffix && bluSuffix.length) || (observeSuffix && observeSuffix.length) || (reportSuffix && reportSuffix.length) || (rateSuffix && rateSuffix.length) || (rewardSuffix && rewardSuffix.length))) {
     const parts = [packed];
     if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
-    if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
     if (slotSuffix && slotSuffix.length) parts.push(slotSuffix);
     if (issuedSuffix && issuedSuffix.length) parts.push(issuedSuffix);
     if (bluSuffix && bluSuffix.length) parts.push(bluSuffix);
@@ -928,18 +915,6 @@ export function allowedHashBonusCustodyDest(dest) {
   return dest && isDestAddress(dest) ? dest : '';
 }
 
-function sealHashPay(pay, address) {
-  const nanos = Number(pay.nanos);
-  const base = pay.admitBase && Buffer.from(pay.admitBase).length === 32
-    ? pay.admitBase
-    : (address ? admitBaseFromAddress(address) : null);
-  return attachAdmitPub(sealCoinbaseNote(nanos, {
-    dest20: pay.dest20,
-    noteCommit: pay.noteCommit,
-    kind: 'hash',
-  }), { admitBase: base || null });
-}
-
 
 // ---- R28 BluNotes coinbase ---------------------------------------------------
 
@@ -1062,24 +1037,24 @@ export function bluPlanFor({ payable, finderLevy = 0, feeNanos = 0n, feeKey = nu
   return blunotePlan({ shareCount: shares.length, potPayable: payable, feeNanos, feeKey, finderLevy, hashNanos: hash, potToFee });
 }
 
+/**
+ * A pot-only coinbase for tests and tools that build legacy-shaped blocks.
+ * R28 (D2, Russell 28 Oct): it has no owed half. No hash notes are settled
+ * and no owed or hash-credit field is stamped (verify refuses those as
+ * blunote_owed); shares pay by the BluNotes draw in buildTemplate.
+ */
 export function coinbaseTx({
-  height, miner, samples = [], potShares = null, destOf = (a) => a, hashBonusNanos = HASH_BONUS_NANOS,
+  height, miner, potShares = null, destOf = (a) => a,
   shareBatch = null, poolDest = null, potNanos = BLOCK_SUBSIDY_NANOS,
   hashBonusCustodyDest = null,
   carryNanos = 0,
-  hashOwedIn = null,
-  hashDustIn = null,
-  hashOverflowIn = null,
-  hashAcceptedSeries = null,
-  hashSpill = null,
 }) {
   const pot = Math.max(0, Math.floor(Number(potNanos) || BLOCK_SUBSIDY_NANOS));
   const carry = Math.max(0, Math.floor(Number(carryNanos) || 0));
-  const bonuses = hashBonusByMiner(samples, hashBonusNanos, shareBatch);
   const vout = [];
-  // v12 does not retarget the hash bonus or the pot onto a custody dest.
-  // Explicit shares still name the pot. Callers that pass a custodial list
-  // build a block verify rejects.
+  // v12 does not retarget the pot onto a custody dest. Explicit shares still
+  // name the pot. Callers that pass a custodial list build a block verify
+  // rejects.
   void hashBonusCustodyDest;
   const explicit = Array.isArray(potShares);
   let shares = explicit ? potShares : null;
@@ -1101,56 +1076,8 @@ export function coinbaseTx({
       admitBase: admitBaseFromAddress(pay),
     }));
   }
-  // Hash notes follow the owed settlement. Under the cap with nothing
-  // owed, that is the retained share and the vout order matches the
-  // first-seen dest order. An empty batch with an empty ledger mints no
-  // hash note here. A later producer pays parent rows the same way.
-  const fresh = freshCreditsFromShares(shareBatch || [], hashBonusNanos);
-  const spill = freshCreditsFromShares(hashSpill || [], hashBonusNanos);
-  const budget = hashAcceptedSeries == null ? null : hashBudgetNanos(hashAcceptedSeries, hashBonusNanos);
-  if (hashAcceptedSeries != null && budget == null) throw new Error('hash_owed');
-  const settled = settleHashOwed({
-    owedIn: hashOwedIn || [],
-    dustIn: hashDustIn || 0n,
-    overflowIn: hashOverflowIn || 0n,
-    fresh,
-    spill,
-    height,
-    unit: hashBonusNanos,
-    budget,
-  });
-  if (!settled.ok) throw new Error(settled.reason || 'hash_owed');
-  const payByHex = new Map(settled.pay.map((p) => [p.noteCommit.toString('hex'), p]));
-  const emitted = new Set();
-  for (const [address] of bonuses) {
-    const payAddr = destOf(address);
-    if (!isDestAddress(payAddr)) continue;
-    const d20 = hash20FromAddress(payAddr);
-    if (!d20) continue;
-    let nc;
-    try { nc = noteCommitOfDest20(d20); } catch { continue; }
-    const hex = nc.toString('hex');
-    const pay = payByHex.get(hex);
-    if (!pay || emitted.has(hex)) continue;
-    if (pay.nanos > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('hash_owed');
-    emitted.add(hex);
-    vout.push(sealHashPay(pay, payAddr));
-  }
-  for (const pay of settled.pay) {
-    const hex = pay.noteCommit.toString('hex');
-    if (emitted.has(hex)) continue;
-    if (pay.nanos > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('hash_owed');
-    emitted.add(hex);
-    const addr = pay.address && isDestAddress(pay.address)
-      ? pay.address
-      : encodeDest(pay.dest20);
-    vout.push(sealHashPay(pay, addr));
-  }
-  const carriedRows = (settled.owed?.length || 0) + (settled.owedRest?.length || 0);
-  if (!vout.length && carry <= 0 && settled.minted === 0n && carriedRows === 0) {
-    throw new Error('coinbase_needs_dest');
-  }
-  const tx = {
+  if (!vout.length && carry <= 0) throw new Error('coinbase_needs_dest');
+  return {
     coinbase: true,
     height,
     vin: [{ coinbase: true, height }],
@@ -1158,8 +1085,6 @@ export function coinbaseTx({
     excess: excessOf(vout),
     carryNanos: carry,
   };
-  writeHashLedger(tx, settled);
-  return tx;
 }
 
 function noteDest20(o) {
@@ -1621,7 +1546,6 @@ export function buildTemplate({
   parentFluxset = null,
   parentBlocks = null,
   hashAcceptedSeries = null,
-  hashOwedIn: hashOwedInOpt = null,
   issuedHeaders = null,
   hashSpill = null,
   prepareCoinbase = null,
@@ -1661,23 +1585,11 @@ export function buildTemplate({
   // Anything still unpaid, including an empty list, stays carried. Solo
   // (null shares) pays the miner the subsidy plus that carry and carries nothing.
   const carryIn = canonicalCarry(prevBlock?.txs?.[0]) || 0;
-  const parentCb = prevBlock?.txs?.[0] || null;
-  let series = Array.isArray(hashAcceptedSeries) ? hashAcceptedSeries : null;
-  // Maintained owed state. A lean parent root is not a reason to walk the chain.
-  let hashOwedIn = Array.isArray(hashOwedInOpt) ? hashOwedInOpt : hashOwedFromTx(parentCb);
-  if (Array.isArray(hashOwedInOpt) && parentCb && !hashOwedRootAgrees(parentCb, hashOwedInOpt)) {
-    throw new Error('hash_owed');
-  }
-  const hashDustIn = hashDustFromTx(parentCb);
-  const hashOverflowIn = hashOverflowFromTx(parentCb);
-  if (hashOwedIn == null || hashDustIn == null || hashOverflowIn == null) {
-    throw new Error('hash_owed');
-  }
+  // R28 (D2, Russell 28 Oct): no owed ledger. The template reads no owed
+  // state from the parent; its hash budget is the accepted-W series alone.
+  const series = Array.isArray(hashAcceptedSeries) ? hashAcceptedSeries : null;
   const payable = subsidy + carryIn;
   void potShares;
-  void hashOwedIn;
-  void hashDustIn;
-  void hashOverflowIn;
   // A leaf-vote fee is the note it spends. A declared number with no spend
   // is not minted into the reserve fee note.
   const fees = (txs || []).reduce((a, t) => {
@@ -1813,7 +1725,6 @@ export function buildTemplate({
     hashSpill: spillBatch,
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
-    hashCredits: [],
     levyBind: {
       // R28: the finder levy is in the draw (or the coinbase key / reserve
       // note), so no finder-fee note exists to aim at a login dest.
@@ -2143,93 +2054,6 @@ export function shareCreditBound(block, tipHeight = null) {
     }
   }
   return { ok: true, reason: '' };
-}
-
-function spillWorkKeys(shares, fallbackHeader) {
-  const out = [];
-  for (const s of shares || []) {
-    const hdr = s?.verifiedHeader || fallbackHeader;
-    const key = shareWorkKey(hdr, s?.nonce);
-    if (key) out.push(key);
-  }
-  return out;
-}
-
-/**
- * Expiring overflow only. Slot 0 is still eligible and must stay in the
- * payable batch. A witness longer than the seat cap, or one that repeats
- * a seated work key, is not a credit. Buried blocks keep the credit record
- * and no longer carry the share bodies.
- */
-function spillSharesRejected(block, prev, opts = {}) {
-  const spill = Array.isArray(block?.hashSpill) ? block.hashSpill : [];
-  if (!spill.length) {
-    const recorded = block?.hashSpillCredits;
-    if (Array.isArray(recorded) && recorded.length && !sealedCreditsBuried(block, opts.burialTip)) {
-      return 'hash_spill';
-    }
-    return '';
-  }
-  if (spill.length > MAX_SHARES_PER_BLOCK) return 'hash_spill';
-  if (!prev?.header) return 'hash_spill';
-  const exclude = spillWorkKeys(block.shareBatch, prev.header);
-  const proved = verifyShareBatch({
-    parentHeader: prev.header,
-    priorHeader: opts.grandparentHeader || null,
-    excludeNonces: exclude,
-    shares: spill,
-    floorBits: SHARE_FLOOR_BITS,
-    skipPow: !!opts.skipSharePow,
-    trustWork: !!opts.trustWork,
-    issuedJobKeys: block.txs?.[0]?.issuedJobKeys,
-  });
-  if (!proved.ok || proved.shares.length !== spill.length) return 'hash_spill';
-  for (const row of proved.shares) {
-    if (row.proofSlot !== 1) return 'hash_spill';
-  }
-  return '';
-}
-
-function settlementFor(prev, height, block, unit, extra = {}) {
-  const shareBatch = Array.isArray(block?.shareBatch) ? block.shareBatch : (Array.isArray(block) ? block : []);
-  const creditBlock = block && !Array.isArray(block) ? block : { shareBatch };
-  const parent = prev?.txs?.[0] || null;
-  let owedIn;
-  if (extra.owedIn != null) {
-    if (!hashOwedRootAgrees(parent, extra.owedIn)) return { ok: false, reason: 'hash_owed' };
-    owedIn = extra.owedIn;
-  } else {
-    owedIn = hashOwedFromTx(parent);
-  }
-  const dustIn = hashDustFromTx(parent);
-  const overflowIn = hashOverflowFromTx(parent);
-  if (owedIn == null || dustIn == null || overflowIn == null) {
-    return { ok: false, reason: 'hash_owed' };
-  }
-  const series = extra.hashAcceptedSeries;
-  const budget = series == null ? null : hashBudgetNanos(series, unit);
-  if (series != null && budget == null) return { ok: false, reason: 'hash_owed' };
-  const gotFresh = freshForBlock(creditBlock, unit, extra.tipHeight);
-  if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };
-  const gotSpill = spillForBlock(creditBlock, unit, extra.tipHeight);
-  if (!gotSpill.ok) return { ok: false, reason: 'hash_owed' };
-  const fresh = gotFresh.fresh;
-  const settled = settleHashOwed({
-    owedIn,
-    dustIn,
-    overflowIn,
-    fresh,
-    spill: gotSpill.fresh,
-    height,
-    unit,
-    budget,
-  });
-  if (!settled.ok) return { ok: false, reason: settled.reason || 'hash_owed' };
-  // owedIn is the combined map, including rows that were packed in hashOwedRest.
-  // A ledger that only looks empty inline is not idle and must not mint a finder floor.
-  const parentIdle = owedIn.length === 0 && dustIn === 0n && overflowIn === 0n;
-  const idle = parentIdle && hashLedgerIdle(settled, fresh.length);
-  return { ...settled, idle };
 }
 
 /**
@@ -2562,12 +2386,35 @@ export function arrivedRowsKey(block) {
 }
 
 /**
- * The row checks verifyBlock runs before proof of work: fee fields, a
- * coinbase observe, stage 0, leaked and unsigned fields. They read the rows
- * as given, so the store also runs them on the rows as they arrived
- * (store.js arrivedRows): compaction strips some of what they name.
+ * Retired R28 block fields read on the block as given (D2, Russell 28 Oct):
+ * an owed-ledger or hash-credit field (blunote_owed), and spill rows or
+ * spill credits (hash_spill). Compaction keeps none of them and the header
+ * commits none of them, so a relay can add one to an honest block: the store
+ * reads them on the block as it arrived and refuses that copy as the serving
+ * peer's fault (peerOnly), and the honest copy stays valid.
+ */
+export function retiredBlockFieldRejected(block) {
+  const owed = retiredOwedField(block);
+  if (owed) return owed;
+  for (const key of ['hashSpill', 'hashSpillCredits']) {
+    const v = block?.[key];
+    if (Array.isArray(v) ? v.length > 0 : v != null) return { ok: false, reason: 'hash_spill', field: key };
+  }
+  for (const key of ['hashSpillPacked', 'hashSpillCreditPacked']) {
+    if (block?.[key] != null && block[key] !== '') return { ok: false, reason: 'hash_spill', field: key };
+  }
+  return null;
+}
+
+/**
+ * The row checks verifyBlock runs before proof of work: retired R28 fields,
+ * fee fields, a coinbase observe, stage 0, leaked and unsigned fields. They
+ * read the rows as given, so the store also runs them on the rows as they
+ * arrived (store.js arrivedRows): compaction strips some of what they name.
  */
 export function earlyRowsRejected(block) {
+  const retired = retiredBlockFieldRejected(block);
+  if (retired) return retired;
   const txs = Array.isArray(block?.txs) ? block.txs : [];
   for (let i = 0; i < txs.length; i += 1) {
     const feeHit = feeFieldRejected(txs[i]);
@@ -2731,6 +2578,9 @@ function verifyBlockBody(block, prev, opts = {}) {
   // miner. A block names no miner and carries no samples (they listed each
   // hasher's address and work); work is the share batch, paid by the draw.
   if (block.miner != null && block.miner !== '') return { ok: false, reason: 'blunote_miner' };
+  // R28 (D2, Russell 28 Oct): no owed ledger and no hash-credit record.
+  const owedField = retiredOwedField(block);
+  if (owedField) return owedField;
   if ((Array.isArray(block.samples) && block.samples.length) || (Array.isArray(txs[0].samples) && txs[0].samples.length)) {
     return { ok: false, reason: 'blunote_samples' };
   }

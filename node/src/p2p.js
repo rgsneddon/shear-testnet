@@ -5,8 +5,6 @@ import { MAGIC_TESTNET, PRODUCT_VERSION, SAMPLE_PRUNE_CONFIRMATIONS, consensusFi
 import { safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
 import {
-  packHashCreditBytes,
-  unpackHashCreditBytes,
   packSpillBytes,
   unpackSpillBytes,
   packSpillCreditBytes,
@@ -711,7 +709,6 @@ export function encodeWireBlock(b) {
     // R28: samples and miner are never on the wire (blunote_samples,
     // blunote_miner), so a relay cannot add one to a valid block.
     sharePacked: packShareBatchBytes(b.shareBatch || []).toString('hex'),
-    hashCreditPacked: Array.isArray(b.hashCredits) ? packHashCreditBytes(b.hashCredits).toString('hex') : '',
     ...(Array.isArray(b.hashSpill) && b.hashSpill.length
       ? { hashSpillPacked: packSpillBytes(b.hashSpill).toString('hex') }
       : {}),
@@ -755,13 +752,12 @@ export function decodeWireBlock(w) {
   if (typeof w.blunoteRecord === 'string' && /^([0-9a-f]{2})+$/i.test(w.blunoteRecord)) {
     block.blunoteRecord = w.blunoteRecord.toLowerCase();
   }
-  // A missing credit column is not a record. An own-property set to undefined
-  // makes freshForBlock / spillForBlock reject the block as hash_owed.
-  if (w.hashCreditPacked) {
-    block.hashCredits = unpackHashCreditBytes(Buffer.from(String(w.hashCreditPacked), 'hex'));
-  } else if (Array.isArray(w.hashCredits)) {
-    block.hashCredits = w.hashCredits;
-  }
+  // R28 (D2): no block carries a hash-credit column, and this encoder never
+  // sends one. A peer that sends one has its copy refused as blunote_owed
+  // (peerOnly), so the column is kept as sent for that check, not dropped
+  // here: a relay-altered copy must not pass as the honest block.
+  if (w.hashCreditPacked !== undefined && w.hashCreditPacked !== null) block.hashCreditPacked = String(w.hashCreditPacked);
+  if (w.hashCredits !== undefined && w.hashCredits !== null) block.hashCredits = reviveDeep(w.hashCredits);
   if (w.hashSpillCreditPacked) {
     block.hashSpillCredits = unpackSpillCreditBytes(Buffer.from(String(w.hashSpillCreditPacked), 'hex'));
   } else if (Array.isArray(w.hashSpillCredits)) {

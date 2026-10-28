@@ -123,7 +123,7 @@ import {
   hasLiveSharePow,
   sharePowCounters,
 } from '../../crypto/share_batch.js';
-import { advanceHashOwed, freshCreditsFromShares, replayHashOwed, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
+import { advanceHashOwed, replayHashOwed, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
 import { unpackShareBatchBytes } from '../../crypto/pack.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { isDestAddress } from '../../crypto/address.js';
@@ -575,10 +575,9 @@ export function createStore(dir, {
       if (!b || !b.header) continue;
       b.header = Buffer.from(b.header, 'hex');
       b.hash = Buffer.from(b.hash, 'hex');
-      if (typeof b.hashCreditPacked === 'string' && b.hashCreditPacked) {
-        const credits = unpackHashCreditBytes(Buffer.from(b.hashCreditPacked, 'hex'));
-        if (credits) b.hashCredits = credits;
-      }
+      // R28 (D2): the hash-credit column is retired. A row an older build
+      // wrote keeps it on disk only; nothing reads it, so it is not loaded.
+      delete b.hashCreditPacked;
       if (typeof b.hashSpillPacked === 'string' && b.hashSpillPacked) {
         const spill = unpackShareBatchBytes(Buffer.from(b.hashSpillPacked, 'hex'));
         if (Array.isArray(spill)) b.hashSpill = spill;
@@ -2377,18 +2376,6 @@ export function createStore(dir, {
     savePolicyState();
   }
 
-  function stampCredits(block, unit) {
-    if (!block) return;
-    const haveCredits = Object.prototype.hasOwnProperty.call(block, 'hashCredits');
-    if (!haveCredits && !(block.samplesPruned === true && !(block.shareBatch || []).length)) {
-      block.hashCredits = freshCreditsFromShares(block.shareBatch || [], unit);
-    }
-    if (Object.prototype.hasOwnProperty.call(block, 'hashSpillCredits')) return;
-    const spill = Array.isArray(block.hashSpill) ? block.hashSpill : [];
-    if (!spill.length) return;
-    block.hashSpillCredits = freshCreditsFromShares(spill, unit);
-  }
-
   function keepOwedIndex(at, tipAt) {
     if (!Number.isInteger(at) || at < 0 || at > tipAt) return false;
     if (at === 0 || at === tipAt) return true;
@@ -3620,7 +3607,19 @@ export function createStore(dir, {
     if (!block || typeof block !== 'object' || !Array.isArray(block.txs)) return block;
     const cb = block.txs[0];
     const samples = Array.isArray(block.samples) ? block.samples : (cb?.coinbase && Array.isArray(cb.samples) ? cb.samples : block.samples);
-    return { ...block, samples, txs: block.txs.map((tx) => {
+    // R28 (D2): the retired hash-credit and spill columns are not body. The
+    // header commits none of them, so a copy that carries one is refused on
+    // the rows as it arrived (chain.js retiredBlockFieldRejected, peerOnly),
+    // and the body validated, stored and served never carries them.
+    const {
+      hashCredits: _hc,
+      hashCreditPacked: _hcp,
+      hashSpillCredits: _hsc,
+      hashSpillPacked: _hsp,
+      hashSpillCreditPacked: _hscp,
+      ...kept
+    } = block;
+    return { ...kept, hashSpill: [], samples, txs: block.txs.map((tx) => {
       if (tx?.coinbase) {
         if (!Object.prototype.hasOwnProperty.call(tx, 'samples')) return compactOrSame(tx, compactTx(tx));
         const { samples: _s, ...rest } = tx;
@@ -4053,7 +4052,6 @@ export function createStore(dir, {
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
     };
     const unitNow = hashBonusUnitNanos(reserveVault.liveHashBonusNanos);
-    stampCredits(full, unitNow);
     const stored = leanBlock(full);
     const owedNext = advanceHashOwed({
       owedIn: owedRows,
@@ -4813,7 +4811,6 @@ export function createStore(dir, {
         burialTip,
       });
       if (!check.ok) return { ok: false, reason: check.reason, at: i, ...(check.peerOnly ? { peerOnly: true } : {}) };
-      stampCredits(fork[i], units[i]);
       const lean = leanBlock({
         ...fork[i],
         magic: bookMagic,
@@ -4877,7 +4874,6 @@ export function createStore(dir, {
       );
       if (check.evmSession) trialSession = check.evmSession;
       if (!check.ok) return { ok: false, reason: check.reason, at: i, ...(check.peerOnly ? { peerOnly: true } : {}) };
-      stampCredits(fork[i], units[i]);
       const lean = leanBlock({
         ...fork[i],
         magic: bookMagic,
@@ -5490,7 +5486,6 @@ export function createStore(dir, {
         rollbackSpent(trialSpent, beforeSpent);
         return { ok: false, reason: owedNext.reason || 'hash_owed' };
       }
-      stampCredits(fork[i], owedUnit);
       owedWalk.owedIn = owedNext.rows;
       owedWalk.hashAcceptedSeries = owedNext.acceptedSeries;
       owedSeed.suffixAdvances += 1;
@@ -6681,7 +6676,6 @@ export function createStore(dir, {
       finderDest,
       parentBlocks: blocks,
       parentFluxset: liveFlux,
-      hashOwedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
       // R28: the pool's own one-time fee key and fee rate (no address).
