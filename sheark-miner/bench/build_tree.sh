@@ -18,4 +18,8 @@ case "$(uname -m)" in x86_64) BASE="-march=x86-64 -mtune=generic" ;; *) BASE="" 
 gcc $BASE -O3 -Wall -Wextra -std=c11 -pthread -I"$M/src" -I"$T/crypto/randomx/src" -c -o "$M/bench/rxbench.o" "$RXB"
 g++ $BASE -O3 -pthread -o "$M/bench/rxbench" "$M/bench/rxbench.o" "$M/src/shear_hash.o" "$M/src/sha256.o" "$M/src/sha512.o" \
   "$T/crypto/randomx/build/librandomx.a" -lm -static-libgcc -static-libstdc++
+# The node addon (it compiles this tree's shear_hash.c): the loopback pool
+# verifies shares in-process with it, as the live pool does, instead of
+# spawning ShearK-Miner --verify per share.
+make -C crypto/native shearhash.node CC=gcc
 echo "built $M/ShearK-Miner and $M/bench/rxbench at $(git -C "$T" rev-parse --short HEAD)"
