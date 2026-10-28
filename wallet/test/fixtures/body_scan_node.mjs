@@ -55,14 +55,14 @@ function stampOf(b) {
   return Number(decodeHeader(Buffer.from(b.header)).timestamp);
 }
 
-async function appendTpl(tpl, header, hash, miner) {
+async function appendTpl(tpl, header, hash) {
   const got = await Promise.resolve(store.append({
     header,
     height: tpl.height,
     txs: tpl.txs,
     samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner,
+    // R28: a block names no miner (blunote_miner).
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -79,7 +79,7 @@ const T0 = Date.now() - 4 * 24 * 60 * 60 * 1000;
 let at = T0;
 for (;;) {
   const { tpl } = store.template({ miner: other, now: at });
-  await appendTpl(tpl, tpl.header, fakeHash(), other);
+  await appendTpl(tpl, tpl.header, fakeHash());
   const h = store.tip().height;
   const bits = decodeHeader(Buffer.from(tpl.header)).bits;
   if (h >= 12 && bits === FLOOR_BITS) break;
@@ -110,7 +110,7 @@ for (let i = 1; i <= ABOVE_PIN; i += 1) {
     }
   }
   if (!header) throw new Error(`no nonce at h=${tpl.height}`);
-  await appendTpl(tpl, header, hash, miner);
+  await appendTpl(tpl, header, hash);
   if (!paid) continue;
   const block = store.tip();
   const own = ownBluNotes(who, block.blunoteRecord);
