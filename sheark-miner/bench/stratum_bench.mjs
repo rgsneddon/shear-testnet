@@ -241,7 +241,7 @@ async function mine(kind) {
     blocks: st.blocks, jobs: st.jobs, minerDropped: child.status.dropped,
     rssKbFirst: samples[0]?.rssKb ?? null, rssKbLast: samples.at(-1)?.rssKb ?? null,
     rssKbMax: samples.length ? Math.max(...samples.map((s) => s.rssKb || 0)) : null,
-    crashed, stop, restart, head: child.out.slice(0, 1500), samples,
+    crashed, stop, restart, head: child.out.slice(0, 8000), samples,
   };
   return out;
 }
