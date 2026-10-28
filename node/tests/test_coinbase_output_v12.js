@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../src/store.js';
-import { verifyBlock, digestTx } from '../src/chain.js';
+import { verifyBlock, digestTx, buildTemplate, GENESIS_PREV } from '../src/chain.js';
+import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { reserveFeeDest } from '../../crypto/levy.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import {
@@ -16,7 +18,7 @@ import {
   addExcess,
 } from '../../crypto/note.js';
 import { arrivalFieldRejected } from '../../crypto/arrival_fields.js';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 
 function minerDest() {
@@ -32,6 +34,34 @@ function easyPowHash() {
   h[6] = (powTag >> 16) & 0xff;
   powTag += 1;
   return h;
+}
+
+const TRUSTED = Buffer.alloc(32);
+
+/** A genesis block whose body is one claim paying `fee`, header bound to it. */
+function feeBlock(now, fee) {
+  const miner = minerDest();
+  const tpl = buildTemplate({
+    prev: GENESIS_PREV,
+    height: 1,
+    miner,
+    bits: GENESIS_BITS_PACKED,
+    now,
+    txs: [{ kind: 'claim', fee, vin: [{ address: miner }] }],
+  });
+  return {
+    header: tpl.header,
+    height: 1,
+    txs: tpl.txs,
+    samples: tpl.samples,
+    shareBatch: tpl.shareBatch || [],
+    miner,
+    aLeaves: tpl.aLeaves,
+    bLeaves: tpl.bLeaves,
+    rootA: tpl.rootA,
+    rootB: tpl.rootB,
+    weight: tpl.weight,
+  };
 }
 
 describe('v12 coinbase outputs are individually bound', () => {
@@ -71,36 +101,21 @@ describe('v12 coinbase outputs are individually bound', () => {
   });
 
   it('a sealed block fails if any coinbase output loses its proof, including an extra levy note', async () => {
-    const dest = minerDest();
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-cb-'));
-    const store = createStore(dir);
+    // R28: the reserve levy note is the one explicit coinbase output. An
+    // empty round with no fee key pays its whole finder levy with it, so a
+    // block whose body pays a fee carries one.
     const t0 = 1_700_000_000_000;
-    const { tpl } = store.template({ miner: dest, shareBits: 4, now: t0 });
-    const block = {
-      header: tpl.header,
-      txs: tpl.txs,
-      samples: tpl.samples,
-      shareBatch: tpl.shareBatch || [],
-      miner: dest,
-      aLeaves: tpl.aLeaves,
-      bLeaves: tpl.bLeaves,
-      rootA: tpl.rootA,
-      rootB: tpl.rootB,
-      weight: tpl.weight,
-    };
-    const got = await Promise.resolve(store.append(block, {
-      trustedPowHash: easyPowHash(),
-      skipSharePow: true,
-    }));
-    assert.equal(got.ok, true, got.reason);
-    const tip = store.tip();
-    const stamp = Number(decodeHeader(Buffer.from(tip.header)).timestamp);
-    const again = verifyBlock(tip, null, {
+    const tip = feeBlock(t0, 1000);
+    assert.equal(tip.txs[0].vout.length, 1);
+    assert.equal(tip.txs[0].vout[0].kind, 'reserve-fee');
+    const stamp = t0;
+    const verdict = (block) => verifyBlock(block, null, {
       genesisMs: stamp,
-      trustedPowHash: Buffer.from(tip.hash),
+      trustedPowHash: TRUSTED,
       skipSharePow: true,
       nowMs: stamp,
     });
+    const again = verdict(tip);
     assert.equal(again.ok, true, again.reason);
 
     const stripped = {
@@ -113,12 +128,6 @@ describe('v12 coinbase outputs are individually bound', () => {
     // The leaf binds the compact coinbase, its range proofs included
     // (TX_DIGEST=body-v2): under the old header the edit is merkle, and
     // resealed over it the coinbase check itself refuses it.
-    const verdict = (block) => verifyBlock(block, null, {
-      genesisMs: stamp,
-      trustedPowHash: Buffer.from(tip.hash),
-      skipSharePow: true,
-      nowMs: stamp,
-    });
     const unsealed = verdict(stripped);
     assert.equal(unsealed.ok, false);
     assert.equal(unsealed.reason, 'merkle');
@@ -140,7 +149,7 @@ describe('v12 coinbase outputs are individually bound', () => {
         excess: addExcess(tip.txs[0].excess, extra.r),
       }, ...tip.txs.slice(1)];
       const decoded = decodeHeader(Buffer.from(tip.header));
-      return verifyBlock({
+      return verdict({
         ...tip,
         header: encodeHeader({
           version: decoded.version,
@@ -153,20 +162,20 @@ describe('v12 coinbase outputs are individually bound', () => {
           baseFee: decoded.baseFee,
         }),
         txs,
-      }, null, {
-        genesisMs: stamp,
-        trustedPowHash: Buffer.from(tip.hash),
-        skipSharePow: true,
-        nowMs: stamp,
       });
     };
-    // An extra finder levy, labelled by its own dest20: the levy split refuses it.
+    // An extra public finder-fee note, labelled by its own dest20: an R28
+    // coinbase carries only the reserve levy note, so it is refused.
     const levy = withExtra(sealCoinbaseNote(1, { kind: 'finder-fee', dest20: Buffer.alloc(20, 0x5a) }));
     assert.equal(levy.ok, false);
-    assert.equal(levy.reason, 'levy_split');
+    assert.equal(levy.reason, 'blunote_vout');
+    // An extra reserve levy note to the reserve: the levy sum refuses it.
+    const extraReserve = withExtra(sealCoinbaseNote(1, { kind: 'reserve-fee', dest20: Buffer.from(hash20FromAddress(reserveFeeDest())) }));
+    assert.equal(extraReserve.ok, false);
+    assert.equal(extraReserve.reason, 'levy_split');
     // The same extra with a label and no dest20 (sealCoinbaseNote's zero
     // label) is a second fault, which COINBASE_NC=dest-bound names first.
-    const unbound = withExtra(sealCoinbaseNote(1, { kind: 'finder-fee' }));
+    const unbound = withExtra(sealCoinbaseNote(1, { kind: 'reserve-fee' }));
     assert.equal(unbound.ok, false);
     assert.equal(unbound.reason, 'coinbase_output');
   });
@@ -174,9 +183,8 @@ describe('v12 coinbase outputs are individually bound', () => {
   it('an arriving coinbase states each published v as a canonical u64 and carries no membership', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-cb-arrive-'));
     try {
-      const store = createStore(dir);
-      const { tpl } = store.template({ miner: minerDest(), shareBits: 4, now: 1_700_000_000_000 });
-      const cb = tpl.txs[0];
+      // R28: the reserve levy note is the coinbase output that publishes a v.
+      const cb = feeBlock(1_700_000_000_000, 1000).txs[0];
       assert.equal(cb.coinbase, true);
       assert.equal(arrivalFieldRejected(cb), null, 'the sealed coinbase arrives');
       const at = cb.vout.findIndex((o) => o?.valueProof?.v != null);

@@ -4,7 +4,6 @@
  * loaded (crypto/native shearadmit.node).
  */
 import { hash20FromAddress } from '../../crypto/address.js';
-import { admitScalarFromSeed } from '../../crypto/admit.js';
 import { walletAnchor } from '../../crypto/admit_v3.js';
 import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { compactTx } from '../../crypto/chronoflux.js';
@@ -22,7 +21,6 @@ import { fs1NativeLoaded } from '../../crypto/native_admit.js';
 import {
   asU8,
   kernelExcess,
-  openedCoinbaseNanos,
   sealHiddenNote,
   sealNote,
 } from '../../crypto/note.js';
@@ -30,7 +28,6 @@ import { attachAdmitPub } from '../../crypto/admit.js';
 import {
   appendTpl,
   potOutput,
-  retainNote,
   templateOn,
 } from './b_leaf_fund.js';
 
@@ -94,20 +91,15 @@ async function growCoins(store, who, need) {
       const ready = indexedCoins(coins, live);
       if (ready.length >= need) return { anchor, live, coins: ready };
     }
+    // R28: who mines solo with option (b); the pot is its record coin.
     const tpl = templateOn(store, { miner: who.dest });
-    const pot = retainNote(potOutput(tpl));
     const got = await appendTpl(store, tpl);
     if (!got.ok) {
       throw new Error(`grow ${store.tip()?.height || 0} ${got.reason || ''} ${got.error || ''}`);
     }
-    const opened = pot ? openedCoinbaseNanos(pot) : null;
-    if (pot?.r && pot.commit && Number.isSafeInteger(opened) && opened > 0) {
-      coins.push({
-        r: Buffer.from(asU8(pot.r)),
-        v: opened,
-        commit: Buffer.from(asU8(pot.commit)),
-        x: admitScalarFromSeed(who.spendSeed, pot),
-      });
+    const pot = potOutput(store.tip(), who.dest);
+    if (pot && Number.isSafeInteger(pot.opened) && pot.opened > 0) {
+      coins.push({ r: pot.r, v: pot.opened, commit: pot.commit, x: pot.x });
     }
   }
   throw new Error(`anchor never held ${need} pot notes`);

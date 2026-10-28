@@ -5,6 +5,7 @@
  * cannot be spent again.
  */
 import { describe, it } from 'node:test';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 import { fileCapMs } from './slow_caps.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -88,7 +89,7 @@ function easyPowHash() {
 function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey };
+  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey, blu: bluWallet(id.spendSeed) };
 }
 
 function typedTx(kind, dest, nanos, id) {
@@ -112,8 +113,8 @@ function stripPayer(tx) {
   return tx;
 }
 
-async function sealEmpty(store, dest, now, openings) {
-  const { tpl } = store.template({ miner: dest, shareBits: 4, now });
+async function sealEmpty(store, dest, now, openings, extra = {}) {
+  const { tpl } = store.template({ miner: dest, shareBits: 4, now, ...extra });
   const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
   const opening = pot?.r && pot.commit
     ? { r: pot.r, v: openedCoinbaseNanos(pot), commit: Buffer.from(asU8(pot.commit)) }
@@ -460,6 +461,7 @@ function lifePayer() {
     portalId: portal.portalId,
     portalDest: Buffer.from(portal.dest20),
     spend20: destCommitFromSpendPub(ownerPub),
+    blu: bluWallet(id.spendSeed),
   };
 }
 
@@ -468,9 +470,9 @@ function lifeStamp(store) {
   return tip ? Number(decodeHeader(Buffer.from(tip.header)).timestamp) : T0;
 }
 
-async function lifeMine(store, dest, now) {
+async function lifeMine(store, dest, now, extra = {}) {
   const at = now == null ? Math.max(T0, lifeStamp(store) + 90_000) : now;
-  const { tpl } = store.template({ miner: dest, shareBits: 4, now: at });
+  const { tpl } = store.template({ miner: dest, shareBits: 4, now: at, ...extra });
   const got = await Promise.resolve(store.append({
     header: tpl.header,
     height: tpl.height,
@@ -497,14 +499,16 @@ async function lifeAdvance(store, dest, targetMs) {
   }
 }
 
-function lifePot(tpl, who) {
-  const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+// R28: the block was mined solo with option (b); its pot is a record coin
+// of who's wallet, found with its scan key.
+function lifePot(block, who) {
+  const pot = soloCoin(who.blu, block);
   assert.ok(pot && pot.r, 'pot opening');
   return {
-    r: Buffer.from(asU8(pot.r)),
-    v: openedCoinbaseNanos(pot),
-    commit: Buffer.from(asU8(pot.commit)),
-    x: admitScalarFromSeed(who.spendSeed, pot),
+    r: pot.r,
+    v: pot.v,
+    commit: pot.commit,
+    x: pot.x,
     who,
   };
 }
@@ -894,8 +898,8 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
     const spent = new Set();
     try {
       for (let n = 0; n < 4; n += 1) {
-        const { tpl } = await lifeMine(store, who.dest);
-        coins.push(lifePot(tpl, who));
+        await lifeMine(store, who.dest, undefined, soloPay(who.blu));
+        coins.push(lifePot(store.tip(), who));
       }
       while (store.tip().height < 100) await lifeMine(store, who.dest);
       const locked = await lifeLock(store, who, coins, spent, 'life-lock');
@@ -953,15 +957,17 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
     const store = createStore(dir);
     try {
       for (let i = 0; i < 16; i += 1) {
-        await sealEmpty(store, who.dest, T0 + i * TARGET_BLOCK_INTERVAL_MS, []);
+        await sealEmpty(store, who.dest, T0 + i * TARGET_BLOCK_INTERVAL_MS, [], i === 0 ? soloPay(who.blu) : {});
       }
       assert.equal(store.tip().height, 16);
       const anchor = walletAnchor(17);
       assert.equal(anchor, 8);
       const live = store.anchorNote(anchor);
       assert.ok(live && live.n >= 1, `anchor ${anchor}`);
-      const pot = store.blocks[0].txs[0].vout.find((o) => o.kind === 'pot');
-      const want = Buffer.from(asU8(pot.commit));
+      // R28: block 1 was mined solo with option (b); its pot is a record coin.
+      const pot = soloCoin(who.blu, store.blocks[0]);
+      assert.ok(pot, 'the solo round paid its pot to who');
+      const want = pot.commit;
       let index = -1;
       for (let i = 0; i < live.n; i += 1) {
         if (Buffer.from(asU8(live.commits[i])).equals(want)) index = i;
@@ -969,9 +975,9 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
       assert.ok(index >= 0, 'pot is inside the anchor');
       const coin = {
         index,
-        r: Buffer.from(asU8(pot.r)),
-        v: openedCoinbaseNanos(pot),
-        x: admitScalarFromSeed(who.spendSeed, pot),
+        r: pot.r,
+        v: pot.v,
+        x: pot.x,
       };
       assert.ok(coin.v > 1_000_000, String(coin.v));
       const d20 = Buffer.from(asU8(hash20FromAddress(who.dest)));

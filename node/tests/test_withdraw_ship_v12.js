@@ -4,6 +4,7 @@
  * the 64-DLEQ block cap: 21 are mined, and the 22nd is in the next block.
  */
 import { describe, it, before, after } from 'node:test';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -77,6 +78,7 @@ function payer() {
     pub: Buffer.from(id.spendPub).toString('hex'),
     key: id.privateKey,
     portalId: portalIdFromDest20(hash20FromAddress(dest)),
+    blu: bluWallet(id.spendSeed),
   };
 }
 
@@ -94,9 +96,9 @@ function nextPow() {
   return hash;
 }
 
-async function mine(store, dest, now) {
+async function mine(store, dest, now, extra = {}) {
   const at = now == null ? Math.max(T0, lastStamp(store) + 90_000) : now;
-  const { tpl } = store.template({ miner: dest, shareBits: 4, now: at });
+  const { tpl } = store.template({ miner: dest, shareBits: 4, now: at, ...extra });
   const got = await Promise.resolve(store.append({
     header: tpl.header,
     height: tpl.height,
@@ -130,14 +132,16 @@ async function advanceClock(store, dest, targetMs) {
   }
 }
 
-function potOf(tpl, who) {
-  const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+// R28: the block was mined solo with option (b); its pot is a record coin
+// of who's wallet, found with its scan key.
+function potOf(block, who) {
+  const pot = soloCoin(who.blu, block);
   assert.ok(pot && pot.r, 'pot opening');
   return {
-    r: Buffer.from(asU8(pot.r)),
-    v: openedCoinbaseNanos(pot),
-    commit: Buffer.from(asU8(pot.commit)),
-    x: admitScalarFromSeed(who.spendSeed, pot),
+    r: pot.r,
+    v: pot.v,
+    commit: pot.commit,
+    x: pot.x,
     who,
   };
 }
@@ -239,8 +243,8 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
     store = createStore(dir);
     for (let i = 0; i < N; i += 1) {
       for (let n = 0; n < 4; n += 1) {
-        const { tpl } = await mine(store, owners[i].dest);
-        coins.push(potOf(tpl, owners[i]));
+        await mine(store, owners[i].dest, undefined, soloPay(owners[i].blu));
+        coins.push(potOf(store.tip(), owners[i]));
       }
     }
     while (store.tip().height < 100) {

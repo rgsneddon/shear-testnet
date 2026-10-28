@@ -19,7 +19,7 @@ import {
   fundedUnitSpread,
   openStore,
   payerIdentity,
-  potOutput,
+  openedPot,
   sealBalanced,
   sealEmpty,
   sealMintOut,
@@ -41,7 +41,7 @@ describe('v12 B leaves are debited', () => {
       const genesis = await sealEmpty(book.store, payer.dest);
       assert.equal(genesis.ok, true, `${genesis.reason || ''} ${genesis.error || ''}`);
       assert.ok(genesis.pot?.r, 'pot blinding');
-      const opened = openedCoinbaseNanos(genesis.pot);
+      const opened = genesis.pot.opened;
       assert.ok(Number.isSafeInteger(opened) && opened > PAY_NANOS);
       assert.ok(FREE_UNITS.some((n) => n > opened), 'one unit is larger than the pot');
       const heightBefore = book.store.tip().height;
@@ -122,7 +122,7 @@ describe('v12 B leaves are debited', () => {
     try {
       const genesis = await sealEmpty(book.store, payer.dest);
       assert.equal(genesis.ok, true, `${genesis.reason || ''} ${genesis.error || ''}`);
-      const opened = openedCoinbaseNanos(potOutput(book.store.tip()));
+      const opened = openedPot(book.store.tip(), payer.dest);
       const freeUnits = [1, 2 ** 20, 2 ** 40].filter((n) => n !== opened);
       assert.ok(freeUnits.length >= 3);
       for (const unit of freeUnits) {
@@ -158,8 +158,12 @@ describe('v12 B leaves are debited', () => {
     try {
       const genesis = await sealEmpty(book.store, payer.dest);
       assert.equal(genesis.ok, true, `${genesis.reason || ''} ${genesis.error || ''}`);
-      const child = asBlock(templateOn(book.store, { miner: payer.dest }));
-      const clean = auditCirculatingSupply(book.store.blocks.concat([child]));
+      // R28: the audit reads each block's record, which append derives.
+      const sealed = await appendTpl(book.store, templateOn(book.store, { miner: payer.dest }));
+      assert.equal(sealed.ok, true, sealed.reason);
+      const child = book.store.tip();
+      const prior = book.store.blocks.slice(0, -1);
+      const clean = auditCirculatingSupply(prior.concat([child]));
       assert.equal(clean.status, 'verified', clean.reason);
       for (const unit of FREE_UNITS) {
         const outs = [sealMintOut(unit, payer.dest, 'b-spend')];
@@ -185,7 +189,7 @@ describe('v12 B leaves are debited', () => {
           vout: outs,
         };
         const block = { ...child, txs: [child.txs[0], tx] };
-        const audit = auditCirculatingSupply(book.store.blocks.concat([block]));
+        const audit = auditCirculatingSupply(prior.concat([block]));
         assert.equal(audit.status, 'mismatch', `${unit} ${audit.status} ${audit.reason}`);
         assert.equal(audit.reason, 'supply', `${unit} ${audit.reason}`);
       }
@@ -201,7 +205,7 @@ describe('v12 B leaves are debited', () => {
       const genesis = await sealEmpty(book.store, payer.dest);
       assert.equal(genesis.ok, true, `${genesis.reason || ''} ${genesis.error || ''}`);
       assert.ok(genesis.pot?.r, 'pot blinding');
-      const opened = openedCoinbaseNanos(genesis.pot);
+      const opened = genesis.pot.opened;
       const units = fundedUnitSpread(opened);
       assert.ok(units, `pot ${opened} has no funded spread`);
       const leaves = [];

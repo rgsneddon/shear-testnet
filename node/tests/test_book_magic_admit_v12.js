@@ -16,6 +16,7 @@
  * work for every funding block.
  */
 import { after, before, describe, it } from 'node:test';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -61,7 +62,7 @@ after(() => closeMineWorkers());
 function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, spendSeed: id.spendSeed, base: id.admitBase };
+  return { id, dest, spendSeed: id.spendSeed, base: id.admitBase, blu: bluWallet(id.spendSeed) };
 }
 
 function hiddenOut(nanos, dest20, admitBase, kind) {
@@ -96,9 +97,9 @@ function bodyOf(tpl, header, dest) {
 }
 
 /** Mine the store's own template with real regtest work, then append it. */
-async function mine(store, dest) {
+async function mine(store, dest, extra = {}) {
   const want = regtestBitsOverride(MAGIC_REGTEST);
-  const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now: lastStamp(store) + STEP });
+  const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now: lastStamp(store) + STEP, ...extra });
   assert.equal(tpl.bits, want, 'template seals the regtest bits');
   const found = await mineHeaderParallel(tpl.header, tpl.bits, MAX_TRIES, 1);
   assert.ok(found && found.block, 'regtest pow');
@@ -229,16 +230,13 @@ describe('v12 mempool and block verify use the book magic for FS-1', { concurren
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-book-magic-'));
     store = createRegtestStore(dir, { bits: 4 });
     assert.equal(store.magic, MAGIC_REGTEST);
+    // R28: who mines solo with option (b); each pot is a record coin of
+    // who's wallet, found with its scan key.
     for (let i = 0; i < GROW; i += 1) {
-      const tpl = await mine(store, who.dest);
-      const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-      assert.ok(pot && pot.r, 'template pot opening');
-      coins.push({
-        r: Buffer.from(asU8(pot.r)),
-        v: openedCoinbaseNanos(pot),
-        commit: Buffer.from(asU8(pot.commit)),
-        x: admitScalarFromSeed(who.spendSeed, pot),
-      });
+      await mine(store, who.dest, soloPay(who.blu));
+      const pot = soloCoin(who.blu, store.tip());
+      assert.ok(pot && pot.r, 'record pot opening');
+      coins.push({ r: pot.r, v: pot.v, commit: pot.commit, x: pot.x });
     }
   });
 

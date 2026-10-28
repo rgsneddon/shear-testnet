@@ -39,11 +39,16 @@ import { signSpendTx } from '../../crypto/spend.js';
 import { createStore } from '../src/store.js';
 import { bookSealKeyPath } from '../src/book_seal_key.js';
 import { buildTemplate, retarget, shouldAdopt, GENESIS_PREV } from '../src/chain.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
+
+const soloWallets = new Map();
 
 function identityDest() {
   const id = newIdentity();
   const pay = freshStealthDest(id);
   const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
+  // R28: this dest mines solo with option (b); its pots are record coins.
+  soloWallets.set(pay.dest, bluWallet(spendSeed));
   return { dest: pay.dest, spendSeed, key: stealthKey(pay.shared, spendSeed) };
 }
 
@@ -121,18 +126,27 @@ async function appendBuilt(store, dest, txs = []) {
     bits,
     parentBlocks: store.blocks,
     txs,
+    ...(soloWallets.has(dest) ? soloPay(soloWallets.get(dest)) : {}),
   });
   const pow = easyPow();
   const got = await store.append(blockFrom(tpl, pow), { trustedPowHash: pow, skipSharePow: true });
-  return { got, tpl, now };
+  const pot = got.ok && soloWallets.has(dest) ? soloCoin(soloWallets.get(dest), store.tip()) : null;
+  return { got, tpl, now, pot };
 }
 
-function potOf(tpl) {
-  return tpl.txs[0].vout.find((o) => o.kind === 'pot');
+/** The record coin a solo (b) round paid its miner. */
+function potOf(mined) {
+  assert.ok(mined.pot, 'the solo round paid its pot to the miner');
+  return mined.pot;
+}
+
+/** A coin's index in the live admit set, by its one-time key. */
+function indexOfPub(pubs, coin) {
+  return (pubs || []).findIndex((p) => Buffer.from(p?.toBytes ? p.toBytes() : p).equals(coin.admitPub));
 }
 
 function payOf(note) {
-  const opened = openedCoinbaseNanos(note);
+  const opened = note.opened;
   assert.ok(opened > 1);
   const pay = Math.max(1, Math.floor(opened / 5));
   const fee = levyNanos(pay);
@@ -333,7 +347,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     const store = createStore(dir);
     const genesis = await appendBuilt(store, dest);
     assert.equal(genesis.got.ok, true, genesis.got.reason);
-    const pot = potOf(genesis.tpl);
+    const pot = potOf(genesis);
     const { pay, fee, change } = payOf(pot);
     const spend = sendBody({ id: 'omit', dest, notes: [pot], pay, fee, change });
     attachStubAdmitV2(spend);
@@ -527,9 +541,9 @@ describe('v12 spend tags come from the proof bytes', () => {
     for (let i = 0; i < 2; i += 1) {
       const mined = await appendBuilt(store, dest);
       assert.equal(mined.got.ok, true, mined.got.reason);
-      pots.push(potOf(mined.tpl));
+      pots.push(potOf(mined));
     }
-    const opened = pots.map((note) => openedCoinbaseNanos(note));
+    const opened = pots.map((note) => note.opened);
     const pay = Math.max(1, Math.floor(Math.min(...opened) / 5));
     const live = store.fluxset();
     let fee = levyNanos(0);
@@ -544,7 +558,7 @@ describe('v12 spend tags come from the proof bytes', () => {
       tx = sendBody({ id: 'two', dest, notes: pots, pay, fee, change });
       proofs = [];
       for (let i = 0; i < pots.length; i += 1) {
-        const index = fluxsetIndexOf(live.pubs, spendSeed, pots[i]);
+        const index = indexOfPub(live.pubs, pots[i]);
         assert.ok(index >= 0, `index ${i}`);
         const proof = stubAdmitV2({
           cTilde: tx.vin[i]?.commit || pots[i].commit,

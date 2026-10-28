@@ -81,6 +81,7 @@ import { fs1NativeLoaded } from '../../crypto/native_admit.js';
 import { proveLeafVote, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
 import { censusOf, proposalId, voteCloseHeight } from '../../crypto/leaf_vote.js';
 import { VAULT_DAY_BLOCKS } from '../../crypto/vault_accrual.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 
 const T0 = 1_700_000_000_000;
 const LOCKS = [PI_SHE_NANOS, PI_SHE_NANOS + 1_000_000];
@@ -95,10 +96,21 @@ function easyPowHash() {
   return h;
 }
 
+// R28: a payer's dest mines solo with option (b); its pots are record coins
+// of its wallet, found with its scan key.
+const soloWallets = new Map();
+
 function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey };
+  const blu = bluWallet(id.spendSeed);
+  soloWallets.set(dest, blu);
+  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey, blu };
+}
+
+function soloOf(dest) {
+  const blu = soloWallets.get(dest);
+  return blu ? soloPay(blu) : {};
 }
 
 function stripPayer(tx) {
@@ -126,11 +138,7 @@ function tipHeight(store) {
 }
 
 async function sealEmpty(store, dest, now, openings) {
-  const { tpl } = store.template({ miner: dest, shareBits: 4, now });
-  const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-  const opening = pot?.r && pot.commit
-    ? { r: pot.r, v: openedCoinbaseNanos(pot), commit: Buffer.from(asU8(pot.commit)) }
-    : null;
+  const { tpl } = store.template({ miner: dest, shareBits: 4, now, ...soloOf(dest) });
   const block = {
     header: tpl.header,
     txs: tpl.txs,
@@ -148,6 +156,9 @@ async function sealEmpty(store, dest, now, openings) {
     skipSharePow: true,
   }));
   assert.equal(got.ok, true, `${got.reason || 'seal'}${got.error ? ` ${got.error}` : ''}`);
+  const blu = soloWallets.get(dest);
+  const coin = blu ? soloCoin(blu, store.tip()) : null;
+  const opening = coin ? { r: coin.r, v: coin.v, commit: coin.commit } : null;
   if (openings && opening) openings.push({ height: store.tip().height, dest, ...opening });
   return opening;
 }
@@ -254,8 +265,7 @@ function proveVote(store, who, opening, id, choice) {
   const anchor = walletAnchor(tipHeight(store) + 1);
   assert.ok(anchor >= opening.height, `anchor ${anchor} covers ${opening.height}`);
   const flux = anchorFlux(store.blocks, anchor);
-  const pot = (store.blocks.find((b) => Number(b.height) === opening.height)?.txs?.[0]?.vout || [])
-    .find((o) => o.kind === 'pot');
+  const pot = soloCoin(who.blu, store.blocks.find((b) => Number(b.height) === opening.height));
   const index = indexInFlux(flux, pot.commit);
   assert.ok(index >= 0, `pot ${opening.height}`);
   const tx = stripPayer(voteTx({
@@ -265,7 +275,7 @@ function proveVote(store, who, opening, id, choice) {
     id,
   }));
   proveChanged(tx, {
-    x: admitScalarFromSeed(who.spendSeed, pot),
+    x: pot.x,
     index,
     flux,
     note: pot,
@@ -282,8 +292,7 @@ function proveVote(store, who, opening, id, choice) {
 function proveWithdraw(store, who, opening, id) {
   const anchor = walletAnchor(tipHeight(store) + 1);
   const flux = anchorFlux(store.blocks, anchor);
-  const pot = (store.blocks.find((b) => Number(b.height) === opening.height)?.txs?.[0]?.vout || [])
-    .find((o) => o.kind === 'pot');
+  const pot = soloCoin(who.blu, store.blocks.find((b) => Number(b.height) === opening.height));
   const index = indexInFlux(flux, pot.commit);
   assert.ok(index >= 0, `withdraw pot ${opening.height}`);
   const preview = previewWithdraw(store.reserveVault, who.dest);
@@ -295,7 +304,7 @@ function proveWithdraw(store, who, opening, id) {
     id,
   }));
   proveChanged(tx, {
-    x: admitScalarFromSeed(who.spendSeed, pot),
+    x: pot.x,
     index,
     flux,
     note: pot,
@@ -347,8 +356,7 @@ function hiddenChange(nanos, dest20, admitBase) {
 }
 
 async function mineAt(store, dest, now, openings, who) {
-  const { tpl } = store.template({ miner: dest, shareBits: 4, now });
-  const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+  const { tpl } = store.template({ miner: dest, shareBits: 4, now, ...soloOf(dest) });
   const got = await Promise.resolve(store.append({
     header: tpl.header,
     txs: tpl.txs,
@@ -362,12 +370,13 @@ async function mineAt(store, dest, now, openings, who) {
     weight: tpl.weight,
   }, { trustedPowHash: easyPowHash(), skipSharePow: true }));
   assert.equal(got.ok, true, `mine ${got.reason || ''} ${got.error || ''} h=${tpl.height}`);
+  const pot = who?.blu ? soloCoin(who.blu, store.tip()) : null;
   if (openings && who && pot?.r && pot.commit) {
     openings.push({
       r: scalarBuf(pot.r),
-      v: openedCoinbaseNanos(pot),
-      commit: Buffer.from(asU8(pot.commit)),
-      x: admitScalarFromSeed(who.spendSeed, pot),
+      v: pot.v,
+      commit: pot.commit,
+      x: pot.x,
       height: tpl.height,
     });
   }

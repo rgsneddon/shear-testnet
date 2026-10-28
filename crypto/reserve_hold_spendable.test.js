@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { newIdentity, spendDestOf } from './address.js';
-import { NANOS_PER_SHE } from './asert.js';
+import { NANOS_PER_SHE, SPENDABLE_CONFIRMATIONS } from './asert.js';
 import { vaultDest } from './flow_sheet.js';
 import { levyNanos } from './levy.js';
 import { signSpendTx } from './spend.js';
@@ -15,6 +15,7 @@ import {
   portalPrincipalNanos,
 } from './reserve_vault.js';
 import { createStore } from '../node/src/store.js';
+import { bluWallet, soloCoin, soloPay } from '../node/tests/support/blunote_mine.js';
 
 function powHex(n) {
   const b = Buffer.alloc(32, 0);
@@ -23,8 +24,10 @@ function powHex(n) {
   return b.toString('hex');
 }
 
-async function seal(store, miner, now, n) {
-  const { job } = store.template({ miner, now });
+// R28 solo option (b): each round pays its pot to a fresh one-time key of
+// the miner's wallet (`blu`), not to a dest a node can walk.
+async function seal(store, miner, now, n, blu) {
+  const { job } = store.template({ miner, now, ...soloPay(blu) });
   return store.submitHeader({
     jobId: job.jobId,
     nonce: 0n,
@@ -66,6 +69,20 @@ describe('reserve principal is not spendable', () => {
   it('a plaintext lock is not a debit, and spendable is the note walk', async () => {
     const id = newIdentity();
     const miner = spendDestOf(id.spendPub);
+    const blu = bluWallet(id.spendSeed);
+    // The wallet's own walk: the notes its scan key finds in each record,
+    // matured as a coinbase is.
+    const walletNanos = (store) => {
+      const tipH = store.tip().height;
+      let sum = 0n;
+      for (const b of store.blocks) {
+        // The ledger's rule (note_ledger.js): tip - height + 1 confirmations.
+        if (tipH - b.height + 1 < SPENDABLE_CONFIRMATIONS) continue;
+        const coin = soloCoin(blu, b);
+        if (coin) sum += BigInt(coin.v);
+      }
+      return sum;
+    };
     const vault = vaultDest(id.address, { viewKey: id.viewKey });
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hold-b-'));
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-hold-a-'));
@@ -76,16 +93,19 @@ describe('reserve principal is not spendable', () => {
       const step = 60_000;
       for (let i = 0; i < 10; i += 1) {
         const now = t0 + i * step;
-        const got = await seal(live, miner, now, i + 1);
+        const got = await seal(live, miner, now, i + 1, blu);
         assert.equal(got.ok, true, got.reason || `seal ${i}`);
-        const twin = await seal(plain, miner, now, i + 1);
+        const twin = await seal(plain, miner, now, i + 1, blu);
         assert.equal(twin.ok, true, twin.reason || `twin ${i}`);
       }
-      const mature = live.spendableNanos(miner);
-      assert.ok(mature >= NANOS_PER_SHE + 100, `mature ${mature}`);
-      const open = await seal(plain, miner, t0 + 10 * step, 11);
+      const mature = walletNanos(live);
+      assert.ok(mature >= BigInt(NANOS_PER_SHE + 100), `mature ${mature}`);
+      // The node walks dest notes only; a one-time key is no dest's.
+      assert.equal(live.spendableNanos(miner), 0);
+      const open = await seal(plain, miner, t0 + 10 * step, 11, blu);
       assert.equal(open.ok, true, open.reason || 'plain seal');
       const unlocked = plain.spendableNanos(miner);
+      const unlockedWallet = walletNanos(plain);
       const raw = lockTx({
         from: miner,
         to: vault,
@@ -99,10 +119,12 @@ describe('reserve principal is not spendable', () => {
       // A plaintext lock names from/to. Since a5760821 the mempool refuses that
       // address leak (compactLockLeakRejected) before the admit-version gate.
       assert.equal(queued.reason, 'vote_leak');
-      const heldSeal = await seal(live, miner, t0 + 10 * step, 11);
+      const heldSeal = await seal(live, miner, t0 + 10 * step, 11, blu);
       assert.equal(heldSeal.ok, true, heldSeal.reason || 'lock seal');
       const held = live.spendableNanos(miner);
       assert.equal(held, unlocked);
+      // The refused lock debited nothing the wallet walks either.
+      assert.equal(walletNanos(live), unlockedWallet);
     } finally {
       fs.rmSync(dirA, { recursive: true, force: true });
       fs.rmSync(dirB, { recursive: true, force: true });

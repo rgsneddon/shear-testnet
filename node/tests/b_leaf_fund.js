@@ -1,7 +1,13 @@
 /**
- * Fund a B leaf by spending a real coinbase pot.
+ * Fund a B leaf by spending a real pot.
  * The lock is part of the conservation inputs only when lockInInputs is set.
  * A send that already balances and also carries a unit is the free-leaf case.
+ *
+ * R28: a coinbase carries no pot note. A payer mines solo with option (b)
+ * (Russell 28 Oct): its empty-round template pays the pot to a fresh
+ * one-time key of its wallet, and the payer finds that coin in the block's
+ * record with its scan key. Every template built here for a payer's dest
+ * pays that way.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +32,7 @@ import {
   stealthKey,
 } from '../../crypto/address.js';
 import { LEVY_CAP_NANOS, LEVY_FLOOR_UNITS, levyNeed } from '../../crypto/levy.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 
 export const T0 = 1_700_000_000_000;
 export const PAY_NANOS = 1;
@@ -40,14 +47,25 @@ export function easyPowHash() {
   return h;
 }
 
+// A payer's dest -> its wallet (spend base and scan key), for solo option (b).
+const soloWallets = new Map();
+
+/** The wallet a payer's dest mines solo for, or null. */
+export function soloWalletOf(dest) {
+  return soloWallets.get(String(dest || '')) || null;
+}
+
 export function payerIdentity() {
   const id = newIdentity();
   const pay = freshStealthDest(id);
   const spendSeed = id.spendSeed || ed25519SeedOf(id.privateKey);
+  const blu = bluWallet(spendSeed);
+  soloWallets.set(pay.dest, blu);
   return {
     id,
     dest: pay.dest,
     spendSeed,
+    blu,
     key: stealthKey(pay.shared, spendSeed),
   };
 }
@@ -85,21 +103,23 @@ export function stampNow(store) {
   return Number(decodeHeader(Buffer.from(t.header)).timestamp) + 90_000;
 }
 
-export function potOutput(block) {
-  const rows = block?.txs?.[0]?.vout || [];
-  return rows.find((o) => o && o.kind === 'pot') || null;
+/** The coin a stored block paid its miner's wallet (solo option b), or null. */
+export function potOutput(block, miner = block?.miner) {
+  const blu = soloWalletOf(miner);
+  return blu ? soloCoin(blu, block) : null;
 }
 
-export function openedPot(block) {
-  const pot = potOutput(block);
+export function openedPot(block, miner = block?.miner) {
+  const pot = potOutput(block, miner);
   if (!pot) return null;
-  const n = openedCoinbaseNanos(pot);
-  return Number.isSafeInteger(n) ? n : null;
+  return Number.isSafeInteger(pot.opened) ? pot.opened : null;
 }
 
 /** The template note, before append strips the blinding. The chain row keeps the commit. */
 export function retainNote(o) {
   if (!o?.commit || !o?.r) return null;
+  // A record coin is already its owner's opening.
+  if (o.kind === 'pool-fee' && o.x != null) return o;
   return {
     kind: o.kind,
     commit: o.commit,
@@ -138,8 +158,11 @@ export function templateOn(store, { miner, txs = [], bLeaves, now } = {}) {
   const stamp = now != null ? now : stampNow(store);
   const t = store.tip();
   const hashBonusNanos = hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos);
+  const blu = soloWalletOf(miner);
+  const pay = blu ? soloPay(blu) : {};
   if (!t) {
     return buildTemplate({
+      ...pay,
       prev: GENESIS_PREV,
       height: 1,
       miner,
@@ -151,6 +174,7 @@ export function templateOn(store, { miner, txs = [], bLeaves, now } = {}) {
     });
   }
   return buildTemplate({
+    ...pay,
     prev: t.hash,
     prevHeader: t.header,
     prevBlock: t,
@@ -177,8 +201,10 @@ export function appendTpl(store, tpl) {
 
 export function sealEmpty(store, miner, now) {
   const tpl = templateOn(store, { miner, now });
-  const pot = retainNote(potOutput(tpl));
-  return appendTpl(store, tpl).then((got) => ({ ...got, pot }));
+  return appendTpl(store, tpl).then((got) => ({
+    ...got,
+    pot: got.ok ? potOutput(store.tip(), miner) : null,
+  }));
 }
 
 /**
@@ -196,7 +222,8 @@ export function balancedSend(store, payer, {
   spentNote = null,
 } = {}) {
   const spent = spentNote;
-  const opened = spent ? openedCoinbaseNanos(spent) : null;
+  // A record coin states its opened value; an explicit note opens by proof.
+  const opened = spent ? (Number.isSafeInteger(spent.opened) ? spent.opened : openedCoinbaseNanos(spent)) : null;
   if (!spent?.r || !Number.isSafeInteger(opened) || opened <= 0) {
     return { ok: false, reason: 'no_pot_open' };
   }
@@ -250,10 +277,10 @@ export async function sealBalanced(store, payer, opts = {}) {
   if (!built?.ok) return built || { ok: false, reason: 'prove' };
   if (built.need > built.fee) return { ok: false, reason: 'levy', need: built.need, fee: built.fee };
   const tpl = templateOn(store, { miner: payer.dest, txs: [built.wire] });
-  const nextPot = retainNote(potOutput(tpl));
   // A byte-2 flow proof is admit_version. The leaf is not published.
   const got = await appendTpl(store, tpl);
   const tip = got.ok ? store.tip() : null;
+  const nextPot = tip ? potOutput(tip, payer.dest) : null;
   const leaves = tip?.bLeaves || [];
   const leaf = leaves[0] || null;
   return {

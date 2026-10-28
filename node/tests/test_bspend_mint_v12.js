@@ -40,7 +40,7 @@ describe('v12 b-spend mint is the chain leaf', () => {
       const genesis = await sealEmpty(store, dest);
       assert.equal(genesis.ok, true, `${genesis.reason || ''} ${genesis.error || ''}`);
       assert.ok(genesis.pot?.r, 'pot blinding');
-      const opened = openedCoinbaseNanos(genesis.pot);
+      const opened = genesis.pot.opened;
       const amounts = fundedUnitSpread(opened);
       assert.ok(amounts, `pot ${opened} has no funded spread`);
       assert.ok(REJECT.some((n) => n > opened), 'one rejected unit is larger than the pot');

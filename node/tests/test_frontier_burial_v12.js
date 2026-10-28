@@ -85,6 +85,7 @@ import {
 } from '../../crypto/fs1_spend.js';
 import { fs1NativeLoaded } from '../../crypto/native_admit.js';
 import { destCommitFromSpendPub } from '../../crypto/stealth_ed25519.js';
+import { bluWallet, emptyRoundRecord, soloCoin, soloPay } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -218,6 +219,8 @@ function forkBlocks(prefix, dest, count, tagBase, txsForFirst = null) {
     });
     const block = asBlock(tpl, Number(prev.height) + 1, easyPow());
     block.miner = dest;
+    // R28: an empty round with no fee key; the next coinbase binds its record.
+    block.blunoteRecord = emptyRoundRecord();
     out.push(block);
     appendFluxBlock(flux, block);
     prev = block;
@@ -420,7 +423,7 @@ function sideLock(store, who, saved, anchor, proveHeight, nowMs) {
       r: row.r,
       v: row.v,
       index: at.get(key),
-      x: admitScalarFromSeed(who.spendSeed, row.pot),
+      x: row.pot.x,
     });
     total += row.v;
     if (coins.length >= 4 && total > PI_SHE_NANOS + LEVY_CAP_NANOS) break;
@@ -631,8 +634,8 @@ describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import
       for (let i = 0; i < mainH; i += 1) {
         const tip = store.tip();
         const now = tip ? headerTime(tip) + STEP : T0;
-        const { tpl } = store.template({ miner: who.dest, shareBits: 4, now });
-        const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+        // R28: who mines solo with option (b); each pot is a record coin.
+        const { tpl } = store.template({ miner: who.dest, shareBits: 4, now, ...soloPay(bluWallet(who.spendSeed)) });
         const got = store.append({
           header: tpl.header,
           txs: tpl.txs,
@@ -646,13 +649,9 @@ describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import
           weight: tpl.weight,
         }, { trustedPowHash: easyPow(), skipSharePow: true });
         assert.equal(got.ok, true, `${got.reason || 'seal'} at ${i + 1}`);
+        const pot = soloCoin(bluWallet(who.spendSeed), store.tip());
         if (pot?.r && pot.commit) {
-          saved.push({
-            r: Buffer.from(asU8(pot.r)),
-            v: openedCoinbaseNanos(pot),
-            commit: Buffer.from(asU8(pot.commit)),
-            pot,
-          });
+          saved.push({ r: pot.r, v: pot.v, commit: pot.commit, pot });
         }
       }
       assert.equal(store.tip().height, mainH);

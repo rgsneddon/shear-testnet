@@ -14,6 +14,7 @@ import {
   verifyBlock,
   GENESIS_PREV,
 } from '../src/chain.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 
 let powTag = 1;
 function mine(tpl) {
@@ -43,21 +44,26 @@ describe('Flow conservation binds vin.commit to spent vout', () => {
   it('compact send whose vin.commit is the parent coinbase is ok; a self-minted C_in is confidential', () => {
     const id = newIdentity();
     const dest = freshStealthDest(id).dest;
+    // R28: the parent is a solo option (b) round. Its pot is a record coin of
+    // the miner's wallet, which verify derives and the scan key finds.
+    const blu = bluWallet(id.spendSeed);
     const parent = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
       bits: GENESIS_BITS_PACKED,
       now: 1_700_000_000_000,
+      ...soloPay(blu),
     }));
     const okP = verifyBlock(parent, null, trust(parent));
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
-    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
+    parent.blunoteRecord = okP.blunoteRecord;
+    const spent = soloCoin(blu, parent);
     assert.ok(spent?.commit && spent.r);
-    const idx = parent.txs[0].vout.indexOf(spent);
+    assert.equal(spent.opened, BLOCK_SUBSIDY_NANOS, 'the genesis pot is the subsidy');
     const fee = levyNanos(2);
-    const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
+    const change = spent.opened - 2 - fee;
     const honest = attachDummyOuts({
       id: 'honest-send',
       kind: 'send',

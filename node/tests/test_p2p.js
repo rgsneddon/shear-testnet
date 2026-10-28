@@ -84,6 +84,7 @@ import { loadOracleSnapshot } from '../src/oracle_feed.js';
 import { emptyVault } from '../../crypto/reserve_vault.js';
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import { createRegtestStore } from './regtest_store.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 import { countSyncedOnline, countLiveOnline, isFinalIngestFail, recordIngestFail, requeuePrevHash, drainRetryPrev } from '../src/p2p.js';
 
 function destMiner() {
@@ -173,6 +174,11 @@ async function startRegtestNode({ dataDir, p2pBind = '127.0.0.1', fluffDelayMs =
   return { store, p2p, rpc, bound, rpcBound, magic: store.magic };
 }
 
+// R28: a coinbase pays no pot note. A funded test dest mines solo with
+// option (b): its rounds pay the pot to a fresh one-time key of its wallet,
+// and the wallet finds that coin in the block's record with its scan key.
+const soloWallets = new Map();
+
 /** One regtest block with real proof of work, stored under its ShearHash. */
 async function appendMined(store, dest, nowMs = null) {
   const parent = store.tip();
@@ -182,12 +188,9 @@ async function appendMined(store, dest, nowMs = null) {
       ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
       : 1_700_000_000_000);
   const want = regtestBitsOverride(MAGIC_REGTEST);
-  const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now });
+  const blu = soloWallets.get(dest) || null;
+  const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now, ...(blu ? soloPay(blu) : {}) });
   assert.equal(tpl.bits, want, 'template seals the regtest bits');
-  const pot = (tpl.txs[0].vout || []).find((o) => o.kind === 'pot');
-  const opening = pot && pot.r && pot.commit
-    ? { r: Buffer.from(asU8(pot.r)), commit: Buffer.from(asU8(pot.commit)), v: openedCoinbaseNanos(pot) }
-    : null;
   const found = await mineHeaderParallel(tpl.header, tpl.bits, REGTEST_TRIES, 1);
   assert.ok(found && found.block, 'regtest pow');
   const got = await Promise.resolve(store.append({
@@ -203,7 +206,8 @@ async function appendMined(store, dest, nowMs = null) {
     weight: tpl.weight,
   }));
   assert.equal(got.ok, true, got.reason);
-  return { tpl, opening, pot };
+  const opening = blu ? soloCoin(blu, store.tip()) : null;
+  return { tpl, opening, pot: opening };
 }
 
 async function appendTrusted(store, dest, seq, nowMs = null) {
@@ -213,11 +217,8 @@ async function appendTrusted(store, dest, seq, nowMs = null) {
     : (parent
       ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + 90_000
       : 1_700_000_000_000);
-  const { tpl } = store.template({ miner: dest, bits: GENESIS_BITS_PACKED, shareBits: 4, now });
-  const pot = (tpl.txs[0].vout || []).find((o) => o.kind === 'pot');
-  const opening = pot && pot.r && pot.commit
-    ? { r: Buffer.from(asU8(pot.r)), commit: Buffer.from(asU8(pot.commit)), v: openedCoinbaseNanos(pot) }
-    : null;
+  const blu = soloWallets.get(dest) || null;
+  const { tpl } = store.template({ miner: dest, bits: GENESIS_BITS_PACKED, shareBits: 4, now, ...(blu ? soloPay(blu) : {}) });
   const pow = Buffer.alloc(32);
   pow.writeUInt32BE(seq >>> 0, 28);
   const got = await store.append({
@@ -233,12 +234,14 @@ async function appendTrusted(store, dest, seq, nowMs = null) {
     weight: tpl.weight,
   }, { trustedPowHash: pow, skipSharePow: true });
   assert.equal(got.ok, true, got.reason);
-  return { tpl, opening, pot };
+  const opening = blu ? soloCoin(blu, store.tip()) : null;
+  return { tpl, opening, pot: opening };
 }
 
 async function fundAnchor(store, id, { mined = false } = {}) {
   const box = spendBox(id);
   const minerDest = encodeDest(hash20FromAddress(box.dest), id.admitBase);
+  soloWallets.set(minerDest, bluWallet(id.spendSeed));
   const openings = [];
   const seal = (seq) => (mined ? appendMined(store, minerDest) : appendTrusted(store, minerDest, seq));
   const first = await seal(1);
@@ -257,10 +260,9 @@ async function fundAnchor(store, id, { mined = false } = {}) {
   assert.ok(live && live.n >= 1, `anchor ${anchor}`);
   const coins = [];
   for (let b = 0; b < store.blocks.length && b < openings.length; b += 1) {
-    const storedPot = (store.blocks[b].txs[0].vout || []).find((o) => o.kind === 'pot');
     const opening = openings[b];
-    if (!storedPot?.commit || !opening?.r || !(opening.v > 0)) continue;
-    const want = Buffer.from(asU8(storedPot.commit));
+    if (!opening?.commit || !opening?.r || !(opening.v > 0)) continue;
+    const want = Buffer.from(opening.commit);
     let index = -1;
     for (let i = 0; i < live.n; i += 1) {
       if (Buffer.from(asU8(live.commits[i])).equals(want)) index = i;
@@ -271,7 +273,7 @@ async function fundAnchor(store, id, { mined = false } = {}) {
       commit: Buffer.from(want),
       r: Buffer.from(opening.r),
       v: opening.v,
-      x: admitScalarFromSeed(id.spendSeed, storedPot),
+      x: opening.x,
     });
   }
   assert.ok(coins.length >= 1, 'pot is inside the anchor');
@@ -1053,7 +1055,7 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       commit: row.opening.commit,
       r: row.opening.r,
       v: row.opening.v,
-      x: admitScalarFromSeed(id.spendSeed, row.pot),
+      x: row.opening.x,
     })));
     assert.ok(late.coins.length >= 5, `late coins ${late.coins.length}`);
     const pendingKey = ed25519PrivateFromSeed(portals[1].spendSeed);

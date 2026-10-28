@@ -26,6 +26,8 @@ import {
 } from '../../crypto/pot_sched.js';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
+import { decodeRecord } from '../../crypto/blunote.js';
+import { bluWallet, soloPay } from './support/blunote_mine.js';
 
 const T = TARGET_BLOCK_INTERVAL_MS;
 
@@ -52,13 +54,20 @@ function bitsOf(block) {
   return Number(decodeHeader(Buffer.from(block.header)).bits);
 }
 
+/**
+ * R28: the pot a block paid. A solo option (b) block (every block the pot
+ * test seals) pays it to the miner's one-time key: the record's fee note,
+ * derived by verify, with no carry. An empty round with no key carries it.
+ */
 function potOpened(block) {
-  let sum = 0;
-  for (const o of block.txs?.[0]?.vout || []) {
-    if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
-    sum += Number(o.valueProof?.v ?? o.nanos ?? 0);
+  if (block.blunoteRecord) {
+    const rec = decodeRecord(Buffer.from(block.blunoteRecord, 'hex'));
+    if (rec.feeV > 0n) {
+      assert.equal(Number(block.txs[0].carryNanos || 0), 0, 'a solo round carries nothing');
+      return Number(rec.feeV);
+    }
   }
-  return sum;
+  return Number(block.txs?.[0]?.carryNanos || 0);
 }
 
 function withBits(header, bits) {
@@ -79,8 +88,8 @@ function freshStore(tag) {
   return createStore(fs.mkdtempSync(path.join(os.tmpdir(), tag)));
 }
 
-async function appendAt(store, dest, now) {
-  const { tpl } = store.template({ miner: dest, shareBits: 4, now });
+async function appendAt(store, dest, now, extra = {}) {
+  const { tpl } = store.template({ miner: dest, shareBits: 4, now, ...extra });
   const block = {
     header: tpl.header,
     txs: tpl.txs,
@@ -123,12 +132,14 @@ function admitPubsOf(block) {
   return pubs;
 }
 
-function sealOn(chain, pubs, dest, stamp) {
+function sealOn(chain, pubs, dest, stamp, extra = {}) {
   const tip = chain[chain.length - 1];
   const bits = retarget(chain, stamp);
   const tpl = buildTemplate({
     prev: tip.hash,
     prevHeader: tip.header,
+    prevBlock: tip,
+    ...extra,
     height: tip.height + 1,
     miner: dest,
     now: stamp,
@@ -153,6 +164,8 @@ function sealOn(chain, pubs, dest, stamp) {
     header: tip.header,
     height: tip.height,
     weight: tip.weight,
+    txs: tip.txs,
+    blunoteRecord: tip.blunoteRecord,
   }, {
     genesisMs: stampOf(chain[0]),
     // MTP-11 cannot see an epoch ahead. This is the window once the chain's
@@ -165,6 +178,7 @@ function sealOn(chain, pubs, dest, stamp) {
     nowMs: stamp,
     supplyParents: chain,
   });
+  if (got.ok) block.blunoteRecord = got.blunoteRecord;
   return { got, block };
 }
 
@@ -312,11 +326,12 @@ describe('v12 genesis-anchored aserti3-2d', () => {
 
   it('pot follows the genesis header across append and ingest, including the epoch floor', async () => {
     const dest = minerDest();
+    const blu = bluWallet();
     const store = freshStore('shear-asert-epoch-');
     const t0 = 1_700_000_000_000;
-    assert.equal((await appendAt(store, dest, t0)).got.ok, true);
+    assert.equal((await appendAt(store, dest, t0, soloPay(blu))).got.ok, true);
     for (let i = 1; i <= 3; i += 1) {
-      const got = await appendAt(store, dest, t0 + i * T);
+      const got = await appendAt(store, dest, t0 + i * T, soloPay(blu));
       assert.equal(got.got.ok, true, got.got.reason);
       assert.equal(potOpened(store.tip()), POT_START_NANOS);
     }
@@ -343,7 +358,7 @@ describe('v12 genesis-anchored aserti3-2d', () => {
     ];
     let floorBlock = null;
     for (const row of boundaries) {
-      const sealed = sealOn(chain, pubs, dest, row.at);
+      const sealed = sealOn(chain, pubs, dest, row.at, soloPay(blu));
       assert.equal(sealed.got.ok, true, `${sealed.got.reason} at ${row.at}`);
       assert.equal(potOpened(sealed.block), row.pot);
       floorBlock = sealed.block;
@@ -356,12 +371,14 @@ describe('v12 genesis-anchored aserti3-2d', () => {
     assert.equal(jumped.reason, 'timestamp');
 
     const parent = chain[chain.length - 1];
-    const epoch2 = sealOn(chain, pubs, dest, g + 2 * epochMs + T);
+    const epoch2 = sealOn(chain, pubs, dest, g + 2 * epochMs + T, soloPay(blu));
     const missingGenesis = verifyBlock(epoch2.block, {
       hash: parent.hash,
       header: parent.header,
       height: parent.height,
       weight: parent.weight,
+      txs: parent.txs,
+      blunoteRecord: parent.blunoteRecord,
     }, {
       trustedPowHash: easyPowHash(),
       skipSharePow: true,
@@ -373,9 +390,13 @@ describe('v12 genesis-anchored aserti3-2d', () => {
 
     const floorStamp = g + 80 * epochMs;
     const floorBits = retarget(chain, floorStamp);
+    // No key: an empty round carries its pot, so the template's own pot is
+    // in its coinbase as the carry. With no parent blocks it reads the
+    // epoch-0 schedule.
     const epoch0 = buildTemplate({
       prev: parent.hash,
       prevHeader: parent.header,
+      prevBlock: parent,
       height: parent.height + 1,
       miner: dest,
       now: floorStamp,
@@ -392,6 +413,8 @@ describe('v12 genesis-anchored aserti3-2d', () => {
       header: parent.header,
       height: parent.height,
       weight: parent.weight,
+      txs: parent.txs,
+      blunoteRecord: parent.blunoteRecord,
     }, {
       genesisMs: g,
       mtpTimestamps: [floorStamp - 1_000],
@@ -401,8 +424,9 @@ describe('v12 genesis-anchored aserti3-2d', () => {
     });
     assert.equal(potOpened(epoch0Block), POT_START_NANOS);
     assert.equal(floorBad.ok, false);
-    // Sealed coinbase fails the mint check. Plaintext nanos would be pot_sched.
-    assert.equal(floorBad.reason, 'pot');
+    // R28: the pot is no sealed note. The carry claims the epoch-0 pot, more
+    // than the floor schedule pays, so the mint would be negative.
+    assert.equal(floorBad.reason, 'pot_sched');
   });
 
   it('steady gaps stay near T across hashrate and seed', () => {

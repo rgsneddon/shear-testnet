@@ -36,6 +36,7 @@ import { levyNeed } from '../../crypto/levy.js';
 import { ANCHOR_QUANTUM, ANCHOR_WINDOW } from '../../crypto/admit_v3.js';
 import { resetFs1Tree } from '../../crypto/fs1_spend.js';
 import { lockSend } from './b_leaf_fs1.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -52,10 +53,16 @@ function easyPow() {
   return h;
 }
 
+// R28: a payer's dest mines its first round solo with option (b); that pot
+// is a record coin of its wallet.
+const soloWallets = new Map();
+
 function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey };
+  const blu = bluWallet(id.spendSeed);
+  soloWallets.set(dest, blu);
+  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey, blu };
 }
 
 function headerTime(block) {
@@ -65,14 +72,8 @@ function headerTime(block) {
 function sealNext(store, dest, opening) {
   const tip = store.tip();
   const now = tip ? headerTime(tip) + STEP : T0;
-  const { tpl } = store.template({ miner: dest, now });
-  if (!opening.note) {
-    const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-    const v = pot ? openedCoinbaseNanos(pot) : 0;
-    if (pot?.r && pot.commit && v > 1) {
-      opening.note = { r: pot.r, v, commit: Buffer.from(asU8(pot.commit)) };
-    }
-  }
+  const blu = !opening.note ? soloWallets.get(dest) : null;
+  const { tpl } = store.template({ miner: dest, now, ...(blu ? soloPay(blu) : {}) });
   const got = store.append({
     header: tpl.header,
     txs: tpl.txs,
@@ -85,6 +86,10 @@ function sealNext(store, dest, opening) {
     rootB: tpl.rootB,
     weight: tpl.weight,
   }, { trustedPowHash: easyPow(), skipSharePow: true });
+  if (blu && got.ok) {
+    const pot = soloCoin(blu, store.tip());
+    if (pot && pot.v > 1) opening.note = { r: pot.r, v: pot.v, commit: pot.commit };
+  }
   return got;
 }
 
@@ -174,14 +179,14 @@ let lockNonce = 1;
  * the anchored spend is an FS-1 send that locks a unit.
  */
 function makeLock(prefix, who, opening, anchor, id) {
-  const pot = prefix[0].txs[0].vout.find((o) => o.kind === 'pot');
-  assert.ok(Buffer.from(asU8(pot.commit)).equals(Buffer.from(asU8(opening.commit))), 'opened pot');
+  const pot = soloCoin(who.blu, prefix[0]);
+  assert.ok(pot && pot.commit.equals(Buffer.from(asU8(opening.commit))), 'opened pot');
   const flux = fluxsetFromBlocks(prefix.filter((b) => Number(b.height) > 0 && Number(b.height) <= anchor));
   const live = { n: flux.pubs.length, pubs: flux.pubs, commits: flux.commits };
   const want = Buffer.from(asU8(pot.commit));
   const index = flux.commits.findIndex((c) => Buffer.from(asU8(c)).equals(want));
   assert.ok(index >= 0, `pot index at anchor ${anchor}`);
-  const x = admitScalarFromSeed(who.spendSeed, pot);
+  const x = pot.x;
   assert.ok(Buffer.from(pointBytes(admitPub(x))).equals(Buffer.from(asU8(pot.admitPub))), 'pot key');
   const lock = lockSend(who, {
     id,

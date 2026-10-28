@@ -23,6 +23,7 @@ import { createStore } from '../src/store.js';
 import { reconstructOwner } from '../../pool/src/wallet_api.js';
 import { readChainSegments } from '../../crypto/chainbin.js';
 import { decodeHeader } from '../../crypto/header.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 
 let powTag = 1;
 function mine(tpl) {
@@ -145,6 +146,9 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     }));
     const t0 = 1_700_000_000_000;
 
+    // R28: the genesis round is Alice's solo option (b) round. Its pot is a
+    // record coin of her wallet, which verify derives and her scan key finds.
+    const aliceBlu = bluWallet(alice.spendSeed);
     const b1 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -152,19 +156,18 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       bits: GENESIS_BITS_PACKED,
       now: t0,
       samples: fat,
+      ...soloPay(aliceBlu),
     }));
-    const born = (b1.txs[0].vout || []).find((o) => o.kind === 'pot');
-    assert.ok(born && born.r && born.commit, 'height-1 pot opening');
-    const potR = Buffer.from(asU8(born.r));
-    const potV = openedCoinbaseNanos(born);
-    assert.ok(potV > 0, 'pot value');
     const a1 = await Promise.resolve(store.append(b1, trust(b1)));
     assert.equal(a1.ok, true, a1.reason);
     assert.equal(store.blocks[0].samples.length, 1);
     assert.equal(store.blocks[0].samples[0].count, 250);
     assert.equal(store.blocks[0].txs[0].samples, undefined);
-    const storedPot = (store.blocks[0].txs[0].vout || []).find((o) => o.kind === 'pot');
-    assert.ok(Buffer.from(asU8(storedPot.commit)).equals(Buffer.from(asU8(born.commit))), 'pot commit survived append');
+    const storedPot = soloCoin(aliceBlu, store.blocks[0]);
+    assert.ok(storedPot && storedPot.r && storedPot.commit, 'height-1 pot opening');
+    const potR = storedPot.r;
+    const potV = storedPot.v;
+    assert.ok(potV > 0, 'pot value');
 
     const includeAt = readyHeight(1);
     while (store.tip().height < includeAt - 1) {
@@ -173,6 +176,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       const nxt = mine(buildTemplate({
         prev: parent.hash,
         prevHeader: parent.header,
+        prevBlock: parent,
         height: parent.height + 1,
         miner: minerDest,
         bits: GENESIS_BITS_PACKED,
@@ -197,7 +201,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
         index,
         r: potR,
         v: potV,
-        x: admitScalarFromSeed(alice.spendSeed, storedPot),
+        x: storedPot.x,
       },
       anchor,
       live,
@@ -235,6 +239,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
       const nxt = mine(buildTemplate({
         prev: parent.hash,
         prevHeader: parent.header,
+        prevBlock: parent,
         height: parent.height + 1,
         miner: destA,
         bits: GENESIS_BITS_PACKED,
@@ -247,7 +252,9 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     const genesis = store.blocks[0];
     assert.notEqual(genesis.samplesPruned, true);
     assert.ok((genesis.samples || []).length > 0);
-    assert.ok(genesis.txs[0].vout.some((o) => o.kind === 'pot'));
+    // The genesis round's payout key is its coinbase's, and its record stays.
+    assert.ok(genesis.txs[0].blunote?.feeP, 'the genesis coinbase names its payout key');
+    assert.ok(genesis.blunoteRecord, 'the genesis record is kept');
     assert.equal(HASH_BONUS_NANOS, 1);
     assert.ok(buried.txs.slice(1).some((t) => t.id === 'send-forever'));
 
@@ -256,7 +263,7 @@ describe('node chain is lean, light, scalable, prunable', { timeout: 600_000 }, 
     const epochs = readChainSegments(segDir);
     assert.ok(epochs.length >= 1);
     assert.equal(epochs[0].samplesPruned, false);
-    assert.ok(epochs[0].txs[0].vout.some((o) => o.kind === 'pot'));
+    assert.ok(Buffer.from(epochs[0].txs[0].blunote.feeP).equals(Buffer.from(genesis.txs[0].blunote.feeP)), 'the chainbin keeps the genesis payout key');
     const sendEpoch = epochs.find((e) => (e.txs || []).some((t) => t.id === 'send-forever'));
     assert.ok(sendEpoch, 'send-forever stays in the pruned chainbin');
     assert.ok(sendEpoch.txs.slice(1).some((t) => t.id === 'send-forever'));

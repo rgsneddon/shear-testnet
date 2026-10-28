@@ -78,6 +78,7 @@ import { fs1NativeLoaded } from '../../crypto/native_admit.js';
 import { destCommitFromSpendPub } from '../../crypto/stealth_ed25519.js';
 import { MAX_BLOCK_RESERVE_TXS } from '../../crypto/block_budget.js';
 import { rememberFundVerdict } from '../../crypto/fund_verdict.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -96,7 +97,7 @@ function easyPow() {
 function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey, base: id.admitBase };
+  return { id, dest, spendSeed: id.spendSeed, key: id.privateKey, base: id.admitBase, blu: bluWallet(id.spendSeed) };
 }
 
 function headerTime(block) {
@@ -435,7 +436,7 @@ function realFs1Lock(store, who, saved) {
       v: row.v,
       commit: row.commit,
       index: at.get(key),
-      x: admitScalarFromSeed(who.spendSeed, row.pot),
+      x: row.pot.x,
     });
     total += row.v;
     if (coins.length >= 4 && total > PI_SHE_NANOS + LEVY_CAP_NANOS) break;
@@ -562,18 +563,14 @@ describe('v12 reserve trial is incremental', { timeout: fileCapMs(import.meta.ur
       while ((store.tip()?.height || 0) + 1 < includeAt) {
         const tip = store.tip();
         const now = tip ? headerTime(tip) + STEP : T0;
-        const { tpl } = store.template({ miner: who.dest, shareBits: 4, now });
-        const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+        // R28: who mines solo with option (b); each pot is a record coin.
+        const { tpl } = store.template({ miner: who.dest, shareBits: 4, now, ...soloPay(who.blu) });
         const pow = easyPow();
         const got = await store.append(blockFrom(tpl, pow), { trustedPowHash: pow, skipSharePow: true });
         assert.equal(got.ok, true, `${got.reason || 'seal'} at ${(tip?.height || 0) + 1}`);
+        const pot = soloCoin(who.blu, store.tip());
         if (pot?.r && pot.commit) {
-          saved.push({
-            r: Buffer.from(asU8(pot.r)),
-            v: openedCoinbaseNanos(pot),
-            commit: Buffer.from(asU8(pot.commit)),
-            pot,
-          });
+          saved.push({ r: pot.r, v: pot.v, commit: pot.commit, pot });
         }
       }
       const height = store.tip().height + 1;

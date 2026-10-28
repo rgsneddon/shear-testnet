@@ -22,6 +22,7 @@ function rangeProofsLive() {
 import { fluxsetFromBlocks } from '../../crypto/admit.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { attachStubAdmitV2 } from './stub_admit_v2.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 import {
   buildTemplate,
   mineTemplate,
@@ -79,6 +80,9 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const lockNanos = 1000;
     const valueNanos = 77;
     const parentNow = 1_700_000_000_000;
+    // R28: the parent is A's solo option (b) round; its pot is a record coin
+    // of A's wallet, which verify derives and A's scan key finds.
+    const bluA = bluWallet(idA.spendSeed);
     const parent = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -86,15 +90,17 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
       bits: GENESIS_BITS_PACKED,
       now: parentNow,
       samples: [{ miner: destA, nonce: '1', tag: 'a', count: 1 }],
+      ...soloPay(bluA),
     }));
     const TRUSTED = Buffer.alloc(32);
     const okP = verifyBlock(parent, null, { trustedPowHash: TRUSTED });
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
-    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
-    const spentIdx = parent.txs[0].vout.indexOf(spent);
+    parent.blunoteRecord = okP.blunoteRecord;
+    const spent = soloCoin(bluA, parent);
+    assert.ok(spent, 'A was paid the pot');
     const fee = levyNanos(sendNanos);
-    const change = BLOCK_SUBSIDY_NANOS - sendNanos - fee;
+    const change = spent.opened - sendNanos - fee;
     const sendTx = attachDummyOuts({
       id: 'flow-send',
       kind: 'send',

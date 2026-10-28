@@ -271,7 +271,7 @@ describe('v12 b-spend pays its owner', () => {
     try {
       const genesis = await sealEmpty(book.store, owner.dest);
       assert.equal(genesis.ok, true, `${genesis.reason || ''} ${genesis.error || ''}`);
-      const opened = openedCoinbaseNanos(genesis.pot);
+      const opened = genesis.pot.opened;
       assert.ok(Number.isSafeInteger(opened) && opened > (2 ** 20));
       const leaves = [];
       let pot = genesis.pot;

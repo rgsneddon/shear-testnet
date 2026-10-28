@@ -17,8 +17,10 @@ import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import { digestTx } from '../src/chain.js';
+import { pointFrom } from '../../crypto/note.js';
 import { sameCompactShape } from '../src/store.js';
 import { createRegtestStore } from './regtest_store.js';
+import { bluWallet, soloPay } from './support/blunote_mine.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -74,15 +76,19 @@ describe('compactOrSame never makes an invalid body valid', () => {
 
   it('an already-compact block and its re-compacted copy get one verdict, valid or invalid', async () => {
     const store = createRegtestStore(fs.mkdtempSync(path.join(os.tmpdir(), 'shear-compact-same-')), { bits: 4 });
-    const miner = freshStealthDest(newIdentity()).dest;
-    const { tpl } = store.template({ miner, bits: regtestBitsOverride(MAGIC_REGTEST), shareBits: 4, now: T0 });
+    const id = newIdentity();
+    const miner = freshStealthDest(id).dest;
+    // R28: a coinbase carries no pot note; the payout is committed as the
+    // coinbase's one-time fee key. A solo option (b) round names one.
+    const { tpl } = store.template({ miner, bits: regtestBitsOverride(MAGIC_REGTEST), shareBits: 4, now: T0, ...soloPay(bluWallet(id.spendSeed)) });
     const compact = tpl.txs.map((tx) => {
       if (!tx?.coinbase) return compactTx(tx);
       const { samples: _s, ...rest } = tx;
       return compactTx({ ...rest, coinbase: true });
     });
     const cb = compact[0];
-    assert.ok(Array.isArray(cb.vout) && cb.vout.length > 0 && Buffer.isBuffer(cb.vout[0].commit), 'the coinbase has a committed output');
+    // Its compact form holds the key as 32-byte hex (chronoflux compactBlunote).
+    assert.ok(cb.blunote && /^[0-9a-f]{64}$/.test(cb.blunote.feeP) && /^[0-9a-f]{64}$/.test(cb.blunote.feeR), 'the coinbase commits a payout key');
     // The view form compacts back to the compact row: the store must take
     // the copy path for it and the same-object path for the compact row.
     assert.equal(sameCompactShape(asViews(cb), compactTx(asViews(cb))), false);
@@ -90,13 +96,20 @@ describe('compactOrSame never makes an invalid body valid', () => {
     assert.equal(sameCompactShape(cb, compactTx(cb)), true);
 
     const flip = (buf, at) => { const b = Buffer.from(buf); b[at] ^= 1; return b; };
+    // A flipped key byte is no longer a point: the payout key is refused.
+    const flipHex = (hex, at) => flip(Buffer.from(hex, 'hex'), at).toString('hex');
+    const notPoint = (() => {
+      for (let at = 0; at < 32; at += 1) {
+        try { pointFrom(Buffer.from(flipHex(cb.blunote.feeP, at), 'hex')); } catch { return at; }
+      }
+      return -1;
+    })();
+    assert.ok(notPoint >= 0, 'a one-byte flip that is not a point');
     const faults = [
       ['honest', (row) => row],
-      ['commit', (row) => ({ ...row, vout: [{ ...row.vout[0], commit: flip(row.vout[0].commit, 5) }, ...row.vout.slice(1)] })],
+      ['payout key', (row) => ({ ...row, blunote: { ...row.blunote, feeP: flipHex(row.blunote.feeP, notPoint) } })],
+      ['pot flag', (row) => ({ ...row, blunote: { ...row.blunote, potToFee: 2 } })],
     ];
-    if (Buffer.isBuffer(cb.vout[0].rangeProof)) {
-      faults.push(['range proof', (row) => ({ ...row, vout: [{ ...row.vout[0], rangeProof: flip(row.vout[0].rangeProof, 40) }, ...row.vout.slice(1)] })]);
-    }
     for (const [label, fault] of faults) {
       const row = fault(cb);
       const same = await Promise.resolve(store.probeBlock(blockOf(tpl, [row, ...compact.slice(1)], miner)));

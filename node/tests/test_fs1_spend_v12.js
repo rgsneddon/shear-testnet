@@ -6,6 +6,7 @@
  * Prove and verify timings go to $TMPDIR/shear-fs1-spend-timings.jsonl.
  */
 import { describe, it, before, after } from 'node:test';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -58,7 +59,7 @@ function record(row) {
 function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, spendSeed: id.spendSeed, base: id.admitBase };
+  return { id, dest, spendSeed: id.spendSeed, base: id.admitBase, blu: bluWallet(id.spendSeed) };
 }
 
 function lastStamp(store) {
@@ -78,10 +79,10 @@ async function sealHeader(header, bits) {
   return found.header;
 }
 
-async function mine(store, dest) {
+async function mine(store, dest, extra = {}) {
   const now = Math.max(T0, lastStamp(store) + 90_000);
   const bits = regtestBits();
-  const { tpl } = store.template({ miner: dest, bits, shareBits: 4, now });
+  const { tpl } = store.template({ miner: dest, bits, shareBits: 4, now, ...extra });
   assert.equal(tpl.bits, bits, 'template seals the regtest bits');
   const header = await sealHeader(tpl.header, tpl.bits);
   const got = await Promise.resolve(store.append({
@@ -248,16 +249,13 @@ describe('v12 FS-1 full-set send', { concurrency: false }, () => {
     store = createRegtestStore(dir, { bits: 4 });
     assert.equal(store.magic, MAGIC_REGTEST);
     const t0 = Date.now();
+    // R28: who mines solo with option (b). Each round pays its pot to a
+    // fresh one-time key of who's wallet; who finds it in the block's record.
     for (let i = 0; i < 34; i += 1) {
-      const tpl = await mine(store, who.dest);
-      const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-      assert.ok(pot && pot.r, 'template pot opening');
-      coins.push({
-        r: Buffer.from(asU8(pot.r)),
-        v: openedCoinbaseNanos(pot),
-        commit: Buffer.from(asU8(pot.commit)),
-        x: admitScalarFromSeed(who.spendSeed, pot),
-      });
+      await mine(store, who.dest, soloPay(who.blu));
+      const pot = soloCoin(who.blu, store.tip());
+      assert.ok(pot && pot.r, 'record pot opening');
+      coins.push({ r: pot.r, v: pot.v, commit: pot.commit, x: pot.x });
     }
     record({ phase: 'grow', blocks: store.tip().height, ms: Date.now() - t0 });
   });

@@ -29,6 +29,7 @@ import {
 } from '../src/p2p.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 /**
@@ -64,9 +65,9 @@ function wireIngest(store, block) {
   return Promise.resolve(store.ingest([decoded])).then((got) => ({ got, decoded }));
 }
 
-async function minePacked(store, dest, now) {
+async function minePacked(store, dest, now, extra = {}) {
   const bits = regtestBitsOverride(MAGIC_REGTEST);
-  const { tpl } = store.template({ miner: dest, bits, shareBits: 4, now });
+  const { tpl } = store.template({ miner: dest, bits, shareBits: 4, now, ...extra });
   assert.equal(tpl.bits, bits, 'template must seal the regtest bits');
   const found = await mineHeaderParallel(tpl.header, tpl.bits, MAX_TRIES, 1);
   assert.ok(found && found.block, 'need pow');
@@ -137,16 +138,19 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
     const dest = box.dest;
     const t0 = 1_700_000_000_000;
     let lastPot = null;
+    // R28: a mines solo with option (b); the pot is a record coin of the
+    // miner's wallet, found with its scan key.
+    const blu = bluWallet(id.spendSeed);
     {
-      const { appended, tpl } = await minePacked(a, dest, t0);
+      const { appended } = await minePacked(a, dest, t0, soloPay(blu));
       assert.equal(appended.ok, true, appended.reason);
-      const pot = (tpl.txs[0].vout || []).find((o) => o.kind === 'pot');
+      const pot = soloCoin(blu, a.tip());
+      assert.ok(pot, 'the solo round paid its pot to the miner');
       lastPot = {
         commit: pot.commit,
-        noteCommit: pot.noteCommit,
         r: pot.r,
-        index: tpl.txs[0].vout.indexOf(pot),
-        change: BLOCK_SUBSIDY_NANOS - 2 - levyNanos(2),
+        opened: pot.opened,
+        change: pot.opened - 2 - levyNanos(2),
       };
       const { got } = await wireIngest(b, a.tip());
       assert.equal(got.ok, true, got.reason);
@@ -154,9 +158,7 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
     assert.ok(lastPot?.r && lastPot.commit);
     const sendNanos = 2;
     const fee = levyNanos(sendNanos);
-    const tip = a.tip();
-    const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
-    assert.ok(spent?.commit, 'need pot note');
+    assert.ok(soloCoin(blu, a.tip())?.commit, 'need pot note');
     const sendTx = attachDummyOuts({
       id: 'ibd-flow-send',
       kind: 'send',

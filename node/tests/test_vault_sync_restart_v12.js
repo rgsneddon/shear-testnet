@@ -6,6 +6,7 @@
  * census the chain committed.
  */
 import { describe, it, before, after } from 'node:test';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -99,6 +100,7 @@ function payer() {
     key: id.privateKey,
     // portalId = H(tag, dest20). r is not an input. The address hash does not match.
     portalId: portalIdFromDest20(hash20FromAddress(dest), portalBlindFromSeed(id.spendSeed)),
+    blu: bluWallet(id.spendSeed),
   };
 }
 
@@ -116,9 +118,9 @@ function nextPow() {
   return hash;
 }
 
-async function mine(store, dest, now) {
+async function mine(store, dest, now, extra = {}) {
   const at = now == null ? Math.max(T0, lastStamp(store) + 90_000) : now;
-  const { tpl } = store.template({ miner: dest, shareBits: 4, now: at });
+  const { tpl } = store.template({ miner: dest, shareBits: 4, now: at, ...extra });
   const got = await Promise.resolve(store.append({
     header: tpl.header,
     height: tpl.height,
@@ -146,14 +148,16 @@ async function advanceClock(store, dest, targetMs) {
   }
 }
 
-function potOf(tpl, who) {
-  const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
+// R28: the block was mined solo with option (b); its pot is a record coin
+// of who's wallet, found with its scan key.
+function potOf(block, who) {
+  const pot = soloCoin(who.blu, block);
   assert.ok(pot && pot.r, 'pot opening');
   return {
-    r: Buffer.from(asU8(pot.r)),
-    v: openedCoinbaseNanos(pot),
-    commit: Buffer.from(asU8(pot.commit)),
-    x: admitScalarFromSeed(who.spendSeed, pot),
+    r: pot.r,
+    v: pot.v,
+    commit: pot.commit,
+    x: pot.x,
     who,
   };
 }
@@ -258,13 +262,13 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     // This test process writes the book and does not hold it.
     store = createStore(dir, { lock: false });
     for (let n = 0; n < 4; n += 1) {
-      const { tpl } = await mine(store, who.dest);
-      coins.push(potOf(tpl, who));
+      await mine(store, who.dest, undefined, soloPay(who.blu));
+      coins.push(potOf(store.tip(), who));
     }
     // A second wallet. Its π lock stays live through the withdraw and the restart.
     for (let n = 0; n < 4; n += 1) {
-      const { tpl } = await mine(store, pay.dest);
-      coins.push(potOf(tpl, pay));
+      await mine(store, pay.dest, undefined, soloPay(pay.blu));
+      coins.push(potOf(store.tip(), pay));
     }
     while (store.tip().height < 100) await mine(store, who.dest);
   });

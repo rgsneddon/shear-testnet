@@ -4,6 +4,7 @@
  * starting unit. A constant unit does not describe that branch.
  */
 import { describe, it } from 'node:test';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { fileCapMs } from './slow_caps.js';
@@ -390,19 +391,18 @@ function whoOf() {
     pub: Buffer.from(id.spendPub).toString('hex'),
     key: id.privateKey,
     portalId: portalIdFromDest20(hash20FromAddress(dest), portalBlindFromSeed(id.spendSeed)),
+    blu: bluWallet(id.spendSeed),
   };
 }
 
-function potCoin(tpl, who) {
-  const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-  assert.ok(pot && pot.r, 'pot opening');
-  return {
-    r: Buffer.from(asU8(pot.r)),
-    v: openedCoinbaseNanos(pot),
-    commit: Buffer.from(asU8(pot.commit)),
-    x: admitScalarFromSeed(who.spendSeed, pot),
-    who,
-  };
+/**
+ * R28: a coinbase pays no pot note. The block was mined solo with option
+ * (b), so its pot is a record coin of who's wallet, found by its scan key.
+ */
+function potCoin(block, who) {
+  const coin = soloCoin(who.blu, block);
+  assert.ok(coin && coin.r, 'pot opening');
+  return { r: coin.r, v: coin.v, commit: coin.commit, x: coin.x, who };
 }
 
 function rangeSlack(outs) {
@@ -477,10 +477,10 @@ function proveSpend(tx, use, anchor, live, outs) {
   return settled;
 }
 
-async function appendShare(store, dest, now) {
+async function appendShare(store, dest, now, extra = {}) {
   const tip = store.tip();
   const at = now == null ? (tip ? headerTime(tip) + STEP : T0) : now;
-  const { tpl } = store.template({ miner: dest, shareBits: 4, now: at });
+  const { tpl } = store.template({ miner: dest, shareBits: 4, now: at, ...extra });
   const pow = easyPow();
   const got = await Promise.resolve(store.append({
     header: tpl.header,
@@ -498,8 +498,8 @@ async function appendShare(store, dest, now) {
   return { tpl, got, at };
 }
 
-async function mineOk(store, dest, now) {
-  const sealed = await appendShare(store, dest, now);
+async function mineOk(store, dest, now, extra = {}) {
+  const sealed = await appendShare(store, dest, now, extra);
   assert.equal(sealed.got.ok, true, `append ${sealed.got.reason || ''} ${sealed.got.error || ''} h=${sealed.tpl.height}`);
   return sealed;
 }
@@ -521,8 +521,8 @@ describe('v12 adopt keeps the walked hash-bonus unit', { timeout: fileCapMs(impo
       // does. This test process writes the heavy book and does not hold it.
       const heavy = createStore(heavyDir, { ...FAST_BOOK, lock: false });
       for (let n = 0; n < 4; n += 1) {
-        const { tpl } = await mineOk(heavy, who.dest);
-        coins.push(potCoin(tpl, who));
+        await mineOk(heavy, who.dest, undefined, soloPay(who.blu));
+        coins.push(potCoin(heavy.tip(), who));
       }
       while (heavy.tip().height < 100) await mineOk(heavy, who.dest);
       phase('funded', heavy);

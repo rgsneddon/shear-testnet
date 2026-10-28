@@ -19,6 +19,7 @@ import { shouldAdopt, digestTx } from '../src/chain.js';
 import { readChainSegments } from '../../crypto/chainbin.js';
 import { auditCirculatingSupply } from '../src/supply.js';
 import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -41,7 +42,7 @@ function tmpStore(regtest = true) {
   return regtest ? createRegtestStore(dir, { bits: 4 }) : createStore(dir);
 }
 
-async function mineOne(store, dest) {
+async function mineOne(store, dest, extra = {}) {
   const parent = store.tip();
   // Each empty chain gets its own past stamp. One shared stamp makes every
   // genesis header identical, so the equal-work case never stages a side tip.
@@ -50,7 +51,7 @@ async function mineOne(store, dest) {
     : genesisStamp;
   if (!parent) genesisStamp += 7_000;
   const want = regtestBitsOverride(MAGIC_REGTEST);
-  const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now });
+  const { tpl } = store.template({ miner: dest, bits: want, shareBits: 4, now, ...extra });
   assert.equal(tpl.bits, want, 'template must seal the regtest bits');
   assert.equal(decodeHeader(tpl.header).bits, want);
   const found = await mineHeaderParallel(tpl.header, tpl.bits, MAX_TRIES, threads);
@@ -104,12 +105,16 @@ describe('most-work adopt', () => {
 
     const events = [];
     local.on('reorg', (e) => events.push(e));
+    // R28: the extension is mined solo with option (b); the tip's pot is a
+    // record coin of the miner's wallet, found with its scan key.
+    const blu = bluWallet(id.spendSeed);
     for (let i = 0; i < SPENDABLE_CONFIRMATIONS; i += 1) {
-      const extended = await mineOne(local, dest);
+      const extended = await mineOne(local, dest, soloPay(blu));
       assert.equal(extended.ok, true, `${extended.reason || 'extend'} at=${extended.at} i=${i}`);
     }
     const tip = local.tip();
-    const spent = (tip.txs[0].vout || []).find((o) => o.kind === 'pot');
+    const spent = soloCoin(blu, tip);
+    assert.ok(spent, 'the tip paid its pot to the miner');
     const bounce = attachDummyOuts({
       id: 'bounce-1',
       kind: 'send',

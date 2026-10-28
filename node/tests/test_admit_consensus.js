@@ -20,6 +20,7 @@ import { FS1_SEND_REASON } from '../../crypto/fs1_send_gate.js';
 import { compactLockLeakRejected } from '../../crypto/reserve_vault.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { BLOCK_SUBSIDY_NANOS } from '../../crypto/asert.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 import { levyNanos } from '../../crypto/levy.js';
 import { fluxsetFromBlocks, attachAdmitPub } from '../../crypto/admit.js';
 import { attachStubAdmitV2 } from './stub_admit_v2.js';
@@ -99,6 +100,8 @@ function identityDest() {
     id,
     dest: pay.dest,
     spendSeed,
+    // R28: the wallet a solo option (b) round pays its pot to.
+    blu: bluWallet(spendSeed),
     key: stealthKey(pay.shared, spendSeed),
   };
 }
@@ -117,17 +120,22 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
   });
 
   it('honest spent-note send with admit_proof against the real fluxset is ok; sampled / missing / reused tag fail; compact self-minted C_in is confidential', async () => {
-    const { dest, spendSeed, key } = identityDest();
+    const { dest, spendSeed, key, blu } = identityDest();
+    // Both rounds are solo option (b): each pays its pot to a one-time key,
+    // so the fluxset holds more than one note.
     const genesis = await mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
       bits: RT_BITS,
       now: 1_700_000_000_000,
+      ...soloPay(blu),
     }));
     const okG = verifyBlock(genesis, null, { magic: MAGIC_REGTEST });
     assert.equal(okG.ok, true, okG.reason);
     genesis.hash = okG.hash;
+    // R28: each block's record is what its child's coinbase binds.
+    genesis.blunoteRecord = okG.blunoteRecord;
     const parent = await mine(buildTemplate({
       prev: okG.hash,
       prevHeader: genesis.header,
@@ -137,23 +145,25 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       now: 1_700_000_090_000,
       prevBlock: genesis,
       parentFluxset: fluxsetFromBlocks([genesis]).pubs,
+      ...soloPay(blu),
     }));
     const okP = verifyBlock(parent, genesis, { magic: MAGIC_REGTEST });
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
+    parent.blunoteRecord = okP.blunoteRecord;
     const history = [genesis, parent];
     // A grandchild is not its own anchor. Pass the genesis stamp, and keep
     // the height-3 time on the 90s grid so ASERT still accepts the sealed regtest bits.
     const genesisMs = Number(decodeHeader(Buffer.from(genesis.header)).timestamp);
     const height3Now = genesisMs + 180_000;
     const height3Opts = { evmHistory: history, genesisMs, magic: MAGIC_REGTEST };
-    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
+    // R28: the parent is a solo option (b) round; its pot is a record coin.
+    const spent = soloCoin(blu, parent);
     assert.ok(spent?.commit && spent.admitPub, 'coinbase note enters J');
-    const idx = parent.txs[0].vout.indexOf(spent);
     const live = fluxsetFromBlocks(history);
     assert.ok(live.pubs.length >= 2, 'fluxset has more than a sampled singleton');
     const fee = levyNanos(2);
-    const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
+    const change = spent.opened - 2 - fee;
     const mkSend = (extra = {}) => {
       const tx = attachDummyOuts({
         id: extra.id || 'honest-send',
@@ -278,13 +288,14 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
   it('queueTx admits an honest spent-note send and rejects missing proof, sampled subset, and reused spendTag', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-'));
     const store = createRegtestStore(dir, { bits: 4 });
-    const { dest, spendSeed, key } = identityDest();
+    const { dest, spendSeed, key, blu } = identityDest();
     const parent = await mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
       bits: RT_BITS,
       now: 1_700_001_000_000,
+      ...soloPay(blu),
     }));
     const appended = store.append({
       header: parent.header,
@@ -297,10 +308,11 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     assert.equal(Buffer.from(store.jroot()).equals(Buffer.from(rebuilt.jroot)), true);
     assert.equal(store.fluxset().pubs.length, rebuilt.pubs.length);
     assert.ok(store.fluxset().pubs.length >= 1, 'coinbase notes enter live J');
-    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
-    const idx = parent.txs[0].vout.indexOf(spent);
+    // R28: the record coin the solo round paid, from the stored record.
+    const spent = soloCoin(blu, store.tip());
+    assert.ok(spent, 'the solo round paid its pot to the miner');
     const fee = levyNanos(2);
-    const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
+    const change = spent.opened - 2 - fee;
     const body = () => attachDummyOuts({
       id: `send-${Math.random()}`,
       kind: 'send',
@@ -372,7 +384,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
   it('hex-posted Flow send is in the next template and mined header with admit_proof', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-admit-job-'));
     const store = createRegtestStore(dir, { bits: 4 });
-    const { dest, spendSeed, key } = identityDest();
+    const { dest, spendSeed, key, blu } = identityDest();
     let now = 1_700_002_000_000;
     const parent = await mine(buildTemplate({
       prev: GENESIS_PREV,
@@ -380,6 +392,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       miner: dest,
       bits: RT_BITS,
       now,
+      ...soloPay(blu),
     }));
     let appended = store.append({
       header: parent.header,
@@ -389,8 +402,8 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     });
     assert.equal(appended.ok, true, appended.reason);
     const genesisHash = appended.block.hash;
-    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
-    const idx = parent.txs[0].vout.indexOf(spent);
+    const spent = soloCoin(blu, store.tip());
+    assert.ok(spent, 'the solo round paid its pot to the miner');
     for (let h = 2; h <= 6; h += 1) {
       now += 90_000;
       const { tpl } = store.template({ miner: dest, bits: RT_BITS, now });
@@ -409,7 +422,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       assert.equal(appended.ok, true, appended.reason);
     }
     const fee = levyNanos(2);
-    const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
+    const change = spent.opened - 2 - fee;
     const honest = attachDummyOuts({
       id: 'job-send',
       kind: 'send',
@@ -457,22 +470,24 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
   });
 
   it('named reject reasons: range stub, no members list, she1 silent_id', async () => {
-    const { dest, spendSeed, key } = identityDest();
+    const { dest, spendSeed, key, blu } = identityDest();
     const parent = await mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
       miner: dest,
       bits: RT_BITS,
       now: 1_700_003_000_000,
+      ...soloPay(blu),
     }));
     const okP = verifyBlock(parent, null, { magic: MAGIC_REGTEST });
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
-    const spent = parent.txs[0].vout.find((o) => o.kind === 'pot');
-    const idx = parent.txs[0].vout.indexOf(spent);
+    parent.blunoteRecord = okP.blunoteRecord;
+    const spent = soloCoin(blu, parent);
+    assert.ok(spent, 'the solo round paid its pot to the miner');
     const live = fluxsetFromBlocks([parent]);
     const fee = levyNanos(2);
-    const change = BLOCK_SUBSIDY_NANOS - 2 - fee;
+    const change = spent.opened - 2 - fee;
     const body = attachDummyOuts({
       id: 'range-stub',
       kind: 'send',
