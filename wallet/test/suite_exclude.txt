@@ -22,3 +22,5 @@ test/android_apk_test.dart android-admit.yml (NDK-built arm64 libraries)
 test/rx_rpmail_vortice_test.dart SCOPE vortice scope ruling, Russell 26 Oct
 # An empty placeholder ("Replaced by shear_wallet_test.dart"): no tests to run.
 test/widget_test.dart empty placeholder, replaced by shear_wallet_test.dart
+# Windows-only (skipped on Linux): wallet-shewall-windows.yml runs it on windows-latest.
+test/shewall_windows_ci_test.dart wallet-shewall-windows.yml (Windows runner)
