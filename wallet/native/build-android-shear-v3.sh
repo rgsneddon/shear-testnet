@@ -92,8 +92,11 @@ for abi in "${ABIS[@]}"; do
   OBJ="$BUILD/wallet"
   mkdir -p "$OUT" "$OBJ"
   # C sources stay C. clang++ only links, so libstdc++ is static.
-  "$CC" -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJ/shear_v3_export.o" "$HERE/shear_v3_export.c"
-  "$CC" -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJ/shear_hash.o" "$MINER/shear_hash.c"
+  # The wallet hashes in light mode with the interpreter only (Russell,
+  # 28 Oct): SHEAR_HASH_INTERPRETER_ONLY compiles every JIT and full-dataset
+  # selection out of shear_hash.c.
+  "$CC" -fPIC -O2 -Wall -DSHEAR_HASH_INTERPRETER_ONLY -I"$MINER" -I"$RX/src" -c -o "$OBJ/shear_v3_export.o" "$HERE/shear_v3_export.c"
+  "$CC" -fPIC -O2 -Wall -DSHEAR_HASH_INTERPRETER_ONLY -I"$MINER" -I"$RX/src" -c -o "$OBJ/shear_hash.o" "$MINER/shear_hash.c"
   "$CC" -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJ/sha512.o" "$MINER/sha512.c"
   "$CC" -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJ/sha256.o" "$MINER/sha256.c"
   "$CXX" -shared -fPIC -O2 \
@@ -102,6 +105,16 @@ for abi in "${ABIS[@]}"; do
     -o "$OUT/libshear_v3.so" \
     "$OBJ/shear_v3_export.o" "$OBJ/shear_hash.o" "$OBJ/sha512.o" "$OBJ/sha256.o" \
     "$RXLIB" \
-    -pthread -lm
-  echo "staged $OUT/libshear_v3.so"
+    -pthread -lm -llog
+  # Guard on the built library, not the source: the interpreter-only build
+  # carries its refusal line and none of the JIT selection lines.
+  if ! grep -aq 'interpreter-only build refused backend' "$OUT/libshear_v3.so"; then
+    echo "libshear_v3.so for $abi is not the interpreter-only build" >&2
+    exit 1
+  fi
+  if grep -aq 'jit-full uses the 2 GiB dataset' "$OUT/libshear_v3.so"; then
+    echo "libshear_v3.so for $abi still selects the JIT or the full dataset" >&2
+    exit 1
+  fi
+  echo "staged $OUT/libshear_v3.so (light interpreter only)"
 done
