@@ -22,12 +22,12 @@ import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.join(here, '..', '..');
-
 function arg(name, dflt) {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 && i + 1 < process.argv.length ? process.argv[i + 1] : dflt;
 }
+// --root: the checkout whose pool/node code serves the stratum.
+const root = path.resolve(arg('root', path.join(here, '..', '..')));
 const flag = (name) => process.argv.includes(`--${name}`);
 
 const mode = arg('mode', 'pool');

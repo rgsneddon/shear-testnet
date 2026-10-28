@@ -11,7 +11,8 @@
 #   NICE     nice level (pool host: 19)
 #   IDLE     1: wait up to 60 min for loadavg < 0.5 first (agent-box)
 #   SECS     rxbench seconds per point (default 30); STRAT_SECS (default 300)
-# Measurement only: no system setting is read-write here.
+# Measurement only: no system setting is read-write here. Run it from a copy
+# of bench/ (a pull must never rewrite a running script).
 set -u
 LABEL=$1
 TREE=$(cd "$2" && pwd)
@@ -100,13 +101,13 @@ if has stratum; then
   [ -n "${MINER_THREADS:-}" ] && mt=(--threads "$MINER_THREADS")
   for mode in pool solo; do
     log "stratum $mode"
-    ( cd "$TREE" && "${pre[@]}" node "$BENCH/stratum_bench.mjs" --mode $mode --miner "$M/ShearK-Miner" \
+    ( cd "$TREE" && "${pre[@]}" node "$BENCH/stratum_bench.mjs" --root "$TREE" --mode $mode --miner "$M/ShearK-Miner" \
         --secs "$STRAT_SECS" --sample 30 "${mt[@]}" --out "$OUT/stratum-$mode.json" ) > "$OUT/stratum-$mode.log" 2>&1
     log "stratum $mode rc=$? $(tail -1 "$OUT/stratum-$mode.log" | cut -c1-600)"
   done
 fi
 if has refusals; then
-  ( cd "$TREE" && "${pre[@]}" node "$BENCH/stratum_bench.mjs" --mode refusals --miner "$M/ShearK-Miner" --out "$OUT/refusals.json" ) > "$OUT/refusals.log" 2>&1
+  ( cd "$TREE" && "${pre[@]}" node "$BENCH/stratum_bench.mjs" --root "$TREE" --mode refusals --miner "$M/ShearK-Miner" --out "$OUT/refusals.json" ) > "$OUT/refusals.log" 2>&1
   log "refusals rc=$? $(tail -1 "$OUT/refusals.log" | cut -c1-600)"
 fi
 log "done load=$(cut -d' ' -f1-3 /proc/loadavg)"
