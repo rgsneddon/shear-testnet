@@ -32,7 +32,6 @@ const char SHEAR_SELFTEST_HASH[] =
 
 static pthread_rwlock_t g_rx;
 static pthread_once_t g_rx_once = PTHREAD_ONCE_INIT;
-static pthread_mutex_t g_key_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_key_t g_vm_key;
 static int g_key_ok = 0;
 static randomx_cache *g_cache = NULL;
@@ -159,12 +158,15 @@ static void tls_free(void *p) {
   free(t);
 }
 
+/* R41: once, then lock-free. It took g_key_mu on every hash call, one
+ * process-wide mutex every worker passed through per digest. */
+static pthread_once_t g_key_once = PTHREAD_ONCE_INIT;
+static void make_tls_key(void) {
+  if (pthread_key_create(&g_vm_key, tls_free) == 0) g_key_ok = 1;
+}
+
 static void ensure_tls_key(void) {
-  pthread_mutex_lock(&g_key_mu);
-  if (!g_key_ok) {
-    if (pthread_key_create(&g_vm_key, tls_free) == 0) g_key_ok = 1;
-  }
-  pthread_mutex_unlock(&g_key_mu);
+  pthread_once(&g_key_once, make_tls_key);
 }
 
 static RxTls *tls_slot(void) {
