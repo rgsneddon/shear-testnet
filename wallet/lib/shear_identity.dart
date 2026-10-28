@@ -17,8 +17,36 @@ const shearHrp = 'shear';
 const destHrp = 'ssa';
 /// Public-facing silent ID is she1 (HRP she). Never a dest.
 const payHrp = 'she';
-/// Live book. A shewall from another magic needs an explicit reset.
-const kBookMagic = 'shear-testnet-v12';
+/// The testnet and mainnet books: the only two a release or profile build runs.
+const kTestnetBookMagic = 'shear-testnet-v12';
+const kMainnetBookMagic = 'shear-v1';
+
+/// The regtest book (node/tests/regtest_store.js). Only a debug or test build
+/// set to it runs it, and only it takes the regtest checkpoint.
+const kRegtestBookMagic = 'shear-regtest';
+
+/// Live book: a build-time setting (Russell, 28 Oct), default testnet-v12.
+///   flutter test --dart-define=SHEAR_BOOK_MAGIC=shear-regtest
+/// Every digest the wallet signs and every book check uses it. A release or
+/// profile build set to anything else refuses at start ([bookMagicRefusal]).
+/// A shewall from another magic needs an explicit reset.
+const kBookMagic = String.fromEnvironment('SHEAR_BOOK_MAGIC', defaultValue: kTestnetBookMagic);
+
+/// A release or profile build. Debug builds and flutter test are neither.
+const bool kShippedBuild =
+    bool.fromEnvironment('dart.vm.product') || bool.fromEnvironment('dart.vm.profile');
+
+/// Null when [magic] may run in this build, else the line shown at start.
+/// A shipped build runs only [kTestnetBookMagic] or [kMainnetBookMagic].
+String? bookMagicRefusal([String magic = kBookMagic, bool shipped = kShippedBuild]) {
+  if (magic == kTestnetBookMagic || magic == kMainnetBookMagic) return null;
+  if (shipped) {
+    return 'This build is set to the book "$magic". Release and profile builds run only '
+        '$kTestnetBookMagic or $kMainnetBookMagic. Rebuild it without SHEAR_BOOK_MAGIC.';
+  }
+  if (magic.trim().isEmpty) return 'This build has no book magic. Rebuild it without an empty SHEAR_BOOK_MAGIC.';
+  return null;
+}
 const _charset = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
 class ShearIdentity {

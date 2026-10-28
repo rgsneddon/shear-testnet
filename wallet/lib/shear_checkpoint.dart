@@ -1,3 +1,5 @@
+import 'shear_identity.dart' show kBookMagic, kRegtestBookMagic;
+
 /// PLACEHOLDER until the v12 testnet cut fills [kReleaseCheckpoint].
 /// A release build shows the checkpoint-missing screen while this is true.
 /// Tests install a fixture.
@@ -84,6 +86,16 @@ bool checkpointPinWellFormed(CheckpointPin pin) {
   }
   if (pin.priorTimesMs.last >= pin.timeMs) return false;
   return true;
+}
+
+/// True when this book may take [pin] as its trust root. The regtest
+/// checkpoint (network shear-regtest, pinned under node/tests) is
+/// taken only by the regtest book, and the regtest book takes no other pin.
+/// Under the testnet, mainnet or any other magic a regtest pin is refused.
+bool checkpointAllowedFor(CheckpointPin pin, [String magic = kBookMagic]) {
+  final regtestPin = pin.network == kRegtestBookMagic;
+  final regtestBook = magic == kRegtestBookMagic;
+  return regtestPin == regtestBook;
 }
 
 /// True when [pin] may ship: not a placeholder, well formed, and its anchor

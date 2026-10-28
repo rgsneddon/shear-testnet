@@ -102,6 +102,11 @@ const kExplains = [
 final List<String> debugPopulationOrder = <String>[];
 
 Future<void> main(List<String> args) async {
+  final magicRefusal = bookMagicRefusal();
+  if (magicRefusal != null) {
+    runApp(BookMagicRefusedApp(message: magicRefusal));
+    return;
+  }
   if (releaseCheckpointMissing()) {
     runApp(const CheckpointMissingApp());
     return;
@@ -136,6 +141,29 @@ class CheckpointMissingApp extends StatelessWidget {
       home: Scaffold(
         body: Center(
           child: Text('checkpoint missing', key: Key('checkpoint-missing')),
+        ),
+      ),
+    );
+  }
+}
+
+/// A build whose book magic this build may not run ([bookMagicRefusal]): a
+/// release or profile build set to anything but testnet-v12 or mainnet. The
+/// wallet does not open; the line is the whole screen.
+class BookMagicRefusedApp extends StatelessWidget {
+  const BookMagicRefusedApp({super.key, required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(message, key: const Key('book-magic-refused'), textAlign: TextAlign.center),
+          ),
         ),
       ),
     );
