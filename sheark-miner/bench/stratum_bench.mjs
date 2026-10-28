@@ -163,6 +163,9 @@ function runMiner(port, extra) {
   child.stdout.on('data', onData);
   child.stderr.on('data', onData);
   child.closed = new Promise((r) => child.once('close', (code, sig) => r({ code, sig })));
+  // --pid-file PATH: the miner's pid, for an outside watchdog (site_watch.sh).
+  const pidFile = arg('pid-file', '');
+  if (pidFile && child.pid) { try { fs.writeFileSync(pidFile, `${child.pid}\n`); } catch { /* ignore */ } }
   return child;
 }
 
