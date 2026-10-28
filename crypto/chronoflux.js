@@ -821,6 +821,7 @@ function compactBlunote(b) {
   if (b.feeTag != null) out.feeTag = Math.floor(Number(b.feeTag) || 0) & 0xff;
   const prev = bluHex(b.prev);
   if (prev) out.prev = prev;
+  if (Number(b.potToFee) === 1) out.potToFee = 1;
   return out;
 }
 
