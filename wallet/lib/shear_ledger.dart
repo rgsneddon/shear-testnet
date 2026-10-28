@@ -4602,7 +4602,14 @@ class ShearLedger implements ReadProofSink {
   /// header, at its confirmations. A Vault lock leaf (never Spendable,
   /// withdraw is its only exit) is kept only when its body is proven.
   List<Map<String, dynamic>> get pickableNotes {
-    if (!_bodyProofRequired) return notes;
+    if (!_bodyProofRequired) {
+      // A read-page note is Pending until its body is proven (ruling 6).
+      if (!_notes.any((n) => n['readOpen'] == true && n['bodyProven'] != true)) return notes;
+      return List.unmodifiable([
+        for (final n in _notes)
+          if (n['readOpen'] != true || n['bodyProven'] == true) n,
+      ]);
+    }
     return List.unmodifiable([
       for (final n in _notes)
         if (n['bodyProven'] == true &&
@@ -4878,6 +4885,33 @@ class ShearLedger implements ReadProofSink {
   /// A failed proof and a bare `{v}` stay unverified. An unread height is skipped.
   @override
   void ingestReadOpen(
+    ReadBlockOpen open, {
+    required List blocks,
+    String? dest,
+  }) {
+    // Ruling 6: every note this page brings in (its value proof opened, or
+    // its output scanned from the page's txs) sits under a header the
+    // wallet has not proven, so it is Pending until the body scan proves it.
+    // A note the book already held from another source keeps its standing.
+    final before = <String>{
+      for (final n in _notes)
+        if (_noteBytes(n['commit']) case final c?) _bytesHex(c),
+    };
+    try {
+      _ingestReadPage(open, blocks: blocks, dest: dest);
+    } finally {
+      for (final n in _notes) {
+        final c = _noteBytes(n['commit']);
+        if (c == null || before.contains(_bytesHex(c))) continue;
+        if (n['bodyProven'] == true) continue;
+        n['readOpen'] = true;
+      }
+    }
+    final rest = _restFrame;
+    if (rest != null && rest.isNotEmpty) recheckRestFrameSpendable(rest);
+  }
+
+  void _ingestReadPage(
     ReadBlockOpen open, {
     required List blocks,
     String? dest,
@@ -9319,6 +9353,10 @@ class ShearLedger implements ReadProofSink {
 
   bool _noteIsSpendable(Map<String, dynamic> n, {bool ignoreConfs = false}) {
     if (_bodyProofRequired && n['bodyProven'] != true) return false;
+    // Ruling 6: a note opened from a read page (its value proof checked, its
+    // body not proven against a verified header) is Pending until the body
+    // scan proves it.
+    if (n['readOpen'] == true && n['bodyProven'] != true) return false;
     return spendableNote(
       n,
       tip: bookTip,
@@ -9732,6 +9770,9 @@ class ShearLedger implements ReadProofSink {
       known.add(_bytesHex(commit));
       final h = n['height'];
       if (h is! num || h < 1) heightless.add(_bytesHex(commit));
+      // A read-page note (ruling 6) is opened again from the scanned body:
+      // that copy is the one with the blind the wallet unwraps to spend it.
+      if (n['readOpen'] == true && n['bodyProven'] != true) heightless.add(_bytesHex(commit));
     }
     // A held note with no block height yet (this wallet's own change, posted
     // but not read back mined) is read again: its mined copy is the only one
@@ -11956,8 +11997,9 @@ class ShearLedger implements ReadProofSink {
     // Ruling 6: a mined note deep enough to spend whose body is not proven
     // against a verified header is not Spendable. It stays Pending until it
     // is.
-    if (_bodyProofRequired) {
+    {
       for (final note in _notes) {
+        if (!_bodyProofRequired && note['readOpen'] != true) continue;
         if (note['bodyProven'] == true || note['verified'] != true) continue;
         if (note['spent'] == true || note['reorged'] == true) continue;
         if (isVaultLockNote(note)) continue;
@@ -12368,9 +12410,11 @@ class ShearLedger implements ReadProofSink {
           'reorged': n['reorged'] == true,
           'locked': n['locked'] == true,
           // Ruling 6: once bodies are scanned, a note counts only from a body
-          // proven against a verified header.
+          // proven against a verified header; a note a read page brought in
+          // counts only once its body is proven.
           'verified': n['verified'] == true &&
-              (!_bodyProofRequired || n['bodyProven'] == true),
+              (!_bodyProofRequired || n['bodyProven'] == true) &&
+              (n['readOpen'] != true || n['bodyProven'] == true),
           'sealed': noteHasSealedSpendBytes(n),
           'address': (n['address'] ?? n['dest'])?.toString() ?? '',
           'height': n['height'],
