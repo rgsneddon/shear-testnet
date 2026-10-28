@@ -4596,6 +4596,21 @@ class ShearLedger implements ReadProofSink {
   String? _coinLedger;
   List<Map<String, dynamic>> get notes => List.unmodifiable(_notes);
 
+  /// The notes a send, lock, vote fee or withdraw may pick. Spendable must
+  /// equal what a send can use, so in body mode (ruling 6) this is the set
+  /// Spendable counts: a note whose body is proven against a verified
+  /// header, at its confirmations. A Vault lock leaf (never Spendable,
+  /// withdraw is its only exit) is kept only when its body is proven.
+  List<Map<String, dynamic>> get pickableNotes {
+    if (!_bodyProofRequired) return notes;
+    return List.unmodifiable([
+      for (final n in _notes)
+        if (n['bodyProven'] == true &&
+            ((n['kind'] ?? '').toString() == 'lock' || isVaultLockNote(n) || _noteIsSpendable(n)))
+          n,
+    ]);
+  }
+
   List<Map<String, dynamic>> exportOpenedProofs() => [
     for (final e in _openedProofs.entries)
       {'k': e.key, 'n': e.value.toString()},
@@ -13201,6 +13216,8 @@ class ShearLedger implements ReadProofSink {
       if (note['spent'] == true) continue;
       if ((note['kind'] ?? '').toString() == 'lock') continue;
       if (!noteHasSealedSpendBytes(note)) continue;
+      // Ruling 6: only the notes Spendable counts may fund the lock.
+      if (_bodyProofRequired && !_noteIsSpendable(note)) continue;
       final units = tryU64Units(note['nanos']);
       if (units == null || units <= BigInt.zero || units.bitLength > 63) continue;
       final commit = _noteBytes(note['commit']);
@@ -15023,6 +15040,12 @@ class ShearPoolClient {
   /// Per-portal Reserve stake/idle/accrued. Not a public vortice.
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
+
+  /// The node's own Reserve read for [dest] (GET /reserve?address=): its
+  /// portal and the public vault view. Used on an own node, which has no
+  /// pool vault route; the dest goes only to the user's own node.
+  Future<Map<String, dynamic>> nodeReserve(String dest) =>
+      _get('/reserve?address=${Uri.encodeQueryComponent(dest)}');
 
   /// Every portal's matured-tranche rows. No portal id is on the query.
   Future<Map<String, dynamic>> reserveTrancheBook() =>

@@ -4607,7 +4607,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
           publicIpConsent: !local && _reserveUnprivateOk,
         );
       } else {
-        final leaves = reserveLockLeaves(ledger.notes);
+        final leaves = reserveLockLeaves(ledger.pickableNotes);
         final postedAll = await postMaturedWithdraws(
           ledger,
           reserve: reserve,
