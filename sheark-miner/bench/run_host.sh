@@ -103,7 +103,12 @@ fi
 if has perf; then
   log "perf"
   perf record -F 499 -g -o "$OUT/perf.data" -- "$M/bench/rxbench" --backend jit-full --threads "$NP" --secs 20 --warm 3 > "$OUT/perf-run.txt" 2>&1
-  perf report -i "$OUT/perf.data" --no-children --sort dso,sym --stdio 2>/dev/null | head -80 > "$OUT/perf-report.txt"
+  # By object first: JIT-generated RandomX programs show as [JIT] tid N.
+  # Summed per object, so every thread's [JIT] programs count together.
+  perf report -i "$OUT/perf.data" --no-children --sort dso --stdio -g none 2>/dev/null | grep '%' | grep -v '^#' \
+    | awk '{p=$1; sub(/%/,"",p); d=$2; s[d]+=p} END {for (d in s) printf "%.2f%% %s\n", s[d], d}' | sort -rn > "$OUT/perf-dso.txt"
+  perf report -i "$OUT/perf.data" --no-children --sort dso,sym --stdio -g none 2>/dev/null | grep '%' | grep -v '^#' | grep -v 'JIT' | head -30 > "$OUT/perf-report.txt"
+  log "perf by object: $(head -6 "$OUT/perf-dso.txt" | paste -s -d ';')"
   rm -f "$OUT/perf.data"
 fi
 if has stratum; then
