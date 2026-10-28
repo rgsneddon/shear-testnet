@@ -49,7 +49,10 @@ Future<void> main() async {
   const above = '9007199254740993';
   final dest = ledger.currentDest(id.address, paymentCode: id.paymentCode);
   // A coin the selector may spend has a sealed commit, a note commit, and
-  // an opening. An amount with only one of those stays out of the pay set.
+  // an opening, a value proof that opened (verified), and a block height
+  // with 9 confirmations at a checked tip (gate 3). Without any one of those
+  // it stays out of the pay set.
+  ledger.noteNodeCheckedTip(ShearLedger.spendableConfirmations);
   ledger.rememberNote(<String, dynamic>{
     'address': dest,
     'dest': dest,
@@ -57,6 +60,8 @@ Future<void> main() async {
     'commit': Uint8List(32)..[0] = 11,
     'noteCommit': Uint8List(32)..[0] = 21,
     'r': Uint8List(32)..[0] = 31,
+    'verified': true,
+    'height': 1,
   });
   ledger.rememberNote(<String, dynamic>{
     'address': dest,
@@ -65,6 +70,8 @@ Future<void> main() async {
     'commit': Uint8List(32)..[1] = 12,
     'noteCommit': Uint8List(32)..[1] = 22,
     'r': Uint8List(32)..[1] = 32,
+    'verified': true,
+    'height': 1,
   });
   await ledger.quoteSendLevyUnits(
     restFrame: id.address,
