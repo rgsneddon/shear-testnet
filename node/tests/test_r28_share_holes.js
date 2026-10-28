@@ -278,6 +278,9 @@ describe('R28 BluNotes blocks', () => {
   it('binds the parent record under the next block, and refuses a wrong one', () => {
     const b2 = child([g], { shareBatch: [mineShare(wallet(), g.header)] });
     assert.equal(b2.verdict.ok, true, b2.verdict.reason);
+    // The record crosses the wire with its block (a pruned block keeps only it).
+    const wired = decodeWireBlock(encodeWireBlock(b2.block));
+    assert.equal(wired.blunoteRecord, b2.block.blunoteRecord);
     const b3 = child([g, b2.block]);
     assert.equal(b3.verdict.ok, true, b3.verdict.reason);
     assert.equal(Buffer.from(b3.block.txs[0].blunote.prev).toString('hex'), recordRoot(Buffer.from(b2.block.blunoteRecord, 'hex')).toString('hex'));
