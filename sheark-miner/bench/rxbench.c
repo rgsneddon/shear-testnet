@@ -37,6 +37,9 @@
 
 #define MAXT 256
 
+/* Defined in shear_hash.c; not in shear_hash.h. */
+extern const char SHEAR_SELFTEST_HASH[];
+
 static double now_s(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
