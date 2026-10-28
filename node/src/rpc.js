@@ -491,7 +491,6 @@ export function createRpc({
       return store.submitHeader({
         jobId: params.jobId || params[0],
         nonce: nonce.toString(),
-        miner: params.miner,
         powHash: params.powHash,
         skipSharePow: params.skipSharePow,
         trustedPowHash: params.trustedPowHash,

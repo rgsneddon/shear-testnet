@@ -5,8 +5,17 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
+import { encodeMiningAddress } from '../../crypto/address.js';
+import { admitBasePub } from '../../crypto/admit.js';
+import { scanPub } from '../../crypto/blunote.js';
+import { pointBytes } from '../../crypto/note.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+// R28 option 2: a rig logs in with a worker name and keeps its mining address.
+const SEED = randomBytes(32);
+const MINING = encodeMiningAddress({ B: pointBytes(admitBasePub(SEED)), Y: scanPub(SEED) });
+const WORKER = 'rig1';
 const bin = process.platform === 'win32'
   ? path.join(root, 'ShearK-Miner.exe')
   : path.join(root, 'ShearK-Miner');
@@ -75,16 +84,15 @@ describe('ShearK-Miner', () => {
     assert.equal(j.clientLogin, 'direct');
     assert.equal(j.pool, 'pool.shear.digital:443');
     assert.equal(j.tls, true);
-    const longDest = 'ssa1qsj3qt0mcuznqv6r5370d58tw32gz3yhjychuu0sljyw5zmw9pmwc47d9vnwagjafs3ywjz7udh7suc7e3qsshw25ze';
-    const longCfg = spawnSync(bin, [
+    // R28 option 2: a worker login binds no dest; nothing names a wallet.
+    const workerCfg = spawnSync(bin, [
       '--backend', 'interpreter', '--print-config',
-      '--user', `${longDest}.P7`,
+      '--user', WORKER, '--blu', MINING,
     ], { timeout: 600_000, encoding: 'utf8' });
-    assert.equal(longCfg.status, 0, longCfg.stderr);
-    const lj = jsonFromProc(longCfg.stdout);
-    assert.equal(lj.destBound, true, longCfg.stdout);
-    assert.equal(lj.dest20, '84a205bf78e0a60668748f9eda1d6e8a902892f2');
-    assert.equal(lj.dest20.length, 40);
+    assert.equal(workerCfg.status, 0, workerCfg.stderr);
+    const wj = jsonFromProc(workerCfg.stdout);
+    assert.equal(wj.destBound, false, workerCfg.stdout);
+    assert.equal(wj.dest20, '');
     assert.equal(j.feeDest, undefined);
     const src = fs.readFileSync(path.join(root, 'src/sheark_miner.c'), 'utf8');
     assert.equal(src.toLowerCase().includes('feeless'), false);
@@ -106,11 +114,12 @@ describe('ShearK-Miner', () => {
     assert.match(bat, /shear-testnet-v12/);
     assert.equal(bat.includes('shear-testnet-v2'), false);
     assert.equal(bat.includes('shear-testnet-v3'), false);
-    assert.match(srcEx, /--user YOUR_SSA1\.worker/);
-    assert.match(srcEx, /--dest YOUR_SSA1/);
+    // R28 option 2: a worker name and the mining address; no ssa1, no --dest.
+    assert.match(srcEx, /--user rig1 --blu YOUR_MINING_ADDRESS/);
+    assert.doesNotMatch(srcEx, /YOUR_SSA1|--dest/);
     assert.match(srcEx, /--backend jit-full/);
-    assert.match(bat, /--user YOUR_SSA1\.worker/);
-    assert.match(bat, /--dest YOUR_SSA1/);
+    assert.match(bat, /--user pc1 --blu YOUR_MINING_ADDRESS/);
+    assert.doesNotMatch(bat, /YOUR_SSA1|--dest/);
     assert.match(bat, /--backend jit-full/);
     assert.match(bat, /ShearK-Miner-2\.9-windows\.zip/);
     assert.doesNotMatch(bat, /ShearK-Miner-2\.7-windows\.zip/);
@@ -173,10 +182,9 @@ describe('ShearK-Miner', () => {
     assert.match(hashc, /flags_jit_light/);
     assert.match(src, /backend_arg = "jit-full"/);
     assert.equal(/backend_arg = "auto"/.test(src), false);
-    assert.match(src, /--dest ssa1/);
-    assert.match(src, /ssa1 dest is incomplete or checksum-failed/);
-    assert.match(src, /Copy dest from the Shear wallet/);
-    assert.match(src, /she1 login has no --dest ssa1/);
+    assert.match(src, /--dest is retired/);
+    assert.match(src, /--user is a worker name/);
+    assert.match(src, /names_address/);
     assert.equal(/randomx_calculate_hash\(g_vm,/.test(hashc), false);
     assert.match(src, /pthread_setaffinity_np/);
     assert.match(src, /g_cpu_map/);
@@ -242,7 +250,8 @@ describe('ShearK-Miner', () => {
       '--backend', 'interpreter',
       '--pool', `127.0.0.1:${port}`,
       '--notls',
-      '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
+      '--user', WORKER,
+      '--blu', MINING,
       '--threads', '1',
     ]);
     let out = '';
@@ -264,6 +273,10 @@ describe('ShearK-Miner', () => {
     assert.match(loginLine, /"client":"ShearHash"/);
     assert.match(loginLine, /"algorithm":"ShearHash"/);
     assert.equal(/"dest"/.test(loginLine), false, loginLine);
+    // R28 option 2: the pool sees only the worker name, never the mining address.
+    assert.match(loginLine, /"login":"rig1"/);
+    assert.equal(loginLine.includes(MINING), false, loginLine);
+    assert.equal(/bluAddr|ssa1|she1|shm1/.test(loginLine), false, loginLine);
     assert.equal(/"version":"1\.[019]"/.test(loginLine), false, loginLine);
     assert.match(out, /ShearK-Miner 2\.9 \(ShearHash-v3 light\)/);
     assert.match(stripAnsi(out), /hashes=\d+/);
@@ -276,55 +289,25 @@ describe('ShearK-Miner', () => {
     assert.equal(/accepted=1/.test(out), false, out);
   });
 
-  it('she1 login with owned ssa1 --dest still gets a 256-hex job', async () => {
+  it('an address in --user, --dest, or a missing or bad --blu exits 2 before any login', () => {
     needBin();
-    const header = Buffer.alloc(128);
-    header[0] = 1;
-    const job = {
-      jobId: 'dest-job',
-      header: header.toString('hex'),
-      shareBits: 32,
-      blockBits: 32,
-      bits: 32,
-    };
-    let loginLine = '';
-    const server = net.createServer((sock) => {
-      sock.on('error', () => {});
-      sock.on('data', (chunk) => {
-        const text = chunk.toString();
-        if (text.includes('"method":"login"')) {
-          loginLine += text;
-          sock.write(`${JSON.stringify({ id: 1, result: { status: 'OK' }, job })}\n`);
-        }
-      });
-    });
-    server.on('error', () => {});
-    await new Promise((r) => server.listen(0, '127.0.0.1', r));
-    server.unref();
-    const port = server.address().port;
-    const dest = 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z';
-    const child = spawnMiner([
-      '--backend', 'interpreter',
-      '--pool', `127.0.0.1:${port}`,
-      '--notls',
-      '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
-      '--dest', dest,
-      '--threads', '1',
-    ]);
-    let out = '';
-    child.stdout.on('data', (d) => { out += d.toString(); });
-    child.stderr.on('data', (d) => { out += d.toString(); });
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline && !/job[= ]dest-job/.test(stripAnsi(out))) {
-      await new Promise((r) => setTimeout(r, 150));
+    const run = (args) => spawnSync(bin, ['--backend', 'interpreter', '--pool', '127.0.0.1:1', '--notls', '--threads', '1', ...args], { timeout: 120_000, encoding: 'utf8' });
+    for (const user of ['ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z.rig', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul', `rig.${MINING}`, 'ab'.repeat(32)]) {
+      const r = run(['--user', user, '--blu', MINING]);
+      assert.equal(r.status, 2, `${user}: ${r.stderr}`);
+      assert.match(r.stderr, /--user is a worker name/);
     }
-    child.kill('SIGTERM');
-    await child.done;
-    server.close();
-    assert.match(loginLine, /"version":"2\.9"/);
-    assert.match(loginLine, new RegExp(`"dest":"${dest}"`));
-    assert.match(stripAnsi(out), /job[= ]dest-job/);
-    assert.equal(header.toString('hex').length, 256);
+    const dest = run(['--user', WORKER, '--blu', MINING, '--dest', 'ssa1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7mhq4z']);
+    assert.equal(dest.status, 2);
+    assert.match(dest.stderr, /--dest is retired/);
+    const none = run(['--user', WORKER]);
+    assert.equal(none.status, 2);
+    assert.match(none.stderr, /--blu YOUR_MINING_ADDRESS is required/);
+    // One flipped character breaks the shm1 checksum.
+    const last = MINING.slice(-1) === 'q' ? 'p' : 'q';
+    const typo = run(['--user', WORKER, '--blu', `${MINING.slice(0, -1)}${last}`]);
+    assert.equal(typo.status, 2);
+    assert.match(typo.stderr, /bad checksum/);
   });
 
   it('two hash threads complete more hashes than one against the same job', async () => {
@@ -355,7 +338,8 @@ describe('ShearK-Miner', () => {
         '--backend', 'interpreter',
         '--pool', `127.0.0.1:${port}`,
         '--notls',
-        '--user', 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul',
+        '--user', WORKER,
+        '--blu', MINING,
         '--threads', String(n),
       ]);
       let out = '';
@@ -378,7 +362,7 @@ describe('ShearK-Miner', () => {
 
   it('requireTls refuses a cleartext pool url in either flag order', () => {
     needBin();
-    const user = 'she1qlrll6hhdakpcrlygumhq5a2xqhcj49ys7j2lzj.raskul';
+    const user = WORKER;
     const first = spawnSync(bin, [
       '--require-tls', '--pool', 'stratum+tcp://127.0.0.1:1111',
       '--user', user, '--print-config',
@@ -452,6 +436,10 @@ describe('ShearK-Miner', () => {
     const defs = fs.readFileSync(path.join(root, 'sheark-v4-afk.default'), 'utf8');
     const unit = fs.readFileSync(path.join(root, '..', 'deploy', 'sheark-v4-afk.service'), 'utf8');
     assert.match(run, /\$\{SHEARK_USER:\?\}/);
+    // R28: the mining address comes from the host file, never from git.
+    assert.match(run, /--blu "\$\{SHEARK_BLU:\?\}"/);
+    assert.equal(/^SHEARK_BLU=/m.test(defs), false);
+    assert.equal(defs.includes('shm1'), false);
     assert.match(run, /\$\{SHEARK_BACKEND:-jit\}/);
     assert.match(run, /\$\{SHEARK_THREADS:-1\}/);
     assert.match(run, /--require-tls/);

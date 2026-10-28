@@ -116,7 +116,6 @@ import {
 import { advanceHashOwed, freshCreditsFromShares, replayHashOwed, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
 import { unpackShareBatchBytes } from '../../crypto/pack.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
 import { isDestAddress } from '../../crypto/address.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
 import { publicExplorerRow } from '../../crypto/dummy.js';
@@ -2995,9 +2994,7 @@ export function createStore(dir, {
       ...(blocks.length && supplyTip ? { parentSupply: supplyTip } : {}),
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       ...(Number.isInteger(extra.burialTip) ? { burialTip: extra.burialTip } : {}),
-      poolDest: extra.poolDest
-        || block?.poolDest
-        || (block?.miner && isDestAddress(block.miner) ? block.miner : null),
+      poolDest: extra.poolDest || block?.poolDest || null,
       owedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       arrivedRows: extra.arrivedRows,
@@ -6727,11 +6724,10 @@ export function createStore(dir, {
     const block = {
       header,
       txs: rec.tpl.txs,
-      samples: rec.tpl.samples,
       shareBatch: rec.tpl.shareBatch || [],
       hashSpill: Array.isArray(rec.tpl.hashSpill) ? rec.tpl.hashSpill : [],
-      miner: destForLogin(miner) || miner || rec.tpl.miner,
-      poolDest: rec.tpl.poolDest || rec.tpl.miner || '',
+      // R28: the login never reaches the block (option 2; blunote_miner).
+      poolDest: rec.tpl.poolDest || '',
       aLeaves: rec.tpl.aLeaves,
       bLeaves: rec.tpl.bLeaves,
       rootA: rec.tpl.rootA,

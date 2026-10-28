@@ -3,16 +3,14 @@
  * No HTTP dashboard, auto-payout, pool fee, or operator custody.
  */
 import net from 'node:net';
-import { isDestAddress } from '../../crypto/address.js';
+import { decodeMiningAddress, namesAnAddress } from '../../crypto/address.js';
 import { payeeFs1Ok } from '../../crypto/n1.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
-import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { MAGIC_MAINNET, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { isInitialBlockDownload } from './status.js';
 import { shearHash, meetsTarget, hashBackendKind } from '../../crypto/shear_hash.js';
 import { setNonce, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
 import { bindingOk, oneTimeKey } from '../../crypto/blunote.js';
-import { pointFrom } from '../../crypto/note.js';
 import { STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 
 export const SOLO_STRATUM_PORT = 1111;
@@ -36,35 +34,28 @@ function line(obj) {
 }
 
 /**
- * R28 solo payout (b): the mining address B||Y (128 hex, two ristretto255
- * points) the miner sends at login with --solo. Public keys only; the node
- * makes a fresh one-time key from it for every template. Null if malformed.
+ * R28 solo payout (b): the mining address the miner sends at login with
+ * --solo, `shm1…` (checksummed B‖Y), or 128 raw hex off mainnet. Public keys
+ * only; the node makes a fresh one-time key from it for every template.
  */
-export function parseBluAddr(hex) {
-  const s = String(hex || '').trim();
-  if (!/^[0-9a-fA-F]{128}$/.test(s)) return null;
-  const B = Buffer.from(s.slice(0, 64), 'hex');
-  const Y = Buffer.from(s.slice(64), 'hex');
-  try {
-    pointFrom(B);
-    pointFrom(Y);
-  } catch {
-    return null;
-  }
-  return { B, Y };
+export function parseBluAddr(addr, { allowHex = true } = {}) {
+  return decodeMiningAddress(addr, { allowHex });
 }
 
-export function parseSoloLogin(login, bluAddr) {
+/**
+ * R28 option 2 (Russell 28 Oct): the login is a worker name only, here as on
+ * a pool, and the mining address pays. A login that names a wallet is
+ * refused (login_address); one without a mining address could never be
+ * paid (need_blu).
+ */
+export function parseSoloLogin(login, bluAddr, { allowHex = true } = {}) {
   const s = String(login || '').trim();
-  const dest = s.split('.')[0];
-  const worker = s.includes('.') ? s.split('.').slice(1).join('.') : '';
-  if (!isDestAddress(dest)) return { ok: false, reason: 'need_dest' };
-  if (!payeeFs1Ok(dest)) return { ok: false, reason: 'admit_note_point' };
-  // R28: the pot is paid to a one-time key of this address, so a login
-  // without one could never be paid. Refuse it rather than mine for nothing.
-  const blu = parseBluAddr(bluAddr);
+  if (!s) return { ok: false, reason: 'bad_login' };
+  if (namesAnAddress(s)) return { ok: false, reason: 'login_address' };
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(s)) return { ok: false, reason: 'bad_login' };
+  const blu = parseBluAddr(bluAddr, { allowHex });
   if (!blu) return { ok: false, reason: 'need_blu' };
-  return { ok: true, dest, worker, login: s, blu };
+  return { ok: true, worker: s, login: s, blu };
 }
 
 /** A fresh one-time coinbase key for this template: the pot goes to it (option (b)). */
@@ -339,16 +330,15 @@ export function createSoloStratum({
     return n;
   }
   let lastJob = null;
-  let lastMiner = '';
   let lastBlu = null;
   let restamp = null;
   let idleSweep = null;
   let unsubTip = null;
 
   function pushFreshJob() {
-    if (!lastMiner || !lastBlu || !sockets.size) return;
+    if (!lastBlu || !sockets.size) return;
     try {
-      const job = issueJob(lastMiner, lastBlu);
+      const job = issueJob(lastBlu);
       if (!job) return;
       pushJob(job, job.shareBits || SHARE_FLOOR_BITS);
     } catch { /* ignore */ }
@@ -365,16 +355,14 @@ export function createSoloStratum({
     });
   }
 
-  function issueJob(miner, blu, shareBits = SHARE_FLOOR_BITS) {
-    const dest = destForLogin(miner) || miner;
+  function issueJob(blu, shareBits = SHARE_FLOOR_BITS) {
     // ShearK ignores a login error and stays on this socket. Remember the
-    // dest while sealing is refused so the restamp can push a job later.
-    lastMiner = dest;
+    // address while sealing is refused so the restamp can push a job later.
     lastBlu = blu;
     if (!sealOk()) return null;
     // Option (b): an empty round pays its pot and finder levy to a fresh
     // one-time key of the miner's address. Solo charges no fee.
-    const { job } = store.template({ miner: dest, shareBits, feeKey: soloFeeKey(blu), feeBps: 0, potToFee: true });
+    const { job } = store.template({ shareBits, feeKey: soloFeeKey(blu), feeBps: 0, potToFee: true });
     lastJob = job;
     return job;
   }
@@ -452,7 +440,7 @@ export function createSoloStratum({
             return;
           }
           logins += 1;
-          const adm = parseSoloLogin(params.login || params.user || '', params.bluAddr);
+          const adm = parseSoloLogin(params.login || params.user || '', params.bluAddr, { allowHex: store?.magic !== MAGIC_MAINNET });
           if (!adm.ok) {
             refused = true;
             buf = '';
@@ -460,11 +448,11 @@ export function createSoloStratum({
             try { sock.destroy(); } catch { /* ignore */ }
             return;
           }
-          session = { dest: adm.dest, worker: adm.worker, login: adm.login, blu: adm.blu };
+          session = { worker: adm.worker, login: adm.login, blu: adm.blu };
           authed.add(sock);
           clearLoginTimer();
           const shareBits = Number(params.shareBits) || SHARE_FLOOR_BITS;
-          const job = issueJob(adm.dest, adm.blu, shareBits);
+          const job = issueJob(adm.blu, shareBits);
           if (!job) {
             try { sock.write(line({ id: msg.id, error: 'syncing' })); } catch { /* ignore */ }
             continue;
@@ -492,7 +480,7 @@ export function createSoloStratum({
             jobId,
             nonce,
             claimed: powHash,
-            dest: session.dest,
+            dest: '',
             shareKey: bluKeyOf(params),
             peers: typeof peers === 'function' ? peers() : peers,
             followPublic,
@@ -512,7 +500,7 @@ export function createSoloStratum({
             sock.write(line(soloSubmitAck(msg.id, got)));
           } catch { /* ignore */ }
           if (got?.ok && got.block) {
-            const job = issueJob(session.dest, session.blu);
+            const job = issueJob(session.blu);
             if (job) pushJob(job, job.shareBits || SHARE_FLOOR_BITS);
           }
           continue;

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { encodeDest } from '../../crypto/address.js';
+import { encodeMiningAddress } from '../../crypto/address.js';
 import { pointBytes } from '../../crypto/note.js';
 import { admitBasePub } from '../../crypto/admit.js';
 import { scanPub } from '../../crypto/blunote.js';
@@ -38,7 +38,7 @@ function ensureMiner() {
 
 function miningAddress() {
   const seed = randomBytes(32);
-  return Buffer.concat([Buffer.from(pointBytes(admitBasePub(seed))), Buffer.from(scanPub(seed))]).toString('hex');
+  return encodeMiningAddress({ B: pointBytes(admitBasePub(seed)), Y: scanPub(seed) });
 }
 
 /** The first line the miner sends to a stratum listener, as parsed JSON. */
@@ -71,15 +71,17 @@ async function firstLogin(bin, args) {
 }
 
 describe('ShearK-Miner --solo login (R28 option (b))', { timeout: 900_000 }, () => {
-  const dest = encodeDest(Buffer.alloc(20, 5));
+  // R28 option 2: the login is a worker name; the mining address stays on the rig.
+  const worker = 'rig1';
 
   it('--solo sends the mining address; a pool login never does', async () => {
     const bin = ensureMiner();
     const addr = miningAddress();
-    const solo = await firstLogin(bin, ['--user', `${dest}.solo`, '--blu', addr, '--solo']);
+    const solo = await firstLogin(bin, ['--user', worker, '--blu', addr, '--solo']);
     assert.equal(solo.method, 'login');
     assert.equal(solo.params.bluAddr, addr);
-    const pooled = await firstLogin(bin, ['--user', `${dest}.rig`, '--blu', addr]);
+    const pooled = await firstLogin(bin, ['--user', worker, '--blu', addr]);
+    assert.equal(pooled.params.login, worker);
     assert.equal(pooled.method, 'login');
     assert.equal(pooled.params.bluAddr, undefined);
     assert.doesNotMatch(JSON.stringify(pooled), new RegExp(addr.slice(0, 32)));
@@ -87,7 +89,7 @@ describe('ShearK-Miner --solo login (R28 option (b))', { timeout: 900_000 }, () 
 
   it('--solo without --blu is refused before mining', () => {
     const bin = ensureMiner();
-    const run = spawnSync(bin, ['--pool', '127.0.0.1:1', '--notls', '--user', `${dest}.solo`, '--solo'], { encoding: 'utf8', timeout: 60_000 });
+    const run = spawnSync(bin, ['--pool', '127.0.0.1:1', '--notls', '--user', worker, '--solo'], { encoding: 'utf8', timeout: 60_000 });
     assert.equal(run.status, 2);
     assert.match(run.stderr, /--solo needs --blu/);
   });
