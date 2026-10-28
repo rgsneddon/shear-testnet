@@ -1,9 +1,11 @@
 /**
- * An accepted block pays the finder half to the miner named on that coinbase
- * and credits the reserve half to the vault fee bank. The fee body is a
- * byte-3 send. Stage 0 rejects that proof before admitProveV3. A coinbase flag and a stripped
- * body are not this path. The fee is the weight levy of the sealed proof.
- * The spread is which of the prepared dests found the block.
+ * A fee body is a byte-3 send. Stage 0 rejects that proof before
+ * admitProveV3. A coinbase flag and a stripped body are not this path. The
+ * fee is the weight levy of the sealed proof. Under R28 (as built, Russell
+ * 28 Oct) the template that seats it pays the finder levy with the draw, or
+ * in an empty round with the fee key or the reserve note: never a public
+ * finder-fee note for a named finder, so there is nothing to aim. The spent
+ * note is the payer's own solo option (b) pot, found with its scan key.
  */
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +20,6 @@ import {
   buildTemplate,
   verifyBlock,
   templateForFinder,
-  coinbaseLevyPays,
   digestTx,
   GENESIS_PREV,
 } from '../src/chain.js';
@@ -32,13 +33,11 @@ import {
   levyNeed,
   reserveFeeDest,
   splitLevy,
-  unclaimedFinderDest,
 } from '../../crypto/levy.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import {
   admitPub,
-  admitScalarFromSeed,
   blindCommit,
   attachAdmitPub,
   jroot,
@@ -62,6 +61,7 @@ import {
   txDigestV3,
   walletAnchor,
 } from '../../crypto/admit_v3.js';
+import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
 
 const T0 = 1_700_000_000_000;
 const PROOF_CAP = 40354;
@@ -83,7 +83,7 @@ function nativeSpendTag(x) {
 function payer() {
   const id = newIdentity();
   const dest = encodeDest(Buffer.from(id.spendPub.subarray(0, 20)), id.admitBase);
-  return { id, dest, spendSeed: id.spendSeed, base: id.admitBase };
+  return { id, dest, spendSeed: id.spendSeed, base: id.admitBase, blu: bluWallet(id.spendSeed) };
 }
 
 function hiddenOut(nanos, dest20, admitBase, kind) {
@@ -121,19 +121,14 @@ async function sealHeader(header, bits) {
   return found.header;
 }
 
-async function grow(store, dest, n) {
+// The first block is the miner's solo option (b) round: its pot is paid to
+// a one-time key of `who`, which only `who` recognises.
+async function grow(store, who, n) {
   let opening = null;
+  const dest = who.dest;
   for (let i = 0; i < n; i += 1) {
     const now = T0 + i * 90_000;
-    const { tpl } = store.template({ miner: dest, shareBits: 4, now });
-    if (!opening) {
-      const pot = (tpl.txs?.[0]?.vout || []).find((o) => o.kind === 'pot');
-      opening = {
-        r: Buffer.from(asU8(pot.r)),
-        v: openedCoinbaseNanos(pot),
-        commit: Buffer.from(asU8(pot.commit)),
-      };
-    }
+    const { tpl } = store.template({ miner: dest, shareBits: 4, now, ...(i === 0 ? soloPay(who.blu) : {}) });
     const got = await Promise.resolve(store.append({
       header: await sealHeader(tpl.header, tpl.bits),
       height: tpl.height,
@@ -148,6 +143,10 @@ async function grow(store, dest, n) {
       weight: tpl.weight,
     }));
     assert.equal(got.ok, true, `height ${i + 1} ${got.reason || ''}`);
+    if (i === 0) {
+      opening = soloCoin(who.blu, store.tip());
+      assert.ok(opening, 'the solo round paid its pot to the miner's key');
+    }
   }
   return opening;
 }
@@ -187,7 +186,7 @@ function blockOf(tpl) {
 describe('accepted finder levy', () => {
   after(() => closeMineWorkers());
 
-  it('the miner who found the block is paid, and the reserve half credits the fee bank', { timeout: 7_200_000 }, async () => {
+  it('a template seating a fee body pays its levy as built, and a byte-3 stand-in is gated before any proof', { timeout: 7_200_000 }, async () => {
     const who = payer();
     const payee = payer();
     const feeTo = payer();
@@ -201,7 +200,7 @@ describe('accepted finder levy', () => {
     resetFlowProofVerifies();
     try { fs.unlinkSync(PROGRESS); } catch { /* first run */ }
     try {
-      const opening = await grow(store, who.dest, 16);
+      const opening = await grow(store, who, 16);
       const height = store.tip().height + 1;
       const anchor = walletAnchor(height);
       assert.equal(height, 17);
@@ -214,17 +213,17 @@ describe('accepted finder levy', () => {
       assert.ok(stored.equals(recomputed), 'anchor book is not the stored root');
       const root = fundingJroot(book);
       assert.ok(root, 'point root');
-      const pot = store.blocks[0].txs[0].vout.find((o) => o.kind === 'pot');
       let index = -1;
       for (let i = 0; i < book.commits.length; i += 1) {
         if (Buffer.from(asU8(book.commits[i])).equals(opening.commit)) index = i;
       }
       assert.ok(index >= 0, 'spent note is outside the anchor');
-      const x = admitScalarFromSeed(who.spendSeed, pot);
-      assert.ok(Buffer.from(asU8(pot.admitPub)).equals(Buffer.from(pointBytes(admitPub(x)))));
+      const x = opening.x;
+      assert.ok(opening.admitPub.equals(Buffer.from(pointBytes(admitPub(x)))), 'x opens the paid key');
+      assert.ok(Buffer.from(asU8(book.pubs[index])).equals(opening.admitPub), 'the anchor leaf is the paid key');
       const t = randomScalar();
       const tag = nativeSpendTag(x);
-      const cTilde = Buffer.from(blindCommit(pot.commit, scalarBytes(t)));
+      const cTilde = Buffer.from(blindCommit(opening.commit, scalarBytes(t)));
       // compactTx replaces a posted tag with bytes 1..33 of a version-3 blob.
       // A filler that does not carry this tag seals the wrong point into the digest.
       const standBlob = Buffer.alloc(PROOF_CAP, 3);
@@ -346,34 +345,25 @@ describe('accepted finder levy', () => {
         });
       }
 
-      function assertPays(tpl, finderDest, label) {
+      // As built: an empty round with no fee key pays the whole finder levy
+      // with the reserve note. No prepared dest, finder or pool is paid a
+      // public note, and there is nothing for a pool to aim.
+      function assertPays(tpl, label) {
         assert.ok(tpl.txs.some((row) => row.id === tx.id), `${label} dropped the spend`);
         assert.equal(tpl.txs.slice(1).some((row) => row && row.coinbase), false);
         const cb = tpl.txs[0];
-        const finderNotes = (cb.vout || []).filter((o) => o.kind === 'finder-fee');
+        assert.equal((cb.vout || []).some((o) => o.kind === 'finder-fee'), false, label);
         const reserveNotes = (cb.vout || []).filter((o) => o.kind === 'reserve-fee');
-        assert.equal(finderNotes.length, 1, label);
-        assert.equal(openedCoinbaseNanos(finderNotes[0]), split.finder, label);
-        assert.equal(same20(finderNotes[0], finderDest), true, label);
-        assert.equal(same20(finderNotes[0], feeTo.dest), false, label);
-        assert.equal(same20(finderNotes[0], reserveFeeDest()), false, label);
-        assert.equal(same20(finderNotes[0], unclaimedFinderDest()), false, label);
-        if (finderDest !== templateMiner) {
-          assert.equal(same20(finderNotes[0], templateMiner), false, label);
-        }
-        for (const other of prepared) {
-          if (other.dest !== finderDest) assert.equal(same20(finderNotes[0], other.dest), false, label);
-        }
         assert.equal(reserveNotes.length, 1, label);
-        assert.equal(openedCoinbaseNanos(reserveNotes[0]), split.reserve, label);
+        assert.equal(openedCoinbaseNanos(reserveNotes[0]), split.finder + split.reserve, label);
         assert.equal(same20(reserveNotes[0], reserveFeeDest()), true, label);
-        assert.equal(same20(reserveNotes[0], finderDest), false, label);
-        const bound = coinbaseLevyPays(cb, tx.fee);
-        assert.equal(bound.ok, true, `${label} ${bound.reason || ''}`);
-        assert.equal(bound.finder + bound.reserve, tx.fee, label);
+        for (const other of [...prepared, feeTo, who]) assert.equal(same20(reserveNotes[0], other.dest), false, label);
+        assert.equal(templateForFinder(tpl, finders[1].dest), tpl, `${label}: nothing to aim`);
       }
 
       const built = aimedTemplate(finders[0].dest);
+      assertPays(built, 'template');
+      assertPays(aimedTemplate(finders[2].dest), 'another named finder');
       const aimed = { ...built, header: await sealHeader(built.header, built.bits) };
       const verdict = verifyBlock(blockOf(aimed), tip, verifyOpts);
       assert.equal(verdict.ok, false, verdict.reason);

@@ -1,25 +1,23 @@
+// Transaction fees pay miners, under R28 (as built, Russell 28 Oct). The
+// finder levy is the whole fee (FEE_SPLIT_FINDER_BPS = 10000). A round with
+// shares adds it to the draw's T, so it is paid by work through the k drawn
+// notes, never as a public finder-fee note. An empty round with no fee key
+// pays it with the reserve levy note. The shares here are real BluNotes
+// frames, ground with ShearHash on the parent header.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { newIdentity, freshStealthDest, hash20FromAddress } from '../../crypto/address.js';
-import { GENESIS_BITS_PACKED, SHARE_FLOOR_BITS, bitsForBlock } from '../../crypto/asert.js';
-import { splitLevy } from '../../crypto/levy.js';
-import {
-  clearLiveSharePow,
-  dest20OfShare,
-  nonceWithShareTarget,
-  noteCommitOfShare,
-  rememberLiveSharePow,
-} from '../../crypto/share_batch.js';
+import { GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
+import { reserveFeeDest, splitLevy } from '../../crypto/levy.js';
 import { decodeHeader, encodeHeader } from '../../crypto/header.js';
 import { merkleRoot } from '../../crypto/merkle.js';
-import { sealCoinbaseNote, verifySealedNote, noteCommitOfDest20, excessOf } from '../../crypto/note.js';
-import {
-  buildTemplate,
-  verifyBlock,
-  digestTx,
-  finderFeePays,
-  GENESIS_PREV,
-} from '../src/chain.js';
+import { sealCoinbaseNote, openedCoinbaseNanos, excessOf } from '../../crypto/note.js';
+import { BLUNOTE_WINNERS, decodeRecord, drawPieces } from '../../crypto/blunote.js';
+import { setHashBackend } from '../../crypto/shear_hash.js';
+import { buildTemplate, verifyBlock, digestTx, GENESIS_PREV } from '../src/chain.js';
+import { bluWallet, mineBluShare, ownBluNotes } from './support/blunote_mine.js';
+
+try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 const TRUSTED = Buffer.alloc(32);
 const T0 = 1_700_000_000_000;
@@ -52,7 +50,7 @@ function reseal(tpl) {
 }
 
 describe('transaction fees pay miners', () => {
-  it('an empty round pays the whole fee as one public finder-fee note', () => {
+  it('an empty round with no fee key pays the whole fee with the reserve note, never a public finder note', () => {
     const miner = destOf(newIdentity());
     for (const fee of [1, 100, 101]) {
       const tpl = buildTemplate({
@@ -63,21 +61,21 @@ describe('transaction fees pay miners', () => {
         now: T0,
         txs: [{ kind: 'claim', fee, vin: [{ address: miner }] }],
       });
-      const notes = tpl.txs[0].vout.filter((o) => o.kind === 'finder-fee');
-      assert.equal(notes.length, 1, String(fee));
-      assert.equal(tpl.txs[0].vout.some((o) => o.kind === 'reserve-fee'), false);
-      assert.equal(verifySealedNote(notes[0], fee), true);
-      assert.ok(Buffer.from(notes[0].noteCommit).equals(noteCommitOfDest20(hash20FromAddress(miner))));
       assert.deepEqual(splitLevy(fee), { finder: fee, reserve: 0 });
+      assert.equal(tpl.txs[0].vout.some((o) => o.kind === 'finder-fee'), false, String(fee));
+      const reserve = tpl.txs[0].vout.filter((o) => o.kind === 'reserve-fee');
+      assert.equal(reserve.length, 1, String(fee));
+      assert.equal(openedCoinbaseNanos(reserve[0]), fee);
+      assert.ok(Buffer.from(reserve[0].dest20).equals(Buffer.from(hash20FromAddress(reserveFeeDest()))));
       const got = verifyBlock(blockOf(tpl), null, { trustedPowHash: TRUSTED });
       assert.equal(got.ok, true, got.reason);
     }
   });
 
-  it('a round with shares splits the whole fee by work and rejects a vault note', () => {
+  it('a round with shares adds the whole fee to the draw, and refuses a planted reserve or finder note', () => {
     const miner = destOf(newIdentity());
-    const alice = destOf(newIdentity());
-    const bob = destOf(newIdentity());
+    const alice = bluWallet();
+    const bob = bluWallet();
     const parentTpl = buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -89,17 +87,14 @@ describe('transaction fees pay miners', () => {
     const okP = verifyBlock(parent, null, { trustedPowHash: TRUSTED });
     assert.equal(okP.ok, true, okP.reason);
     parent.hash = okP.hash;
+    parent.blunoteRecord = okP.blunoteRecord;
+    const prevView = { ...parent, hash: okP.hash, header: parent.header, height: 1 };
     const now = T0 + 90_000;
     const ph = decodeHeader(parent.header);
-    const shares = [alice, bob, bob, bob].map((dest, i) => ({
-      dest20: dest20OfShare({ dest }),
-      dest,
-      nonce: nonceWithShareTarget(BigInt(i + 1), SHARE_FLOOR_BITS),
-      lz: SHARE_FLOOR_BITS,
-      proofSlot: 0,
-    }));
+    // One share for alice and three for bob, each its own one-time key.
+    const shares = [alice, bob, bob, bob].map((w) => mineBluShare(w, parent.header));
     const fee = 1000;
-    const tpl = buildTemplate({
+    const childOf = (txs) => buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
       prevBlock: parent,
@@ -109,75 +104,45 @@ describe('transaction fees pay miners', () => {
       bits: bitsForBlock(ph.bits, ph.timestamp, now),
       now,
       shareBatch: shares,
-      txs: [{ kind: 'claim', fee, vin: [{ address: miner }] }],
+      txs,
     });
-    clearLiveSharePow();
-    for (const row of tpl.shareBatch || []) {
-      rememberLiveSharePow(parent.header, row.nonce, {
-        noteCommit: noteCommitOfShare(row),
-        shareBits: SHARE_FLOOR_BITS,
-        lz: SHARE_FLOOR_BITS,
-      });
-    }
-    const pays = finderFeePays(tpl.shareBatch, fee, miner);
-    const notes = tpl.txs[0].vout.filter((o) => o.kind === 'finder-fee');
-    assert.equal(notes.length, pays.length);
-    assert.equal(pays.reduce((a, p) => a + p.nanos, 0), fee);
-    assert.equal(tpl.txs[0].vout.some((o) => o.kind === 'reserve-fee'), false);
-    const byDest = new Map();
-    for (const p of pays) byDest.set(p.address, (byDest.get(p.address) || 0) + p.nanos);
-    assert.equal(byDest.size, 2);
-    const small = Math.min(...byDest.values());
-    const large = Math.max(...byDest.values());
-    assert.equal(large, small * 3);
-    assert.equal(byDest.has(miner), false);
-    for (const p of pays) {
-      const hit = notes.find((o) => Buffer.from(o.noteCommit).equals(Buffer.from(p.noteCommit)));
-      assert.equal(verifySealedNote(hit, p.nanos), true);
-    }
-    const child = blockOf(tpl);
-    const got = verifyBlock(child, { ...parent, hash: okP.hash, header: parent.header, height: 1 }, {
-      trustedPowHash: TRUSTED,
-      skipSharePow: true,
-    });
+    const tpl = childOf([{ kind: 'claim', fee, vin: [{ address: miner }] }]);
+    assert.equal(tpl.shareBatch.length, shares.length);
+    assert.equal(tpl.txs[0].vout.some((o) => o.kind === 'finder-fee'), false);
+    assert.equal(tpl.txs[0].vout.some((o) => o.kind === 'reserve-fee'), false, 'with shares the levy is not the reserve note');
+    const got = verifyBlock(blockOf(tpl), prevView, { trustedPowHash: TRUSTED });
     assert.equal(got.ok, true, got.reason);
+    const rec = decodeRecord(Buffer.from(got.blunoteRecord, 'hex'));
+    // The same round with no fee: T differs by exactly the levy.
+    const bare = verifyBlock(blockOf(childOf([])), prevView, { trustedPowHash: TRUSTED });
+    assert.equal(bare.ok, true, bare.reason);
+    const bareRec = decodeRecord(Buffer.from(bare.blunoteRecord, 'hex'));
+    assert.equal(rec.n, shares.length);
+    assert.equal(rec.T - bareRec.T, BigInt(splitLevy(fee).finder), 'the whole fee joined T');
+    // The k pieces are paid to the share keys only; the remainder is the carry.
+    const { piece, carry } = drawPieces(rec.T, BLUNOTE_WINNERS);
+    assert.equal(BigInt(tpl.txs[0].carryNanos), carry);
+    const paidA = ownBluNotes(alice, got.blunoteRecord).reduce((a, n) => a + n.v, 0n);
+    const paidB = ownBluNotes(bob, got.blunoteRecord).reduce((a, n) => a + n.v, 0n);
+    assert.equal(paidA + paidB, piece * BigInt(BLUNOTE_WINNERS), 'every drawn piece is a share key\'s');
+    assert.equal(ownBluNotes(bluWallet(), got.blunoteRecord).length, 0);
 
-    const whole = sealCoinbaseNote(fee, {
-      dest20: hash20FromAddress(miner),
-      kind: 'finder-fee',
-    });
-    tpl.txs[0].vout = tpl.txs[0].vout.filter((o) => o.kind !== 'finder-fee').concat([whole]);
+    const finderNote = sealCoinbaseNote(fee, { dest20: hash20FromAddress(miner), kind: 'finder-fee' });
+    tpl.txs[0].vout = tpl.txs[0].vout.concat([finderNote]);
     tpl.txs[0].excess = excessOf(tpl.txs[0].vout);
     reseal(tpl);
-    const redirected = verifyBlock(blockOf(tpl), { ...parent, hash: okP.hash, header: parent.header, height: 1 }, {
-      trustedPowHash: TRUSTED,
-      skipSharePow: true,
-    });
+    const redirected = verifyBlock(blockOf(tpl), prevView, { trustedPowHash: TRUSTED });
     assert.equal(redirected.ok, false);
-    assert.equal(redirected.reason, 'levy_split');
+    assert.equal(redirected.reason, 'blunote_vout');
 
-    const fresh = buildTemplate({
-      prev: okP.hash,
-      prevHeader: parent.header,
-      prevBlock: parent,
-      parentWeight: parent.weight,
-      height: 2,
-      miner,
-      bits: bitsForBlock(ph.bits, ph.timestamp, now),
-      now,
-      shareBatch: shares,
-      txs: [{ kind: 'claim', fee, vin: [{ address: miner }] }],
-    });
+    const fresh = childOf([{ kind: 'claim', fee, vin: [{ address: miner }] }]);
     fresh.txs[0].vout.push(sealCoinbaseNote(1, {
-      dest20: hash20FromAddress(miner),
+      dest20: hash20FromAddress(reserveFeeDest()),
       kind: 'reserve-fee',
     }));
     fresh.txs[0].excess = excessOf(fresh.txs[0].vout);
     reseal(fresh);
-    const vaulted = verifyBlock(blockOf(fresh), { ...parent, hash: okP.hash, header: parent.header, height: 1 }, {
-      trustedPowHash: TRUSTED,
-      skipSharePow: true,
-    });
+    const vaulted = verifyBlock(blockOf(fresh), prevView, { trustedPowHash: TRUSTED });
     assert.equal(vaulted.ok, false);
     assert.equal(vaulted.reason, 'levy_split');
   });
