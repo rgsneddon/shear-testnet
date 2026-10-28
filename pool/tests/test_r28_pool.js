@@ -8,10 +8,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity, encodeDest } from '../../crypto/address.js';
+import { newIdentity, encodeDest, admitBaseFromAddress } from '../../crypto/address.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { decodeRecord, recogniseOneTime, scanPub, scanScalar } from '../../crypto/blunote.js';
-import { createPool, bluSubmitKey } from '../src/pool.js';
+import { createPool, bluSubmitKey, configuredFeeIdentity } from '../src/pool.js';
 import { bluWallet, mineBluShares, ownBluNotes } from '../../node/tests/support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
@@ -87,7 +87,10 @@ describe('R28 BluNotes through the pool', () => {
       const mine = ownBluNotes(miner, tip.blunoteRecord).filter((n) => n.kind === 'blunote');
       assert.ok(mine.length >= 1);
       assert.equal(mine.reduce((a, n) => a + n.v, 0n) > 0n, true);
-      const feeDelta = recogniseOneTime({ y: feeScan.y, B: Buffer.from(fee.admitBase) }, rec.feeR, rec.feeP);
+      // The fee key is the pool operator's fee dest base B with the configured
+      // scan key Y; the operator sets Y from the wallet that owns that dest.
+      const poolFeeB = Buffer.from(admitBaseFromAddress(configuredFeeIdentity().feeDest));
+      const feeDelta = recogniseOneTime({ y: feeScan.y, B: poolFeeB }, rec.feeR, rec.feeP);
       assert.ok(feeDelta != null, 'the pool finds its fee note');
       assert.ok(rec.feeV > 0n);
       assert.equal(recogniseOneTime({ y: miner.y, B: miner.B }, rec.feeR, rec.feeP), null);
