@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { decodeHeader } from '../../crypto/header.js';
+import { packBits, SHARE_FLOOR_BITS, shareFloorBits } from '../../crypto/asert.js';
 import { compareBluShares, verifyShareBatch } from '../../crypto/share_batch.js';
 import { bluWallet, mineBluShare } from './support/blunote_mine.js';
 
@@ -14,11 +15,15 @@ try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 describe('R28 BluNotes share rules', () => {
   const header = randomBytes(128);
-  // A sane header: the version and bits fields do not matter to share PoW.
+  // A sane header: version 1 and block bits 12. R39 (28 Oct): the share
+  // floor follows the block's bits, so random bits would ask for an
+  // unreachable width; 12 bits keeps the floor at SHARE_FLOOR_BITS.
   header.writeUInt32LE(1, 0);
+  header.writeUInt32LE(packBits(12), 108);
   let a;
   let b;
   before(() => {
+    assert.equal(shareFloorBits(decodeHeader(header).bits), SHARE_FLOOR_BITS);
     const w = bluWallet();
     const two = [mineBluShare(w, header), mineBluShare(w, header)].sort(compareBluShares);
     [a, b] = two;
