@@ -79,7 +79,6 @@ function asBlock(tpl, hash) {
     txs: tpl.txs,
     samples: tpl.samples,
     shareBatch: (tpl.shareBatch || []).map((s) => ({ ...s })),
-    miner: MINER,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

@@ -43,7 +43,7 @@ function feeKey() {
 function asBlock(tpl, hash) {
   return {
     header: tpl.header, txs: tpl.txs, samples: tpl.samples || [], shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner, aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, rootA: tpl.rootA, rootB: tpl.rootB,
+    aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, rootA: tpl.rootA, rootB: tpl.rootB,
     weight: tpl.weight, hash, height: tpl.height,
   };
 }
@@ -59,7 +59,12 @@ function genesis() {
   const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: MINER, bits: GENESIS_BITS_PACKED, now: NOW, feeKey: feeKey(), feeBps: 100 });
   const hash = Buffer.alloc(32);
   hash.writeUInt32LE(1, 4);
-  return asBlock(tpl, hash);
+  const g = asBlock(tpl, hash);
+  // A child binds its parent's record (blunote_prev), as the store attaches it.
+  const res = verifyBlock(g, null, { trustedPowHash: powTag(1), nowMs: NOW });
+  assert.equal(res.ok, true, res.reason);
+  g.blunoteRecord = res.blunoteRecord;
+  return g;
 }
 
 function childTpl(parent, shareBatch) {

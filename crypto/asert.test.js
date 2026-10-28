@@ -489,19 +489,20 @@ describe('hash-tx consensus law', () => {
     assert.doesNotMatch(fp, /MAX_SHARES_PER_BLOCK=32768/);
     assert.equal(SHARE_FLOOR_BITS, 8);
     assert.equal(HASH_BONUS_NANOS, 1);
-    assert.equal(MAX_SHARES_PER_BLOCK, 65536);
+    assert.equal(MAX_SHARES_PER_BLOCK, 256);
     assert.equal(MAX_HASH_UNITS_PER_BLOCK, 2 ** 28);
     assert.ok(MAX_HASH_UNITS_PER_BLOCK >= 2 ** 26);
-    assert.notEqual(MAX_HASH_UNITS_PER_BLOCK, 65536 * (2 ** SHARE_FLOOR_BITS));
+    assert.notEqual(MAX_HASH_UNITS_PER_BLOCK, MAX_SHARES_PER_BLOCK * (2 ** SHARE_FLOOR_BITS));
     assert.match(fp, /MAX_HASH_UNITS=268435456/);
     // R28 (D6): a batch is bounded by SHARE_BYTES_MAX, checked before any
-    // hash; at 89 B a work frame, that binds below MAX_SHARES_PER_BLOCK. A row
-    // with no one-time key is not a share at all.
+    // hash. R39 (28 Oct): at 89 B a work frame, the 256-share count cap now
+    // binds first (verify refuses share_cap before any hash); the byte cap
+    // stays as the frame bound. A row with no one-time key is not a share.
     const legacy = Array.from({ length: 3 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
     assert.equal(verifyShareBatch({ shares: legacy, skipPow: true }).reason, 'share_frame');
     const frame = (i) => ({ shareR: Buffer.alloc(32, 1), shareP: Buffer.alloc(32, 2), viewTag: 0, nonce: BigInt(i), lz: 0, shareBits: SHARE_FLOOR_BITS, proofSlot: 0 });
     const bluCap = Math.floor(SHARE_BYTES_MAX / 89);
-    assert.ok(bluCap < MAX_SHARES_PER_BLOCK, 'the byte cap binds before the count cap');
+    assert.ok(MAX_SHARES_PER_BLOCK < bluCap, 'the count cap binds before the byte cap');
     const over = Array.from({ length: bluCap + 1 }, (_, i) => frame(i));
     assert.equal(verifyShareBatch({ shares: over, skipPow: true }).reason, 'share_bytes');
     const atCap = Array.from({ length: bluCap }, (_, i) => frame(i));

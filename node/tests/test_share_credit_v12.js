@@ -209,7 +209,7 @@ describe('v12 share credit is the nonce high byte', () => {
       });
       const block = {
         header: tpl.header, txs: tpl.txs, samples: tpl.samples, shareBatch: tpl.shareBatch || [],
-        miner: MINER, aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, weight: tpl.weight, height,
+        aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, weight: tpl.weight, height,
       };
       const pow = trustedPow(tag);
       const res = verifyBlock(block, prev ? viewOf(prev, prevHash, height - 1) : null, {
