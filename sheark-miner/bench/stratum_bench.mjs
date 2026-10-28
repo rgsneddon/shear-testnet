@@ -41,6 +41,8 @@ const sampleSecs = Number(arg('sample', '60'));
 const warmSecs = Number(arg('warm', '30'));
 const outFile = arg('out', '');
 const restartCheck = flag('restart');
+// --miner-args "A B": extra miner flags (e.g. --stats-file PATH --stats-interval 300).
+const minerArgs = String(arg('miner-args', '')).split(/\s+/).filter(Boolean);
 
 // A file URL, so a Windows drive path imports too.
 const load = (rel) => import(pathToFileURL(path.join(root, rel)).href);
@@ -142,7 +144,7 @@ async function startStratum(kind) {
 }
 
 function runMiner(port, extra) {
-  const args = ['--backend', backend, '--pool', `127.0.0.1:${port}`, '--notls', ...extra];
+  const args = ['--backend', backend, '--pool', `127.0.0.1:${port}`, '--notls', ...extra, ...minerArgs];
   if (threads) args.push('--threads', threads);
   const child = spawn(minerBin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NO_COLOR: '1' } });
   child.out = '';
