@@ -35,7 +35,8 @@ function sources() {
 
 const FORBIDDEN = [
   [/LsaAddAccountRights|LsaOpenPolicy/, 'grants a Windows account right'],
-  [/sysctl\s+-w|sysctlbyname\([^)]*,[^)]*,[^)]*,\s*[^0N][^)]*\)/, 'writes a sysctl'],
+  // sysctlbyname(name, old, oldlen, new, newlen): a write passes a non-NULL new value.
+  [/sysctl\s+-w|sysctlbyname\(\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*(?!NULL\b)[^,\s]/, 'writes a sysctl'],
   [/\/proc\/sys\/[^"'\s]*["']\s*,\s*["'][wa]/, 'writes /proc/sys'],
   [/nr_hugepages[^\n]*(fopen|open)\([^)]*["'][wa]|(fopen|open)\([^)]*nr_hugepages[^)]*["'][wa]/, 'reserves hugetlb pages'],
   [/\/dev\/cpu\/[^"']*msr[^\n]*O_(WRONLY|RDWR)|wrmsr/, 'writes an MSR'],
@@ -43,6 +44,19 @@ const FORBIDDEN = [
 ];
 
 describe('ShearK never changes a system setting (R41)', () => {
+  it('each guard catches the write it names', () => {
+    const bad = [
+      'LsaAddAccountRights(policy, sid, &right, 1);',
+      'sysctlbyname("vm.x", NULL, NULL, &v, sizeof(v));',
+      'fopen("/proc/sys/vm/nr_hugepages", "w");',
+      'f = fopen("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", "w");',
+      'int fd = open("/dev/cpu/0/msr", O_WRONLY);',
+      'fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", "w");',
+    ];
+    bad.forEach((line, i) => assert.match(line, FORBIDDEN[i][0], FORBIDDEN[i][1]));
+    assert.doesNotMatch('sysctlbyname(name, &v, &len, NULL, 0)', FORBIDDEN[1][0]);
+  });
+
   it('no miner, bench or RandomX source writes sysctl, hugetlb, MSR, governor or Windows rights', () => {
     for (const rel of sources()) {
       const text = fs.readFileSync(path.join(root, rel), 'utf8');
