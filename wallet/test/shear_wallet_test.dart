@@ -1483,19 +1483,22 @@ void main() {
     expect(kPoolFeeDest, startsWith('ssa1q4ke8'));
   });
 
-  test(
-    'allowPublicHttp true posts a pool failure without the public-IP mask',
-    () async {
-      final id = createIdentity();
-      final pool = _ReasonPool('fee_rejected');
-      addTearDown(pool.close);
-      final ledger = ShearLedger(pool: pool)..bindIdentity(id);
-      final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-      ledger.confirmRound(address: from, pot: 2, height: 2);
-      ledger.settleTo(2 + ShearLedger.spendableConfirmations);
-      final vault = vaultDest(id.address, viewKey: id.viewKey)!;
-      try {
-        await ledger.send(
+  // Russell ruling 28 Oct: portal vote retired. The two tests that used a
+  // portal vote as the vehicle for the public-HTTP gate ("allowPublicHttp true
+  // posts a pool failure without the public-IP mask", "hop off and no
+  // unprivate still blocks public pool HTTP") now show the retired kind is
+  // refused first, whatever the HTTP setting; the gate itself is covered by
+  // the Flow send tests above.
+  test('a portal vote (kind=vote) is refused as retired before the pool is asked, public HTTP or not', () async {
+    final id = createIdentity();
+    final pool = _ReasonPool('fee_rejected');
+    addTearDown(pool.close);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final vault = vaultDest(id.address, viewKey: id.viewKey)!;
+    for (final allow in [true, false]) {
+      await expectLater(
+        ledger.send(
           from: from,
           to: vault,
           amount: 0,
@@ -1505,45 +1508,14 @@ void main() {
           restFrame: id.address,
           paymentCode: id.paymentCode,
           spendSeed: hexToBytes(id.seedHex),
-          allowPublicHttp: true,
+          allowPublicHttp: allow,
           choice: 'hold',
-        );
-        fail('pool rejection must surface');
-      } catch (e) {
-        expect((e as StateError).message, 'fee_rejected');
-        expect(e.message, isNot(kErrPublicHttp));
-        expect(e.message, isNot(kErrSendGeneric));
-        expect(e.toString(), isNot(contains(kErrPublicHttp)));
-      }
-    },
-  );
-
-  test('hop off and no unprivate still blocks public pool HTTP', () async {
-    final id = createIdentity();
-    final pool = _ReasonPool('fee_rejected');
-    addTearDown(pool.close);
-    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
-    final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-    ledger.confirmRound(address: from, pot: 2, height: 2);
-    ledger.settleTo(2 + ShearLedger.spendableConfirmations);
-    try {
-      await ledger.send(
-        from: from,
-        to: vaultDest(id.address, viewKey: id.viewKey)!,
-        amount: 0,
-        kind: 'vote',
-        programId: kReserveProgram,
-        local: false,
-        restFrame: id.address,
-        paymentCode: id.paymentCode,
-        spendSeed: hexToBytes(id.seedHex),
-        allowPublicHttp: false,
-        choice: 'hold',
+        ),
+        throwsA(isA<StateError>().having((e) => e.message, 'message', kErrVoteRetired)),
+        reason: 'allowPublicHttp=$allow',
       );
-      fail('public HTTP must not send');
-    } catch (e) {
-      expect(flowSendAdvisoryOf(e), kErrPublicHttp);
     }
+    expect(ledger.transactions.where((t) => t.kind == 'vote'), isEmpty);
   });
 
   test('compactSealedVout keeps lock dest and nanos for spend sig', () {
@@ -1558,48 +1530,9 @@ void main() {
     expect(row.containsKey('commit'), isFalse);
   });
 
-  test('vote send with spendSeed posts sig spendPub and vault dest', () async {
-    final id = createIdentity();
-    final seed = hexToBytes(id.seedHex);
-    final posted = <Map<String, dynamic>>[];
-    final live = _PoolLive(
-      headerHex: Uint8List(
-        128,
-      ).map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
-      height: 12,
-      balance: 10,
-    );
-    final server = await _fakePool(live: live, posted: posted);
-    addTearDown(() => server.close(force: true));
-    final pool = ShearPoolClient(
-      baseUrl: 'http://127.0.0.1:${server.port}',
-      http: _realHttp(),
-    );
-    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
-    final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-    final vault = vaultDest(id.address, viewKey: id.viewKey)!;
-    ledger.confirmRound(address: from, pot: 1, height: 1);
-    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-    await ledger.send(
-      from: from,
-      to: vault,
-      amount: 0,
-      kind: 'vote',
-      programId: kReserveProgram,
-      choice: 'hold',
-      restFrame: id.address,
-      paymentCode: id.paymentCode,
-      spendSeed: seed,
-    );
-    expect(posted.single['kind'], 'vote');
-    expect(posted.single['choice'], 'hold');
-    expect(posted.single['sig'], isNotEmpty);
-    expect(posted.single['spendPub'], isNotEmpty);
-    final v0 = (posted.single['vout'] as List).first as Map;
-    expect(v0['kind'], 'vote');
-    expect(v0['address'], vault);
-    expect(v0['nanos'], 0);
-  });
+  // "vote send with spendSeed posts sig spendPub and vault dest" retired:
+  // Russell ruling 28 Oct, portal vote retired (the leaf vote's post is
+  // leaf_vote_wire_test and plate1 "Cast vote posts spendSeed").
 
   test(
     'send skips notes whose spendTag is already in the live fluxset',
@@ -6765,7 +6698,7 @@ void main() {
   );
 
   test(
-    'Reserve lock and vote appear in pendingTxs and shearview from mempool',
+    'Reserve lock appears in pendingTxs and shearview from mempool; a portal vote is refused',
     () async {
       final id = createIdentity();
       final ledger = ShearLedger()..bindIdentity(id);
@@ -6800,25 +6733,22 @@ void main() {
         ledger.shearviewTxs(id.address).any((t) => t.id == lock.id),
         isTrue,
       );
-      final vote = await ledger.send(
-        from: from,
-        to: from,
-        amount: 0,
-        kind: 'vote',
-        programId: 'shear-reserve-v1',
-        restFrame: id.address,
-        paymentCode: id.paymentCode,
+      // Russell ruling 28 Oct: portal vote retired. A kind=vote send is
+      // refused and adds nothing to pending or Shearview.
+      await expectLater(
+        ledger.send(
+          from: from,
+          to: from,
+          amount: 0,
+          kind: 'vote',
+          programId: 'shear-reserve-v1',
+          restFrame: id.address,
+          paymentCode: id.paymentCode,
+        ),
+        throwsA(isA<StateError>().having((e) => e.message, 'message', kErrVoteRetired)),
       );
-      expect(
-        ledger
-            .pendingTxs(id.address)
-            .any((t) => t.id == vote.id && t.kind == 'vote'),
-        isTrue,
-      );
-      expect(
-        ledger.shearviewTxs(id.address).any((t) => t.id == vote.id),
-        isTrue,
-      );
+      expect(ledger.pendingTxs(id.address).where((t) => t.kind == 'vote'), isEmpty);
+      expect(ledger.shearviewTxs(id.address).where((t) => t.kind == 'vote'), isEmpty);
       expect(lock.to.startsWith('ssa1') || lock.to.isNotEmpty, isTrue);
     },
   );
@@ -11241,7 +11171,7 @@ void main() {
   });
 
   test(
-    'signed vote hydrates program tallies on the voting wallet and a peer vault',
+    'program tallies from the node hydrate on the voting wallet and a peer vault',
     () async {
       final id = createIdentity();
       final dest = vaultDest(id.address, viewKey: id.viewKey)!;
@@ -11274,23 +11204,25 @@ void main() {
         height: 1,
       );
       ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-      final from = ledger.spendFrom(
-        id.address,
-        paymentCode: id.paymentCode,
-        amount: levyNanos(0) / kUnitsPerShe,
+      // Russell ruling 28 Oct: portal vote retired. The tally is the chain's
+      // (leaf votes); this wallet's own leaf vote is in the node's view.
+      live.reservePortal!['votes'] = {'increase': 1, 'decrease': 0, 'hold': 0};
+      live.reservePortal!['vote'] = kVoteIncrease;
+      live.reservePortal!['voteEpoch'] = 1;
+      await expectLater(
+        ledger.send(
+          from: ledger.homeDest(id.address, paymentCode: id.paymentCode),
+          to: dest,
+          amount: 0,
+          kind: 'vote',
+          programId: kReserveProgram,
+          choice: kVoteIncrease,
+          restFrame: id.address,
+          paymentCode: id.paymentCode,
+        ),
+        throwsA(isA<StateError>().having((e) => e.message, 'message', kErrVoteRetired)),
       );
-      await ledger.send(
-        from: from,
-        to: dest,
-        amount: 0,
-        kind: 'vote',
-        programId: kReserveProgram,
-        choice: kVoteIncrease,
-        restFrame: id.address,
-        paymentCode: id.paymentCode,
-      );
-      expect(posted.single['kind'], 'vote');
-      expect(posted.single['choice'], kVoteIncrease);
+      expect(posted, isEmpty, reason: 'nothing reached the pool');
       final voter = ShearReserve();
       voter.applyRemotePortal(dest, await pool.reservePortal(dest));
       expect(voter.votesIncrease, 1);

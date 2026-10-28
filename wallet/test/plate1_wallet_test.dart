@@ -49,7 +49,7 @@ void main() {
     expect(out!['payout'], greaterThan(0));
   });
 
-  test('vote fail copy is human and the vote post carries spendSeed', () async {
+  test('vote fail copy is human and a portal vote send is refused as retired', () async {
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     expect(seed.length, 32);
@@ -62,22 +62,26 @@ void main() {
     expect(voteFailCopy(StateError('unsigned')), contains('could not be signed'));
     expect(voteFailCopy(StateError('bad_vote')), contains('could not be signed'));
     expect(voteFailCopy(StateError('not_voter')).toLowerCase(), isNot(contains('privacy hop')));
+    // Russell ruling 28 Oct: portal vote retired. The leaf vote carries the
+    // seed (the "Cast vote posts spendSeed" test below); a kind=vote send is
+    // refused before anything is built.
     final ledger = ShearLedger()..bindIdentity(id);
     final from = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
-    ledger.confirmRound(address: from, pot: 1, height: 1);
-    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-    await ledger.send(
-      from: from,
-      to: from,
-      amount: 0,
-      local: true,
-      kind: 'vote',
-      programId: kReserveProgram,
-      spendSeed: seed,
-      restFrame: id.address,
-      paymentCode: id.paymentCode,
+    await expectLater(
+      ledger.send(
+        from: from,
+        to: from,
+        amount: 0,
+        local: true,
+        kind: 'vote',
+        programId: kReserveProgram,
+        spendSeed: seed,
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+      ),
+      throwsA(isA<StateError>().having((e) => e.message, 'message', kErrVoteRetired)),
     );
-    expect(ledger.spendSeed, seed);
+    expect(ledger.transactions.where((t) => t.kind == 'vote'), isEmpty);
   });
 
   // Books below hold real sealed notes mined 9 deep (Spendable is never a
@@ -114,7 +118,7 @@ void main() {
     expect(ledger.spendable(home), closeTo(3.96 - need, 0.001));
   });
 
-  test('vote fee hops off the mining mailbox when it is the only cover', () async {
+  test('a fee-sized fund hops off the mining mailbox when it is the only cover', () async {
     final id = createIdentity();
     final ledger = ShearLedger()..bindIdentity(id);
     final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
@@ -126,22 +130,8 @@ void main() {
     expect(from, isNot(home));
     expect(ledger.spendable(home), 0);
     expect(ledger.spendable(from), closeTo(1, 1e-9));
-    final posted = ShearLedger()..bindIdentity(id);
-    final postedHome = posted.homeDest(id.address, paymentCode: id.paymentCode);
-    _fund(posted, id, postedHome, 1);
-    final tx = await posted.send(
-      from: postedHome,
-      to: postedHome,
-      amount: 0,
-      local: true,
-      kind: 'vote',
-      programId: kReserveProgram,
-      restFrame: id.address,
-      paymentCode: id.paymentCode,
-      spendSeed: hexToBytes(id.seedHex),
-    );
-    expect(tx.from, isNot(postedHome));
-    expect(posted.spendable(postedHome), 0);
+    // Russell ruling 28 Oct: portal vote retired; the posted half of this test
+    // (a kind=vote send hopping off the mailbox) is gone with it.
   });
 
   test('flow spend refuses the mining mailbox and uses another covering dest', () {

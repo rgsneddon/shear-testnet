@@ -3829,6 +3829,12 @@ const kErrChangePending = 'waiting for your change to be mined';
 /// A Vault lock is one π leaf. Any other amount is refused before anything is posted.
 const kErrLockAmount = 'A Vault lock is exactly 3.14159265358 SHE (one π leaf)';
 
+/// The portal vote (kind=vote) is retired (Russell ruling 28 Oct: portal vote
+/// retired; the node refuses it as vote_retired). A vote is a leaf vote:
+/// castPlannedLeafVotes. ledger.send refuses kind=vote before anything is
+/// built or posted.
+const kErrVoteRetired = 'vote_retired: the portal vote is retired; vote with a leaf vote from the Vortex ballot';
+
 /// True when [amountShe] is exactly one π leaf in protocol units.
 bool isOnePiLeaf(double amountShe) => (amountShe * kUnitsPerShe).round() == kPiSheNanos;
 
@@ -13491,7 +13497,10 @@ class ShearLedger implements ReadProofSink {
   }) async {
     final sendKind =
         kind ?? (programId == 'shear-reserve-v1' ? 'lock' : 'send');
-    if (sendKind != 'vote' && sendKind != 'roll' && amount <= 0) {
+    // Russell ruling 28 Oct: portal vote retired. Refused before any note is
+    // picked, sealed or posted.
+    if (sendKind == 'vote') throw StateError(kErrVoteRetired);
+    if (sendKind != 'roll' && amount <= 0) {
       throw ArgumentError('amount');
     }
     // A lock is one π leaf (the node refuses any other amount); a note larger
@@ -13577,10 +13586,8 @@ class ShearLedger implements ReadProofSink {
       } catch (_) {}
     }
     final taxed = levyTaxed(sendKind);
-    var payUnits = sendKind == 'vote'
-        ? BigInt.zero
-        : sendUnitsFromWire(nanosWire);
-    if (payUnits <= BigInt.zero && sendKind != 'vote') {
+    var payUnits = sendUnitsFromWire(nanosWire);
+    if (payUnits <= BigInt.zero) {
       final rounded = (amount * kUnitsPerShe).round();
       if (rounded > 0 && rounded <= _kSafeDoubleNanos)
         payUnits = BigInt.from(rounded);
@@ -13588,8 +13595,8 @@ class ShearLedger implements ReadProofSink {
     final nanos = payUnits.bitLength <= 63 ? payUnits.toInt() : 0;
     final levy = taxed ? levyNanos(nanos, depth: depth) : 0;
     // Roll keeps the vault sum. Continuum pays the levy and nothing else.
-    final needShe = (sendKind == 'vote' || sendKind == 'roll' ? 0.0 : amount) + levy / kUnitsPerShe;
-    if (restFrame != null && (sendKind == 'vote' || sendKind == 'lock')) {
+    final needShe = (sendKind == 'roll' ? 0.0 : amount) + levy / kUnitsPerShe;
+    if (restFrame != null && sendKind == 'lock') {
       final home = homeDest(restFrame, paymentCode: paymentCode);
       final short = spendable(src) + 1e-12 < needShe;
       if (src == home || short) {
@@ -14006,7 +14013,7 @@ class ShearLedger implements ReadProofSink {
     String? postedLockAuth;
     String? postedOwnerPub;
     String? postedVaultLockNote;
-    if (sendKind == 'lock' || sendKind == 'vote' || sendKind == 'withdraw' || sendKind == 'roll') {
+    if (sendKind == 'lock' || sendKind == 'withdraw' || sendKind == 'roll') {
       if (spendSeed != null && spendSeed.length == 32) {
         if (!isBindable(src, restFrame: restFrame, paymentCode: paymentCode)) {
           throw StateError('unspendable_dest');
@@ -14110,7 +14117,7 @@ class ShearLedger implements ReadProofSink {
           publicConsent: publicConsent,
           from: src,
           to: destTo,
-          amount: sendKind == 'vote' ? 0 : postedShe,
+          amount: postedShe,
           memoCt: memoCt,
           kind: sendKind,
           programId: programId,
