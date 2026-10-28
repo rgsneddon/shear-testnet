@@ -17,7 +17,7 @@ import {
   GENESIS_BITS_PACKED,
   MAGIC_TESTNET,
   SAMPLE_PRUNE_CONFIRMATIONS,
-  SHARE_FLOOR_BITS,
+  shareFloorBits,
   asertNextBits,
 } from '../../crypto/asert.js';
 import { pruneSamples } from '../../crypto/chronoflux.js';
@@ -41,7 +41,8 @@ const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-slot-keys-'));
 process.env.SHEAR_SEAL_KEY_DIR = keyDir;
 
 const MINER = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
-const BITS = SHARE_FLOOR_BITS;
+// R39: the floor a block at genesis bits accepts.
+const BITS = shareFloorBits(GENESIS_BITS_PACKED);
 const BLU_FRAME = 89;
 const SLOT_FROM_END = 2;
 

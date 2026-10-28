@@ -13,6 +13,7 @@ import {
   MAX_HASH_UNITS_PER_BLOCK,
   SAMPLE_PRUNE_CONFIRMATIONS,
   SHARE_FLOOR_BITS,
+  shareFloorBits,
   asertNextBits,
   shareCreditMaxBits,
 } from '../../crypto/asert.js';
@@ -244,7 +245,8 @@ describe('v12 share credit is the nonce high byte', () => {
     const buried = verifyBlock(child.block, parentView, { trustedPowHash: child.pow, skipSharePow: true, genesisMs, burialTip });
     assert.equal(buried.ok, false);
     assert.equal(buried.reason, 'share_target');
-    restamp(child.block, [shareAt(owner, mid.block.header, SHARE_FLOOR_BITS, 4)]);
+    // R39: the block's own floor (genesis-schedule bits).
+    restamp(child.block, [shareAt(owner, mid.block.header, shareFloorBits(decodeHeader(child.block.header).bits), 4)]);
     clearLiveSharePow();
     const unproven = verifyBlock(child.block, parentView, { trustedPowHash: child.pow, skipSharePow: true, genesisMs, burialTip });
     assert.equal(unproven.reason, 'share_pow');

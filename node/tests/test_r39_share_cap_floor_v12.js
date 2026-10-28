@@ -7,7 +7,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { setHashBackend } from '../../crypto/shear_hash.js';
-import { decodeHeader } from '../../crypto/header.js';
+import { decodeHeader, encodeHeader } from '../../crypto/header.js';
+import { merkleRoot } from '../../crypto/merkle.js';
+import { shareSlotRoot } from '../../crypto/pack.js';
 import {
   GENESIS_BITS_PACKED,
   MAX_SHARES_PER_BLOCK,
@@ -17,7 +19,7 @@ import {
   shareFloorBits,
 } from '../../crypto/asert.js';
 import { compareBluShares } from '../../crypto/share_batch.js';
-import { GENESIS_PREV, bluTemplateBatch, buildTemplate, verifyBlock } from '../src/chain.js';
+import { GENESIS_PREV, bluTemplateBatch, buildTemplate, digestTx, verifyBlock } from '../src/chain.js';
 import { bluWallet, mineBluShare } from './support/blunote_mine.js';
 import { oneTimeKey } from '../../crypto/blunote.js';
 
@@ -25,6 +27,13 @@ try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 const MINER = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
 const NOW = 1_700_000_000_000;
+
+/** A trusted PoW tag that meets any block target here (zero high bytes). */
+function powTag(n) {
+  const h = Buffer.alloc(32);
+  h.writeUInt32LE(n, 28);
+  return h;
+}
 
 function feeKey() {
   const k = oneTimeKey(bluWallet());
@@ -37,6 +46,13 @@ function asBlock(tpl, hash) {
     miner: tpl.miner, aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, rootA: tpl.rootA, rootB: tpl.rootB,
     weight: tpl.weight, hash, height: tpl.height,
   };
+}
+
+function restamp(block, shares) {
+  const txs = block.txs.map((tx, i) => (i === 0 ? { ...tx, shareSlotRoot: shareSlotRoot(shares) } : tx));
+  const decoded = decodeHeader(Buffer.from(block.header));
+  decoded.merkleRoot = merkleRoot(txs.map(digestTx));
+  return { ...block, txs, shareBatch: shares, header: encodeHeader(decoded) };
 }
 
 function genesis() {
@@ -89,7 +105,7 @@ describe('R39: share cap and floor', () => {
     // The real template drops the narrow share and its block verifies.
     const tpl = childTpl(g, rows);
     assert.equal(tpl.shareBatch.length, 3);
-    const ok = verifyBlock(asBlock(tpl, Buffer.alloc(32, 7)), g, { trustedPowHash: Buffer.alloc(32, 7), nowMs: NOW + 90_000 });
+    const ok = verifyBlock(asBlock(tpl, powTag(7)), g, { trustedPowHash: powTag(7), nowMs: NOW + 90_000 });
     assert.equal(ok.ok, true, ok.reason);
   });
 
@@ -101,12 +117,13 @@ describe('R39: share cap and floor', () => {
     const narrow = mineBluShare(miner, g.header, { bits: floor - 1 });
     const tpl = childTpl(g, [good]);
     // A block that names the narrow share as well: same template, its batch widened by hand.
-    const forced = { ...asBlock(tpl, Buffer.alloc(32, 8)), shareBatch: [good, narrow].sort(compareBluShares) };
-    const bad = verifyBlock(forced, g, { trustedPowHash: Buffer.alloc(32, 8), nowMs: NOW + 90_000 });
+    // Slot root and merkle root restamped, so only the floor is wrong.
+    const forced = restamp(asBlock(tpl, powTag(8)), [good, narrow].sort(compareBluShares));
+    const bad = verifyBlock(forced, g, { trustedPowHash: powTag(8), nowMs: NOW + 90_000 });
     assert.equal(bad.ok, false);
     assert.equal(bad.reason, 'share_target');
-    const over = { ...forced, shareBatch: Array.from({ length: MAX_SHARES_PER_BLOCK + 1 }, () => good) };
-    const capped = verifyBlock(over, g, { trustedPowHash: Buffer.alloc(32, 8), nowMs: NOW + 90_000 });
+    const over = restamp(asBlock(tpl, powTag(8)), Array.from({ length: MAX_SHARES_PER_BLOCK + 1 }, () => good));
+    const capped = verifyBlock(over, g, { trustedPowHash: powTag(8), nowMs: NOW + 90_000 });
     assert.equal(capped.ok, false);
     assert.equal(capped.reason, 'share_cap');
   });

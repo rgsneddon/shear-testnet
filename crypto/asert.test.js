@@ -482,7 +482,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /RX_MODE=light/);
     assert.match(fp, /RX_SALT=ShearHash-v3\/rx/);
     assert.match(fp, /SHARE_FLOOR_BITS=8/);
-    assert.match(fp, /MAX_SHARES_PER_BLOCK=65536/);
+    assert.match(fp, /MAX_SHARES_PER_BLOCK=256/);
+    // R39 (28 Oct): the floor follows the block's bits.
+    assert.match(fp, /SHARE_FLOOR=max-8-ceilB-minus-7/);
     assert.doesNotMatch(fp, /MAX_SHARES_PER_BLOCK=8192/);
     assert.doesNotMatch(fp, /MAX_SHARES_PER_BLOCK=32768/);
     assert.equal(SHARE_FLOOR_BITS, 8);

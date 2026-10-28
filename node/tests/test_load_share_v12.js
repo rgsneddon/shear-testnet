@@ -11,7 +11,7 @@ import path from 'node:path';
 import {
   GENESIS_BITS_PACKED,
   POOL_FEE_MAX_BPS,
-  SHARE_FLOOR_BITS,
+  shareFloorBits,
   asertNextBits,
   shareCreditMaxBits,
 } from '../../crypto/asert.js';
@@ -34,6 +34,9 @@ process.env.SHEAR_SEAL_KEY_DIR = keyDir;
 const MINER = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
 const POOL = bluWallet();
 
+// R39: rows go into blocks at genesis bits, so their floor is that block's.
+const FLOOR = shareFloorBits(GENESIS_BITS_PACKED);
+
 function tmp(tag) {
   return fs.mkdtempSync(path.join(os.tmpdir(), tag));
 }
@@ -53,7 +56,7 @@ function feeKey() {
 }
 
 /** A BluNotes row for a fresh key, its nonce bound on `header`. Load trusts its own work. */
-function shareRow(header, bits = SHARE_FLOOR_BITS, counter = 0, slot = 0) {
+function shareRow(header, bits = FLOOR, counter = 0, slot = 0) {
   const k = oneTimeKey(bluWallet());
   return {
     shareR: k.R,
@@ -66,7 +69,7 @@ function shareRow(header, bits = SHARE_FLOOR_BITS, counter = 0, slot = 0) {
   };
 }
 
-function rowsFor(header, count, bits = SHARE_FLOOR_BITS) {
+function rowsFor(header, count, bits = FLOOR) {
   return Array.from({ length: count }, () => shareRow(header, bits)).sort(compareBluShares);
 }
 
@@ -184,9 +187,9 @@ describe('v12 load applies the share rules', () => {
 
   it('rejects a bad share byte, a duplicate, a paid work key, and a payee leaf', () => {
     const illegal = [
-      (h) => shareRow(h, SHARE_FLOOR_BITS - 1),
+      (h) => shareRow(h, FLOOR - 1),
       (h) => shareRow(h, shareCreditMaxBits() + 1),
-      (h) => ({ ...shareRow(h, SHARE_FLOOR_BITS), shareBits: SHARE_FLOOR_BITS + 4 }),
+      (h) => ({ ...shareRow(h, FLOOR), shareBits: FLOOR + 4 }),
     ];
     [1, 4, 17].forEach((count, index) => {
       const book = bookAt(count);
@@ -222,7 +225,7 @@ describe('v12 load applies the share rules', () => {
 
   it('hashes unproven shares when the load does not trust them', () => {
     setHashBackend('jit');
-    const widths = [SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 1, SHARE_FLOOR_BITS + 4, shareCreditMaxBits()];
+    const widths = [FLOOR, FLOOR + 1, FLOOR + 4, shareCreditMaxBits()];
     for (const bits of widths) {
       for (const count of [1, 4, 17]) {
         const t0 = Date.now() - 400_000;
