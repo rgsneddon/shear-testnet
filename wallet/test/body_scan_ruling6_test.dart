@@ -275,6 +275,37 @@ void main() {
     pool.close();
   }, timeout: const Timeout(Duration(minutes: 10)));
 
+  test('a header below the checkpoint that does not hash to its child\'s link is refused', () async {
+    final pool = _client(node);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.installCheckpoint(node.pin);
+    final pinH = node.pin.height;
+    Future<List<({int height, Uint8List header})>> bentHeaders(int from, int to) async {
+      final out = <({int height, Uint8List header})>[];
+      for (var h = from; h <= to; h++) {
+        final j = await pool.headerAt(h);
+        final raw = Uint8List.fromList([
+          for (var i = 0; i < (j['header'] as String).length; i += 2)
+            int.parse((j['header'] as String).substring(i, i + 2), radix: 16),
+        ]);
+        if (h == pinH - 3) raw[100] ^= 1; // its time: another header, another hash
+        out.add((height: h, header: raw));
+      }
+      return out;
+    }
+
+    final ok = await ledger.scanVerifiedBodies(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      fetchHeaders: bentHeaders,
+    );
+    expect(ok, isFalse);
+    ledger.noteSpendableReadFailed();
+    expect(ledger.spendableReadError, 'headers below the checkpoint do not link to it');
+    expect(ledger.bodyScanTo, 0, reason: 'no body below the pin was read');
+    pool.close();
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
   test('a failed read never shows 0: the figure is "syncing" and the error is named', () async {
     // 1. No checkpoint pin (a debug or pre-cut build): depth is unknown, so
     // the own node's bodies cannot be proven and nothing is a verified zero.

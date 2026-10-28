@@ -9954,9 +9954,25 @@ class ShearLedger implements ReadProofSink {
     if (pin == null) return _bodyScanFail(kErrHeaderSync);
     _loadVerifiedChain();
     await _adoptSealedPending();
-    if (_bodyScanTo < pin.height) _bodyScanTo = pin.height;
     final read = fetch ?? _fetchWireBody;
     final home = homeDest(restFrame, paymentCode: paymentCode);
+    // Blocks at and below the pin: their headers are proven by hash links
+    // down from the pin's own hash, then their bodies scanned like any other.
+    if (_bodyScanTo < pin.height) {
+      final linked = await _proveBelowPin(pin, fetchHeaders);
+      if (!linked) {
+        return _bodyScanFail('headers below the checkpoint do not link to it');
+      }
+      final ok = await _scanBodyRange(
+        from: _bodyScanTo + 1,
+        to: pin.height,
+        seed: seed,
+        home: home,
+        read: read,
+        partials: partials,
+      );
+      if (!ok) return false;
+    }
     for (var round = 0; round < rounds; round++) {
       if (hostTip > 0) {
         await catchUpVerifiedChain(hostTip, fetch: fetchHeaders);
@@ -9990,6 +10006,46 @@ class ShearLedger implements ReadProofSink {
     return true;
   }
 
+  /// Headers 1..pin, each proven by its ShearHash: the pin's header hashes to
+  /// the pin, and each header below hashes to the parent link of the one
+  /// above it. Their roots prove the bodies below the checkpoint. Kept for
+  /// this ledger's life; the pin never moves under it.
+  Map<int, ({Uint8List hash, Uint8List root, int timeMs})>? _belowPin;
+
+  Future<bool> _proveBelowPin(
+    CheckpointPin pin,
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetchHeaders,
+  ) async {
+    if (_belowPin != null) return true;
+    final want = _hexToBytes(pin.hashHex.toLowerCase());
+    if (want == null) return false;
+    final byHeight = <int, Uint8List>{};
+    for (var from = 1; from <= pin.height; from += _kHeaderBackfillCap) {
+      final to = from + _kHeaderBackfillCap - 1 > pin.height
+          ? pin.height
+          : from + _kHeaderBackfillCap - 1;
+      final rows = await _readHeaders(from, to, fetchHeaders);
+      for (final r in rows) {
+        if (r.height >= from && r.height <= to) byHeight[r.height] = r.header;
+      }
+    }
+    final out = <int, ({Uint8List hash, Uint8List root, int timeMs})>{};
+    var link = want;
+    for (var h = pin.height; h >= 1; h--) {
+      final header = byHeight[h];
+      if (header == null || header.length != shearHeaderLen) return false;
+      final digest = await _hashHeader(header);
+      if (digest == null || !_same32(digest, link)) return false;
+      final root = headerMerkleRoot(header);
+      if (root == null) return false;
+      out[h] = (hash: digest, root: root, timeMs: headerTimestampMs(header) ?? 0);
+      link = Uint8List.fromList(header.sublist(4, 36));
+    }
+    _belowPin = out;
+    return true;
+  }
+
   Future<Map<String, dynamic>?> _fetchWireBody(int height) async {
     final client = pool;
     if (client == null) return null;
@@ -10014,12 +10070,14 @@ class ShearLedger implements ReadProofSink {
     var last = from - 1;
     String? stop;
     for (var h = from; h <= to; h++) {
-      final row = _checkedAt(h);
+      final below = _belowPin?[h];
+      final row = below == null ? _checkedAt(h) : null;
       final header = (row == null || row.headerHex.isEmpty)
           ? null
           : headerFromHex(row.headerHex);
-      final root = header == null ? null : headerMerkleRoot(header);
-      if (row == null || root == null) {
+      final root = below?.root ?? (header == null ? null : headerMerkleRoot(header));
+      final blockHash = below?.hash ?? row?.hash;
+      if (root == null || blockHash == null) {
         // The header left the checked window before its body was read.
         // Walk the headers again from the pin; the cursor stays.
         _resetChainToPin();
@@ -10041,7 +10099,7 @@ class ShearLedger implements ReadProofSink {
         stop = 'block $h: body does not match its verified header';
         break;
       }
-      rows.addAll(wireScanRows(proof.txs, height: h, blockHash: row.hash));
+      rows.addAll(wireScanRows(proof.txs, height: h, blockHash: blockHash));
       for (final c in wireOutputCommits(proof.txs)) {
         provenAt[c] = h;
       }
