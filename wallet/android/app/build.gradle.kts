@@ -26,6 +26,9 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.shear.shear_wallet"
+        // A measurement build installs beside the wallet, never over it:
+        // -PshearIdSuffix=.walkframes. A release build passes none.
+        (project.findProperty("shearIdSuffix") as String?)?.let { applicationIdSuffix = it }
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 29

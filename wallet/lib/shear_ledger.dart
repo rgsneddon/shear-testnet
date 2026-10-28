@@ -21,6 +21,7 @@ import 'shear_admit.dart';
 import 'shear_admit_ffi.dart';
 import 'shear_blunote.dart';
 import 'shear_body_scan.dart';
+import 'shear_v3_ffi.dart' show shearV3Backend;
 import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
@@ -1340,6 +1341,38 @@ Future<void> creditFollowEntry(List<dynamic> args) async {
   }
 }
 
+/// The production walk below a checkpoint ([ShearLedger] _proveBelowPin),
+/// run in this worker isolate with the native hash inline. Input: 'headers'
+/// (128-byte headers, height 1 first), 'pin' (checkpointPinToJson), and
+/// 'progress' (a SendPort, or null). Returns whether the chain linked and
+/// the walk time. Used by the walk-frames measurement build; the Spendable
+/// path does not call it.
+Future<Map<String, dynamic>> walkBelowCheckpointWorker(Map<String, dynamic> input) async {
+  final pin = checkpointPinFromJson(Map<String, dynamic>.from(input['pin'] as Map));
+  if (pin == null) return {'ok': false, 'reason': 'pin'};
+  final raw = input['headers'] as Uint8List;
+  final ledger = ShearLedger();
+  ledger._v3HashInline = true;
+  ledger.installCheckpoint(pin);
+  Future<List<({int height, Uint8List header})>> rows(int from, int to) async => [
+        for (var h = from; h <= to && h * 128 <= raw.length; h++)
+          (height: h, header: Uint8List.sublistView(raw, (h - 1) * 128, h * 128)),
+      ];
+  final sw = Stopwatch()..start();
+  final ok = await ledger._proveBelowPin(
+    pin,
+    rows,
+    from: (input['from'] as num?)?.toInt() ?? 1,
+    progress: input['progress'] as SendPort?,
+  );
+  return {
+    'ok': ok,
+    'ms': sw.elapsedMilliseconds,
+    'headers': pin.height - ((input['from'] as num?)?.toInt() ?? 1) + 1,
+    'backend': shearV3Backend() ?? 'none',
+  };
+}
+
 Future<Map<String, dynamic>> creditFollowWorker(
   String specJson, [
   SendPort? partials,
@@ -1395,6 +1428,11 @@ Future<Map<String, dynamic>> creditFollowWorker(
   ledger._v3HashInline = true;
   final sessionPath = spec['sessionPath']?.toString() ?? '';
   final headerStore = verifiedHeaderStorePath(sessionPath);
+  final pinJson = spec['checkpoint'];
+  if (pinJson is Map) {
+    final pin = checkpointPinFromJson(Map<String, dynamic>.from(pinJson));
+    if (pin != null) ledger.installCheckpoint(pin, storePath: headerStore.isEmpty ? null : headerStore);
+  }
   if (headerStore.isNotEmpty) ledger.bindHeaderStore(headerStore);
   try {
     ledger.installCreditFollow(spec);
@@ -10191,7 +10229,7 @@ class ShearLedger implements ReadProofSink {
     // down from the pin's own hash, then their bodies scanned like any other.
     if (_bodyScanTo < _birthHeight - 1) _bodyScanTo = _birthHeight - 1;
     if (_bodyScanTo < pin.height) {
-      final linked = await _proveBelowPin(pin, fetchHeaders, from: _bodyScanTo + 1);
+      final linked = await _proveBelowPin(pin, fetchHeaders, from: _bodyScanTo + 1, progress: partials);
       if (!linked) {
         return _bodyScanFail('headers below the checkpoint do not link to it');
       }
@@ -10248,11 +10286,15 @@ class ShearLedger implements ReadProofSink {
   int _belowPinDone = 0;
   int _belowPinTotal = 0;
 
+  /// How long the last walk below the checkpoint took, for measurement.
+  int lastBelowPinWalkMs = 0;
+
   Future<bool> _proveBelowPin(
     CheckpointPin pin,
     Future<List<({int height, Uint8List header})>> Function(int from, int to)?
     fetchHeaders, {
     int from = 1,
+    SendPort? progress,
   }) async {
     // Only the range the body scan still needs: from the cursor up to the
     // pin. Each header is still hashed and linked; nothing is skipped.
@@ -10264,11 +10306,14 @@ class ShearLedger implements ReadProofSink {
     _belowPinTotal = pin.height - lowest + 1;
     _belowPinDone = 0;
     _paintHeaderProgress(_headerHostTip);
+    final sw = Stopwatch()..start();
     try {
-      return await _walkBelowPin(pin, fetchHeaders, lowest, want);
+      return await _walkBelowPin(pin, fetchHeaders, lowest, want, progress);
     } finally {
+      lastBelowPinWalkMs = sw.elapsedMilliseconds;
       _belowPinTotal = 0;
       _belowPinDone = 0;
+      progress?.send(<String, dynamic>{'event': 'walk', 'done': 0, 'total': 0});
       _paintHeaderProgress(_headerHostTip);
     }
   }
@@ -10279,8 +10324,17 @@ class ShearLedger implements ReadProofSink {
     fetchHeaders,
     int lowest,
     Uint8List want,
+    SendPort? progress,
   ) async {
     final byHeight = <int, Uint8List>{};
+    // Progress for the UI: at most a few small messages a second, never one
+    // per header.
+    final tick = Stopwatch()..start();
+    void report() {
+      if (progress == null || tick.elapsedMilliseconds < 250) return;
+      tick.reset();
+      progress.send(<String, dynamic>{'event': 'walk', 'done': _belowPinDone, 'total': _belowPinTotal});
+    }
     for (var from = lowest; from <= pin.height; from += _kHeaderBackfillCap) {
       final to = from + _kHeaderBackfillCap - 1 > pin.height
           ? pin.height
@@ -10303,6 +10357,7 @@ class ShearLedger implements ReadProofSink {
       link = Uint8List.fromList(header.sublist(4, 36));
       _belowPinDone++;
       if (_belowPinDone % 16 == 0) _paintHeaderProgress(_headerHostTip);
+      report();
     }
     _belowPin = out;
     return true;
@@ -11210,6 +11265,9 @@ class ShearLedger implements ReadProofSink {
       'reserveHeld': <String, String>{
         for (final e in _reserveHeldNanos.entries) e.key: e.value.toString(),
       },
+      // The trust root this book checks headers from. The worker checks the
+      // same chain from the same pin (the release pin in a release build).
+      if (_pin != null) 'checkpoint': checkpointPinToJson(_pin!),
     };
     // The launch token lives in this isolate. The worker is another isolate,
     // so the spec carries it. armLocalRpcFromSpec removes it before any export.
@@ -11267,6 +11325,13 @@ class ShearLedger implements ReadProofSink {
       if (event == 'coins') {
         final msg = Map<String, dynamic>.from(message);
         adoptChain = adoptChain.then((_) => _adoptCoinMessage(msg, onCoins));
+        return;
+      }
+      if (event == 'walk') {
+        // The worker's walk below the checkpoint, a few times a second.
+        _belowPinDone = (message['done'] as num?)?.toInt() ?? 0;
+        _belowPinTotal = (message['total'] as num?)?.toInt() ?? 0;
+        _paintHeaderProgress(_headerHostTip);
         return;
       }
       if ((event == 'done' || event == 'error') && !doneWait.isCompleted) {
