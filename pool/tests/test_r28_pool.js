@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity } from '../../crypto/address.js';
+import { newIdentity, encodeDest } from '../../crypto/address.js';
 import { setHashBackend } from '../../crypto/shear_hash.js';
 import { decodeRecord, recogniseOneTime, scanPub, scanScalar } from '../../crypto/blunote.js';
 import { createPool, bluSubmitKey } from '../src/pool.js';
@@ -42,18 +42,19 @@ describe('R28 BluNotes through the pool', () => {
   it('seats real shares, pays the miner by draw and the pool fee to its own key', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-r28-pool-'));
     const fee = newIdentity();
+    const feeDest = encodeDest(Buffer.from(fee.spendPub.subarray(0, 20)), fee.admitBase);
     const feeScan = { y: scanScalar(fee.spendSeed), Y: scanPub(fee.spendSeed) };
     const pool = createPool({
       dataDir: dir,
       stratumPort: 0,
       httpPort: 0,
-      miner: fee.address,
+      miner: feeDest,
       feeScanPub: feeScan.Y.toString('hex'),
     });
     try {
       const genesis = pool.issueJob(undefined, { force: true });
       assert.ok(genesis?.jobId);
-      await sealJob(pool, genesis, fee.address);
+      await sealJob(pool, genesis, feeDest);
       const live = pool.issueJob(undefined, { force: true });
       assert.ok(live?.jobId);
       const liveHeader = Buffer.from(live.header, 'hex');
@@ -72,13 +73,13 @@ describe('R28 BluNotes through the pool', () => {
         });
         assert.equal(opened.ok, true, opened.reason);
       }
-      await sealJob(pool, live, fee.address);
+      await sealJob(pool, live, feeDest);
       pool.rollOpenRound();
       const published = pool.issueJob(undefined, { force: true });
       const tpl = pool.store.jobs.get(String(published.jobId)).tpl;
       assert.equal((tpl.shareBatch || []).length, 3, 'the template seats the shares');
       assert.ok(tpl.txs[0].blunote?.feeP, 'the template names a pool fee key');
-      await sealJob(pool, published, fee.address);
+      await sealJob(pool, published, feeDest);
       const tip = pool.store.tip();
       const rec = decodeRecord(Buffer.from(tip.blunoteRecord, 'hex'));
       assert.equal(rec.n, 3);
