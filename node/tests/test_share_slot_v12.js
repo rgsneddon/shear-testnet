@@ -1,48 +1,49 @@
+// A share's proofSlot (0 = the parent's header, 1 = the grandparent's) is
+// bound by the block's share root: a flipped, stripped or out-of-range slot
+// is refused on append, wire and IPC, and the honest block is accepted and
+// reloads byte for byte. R28: shares are BluNotes frames (one-time key, the
+// nonce bound to it on the header it names); the slot byte is the frame's
+// second-to-last, before the view tag. Digests are stashed as the prepared
+// RandomX output for each header and nonce (the batch-scale cases run to the
+// 2 MiB byte cap); verify still checks the target, the lz and the binding
+// against them. Real-ShearHash coverage of the same rules is in
+// test_r28_share_rules.js.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { newIdentity } from '../../crypto/address.js';
 import {
   GENESIS_BITS_PACKED,
   MAGIC_TESTNET,
-  MAX_SHARES_PER_BLOCK,
   SAMPLE_PRUNE_CONFIRMATIONS,
   SHARE_FLOOR_BITS,
   asertNextBits,
 } from '../../crypto/asert.js';
 import { pruneSamples } from '../../crypto/chronoflux.js';
 import { decodeHeader, setNonce } from '../../crypto/header.js';
-import { potSubsidyAt } from '../../crypto/pot_sched.js';
 import {
   packShareBatchBytes,
   shareSlotCommitment,
   shareSlotRoot,
   unpackShareBatchBytes,
 } from '../../crypto/pack.js';
-import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
-import {
-  clearLiveSharePow,
-  destBoundShareHash,
-  nonceWithShareTarget,
-  noteCommitOfShare,
-  stashSharePow,
-} from '../../crypto/share_batch.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
-import {
-  GENESIS_PREV,
-  buildTemplate,
-  canonicalCarry,
-  potSharesFromBatch,
-  verifyBlock,
-} from '../src/chain.js';
+import { leadingZeroBits, meetsTarget, shearHash } from '../../crypto/shear_hash.js';
+import { clearLiveSharePow, stashSharePow } from '../../crypto/share_batch.js';
+import { SHARE_BYTES_MAX, bindNonce, oneTimeKey } from '../../crypto/blunote.js';
+import { GENESIS_PREV, buildTemplate, verifyBlock } from '../src/chain.js';
 import { encodeWireBlock, decodeWireBlock } from '../src/p2p.js';
 import { applyVerifiedIpcBlock } from '../src/p2p_ipc.js';
 import { createStore } from '../src/store.js';
+import { bluWallet } from './support/blunote_mine.js';
 
 const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-slot-keys-'));
 process.env.SHEAR_SEAL_KEY_DIR = keyDir;
+
+const MINER = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
+const BITS = SHARE_FLOOR_BITS;
+const BLU_FRAME = 89;
+const SLOT_FROM_END = 2;
 
 let powTag = 1;
 function easyPow() {
@@ -53,58 +54,35 @@ function easyPow() {
   return h;
 }
 
-function minerDest() {
-  const id = newIdentity();
-  return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-}
-
-function rxForBits(noteCommit, meet, miss) {
-  const limit = meet <= 16 ? 250_000 : 20_000;
-  for (let i = 0; i < limit; i += 1) {
+/** A digest that meets BITS and misses BITS + 1, so its lz is exactly BITS. */
+function exactRx(seed) {
+  for (let i = 0; i < 1 << 20; i += 1) {
     const rx = Buffer.alloc(32);
+    rx.writeUInt32LE(seed, 8);
     rx.writeUInt32LE(i, 0);
-    rx.writeUInt32LE((i * 17) >>> 0, 4);
-    const bound = destBoundShareHash(rx, noteCommit);
-    if (meetsTarget(bound, meet) && (miss == null || !meetsTarget(bound, miss))) return rx;
+    rx.writeUInt32LE((i * 2654435761) >>> 0, 4);
+    if (meetsTarget(rx, BITS) && !meetsTarget(rx, BITS + 1)) return rx;
   }
-  return null;
+  throw new Error('no digest');
 }
+const RX = exactRx(7);
+assert.equal(leadingZeroBits(RX), BITS);
 
-function shareRow(dest, low, slot) {
-  const bits = SHARE_FLOOR_BITS;
-  const row = {
-    dest,
-    nonce: nonceWithShareTarget(BigInt(low), bits),
-    lz: bits,
-    shareBits: bits,
-    creditedShareBits: bits,
-    proofSlot: slot,
-  };
-  row.noteCommit = Buffer.from(noteCommitOfShare(row));
-  return row;
-}
-
-function rowsFor(dests, count, slot = 0) {
+/** count one-time keys spread over `miners` wallets; nonces are bound later, per header. */
+function rowsFor(miners, count, slot = 0) {
+  const owners = Array.from({ length: miners }, () => bluWallet());
   const rows = [];
-  let low = 1;
   for (let i = 0; i < count; i += 1) {
-    rows.push(shareRow(dests[i % dests.length], low, slot));
-    low += 1;
+    const k = oneTimeKey(owners[i % owners.length]);
+    rows.push({ shareR: k.R, shareP: k.P, viewTag: k.tag, lz: BITS, shareBits: BITS, proofSlot: slot });
   }
   return rows;
 }
 
-const rxByNote = new Map();
+/** Bind each row's nonce to the header it proves on and stash its digest. */
 function plant(header, row) {
-  const nc = noteCommitOfShare(row);
-  const hex = Buffer.from(nc).toString('hex');
-  let rx = rxByNote.get(hex);
-  if (!rx) {
-    rx = rxForBits(nc, row.shareBits, row.shareBits + 1);
-    assert.ok(rx, 'bound digest');
-    rxByNote.set(hex, rx);
-  }
-  stashSharePow(setNonce(Buffer.from(header), BigInt(row.nonce)), rx);
+  row.nonce = bindNonce(header, row.shareR, row.shareP, 0, BITS);
+  stashSharePow(setNonce(Buffer.from(header), row.nonce), RX);
 }
 
 function quoteFor(store, now) {
@@ -122,19 +100,18 @@ function quoteFor(store, now) {
   });
 }
 
-function asBlock(tpl, miner, hash) {
+function asBlock(tpl, hash) {
   return {
     header: Buffer.from(tpl.header),
     txs: tpl.txs,
     samples: tpl.samples,
     shareBatch: (tpl.shareBatch || []).map((s) => ({ ...s })),
-    miner,
+    miner: MINER,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
-    hashCredits: tpl.hashCredits,
     hash,
     height: tpl.height,
   };
@@ -143,57 +120,35 @@ function asBlock(tpl, miner, hash) {
 function freshStore(childCount = 4) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-slot-'));
   const store = createStore(dir);
-  const dest = minerDest();
   // Every child is 90s after its parent and still behind HEADER_AHEAD.
   const now = Date.now() - (childCount + 3) * 90_000;
-  const tpl = buildTemplate({
-    prev: GENESIS_PREV,
-    height: 1,
-    miner: dest,
-    bits: GENESIS_BITS_PACKED,
-    now,
-  });
+  const tpl = buildTemplate({ prev: GENESIS_PREV, height: 1, miner: MINER, bits: GENESIS_BITS_PACKED, now });
   const pow = easyPow();
-  const got = store.append(asBlock(tpl, dest, pow), { trustedPowHash: pow, skipSharePow: true });
+  const got = store.append(asBlock(tpl, pow), { trustedPowHash: pow, skipSharePow: true });
   assert.equal(got.ok, true, got.reason || 'height 1');
   assert.equal(store.tip().height, 1);
-  return { dir, store, dest, now };
+  return { dir, store, now };
 }
 
 function childOf(store, rows, now) {
   const tip = store.tip();
-  const genesis = decodeHeader(store.blocks[0].header);
-  const subsidy = potSubsidyAt({
-    nowMs: now,
-    genesisMs: Number(genesis.timestamp),
-    magic: MAGIC_TESTNET,
-  });
-  const carry = canonicalCarry(tip.txs[0]) || 0;
-  const pays = potSharesFromBatch(rows, null, subsidy, carry);
-  const sum = pays.reduce((n, row) => n + row.nanos, 0);
-  assert.equal(sum, subsidy + carry);
   const quote = quoteFor(store, now);
   assert.equal(quote.ok, true, quote.reason || 'asert');
   clearLiveSharePow();
-  const provedOn = rows[0].proofSlot === 1 && store.blocks.length >= 2
-    ? store.blocks[store.blocks.length - 2].header
-    : tip.header;
-  for (const row of rows) {
-    const header = row.proofSlot === 1 ? provedOn : tip.header;
-    plant(header, row);
-  }
+  const prior = store.blocks.length >= 2 ? store.blocks[store.blocks.length - 2].header : null;
+  for (const row of rows) plant(row.proofSlot === 1 ? prior : tip.header, row);
   const tpl = buildTemplate({
     prev: tip.hash,
     prevHeader: tip.header,
     prevBlock: tip,
     height: tip.height + 1,
-    miner: rows[0].dest,
+    miner: MINER,
     bits: quote.packed,
     now,
-    potShares: pays,
     shareBatch: rows,
     parentBlocks: store.blocks,
   });
+  assert.equal(tpl.shareBatch.length, rows.length, 'the template seats every row');
   assert.ok(Buffer.from(tpl.txs[0].shareSlotRoot).equals(shareSlotRoot(tpl.shareBatch)));
   return tpl;
 }
@@ -202,37 +157,50 @@ function appendBlock(store, block, pow) {
   return store.append(block, { trustedPowHash: pow, poolDest: block.miner });
 }
 
+/** Rewrite every frame of a packed batch with `edit(frame)`. */
+function eachFrame(packed, edit) {
+  const n = packed.readUInt32LE(0);
+  const parts = [Buffer.alloc(4)];
+  parts[0].writeUInt32LE(n, 0);
+  let o = 4;
+  for (let i = 0; i < n; i += 1) {
+    const len = packed.readUInt16LE(o);
+    o += 2;
+    const body = edit(Buffer.from(packed.subarray(o, o + len)));
+    o += len;
+    const l = Buffer.alloc(2);
+    l.writeUInt16LE(body.length, 0);
+    parts.push(l, body);
+  }
+  return Buffer.concat(parts);
+}
+
 describe('v12 proofSlot is bound by the block', () => {
   it('rejects a flipped, stripped, or wrong slot and still accepts the honest block', () => {
+    const atCap = Math.floor(SHARE_BYTES_MAX / BLU_FRAME);
     const widths = [
-      { dests: 1, count: 1 },
-      { dests: 3, count: 1 },
-      { dests: 17, count: 1 },
-      { dests: 1, count: 4 },
-      { dests: 3, count: 4 },
-      { dests: 17, count: 4 },
-      { dests: 1, count: MAX_SHARES_PER_BLOCK - 1 },
+      { miners: 1, count: 1 },
+      { miners: 3, count: 1 },
+      { miners: 17, count: 1 },
+      { miners: 1, count: 4 },
+      { miners: 3, count: 4 },
+      { miners: 17, count: 4 },
+      { miners: 1, count: atCap },
     ];
     const { dir, store, now } = freshStore(widths.length);
     let clock = now;
     for (const width of widths) {
       clock += 90_000;
-      const dests = Array.from({ length: width.dests }, () => minerDest());
-      const rows = rowsFor(dests, width.count, 0);
-      const slotsBefore = rows.map((row) => row.proofSlot);
+      const rows = rowsFor(width.miners, width.count, 0);
       const tpl = childOf(store, rows, clock);
-      assert.deepEqual(rows.map((row) => row.proofSlot), slotsBefore);
       const honestHeader = Buffer.from(tpl.header);
       // The honest block claims its own ShearHash. Every attack keeps that
       // header and claim, so the share slot is the only thing that differs.
-      const honest = asBlock(tpl, dests[0], Buffer.from(shearHash(honestHeader)));
+      const honest = asBlock(tpl, Buffer.from(shearHash(honestHeader)));
       const tipBefore = store.tip().height;
+      const label = `${width.miners}x${width.count}`;
       const attacks = [
-        {
-          name: 'flip',
-          batch: honest.shareBatch.map((row) => ({ ...row, proofSlot: row.proofSlot === 0 ? 1 : 0 })),
-          reason: 'share_slot',
-        },
+        { name: 'flip', batch: honest.shareBatch.map((row) => ({ ...row, proofSlot: row.proofSlot === 0 ? 1 : 0 })) },
         {
           name: 'strip',
           batch: honest.shareBatch.map((row) => {
@@ -240,72 +208,51 @@ describe('v12 proofSlot is bound by the block', () => {
             delete copy.proofSlot;
             return copy;
           }),
-          reason: 'share_slot',
         },
-        {
-          name: 'wrong',
-          batch: honest.shareBatch.map((row) => ({ ...row, proofSlot: 2 })),
-          reason: 'share_slot',
-        },
+        { name: 'wrong', batch: honest.shareBatch.map((row) => ({ ...row, proofSlot: 2 })) },
       ];
       for (const attack of attacks) {
         const bad = { ...honest, header: Buffer.from(honestHeader), shareBatch: attack.batch };
         const got = appendBlock(store, bad, honest.hash);
-        assert.equal(got.ok, false, `${width.dests}x${width.count} ${attack.name} ${got.reason}`);
-        assert.equal(got.reason, attack.reason, `${width.dests}x${width.count} ${attack.name}`);
+        assert.equal(got.ok, false, `${label} ${attack.name} ${got.reason}`);
+        assert.equal(got.reason, 'share_slot', `${label} ${attack.name}`);
         assert.ok(Buffer.from(bad.header).equals(honestHeader));
         assert.equal(store.tip().height, tipBefore);
         const wire = encodeWireBlock({ ...honest, shareBatch: tpl.shareBatch });
+        const packed = Buffer.from(wire.sharePacked, 'hex');
         if (attack.name === 'flip') {
-          const packed = Buffer.from(wire.sharePacked, 'hex');
-          const n = packed.readUInt32LE(0);
-          let o = 4;
-          for (let i = 0; i < n; i += 1) {
-            const len = packed.readUInt16LE(o);
-            o += 2;
-            packed[o + len - 1] ^= 1;
-            o += len;
-          }
-          wire.sharePacked = packed.toString('hex');
-          const decoded = decodeWireBlock(wire);
+          const flipped = eachFrame(packed, (f) => {
+            f[f.length - SLOT_FROM_END] ^= 1;
+            return f;
+          });
+          const decoded = decodeWireBlock({ ...wire, sharePacked: flipped.toString('hex') });
           const wireGot = appendBlock(store, { ...decoded, hash: honest.hash }, honest.hash);
-          assert.equal(wireGot.reason, 'share_slot', `wire ${width.dests}x${width.count}`);
+          assert.equal(wireGot.reason, 'share_slot', `wire ${label}`);
           const ipc = applyVerifiedIpcBlock(store, {
             type: 'ipc_block',
             magic: MAGIC_TESTNET,
-            block: { ...wire, sharePacked: packed.toString('hex') },
+            block: { ...wire, sharePacked: flipped.toString('hex') },
             powHash: honest.hash.toString('hex'),
           });
           assert.equal(ipc.ok, false);
-          assert.equal(ipc.reason, 'share_slot', `ipc ${width.dests}x${width.count}`);
+          assert.equal(ipc.reason, 'share_slot', `ipc ${label}`);
         } else {
-          const packed = Buffer.from(wire.sharePacked, 'hex');
-          const n = packed.readUInt32LE(0);
-          const parts = [Buffer.alloc(4)];
-          parts[0].writeUInt32LE(n, 0);
-          let o = 4;
-          for (let i = 0; i < n; i += 1) {
-            const len = packed.readUInt16LE(o);
-            o += 2;
-            const frame = Buffer.from(packed.subarray(o, o + len));
-            o += len;
-            const body = attack.name === 'strip' ? frame.subarray(0, frame.length - 1) : frame;
-            if (attack.name === 'wrong') body[body.length - 1] = 2;
-            const l = Buffer.alloc(2);
-            l.writeUInt16LE(body.length, 0);
-            parts.push(l, body);
-          }
-          const mangled = Buffer.concat(parts);
-          assert.throws(() => unpackShareBatchBytes(mangled), /bad_share_work/);
+          // strip drops the slot byte; wrong writes slot 2. Neither decodes.
+          const mangled = eachFrame(packed, (f) => {
+            if (attack.name === 'strip') return Buffer.concat([f.subarray(0, f.length - SLOT_FROM_END), f.subarray(f.length - 1)]);
+            f[f.length - SLOT_FROM_END] = 2;
+            return f;
+          });
+          assert.throws(() => unpackShareBatchBytes(mangled), /bad_share_blu/);
           const broken = { ...wire, sharePacked: mangled.toString('hex') };
-          assert.throws(() => decodeWireBlock(broken), /bad_share_work/);
+          assert.throws(() => decodeWireBlock(broken), /bad_share_blu/);
           const ipc = applyVerifiedIpcBlock(store, {
             type: 'ipc_block',
             magic: MAGIC_TESTNET,
             block: broken,
             powHash: honest.hash.toString('hex'),
           });
-          assert.equal(ipc.reason, 'decode', `ipc ${attack.name} ${width.dests}x${width.count}`);
+          assert.equal(ipc.reason, 'decode', `ipc ${attack.name} ${label}`);
         }
         assert.equal(store.tip().height, tipBefore);
         assert.ok(Buffer.from(honest.header).equals(honestHeader));
@@ -316,13 +263,11 @@ describe('v12 proofSlot is bound by the block', () => {
       assert.equal(store.tip().height, tipBefore);
       const again = childOf(store, rows, clock);
       const pow = easyPow();
-      const ok = appendBlock(store, asBlock(again, dests[0], pow), pow);
-      assert.equal(ok.ok, true, `${width.dests}x${width.count} honest ${ok.reason}`);
+      const ok = appendBlock(store, asBlock(again, pow), pow);
+      assert.equal(ok.ok, true, `${label} honest ${ok.reason}`);
       assert.equal(store.tip().height, tipBefore + 1);
-      const packed = packShareBatchBytes(store.tip().shareBatch);
-      const opened = unpackShareBatchBytes(packed);
+      const opened = unpackShareBatchBytes(packShareBatchBytes(store.tip().shareBatch));
       assert.equal(opened.length, width.count);
-      for (const row of opened) assert.equal(row.proofSlot === 0 || row.proofSlot === 1, true);
       assert.equal(opened.filter((row) => row.proofSlot === 0).length, width.count);
     }
     const reloaded = createStore(dir);
@@ -336,12 +281,17 @@ describe('v12 proofSlot is bound by the block', () => {
     assert.equal(tip.samplesPruned, false);
     const parent = reloaded.blocks[reloaded.blocks.length - 2];
     const pruned = pruneSamples(tip);
+    // R28: the payout record survives pruning; the frames do not.
+    assert.equal(pruned.blunoteRecord, tip.blunoteRecord);
+    assert.equal(pruned.shareBatch.length, 0);
+    assert.throws(() => pruneSamples({ ...tip, blunoteRecord: undefined, txs: [{ ...tip.txs[0], vout: [] }] }), /prune_refuses_empty_coinbase/);
     const buried = verifyBlock(pruned, {
       hash: parent.hash,
       header: parent.header,
       height: parent.height,
       txs: parent.txs,
       shareBatch: parent.shareBatch,
+      blunoteRecord: parent.blunoteRecord,
     }, {
       loadReplay: true,
       tipHeight: tip.height + SAMPLE_PRUNE_CONFIRMATIONS,
@@ -355,48 +305,43 @@ describe('v12 proofSlot is bound by the block', () => {
     assert.equal(unburied, 'share_slot');
   });
 
-  it('pays the same nonce on the other header only when that header is named', () => {
-    const { store, dest, now } = freshStore();
-    const first = rowsFor([dest], 1, 0);
-    const midNow = now + 90_000;
-    const midTpl = childOf(store, first, midNow);
+  it('a share binds only the header its slot names', () => {
+    const { store, now } = freshStore();
+    const first = rowsFor(1, 1, 0);
+    const midTpl = childOf(store, first, now + 90_000);
     const midPow = easyPow();
-    const mid = appendBlock(store, asBlock(midTpl, dest, midPow), midPow);
-    assert.equal(mid.ok, true, mid.reason || 'parent seal');
-    const nonce = first[0].nonce;
-    assert.equal(store.tip().shareBatch.length, 1);
+    assert.equal(appendBlock(store, asBlock(midTpl, midPow), midPow).ok, true, 'parent seal');
     assert.equal(store.tip().shareBatch[0].proofSlot, 0);
-    const nextNow = midNow + 90_000;
-    const namedPrior = rowsFor([dest], 1, 1);
-    namedPrior[0].nonce = nonce;
-    namedPrior[0].noteCommit = Buffer.from(noteCommitOfShare(namedPrior[0]));
-    const priorTpl = childOf(store, namedPrior, nextNow);
-    const priorPow = easyPow();
-    const priorGot = appendBlock(store, asBlock(priorTpl, dest, priorPow), priorPow);
-    assert.equal(priorGot.ok, false);
-    assert.equal(priorGot.reason, 'share_pow');
-    assert.equal(store.tip().height, 2);
-    const absentTpl = childOf(store, rowsFor([dest], 1, 0), nextNow);
-    const absent = asBlock(absentTpl, dest, easyPow());
-    absent.shareBatch = absent.shareBatch.map((row) => {
-      const copy = { ...row, nonce };
-      delete copy.proofSlot;
-      return copy;
+    // A share bound on the tip header but claiming slot 1 (the grandparent):
+    // its nonce does not bind there.
+    const tip = store.tip();
+    const misnamed = rowsFor(1, 1, 0);
+    clearLiveSharePow();
+    plant(tip.header, misnamed[0]);
+    const prior = store.blocks[store.blocks.length - 2].header;
+    stashSharePow(setNonce(Buffer.from(prior), misnamed[0].nonce), RX);
+    const quote = quoteFor(store, now + 180_000);
+    const tpl = buildTemplate({
+      prev: tip.hash,
+      prevHeader: tip.header,
+      prevBlock: tip,
+      height: tip.height + 1,
+      miner: MINER,
+      bits: quote.packed,
+      now: now + 180_000,
+      shareBatch: [{ ...misnamed[0], proofSlot: 1 }],
+      parentBlocks: store.blocks,
     });
-    const absentGot = appendBlock(store, absent, absent.hash);
-    assert.equal(absentGot.reason, 'share_slot');
-    assert.equal(store.tip().height, 2);
-    const other = rowsFor([dest], 1, 0);
-    other[0].nonce = nonce;
-    other[0].noteCommit = Buffer.from(noteCommitOfShare(other[0]));
-    const otherTpl = childOf(store, other, nextNow);
-    const otherPow = easyPow();
-    const otherGot = appendBlock(store, asBlock(otherTpl, dest, otherPow), otherPow);
-    assert.equal(otherGot.ok, true, otherGot.reason || 'other header');
-    assert.equal(store.tip().height, 3);
+    assert.equal(tpl.shareBatch.length, 1);
+    const pow = easyPow();
+    const got = appendBlock(store, asBlock(tpl, pow), pow);
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'share_bind');
+    // Named as slot 0, the same share binds and is paid.
+    const named = childOf(store, misnamed, now + 180_000);
+    const pow2 = easyPow();
+    const ok = appendBlock(store, asBlock(named, pow2), pow2);
+    assert.equal(ok.ok, true, ok.reason);
     assert.equal(store.tip().shareBatch[0].proofSlot, 0);
-    assert.equal(store.tip().shareBatch[0].nonce, nonce);
-    assert.equal(store.blocks[1].shareBatch[0].nonce, nonce);
-    assert.equal(store.blocks[1].shareBatch[0].proofSlot, 0);
   });
 });

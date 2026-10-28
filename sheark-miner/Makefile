@@ -70,6 +70,12 @@ else
   WIN_STATIC_RT :=
 endif
 
+# R28: libsodium (ristretto255 share keys) from a prefix, as Homebrew lays it out.
+ifneq ($(SODIUM_PREFIX),)
+  CFLAGS += -I$(SODIUM_PREFIX)/include
+  LIBS += -L$(SODIUM_PREFIX)/lib
+endif
+
 # macOS Homebrew OpenSSL is keg-only. Public packs pass OPENSSL_PREFIX.
 ifneq ($(OPENSSL_PREFIX),)
   CFLAGS += -I$(OPENSSL_PREFIX)/include

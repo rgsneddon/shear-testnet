@@ -248,6 +248,8 @@ def license_files_for(binary: str, repo: str | None) -> list[str]:
 COVERED_WINDOWS_DLLS = {
     "libssl-3-x64.dll": "LICENSES/third-party/openssl",
     "libcrypto-3-x64.dll": "LICENSES/third-party/openssl",
+    # R28: ShearK-Miner links libsodium for its BluNotes share keys (MSYS2 DLL name).
+    "libsodium-26.dll": "LICENSES/third-party/libsodium",
 }
 
 # Windows binaries link the GCC runtime and winpthreads statically

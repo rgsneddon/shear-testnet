@@ -44,14 +44,14 @@ describe('ShearK-Miner', () => {
     assert.equal(fs.existsSync(bin), true, `missing ${bin}`);
     const st = spawnSync(bin, ['--backend', 'interpreter', '--selftest'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(st.status, 0, st.stderr + st.stdout);
-    assert.match(st.stdout, /selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
+    assert.match(st.stdout, /selftest ok e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4/);
     const stJit = spawnSync(bin, ['--backend', 'jit', '--selftest'], { timeout: 600_000, encoding: 'utf8' });
     assert.equal(stJit.status, 0, stJit.stderr + stJit.stdout);
-    assert.match(stJit.stdout, /selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
+    assert.match(stJit.stdout, /selftest ok e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4/);
     assert.match(stJit.stdout, /backend=(jit|interpreter)/);
     assert.equal(stJit.stdout.includes('jit-full'), false);
     if (process.platform === 'linux') assert.match(stJit.stdout, /backend=jit/);
-    assert.match(st.stdout, /k 55111f0216ab10a6ba15fc0146990b10d26edcf58c86fa1418c41d96fa40b8e4/);
+    assert.match(st.stdout, /k 5a09106fcfdc1a4fdcd4ccefed812aae516b2dfa13c4b0606983dd558cb8911b/);
     assert.equal(st.stdout.includes('64d41fa97f5ebea8a7e2a2625b1824467ce9d081bf29b0b2ae0a7fe617599895'), false);
     assert.match(st.stdout, /client=ShearHash/);
     assert.match(st.stdout, /algorithm=ShearHash/);
@@ -181,12 +181,12 @@ describe('ShearK-Miner', () => {
     assert.match(src, /pthread_setaffinity_np/);
     assert.match(src, /g_cpu_map/);
     assert.match(src, /s\.gen != live_gen/);
-    assert.match(src, /enqueue_share\(job\.jobId, stamped, hash, job\.gen\)/);
+    assert.match(src, /enqueue_share\(job\.jobId, stamped, hash, job\.gen, blu_enabled\(\) \? &key : NULL\)/);
     assert.match(src, /never submit a digest for the previous header/);
     assert.match(src, /g_stale\+\+/);
     assert.match(src, /strstr\(low, "stale"\)/);
     assert.equal(/Do not bump gen \(that aborts/.test(src), false);
-    assert.match(src, /enqueue_share\(job\.jobId, primed_n, hash, job\.gen\)/);
+    assert.match(src, /enqueue_share\(job\.jobId, primed_n, hash, job\.gen, blu_enabled\(\) \? &primed_key : NULL\)/);
     assert.match(src, /g_stamp_seq/);
     assert.match(src, /stamp != last_stamp/);
     assert.match(src, /#define IN_FLIGHT_MAX 1/);
@@ -430,7 +430,7 @@ describe('ShearK-Miner', () => {
     const mk = fs.readFileSync(path.join(root, 'Makefile'), 'utf8');
     assert.match(mk, /OPENSSL_PREFIX/);
     const selftest = fs.readFileSync(path.join(root, 'pack/selftest.sh'), 'utf8');
-    assert.match(selftest, /98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b/);
+    assert.match(selftest, /e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4/);
   });
 
   it('the Linux pack recipe is portable unless SHEARK_NATIVE=1', () => {

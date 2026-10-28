@@ -15,13 +15,19 @@ import {
   applySoloSubmit,
   soloSubmitAck,
   soloMaySeal,
+  parseBluAddr,
 } from '../src/solo_stratum.js';
 import { createStore } from '../src/node.js';
 import { createRegtestStore } from './regtest_store.js';
 import { setNonce, headerFromHex } from '../../crypto/header.js';
 import { shearHash, meetsTarget, setHashBackend } from '../../crypto/shear_hash.js';
-import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { bindNonce, decodeRecord, oneTimeKey, recogniseOneTime } from '../../crypto/blunote.js';
+import { bluWallet } from './support/blunote_mine.js';
+
+// R28 solo payout (b): the solo miner's BluNotes wallet and mining address B||Y.
+const SOLO = bluWallet();
+const BLU_ADDR = Buffer.concat([Buffer.from(SOLO.B), Buffer.from(SOLO.Y)]).toString('hex');
 
 function destMiner() {
   return encodeDest(Buffer.alloc(20, 5));
@@ -73,17 +79,19 @@ function yieldTick() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-async function findDestShareNotBlock({ headerHex, dest, shareBits, blockBits, max = 400_000n }) {
+/** A real BluNotes share for SOLO on this job that misses the block bits. */
+async function findBluShareNotBlock({ headerHex, shareBits, blockBits, keys = 4096 }) {
   const header0 = headerFromHex(headerHex);
-  const nc = noteCommitOfShare({ dest });
-  for (let nonce = 0n; nonce < max; nonce += 1n) {
-    const header = setNonce(header0, nonce);
-    const rx = shearHash(header);
-    const bound = destBoundShareHash(rx, nc);
-    if (meetsTarget(bound, shareBits) && !meetsTarget(rx, blockBits)) {
-      return { nonce, hash: rx.toString('hex') };
+  for (let i = 0; i < keys; i += 1) {
+    const k = oneTimeKey(SOLO);
+    for (let c = 0; c < 256; c += 1) {
+      const nonce = bindNonce(header0, k.R, k.P, c, shareBits);
+      const rx = shearHash(setNonce(header0, nonce));
+      if (meetsTarget(rx, shareBits) && !meetsTarget(rx, blockBits)) {
+        return { nonce, hash: rx.toString('hex'), R: k.R, P: k.P, tag: k.tag };
+      }
+      if ((c & 31) === 31) await yieldTick();
     }
-    if ((nonce & 31n) === 31n) await yieldTick();
   }
   throw new Error('no_share');
 }
@@ -109,7 +117,7 @@ function loginSolo(port, dest, shareBits = SHARE_FLOOR_BITS) {
       sock.write(`${JSON.stringify({
         id: 1,
         method: 'login',
-        params: { login: `${dest}.solo`, shareBits, threads: 1 },
+        params: { login: `${dest}.solo`, shareBits, threads: 1, bluAddr: BLU_ADDR },
       })}\n`);
     });
     const onData = (chunk) => {
@@ -175,13 +183,19 @@ describe('thin solo stratum', { timeout: fileCapMs(import.meta.url) }, () => {
     assert.match(help, /thin local stratum/);
     assert.doesNotMatch(help, /2\. npm run pool/);
     const dest = destMiner();
-    const ok = parseSoloLogin(`${dest}.solo`);
+    const ok = parseSoloLogin(`${dest}.solo`, BLU_ADDR);
     assert.equal(ok.ok, true);
     assert.equal(ok.dest, dest);
     assert.equal(ok.worker, 'solo');
-    const bare = parseSoloLogin(dest);
+    assert.ok(Buffer.from(ok.blu.B).equals(Buffer.from(SOLO.B)));
+    const bare = parseSoloLogin(dest, BLU_ADDR);
     assert.equal(bare.ok, true);
     assert.equal(bare.worker, '');
+    // R28: no mining address, or one that is not two points, is never paid.
+    assert.equal(parseSoloLogin(`${dest}.solo`).reason, 'need_blu');
+    assert.equal(parseSoloLogin(`${dest}.solo`, BLU_ADDR.slice(2)).reason, 'need_blu');
+    assert.equal(parseSoloLogin(`${dest}.solo`, 'ff'.repeat(64)).reason, 'need_blu');
+    assert.equal(parseBluAddr('ff'.repeat(64)), null);
     const ahead = new Map([['peer', { height: 100, hash: 'ab'.repeat(32) }]]);
     assert.equal(soloMaySeal({ height: 70, hash: 'cd'.repeat(32), peers: ahead }), false);
     assert.equal(soloMaySeal({ height: 100, hash: 'ab'.repeat(32), peers: ahead }), true);
@@ -200,7 +214,7 @@ describe('thin solo stratum', { timeout: fileCapMs(import.meta.url) }, () => {
       peers: behind,
       blockHashAt: () => 'aa'.repeat(32),
     }), false);
-    assert.equal(parseSoloLogin('not-a-dest.solo').ok, false);
+    assert.equal(parseSoloLogin('not-a-dest.solo', BLU_ADDR).ok, false);
   });
 
   it('login is rejected while a live peer is ahead, and a job is issued at matching tip', async () => {
@@ -313,7 +327,7 @@ describe('thin solo stratum', { timeout: fileCapMs(import.meta.url) }, () => {
         });
         sock.on('error', reject);
         sock.once('connect', () => {
-          sock.write(`${JSON.stringify({ method: 'login', params: { login: `${dest}.solo`, threads: 1 } })}\n`);
+          sock.write(`${JSON.stringify({ method: 'login', params: { login: `${dest}.solo`, threads: 1, bluAddr: BLU_ADDR } })}\n`);
         });
       });
       sock.destroy();
@@ -338,7 +352,7 @@ describe('thin solo stratum', { timeout: fileCapMs(import.meta.url) }, () => {
     try {
       assert.equal(bound.host, '127.0.0.1');
       const dest = destMiner();
-      const job = stratum.issueJob(dest);
+      const job = stratum.issueJob(dest, parseBluAddr(BLU_ADDR));
       assert.ok(job.jobId);
       assert.match(job.header, /^[0-9a-f]+$/i);
     } finally {
@@ -383,7 +397,7 @@ describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, 
     assert.doesNotMatch(rejected, /"block":true/);
   });
 
-  it('dest-bound shareBits=8 that misses blockBits is OK and does not append', { timeout: 720_000 }, async () => {
+  it('a ShearK --blu --solo share at shareBits=8 that misses blockBits is OK and does not append', { timeout: 720_000 }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-share-'));
     const store = createStore(dir);
     const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
@@ -400,6 +414,8 @@ describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, 
         '--pool', `127.0.0.1:${bound.port}`,
         '--notls',
         '--user', `${dest}.solo`,
+        '--blu', BLU_ADDR,
+        '--solo',
         '--threads', '4',
       ], { stdio: ['ignore', 'pipe', 'pipe'] });
       let out = '';
@@ -461,13 +477,23 @@ describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, 
       assert.equal(reply.result?.hash, found.hash);
       assert.equal(store.tip()?.height, heightBefore + 1);
       assert.equal(store.blocks.length, nBefore + 1);
+      // Option (b): the empty round's pot went to a one-time key that only
+      // the solo miner's wallet recognises, and nothing was carried.
+      const rec = decodeRecord(Buffer.from(store.tip().blunoteRecord, 'hex'));
+      assert.equal(rec.winners.length, 0);
+      assert.equal(rec.n, 0);
+      assert.ok(rec.feeV > 0n, `feeV ${rec.feeV}`);
+      assert.ok(recogniseOneTime({ y: SOLO.y, B: SOLO.B }, rec.feeR, rec.feeP) != null);
+      const stranger = bluWallet();
+      assert.equal(recogniseOneTime({ y: stranger.y, B: stranger.B }, rec.feeR, rec.feeP), null);
+      assert.equal(store.tip().txs[0].blunote.potToFee, 1);
     } finally {
       try { sock?.destroy(); } catch { /* ignore */ }
       stratum.close();
     }
   });
 
-  it('dest-bound share that misses blockBits ACKs block false', { timeout: 180_000 }, async () => {
+  it('a BluNotes share that misses blockBits ACKs block false; under another key it is low_diff', { timeout: 180_000 }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-solo-share-ack-'));
     const store = createStore(dir);
     const stratum = createSoloStratum({ store, port: 0, host: '127.0.0.1', restampMs: 0 });
@@ -480,12 +506,25 @@ describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, 
       const logged = await loginSolo(bound.port, dest, SHARE_FLOOR_BITS);
       sock = logged.sock;
       const job = logged.msg.job;
-      const found = await findDestShareNotBlock({
+      const found = await findBluShareNotBlock({
         headerHex: job.header,
-        dest,
         shareBits: Number(job.shareBits),
         blockBits: Number(job.blockBits || job.bits),
       });
+      const thief = oneTimeKey(bluWallet());
+      const moved = await submitAndReply(sock, {
+        id: 3,
+        method: 'submit',
+        params: {
+          jobId: job.jobId,
+          nonce: String(found.nonce),
+          hash: found.hash,
+          shareR: Buffer.from(thief.R).toString('hex'),
+          shareP: Buffer.from(thief.P).toString('hex'),
+          viewTag: thief.tag,
+        },
+      });
+      assert.equal(moved.error, 'low_diff');
       const reply = await submitAndReply(sock, {
         id: 2,
         method: 'submit',
@@ -493,6 +532,9 @@ describe('solo submit share vs block', { timeout: fileCapMs(import.meta.url) }, 
           jobId: job.jobId,
           nonce: String(found.nonce),
           hash: found.hash,
+          shareR: Buffer.from(found.R).toString('hex'),
+          shareP: Buffer.from(found.P).toString('hex'),
+          viewTag: found.tag,
         },
       });
       assert.equal(reply.error, undefined, reply.error);

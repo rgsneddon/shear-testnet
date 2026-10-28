@@ -49,6 +49,7 @@ import {
 import { admitClient, bindAcceptedShare, SHEARK_MINER_VERSION } from '../../pool/src/pool.js';
 import { createPullBook } from '../../pool/src/pull_book.js';
 import { evaluateSoloSubmit, parseSoloLogin } from '../src/solo_stratum.js';
+import { bluWallet } from './support/blunote_mine.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -328,7 +329,9 @@ describe('N-1 gate order', () => {
     const solo = parseSoloLogin(bad);
     assert.equal(solo.ok, false);
     assert.equal(solo.reason, 'admit_note_point');
-    assert.equal(parseSoloLogin(who).ok, true);
+    // R28: a solo login also names its BluNotes mining address B||Y.
+    const miner = bluWallet();
+    assert.equal(parseSoloLogin(who, Buffer.concat([Buffer.from(miner.B), Buffer.from(miner.Y)]).toString('hex')).ok, true);
     const soloShare = evaluateSoloSubmit({
       store: { jobs: new Map() },
       jobId: 'missing',

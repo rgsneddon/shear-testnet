@@ -19,10 +19,12 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$SHEARK_VER"
-          brew install openssl cmake
+          brew install openssl cmake libsodium
           PREFIX="$(brew --prefix openssl)"
+          SODIUM="$(brew --prefix libsodium)"
           test -f "$PREFIX/include/openssl/ssl.h"
-          make -C sheark-miner OPENSSL_PREFIX="$PREFIX"
+          test -f "$SODIUM/include/sodium.h"
+          make -C sheark-miner OPENSSL_PREFIX="$PREFIX" SODIUM_PREFIX="$SODIUM"
           bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
           python3 sheark-miner/pack/zip_unix.py macos
           bash sheark-miner/pack/smoke_zip.sh "dist/ShearK-Miner-${SHEARK_VER}-macos.zip"

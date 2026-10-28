@@ -2530,7 +2530,7 @@ const _v3CkptMs = 1600000090000;
 const _v3ChildMs = 1600007199000;
 const _v3ChildBits = 1049404;
 const _v3SelfDigest =
-    '98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b';
+    'e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4';
 const _v3PatDigest =
     '14e89ca711850acd9389ba431fd2f9f44472aa479047e67586200b0afde68095';
 const _v3GenesisDigest =

@@ -24,7 +24,7 @@ import { hashHeaderOffLoop } from './hash_offloop.js';
 import { setNonce } from './header.js';
 import { packShareV5, unpackShareBatch } from './pack.js';
 import { isDestAddress, bech32Hrp, encodeDest, hash20FromAddress } from './address.js';
-import { noteCommitOfDest20 } from './note.js';
+import { noteCommitOfDest20, pointFrom } from './note.js';
 import { SHARE_BYTES_MAX, bindingOk } from './blunote.js';
 
 export const SHARE_DEST_DST = Buffer.from('shear-share-dest-v1');
@@ -1348,6 +1348,9 @@ export function verifyBluShareBatch({
     if (paidBlocks(paid, hdr, nk)) return { ok: false, reason: 'paid_share' };
     const R = Buffer.from(s.shareR);
     const P = Buffer.from(s.shareP);
+    // Every share's P must be a point (R28 refinement 2): the payout can then
+    // never forfeit, so the carry is fixed before the PoW.
+    try { pointFrom(P); } catch { return { ok: false, reason: 'share_key' }; }
     const attempt = proveBluShareOn(hdr, {
       nonce,
       nk,

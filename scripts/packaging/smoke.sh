@@ -15,7 +15,7 @@ node --version | grep -q '^v22\.' || fail "expected Node 22"
 echo "SMOKE miner self-test"
 SELF=$(ShearK-Miner --selftest 2>&1) || fail "ShearK-Miner --selftest exited $?"
 printf '%s\n' "$SELF"
-printf '%s\n' "$SELF" | grep -q '98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b' \
+printf '%s\n' "$SELF" | grep -q 'e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4' \
   || fail "ShearHash-v3 digest missing"
 if printf '%s\n' "$SELF" | grep -q '5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066'; then
   fail "v1 digest must not pass"

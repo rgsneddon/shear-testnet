@@ -187,7 +187,12 @@ describe('R28 share holes (each failed on feat 2f6e9962)', () => {
     const fresh = mineShare(wallet(), g.header, { slot: 1 });
     const ok3 = child([g, b2.block], { shareBatch: [fresh] });
     assert.equal(ok3.verdict.ok, true, ok3.verdict.reason);
-    const again = child([g, b2.block], { shareBatch: [{ ...s, proofSlot: 1 }] });
+    // s won block 2's draw, so its P is now a note and a knowing template
+    // drops it (attack 8). Forced in, the paid-work check refuses it first.
+    const dropped = child([g, b2.block], { shareBatch: [{ ...s, proofSlot: 1 }] });
+    assert.equal(dropped.block.shareBatch.length, 0);
+    const again = child([g, b2.block], { shareBatch: [{ ...s, proofSlot: 1 }], templateFlux: emptyFluxset() });
+    assert.equal(again.block.shareBatch.length, 1);
     assert.equal(again.verdict.ok, false);
     assert.equal(again.verdict.reason, 'paid_share');
     const spilled = child([g, b2.block], { hashSpill: [{ ...s, proofSlot: 1 }] });
@@ -218,7 +223,9 @@ describe('R28 share holes (each failed on feat 2f6e9962)', () => {
     const other = mineShare(wallet(), kin, { kin: true, slot: 1 });
     const ok3 = child([g, b2.block], { shareBatch: [other], issuedHeaders: [kin] });
     assert.equal(ok3.verdict.ok, true, ok3.verdict.reason);
-    const b3 = child([g, b2.block], { shareBatch: [{ ...s, proofSlot: 1 }], issuedHeaders: [kin] });
+    // Forced in past a knowing template (its P won block 2's draw).
+    const b3 = child([g, b2.block], { shareBatch: [{ ...s, proofSlot: 1 }], issuedHeaders: [kin], templateFlux: emptyFluxset() });
+    assert.equal(b3.block.shareBatch.length, 1);
     assert.equal(b3.verdict.ok, false, 'a kin share paid in block 2 was paid again in block 3');
     assert.equal(b3.verdict.reason, 'paid_share');
   });
@@ -271,6 +278,9 @@ describe('R28 BluNotes blocks', () => {
   it('binds the parent record under the next block, and refuses a wrong one', () => {
     const b2 = child([g], { shareBatch: [mineShare(wallet(), g.header)] });
     assert.equal(b2.verdict.ok, true, b2.verdict.reason);
+    // The record crosses the wire with its block (a pruned block keeps only it).
+    const wired = decodeWireBlock(encodeWireBlock(b2.block));
+    assert.equal(wired.blunoteRecord, b2.block.blunoteRecord);
     const b3 = child([g, b2.block]);
     assert.equal(b3.verdict.ok, true, b3.verdict.reason);
     assert.equal(Buffer.from(b3.block.txs[0].blunote.prev).toString('hex'), recordRoot(Buffer.from(b2.block.blunoteRecord, 'hex')).toString('hex'));

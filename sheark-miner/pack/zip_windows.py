@@ -215,6 +215,9 @@ def main(argv: list[str] | None = None) -> int:
     for required in ("libssl-3-x64.dll", "libcrypto-3-x64.dll"):
         if required not in names:
             sys.exit(f"ShearK TLS build did not import {required}; refusing a cleartext-only pack")
+    # R28: the rig's BluNotes one-time share keys need libsodium (ristretto255).
+    if not any(n.startswith("libsodium") for n in names):
+        sys.exit("ShearK build did not import libsodium; it cannot make BluNotes share keys")
     release_notices.assert_no_mingw_runtime([EXE] + dlls)
     release_notices.assert_windows_dlls_covered(dlls)
     stage(EXE, dlls)

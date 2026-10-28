@@ -84,16 +84,21 @@ export function rollHashBundle(samples = []) {
   return collateSamples(samples);
 }
 
-/** Drop Flow samples and B leaves. Never drop txs or coinbase vout — they stay sealed. */
+/**
+ * Drop Flow samples and B leaves. Never drop txs or coinbase vout — they stay
+ * sealed. R28: a BluNotes coinbase often has no vout (its payouts are the
+ * notes its record names), so it prunes only when the block keeps its record.
+ */
 export function pruneSamples(block) {
   const txs = Array.isArray(block.txs) ? block.txs : [];
   if (!txs.length) {
     throw new Error('prune_refuses_empty_txs');
   }
+  const hasRecord = block?.blunoteRecord != null && block.blunoteRecord !== '';
   const nextTxs = txs.map((tx) => {
     if (!tx?.coinbase) return tx;
     const { samples, ...rest } = tx;
-    if (!Array.isArray(rest.vout) || !rest.vout.length) {
+    if ((!Array.isArray(rest.vout) || !rest.vout.length) && !hasRecord) {
       throw new Error('prune_refuses_empty_coinbase');
     }
     return rest;
@@ -816,6 +821,7 @@ function compactBlunote(b) {
   if (b.feeTag != null) out.feeTag = Math.floor(Number(b.feeTag) || 0) & 0xff;
   const prev = bluHex(b.prev);
   if (prev) out.prev = prev;
+  if (Number(b.potToFee) === 1) out.potToFee = 1;
   return out;
 }
 

@@ -394,8 +394,8 @@ void _blake16(Uint32List r, List<int> v) {
   _g64(r, v[3], v[4], v[9], v[14]);
 }
 
-// sheark-miner/src/sha512.c. K[53] is 0x4ed8aa4ae256485b in that file.
-// NIST's constant is 0x4ed8aa4ae3418acb. The key must follow the miner.
+// FIPS 180-4 SHA-512, as sheark-miner/src/sha512.c (R40, 28 Oct: K[53] was
+// mistyped there and here until the v12/mainnet genesis). The key must follow the miner.
 const List<int> _sha512k = [
   0x428a2f98d728ae22, 0x7137449123ef65cd, 0xb5c0fbcfec4d3b2f, 0xe9b5dba58189dbbc,
   0x3956c25bf348b538, 0x59f111f1b605d019, 0x923f82a4af194f9b, 0xab1c5ed5da6d8118,
@@ -410,7 +410,7 @@ const List<int> _sha512k = [
   0xa2bfe8a14cf10364, 0xa81a664bbc423001, 0xc24b8b70d0f89791, 0xc76c51a30654be30,
   0xd192e819d6ef5218, 0xd69906245565a910, 0xf40e35855771202a, 0x106aa07032bbd1b8,
   0x19a4c116b8d2d0c8, 0x1e376c085141ab53, 0x2748774cdf8eeb99, 0x34b0bcb5e19b48a8,
-  0x391c0cb3c5c95a63, 0x4ed8aa4ae256485b, 0x5b9cca4f7763e373, 0x682e6ff3d6b2b8a3,
+  0x391c0cb3c5c95a63, 0x4ed8aa4ae3418acb, 0x5b9cca4f7763e373, 0x682e6ff3d6b2b8a3,
   0x748f82ee5defb2fc, 0x78a5636f43172f60, 0x84c87814a1f0ab72, 0x8cc702081a6439ec,
   0x90befffa23631e28, 0xa4506cebde82bde9, 0xbef9a3f7b2c67915, 0xc67178f2e372532b,
   0xca273eceea26619c, 0xd186b8c721c0c207, 0xeada7dd6cde0eb1e, 0xf57d4f7fee6ed178,

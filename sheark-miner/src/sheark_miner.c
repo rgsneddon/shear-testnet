@@ -59,6 +59,9 @@
 static const char *g_user = NULL;
 static char g_login[320];
 static char g_dest[256];
+/* R28 solo (b): the mining address B||Y, sent at login only with --solo. */
+static char g_blu_addr[129];
+static int g_solo = 0;
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
@@ -175,6 +178,10 @@ static void usage(FILE *out) {
           "Hashes the 128-byte Shear header. One proven share-hash mints units.\n\n"
           "  --user she1…|ssa1….worker   required (not shear1)\n"
           "  --dest ssa1…                owned payout dest (she1 login)\n"
+          "  --blu B||Y (128 hex)        BluNotes mining address; shares carry one-time keys\n"
+          "  --solo                      your own node's solo stratum: login sends the --blu\n"
+          "                              address so the node pays its pot to a one-time key.\n"
+          "                              Never use it with a public pool.\n"
           "  --pool host:port            default stratum+ssl://%s:%d\n"
           "  --threads N                 no 256 farm cap\n"
           "  --backend jit-full            default: 2 GiB dataset JIT (same digest as light)\n"
@@ -584,10 +591,12 @@ static void identity_json(char *out, size_t cap, const char *login, int threads)
 }
 
 static int send_login(Conn *c, const char *login, int threads) {
-  char ident[1400], line[3200];
+  char ident[1400], line[3200], blu[160] = "";
   identity_json(ident, sizeof(ident), login, threads);
+  /* Only a solo node gets the address; a pool learns nothing it could link. */
+  if (g_solo && g_blu_addr[0]) snprintf(blu, sizeof(blu), ",\"bluAddr\":\"%s\"", g_blu_addr);
   int n = snprintf(line, sizeof(line),
-                   "{\"id\":1,\"method\":\"login\",\"params\":{%s},%s}\n", ident, ident);
+                   "{\"id\":1,\"method\":\"login\",\"params\":{%s%s},%s%s}\n", ident, blu, ident, blu);
   return conn_write(c, line, n) == 0 ? 0 : -1;
 }
 
@@ -1352,6 +1361,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "--blu: need 128 hex chars, the mining address B||Y (two ristretto255 points)\n");
         return 2;
       }
+      snprintf(g_blu_addr, sizeof(g_blu_addr), "%s", argv[i]);
+    } else if (strcmp(argv[i], "--solo") == 0) {
+      g_solo = 1;
     } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
       g_threads = atoi(argv[++i]);
       if (g_threads < 1) g_threads = 1;
@@ -1364,6 +1376,10 @@ int main(int argc, char **argv) {
   }
   /* Flag order must not matter. Refuse before the dataset alloc so a bad URL
      does not spend seconds on jit-full. print-config exits before mining. */
+  if (g_solo && !g_blu_addr[0]) {
+    fprintf(stderr, "--solo needs --blu: a solo node pays its pot to a one-time key of that address\n");
+    return 2;
+  }
   if (!do_selftest && !verify_hex && g_require_tls && (g_cleartext_url || !g_tls)) {
     fprintf(stderr, "requireTls: refusing cleartext\n");
     return 2;

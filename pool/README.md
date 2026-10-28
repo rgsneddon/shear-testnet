@@ -28,6 +28,15 @@ Public site example in this repo is **https://mypool.site**. Point that name at 
 
 **Replace that constant with your own `ssa1` before you start the pool.** If you leave the shipped address, your pool's 1% is paid to that wallet, not yours. The process prints `pool_fee_dest` on listen as a reminder. Solo mining (`npm run solo` or `node node/src/node.js --solo`) does not use this constant and does not take the 1%. The finder keeps the epoch pot and the hash bonus.
 
+### BluNotes fee key (R28)
+- With BluNotes, a block pays its miners by a draw, as notes every node derives. No miner address reaches the pool.
+- The pool fee is paid to a fresh one-time key for each template. That key is built from:
+  - the fee dest's admit base B;
+  - the scan key Y in `SHEAR_POOL_FEE_SCAN_PUB` (64 hex).
+- **Set Y from the same wallet that owns the fee dest**, or the fee note cannot be spent.
+- With no `SHEAR_POOL_FEE_SCAN_PUB` the pool takes no fee: the fee piece goes to the miners.
+- Rigs mine with `ShearK-Miner --blu <B||Y>`, the mining address their wallet shows. A submit without a one-time key is refused (`need_key`).
+
 ## Install
 
 ```bash
@@ -89,7 +98,7 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d mypool.site
 ```
 
-Public miners: `ShearK-Miner --pool mypool.site:1111 --user YOUR_SSA1.worker`
+Public miners: `ShearK-Miner --pool mypool.site:1111 --user YOUR_SSA1.worker --blu YOUR_MINING_ADDRESS` (cleartext on a bare `host:port`; use `stratum+ssl://host:port` for TLS)
 
 Unauthenticated stratum login is dest-format only (no ownership proof). Soft-deny is per-IP; dest/tag durable bans require accepted shares or an operator ban.
 

@@ -18,9 +18,9 @@ export const V2_SELFTEST =
 export const V2_SELFTEST_K =
   'e46e00191cde74015961b7a68274933c680b69f05bdbbad1ef51e75fbc19f389';
 export const V3_SELFTEST =
-  '98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b';
+  'e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4';
 export const V3_SELFTEST_K =
-  '55111f0216ab10a6ba15fc0146990b10d26edcf58c86fa1418c41d96fa40b8e4';
+  '5a09106fcfdc1a4fdcd4ccefed812aae516b2dfa13c4b0606983dd558cb8911b';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
