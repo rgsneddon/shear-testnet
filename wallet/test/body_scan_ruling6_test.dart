@@ -10,10 +10,11 @@ import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_blunote.dart' show kBluAwaitingRecord;
 import 'package:shear_wallet/shear_body_scan.dart';
 import 'package:shear_wallet/shear_checkpoint.dart';
+import 'package:shear_wallet/shear_fs1.dart' show kErrFs1Anchor;
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_reserve.dart' show readVaultPortal;
-import 'package:shear_wallet/shear_vault_reward.dart' show hiddenChangeNote;
+import 'package:shear_wallet/shear_vault_reward.dart' show hiddenChangeNote, kPiSheNanos;
 
 /// Ruling 6 (Russell, 28 Oct): the v12 node has no notes route, so the
 /// wallet scans block bodies against the headers it verified. Every chain
@@ -284,6 +285,37 @@ void main() {
     pool.close();
   }, timeout: const Timeout(Duration(minutes: 10)));
 
+  test('a header below the checkpoint that does not hash to its child\'s link is refused', () async {
+    final pool = _client(node);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    ledger.installCheckpoint(node.pin);
+    final pinH = node.pin.height;
+    Future<List<({int height, Uint8List header})>> bentHeaders(int from, int to) async {
+      final out = <({int height, Uint8List header})>[];
+      for (var h = from; h <= to; h++) {
+        final j = await pool.headerAt(h);
+        final raw = Uint8List.fromList([
+          for (var i = 0; i < (j['header'] as String).length; i += 2)
+            int.parse((j['header'] as String).substring(i, i + 2), radix: 16),
+        ]);
+        if (h == pinH - 3) raw[100] ^= 1; // its time: another header, another hash
+        out.add((height: h, header: raw));
+      }
+      return out;
+    }
+
+    final ok = await ledger.scanVerifiedBodies(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      fetchHeaders: bentHeaders,
+    );
+    expect(ok, isFalse);
+    ledger.noteSpendableReadFailed();
+    expect(ledger.spendableReadError, 'headers below the checkpoint do not link to it');
+    expect(ledger.bodyScanTo, 0, reason: 'no body below the pin was read');
+    pool.close();
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
   test('a failed read never shows 0: the figure is "syncing" and the error is named', () async {
     // 1. No checkpoint pin (a debug or pre-cut build): depth is unknown, so
     // the own node's bodies cannot be proven and nothing is a verified zero.
@@ -332,13 +364,38 @@ void main() {
     pool.close();
   }, timeout: const Timeout(Duration(minutes: 10)));
 
-  test('own-node vault read: the 400 is surfaced, and no portal is painted from it', () async {
-    final pool = _client(node);
-    final read = await readVaultPortal(pool, home);
-    expect(read.portal, isNull);
-    expect(read.error, contains('http_400'));
-    expect(read.error, startsWith('Vault read failed'));
-    pool.close();
+  test('own-node vault read: the pane reads the node\'s own /reserve; a failed read is surfaced, never painted', () async {
+    // The pool route is not on a node: it answers 400.
+    final raw = await HttpClient()
+        .getUrl(Uri.parse('${node.base}/api/vault/reserve?dest=${Uri.encodeQueryComponent(home)}'))
+        .then((r) => r.close());
+    expect(raw.statusCode, 400);
+    await raw.drain<void>();
+
+    for (final own in [false, true]) {
+      final pool = _client(node);
+      if (own) pool.useOwnNode(node.base);
+      final read = await readVaultPortal(pool, home);
+      expect(read.error, isEmpty, reason: 'own=$own');
+      final p = read.portal!;
+      // This wallet's portal, from the node's vault (it has locked nothing).
+      expect(p['staked'], 0);
+      expect(p['idle'], 0);
+      expect(p['accrued'], 0);
+      // The public vault view the pool route also spreads.
+      for (final k in ['totalLockedNanos', 'totalStakedNanos', 'mintBankNanos', 'feeBankNanos', 'epochBps', 'epochStartMs', 'votes']) {
+        expect(p.containsKey(k), isTrue, reason: 'own=$own $k');
+      }
+      pool.close();
+    }
+
+    // A node that does not answer: the error is named and no portal is given.
+    final dead = ShearPoolClient(baseUrl: 'http://127.0.0.1:9', http: HttpClient()..connectionTimeout = const Duration(milliseconds: 300));
+    dead.useOwnNode('http://127.0.0.1:9');
+    final failed = await readVaultPortal(dead, home);
+    expect(failed.portal, isNull);
+    expect(failed.error, startsWith('Vault read failed (node reserve:'));
+    dead.close();
   });
 
   test('in body mode a deep note whose body is not proven is Pending, never Spendable', () {
@@ -394,4 +451,95 @@ void main() {
       expect(canonicalAliasPathWire(v), want['alias'], reason: values[i]);
     }
   });
+
+  test('in body mode no send, lock, vote fee or withdraw can pick a note Spendable does not count', () async {
+    const nanos = 10 * kUnitsPerShe;
+    final note = hiddenChangeNote(
+      nanos,
+      hash20FromAddress(home)!,
+      spendSeed: _seed,
+      admitBase: admitPub(admitBaseScalar(_seed)),
+    );
+    expect(note, isNotNull, reason: 'a real sealed note');
+    Map<String, dynamic> row({required bool proven}) => {
+          ...note!,
+          'address': home,
+          'dest': home,
+          'kind': 'send',
+          'nanos': nanos,
+          'amount': nanos / kUnitsPerShe,
+          'verified': true,
+          'height': 20,
+          if (proven) 'bodyProven': true,
+        };
+    // The node's live note set holds the note, so only the wallet's own
+    // gate can keep it out of a lock.
+    final flux = {
+      'pubs': [_hex(note!['admitPub'] as List<int>)],
+      'commits': [_hex(note['commit'] as List<int>)],
+      'spendTags': const <String>[],
+    };
+    Future<Object?> lockError(ShearLedger ledger) async {
+      try {
+        await ledger.send(
+          from: home,
+          to: home,
+          amount: kPiSheNanos / kUnitsPerShe,
+          kind: 'lock',
+          restFrame: id.address,
+          paymentCode: id.paymentCode,
+          spendSeed: _seed,
+          allowPublicHttp: true,
+        );
+        return null;
+      } catch (e) {
+        return e;
+      }
+    }
+
+    ShearLedger book({required bool proven}) {
+      final ledger = ShearLedger(pool: _FluxPool(flux))..bindIdentity(id);
+      ledger.noteLiveHeight(40);
+      ledger.settleTo(40);
+      ledger.restoreBodyScan(required: true, scanTo: 40);
+      ledger.rememberNote(row(proven: proven));
+      ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
+      return ledger;
+    }
+
+    // Unproven and deep: Spendable leaves it out, so every pick does.
+    final unproven = book(proven: false);
+    expect(_units(unproven.spendableOwned(id.address, paymentCode: id.paymentCode)), 0);
+    expect(unproven.plannerSelectableNanos(id.address, paymentCode: id.paymentCode), BigInt.zero);
+    expect(unproven.pickableNotes, isEmpty, reason: 'withdraw host, vote fee and lock leaf picks read this');
+    final refused = await lockError(unproven);
+    expect('$refused', anyOf(contains('insufficient'), contains('fund'), contains('Spendable')),
+        reason: 'the lock found no note it may spend: $refused');
+
+    // The same note, proven: Spendable counts it and the lock picks it (it
+    // then stops at the FS-1 anchor, which this book has none of).
+    final proven = book(proven: true);
+    expect(_units(proven.spendableOwned(id.address, paymentCode: id.paymentCode)), nanos);
+    expect(proven.plannerSelectableNanos(id.address, paymentCode: id.paymentCode), BigInt.from(nanos));
+    expect(proven.pickableNotes.length, 1);
+    final picked = await lockError(proven);
+    expect('$picked', isNot(contains('insufficient')), reason: 'the proven note was picked: $picked');
+    expect('$picked', contains(kErrFs1Anchor));
+  });
+}
+
+class _FluxPool extends ShearPoolClient {
+  _FluxPool(this.flux)
+      : super(
+          baseUrl: 'http://127.0.0.1:9',
+          http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
+        );
+
+  final Map<String, dynamic> flux;
+
+  @override
+  Future<Map<String, dynamic>> fluxset() async => flux;
+
+  @override
+  Future<Map<String, dynamic>> reserveTrancheBook() async => {'ok': true, 'tranches': const []};
 }

@@ -579,7 +579,9 @@ export function createRpc({
       const address = String(params.address || params[0] || '');
       if (!address) return out;
       if (!isDestAddress(address)) return { ok: false, reason: 'bad_address' };
-      return { ...out, address, portal: portalRewards(cloneVault(vault), address, now) };
+      // A wallet on its own node reads its Reserve pane from here (ruling 6):
+      // the same public vault view the pool's /api/vault/reserve spreads.
+      return { ...out, address, portal: portalRewards(cloneVault(vault), address, now), vault: pub };
     }
     return { ok: false, reason: 'unknown_method', method: m };
   }

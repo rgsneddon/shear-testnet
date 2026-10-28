@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_identity.dart';
+import 'package:shear_wallet/shear_checkpoint.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_lock.dart';
 import 'package:shear_wallet/shear_session.dart';
@@ -3947,16 +3948,21 @@ void main() {
         final err = StringBuffer();
         proc.stderr.transform(utf8.decoder).listen(err.write);
         final ready = Completer<int>();
+        Map<String, dynamic>? pinJson;
         proc.stdout
             .transform(utf8.decoder)
             .transform(const LineSplitter())
             .listen((line) {
+              if (line.startsWith('PIN ')) {
+                pinJson = jsonDecode(line.substring(4)) as Map<String, dynamic>;
+              }
               if (!ready.isCompleted && line.startsWith('PORT ')) {
                 ready.complete(int.parse(line.substring(5).trim()));
               }
             });
+        // The fixture hashes every header of its real chain first.
         final port = await ready.future.timeout(
-          const Duration(seconds: 30),
+          const Duration(minutes: 6),
           onTimeout: () => throw StateError(
             'node rpc did not listen reported=$reported\n$err',
           ),
@@ -3966,6 +3972,20 @@ void main() {
           http: _realHttp(),
         );
         final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+        // The node has no notes route (AL-5): the wallet proves each body
+        // against a header it checked, from the fixture's checkpoint pin.
+        final p = pinJson!;
+        ledger.installCheckpoint(CheckpointPin(
+          network: p['network'] as String,
+          height: (p['height'] as num).toInt(),
+          hashHex: p['hashHex'] as String,
+          timeMs: (p['timeMs'] as num).toInt(),
+          bits: (p['bits'] as num).toInt(),
+          anchorHeight: (p['anchorHeight'] as num).toInt(),
+          anchorTimeMs: (p['anchorTimeMs'] as num).toInt(),
+          anchorBits: (p['anchorBits'] as num).toInt(),
+          priorTimesMs: [for (final t in p['priorTimesMs'] as List) (t as num).toInt()],
+        ));
         expect(ledger.transactions, isEmpty);
         final woke = Completer<int>();
         var stop = false;
@@ -3985,7 +4005,12 @@ void main() {
           isEmpty,
           reason: 'the tip notice must not invent rows',
         );
-        await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+        // Each follow proves and scans the next bodies; the tip takes a few.
+        for (var i = 0; i < 12 && ledger.bodyScanTo < 440; i++) {
+          await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
+        }
+        expect(ledger.bodyProofRequired, isTrue);
+        expect(ledger.bodyScanTo, 440, reason: ledger.spendableReadError);
         ledger.noteNodeCheckedTip(440);
         ledger.settleTo(440);
         _expectOfflineCatchup(ledger, id, reportedBalance: reported);
@@ -3994,7 +4019,7 @@ void main() {
         pool.close();
       }
     },
-    timeout: const Timeout(Duration(minutes: 3)),
+    timeout: const Timeout(Duration(minutes: 20)),
   );
 
   test(

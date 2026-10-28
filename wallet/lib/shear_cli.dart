@@ -1143,7 +1143,7 @@ Future<int> _claimRewards(
     payout: payout,
     nowMs: now,
     spendSeed: hexToBytes(id.seedHex),
-    leaves: reserveLockLeaves(ledger.notes),
+    leaves: reserveLockLeaves(ledger.pickableNotes),
     local: ledger.pool == null,
     publicIpConsent: cliAllowsPublicPost(rpc: rpc, publicOk: flags['public-ok'] == '1'),
   );

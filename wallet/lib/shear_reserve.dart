@@ -505,25 +505,59 @@ String? _leafCommitHex(Map<String, Object?> leaf) {
 String vaultReadErrorCopy(String why) =>
     'Vault read failed ($why). Reserve figures are not shown until the vault answers.';
 
-/// The portal the Reserve pane paints (GET /api/vault/reserve, a pool route).
-/// A refused or failed read is not an empty portal: it returns no portal and
-/// the error the pane shows (ruling 6: an own node answers that route 400).
+String _readWhy(Object e) {
+  final why = e.toString();
+  return why.startsWith('Bad state: ') ? why.substring('Bad state: '.length) : why;
+}
+
+/// The portal the Reserve pane paints. A pool serves GET /api/vault/reserve;
+/// an own node has no such route (it answers 400), so the wallet reads the
+/// node's own GET /reserve?address= instead and gives the pane the same
+/// shape: the public vault view with this portal's figures. A refused or
+/// failed read is not an empty portal: it returns no portal and the error
+/// the pane shows (ruling 6).
 Future<({Map<String, dynamic>? portal, String error})> readVaultPortal(
   ShearPoolClient pool,
   String dest,
 ) async {
-  try {
-    final json = Map<String, dynamic>.from(await pool.reservePortal(dest));
-    if (json['ok'] == false) {
-      final why = json['reason']?.toString() ?? '';
-      return (portal: null, error: vaultReadErrorCopy(why.isEmpty ? 'refused' : why));
+  var why = '';
+  var noRoute = pool.usesOwnNode;
+  if (!noRoute) {
+    try {
+      final json = Map<String, dynamic>.from(await pool.reservePortal(dest));
+      if (json['ok'] != false) return (portal: json, error: '');
+      why = json['reason']?.toString() ?? 'refused';
+    } catch (e) {
+      why = _readWhy(e);
+      noRoute = why.contains('http_400') || why.contains('http_404');
     }
-    return (portal: json, error: '');
-  } catch (e) {
-    var why = e.toString();
-    if (why.startsWith('Bad state: ')) why = why.substring('Bad state: '.length);
-    return (portal: null, error: vaultReadErrorCopy(why));
   }
+  if (noRoute) {
+    try {
+      final json = Map<String, dynamic>.from(await pool.nodeReserve(dest));
+      if (json['ok'] == false) {
+        why = 'node reserve: ${json['reason'] ?? 'refused'}';
+      } else {
+        final portal = json['portal'];
+        final vault = json['vault'];
+        if (portal is Map && vault is Map) {
+          return (
+            portal: <String, dynamic>{
+              ...Map<String, dynamic>.from(vault),
+              ...Map<String, dynamic>.from(portal),
+              'ok': true,
+              'public': false,
+            },
+            error: '',
+          );
+        }
+        why = 'node reserve: no portal view';
+      }
+    } catch (e) {
+      why = 'node reserve: ${_readWhy(e)}';
+    }
+  }
+  return (portal: null, error: vaultReadErrorCopy(why.isEmpty ? 'refused' : why));
 }
 
 /// Rows from GET /api/vault/reserve?view=tranches, or from a portal object.
@@ -733,7 +767,7 @@ Future<({ShearTx tx, Map<String, int> settled})?> _postPortalWithdraw(
   }
   final nanos = principal + stubNanos;
   if (matured.isEmpty || nanos <= 0) return null;
-  final host = _freshWithdrawNote(ledger.notes);
+  final host = _freshWithdrawNote(ledger.pickableNotes);
   if (host == null) return null;
   final hostNanos = _rowNanos(host);
   if (hostNanos == null || hostNanos <= kLevyFloorUnits) return null;
@@ -1912,7 +1946,7 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
     plan = plannedLeafVotes(
       dir: planDir,
       leaves: count,
-      notes: ledger.notes,
+      notes: ledger.pickableNotes,
       openHeight: census.openHeight,
       closeHeight: close,
       epoch: reserve.currentEpoch,
@@ -1924,7 +1958,7 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
   if (plan == null || txs is! List || txs.length != count) {
     return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('not_voter')));
   }
-  final locks = reserveLockLeaves(ledger.notes);
+  final locks = reserveLockLeaves(ledger.pickableNotes);
   if (locks == null || spendSeed == null || spendSeed.length != 32) {
     return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
   }
