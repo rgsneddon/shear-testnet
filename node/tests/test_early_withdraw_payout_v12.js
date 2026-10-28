@@ -84,7 +84,7 @@ function asBlock(tpl) {
 function blockAt(store, dest, stamp, extra) {
   const parent = store.tip();
   const { tpl } = store.template({ miner: dest, now: stamp });
-  if (!extra) return { ...asBlock(tpl), miner: dest };
+  if (!extra) return asBlock(tpl);
   const bits = Number(decodeHeader(Buffer.from(tpl.header)).bits);
   const built = buildTemplate({
     prev: parent ? parent.hash : GENESIS_PREV,
@@ -97,7 +97,7 @@ function blockAt(store, dest, stamp, extra) {
     txs: extra,
     parentBlocks: store.blocks,
   });
-  return { ...asBlock(built), miner: dest };
+  return asBlock(built);
 }
 
 async function appendTemplate(store, dest, stamp, extra) {
@@ -206,7 +206,7 @@ describe('P2-L early withdraw payout', () => {
       txs: [early],
       parentBlocks: store.blocks,
     });
-    const block = { ...asBlock(built), miner: dest, hash: easyPowHash() };
+    const block = { ...asBlock(built), hash: easyPowHash() };
     // The per-tx payout call on the book vault: no portal landed.
     const noPortal = verifyReservePayout(store.reserveVault, early, drawAt);
     assert.equal(noPortal.ok, false);

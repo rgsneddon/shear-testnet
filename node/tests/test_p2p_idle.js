@@ -2010,7 +2010,9 @@ describe('p2p hello deadline and idle eviction', () => {
       sock.write(frame({ type: 'block', block: body }));
       // Sentinel: another body for the same header is verified once the held
       // resend before it has been handled.
-      sock.write(frame({ type: 'block', block: { ...body, miner: 'sentinel' } }));
+      // R28 option 2: the wire carries no miner, so the sentinel differs in
+      // the record it claims, which the header does not commit either.
+      sock.write(frame({ type: 'block', block: { ...body, blunoteRecord: 'ff' } }));
       for (let i = 0; i < 80 && calls < 2; i += 1) await delay(25);
       assert.equal(calls, 2, 'the credit-carrying body is held; only the sentinel verified');
     } finally {
@@ -2040,7 +2042,9 @@ describe('p2p hello deadline and idle eviction', () => {
       // Bodies that differ outside the header commitment, each throwing in stage.
       const variants = STAGE_HOLD_BODIES + 3;
       for (let i = 0; i < variants; i += 1) {
-        sock.write(frame({ type: 'block', block: { hash: wire.hash, height: 1, header: wire.header, miner: `variant-${i}` } }));
+        // R28 option 2: the wire carries no miner; each variant claims its own
+        // record bytes instead, which the header does not commit.
+        sock.write(frame({ type: 'block', block: { hash: wire.hash, height: 1, header: wire.header, blunoteRecord: (i + 1).toString(16).padStart(4, '0') } }));
         for (let k = 0; k < 40 && calls < i + 1; k += 1) await delay(25);
         for (let k = 0; k < 40 && rec()?.verifying?.size; k += 1) await delay(25);
       }

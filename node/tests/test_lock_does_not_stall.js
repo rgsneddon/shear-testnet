@@ -171,7 +171,7 @@ async function mineOne(store, dest, { now } = {}) {
       ? Number(decodeHeader(Buffer.from(parent.header)).timestamp) + TARGET_BLOCK_INTERVAL_MS
       : Date.now());
   const { tpl } = store.template({ miner: dest, bits: 1, shareBits: 8, now: stamp });
-  return sealTemplate(store, { ...tpl, miner: dest });
+  return sealTemplate(store, tpl);
 }
 
 describe('reserve lock does not stall the next block', () => {
@@ -237,7 +237,7 @@ describe('reserve lock does not stall the next block', () => {
       assert.ok(shippedBits < oneFast.packed, `shipped the fast-gap target ${shippedBits}`);
       console.log(`STUCK_TIP height=${LIVE_TIP_HEIGHT} sealed=${GENESIS_BITS_PACKED} shippedBits=${shippedBits} workers=2`);
       const minedAt = Date.now();
-      await sealTemplate(stuck, { ...stuckTpl, miner: continuum }, { timeoutMs: 19 * 60 * 1000 + 30 * 1000 });
+      await sealTemplate(stuck, stuckTpl, { timeoutMs: 19 * 60 * 1000 + 30 * 1000 });
       const advancedMs = Date.now() - minedAt;
       assert.equal(tipHeight(stuck), LIVE_TIP_HEIGHT + 1);
       assert.ok(advancedMs < UNDER_20_MIN_MS, `later block took ${advancedMs}ms`);
@@ -314,7 +314,7 @@ describe('reserve lock does not stall the next block', () => {
       assert.equal(queued.ok, true, queued.reason);
       assert.equal(mempoolHas(store, 'lock-funded'), true);
 
-      await sealTemplate(store, { ...pre.tpl, miner: continuum });
+      await sealTemplate(store, pre.tpl);
       assert.equal(tipHeight(store), fundedTip + 1);
       assert.equal(chainHas(store, 'lock-funded'), false);
       assert.equal(mempoolHas(store, 'lock-funded'), true, 'unmined lock stays queued');

@@ -62,7 +62,7 @@ describe('v12 IBD does not skip on a peer-advertised height', () => {
     const store = createRegtestStore(dir, { bits: 4 });
     const t0 = 1_700_000_000_000;
     const honest = store.template({ miner: dest, shareBits: 4, now: t0 });
-    const sealed = await Promise.resolve(store.append(await asBlock(honest.tpl, { miner: dest })));
+    const sealed = await Promise.resolve(store.append(await asBlock(honest.tpl)));
     assert.equal(sealed.ok, true, sealed.reason);
 
     const rivalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ibd-r-'));
