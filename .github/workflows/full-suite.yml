@@ -77,7 +77,8 @@ jobs:
       - name: Build Shear-Miner and ShearK-Miner
         if: steps.needs.outputs.miner == 'true'
         run: |
-          sudo apt-get install -y libssl-dev pkg-config
+          # R28: sheark-miner links libsodium (ristretto255 one-time share keys).
+          sudo apt-get install -y libssl-dev pkg-config libsodium-dev
           make -C miner
           make -C sheark-miner CC=gcc CXX=g++
           test -x miner/Shear-Miner
