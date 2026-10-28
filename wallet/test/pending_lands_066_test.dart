@@ -7,7 +7,12 @@ import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_cli.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_native_prove.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
+import 'package:shear_wallet/shear_admit.dart';
+
+import 'support/sealed_book.dart' show seedOf;
+import 'support/verified_chain.dart';
 
 class _PassthroughHttpOverrides extends HttpOverrides {}
 
@@ -29,6 +34,26 @@ Map<String, dynamic> _landBody(int height, String dest, double she) => {
         },
       ],
     };
+
+/// A real mined coinbase note to [dest]: a commit that opens to [nanos], the
+/// node range proof, the blind, and the admit key the wallet's seed derives
+/// (an FS-1 leaf), at [height]. Spendable is only such notes, at 9
+/// confirmations from the verified tip (Gate 3, 25 Oct; ruling 6, 28 Oct).
+Map<String, dynamic> _coinbaseNote(String dest, Uint8List seed, int nanos, int height) {
+  final note = attachAdmitPub(
+    nativeSealNote(nanos, dest20: hash20FromAddress(dest), kind: 'coinbase'),
+    spendSeed: seed,
+  );
+  return {
+    ...note,
+    'address': dest,
+    'dest': dest,
+    'nanos': nanos,
+    'amount': nanos / kUnitsPerShe,
+    'height': height,
+    'verified': true,
+  };
+}
 
 void main() {
   test('package pin and CLI pin are Continuum 0.70', () {
@@ -220,16 +245,19 @@ void main() {
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
   });
 
-  test('Shearview lists a just-landed owner land and Spendable waits for 9', () {
+  test('Shearview lists a just-landed owner land and Spendable waits for 9', () async {
     final id = createIdentity();
     final ledger = ShearLedger()..bindIdentity(id);
     final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     ledger.rememberDest(dest);
-    ledger.rememberNodeChain(bodies: [_landBody(5, dest, 1)]);
-    ledger.applyTipHex(_hexHeader(), sealedHeight: 5);
-    expect(ledger.confirmationsOf(5), 1);
-    expect(ledger.shearviewTxs(id.address).any((t) => t.kind == 'blockfound' && t.height == 5), isTrue);
-    expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'blockfound' && t.height == 5), isTrue);
+    // The land is block 15, the verified tip (a pin sits at 11 or above).
+    final chain = VerifiedChain(pinHeight: 15);
+    await chain.verify(ledger, 15);
+    ledger.rememberNodeChain(bodies: [_landBody(15, dest, 1)]);
+    ledger.rememberNote(_coinbaseNote(dest, seedOf(id), kUnitsPerShe, 15));
+    expect(ledger.confirmationsOf(15), 1);
+    expect(ledger.shearviewTxs(id.address).any((t) => t.kind == 'blockfound' && t.height == 15), isTrue);
+    expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'blockfound' && t.height == 15), isTrue);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), 0);
     ledger.mergeChainTx(ShearTx(
       id: 'ahead',
@@ -237,14 +265,15 @@ void main() {
       to: dest,
       amount: 0.5,
       kind: 'blockfound',
-      height: 20,
+      height: 30,
       confirmed: false,
     ));
-    expect(ledger.confirmationsOf(20), 0);
-    expect(ledger.shearviewTxs(id.address).any((t) => t.height == 20), isTrue);
-    ledger.applyTipHex(_hexHeader(), sealedHeight: 13);
-    expect(ledger.confirmationsOf(5), 9);
-    expect(ledger.pendingTxs(id.address).where((t) => t.height == 5), isEmpty);
+    expect(ledger.confirmationsOf(30), 0);
+    expect(ledger.shearviewTxs(id.address).any((t) => t.height == 30), isTrue);
+    // The header sync verifies 16..23: the land has 9 confirmations.
+    await chain.verify(ledger, 23);
+    expect(ledger.confirmationsOf(15), 9);
+    expect(ledger.pendingTxs(id.address).where((t) => t.height == 15), isEmpty);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(1, 1e-9));
   });
 
@@ -428,8 +457,10 @@ void main() {
     final id = createIdentity();
     final probe = ShearLedger()..bindIdentity(id);
     final dest = probe.homeDest(id.address, paymentCode: id.paymentCode);
-    final header = _hexHeader();
-    const tip = 13;
+    // A verified chain: pin at 15 (the land), real headers 16..23.
+    const tip = 23;
+    final chain = VerifiedChain(pinHeight: 15);
+    final header = chain.hexAt(tip);
     var balance = 0.0;
     var historyHits = 0;
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -452,11 +483,11 @@ void main() {
         req.response.write(jsonEncode({
           'ok': true,
           'headers': [
-            for (var h = from; h <= to && h <= tip; h++) {'height': h, 'header': header},
+            for (var h = from < 16 ? 16 : from; h <= to && h <= tip; h++) {'height': h, 'header': chain.hexAt(h)},
           ],
         }));
       } else if (path == '/header' || path == '/api/explorer/header') {
-        req.response.write(jsonEncode({'ok': true, 'height': 1, 'header': header}));
+        req.response.write(jsonEncode({'ok': true, 'height': tip, 'header': header}));
       } else if (path.contains('history')) {
         // Same shape as node walletHistoryFor: blockfound id, nanos, no amount.
         req.response.write(jsonEncode({
@@ -465,12 +496,12 @@ void main() {
           'destProof': true,
           'txs': [
             {
-              'id': 'blockfound:5:$dest',
+              'id': 'blockfound:15:$dest',
               'kind': 'blockfound',
               'from': 'coinbase',
               'to': dest,
               'nanos': kUnitsPerShe,
-              'height': 5,
+              'height': 15,
               'confirmed': true,
             },
             {
@@ -502,11 +533,14 @@ void main() {
     final pool = ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}', http: _http());
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
     ledger.rememberDest(dest);
+    // The landed coin is a real coinbase note; the history row names it.
+    ledger.rememberNote(_coinbaseNote(dest, seedOf(id), kUnitsPerShe, 15));
+    await chain.verify(ledger, tip);
     await ledger.syncCredits(id.address, paymentCode: id.paymentCode);
     expect(historyHits, greaterThan(0));
     expect(ledger.sealedHeight, tip);
-    expect(ledger.confirmationsOf(5), 9);
-    expect(ledger.pendingTxs(id.address).where((t) => t.height == 5), isEmpty);
+    expect(ledger.confirmationsOf(15), 9);
+    expect(ledger.pendingTxs(id.address).where((t) => t.height == 15), isEmpty);
     expect(ledger.pendingTxs(id.address).any((t) => t.kind == 'blockfound' && t.height == tip), isTrue);
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(1, 1e-9));
     balance = 1;
@@ -536,7 +570,7 @@ void main() {
       tipSealed: ledger.sealedHeight,
     );
     expect(ledger.spendableOwned(id.address, paymentCode: id.paymentCode), closeTo(1, 1e-9));
-    expect(ledger.pendingTxs(id.address).where((t) => t.height == 5), isEmpty);
+    expect(ledger.pendingTxs(id.address).where((t) => t.height == 15), isEmpty);
     expect(ledger.pendingTxs(id.address).any((t) => t.height == tip), isTrue);
   });
 }
