@@ -2067,6 +2067,36 @@ export function shareCreditBound(block, tipHeight = null) {
   if (Buffer.isBuffer(block?.hash) && block.hash.length === 32) id = block.hash;
   else if (block?.hash instanceof Uint8Array && block.hash.length === 32) id = block.hash;
   if (!id) return { ok: false, reason: 'share_credit_bind' };
+  // R28: a BluNotes block binds its shares to its record's batch root (count
+  // and total weight) and to the coinbase share root, not to payee leaves.
+  if (block?.blunoteRecord != null && block.blunoteRecord !== '') {
+    const raw = block.blunoteRecord;
+    const rec = decodeRecord(Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw), 'hex'));
+    if (!rec) return { ok: false, reason: 'share_credit_bind' };
+    if (positive) return { ok: false, reason: 'share_credit_bind' };
+    if (shares.length) {
+      let root;
+      try { root = bluSlotRoot(shares); } catch { return { ok: false, reason: 'share_credit_bind' }; }
+      if (rec.n !== shares.length || rec.W !== root.total || !Buffer.from(rec.batchRoot).equals(Buffer.from(root.root))) {
+        return { ok: false, reason: 'share_credit_bind' };
+      }
+      const slot = block?.txs?.[0]?.shareSlotRoot;
+      if (slot == null || !Buffer.from(asU8(slot)).equals(Buffer.from(root.root))) return { ok: false, reason: 'share_credit_bind' };
+    } else if (rec.n !== 0) {
+      return { ok: false, reason: 'share_credit_bind' };
+    }
+    if (block?.samplesPruned !== true) {
+      let decoded;
+      try { decoded = decodeHeader(Buffer.from(block.header)); } catch {
+        return { ok: false, reason: 'share_credit_bind' };
+      }
+      const dual = buildDualTree({ aLeaves: [], bLeaves: block.bLeaves || [] });
+      if (!Buffer.from(dual.continuityRoot).equals(Buffer.from(decoded.continuityRoot))) {
+        return { ok: false, reason: 'share_credit_bind' };
+      }
+    }
+    return { ok: true, reason: '' };
+  }
   if (shares.length === 0 && !positive) return { ok: true, reason: '' };
   const account = accountShareUnits(shares);
   if (!account.ok) return { ok: false, reason: 'share_credit_bind' };
