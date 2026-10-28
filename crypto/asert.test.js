@@ -615,7 +615,10 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /VORTEX=vort1-pin/);
     assert.match(fp, /VORTICE_NO_MINT=1/);
     assert.match(fp, /LEVY_CAP=0.001-SHE/);
-    assert.match(fp, /LEVY_SPLIT=100-finder-work,empty=public-finder-note/);
+    // Ruling 5 (28 Oct): the finder levy joins the draw; an empty block's goes
+    // to the coinbase one-time key, else the reserve note.
+    assert.match(fp, /LEVY_SPLIT=finder-to-draw,empty=coinbase-key-else-reserve-note/);
+    assert.doesNotMatch(fp, /LEVY_SPLIT=100-finder-work,empty=public-finder-note/);
     assert.doesNotMatch(fp, /LEVY_SPLIT=50-50-finder-reserve/);
     assert.match(fp, /ADMIT=ADMITv3/);
     assert.match(fp, /N1=admit-note-point/);
