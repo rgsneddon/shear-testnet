@@ -41,6 +41,7 @@ typedef struct {
   int physical;           /* physical cores, -1 unknown */
   char smt[16];           /* on, off, unknown */
   char pe_split[64];      /* "P 8 / E 16", "none", "unknown" */
+  int perf_logical;       /* logical CPUs on performance cores when P/E is known, else -1 */
   char l1d[32], l2[32], l3[32];
   int l3_domains;         /* -1 unknown */
   long long l3_total;     /* bytes over all L3 domains, -1 unknown */

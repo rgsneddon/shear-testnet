@@ -1767,8 +1767,10 @@ static int choose_threads(int dflt, const char *dflt_why) {
       fclose(f);
     }
   }
-  int cand[4], nc = 0;
+  int cand[5], nc = 0;
   int phys = g_rig.physical;
+  /* P-cores only, on a P/E (hybrid, Apple Silicon) part. */
+  if (g_rig.perf_logical > 0 && g_rig.perf_logical < dflt && g_rig.perf_logical != phys) cand[nc++] = g_rig.perf_logical;
   if (phys > 0 && phys < dflt) cand[nc++] = phys;
   if (dflt - 1 >= 1 && dflt - 1 != phys && dflt - 1 > (phys > 0 ? phys : 0)) cand[nc++] = dflt - 1;
   cand[nc++] = dflt;
@@ -1780,7 +1782,7 @@ static int choose_threads(int dflt, const char *dflt_why) {
   outl(stdout, "auto-tune: measuring %d thread counts on this device (once; cached in %s)\n", nc, path[0] ? path : "nowhere");
   double best = -1;
   int best_k = dflt;
-  double rates[4];
+  double rates[5];
   for (int i = 0; i < nc; i++) {
     rates[i] = tune_point(cand[i], 2.0, 5.0);
     outl(stdout, "auto-tune: %d threads %.1f H/s\n", cand[i], rates[i]);

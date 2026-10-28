@@ -435,6 +435,7 @@ static void linux_topology(RigInfo *r, const char *root, rig_env_fn env) {
   char pc[256], ec[256];
   if (rd_line(root, "/sys/devices/cpu_core/cpus", pc, sizeof(pc)) == 0 && rd_line(root, "/sys/devices/cpu_atom/cpus", ec, sizeof(ec)) == 0) {
     snprintf(r->pe_split, sizeof(r->pe_split), "P %d / E %d logical", list_count(pc), list_count(ec));
+    r->perf_logical = list_count(pc);
   } else if (cap_max > 0 && cap_min > 0 && cap_min < cap_max) {
     snprintf(r->pe_split, sizeof(r->pe_split), "big.LITTLE: %d big, %d little", ncap_max, ncap_min);
   } else if (np > 0) {
@@ -711,7 +712,10 @@ static void win_detect(RigInfo *r) {
     if (l1 >= 0) { human_bytes(l1, hb, sizeof(hb)); snprintf(r->l1d, sizeof(r->l1d), "%s/core", hb); }
     if (l2 >= 0) { human_bytes(l2, hb, sizeof(hb)); snprintf(r->l2, sizeof(r->l2), "%s/core", hb); }
     if (l3 >= 0) { human_bytes(l3, hb, sizeof(hb)); snprintf(r->l3, sizeof(r->l3), "%s x %d", hb, l3n); r->l3_domains = l3n; r->l3_total = l3tot; }
-    if (eff_max > 0) snprintf(r->pe_split, sizeof(r->pe_split), "P %d / E %d cores", ncore_eff[eff_max], cores - ncore_eff[eff_max]);
+    if (eff_max > 0) {
+      snprintf(r->pe_split, sizeof(r->pe_split), "P %d / E %d cores", ncore_eff[eff_max], cores - ncore_eff[eff_max]);
+      r->perf_logical = ncore_eff[eff_max] * (smt ? 2 : 1);
+    }
     else put(r->pe_split, sizeof(r->pe_split), "none");
   }
   free(buf);
@@ -810,7 +814,10 @@ static void mac_detect(RigInfo *r) {
   put(r->cgroup_quota, sizeof(r->cgroup_quota), "none (macOS)");
   put(r->smt, sizeof(r->smt), r->logical > r->physical && r->physical > 0 ? "on" : "off");
   long long p0 = sc_ll("hw.perflevel0.physicalcpu"), p1 = sc_ll("hw.perflevel1.physicalcpu");
-  if (p0 > 0 && p1 > 0) snprintf(r->pe_split, sizeof(r->pe_split), "P %lld / E %lld cores", p0, p1);
+  if (p0 > 0 && p1 > 0) {
+    snprintf(r->pe_split, sizeof(r->pe_split), "P %lld / E %lld cores", p0, p1);
+    r->perf_logical = (int)sc_ll("hw.perflevel0.logicalcpu");
+  }
   else put(r->pe_split, sizeof(r->pe_split), "none");
   char hb[32];
   long long l1 = sc_ll("hw.l1dcachesize"), l2 = sc_ll("hw.l2cachesize"), l3 = sc_ll("hw.l3cachesize");
@@ -877,7 +884,7 @@ void rig_detect(RigInfo *r, const char *root, rig_env_fn env) {
   put(r->governor, sizeof(r->governor), UNK);
   put(r->hugepages, sizeof(r->hugepages), UNK);
   put(r->msr, sizeof(r->msr), UNK);
-  r->logical = r->allowed = r->physical = r->l3_domains = r->numa_nodes = -1;
+  r->logical = r->allowed = r->physical = r->l3_domains = r->numa_nodes = r->perf_logical = -1;
   r->mem_total = r->mem_avail = r->l3_total = -1;
   r->quota_cpus = -1;
 #if defined(RIG_X86)
