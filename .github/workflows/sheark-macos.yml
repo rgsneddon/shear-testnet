@@ -4,10 +4,17 @@
 # selftested again on both. Developer ID signing, hardened runtime,
 # notarisation and stapling run on Russell's Mac with his own certificate
 # (Desktop HANDOFF-Apple-R28-libsodium.md); no Apple credential is ever in CI.
-# Started by hand only, so it never shows as a skipped check on a PR.
+# Runs on PRs that touch the miner or its packs (path-filtered, so it never
+# shows as a skipped check elsewhere), and by hand once it is on main.
 name: sheark-macos
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'sheark-miner/src/**'
+      - 'sheark-miner/Makefile'
+      - 'sheark-miner/pack/**'
+      - '.github/workflows/sheark-macos.yml'
 permissions:
   contents: read
 
