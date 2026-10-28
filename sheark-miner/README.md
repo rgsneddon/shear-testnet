@@ -15,7 +15,7 @@ Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache). TLS-awar
 Paid login is an owned `ssa1` dest (wallet **Copy dest**). Copy dest is dest20-sized (~43 chars); long dest20||B still verifies. 2.3 dest-binds both; 2.1 fails the long form (`low_diff`). Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. Share floor is dest-bound (`sha256("shear-share-dest-v1" || rx || noteCommit)`), so a pool cannot restamp dest on a stolen nonce. The 128-byte job is unchanged.
 
 ```
-ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user YOUR_SSA1.worker --blu YOUR_MINING_ADDRESS --backend jit-full --threads 8
+ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user YOUR_SSA1.worker --blu YOUR_MINING_ADDRESS --backend jit-full
 ```
 
 R28 BluNotes: `--blu` is the 128-hex mining address B||Y your wallet shows ("This wallet mines"). Every share carries a fresh one-time key; the pool never learns a payout address, and a submit without a key is refused (`need_key`).
@@ -23,14 +23,19 @@ R28 BluNotes: `--blu` is the 128-hex mining address B||Y your wallet shows ("Thi
 Solo, on your own node (`npm run solo`, cleartext stratum on 127.0.0.1:1111):
 
 ```
-ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --blu YOUR_MINING_ADDRESS --solo --threads 8
+ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --blu YOUR_MINING_ADDRESS --solo
 ```
 
 `--solo` sends the mining address to your node at login so an empty round's pot is paid to a one-time key of it; without it the node refuses the login (`need_blu`). `--solo` without `--blu` exits 2. Never pass `--solo` to a public pool.
 
 A `she1` login needs `--dest YOUR_SSA1` so the bonus can land on Copy dest. Rest-frame `shear1` stays off stratum.
 
-Default `--backend jit-full` is the 2 GiB RandomX dataset (same ShearHash-v3 digest as light). Pool/node still light-verify. `--backend jit` is the 128 MiB cache path. Huge pages fall back to 4K if unavailable.
+Default `--backend jit-full` is the 260 MiB RandomX dataset (same ShearHash-v3 digest as light). Pool/node still light-verify. `--backend jit` is the 128 MiB cache path.
+
+Speed (R41, measured with `sheark-miner/bench/`):
+- **Threads.** With no `--threads`, ShearK runs one thread per logical CPU it may use (taskset and cgroup limits count), at most one per 2 MiB of L3. SMT siblings add RandomX throughput (+77% for a sibling pair on EPYC Milan). More threads than CPUs lose (8 threads on 2 CPUs: -31%).
+- **Huge pages.** Reserved 2 MiB pages (hugetlb) are used when the OS has them. Without them, on Linux, the dataset, cache and scratchpads ask for transparent huge pages (`madvise`), which the default `madvise` THP mode grants: +12-20% over 4K pages. The miner never changes a system setting; reserving hugetlb pages (`vm.nr_hugepages`) or 1 GiB pages is the operator's choice.
+- Every optimisation is byte-identical: `sheark-miner/tests/test_golden_corpus_v12.js` checks 64 digests from the R28 base on every backend.
 
 On a new job or restamp (prev, merkle/continuity, bits, time, job id) the miner bumps its job generation and **aborts** in-flight hashes. Results for the old generation are dropped (`dropped`, debug `aborted_stale`) and are **not** counted as Rejected. Pool `stale` / `stale_job` is labelled `stale` on the console, not reject. Hashrate is a time-window / EMA; `round` / `proven_round` is accepted work this block and **may reset at block found**.
 

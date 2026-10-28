@@ -158,6 +158,10 @@ static char g_last_ack_hash[65];
 static time_t g_t0;
 static int g_cpu_map[256];
 static int g_cpu_map_n = 0;
+/* R41: the default --threads. Every logical CPU this process may run on
+ * (SMT siblings add RandomX throughput), but no more threads than the L3
+ * holds 2 MiB scratchpads. */
+static int g_auto_threads = 0;
 
 static void fmt_hashrate(double hs, char *buf, size_t n);
 
@@ -183,8 +187,8 @@ static void usage(FILE *out) {
           "                              address so the node pays its pot to a one-time key.\n"
           "                              Never use it with a public pool.\n"
           "  --pool host:port            default stratum+ssl://%s:%d\n"
-          "  --threads N                 no 256 farm cap\n"
-          "  --backend jit-full            default: 2 GiB dataset JIT (same digest as light)\n"
+          "  --threads N                 default: each logical CPU, one per 2 MiB of L3\n"
+          "  --backend jit-full            default: 260 MiB dataset JIT (same digest as light)\n"
           "  --backend jit                light 128 MiB cache JIT\n"
           "  --backend interpreter\n"
           "  --pool stratum+ssl://host:port   TLS stratum (verifies CA or --tls-ca)\n"
@@ -375,6 +379,14 @@ static void device_inventory(void) {
   {
     int cpus[256], cores[256], seen[256], nn = 0, m = 0;
     memset(seen, 0, sizeof(seen));
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    int have_allowed = sched_getaffinity(0, sizeof(allowed), &allowed) == 0;
+    long l3_bytes = 0;
+    char l3_seen[16][64];
+    int l3_n = 0;
+    int all_seen[256], all_uniq = 0;
+    memset(all_seen, 0, sizeof(all_seen));
     for (int cpu = 0; cpu < 256; cpu++) {
       char path[96];
       snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
@@ -386,10 +398,41 @@ static void device_inventory(void) {
         break;
       }
       fclose(f);
+      /* cpuCores counts the whole device, as before. */
+      if (!all_seen[core & 255]) {
+        all_seen[core & 255] = 1;
+        all_uniq++;
+      }
+      /* Pin only to CPUs this process may use (taskset, a cgroup cpuset). */
+      if (have_allowed && !CPU_ISSET((unsigned)cpu, &allowed)) continue;
       cpus[nn] = cpu;
       cores[nn] = core;
       nn++;
+      char lp[112], list[64] = "";
+      snprintf(lp, sizeof(lp), "/sys/devices/system/cpu/cpu%d/cache/index3/shared_cpu_list", cpu);
+      FILE *lf = fopen(lp, "r");
+      if (!lf) continue;
+      if (!fgets(list, sizeof(list), lf)) list[0] = 0;
+      fclose(lf);
+      int dup = 0;
+      for (int k = 0; k < l3_n; k++) if (strcmp(l3_seen[k], list) == 0) dup = 1;
+      if (dup || l3_n >= 16) continue;
+      snprintf(l3_seen[l3_n++], sizeof(l3_seen[0]), "%s", list);
+      snprintf(lp, sizeof(lp), "/sys/devices/system/cpu/cpu%d/cache/index3/size", cpu);
+      lf = fopen(lp, "r");
+      long kb = 0;
+      char unit = 'K';
+      if (lf) {
+        if (fscanf(lf, "%ld%c", &kb, &unit) >= 1) {
+          if (unit == 'M') kb *= 1024;
+          l3_bytes += kb * 1024;
+        }
+        fclose(lf);
+      }
     }
+    g_auto_threads = nn;
+    long cap = l3_bytes / (2L << 20);
+    if (cap > 0 && g_auto_threads > cap) g_auto_threads = (int)cap;
     for (int i = 0; i < nn; i++) {
       int c = cores[i] & 255;
       if (seen[c]) continue;
@@ -402,23 +445,13 @@ static void device_inventory(void) {
       if (!already) g_cpu_map[m++] = cpus[i];
     }
     g_cpu_map_n = m;
-    if (m > 0) {
-      int uniq = 0;
-      memset(seen, 0, sizeof(seen));
-      for (int i = 0; i < nn; i++) {
-        int c = cores[i] & 255;
-        if (!seen[c]) {
-          seen[c] = 1;
-          uniq++;
-        }
-      }
-      if (uniq > 0) g_cpu_cores = uniq;
-    }
+    if (all_uniq > 0) g_cpu_cores = all_uniq;
   }
 #endif
 #endif
   if (g_cpu_threads < 1) g_cpu_threads = 1;
   if (g_cpu_cores < 1) g_cpu_cores = 1;
+  if (g_auto_threads < 1) g_auto_threads = g_cpu_threads;
 }
 
 static int tcp_connect(const char *host, int port) {
@@ -1416,7 +1449,7 @@ int main(int argc, char **argv) {
     printf("digest %s\nk %s\n", digest, khex);
     return 0;
   }
-  if (g_threads < 1) g_threads = g_cpu_cores > 0 ? g_cpu_cores : 1;
+  if (g_threads < 1) g_threads = g_auto_threads > 0 ? g_auto_threads : 1;
   if (g_dest[0] && strncmp(g_dest, "ssa1", 4) != 0) {
     fprintf(stderr, "dest must be ssa1... (owned payout dest)\n");
     return 2;
