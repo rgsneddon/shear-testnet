@@ -17,6 +17,11 @@ import { shouldAdopt } from '../src/chain.js';
 import { createP2p, decodeWireBlock } from '../src/p2p.js';
 import { createSoloStratum, soloMaySeal } from '../src/solo_stratum.js';
 import { createStore } from '../src/store.js';
+import { encodeMiningAddress } from '../../crypto/address.js';
+import { bluWallet } from './support/blunote_mine.js';
+
+const BLU = bluWallet();
+const BLU_ADDR = encodeMiningAddress({ B: BLU.B, Y: BLU.Y });
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -113,7 +118,8 @@ function login(port, dest) {
       sock.write(`${JSON.stringify({
         method: 'login',
         id: 1,
-        params: { login: `${dest}.solo`, threads: 2 },
+        // R28 option 2: a worker name, plus the mining address the solo pot pays.
+        params: { login: 'rig1', threads: 2, bluAddr: BLU_ADDR },
       })}\n`);
     });
     sock.once('error', (err) => {
