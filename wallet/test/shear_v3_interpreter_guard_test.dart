@@ -52,9 +52,9 @@ void main() {
 
   test('the library reports the interpreter and gives the golden digests', () {
     expect(shearV3Backend(), 'interpreter');
-    // Golden digests: the same values the node's ShearHash gives, and the
-    // values the S24 Ultra gave on device (28 Oct) through this library.
-    expect(_hex(shearHashV3(_probe(0))!), '98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b');
-    expect(_hex(shearHashV3(_probe(0xa5))!), 'b8e4d2bd0ec462fe3f87437d056bcb5f36f1f47b30e64bd652d7ea6bf174e584');
+    // Golden digests: the node's ShearHash on this tree (R40 FIPS SHA-512 key;
+    // pre-R40 feat gives 98818c31... and b8e4d2bd..., as the S24 Ultra did).
+    expect(_hex(shearHashV3(_probe(0))!), 'e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4');
+    expect(_hex(shearHashV3(_probe(0xa5))!), '8927578439b9d205584885f7fbe18296b0c8f6397fbb0df4086690c69549f698');
   });
 }
