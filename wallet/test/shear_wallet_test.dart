@@ -8370,10 +8370,10 @@ void main() {
       expect(find.text('Cast your 1 votes'), findsOneWidget);
       expect(find.text('Update vote'), findsNothing);
       expect(find.textContaining('change this vote at any time'), findsNothing);
-      expect(find.text('Amount SHEAR'), findsOneWidget);
+      expect(find.text(kReserveLockAmountLine), findsOneWidget);
       expect(find.byKey(const Key('reserve-lock-levy')), findsOneWidget);
       expect(find.textContaining('from Continuum spendable'), findsWidgets);
-      expect(find.text('Deposit sum'), findsOneWidget);
+      expect(find.text(kReserveLockButton), findsOneWidget);
       expect(find.text('Add more SHE to the vault'), findsNothing);
       expect(find.byKey(const Key('reserve-yours-box')), findsOneWidget);
       expect(find.byKey(const Key('reserve-overall-box')), findsOneWidget);
@@ -8449,14 +8449,10 @@ void main() {
       await tester.pump();
       expect(find.textContaining('Need'), findsWidgets);
       expect(find.byKey(const Key('reserve-vote-submit')), findsOneWidget);
-      await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
-      await tester.pump();
+      // A lock is exactly one π leaf: the amount is shown, never typed.
       expect(
-        tester
-            .widget<TextField>(find.byKey(const Key('reserve-amount')))
-            .controller
-            ?.text,
-        '1',
+        tester.widget<Text>(find.byKey(const Key('reserve-amount'))).data,
+        kReserveLockAmountLine,
       );
       await tester.ensureVisible(find.byKey(const Key('reserve-send')));
       expect(
@@ -8502,10 +8498,6 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text(kVoteBelowPi), findsOneWidget);
       expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
-      await tester.enterText(
-        find.byKey(const Key('reserve-amount')),
-        '$kPiShe',
-      );
       await tester.ensureVisible(find.byKey(const Key('reserve-send')));
       await tester.tap(find.byKey(const Key('reserve-send')));
       await tester.pump();
@@ -8659,8 +8651,6 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    await tester.enterText(find.byKey(const Key('reserve-amount')), '$kPiShe');
-    await tester.pump();
     await tester.ensureVisible(find.byKey(const Key('reserve-send')));
     expect(
       tester
@@ -8765,14 +8755,7 @@ void main() {
       expect(find.text(kReserveIpDisclaimer), findsOneWidget);
       expect(find.text('Privacy hop'), findsNothing);
       expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
-      expect(
-        tester
-            .widget<FilledButton>(find.byKey(const Key('reserve-send')))
-            .onPressed,
-        isNull,
-      );
-      await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
-      await tester.pump();
+      // A Deposit locks exactly one π: no amount gates the button.
       expect(
         tester
             .widget<FilledButton>(find.byKey(const Key('reserve-send')))
@@ -9012,15 +8995,7 @@ void main() {
     await tester.tap(find.text('Vortex'));
     await tester.pump();
     expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
-    expect(
-      tester
-          .widget<FilledButton>(find.byKey(const Key('reserve-send')))
-          .onPressed,
-      isNull,
-    );
-    // A lock is exactly one π leaf.
-    await tester.enterText(find.byKey(const Key('reserve-amount')), '$kPiShe');
-    await tester.pump();
+    // A lock is exactly one π leaf: no amount gates the button.
     expect(
       tester
           .widget<FilledButton>(find.byKey(const Key('reserve-send')))
@@ -9080,14 +9055,7 @@ void main() {
     expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
     expect(find.byKey(const Key('reserve-unprivate-confirm')), findsNothing);
     expect(find.text(kReserveIpDisclaimer), findsOneWidget);
-    expect(
-      tester
-          .widget<FilledButton>(find.byKey(const Key('reserve-send')))
-          .onPressed,
-      isNull,
-    );
-    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
-    await tester.pump();
+    // A Deposit locks exactly one π: no amount gates the button.
     expect(
       tester
           .widget<FilledButton>(find.byKey(const Key('reserve-send')))
@@ -9134,14 +9102,7 @@ void main() {
     expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
     expect(find.text(kPublicIpWaitCopy), findsNothing);
     expect(find.text(kUnprivateUnlockedBanner), findsNothing);
-    expect(
-      tester
-          .widget<FilledButton>(find.byKey(const Key('reserve-send')))
-          .onPressed,
-      isNull,
-    );
-    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
-    await tester.pump();
+    // A Deposit locks exactly one π: no amount gates the button.
     expect(
       tester
           .widget<FilledButton>(find.byKey(const Key('reserve-send')))
@@ -9356,8 +9317,8 @@ void main() {
       await tester.pump();
       expect(find.text(kReserveCutoffDisclaimer), findsOneWidget);
       expect(find.text('increase bonus'), findsOneWidget);
-      expect(find.text('Amount SHEAR'), findsOneWidget);
-      expect(find.text('Deposit sum'), findsOneWidget);
+      expect(find.text(kReserveLockAmountLine), findsOneWidget);
+      expect(find.text(kReserveLockButton), findsOneWidget);
       expect(find.text('Add more SHE to the vault'), findsNothing);
     },
   );
@@ -11046,11 +11007,6 @@ void main() {
       expect(find.text('Claim hashes'), findsNothing);
       expect(find.text('Hash bonus'), findsOneWidget);
       await tester.tap(find.text('Vortex'));
-      await tester.pump();
-      await tester.enterText(
-        find.byKey(const Key('reserve-amount')),
-        '$kPiShe',
-      );
       await tester.pump();
       await tester.ensureVisible(find.byKey(const Key('reserve-send')));
       expect(

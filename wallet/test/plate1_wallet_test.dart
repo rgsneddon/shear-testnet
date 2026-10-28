@@ -6,6 +6,7 @@ import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_session.dart';
 import 'package:shear_wallet/shear_closure.dart';
+import 'package:shear_wallet/shear_ctf.dart' show vaultDest;
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
@@ -620,7 +621,7 @@ void main() {
   // may stay on the mining mailbox when that is it (keepHome, 0.62, 29 Sep:
   // "reserve lock stays on the mining dest that holds the coins" above). Here
   // the larger note is on the other dest, so the lock is not the mailbox's.
-  testWidgets('Deposit sum consolidates 1.5+2 into a non-mailbox lock of π', (tester) async {
+  testWidgets('Lock π consolidates 1.5+2 into a non-mailbox lock of π', (tester) async {
     final funded = await fundedSplit(tester, 1.5, 2);
     await depositSum(tester, '3.14159265358', consolidate: true);
     expect(find.text(kReserveLockSent), findsWidgets, reason: _snacks(tester));
@@ -637,7 +638,7 @@ void main() {
     expect(funded.ledger.spendSeed, isNotNull);
   });
 
-  testWidgets('Deposit sum locks π from split notes and the rest stays Spendable', (tester) async {
+  testWidgets('Lock π locks π from split notes and the rest stays Spendable', (tester) async {
     final funded = await fundedSplit(tester, 1.5, 2.5);
     final owned = funded.ledger.spendableOwned(funded.id.address, paymentCode: funded.id.paymentCode);
     final levyShe = levyNanos(kPiSheNanos) / kUnitsPerShe;
@@ -649,6 +650,74 @@ void main() {
     expect((lock.amount * kUnitsPerShe).round(), kPiSheNanos);
     final left = funded.ledger.spendableOwned(funded.id.address, paymentCode: funded.id.paymentCode);
     expect(left, closeTo(owned - kPiShe - levyShe, 1e-9));
+  });
+
+  // ShearK refuses to run on phones (exit 86, Russell's phone-mining ruling).
+  // The phone wallet (Android and iOS: hostAndroid) says so under the mining
+  // login; the desktop wallet does not.
+  for (final phone in [true, false]) {
+    testWidgets('the mining login ${phone ? 'says ShearK will not run on phones' : 'has no phone line on desktop'}', (tester) async {
+      tester.view.physicalSize = const Size(900, 2600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final dir = Directory.systemTemp.createTempSync('plate1-phone-mining-');
+      addTearDown(() {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      });
+      final session = ShearSession(store: File('${dir.path}/session.json'));
+      await tester.runAsync(() async {
+        await session.loadOrCreate();
+        await session.setPassword('test-pass-1');
+      });
+      final ledger = ShearLedger()..bindIdentity(session.identity!);
+      await tester.pumpWidget(ShearWalletApp(
+        session: session,
+        ledger: ledger,
+        startUnlocked: true,
+        skipPoolSync: true,
+        hostAndroid: phone,
+      ));
+      await tester.pump();
+      await tester.pump();
+      final login = find.byKey(const Key('continuum-ssa1'));
+      expect(login, findsOneWidget, reason: 'the mining login pane is shown');
+      expect(find.textContaining('Stable mining login for ShearK'), findsOneWidget);
+      expect(find.text(kPhoneMiningLine), phone ? findsOneWidget : findsNothing);
+      expect(kPhoneMiningLine, 'Mining is for desktops and servers; ShearK will not run on phones.');
+    });
+  }
+
+  // A lock is exactly one π leaf (Russell, 25 Oct 14:20, Corrections 1), so
+  // the Deposit amount is a fixed line, not free text. Withdraw (the only exit
+  // from a matured lock) and Roll never wait on a Deposit amount.
+  testWidgets('the Deposit shows π as a fixed amount and Lock π, Withdraw and Roll need nothing typed', (tester) async {
+    final reserve = ShearReserve();
+    final funded = await fundedSplit(tester, 0, 5, reserve: reserve);
+    final vault = vaultDest(funded.id.address, viewKey: funded.id.viewKey)!;
+    reserve.portal(vault)
+      ..staked = kPiSheNanos
+      ..joined = true;
+    reserve.epochStartMs = DateTime.now().millisecondsSinceEpoch - 2 * kReserveEpochMs;
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.pump();
+    final amount = find.byKey(const Key('reserve-amount'));
+    expect(amount, findsOneWidget);
+    expect(tester.widget(amount), isA<Text>(), reason: 'read-only, not a field');
+    expect(tester.widget<Text>(amount).data, kReserveLockAmountLine);
+    expect(kReserveLockAmountLine, contains('3.14159265358'));
+    expect(find.text('Amount SHEAR'), findsNothing);
+    final lock = tester.widget<FilledButton>(find.byKey(const Key('reserve-send')));
+    expect((lock.child as Text).data, kReserveLockButton);
+    expect(lock.onPressed, isNotNull, reason: 'one π needs no typed amount');
+    await tester.ensureVisible(find.byKey(const Key('reserve-withdraw')));
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-withdraw'))).onPressed, isNotNull,
+        reason: 'withdraw is independent of the Deposit');
+    final roll = find.byKey(const Key('reserve-roll'));
+    if (roll.evaluate().isNotEmpty) {
+      expect(tester.widget<ButtonStyleButton>(roll).onPressed, isNotNull);
+    }
   });
 
   // A vote is a leaf vote posted to a node (no local vote): the shell runs
@@ -957,11 +1026,13 @@ Future<void> depositSum(WidgetTester tester, String amount, {bool consolidate = 
   await tester.tap(find.text('Vortex'));
   await tester.pump();
   await tester.pump();
+  // A lock is exactly one π leaf: the amount is a fixed line, not a field.
   await tester.ensureVisible(find.byKey(const Key('reserve-amount')));
-  await tester.enterText(find.byKey(const Key('reserve-amount')), amount);
-  await tester.pump();
+  expect(find.byType(TextField).evaluate().where((e) => e.widget.key == const Key('reserve-amount')), isEmpty);
+  expect(tester.widget<Text>(find.byKey(const Key('reserve-amount'))).data, kReserveLockAmountLine);
+  expect(kReserveLockAmountLine, contains(amount));
   await tester.ensureVisible(find.byKey(const Key('reserve-send')));
-  expect(find.text('Deposit sum'), findsOneWidget);
+  expect(find.text(kReserveLockButton), findsOneWidget);
   await tester.tap(find.byKey(const Key('reserve-send')));
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 50));

@@ -301,7 +301,6 @@ class ShearWalletAppState extends State<ShearWalletApp>
   final flowMemo = TextEditingController();
   final unlockCtrl = TextEditingController();
   final confirmCtrl = TextEditingController();
-  final reserveAmt = TextEditingController();
   final vorticeKeyCtrl = TextEditingController();
   final shearviewQuery = TextEditingController();
   bool _vorticeBusy = false;
@@ -605,7 +604,6 @@ class ShearWalletAppState extends State<ShearWalletApp>
     flowMemo.dispose();
     unlockCtrl.dispose();
     confirmCtrl.dispose();
-    reserveAmt.dispose();
     vorticeKeyCtrl.dispose();
     shearviewQuery.dispose();
     for (final c in _tabScroll) {
@@ -3161,6 +3159,18 @@ class ShearWalletAppState extends State<ShearWalletApp>
           color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
         ),
       ),
+      // ShearK refuses to run on phones (exit 86, Russell's phone-mining
+      // ruling): the phone wallet says so where the mining login is.
+      if (_hostAndroid) ...[
+        const SizedBox(height: 6),
+        Text(
+          kPhoneMiningLine,
+          key: const Key('continuum-phone-mining'),
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+          ),
+        ),
+      ],
     ];
     final statsPane = <Widget>[
       Text(
@@ -4057,7 +4067,8 @@ class ShearWalletAppState extends State<ShearWalletApp>
   Future<void> _reserveSend(BuildContext context, ShearIdentity ident) async {
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
-    final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
+    // A lock is exactly one π leaf (ruling 25 Oct): the amount is fixed.
+    const she = kPiShe;
     if (!unprivateAmountPermitted(she)) return;
     final depth = await _mempoolDepthNow();
     final lockNanos = (she * kUnitsPerShe).round();
@@ -4096,7 +4107,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Lock ${formatShe(she)} SHE into The Reserve.\n'
+              'Lock $kPiExactText SHE (one π) into The Reserve.\n'
               'This spends Continuum and locks the coins in your portal until the epoch ends.',
             ),
             const SizedBox(height: 8),
@@ -4194,12 +4205,8 @@ class ShearWalletAppState extends State<ShearWalletApp>
     );
   }
 
-  /// A Deposit needs an amount and a ready node.
-  bool get _reserveSendReady {
-    final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
-    if (!unprivateAmountPermitted(she)) return false;
-    return _reserveNodeReady;
-  }
+  /// A Deposit locks exactly one π leaf, so it needs only a ready node.
+  bool get _reserveSendReady => _reserveNodeReady;
 
   /// Withdraw, roll, and the vote carry no Deposit amount. They wait only on
   /// the node, never on what is typed in the Deposit field.
@@ -5060,19 +5067,14 @@ class ShearWalletAppState extends State<ShearWalletApp>
         ),
       ],
       const SizedBox(height: 8),
-      TextField(
+      // A lock is exactly one π leaf: the amount is shown, never typed.
+      Text(
+        kReserveLockAmountLine,
         key: const Key('reserve-amount'),
-        controller: reserveAmt,
-        keyboardType: TextInputType.number,
-        onChanged: (_) => setState(() {}),
-        decoration: const InputDecoration(labelText: 'Amount SHEAR'),
+        style: const TextStyle(fontWeight: FontWeight.w600),
       ),
       Text(
-        _txFeeAdvice(
-          ((double.tryParse(reserveAmt.text.trim()) ?? 0) * kUnitsPerShe)
-              .round(),
-          oneFeeTo: 'add funds to the vault',
-        ),
+        _txFeeAdvice(kPiSheNanos, oneFeeTo: 'add funds to the vault'),
         key: const Key('reserve-lock-levy'),
       ),
       if (_reserveDepositProgress != null) ...[
@@ -5099,7 +5101,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
             onPressed: _reserveSendReady
                 ? () => _reserveSend(context, ident)
                 : null,
-            child: const Text('Deposit sum'),
+            child: const Text(kReserveLockButton),
           ),
           if ((p.nanos > 0 && reserve.epochIsOver(now)) ||
               p.claimableRewards > 0 ||
@@ -5962,3 +5964,16 @@ class ScanReceiveQrPageState extends State<ScanReceiveQrPage> {
     );
   }
 }
+
+/// One π leaf, to the protocol unit (11 decimals), as the Deposit shows it.
+final String kPiExactText = (kPiSheNanos / kUnitsPerShe).toStringAsFixed(11);
+
+/// The Deposit amount line. A lock is exactly one π leaf (Russell, 25 Oct
+/// 14:20, Corrections 1); there is no amount to type.
+final String kReserveLockAmountLine = 'Amount: $kPiExactText SHE (a lock is exactly one π)';
+
+/// The Deposit action.
+const kReserveLockButton = 'Lock π';
+
+/// Under the mining login on Android and iOS: ShearK will not run on phones.
+const kPhoneMiningLine = 'Mining is for desktops and servers; ShearK will not run on phones.';
