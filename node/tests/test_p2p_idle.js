@@ -1980,7 +1980,9 @@ describe('p2p hello deadline and idle eviction', () => {
   it('a body carrying hash credits is stage-held like any other', async () => {
     const wire = matchingBlock(0x63);
     const dest20 = Buffer.alloc(20, 0x2c);
-    // Hash-credit rows decode with BigInt nanos; the hold key must still form.
+    // R28 (D2): the column is retired. The decoder hands it to the store as
+    // sent (the store refuses that copy as blunote_owed), and the hold key
+    // must still form for it.
     const credits = packHashCreditBytes([{ noteCommit: noteCommitOfDest20(dest20), dest20, nanos: 7n }]).toString('hex');
     let calls = 0;
     const store = {
@@ -1989,7 +1991,7 @@ describe('p2p hello deadline and idle eviction', () => {
       on() { return () => {}; },
       ingest(fork) {
         calls += 1;
-        assert.equal(typeof fork?.[0]?.hashCredits?.[0]?.nanos, 'bigint', 'credits decode to BigInt nanos');
+        assert.equal(fork?.[0]?.hashCreditPacked, credits, 'the credit column reaches the store as sent');
         return { ok: false, reason: 'apply_stage' };
       },
     };

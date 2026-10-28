@@ -29,6 +29,7 @@ import { setHashBackend } from '../../crypto/shear_hash.js';
 import { digestTx } from '../src/chain.js';
 import { encodeWireBlock, decodeWireBlock, jsonWire } from '../src/p2p.js';
 import { auditCirculatingSupply, emptySupplyState, supplyStep } from '../src/supply.js';
+import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { createRegtestStore } from './regtest_store.js';
 import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
 
@@ -231,6 +232,24 @@ describe('R28 refuses the retired owed ledger and hash-credit record', () => {
     } finally {
       fs.rmSync(dirA, { recursive: true, force: true });
       fs.rmSync(dirB, { recursive: true, force: true });
+    }
+  });
+
+  it('a tx carrying an owed or hash-credit field is refused at mempool admission, so no template can carry it', () => {
+    const dir = tmp('mempool');
+    try {
+      const store = createRegtestStore(dir, { bits: 4 });
+      const book = emptyMempool();
+      const seen = {};
+      for (const field of OWED_TX) {
+        const tx = { kind: 'send', vin: [], vout: [], [field]: field.endsWith('Root') ? 'ab'.repeat(32) : '1' };
+        const queued = store.queueTx(tx);
+        const pooled = admitMempool(book, { ...tx });
+        seen[field] = `${queued.ok ? 'ACCEPTED' : queued.reason}/${pooled.ok ? 'ACCEPTED' : pooled.reason}`;
+      }
+      for (const field of OWED_TX) assert.equal(seen[field], 'blunote_owed/blunote_owed', `${field}: ${JSON.stringify(seen)}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
