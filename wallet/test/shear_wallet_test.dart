@@ -146,6 +146,72 @@ _NoteWallet _noteWallet(int count, {required int nanos}) {
   return _NoteWallet(ledger, id, dest, posts, seed);
 }
 
+/// One real FS-1 note on [dest] mined at [height]: the compact chain row,
+/// and the admit-set column (P, C) a pool fluxset serves for it.
+({Map<String, dynamic> note, Uint8List pub, Uint8List commit}) _fs1Note(
+  ShearIdentity id,
+  String dest, {
+  required int nanos,
+  int height = 2,
+}) {
+  final seed = hexToBytes(id.seedHex);
+  final n = _offlinePot(nanos, height, dest20: hash20FromAddress(dest)!, seed: seed);
+  return (
+    note: n,
+    pub: pointBytes(admitPub(admitScalarFromSeed(seed, n))),
+    commit: n['commit'] as Uint8List,
+  );
+}
+
+/// Funds [ledger] the way the chain does: one real FS-1 note of [nanos] on
+/// [dest], mined at [height], scanned in, with its admit-set row appended to
+/// the fluxset [live] serves. A round credit or a pool balance is not this.
+void _fundFs1Live(
+  ShearLedger ledger,
+  ShearIdentity id,
+  _PoolLive live,
+  String dest, {
+  required int nanos,
+  int height = 1,
+}) {
+  final real = _fs1Note(id, dest, nanos: nanos, height: height);
+  final set = live.fluxset ??
+      <String, dynamic>{
+        'ok': true,
+        'pubs': <String>[],
+        'commits': <String>[],
+        'spendTags': <String>[],
+      };
+  (set['pubs'] as List).add(_hexOf(real.pub));
+  (set['commits'] as List).add(_hexOf(real.commit));
+  set['anchors'] = [
+    {'height': 8, 'n': (set['pubs'] as List).length},
+  ];
+  live.fluxset = set;
+  ledger.ingestSealedVouts(
+    [real.note],
+    spendSeed: hexToBytes(id.seedHex),
+    dest: dest,
+    prev: Uint8List(32),
+  );
+  ledger.noteNodeCheckedTip(height + ShearLedger.spendableConfirmations);
+  ledger.settleTo(height + ShearLedger.spendableConfirmations);
+}
+
+/// The fluxset JSON a pool serves for [cols], one anchor over all of them.
+Map<String, dynamic> _fluxsetJson(
+  List<({Map<String, dynamic> note, Uint8List pub, Uint8List commit})> cols, {
+  int height = 2,
+}) => {
+  'ok': true,
+  'pubs': [for (final c in cols) _hexOf(c.pub)],
+  'commits': [for (final c in cols) _hexOf(c.commit)],
+  'spendTags': const <String>[],
+  'anchors': [
+    {'height': height, 'n': cols.length},
+  ],
+};
+
 Map<String, dynamic> _offlinePot(
   int nanos,
   int height, {
@@ -933,12 +999,13 @@ void main() {
       expect(dest.startsWith('ssa1'), isTrue);
       expect(destMatchesSpendPub(dest, probe.spendPub!), isTrue);
       final d20 = hash20FromAddress(dest)!;
-      var spent = Map<String, dynamic>.from(
-        debugNativeSealNote!(kUnitsPerShe, dest20: d20, kind: 'pot'),
-      );
+      // The spent note is a real payout: node range blob, mined at height 2.
+      var spent = _sealPayout(kUnitsPerShe, dest20: d20, kind: 'pot');
       spent['address'] = dest;
       spent = attachAdmitPub(spent, admitBase: pointFrom(admitBaseBytes(seed)));
-      final compacted = compactSealedVout(spent)..['nanos'] = kUnitsPerShe;
+      final compacted = compactSealedVout(spent)
+        ..['nanos'] = kUnitsPerShe
+        ..['height'] = 2;
       expect(compacted.containsKey('r'), isFalse);
       expect(compacted['rEph'], isNotNull);
       expect(compacted['rCt'], isNotNull);
@@ -946,8 +1013,14 @@ void main() {
       final P = pointBytes(admitPub(x));
       final decoy = pointBytes(admitPub(randomScalar()));
       final pubs = [P, decoy];
+      // J is (P, C): the decoy row carries a real commit too.
+      final decoyCommit = _sealPayout(kUnitsPerShe, kind: 'pot')['commit'] as Uint8List;
       final posts = <Map<String, dynamic>>[];
-      final pool = _RecordingPool(posts, pubs: pubs);
+      final pool = _RecordingPool(
+        posts,
+        pubs: pubs,
+        commits: [compacted['commit'] as Uint8List, decoyCommit],
+      );
       final ledger = ShearLedger(pool: pool)..bindIdentity(id);
       ledger.confirmRound(address: dest, pot: 1, height: 2);
       expect(
@@ -956,7 +1029,8 @@ void main() {
         reason: 'confirmRound does not rememberNote',
       );
       ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
-      final bob = encodeDestAddress(Uint8List.fromList(List.filled(20, 7)));
+      // A payable dest: an old short-form ssa1 has no admit base and is refused.
+      final bob = _payablePayee();
       ledger.applyPoolSnapshot(
         dest,
         {'balance': 1.0, 'pending': 0, 'incoming': []},
@@ -993,11 +1067,12 @@ void main() {
       final body = posts.last;
       expect(body['admit_proof'], isA<Map>());
       final proof = Map<String, dynamic>.from(body['admit_proof'] as Map);
-      expect(proof['admit_proof'], isTrue);
-      expect(proof['v'], 2);
-      expect(proof['blob'], isNotNull);
+      // ADMITv3: the admit proof is one FS-1 record (blob, cTilde, spendTag),
+      // and the posted body verifies against the live admit set.
+      expect(_anyBytes(proof['blob'])[0], kFs1Wire);
       expect(proof['cTilde'], isNotNull);
       expect(proof['spendTag'], isNotNull);
+      _expectFs1Post(body, pool.pubs, pool.commits!);
       final vout = body['vout'] as List;
       expect(
         vout.any(
@@ -1030,9 +1105,12 @@ void main() {
       final postedFile = File(
         '${Directory.systemTemp.path}${Platform.pathSeparator}shear-posted-vin-${pid}.json',
       );
+      // The compact FS-1 body names no from. The sig is over the spending
+      // dest, so the check names the dest the note sits on.
+      expect(body['from'], isNull);
       postedFile.writeAsStringSync(
         jsonEncode({
-          'from': body['from'],
+          'from': dest,
           'kind': body['kind'] ?? 'send',
           'vin': body['vin'],
           'vout': body['vout'],
@@ -1064,10 +1142,10 @@ void main() {
         isTrue,
         reason: 'wallet-sealed change keeps r locally',
       );
-      expect(proof['v'], 2);
+      // The FS-1 record is the whole admit proof: no blind, no v2 ring.
+      expect(proof.keys.toSet(), {'spendTag', 'blob', 'cTilde'});
       expect(proof['r'], isNull);
       expect(proof.containsKey('c0'), isFalse);
-      expect(proof['admit_proof'], isTrue);
       expect(
         ledger.notes.any(
           (n) => n['commit'] != null && n['r'] != null && n['prev'] != null,
@@ -1548,8 +1626,10 @@ void main() {
       ledger.confirmRound(address: dest, pot: 1, height: 2);
       expect(ledger.notes, isEmpty);
       ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
+      // Mined at height 2: gate 3 does not hold it as Pending, so the
+      // spend-tag check is what refuses it.
       ledger.ingestSealedVouts(
-        [compactSealedVout(spent)],
+        [compactSealedVout(spent)..['height'] = 2],
         spendSeed: seed,
         dest: dest,
         prev: Uint8List(32),
@@ -1602,6 +1682,8 @@ void main() {
       var pot = _sealPayout(kUnitsPerShe, dest20: d20, kind: 'pot');
       pot['address'] = dest;
       pot = attachAdmitPub(pot, admitBase: pointFrom(admitBaseBytes(seed)));
+      // The pool lists the note with the height it was mined at.
+      pot['height'] = 2;
       final x = admitScalarFromSeed(seed, pot);
       final posts = <Map<String, dynamic>>[];
       final pubs = [pointBytes(admitPub(x))];
@@ -2321,8 +2403,9 @@ void main() {
     final seed = hexToBytes(id.seedHex);
     ledger.ingestSealedVouts(
       [
+        // Covers one π leaf plus its levy.
         _offlinePot(
-          kUnitsPerShe,
+          4 * kUnitsPerShe,
           2,
           dest20: hash20FromAddress(from)!,
           seed: seed,
@@ -2338,7 +2421,8 @@ void main() {
       ledger.send(
         from: from,
         to: vault,
-        amount: 0.05,
+        // A lock is exactly one π leaf.
+        amount: kPiShe,
         kind: 'lock',
         programId: kReserveProgram,
         local: false,
@@ -2379,20 +2463,23 @@ void main() {
       final ledger = ShearLedger(pool: pool)..bindIdentity(id);
       final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
       final vault = vaultDest(id.address, viewKey: id.viewKey)!;
-      ledger.confirmRound(address: from, pot: 2, height: 2);
-      ledger.settleTo(2 + ShearLedger.spendableConfirmations);
-      _rememberSealed(
-        ledger,
-        id,
-        nanos: 2 * kUnitsPerShe,
-        height: 2,
-        tip: 2 + ShearLedger.spendableConfirmations,
+      // A real 4 SHE note mined at 2, in the admit set the pool serves.
+      // The production lock funds π plus the levy cap.
+      final real = _fs1Note(id, from, nanos: 5 * kUnitsPerShe);
+      live.fluxset = _fluxsetJson([real]);
+      ledger.ingestSealedVouts(
+        [real.note],
+        spendSeed: seed,
         dest: from,
+        prev: Uint8List(32),
       );
+      ledger.noteNodeCheckedTip(2 + ShearLedger.spendableConfirmations);
+      ledger.settleTo(2 + ShearLedger.spendableConfirmations);
       await ledger.send(
         from: from,
         to: vault,
-        amount: 0.05,
+        // A lock is exactly one π leaf.
+        amount: kPiShe,
         kind: 'lock',
         programId: kReserveProgram,
         restFrame: id.address,
@@ -2405,7 +2492,11 @@ void main() {
       final v0 = (posted.single['vout'] as List).first as Map;
       expect(v0['kind'], 'lock');
       expect(v0['commit'], isNotNull);
-      expect(posted.single['sig'], isNotEmpty);
+      // An FS-1 lock is authorised by lockAuth, not the identity spend key.
+      expect(posted.single['sig'], isNull);
+      expect(posted.single['spendPub'], isNull);
+      expect(posted.single['lockAuth'], isA<String>());
+      expect(posted.single['fs1'], isA<String>());
     },
   );
 
@@ -2425,11 +2516,16 @@ void main() {
       var pot = _sealPayout(kUnitsPerShe, dest20: d20, kind: 'pot');
       pot['address'] = dest;
       pot = attachAdmitPub(pot, admitBase: pointFrom(admitBaseBytes(seed)));
-      final potRow = compactSealedVout(pot)..['nanos'] = kUnitsPerShe;
+      // Both rows are mined at height 2, so gate 3 does not hold them as Pending.
+      final potRow = compactSealedVout(pot)
+        ..['nanos'] = kUnitsPerShe
+        ..['height'] = 2;
       var hash = _sealNoteNoRange(512, dest20: d20, kind: 'hash');
       hash['address'] = dest;
       hash = attachAdmitPub(hash, admitBase: pointFrom(admitBaseBytes(seed)));
-      final hashRow = compactSealedVout(hash)..['nanos'] = 512;
+      final hashRow = compactSealedVout(hash)
+        ..['nanos'] = 512
+        ..['height'] = 2;
       final x = admitScalarFromSeed(seed, pot);
       final pubs = [
         pointBytes(admitPub(x)),
@@ -2736,6 +2832,9 @@ void main() {
       final ledger = ShearLedger(pool: pool)..bindIdentity(id);
       final silent = ledger.homeDest(id.address, paymentCode: id.paymentCode);
       live.owner = silent;
+      // A live wallet reads the tip, and binds the chain genesis, before its
+      // first credit read; the first genesis bind drops rows from before it.
+      await ledger.syncTip();
       live.incoming = [
         {
           'id': 'in-tip',
@@ -5537,7 +5636,8 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-first-run-');
     final store = File('${dir.path}/session.json');
     final session = ShearSession(store: store);
-    await session.loadOrCreate();
+    // Real file IO: run it outside the fake clock.
+    await tester.runAsync(() => session.loadOrCreate());
     expect(session.needsPasswordSet, isTrue);
     await tester.pumpWidget(
       ShearWalletApp(
@@ -5568,7 +5668,8 @@ void main() {
     expect(session.sealed, isTrue);
 
     final locked = ShearSession(store: store);
-    await locked.loadOrCreate();
+    // Real file IO: run it outside the fake clock.
+    await tester.runAsync(() => locked.loadOrCreate());
     expect(locked.needsUnlock, isTrue);
     await tester.pumpWidget(
       ShearWalletApp(
@@ -6682,7 +6783,8 @@ void main() {
       final lock = await ledger.send(
         from: from,
         to: from,
-        amount: 3.2,
+        // A lock is exactly one π leaf.
+        amount: kPiShe,
         kind: 'lock',
         programId: 'shear-reserve-v1',
         restFrame: id.address,
@@ -7765,6 +7867,9 @@ void main() {
     session.rememberedDests = ledger.exportedDests();
     session.rememberedDestCount = ledger.destCount;
     session.rememberedDestIndex = ledger.destIndex;
+    // A returning wallet: its first-run node choice (public, consented) is made.
+    session.publicNodeChoiceMade = true;
+    session.publicNodeConsent = true;
     await tester.runAsync(() => session.persist());
     await tester.pumpWidget(
       ShearWalletApp(
@@ -7816,8 +7921,11 @@ void main() {
     final fresh = live.balanceQueried.sublist(mark).toSet();
     expect(fresh, mine);
     expect(live.balanceQueried.toSet().intersection(foreign), isEmpty);
+    // The pool figure (10.5 on `received`) is read, and painted nowhere: not
+    // on the dest map, not on Spendable (Spendable never painted from pool
+    // figures).
     expect(ledger.spendable(mailbox), 0);
-    expect(ledger.spendable(received), 10.5);
+    expect(ledger.spendable(received), 0);
     expect(
       ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode),
       0,
@@ -8753,34 +8861,44 @@ void main() {
   );
 
   test(
-    'Reserve lock posts kind=lock with commit and the pool verifies the sig',
+    'Reserve lock posts kind=lock with commit and the node verifies lockAuth, FS-1, and π',
     () async {
       final id = createIdentity();
+      final seed = hexToBytes(id.seedHex);
       final posts = <Map<String, dynamic>>[];
-      final pool = _RecordingPool(posts, baseUrl: kPublicPoolHttp);
+      final home = (ShearLedger()..bindIdentity(id)).homeDest(
+        id.address,
+        paymentCode: id.paymentCode,
+      );
+      // A real 10 SHE note mined at 20, in the admit set the pool serves.
+      final real = _fs1Note(id, home, nanos: 10 * kUnitsPerShe, height: 20);
+      final pool = _RecordingPool(
+        posts,
+        baseUrl: kPublicPoolHttp,
+        pubs: [real.pub],
+        commits: [real.commit],
+      );
       final ledger = ShearLedger(pool: pool)..bindIdentity(id);
       ledger.viewSecret = id.viewKey;
-      final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-      ledger.confirmRound(address: home, pot: 10, height: 20);
-      ledger.settleTo(30);
-      _rememberSealed(
-        ledger,
-        id,
-        nanos: 10 * kUnitsPerShe,
-        height: 20,
-        tip: 30,
+      ledger.ingestSealedVouts(
+        [real.note],
+        spendSeed: seed,
         dest: home,
+        prev: Uint8List(32),
       );
+      ledger.noteNodeCheckedTip(30);
+      ledger.settleTo(30);
       final vault = vaultDest(id.address, viewKey: id.viewKey)!;
       final from = ledger.spendFrom(
         id.address,
         paymentCode: id.paymentCode,
-        amount: 1,
+        amount: kPiShe,
       );
       await ledger.send(
         from: from,
         to: vault,
-        amount: 1,
+        // A lock is exactly one π leaf.
+        amount: kPiShe,
         local: false,
         kind: 'lock',
         programId: kReserveProgram,
@@ -8798,7 +8916,11 @@ void main() {
       final o = Map<String, dynamic>.from(vout.first as Map);
       expect(o['kind'], 'lock');
       expect(o['commit'], isNotNull);
-      expect(o['noteCommit'], isNotNull);
+      // An FS-1 lock is authorised by lockAuth (325b50f5, 22 Oct): the
+      // identity spend key stays off the wire.
+      expect(body['sig'], isNull);
+      expect(body['spendPub'], isNull);
+      expect(body['lockAuth'], isA<String>());
       final repo =
           Directory.current.path.replaceAll('\\', '/').endsWith('/wallet')
           ? Directory.current.parent.path
@@ -8808,17 +8930,12 @@ void main() {
       );
       postedFile.writeAsStringSync(
         jsonEncode({
-          'from': body['from'],
-          'to': body['to'],
-          'kind': 'lock',
-          'programId': kReserveProgram,
-          'portalId': portalIdFromDest(body['to'] as String),
-          'payoutPortalId': portalIdFromDest(body['from'] as String),
-          'fee': body['postedFee'],
-          'vin': body['vin'],
-          'vout': body['vout'],
-          'sig': body['sig'],
-          'spendPub': body['spendPub'],
+          'tx': body,
+          'live': {
+            'pubs': [_hexOf(real.pub)],
+            'commits': [_hexOf(real.commit)],
+          },
+          'height': 80,
         }),
       );
       addTearDown(() {
@@ -8826,21 +8943,23 @@ void main() {
           postedFile.deleteSync();
         } catch (_) {}
       });
+      // The node's own checks: reserveAuth, the FS-1 spend over the live
+      // admit set bound to this body, and the π proof on the lock commit.
       final checked = Process.runSync('node', [
-        'tests/verify_posted_spend.mjs',
+        'tests/verify_posted_lock.mjs',
         postedFile.path,
       ], workingDirectory: repo);
       expect(
         checked.exitCode,
         0,
-        reason:
-            'lock verifySpendSig/verifyReservePortalOpen rejected: ${checked.stdout}${checked.stderr}',
+        reason: 'node rejected the posted lock: ${checked.stdout}${checked.stderr}',
       );
       final verified = jsonDecode(checked.stdout as String) as Map;
       expect(verified['ok'], true);
-      expect(verified['sigOk'], true);
-      expect(verified['portalOk'], true);
-      expect(verified['sealOk'], true);
+      expect(verified['authOk'], true);
+      expect(verified['admitOk'], true);
+      expect(verified['piOk'], true);
+      expect(verified['identityKeyOff'], true);
     },
   );
 
@@ -8853,23 +8972,29 @@ void main() {
     await _sealSession(tester, session);
     final ident = session.identity!;
     final posts = <Map<String, dynamic>>[];
-    final pool = _RecordingPool(posts, baseUrl: kPublicPoolHttp);
+    final home = (ShearLedger()..bindIdentity(ident)).homeDest(
+      ident.address,
+      paymentCode: ident.paymentCode,
+    );
+    // A real 10 SHE note mined at 20, in the admit set the pool serves.
+    final real = _fs1Note(ident, home, nanos: 10 * kUnitsPerShe, height: 20);
+    final pool = _RecordingPool(
+      posts,
+      baseUrl: kPublicPoolHttp,
+      pubs: [real.pub],
+      commits: [real.commit],
+    );
     final ledger = ShearLedger(pool: pool);
     ledger.viewSecret = ident.viewKey;
     ledger.bindIdentity(ident);
-    ledger.confirmRound(
-      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
-      pot: 10,
-      height: 20,
+    ledger.ingestSealedVouts(
+      [real.note],
+      spendSeed: hexToBytes(ident.seedHex),
+      dest: home,
+      prev: Uint8List(32),
     );
+    ledger.noteNodeCheckedTip(30);
     ledger.settleTo(30);
-    _rememberSealed(
-      ledger,
-      ident,
-      nanos: 10 * kUnitsPerShe,
-      height: 20,
-      tip: 30,
-    );
     await tester.pumpWidget(
       ShearWalletApp(
         session: session,
@@ -8892,7 +9017,8 @@ void main() {
           .onPressed,
       isNull,
     );
-    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
+    // A lock is exactly one π leaf.
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '$kPiShe');
     await tester.pump();
     expect(
       tester
@@ -9119,7 +9245,8 @@ void main() {
       expect(session.deployedVortices.single.id, 'stake-pool-a');
       await tester.runAsync(() => session.persist());
       final reloaded = ShearSession(store: File('${dir.path}/session.json'));
-      await reloaded.loadOrCreate();
+      // Real file IO: run it outside the fake clock.
+      await tester.runAsync(() => reloaded.loadOrCreate());
       await tester.runAsync(() => reloaded.unlock(kGatePassword));
       expect(reloaded.deployedVortices.single.id, 'stake-pool-a');
       expect(reloaded.deployedVortices.single.origin, origin);
@@ -9189,7 +9316,8 @@ void main() {
       expect(session.deployedVortices, isEmpty);
       await tester.runAsync(() => session.persist());
       final reloaded = ShearSession(store: File('${dir.path}/session.json'));
-      await reloaded.loadOrCreate();
+      // Real file IO: run it outside the fake clock.
+      await tester.runAsync(() => reloaded.loadOrCreate());
       await tester.runAsync(() => reloaded.unlock(kGatePassword));
       expect(reloaded.deployedVortices, isEmpty);
     },
@@ -9239,7 +9367,8 @@ void main() {
       final posted = <Map<String, dynamic>>[];
       final header = Uint8List(128);
       final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-      final server = await _fakePool(headerHex: hex, height: 1, posted: posted);
+      final live = _PoolLive(headerHex: hex, height: 1);
+      final server = await _fakePool(live: live, posted: posted);
       addTearDown(() => server.close(force: true));
       final alice = createIdentity();
       final bob = createIdentity();
@@ -9256,10 +9385,8 @@ void main() {
       expect(from.startsWith('ssa1'), isTrue);
       expect(isDestAddress(from), isTrue);
       expect(from, isNot(alice.address));
-      aliceL.creditHash(from, hashes: 0);
-      aliceL.confirmRound(address: from, pot: 1, height: 1);
-      aliceL.settleTo(1 + ShearLedger.spendableConfirmations);
-      expect(aliceL.spendable(from), closeTo(1, 1e-12));
+      // One real 1 SHE note mined at 1, in the admit set the pool serves.
+      _fundFs1Live(aliceL, alice, live, from, nanos: kUnitsPerShe);
       expect(
         aliceL.spendableOwned(alice.address, paymentCode: alice.paymentCode),
         closeTo(1, 1e-12),
@@ -9272,6 +9399,7 @@ void main() {
         memo: 'secret-flow',
         restFrame: alice.address,
         paymentCode: alice.paymentCode,
+        spendSeed: hexToBytes(alice.seedHex),
       );
       expect(tx.from, from);
       expect(isDestAddress(tx.to), isTrue);
@@ -9319,9 +9447,9 @@ void main() {
         paymentCode: alice.paymentCode,
       );
       await aliceL.syncCredits(alice.address, paymentCode: alice.paymentCode);
-      // The coin is a matured local round. A pool balance is not spendable.
-      aliceL.confirmRound(address: home, pot: 1.5, height: 1);
-      aliceL.settleTo(1 + ShearLedger.spendableConfirmations);
+      // The coin is a real note mined at 1 on home. A pool balance on
+      // either dest is not spendable.
+      _fundFs1Live(aliceL, alice, live, home, nanos: 15 * kUnitsPerShe ~/ 10);
       live.destBalances[home] = 1.5;
       live.destBalances[indexed] = 1.5;
       expect(home, isNot(indexed));
@@ -9343,20 +9471,29 @@ void main() {
         isNot(indexed),
       );
 
-      final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
+      // A payable dest: a short destForLogin has no admit base.
+      final to = payableChainDest(bob.paymentCodeFull)!;
       final tx = await aliceL.send(
         from: indexed,
         to: to,
         amount: 0.4,
         restFrame: alice.address,
         paymentCode: alice.paymentCode,
+        spendSeed: hexToBytes(alice.seedHex),
       );
       expect(tx.from, home);
       expect(posted.single.containsKey('from'), isFalse);
       expect(posted.single.containsKey('to'), isFalse);
-      final fee = levyNanos((0.4 * kUnitsPerShe).round()) / kUnitsPerShe;
+      // The posted fee is the levy. The change is this wallet's own note
+      // with no height yet (gate 3): Pending, not Spendable, until mined.
+      final fee = (posted.single['fee'] as num).toInt() / kUnitsPerShe;
+      expect(fee, greaterThan(0));
       expect(
         aliceL.spendableOwned(alice.address, paymentCode: alice.paymentCode),
+        0,
+      );
+      expect(
+        aliceL.unminedChangeShe(alice.address, paymentCode: alice.paymentCode),
         closeTo(1.5 - 0.4 - fee, 1e-9),
       );
     },
@@ -9380,22 +9517,21 @@ void main() {
       final ledger = ShearLedger(pool: pool)..bindIdentity(alice);
       await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
       final from = ledger.currentDest(alice.address);
-      ledger.confirmRound(address: from, pot: 1, height: 1);
-      ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-      expect(ledger.spendable(from), closeTo(1.0, 1e-12));
+      // One real 1 SHE note mined at 1, in the admit set the pool serves.
+      _fundFs1Live(ledger, alice, live, from, nanos: kUnitsPerShe);
       expect(
         ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode),
         closeTo(1.0, 1e-12),
       );
-      // Pool mirror so the posted send is accepted. Not the wallet's coin.
-      live.destBalances[from] = 1.0;
-      final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
+      // A payable dest: a short destForLogin has no admit base.
+      final to = payableChainDest(bob.paymentCodeFull)!;
       final tx = await ledger.send(
         from: from,
         to: to,
         amount: 0.4,
         restFrame: alice.address,
         paymentCode: alice.paymentCode,
+        spendSeed: hexToBytes(alice.seedHex),
       );
       expect(posted, isNotEmpty);
       expect(posted.single.containsKey('to'), isFalse);
@@ -9403,19 +9539,37 @@ void main() {
       expect(tx.change, isNotNull);
       expect(tx.change, isNot(from));
       expect(tx.change, isNot(to));
-      final fee = levyNanos((0.4 * kUnitsPerShe).round()) / kUnitsPerShe;
+      final fee = (posted.single['fee'] as num).toInt() / kUnitsPerShe;
       final leftover = 1.0 - 0.4 - fee;
+      // The spent note is gone from `from`. The leftover is this wallet's own
+      // change, Pending until it has a height (gate 3), never Spendable early.
       expect(ledger.spendable(from), closeTo(0, 1e-9));
-      expect(ledger.spendable(tx.change!), closeTo(leftover, 1e-9));
+      expect(
+        ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode),
+        0,
+      );
+      expect(
+        ledger.unminedChangeShe(alice.address, paymentCode: alice.paymentCode),
+        closeTo(leftover, 1e-9),
+      );
+      // A pool figure on either dest after the send restores nothing.
+      live.destBalances[from] = 1.0;
+      live.destBalances[tx.change!] = 0.6;
       await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
       expect(
         ledger.spendable(from),
         closeTo(0, 1e-9),
         reason: 'on-chain leftover must not return to from',
       );
-      expect(live.destBalances[from], closeTo(0, 1e-12));
-      expect(live.destBalances[tx.change!], closeTo(0.6, 1e-12));
-      expect(ledger.spendable(tx.change!), closeTo(0.6, 1e-9));
+      expect(
+        ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode),
+        0,
+        reason: 'a pool balance is not Spendable',
+      );
+      expect(
+        ledger.unminedChangeShe(alice.address, paymentCode: alice.paymentCode),
+        closeTo(leftover, 1e-9),
+      );
     },
   );
 
@@ -9494,7 +9648,8 @@ void main() {
       final header = Uint8List(128);
       final hex = header.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
       final live = _PoolLive(headerHex: hex, height: 20, balance: 0);
-      final server = await _fakePool(live: live);
+      final posted = <Map<String, dynamic>>[];
+      final server = await _fakePool(live: live, posted: posted);
       addTearDown(() => server.close(force: true));
       final pool = ShearPoolClient(
         baseUrl: 'http://127.0.0.1:${server.port}',
@@ -9507,9 +9662,8 @@ void main() {
         paymentCode: alice.paymentCode,
       );
       await aliceL.syncCredits(alice.address, paymentCode: alice.paymentCode);
-      aliceL.confirmRound(address: silent, pot: 2, height: 1);
-      aliceL.settleTo(1 + ShearLedger.spendableConfirmations);
-      live.destBalances[silent] = 2;
+      // One real 2 SHE note mined at 1, in the admit set the pool serves.
+      _fundFs1Live(aliceL, alice, live, silent, nanos: 2 * kUnitsPerShe);
       final to = bobL.homeDest(bob.address, paymentCode: bob.paymentCode);
       await aliceL.send(
         from: aliceL.currentDest(alice.address),
@@ -9517,7 +9671,15 @@ void main() {
         amount: 0.5,
         restFrame: alice.address,
         paymentCode: alice.paymentCode,
+        spendSeed: hexToBytes(alice.seedHex),
       );
+      // Bob learns the payment from the sealed outputs of the posted body,
+      // mined at 21, not from a pool incoming row or a pool balance.
+      live.height = 21;
+      live.notes = [
+        for (final o in (posted.single['vout'] as List))
+          {...Map<String, dynamic>.from(o as Map), 'height': 21},
+      ];
       await bobL.syncCredits(bob.address, paymentCode: bob.paymentCode);
       expect(
         bobL
@@ -9527,7 +9689,7 @@ void main() {
       );
       expect(bobL.spendableOwned(bob.address, paymentCode: bob.paymentCode), 0);
 
-      live.height = 21;
+      live.height = 22;
       live.incoming = [];
       live.destBalances[to] = 0.5;
       await bobL.syncCredits(bob.address, paymentCode: bob.paymentCode);
@@ -9777,16 +9939,17 @@ void main() {
         paymentCode: alice.paymentCode,
       );
       await ledger.syncCredits(alice.address, paymentCode: alice.paymentCode);
-      ledger.confirmRound(address: home, pot: 2, height: 1);
-      ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-      live.destBalances[home] = 2.0;
-      final to = destForLogin(bob.address, height: 1, viewKey: bob.viewKey)!;
+      // One real 2 SHE note mined at 1, in the admit set the pool serves.
+      _fundFs1Live(ledger, alice, live, home, nanos: 2 * kUnitsPerShe);
+      // A payable dest: a short destForLogin has no admit base.
+      final to = payableChainDest(bob.paymentCodeFull)!;
       await ledger.send(
         from: home,
         to: to,
         amount: 0.4,
         restFrame: alice.address,
         paymentCode: alice.paymentCode,
+        spendSeed: hexToBytes(alice.seedHex),
       );
       expect(posted.single.containsKey('open'), isFalse);
       expect(posted.single.containsKey('from'), isFalse);
@@ -9884,7 +10047,9 @@ void main() {
       final session = ShearSession(store: File('${dir.path}/session.json'));
       await _sealSession(tester, session);
       final she1 = session.identity!.paymentCodeFull;
-      final dest = destForLogin(
+      // A payable ssa1 carries its admit base. A short destForLogin does not.
+      final dest = payableChainDest(she1)!;
+      final short = destForLogin(
         session.identity!.address,
         height: 1,
         viewKey: session.identity!.viewKey,
@@ -9941,6 +10106,18 @@ void main() {
       await tester.pump();
       expect(find.text('Not a Shear receive QR.'), findsOneWidget);
       expect(tester.widget<TextField>(toField).controller!.text, dest);
+
+      // A short ssa1 fills To so the user sees it, and says it can't be paid.
+      tester
+          .state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger))
+          .removeCurrentSnackBar();
+      await tester.pump();
+      scanned = short;
+      await tester.tap(find.byKey(const Key('scan-qr')));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text(kErrShortSsa1), findsWidgets);
+      expect(tester.widget<TextField>(toField).controller!.text, short);
     },
   );
 
@@ -10041,7 +10218,19 @@ void main() {
         ),
       );
       await tester.pump();
-      await tester.pump();
+      // Boot reads the sealed store from disk. Let that real IO finish.
+      for (
+        var n = 0;
+        n < 40 &&
+            find.byKey(const Key('unlock-biometrics')).evaluate().isEmpty;
+        n++
+      ) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 250)),
+        );
+        await tester.pump();
+      }
+      expect(find.text('Unlock'), findsOneWidget);
       expect(find.text('Spendable'), findsNothing);
       expect(find.byKey(const Key('unlock-biometrics')), findsOneWidget);
       expect(find.text('Unlock with biometrics'), findsOneWidget);
@@ -10451,6 +10640,10 @@ void main() {
       );
       expect(emptyLedger.transactions.any((t) => t.id == 'old-conf'), isTrue);
       expect(emptyLedger.transactions.any((t) => t.id == 'old-pend'), isTrue);
+      // The full tip read binds the live genesis (syncCredits reads the tip
+      // without walking it, so it never binds); that bind drops the rows.
+      await emptyLedger.syncTip();
+      expect(emptyLedger.chainGenesis, newG);
       await emptyLedger.syncCredits(dest, paymentCode: id.paymentCode);
       expect(emptyLedger.chainGenesis, newG);
       expect(emptyLedger.transactions.any((t) => t.id == 'old-conf'), isFalse);
@@ -10475,6 +10668,10 @@ void main() {
       applyUserArchive(boundLedger, leftoverBound);
       expect(boundLedger.chainGenesis, oldG);
       expect(boundLedger.transactions.any((t) => t.id == 'old-pend'), isTrue);
+      // The full tip read binds the live genesis (syncCredits reads the tip
+      // without walking it, so it never binds); that bind drops the rows.
+      await boundLedger.syncTip();
+      expect(boundLedger.chainGenesis, newG);
       await boundLedger.syncCredits(dest, paymentCode: id.paymentCode);
       expect(boundLedger.chainGenesis, newG);
       expect(boundLedger.transactions.any((t) => t.id == 'old-conf'), isFalse);
@@ -10513,6 +10710,10 @@ void main() {
       applyUserArchive(ledger, leftover);
       expect(ledger.chainGenesis, isNull);
       ledger.rememberSpendable(dest, 9);
+      // The full tip read binds the live genesis (syncCredits reads the tip
+      // without walking it, so it never binds); that bind drops the rows.
+      await ledger.syncTip();
+      expect(ledger.chainGenesis, newG);
       await ledger.syncCredits(dest, paymentCode: id.paymentCode);
       expect(ledger.chainGenesis, newG);
       expect(ledger.transactions.any((t) => t.id == 'old-conf'), isFalse);
@@ -11140,6 +11341,9 @@ void main() {
         ),
       );
       ledger.applyTipHex(List.filled(256, '0').join(), sealedHeight: 10);
+      // This wallet's own node has checked the chain to 10, so the pull mined
+      // at 8 has a known depth and its pie can fill.
+      ledger.noteNodeCheckedTip(10);
       final vault = ShearReserve();
       vault.applyRemotePortal(vaultDestAddr, {
         'staked': 0,
@@ -11936,13 +12140,15 @@ void main() {
       );
       final d20 = hash20FromAddress(dest);
       expect(d20, isNotNull);
-      final note = _sealPayout(
+      // The chain row the notes route serves: compact, with its FS-1 admit
+      // key, mined at 2.
+      final note = _offlinePot(
         (poolBalance * kUnitsPerShe).round(),
-        dest20: d20,
-        kind: 'pot',
+        2,
+        dest20: d20!,
+        seed: hexToBytes(id.seedHex),
       );
-      note['height'] = 2;
-      live.notes = [note];
+      live.notes = [_wireOfflineNote(note)];
       final server = await _fakePool(live: live);
       addTearDown(() => server.close(force: true));
       final pool = ShearPoolClient(
@@ -11950,6 +12156,9 @@ void main() {
         http: _realHttp(),
       );
       final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+      // This wallet's own node has checked the chain to 20, so a note mined
+      // at 2 has a known depth.
+      ledger.noteNodeCheckedTip(20);
       final got = await ledger.syncCredits(
         id.address,
         paymentCode: id.paymentCode,
@@ -11998,13 +12207,15 @@ void main() {
       );
       final d20 = hash20FromAddress(dest);
       expect(d20, isNotNull);
-      final note = _sealPayout(
+      // The chain row the notes route serves: compact, with its FS-1 admit
+      // key, mined at 2.
+      final note = _offlinePot(
         (noteShe * kUnitsPerShe).round(),
-        dest20: d20,
-        kind: 'pot',
+        2,
+        dest20: d20!,
+        seed: hexToBytes(id.seedHex),
       );
-      note['height'] = 2;
-      live.notes = [note];
+      live.notes = [_wireOfflineNote(note)];
       final server = await _fakePool(live: live);
       addTearDown(() => server.close(force: true));
       final pool = ShearPoolClient(
@@ -12012,6 +12223,9 @@ void main() {
         http: _realHttp(),
       );
       final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+      // This wallet's own node has checked the chain to 20, so a note mined
+      // at 2 has a known depth.
+      ledger.noteNodeCheckedTip(20);
       final got = await ledger.syncCredits(
         id.address,
         paymentCode: id.paymentCode,
@@ -12165,9 +12379,13 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-portal-sync-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
+    // A reopened wallet: its first-run node choice (public, consented) is made.
+    session.publicNodeChoiceMade = true;
+    session.publicNodeConsent = true;
     final ident = session.identity!;
     final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
-    const principal = 20 * kUnitsPerShe;
+    // Two locks, each exactly one π leaf.
+    const principal = 2 * kPiSheNanos;
     final vault = ShearReserve();
     expect(vault.portal(dest).nanos, 0);
     final header = Uint8List(128);
@@ -12223,7 +12441,7 @@ void main() {
         id: 'lock-1790031484491-vout-0',
         from: mailbox,
         to: dest,
-        amount: 10,
+        amount: kPiShe,
         kind: 'lock',
         height: 2,
         confirmed: true,
@@ -12234,7 +12452,7 @@ void main() {
         id: 'lock-1790032740613-vout-0',
         from: mailbox,
         to: dest,
-        amount: 10,
+        amount: kPiShe,
         kind: 'lock',
         height: 3,
         confirmed: true,
@@ -12252,7 +12470,13 @@ void main() {
         skipPoolSync: false,
       ),
     );
-    for (var n = 0; n < 100 && vault.portal(dest).nanos != principal; n++) {
+    // The chain lock rows replay at once. Wait for the unlock sync as well.
+    for (
+      var n = 0;
+      n < 100 &&
+          (vault.portal(dest).nanos != principal || live.historyHits == 0);
+      n++
+    ) {
       await tester.runAsync(() async {
         await Future<void>.delayed(const Duration(milliseconds: 250));
       });
@@ -12280,14 +12504,14 @@ void main() {
       spendShown,
       '${formatShe(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode))} SHE',
     );
-    expect(spendShown, isNot('${formatShe(40)} SHE'));
+    expect(spendShown, isNot('${formatShe(2 * principal / kUnitsPerShe)} SHE'));
     expect(spendShown, isNot('${formatShe(28)} SHE'));
     // The portal total lands after the Spendable frame. One more build paints it.
     tester.element(find.byType(ShearWalletApp)).markNeedsBuild();
     await tester.pump();
     expect(find.byKey(const Key('continuum-in-reserve')), findsOneWidget);
     expect(
-      find.textContaining('In Reserve  ${formatShe(20)} SHE'),
+      find.textContaining('In Reserve  ${formatShe(principal / kUnitsPerShe)} SHE'),
       findsOneWidget,
     );
     expect(find.textContaining('Not Continuum spendable'), findsWidgets);
@@ -12297,9 +12521,9 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('reserve-yours-sums-box')), findsOneWidget);
     expect(find.text('Your sums'), findsOneWidget);
-    expect(find.text('Staked  ${formatShe(20)} SHE'), findsOneWidget);
+    expect(find.text('Staked  ${formatShe(principal / kUnitsPerShe)} SHE'), findsOneWidget);
     expect(find.text('Staked  ${formatShe(0)} SHE'), findsNothing);
-    expect(find.text('Staked  ${formatShe(40)} SHE'), findsNothing);
+    expect(find.text('Staked  ${formatShe(2 * principal / kUnitsPerShe)} SHE'), findsNothing);
     expect(find.byKey(const Key('reserve-locked-in')), findsNothing);
     expect(find.textContaining(formatHashBonusShe(7)), findsWidgets);
     late Map<String, dynamic> again;
@@ -12312,21 +12536,21 @@ void main() {
         'id': 'lock-1790031484491-vout-0',
         'kind': 'lock',
         'portalId': portalIdFromDest(dest),
-        'nanos': 10 * kUnitsPerShe,
+        'nanos': kPiSheNanos,
       },
       {
         'id': 'lock-1790032740613-vout-0',
         'kind': 'lock',
         'portalId': portalIdFromDest(dest),
-        'nanos': 10 * kUnitsPerShe,
+        'nanos': kPiSheNanos,
       },
     ];
     vault.applyRemotePortal(dest, again);
     vault.applyRemotePortal(dest, again);
     await tester.pump();
     expect(vault.portal(dest).nanos, principal);
-    expect(find.text('Staked  ${formatShe(20)} SHE'), findsOneWidget);
-    expect(find.text('Staked  ${formatShe(40)} SHE'), findsNothing);
+    expect(find.text('Staked  ${formatShe(principal / kUnitsPerShe)} SHE'), findsOneWidget);
+    expect(find.text('Staked  ${formatShe(2 * principal / kUnitsPerShe)} SHE'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     ledger.pool?.close();
     // Vortex warm leaves a real pool GET in flight. Let it finish, then flush the 8s connect timer.
@@ -12343,9 +12567,13 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-public-portal-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
+    // A reopened wallet: its first-run node choice (public, consented) is made.
+    session.publicNodeChoiceMade = true;
+    session.publicNodeConsent = true;
     final ident = session.identity!;
     final dest = vaultDest(ident.address, viewKey: ident.viewKey)!;
-    const principal = 20 * kUnitsPerShe;
+    // Two locks, each exactly one π leaf.
+    const principal = 2 * kPiSheNanos;
     final vault = ShearReserve();
     expect(vault.portal(dest).nanos, 0);
     final header = Uint8List(128);
@@ -12401,7 +12629,7 @@ void main() {
         id: 'lock-1790031484491-vout-0',
         from: mailbox,
         to: dest,
-        amount: 10,
+        amount: kPiShe,
         kind: 'lock',
         confirmed: false,
       ),
@@ -12411,7 +12639,7 @@ void main() {
         id: 'lock-1790032740613-vout-0',
         from: mailbox,
         to: dest,
-        amount: 10,
+        amount: kPiShe,
         kind: 'lock',
         confirmed: false,
       ),
@@ -12441,7 +12669,7 @@ void main() {
     await tester.tap(find.text('Vortex'));
     await tester.pump();
     expect(find.text('Your sums'), findsOneWidget);
-    expect(find.text('Staked  ${formatShe(20)} SHE'), findsOneWidget);
+    expect(find.text('Staked  ${formatShe(principal / kUnitsPerShe)} SHE'), findsOneWidget);
     expect(find.text('Staked  ${formatShe(0)} SHE'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     inner.close();
@@ -12487,7 +12715,8 @@ void main() {
     );
     final vaultDestAddr = vaultDest(ident.address, viewKey: ident.viewKey)!;
     final vault = ShearReserve();
-    expect(vault.deposit(dest: vaultDestAddr, she: 20, nowMs: 1), isNull);
+    // One portal, one π leaf.
+    expect(vault.deposit(dest: vaultDestAddr, she: kPiShe, nowMs: 1), isNull);
     expect(
       ledger.owedTowardPi(ident.address, paymentCode: ident.paymentCode),
       closeTo(owed, 1e-9),
@@ -12510,25 +12739,27 @@ void main() {
     final shown = tester
         .widget<Text>(find.byKey(const Key('continuum-spendable')))
         .data;
-    expect(shown, '${formatShe(0)} SHE');
+    // No notes read has answered in this session, so the figure is not a
+    // number at all, 0 included (79ea7f5c, 22 Oct). Pool figures never paint it.
+    expect(shown, kSpendableSyncing);
     expect(shown, isNot('${formatShe(minerPending)} SHE'));
     expect(shown, isNot('${formatShe(spend + owed)} SHE'));
-    expect(shown, isNot('${formatShe(spend + 20)} SHE'));
+    expect(shown, isNot('${formatShe(spend + kPiShe)} SHE'));
     expect(find.byKey(const Key('continuum-in-reserve')), findsOneWidget);
     expect(
-      find.textContaining('In Reserve  ${formatShe(20)} SHE'),
+      find.textContaining('In Reserve  ${formatShe(kPiShe)} SHE'),
       findsOneWidget,
     );
     expect(find.textContaining('The Reserve'), findsWidgets);
     expect(find.textContaining('Resistance'), findsWidgets);
     expect(find.byKey(const Key('continuum-owed-pi')), findsNothing);
     expect(find.textContaining('Owed toward π'), findsNothing);
-    expect(shown, '${formatShe(0)} SHE');
+    expect(shown, kSpendableSyncing);
     expect(find.textContaining('Not Continuum spendable'), findsWidgets);
     await tester.tap(find.byKey(const Key('continuum-in-reserve')));
     await tester.pump();
     expect(find.text('Your sums'), findsOneWidget);
-    expect(find.text('Staked  ${formatShe(20)} SHE'), findsOneWidget);
+    expect(find.text('Staked  ${formatShe(kPiShe)} SHE'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(seconds: 2));
   });
@@ -12740,6 +12971,13 @@ class _RecordingPool extends ShearPoolClient {
           {'height': 8, 'n': pubs.length},
         ],
     };
+  }
+
+  /// The production FS-1 lock posts its sealed body as is.
+  @override
+  Future<Map<String, dynamic>> postRaw(Map<String, dynamic> body) async {
+    posts.add(Map<String, dynamic>.from(body));
+    return {'ok': true, 'id': body['id'] ?? 'raw-${posts.length}'};
   }
 
   @override
@@ -13048,6 +13286,10 @@ class _PoolLive {
   List<Map<String, dynamic>> incoming;
   List<Map<String, dynamic>> history;
   List<Map<String, dynamic>> notes = [];
+
+  /// The live FS-1 note set (pubs, commits, anchors) the pool serves.
+  /// Null: the route answers 404, as a pool without it does.
+  Map<String, dynamic>? fluxset;
   bool amountsOnly = false;
   bool destProof = true;
   bool failHistory = false;
@@ -13237,6 +13479,15 @@ Future<HttpServer> _fakePool({
           }),
         );
       }
+    } else if (req.uri.path == '/fluxset' ||
+        req.uri.path == '/api/wallet/fluxset') {
+      final set = state.fluxset;
+      if (set == null) {
+        req.response.statusCode = 404;
+        req.response.write(jsonEncode({'ok': false, 'reason': 'not_found'}));
+      } else {
+        req.response.write(jsonEncode(set));
+      }
     } else if (req.uri.path == '/api/wallet/notes' ||
         req.uri.path == '/notes') {
       state.notesHits += 1;
@@ -13305,6 +13556,23 @@ Future<HttpServer> _fakePool({
       final amount = (body['amount'] as num?)?.toDouble() ?? 0;
       final kind = body['kind']?.toString() ?? 'send';
       final fromKey = payoutDest(from) ?? from;
+      if (kind == 'send' && from.isEmpty) {
+        // wallet_api.js sealedSendOnly: a sealed FS-1 send names no from or
+        // to. The pool queues the body and moves no balance.
+        req.response.write(
+          jsonEncode({
+            'ok': true,
+            'tx': {
+              'id': 'send-${posted?.length ?? 0}',
+              'kind': 'send',
+              'confirmed': false,
+              'memo': body['memoCt'] != null,
+            },
+          }),
+        );
+        await req.response.close();
+        return;
+      }
       if (kind == 'vote') {
         final choice = body['choice']?.toString() ?? '';
         final portal = Map<String, dynamic>.from(
@@ -13486,6 +13754,10 @@ void _expectFs1Post(
       fee: post['postedFee'] as int,
       nIn: records.length,
       vout: vout,
+      // FS1_MEMO=bound: a memo send binds its memoCt into the digest.
+      memoCt: post['memoCt'] is Map
+          ? Map<String, dynamic>.from(post['memoCt'] as Map)
+          : null,
     );
     expect(lib.verify(fs1, records, root, digest, anchor), isTrue);
   } finally {
