@@ -10899,6 +10899,9 @@ class ShearLedger implements ReadProofSink {
       'seedHex': spendSeed == null ? '' : _bytesHex(spendSeed!),
       'viewKey': viewSecret ?? '',
       'sealed': _sealedHeight,
+      // The worker counts confirmations from the verified tip. Without it the
+      // worker's book tip is 0 and an opened, deep coin counts as 0 there.
+      'verifiedTip': _verifiedTip,
       'settled': _settledHeight,
       'notesCovered': _notesCovered,
       'bodyProof': _bodyProofRequired,
