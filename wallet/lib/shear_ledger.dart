@@ -9767,7 +9767,8 @@ class ShearLedger implements ReadProofSink {
       }
       // Ruling 6: no notes route (v12 AL-5). Scan the bodies up to the
       // verified tip instead.
-      if (!sawNotes) {
+      if (!sawNotes) await _probeNotesRoute(restFrame, paymentCode);
+      if (!sawNotes && (_bodyProofRequired || _notesRouteGone)) {
         try {
           sawNotes = await scanVerifiedBodies(
             restFrame: restFrame,
@@ -10016,6 +10017,7 @@ class ShearLedger implements ReadProofSink {
       } catch (e) {
         failed = true;
         _collateError = 'collate:$e';
+        _noteNotesRouteGone(e);
       }
     }
     if (failed || !saw) _listedCommits.clear();
@@ -10031,6 +10033,28 @@ class ShearLedger implements ReadProofSink {
   /// other note is Pending.
   bool _bodyProofRequired = false;
   bool get bodyProofRequired => _bodyProofRequired;
+
+  /// The node answered the notes route 404: the route is gone (AL-5), not
+  /// a read that failed for a moment. Only then does the body scan start.
+  bool _notesRouteGone = false;
+
+  void _noteNotesRouteGone(Object e) {
+    if ('$e'.contains('http_404')) _notesRouteGone = true;
+  }
+
+  /// No notes read ran (no dest had an open), so ask the route once.
+  Future<void> _probeNotesRoute(String restFrame, String? paymentCode) async {
+    if (_bodyProofRequired || _notesRouteGone) return;
+    final client = pool;
+    if (client == null || isPoolLedgerHost(client.baseUrl)) return;
+    final home = homeDest(restFrame, paymentCode: paymentCode);
+    if (!isDestAddress(home)) return;
+    try {
+      await client.notes(home).timeout(const Duration(seconds: 4));
+    } catch (e) {
+      _noteNotesRouteGone(e);
+    }
+  }
 
   /// Highest height whose body was proven and scanned. Header catch-up
   /// stays within [_kHeaderKeep] of it, so every header the next scan
@@ -11227,17 +11251,19 @@ class ShearLedger implements ReadProofSink {
           } else if (spendable(key) > 1e-12) {
             _noteMisses[key] = (_noteMisses[key] ?? 0) + 1;
           }
-        } catch (_) {
+        } catch (e) {
           notesFailed = true;
+          _noteNotesRouteGone(e);
         }
       }
     }
     if (notesTried) _spendableReadFailed = !notesSaw || notesFailed;
     // Ruling 6: no notes route (v12 AL-5). The bodies up to the verified tip
     // are the wallet's only read of its own outputs.
+    if (!notesSaw) await _probeNotesRoute(restFrame, paymentCode);
     if (pool != null &&
         !isPoolLedgerHost(pool!.baseUrl) &&
-        (_bodyProofRequired || (notesTried && !notesSaw))) {
+        (_bodyProofRequired || _notesRouteGone)) {
       try {
         final scanned = await scanVerifiedBodies(
           restFrame: restFrame,
