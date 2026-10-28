@@ -49,6 +49,19 @@ const kSpendableSyncing = 'Syncing…';
 /// Connect bare without consent, or an own node that did not resolve.
 const kSpendableNotSyncing = 'not syncing: choose a node';
 
+/// The Spendable figure. A read that failed or has not finished is never a
+/// number, 0 included: it is [kSpendableSyncing], and the ledger's
+/// [ShearLedger.spendableReadError] shows under it.
+String spendableFigureText({
+  required bool sourceBlocked,
+  required bool ready,
+  required double spendShe,
+}) {
+  if (sourceBlocked) return kSpendableNotSyncing;
+  if (!ready) return kSpendableSyncing;
+  return '${formatShe(spendShe)} SHE';
+}
+
 /// Recipient amount on the flow screen, before the user sends.
 Widget flowRecipientAmountLine(String? she) {
   if (she == null || she.isEmpty) return const SizedBox.shrink();
@@ -330,6 +343,9 @@ class ShearWalletAppState extends State<ShearWalletApp>
   final Set<String> _handledPullIds = {};
   bool _showReceiveQr = false;
   Map<String, dynamic>? _reserveLockNotice;
+
+  /// The last Reserve portal read failed. Shown on the pane, never painted.
+  String? _vaultReadError;
   String? _reserveVoteDraft;
   Timer? _reserveLockHold;
   bool _reserveLockDismissable = false;
@@ -1094,6 +1110,10 @@ class ShearWalletAppState extends State<ShearWalletApp>
         paymentCode: id!.paymentCode,
       );
     }
+    ledger.restoreBodyScan(
+      required: session.rememberedBodyProof,
+      scanTo: session.rememberedBodyScanTo,
+    );
     if (session.rememberedReserve != null) {
       reserve.installRemembered(ledger, session.rememberedReserve!);
     }
@@ -2074,6 +2094,8 @@ class ShearWalletAppState extends State<ShearWalletApp>
     session.rememberedOpenedProofs = ledger.exportOpenedProofs();
     session.rememberedNotes = ledger.exportNotesForSession();
     session.rememberedNotesCovered = ledger.notesCovered;
+    session.rememberedBodyProof = ledger.bodyProofRequired;
+    session.rememberedBodyScanTo = ledger.bodyScanTo;
     session.rememberedChainGenesis = ledger.chainGenesis;
     session.rememberedTxs = [
       for (final t in ledger.transactions)
@@ -2883,11 +2905,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
 
   /// Syncing until a read from the selected source succeeds. A blocked source
   /// names itself instead of painting 0 or a saved book.
-  String _spendableFigureText(bool spendReady, double spend) {
-    if (_spendSourceBlocked) return kSpendableNotSyncing;
-    if (!spendReady) return kSpendableSyncing;
-    return '${formatShe(spend)} SHE';
-  }
+  String _spendableFigureText(bool spendReady, double spend) =>
+      spendableFigureText(
+        sourceBlocked: _spendSourceBlocked,
+        ready: spendReady,
+        spendShe: spend,
+      );
 
   /// One spinner. No step list. The bar stays so the shell is still responding.
   Widget _bookLoading() {
@@ -2968,6 +2991,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      if (!spendReady && ledger.spendableReadError.isNotEmpty)
+        Text(
+          ledger.spendableReadError,
+          key: const Key('continuum-spendable-error'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 13),
+        ),
       if (ledger.headerVerifyLine != null)
         Text(
           ledger.headerVerifyLine!,
@@ -4981,7 +5010,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
                 ),
               ),
             ],
-      if (p.nanos > 0) ...[
+      if (p.nanos > 0 && _vaultReadError == null) ...[
         const SizedBox(height: 8),
         _glowBanner(
           context,
@@ -5253,6 +5282,15 @@ class ShearWalletAppState extends State<ShearWalletApp>
             textAlign: TextAlign.left,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
+          // The portal read failed: say so, and paint no figure from it.
+          if (_vaultReadError != null)
+            Text(
+              _vaultReadError!,
+              key: const Key('reserve-read-error'),
+              textAlign: TextAlign.left,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            )
+          else ...[
           Text('portal ${vortex.yourNanos}', key: const Key('vortex-your-portal'), textAlign: TextAlign.left),
           Text('Flow continuum ${vortex.flowNanos}', key: const Key('vortex-flow-continuum'), textAlign: TextAlign.left),
           Text('Staked  $stakedShe SHE', textAlign: TextAlign.justify),
@@ -5294,6 +5332,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
               textAlign: TextAlign.justify,
             ),
             Text('At epoch end  $endShe SHE', textAlign: TextAlign.justify),
+          ],
           ],
         ],
       ),
@@ -5355,8 +5394,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
         final keepStaked = p.staked;
         final keepIdle = p.idle;
         final keepJoined = p.joined;
-        final json = Map<String, dynamic>.from(await pool.reservePortal(dest));
-        if (json['ok'] == false) return;
+        // A refused or failed read (an own node has no pool vault route and
+        // answers 400) is shown on the pane, and nothing is painted from it.
+        final read = await readVaultPortal(pool, dest);
+        if (mounted) setState(() => _vaultReadError = read.error.isEmpty ? null : read.error);
+        final json = read.portal;
+        if (json == null) return;
         final locks = _reserveLockRows(dest);
         if (locks.isNotEmpty) {
           final prior = json['locks'];
