@@ -1,7 +1,12 @@
+// A share is credited 2^b only when the nonce's high byte, the frame's claim
+// and the digest agree. R28: shares are BluNotes frames (one-time key, nonce
+// bound to it), the target is on the RandomX digest itself, and the per-payee
+// pro-rata pot is replaced by the per-block draw (D1, D2). Digests are
+// stashed as the prepared RandomX output for each header and nonce; real
+// ShearHash coverage of the same rules is in test_r28_share_rules.js.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { newIdentity } from '../../crypto/address.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
+import { randomBytes } from 'node:crypto';
 import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
 import {
   GENESIS_BITS_PACKED,
@@ -11,28 +16,25 @@ import {
   asertNextBits,
   shareCreditMaxBits,
 } from '../../crypto/asert.js';
-import { meetsTarget } from '../../crypto/shear_hash.js';
+import { leadingZeroBits, meetsTarget } from '../../crypto/shear_hash.js';
 import {
   clearLiveSharePow,
+  compareBluShares,
   creditBitsForShare,
-  destBoundShareHash,
-  nonceWithShareTarget,
-  noteCommitOfShare,
   rememberLiveSharePow,
-  retainedUnitsByCommit,
   shareTargetByte,
   stashSharePow,
   unitsForShare,
   verifyShareBatch,
 } from '../../crypto/share_batch.js';
+import { bindNonce, oneTimeKey } from '../../crypto/blunote.js';
 import { merkleRoot } from '../../crypto/merkle.js';
 import { shareSlotRoot } from '../../crypto/pack.js';
-import { GENESIS_PREV, buildTemplate, digestTx, potSharesFromBatch, verifyBlock } from '../src/chain.js';
+import { GENESIS_PREV, buildTemplate, digestTx, verifyBlock } from '../src/chain.js';
+import { blunoteSettle } from '../src/blunote_payout.js';
+import { bluWallet } from './support/blunote_mine.js';
 
-function minerDest() {
-  const id = newIdentity();
-  return destForLogin(id.address, { viewKey: id.viewKey, height: 1 });
-}
+const MINER = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
 
 function parentHeader() {
   return encodeHeader({
@@ -44,96 +46,80 @@ function parentHeader() {
   });
 }
 
-/**
- * A dest-bound digest that meets `meet` and misses `miss`, without ShearHash.
- * A one-bit band at width b lands about once in 2^(b+1) draws. Eight expected
- * hits keeps a miss under a percent at every width this file uses.
- */
-function rxForBits(noteCommit, meet, miss) {
-  const width = Math.max(1, Math.floor(Number(meet) || 1));
-  const band = miss == null ? width : width + 1;
-  const span = band >= 31 ? Number.MAX_SAFE_INTEGER : (2 ** band);
-  const limit = Math.min(2_000_000, Math.max(20_000, span * 8));
+/** A raw digest whose leading zeros are exactly `bits`, without ShearHash. */
+function rxExact(bits, seed = 0) {
+  const span = 2 ** Math.min(30, bits + 1);
+  const limit = Math.min(4_000_000, Math.max(20_000, span * 8));
   for (let i = 0; i < limit; i += 1) {
     const rx = Buffer.alloc(32);
+    rx.writeUInt32LE(seed, 12);
     rx.writeUInt32LE(i, 0);
-    rx.writeUInt32LE((i * 17) >>> 0, 4);
-    const bound = destBoundShareHash(rx, noteCommit);
-    const highEnough = meetsTarget(bound, meet);
-    const notHigher = miss == null || !meetsTarget(bound, miss);
-    if (highEnough && notHigher) return rx;
+    rx.writeUInt32LE((i * 2654435761) >>> 0, 4);
+    if (meetsTarget(rx, bits) && !meetsTarget(rx, bits + 1)) return rx;
   }
   return null;
 }
 
-function shareAt(dest, low, bits) {
+/** A BluNotes share for `owner` claiming width `bits`, its nonce bound on `header`. */
+function shareAt(owner, header, bits, counter = 0, { claim = true } = {}) {
+  const k = oneTimeKey(owner);
   return {
-    dest,
-    nonce: nonceWithShareTarget(low, bits),
-    lz: bits,
-    shareBits: bits,
-    creditedShareBits: bits,
+    shareR: k.R,
+    shareP: k.P,
+    viewTag: k.tag,
+    nonce: bindNonce(header, k.R, k.P, counter, bits),
+    lz: bits & 0xff,
+    ...(claim ? { shareBits: bits } : {}),
     proofSlot: 0,
   };
 }
 
 describe('v12 share credit is the nonce high byte', () => {
   it('rejects any claim that is not the committed byte, at every illegal width', () => {
-    const dest = minerDest();
+    const owner = bluWallet();
     const parent = parentHeader();
     const maxB = shareCreditMaxBits();
     assert.equal(maxB, Math.min(52, Math.floor(Math.log2(MAX_HASH_UNITS_PER_BLOCK))));
     const illegal = [0, 1, SHARE_FLOOR_BITS - 1, maxB + 1, 30, 52, 255];
     for (const bits of illegal) {
-      const row = shareAt(dest, 1n, bits);
+      const row = shareAt(owner, parent, bits);
       assert.equal(shareTargetByte(row.nonce), bits & 0xff);
       const got = verifyShareBatch({ parentHeader: parent, shares: [row], skipPow: true });
       assert.equal(got.ok, false, `byte ${bits}`);
       assert.equal(got.reason, 'share_target');
       assert.equal(creditBitsForShare(row).ok, false);
     }
-    const unstamped = { dest, nonce: 1n, lz: SHARE_FLOOR_BITS, shareBits: SHARE_FLOOR_BITS };
+    // A nonce with no width byte, claimed at the floor or above.
+    const k = oneTimeKey(owner);
+    const unstamped = { shareR: k.R, shareP: k.P, viewTag: 0, nonce: 1n, lz: SHARE_FLOOR_BITS, shareBits: SHARE_FLOOR_BITS, proofSlot: 0 };
     assert.equal(shareTargetByte(unstamped.nonce), 0);
-    const floorLie = verifyShareBatch({ parentHeader: parent, shares: [unstamped], skipPow: true });
-    assert.equal(floorLie.reason, 'share_target');
-    const raised = verifyShareBatch({
-      parentHeader: parent,
-      shares: [{ ...unstamped, shareBits: SHARE_FLOOR_BITS + 4 }],
-      skipPow: true,
-    });
-    assert.equal(raised.reason, 'share_target');
+    assert.equal(verifyShareBatch({ parentHeader: parent, shares: [unstamped], skipPow: true }).reason, 'share_target');
+    assert.equal(verifyShareBatch({ parentHeader: parent, shares: [{ ...unstamped, shareBits: SHARE_FLOOR_BITS + 4 }], skipPow: true }).reason, 'share_target');
   });
 
-  it('credits 2^b only when the byte, the packed claim, and the dest-bound digest agree', () => {
-    const dest = minerDest();
+  it('credits 2^b only when the byte, the packed claim, and the digest agree', () => {
+    const owner = bluWallet();
     const parent = parentHeader();
     const widths = [SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 1, SHARE_FLOOR_BITS + 4, 16];
     for (const bits of widths) {
-      const row = shareAt(dest, 7n, bits);
-      const nc = noteCommitOfShare(row);
-      const rx = rxForBits(nc, bits, bits + 1);
-      assert.ok(rx, `bound digest at ${bits}`);
+      const row = shareAt(owner, parent, bits, 7);
+      const rx = rxExact(bits);
+      assert.ok(rx, `digest at ${bits}`);
+      assert.equal(leadingZeroBits(rx), bits);
       const header = setNonce(parent, row.nonce);
       clearLiveSharePow();
       stashSharePow(header, rx);
       const cold = verifyShareBatch({ parentHeader: parent, shares: [row] });
       assert.equal(cold.ok, true, `${bits} ${cold.reason}`);
       assert.equal(cold.units, unitsForShare(bits));
-      const relabel = verifyShareBatch({
-        parentHeader: parent,
-        shares: [{ ...row, shareBits: bits + 1, creditedShareBits: bits + 1 }],
-      });
+      const relabel = verifyShareBatch({ parentHeader: parent, shares: [{ ...row, shareBits: bits + 1 }] });
       assert.equal(relabel.reason, 'share_target');
-      const low = rxForBits(nc, bits - 1, bits);
+      const low = rxExact(bits - 1, 1);
       assert.ok(low, `digest below ${bits}`);
       stashSharePow(header, low);
-      const miss = verifyShareBatch({ parentHeader: parent, shares: [row] });
+      const miss = verifyShareBatch({ parentHeader: parent, shares: [{ ...row, lz: bits - 1 }] });
       assert.equal(miss.reason, 'share_pow');
-      assert.equal(rememberLiveSharePow(parent, row.nonce, {
-        noteCommit: nc,
-        shareBits: bits,
-        lz: bits,
-      }), true);
+      assert.equal(rememberLiveSharePow(parent, row.nonce, { noteCommit: row.shareP, shareBits: bits, lz: bits }), true);
       const hot = verifyShareBatch({ parentHeader: parent, shares: [row], skipPow: true });
       assert.equal(hot.ok, true, hot.reason);
       assert.equal(hot.units, cold.units);
@@ -141,82 +127,51 @@ describe('v12 share credit is the nonce high byte', () => {
       const wiped = verifyShareBatch({ parentHeader: parent, shares: [row], skipPow: true });
       assert.equal(wiped.reason, 'share_pow');
     }
-    const omitDest = minerDest();
-    const omit = {
-      dest: omitDest,
-      nonce: nonceWithShareTarget(11n, SHARE_FLOOR_BITS),
-      lz: SHARE_FLOOR_BITS,
-    };
-    const omitNc = noteCommitOfShare(omit);
-    const omitRx = rxForBits(omitNc, SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 1);
-    assert.ok(omitRx, 'floor digest for an omitted claim');
+    // A frame that omits its claim is read at the floor, and only the floor.
+    const omit = shareAt(owner, parent, SHARE_FLOOR_BITS, 11, { claim: false });
     clearLiveSharePow();
-    stashSharePow(setNonce(parent, omit.nonce), omitRx);
+    stashSharePow(setNonce(parent, omit.nonce), rxExact(SHARE_FLOOR_BITS, 2));
     const omitOk = verifyShareBatch({ parentHeader: parent, shares: [omit] });
     assert.equal(omitOk.ok, true, omitOk.reason);
     assert.equal(omitOk.units, unitsForShare(SHARE_FLOOR_BITS));
-    const omitHigh = verifyShareBatch({
-      parentHeader: parent,
-      shares: [{
-        dest: omitDest,
-        nonce: nonceWithShareTarget(12n, SHARE_FLOOR_BITS + 4),
-        lz: SHARE_FLOOR_BITS,
-      }],
-      skipPow: true,
-    });
-    assert.equal(omitHigh.reason, 'share_target');
+    const omitHigh = shareAt(owner, parent, SHARE_FLOOR_BITS + 4, 12, { claim: false });
+    assert.equal(verifyShareBatch({ parentHeader: parent, shares: [omitHigh], skipPow: true }).reason, 'share_target');
   });
 
-  it('pays the committed units for any miner count, shuffled, under and over the cap', () => {
+  it('a batch credits its committed units for any miner count, and the draw conserves them', () => {
     const maxB = shareCreditMaxBits();
-    const widths = [SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 4, 16, maxB];
-    const destCounts = [1, 2, 8];
-    const subsidies = [10_000, 100_000_003];
-    const carries = [0, 17];
-    for (const nDest of destCounts) {
-      const dests = Array.from({ length: nDest }, () => minerDest());
+    const widths = [SHARE_FLOOR_BITS, SHARE_FLOOR_BITS + 4, 16, 20];
+    const parent = parentHeader();
+    for (const nOwner of [1, 2, 8]) {
+      const owners = Array.from({ length: nOwner }, () => bluWallet());
       const batch = [];
-      dests.forEach((dest, i) => {
+      owners.forEach((owner, i) => {
         const bits = widths[i % widths.length];
-        const copies = 1 + (i % 3);
-        for (let c = 0; c < copies; c += 1) {
-          batch.push(shareAt(dest, BigInt(batch.length + 1), bits));
-        }
+        for (let c = 0; c < 1 + (i % 3); c += 1) batch.push(shareAt(owner, parent, bits, c));
       });
-      const orders = [batch, [...batch].reverse()];
-      if (batch.length > 1) orders.push([...batch.slice(1), batch[0]]);
-      const first = retainedUnitsByCommit(orders[0]);
-      let sum = 0;
-      for (const u of first.values()) sum += u;
+      batch.sort(compareBluShares);
+      clearLiveSharePow();
+      for (const row of batch) stashSharePow(setNonce(parent, row.nonce), rxExact(row.shareBits, Number(row.nonce & 0xffffn)));
+      const got = verifyShareBatch({ parentHeader: parent, shares: batch });
+      assert.equal(got.ok, true, got.reason);
       const raw = batch.reduce((n, row) => n + unitsForShare(shareTargetByte(row.nonce)), 0);
-      assert.equal(sum, Math.min(raw, MAX_HASH_UNITS_PER_BLOCK), `dests ${nDest}`);
-      for (const order of orders.slice(1)) {
-        const other = retainedUnitsByCommit(order);
-        assert.equal(other.size, first.size);
-        for (const [hex, u] of first) assert.equal(other.get(hex), u);
-      }
-      for (const subsidy of subsidies) {
-        for (const carry of carries) {
-          const pays = potSharesFromBatch(batch, null, subsidy, carry);
-          assert.equal(pays.reduce((a, row) => a + row.nanos, 0), subsidy + carry);
-          const flipped = potSharesFromBatch(orders[1], null, subsidy, carry);
-          const by = (rows) => new Map(rows.map((row) => [row.address, row.nanos]));
-          const a = by(pays);
-          const b = by(flipped);
-          assert.equal(a.size, b.size);
-          for (const [addr, nanos] of a) assert.equal(b.get(addr), nanos);
+      assert.equal(got.units, raw, `owners ${nOwner}`);
+      for (const subsidy of [10_000n, 100_000_003n]) {
+        for (const budget of [null, 1n << 20n]) {
+          const s = blunoteSettle({ shares: got.shares, powHash: randomBytes(32), potPayable: subsidy, unitNanos: 1n, budgetNanos: budget });
+          assert.equal(s.minted + s.carryOut + s.reserveExtra, subsidy + s.hashNanos);
+          assert.equal(s.hashNanos, budget == null ? BigInt(raw) : (BigInt(raw) < budget ? BigInt(raw) : budget));
         }
       }
     }
-    const alone = shareAt(minerDest(), 1n, maxB);
-    const leaf = retainedUnitsByCommit([alone]);
-    assert.equal([...leaf.values()][0], unitsForShare(maxB));
-    const over = shareAt(minerDest(), 1n, maxB + 2);
-    assert.equal(retainedUnitsByCommit([over]).size, 0);
+    // Out of order is refused, so a batch has exactly one valid order.
+    const two = [shareAt(bluWallet(), parent, SHARE_FLOOR_BITS), shareAt(bluWallet(), parent, SHARE_FLOOR_BITS)].sort(compareBluShares);
+    assert.equal(verifyShareBatch({ parentHeader: parent, shares: [two[1], two[0]], skipPow: true }).reason, 'share_order');
+    // Past the credit cap is refused, not clamped.
+    assert.equal(verifyShareBatch({ parentHeader: parent, shares: [shareAt(bluWallet(), parent, maxB + 2)], skipPow: true }).reason, 'share_target');
   });
 
   it('a buried prune still rejects a share whose nonce byte is illegal', () => {
-    const dest = minerDest();
     const genesisMs = 1_700_000_000_000;
     function trustedPow(tag) {
       const h = Buffer.alloc(32);
@@ -224,17 +179,10 @@ describe('v12 share credit is the nonce high byte', () => {
       return h;
     }
     function viewOf(block, hash, height) {
-      return {
-        hash,
-        header: block.header,
-        txs: block.txs,
-        height,
-        weight: block.weight,
-        bLeaves: block.bLeaves,
-      };
+      return { hash, header: block.header, txs: block.txs, height, weight: block.weight, bLeaves: block.bLeaves, blunoteRecord: block.blunoteRecord };
     }
-    function bitsAt(parentHeader, childNow, childHeight) {
-      const ph = decodeHeader(parentHeader);
+    function bitsAt(parentHdr, childNow, childHeight) {
+      const ph = decodeHeader(parentHdr);
       const quote = asertNextBits({
         anchorBits: GENESIS_BITS_PACKED,
         anchorTimeMs: genesisMs,
@@ -252,20 +200,13 @@ describe('v12 share credit is the nonce high byte', () => {
         prevHeader: prev?.header,
         prevBlock: prev,
         height,
-        miner: dest,
+        miner: MINER,
         bits: height === 1 ? GENESIS_BITS_PACKED : bitsAt(prev.header, now, height),
         now,
       });
       const block = {
-        header: tpl.header,
-        txs: tpl.txs,
-        samples: tpl.samples,
-        shareBatch: tpl.shareBatch || [],
-        miner: dest,
-        aLeaves: tpl.aLeaves,
-        bLeaves: tpl.bLeaves,
-        weight: tpl.weight,
-        height,
+        header: tpl.header, txs: tpl.txs, samples: tpl.samples, shareBatch: tpl.shareBatch || [],
+        miner: MINER, aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, weight: tpl.weight, height,
       };
       const pow = trustedPow(tag);
       const res = verifyBlock(block, prev ? viewOf(prev, prevHash, height - 1) : null, {
@@ -275,50 +216,35 @@ describe('v12 share credit is the nonce high byte', () => {
       });
       assert.equal(res.ok, true, `h=${height} ${res.reason}`);
       block.hash = res.hash;
+      block.blunoteRecord = res.blunoteRecord;
       return { block, hash: res.hash, pow };
     }
     function restamp(block, shares) {
-      const rows = shares.map((row) => ({ ...row, noteCommit: noteCommitOfShare(row) }));
-      block.shareBatch = rows;
-      block.txs[0].shareSlotRoot = shareSlotRoot(rows);
+      block.shareBatch = shares;
+      block.txs[0].shareSlotRoot = shareSlotRoot(shares);
       const decoded = decodeHeader(block.header);
       decoded.merkleRoot = merkleRoot(block.txs.map(digestTx));
       block.header = encodeHeader(decoded);
     }
+    const owner = bluWallet();
     const g = sealEmpty(null, null, 1, genesisMs, 1);
     const mid = sealEmpty(g.block, g.hash, 2, genesisMs + 90_000, 2);
-    const childNow = genesisMs + 180_000;
-    const child = sealEmpty(mid.block, mid.hash, 3, childNow, 3, [g.block, mid.block]);
+    const child = sealEmpty(mid.block, mid.hash, 3, genesisMs + 180_000, 3, [g.block, mid.block]);
     child.block.samplesPruned = true;
     const parentView = viewOf(mid.block, mid.hash, mid.block.height);
     const burialTip = child.block.height + SAMPLE_PRUNE_CONFIRMATIONS;
-    const swapped = [shareAt(dest, 1n, 0)];
+    const swapped = [shareAt(owner, mid.block.header, 0)];
     child.block.shareBatch = swapped;
-    const unbound = verifyBlock(child.block, parentView, {
-      trustedPowHash: child.pow,
-      skipSharePow: true,
-      genesisMs,
-      burialTip,
-    });
+    const unbound = verifyBlock(child.block, parentView, { trustedPowHash: child.pow, skipSharePow: true, genesisMs, burialTip });
     assert.equal(unbound.ok, false);
     assert.equal(unbound.reason, 'share_slot');
     restamp(child.block, swapped);
-    const buried = verifyBlock(child.block, parentView, {
-      trustedPowHash: child.pow,
-      skipSharePow: true,
-      genesisMs,
-      burialTip,
-    });
+    const buried = verifyBlock(child.block, parentView, { trustedPowHash: child.pow, skipSharePow: true, genesisMs, burialTip });
     assert.equal(buried.ok, false);
     assert.equal(buried.reason, 'share_target');
-    restamp(child.block, [shareAt(dest, 4n, SHARE_FLOOR_BITS)]);
+    restamp(child.block, [shareAt(owner, mid.block.header, SHARE_FLOOR_BITS, 4)]);
     clearLiveSharePow();
-    const unproven = verifyBlock(child.block, parentView, {
-      trustedPowHash: child.pow,
-      skipSharePow: true,
-      genesisMs,
-      burialTip,
-    });
+    const unproven = verifyBlock(child.block, parentView, { trustedPowHash: child.pow, skipSharePow: true, genesisMs, burialTip });
     assert.equal(unproven.reason, 'share_pow');
   });
 });
