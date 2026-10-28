@@ -1,0 +1,74 @@
+# The full Dart wallet suite. wallet-dart, wallet-tests and the rest each run a
+# named handful of files; every other wallet test ran nowhere and 97 of them
+# rotted as the laws changed (found 28 Oct). This job runs every
+# wallet/test/*_test.dart that wallet/test/suite_exclude.txt does not name, and
+# that list must give each row the job or the dated ruling that covers it.
+name: wallet-suite
+on:
+  push:
+    branches: [main, feat/shear-testnet-v12]
+  pull_request:
+    paths:
+      - '.github/workflows/wallet-suite.yml'
+      - 'wallet/**'
+      - 'crypto/**'
+      - 'node/**'
+      - 'pool/**'
+      - 'tests/**'
+concurrency:
+  group: wallet-suite-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  suite:
+    # Baseline x86-64 toolchain, as wallet-tests.yml (ubuntu-latest builds AVX2).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: '3.44.6'
+          channel: stable
+      # Several wallet tests spawn node (pool and node fixtures, the JS
+      # verifiers), and continuum_069 starts the repo node.
+      - run: npm ci --ignore-scripts
+      - name: Native modules, the Linux admit library and libshear_v3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config python3 libsodium-dev
+          bash scripts/randomx_build.sh
+          make -C crypto/native -j"$(nproc)"
+          bash crypto/native/build-linux-admit-so.sh
+          bash wallet/native/build-shear-v3.sh
+          python3 scripts/isa_scan.py crypto/randomx/build/librandomx.a crypto/native/shearhash.node crypto/native/shearadmit.node wallet/native/libshear_v3.so crypto/native/admit/target/release/libshear_admit.so
+      - name: The fs1_tree tool
+        working-directory: crypto/native/vendor/monero-oxide-77788c3
+        run: |
+          cargo build --release -p shear-fs1 --features tree-cli --bin fs1_tree
+          echo "SHEAR_FS1_TREE_BIN=$PWD/target/release/fs1_tree" >> "$GITHUB_ENV"
+          echo "SHEAR_FS1_TREE_SHA256=$(sha256sum target/release/fs1_tree | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: Wallet suite, shard ${{ matrix.shard }} of 4
+        working-directory: wallet
+        env:
+          SHARD: ${{ matrix.shard }}
+          OF: '4'
+        run: |
+          flutter pub get
+          bash tool/wallet_suite.sh
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallet-suite-shard-${{ matrix.shard }}
+          path: wallet/build/wallet-suite/
+          retention-days: 7
