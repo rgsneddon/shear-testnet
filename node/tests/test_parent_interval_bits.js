@@ -84,8 +84,6 @@ describe('zero parent gap quotes genesis-anchored aserti3-2d', () => {
     const genesis = {
       header: genesisTpl.header,
       txs: genesisTpl.txs,
-      samples: genesisTpl.samples,
-      miner,
       height: 1,
       hash: Buffer.alloc(32, 9),
     };
@@ -105,8 +103,6 @@ describe('zero parent gap quotes genesis-anchored aserti3-2d', () => {
       return verifyBlock({
         header: tpl.header,
         txs: tpl.txs,
-        samples: tpl.samples,
-        miner,
         height: 2,
       }, genesis, { trustedPowHash: Buffer.alloc(32, 0), skipSharePow: true });
     }

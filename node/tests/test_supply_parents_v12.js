@@ -100,9 +100,7 @@ describe('v12 supply parents fail closed', () => {
           const block = {
             header: tpl.header,
             txs: tpl.txs,
-            samples: tpl.samples,
             shareBatch: tpl.shareBatch || [],
-            miner: who,
             aLeaves: tpl.aLeaves,
             bLeaves: tpl.bLeaves,
             rootA: tpl.rootA,
@@ -181,9 +179,7 @@ describe('v12 supply parents fail closed', () => {
           const rivalBlock = {
             header: tpl.header,
             txs: tpl.txs,
-            samples: tpl.samples,
             shareBatch: tpl.shareBatch || [],
-            miner: tpl.miner,
             aLeaves: tpl.aLeaves,
             bLeaves: tpl.bLeaves,
             rootA: tpl.rootA,
@@ -209,9 +205,7 @@ describe('v12 supply parents fail closed', () => {
           const extended = await Promise.resolve(rival.append({
             header: moreTpl.header,
             txs: moreTpl.txs,
-            samples: moreTpl.samples,
             shareBatch: moreTpl.shareBatch || [],
-            miner: who,
             aLeaves: moreTpl.aLeaves,
             bLeaves: moreTpl.bLeaves,
             rootA: moreTpl.rootA,
@@ -254,9 +248,7 @@ describe('v12 supply parents fail closed', () => {
           const sibling = await Promise.resolve(suffixStore.append({
             header: tpl.header,
             txs: tpl.txs,
-            samples: tpl.samples,
             shareBatch: tpl.shareBatch || [],
-            miner: tpl.miner,
             aLeaves: tpl.aLeaves,
             bLeaves: tpl.bLeaves,
             rootA: tpl.rootA,
@@ -279,9 +271,7 @@ describe('v12 supply parents fail closed', () => {
           const sufNext = await Promise.resolve(suffixStore.append({
             header: sufTpl.header,
             txs: sufTpl.txs,
-            samples: sufTpl.samples,
             shareBatch: sufTpl.shareBatch || [],
-            miner: who,
             aLeaves: sufTpl.aLeaves,
             bLeaves: sufTpl.bLeaves,
             rootA: sufTpl.rootA,

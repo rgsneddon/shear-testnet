@@ -47,9 +47,7 @@ async function mineOne(store, dest, now) {
   const got = await Promise.resolve(store.append({
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

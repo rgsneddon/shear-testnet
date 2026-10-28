@@ -42,7 +42,7 @@ async function sealed(tpl, txs) {
   const found = await mineHeaderParallel(encodeHeader({ ...head, merkleRoot: merkleRoot(txs.map((tx) => digestTx(tx))) }), tpl.bits, MAX_TRIES, 1);
   assert.ok(found && found.block, 'need pow');
   return {
-    header: found.header, txs, samples: tpl.samples, shareBatch: tpl.shareBatch || [], miner: tpl.miner,
+    header: found.header, txs, shareBatch: tpl.shareBatch || [],
     aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, rootA: tpl.rootA, rootB: tpl.rootB, weight: tpl.weight,
   };
 }

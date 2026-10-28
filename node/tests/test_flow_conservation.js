@@ -25,8 +25,6 @@ function mine(tpl) {
     header: tpl.header,
     height: tpl.height,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

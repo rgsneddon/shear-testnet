@@ -63,9 +63,7 @@ function mine(tpl) {
     header: tpl.header,
     height: tpl.height,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
   };

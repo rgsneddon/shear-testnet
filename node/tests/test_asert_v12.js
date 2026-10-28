@@ -93,9 +93,7 @@ async function appendAt(store, dest, now, extra = {}) {
   const block = {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -151,7 +149,6 @@ function sealOn(chain, pubs, dest, stamp, extra = {}) {
     header: tpl.header,
     txs: tpl.txs,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -247,7 +244,6 @@ describe('v12 genesis-anchored aserti3-2d', () => {
       header: withBits(parent.header, bitsOf(parent) - 1),
       txs: parent.txs,
       shareBatch: parent.shareBatch || [],
-      miner: dest,
       aLeaves: parent.aLeaves,
       bLeaves: parent.bLeaves,
       rootA: parent.rootA,
@@ -283,9 +279,7 @@ describe('v12 genesis-anchored aserti3-2d', () => {
     const eased = await Promise.resolve(store.append({
       header: withBits(tpl.header, lateQuote.eased),
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -405,7 +399,6 @@ describe('v12 genesis-anchored aserti3-2d', () => {
     const epoch0Block = {
       header: epoch0.header,
       txs: epoch0.txs,
-      miner: dest,
       height: parent.height + 1,
     };
     const floorBad = verifyBlock(epoch0Block, {

@@ -49,6 +49,7 @@ import { buildTemplate, chainLoadSeal, chainWorkOf, retarget, retargetQuote } fr
 import { decodeWireBlock, encodeWireBlock, selectHeadersAfterLocator } from '../src/p2p.js';
 import { applyVerifiedIpcBlock, ipcBlockFrames } from '../src/p2p_ipc.js';
 import { createStore } from '../src/store.js';
+import { emptyRoundRecord } from './support/blunote_mine.js';
 
 const PRUNE = SAMPLE_PRUNE_CONFIRMATIONS;
 const STEP = TARGET_BLOCK_INTERVAL_MS;
@@ -95,9 +96,7 @@ function bodyOf(tpl, dest, extra = {}) {
   return {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -166,7 +165,8 @@ function forkBlocks(store, dest, parentIndex, count) {
       parentBlocks: chain,
       parentFluxset: flux,
     });
-    const block = bodyOf(tpl, dest, { hash: easyPow(), height: Number(prev.height) + 1, bSpendIds: [] });
+    // R28: an empty no-key round; the next coinbase binds its record.
+    const block = bodyOf(tpl, dest, { hash: easyPow(), height: Number(prev.height) + 1, bSpendIds: [], blunoteRecord: emptyRoundRecord() });
     out.push(block);
     flux = applyBlockToFluxset(flux, block);
   }

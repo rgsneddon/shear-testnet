@@ -2184,7 +2184,6 @@ function extendChain(chain, miner, { from, to, salt, tenths }) {
       hash: idHash(height, salt),
       height,
       txs: [cb],
-      miner,
       magic: MAGIC_TESTNET,
       // R28: an empty round with no fee key has the empty record, which the
       // next coinbase binds (blunote_prev); every load re-derives it.

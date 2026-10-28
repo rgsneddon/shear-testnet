@@ -36,8 +36,7 @@ async function minedBlock(store, miner) {
   const found = await mineHeaderParallel(tpl.header, tpl.bits, 8_192, 1);
   assert.ok(found && found.block, 'need pow');
   const got = await Promise.resolve(store.append({
-    header: found.header, txs: tpl.txs, samples: tpl.samples, shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner, aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, rootA: tpl.rootA, rootB: tpl.rootB, weight: tpl.weight,
+    header: found.header, txs: tpl.txs, shareBatch: tpl.shareBatch || [], aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, rootA: tpl.rootA, rootB: tpl.rootB, weight: tpl.weight,
   }));
   assert.equal(got.ok, true, got.reason);
   return store.tip();

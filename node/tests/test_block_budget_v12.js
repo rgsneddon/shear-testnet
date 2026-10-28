@@ -161,9 +161,7 @@ async function blockResult(store, txs, t0) {
   let got = verifyBlock({
     header: encodeHeader(decoded),
     txs,
-    samples: tpl.samples,
     shareBatch: [],
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

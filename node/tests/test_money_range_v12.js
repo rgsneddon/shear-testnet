@@ -197,9 +197,7 @@ describe('v12 money outputs are range-proven and withdraws are funded', () => {
       const got = verifyBlock({
         header: encodeHeader(decoded),
         txs,
-        samples: tpl.samples,
         shareBatch: [],
-        miner: dest,
       }, null, {
         trustedPowHash: easyPowHash(),
         skipSharePow: true,

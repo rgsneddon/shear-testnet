@@ -49,9 +49,7 @@ function padTo(store, dest, target) {
     const got = store.append({
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -113,9 +111,7 @@ describe('a pruned b-spend restarts spent', () => {
     const spent = live.append({
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -153,9 +149,7 @@ describe('a pruned b-spend restarts spent', () => {
     const again = bounced.append({
       header: againTpl.header,
       txs: againTpl.txs,
-      samples: againTpl.samples,
       shareBatch: againTpl.shareBatch || [],
-      miner: dest,
       aLeaves: againTpl.aLeaves,
       bLeaves: againTpl.bLeaves,
       rootA: againTpl.rootA,

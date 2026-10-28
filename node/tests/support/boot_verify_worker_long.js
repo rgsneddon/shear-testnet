@@ -109,7 +109,6 @@ function buildBook(n) {
       rootA: tpl.rootA,
       rootB: tpl.rootB,
       weight: tpl.weight,
-      samples: tpl.samples,
       blunoteRecord: EMPTY_RECORD,
     });
     flux = applyBlockToFluxset(flux, chain[chain.length - 1]);

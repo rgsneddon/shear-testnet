@@ -158,9 +158,7 @@ describe('public receipt spread', () => {
       const got = await Promise.resolve(store.append({
         header: found.header,
         txs: built.txs,
-        samples: built.samples,
         shareBatch: built.shareBatch || [],
-        miner,
         aLeaves: built.aLeaves,
         bLeaves: built.bLeaves,
         rootA: built.rootA,

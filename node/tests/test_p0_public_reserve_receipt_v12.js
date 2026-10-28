@@ -231,9 +231,7 @@ async function mineAppend(store, miner, txs, now) {
   const appended = await Promise.resolve(store.append({
     header: found.header,
     txs: built.txs,
-    samples: built.samples,
     shareBatch: built.shareBatch || [],
-    miner,
     aLeaves: built.aLeaves,
     bLeaves: built.bLeaves,
     rootA: built.rootA,
@@ -445,9 +443,7 @@ describe('P0 public reserve receipt', () => {
       const liveBlock = {
         header: mined.found.header,
         txs: mined.built.txs,
-        samples: mined.built.samples,
         shareBatch: mined.built.shareBatch || [],
-        miner,
         aLeaves: mined.built.aLeaves,
         bLeaves: mined.built.bLeaves,
         rootA: mined.built.rootA,
@@ -481,9 +477,7 @@ describe('P0 public reserve receipt', () => {
       const attackBlock = {
         header: mined.found.header,
         txs: mined.built.txs,
-        samples: mined.built.samples,
         shareBatch: mined.built.shareBatch || [],
-        miner,
       };
       report.attackAudit = supplyAudit({
         blocks: store.blocks.concat([attackBlock]),

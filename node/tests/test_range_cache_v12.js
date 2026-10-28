@@ -180,9 +180,7 @@ describe('v12 range-proof cache stays under the engine limit', () => {
       const appended = await Promise.resolve(store.append({
         header: tpl.header,
         txs: tpl.txs,
-        samples: tpl.samples,
         shareBatch: tpl.shareBatch || [],
-        miner: who,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,

@@ -36,7 +36,7 @@ import { levyNeed } from '../../crypto/levy.js';
 import { ANCHOR_QUANTUM, ANCHOR_WINDOW } from '../../crypto/admit_v3.js';
 import { resetFs1Tree } from '../../crypto/fs1_spend.js';
 import { lockSend } from './b_leaf_fs1.js';
-import { bluWallet, soloCoin, soloPay } from './support/blunote_mine.js';
+import { bluWallet, emptyRoundRecord, soloCoin, soloPay } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -77,9 +77,7 @@ function sealNext(store, dest, opening) {
   const got = store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -116,9 +114,7 @@ function asBlock(tpl, height, hash) {
   return {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -151,7 +147,8 @@ function forkBlocks(prefix, dest, count, txsForFirst) {
       parentFluxset: flux,
     });
     const block = asBlock(tpl, Number(prev.height) + 1, easyPow());
-    block.miner = dest;
+    // R28: an empty no-key round; the next coinbase binds its record.
+    block.blunoteRecord = emptyRoundRecord();
     out.push(block);
     appendFluxBlock(flux, block);
     prev = block;

@@ -63,9 +63,7 @@ function sealNext(store, dest, pow, shares = null) {
   return store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -211,9 +209,7 @@ function forkBlock(store, dest, parentIndex, pow, shares = []) {
   return {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -260,9 +256,7 @@ function heavier(store, dest, parentIndex, count, tagBase) {
     const block = {
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,

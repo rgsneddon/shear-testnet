@@ -55,9 +55,7 @@ describe('a repeated merkle leaf is refused', () => {
       const base = {
         header: tpl.header,
         txs: tpl.txs,
-        samples: tpl.samples,
         shareBatch: tpl.shareBatch || [],
-        miner: dest,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,

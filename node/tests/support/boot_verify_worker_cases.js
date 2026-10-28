@@ -105,7 +105,6 @@ function buildBook(n) {
       rootA: tpl.rootA,
       rootB: tpl.rootB,
       weight: tpl.weight,
-      samples: tpl.samples,
     };
     // R28: a child's coinbase binds its parent's record root, so each block
     // carries the record its own verify derives before the next is built.

@@ -42,9 +42,7 @@ function grow(store, dest, n, tagBase, stepMs = STEP) {
     const got = store.append({
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -67,9 +65,7 @@ function wire(block, record) {
   const out = {
     header: block.header,
     txs: block.txs,
-    samples: block.samples || [],
     shareBatch: block.shareBatch || [],
-    miner: block.miner,
     aLeaves: block.aLeaves,
     bLeaves: block.bLeaves,
     rootA: block.rootA,

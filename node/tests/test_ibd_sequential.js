@@ -51,8 +51,6 @@ function mineOne(store, dest) {
   return store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: dest,
     shareBatch: tpl.shareBatch || [],
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
@@ -206,7 +204,6 @@ describe('sequential IBD', () => {
       header: tpl.header,
       txs: tpl.txs,
       shareBatch: [],
-      miner: dest,
     }, null, { trustedPowHash: easyPowHash() });
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'hash_bonus');

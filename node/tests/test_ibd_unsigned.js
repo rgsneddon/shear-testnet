@@ -74,8 +74,6 @@ async function minePacked(store, dest, now, extra = {}) {
   const appended = await Promise.resolve(store.append({
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: dest,
     shareBatch: tpl.shareBatch || [],
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,

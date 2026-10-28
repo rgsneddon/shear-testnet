@@ -81,9 +81,7 @@ function carry(who, tx) {
   return {
     header,
     txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: who,
     height: 1,
     weight: tpl.weight,
   };

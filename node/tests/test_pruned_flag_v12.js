@@ -81,9 +81,7 @@ function appendTpl(store, dest, tag, when, shares) {
     got: store.append({
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -144,9 +142,7 @@ describe('samplesPruned does not forge hash credits', () => {
     const body = {
       header: next.header,
       txs: next.txs,
-      samples: next.samples,
       shareBatch: next.shareBatch || [],
-      miner: dest,
       aLeaves: next.aLeaves,
       bLeaves: next.bLeaves,
       rootA: next.rootA,

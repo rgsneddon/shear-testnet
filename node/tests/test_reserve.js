@@ -73,9 +73,7 @@ async function mineOne(store, dest, { bits = GENESIS_BITS_PACKED, now } = {}) {
   const got = await store.append({
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -368,9 +366,7 @@ describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
     const funded = await store.append({
       header: foundFund.header,
       txs: fundTpl.txs,
-      samples: fundTpl.samples,
       shareBatch: fundTpl.shareBatch || [],
-      miner: destA,
       aLeaves: fundTpl.aLeaves,
       bLeaves: fundTpl.bLeaves,
       rootA: fundTpl.rootA,

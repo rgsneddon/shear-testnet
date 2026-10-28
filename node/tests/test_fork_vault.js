@@ -46,9 +46,7 @@ async function mineOne(store, dest, { now } = {}) {
   return store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

@@ -168,9 +168,7 @@ describe('v12 Flow inputs are bound to Admit proofs', () => {
       const got = verifyBlock({
         header: encodeHeader(decoded),
         txs,
-        samples: tpl.samples,
         shareBatch: [],
-        miner: dest,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,

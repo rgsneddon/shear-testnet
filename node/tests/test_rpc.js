@@ -29,8 +29,6 @@ function mineOne(store, dest) {
   return store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

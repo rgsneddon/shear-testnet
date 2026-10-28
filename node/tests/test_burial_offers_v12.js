@@ -85,9 +85,7 @@ async function sealNext(store, dest) {
   return Promise.resolve(store.append({
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

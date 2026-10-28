@@ -18,8 +18,7 @@ const T0 = 1_700_000_000_000;
 
 function asBlock(tpl) {
   return {
-    header: tpl.header, txs: tpl.txs, samples: tpl.samples || [], shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner, aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, rootA: tpl.rootA, rootB: tpl.rootB, weight: tpl.weight,
+    header: tpl.header, txs: tpl.txs, shareBatch: tpl.shareBatch || [], aLeaves: tpl.aLeaves, bLeaves: tpl.bLeaves, rootA: tpl.rootA, rootB: tpl.rootB, weight: tpl.weight,
   };
 }
 

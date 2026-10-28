@@ -55,9 +55,7 @@ async function mine(tpl) {
   return {
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     hash: found.hash,

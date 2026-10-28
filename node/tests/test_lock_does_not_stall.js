@@ -125,7 +125,6 @@ function installStuckTip(store, miner) {
       height,
       txs: [],
       weight: tpl.weight,
-      miner,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -152,9 +151,7 @@ async function sealTemplate(store, tpl, mineOpts = {}) {
   const got = await store.append({
     header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

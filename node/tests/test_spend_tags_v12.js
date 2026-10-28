@@ -97,8 +97,6 @@ function blockFrom(tpl, pow) {
   return {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

@@ -114,9 +114,7 @@ describe('v12 range proofs are exact length and canonical', () => {
     const got = verifyBlock({
       header: encodeHeader(decoded),
       txs,
-      samples: tpl.samples,
       shareBatch: [],
-      miner: dest,
     }, null, {
       trustedPowHash: easyPowHash(),
       skipSharePow: true,

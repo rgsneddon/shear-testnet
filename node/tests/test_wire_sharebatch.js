@@ -31,9 +31,7 @@ function mineAppend(store, { miner, shareBatch = [], poolDest = null, now }) {
   return store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || shareBatch,
-    miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -66,9 +64,7 @@ describe('shareBatch on disk and p2p wire', () => {
     const cloned = {
       header: first.block.header,
       txs: first.block.txs,
-      samples: first.block.samples || [],
       shareBatch: first.block.shareBatch || [],
-      miner: hasher,
       aLeaves: first.block.aLeaves,
       bLeaves: first.block.bLeaves,
       rootA: first.block.rootA,

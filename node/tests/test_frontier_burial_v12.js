@@ -133,9 +133,7 @@ function asBlock(tpl, height, hash) {
   return {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -167,9 +165,7 @@ function sealNext(store, dest, share = null) {
   return store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -218,7 +214,6 @@ function forkBlocks(prefix, dest, count, tagBase, txsForFirst = null) {
       parentFluxset: flux,
     });
     const block = asBlock(tpl, Number(prev.height) + 1, easyPow());
-    block.miner = dest;
     // R28: an empty round with no fee key; the next coinbase binds its record.
     block.blunoteRecord = emptyRoundRecord();
     out.push(block);
@@ -639,9 +634,7 @@ describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import
         const got = store.append({
           header: tpl.header,
           txs: tpl.txs,
-          samples: tpl.samples,
           shareBatch: tpl.shareBatch || [],
-          miner: who.dest,
           aLeaves: tpl.aLeaves,
           bLeaves: tpl.bLeaves,
           rootA: tpl.rootA,

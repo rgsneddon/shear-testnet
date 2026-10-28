@@ -47,9 +47,7 @@ function resealed(tpl, txs) {
   return {
     header: encodeHeader({ ...decoded, merkleRoot: merkleRoot(txs.map(digestTx)), nonce: 0n }),
     txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

@@ -14,6 +14,7 @@ import { createStore } from '../src/store.js';
 import { buildTemplate, retarget, GENESIS_PREV, shouldAdopt } from '../src/chain.js';
 import { payerIdentity, sealMintOut } from './b_leaf_fund.js';
 import { publishBLeaves } from './b_leaf_fs1.js';
+import { emptyRoundRecord } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -59,9 +60,7 @@ function sealBuilt(store, dest, extra = {}) {
   return store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -91,9 +90,7 @@ function heavierFork(store, dest, parentIndex, count, tagBase) {
     out.push({
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -102,6 +99,8 @@ function heavierFork(store, dest, parentIndex, count, tagBase) {
       height: Number(prev.height) + 1,
       weight: tpl.weight,
       bSpendIds: [],
+      // R28: the next fork block's coinbase binds this record's root.
+      blunoteRecord: emptyRoundRecord(),
     });
     prev = out[out.length - 1];
     now += 90_000;

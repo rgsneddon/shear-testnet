@@ -36,9 +36,7 @@ async function asBlock(tpl, extra = {}) {
   return {
     header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -74,7 +72,6 @@ describe('v12 IBD does not skip on a peer-advertised height', () => {
     // The continuity lie is sealed with real work, so continuity is the
     // first check it fails.
     const broken = await asBlock(rivalTpl, {
-      miner: other,
       header: flipContinuity(rivalTpl.header),
       samplesPruned: true,
       height: 1,
@@ -96,7 +93,6 @@ describe('v12 IBD does not skip on a peer-advertised height', () => {
       now: t0 + TARGET_BLOCK_INTERVAL_MS,
     }).tpl;
     const child = await asBlock(childTpl, {
-      miner: dest,
       header: flipContinuity(childTpl.header),
       samplesPruned: true,
       height: 2,

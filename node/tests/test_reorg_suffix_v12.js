@@ -18,6 +18,7 @@ import {
 } from '../../crypto/share_batch.js';
 import { createStore } from '../src/store.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
+import { emptyRoundRecord } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -65,9 +66,7 @@ function sealNext(store, dest, tag, share = null) {
   return store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -108,9 +107,7 @@ function heavierFork(store, dest, parentIndex, count, tagBase) {
     const block = {
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -119,6 +116,8 @@ function heavierFork(store, dest, parentIndex, count, tagBase) {
       height: Number(prev.height) + 1,
       weight: tpl.weight,
       bSpendIds: [],
+      // R28: the next fork block's coinbase binds this record's root.
+      blunoteRecord: emptyRoundRecord(),
     };
     out.push(block);
     prev = block;

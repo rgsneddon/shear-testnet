@@ -519,9 +519,7 @@ describe('v12 PROP pays share work', () => {
     const parent = {
       header: parentTpl.header,
       txs: parentTpl.txs,
-      samples: parentTpl.samples,
       shareBatch: [],
-      miner: feeTo,
       poolDest: feeTo,
       aLeaves: parentTpl.aLeaves,
       bLeaves: parentTpl.bLeaves,
@@ -598,9 +596,7 @@ describe('v12 PROP pays share work', () => {
       return verifyBlock({
         header: tpl.header,
         txs: tpl.txs,
-        samples: tpl.samples,
         shareBatch: tpl.shareBatch || [],
-        miner: low,
         poolDest: feeTo,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,

@@ -137,9 +137,7 @@ function seal(tpl, prev, now) {
   const block = {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     poolDest: tpl.poolDest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
@@ -184,9 +182,7 @@ function blockFrom(tpl, txs) {
       baseFee: decoded.baseFee,
     }),
     txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     poolDest: tpl.poolDest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
@@ -634,13 +630,11 @@ describe('v12 consensus rejects a custodial coinbase', () => {
       header: badJob.tpl.header,
       txs: badJob.tpl.txs,
       shareBatch: badJob.tpl.shareBatch,
-      miner: hasher,
       poolDest: pool,
       aLeaves: badJob.tpl.aLeaves,
       bLeaves: badJob.tpl.bLeaves,
       weight: badJob.tpl.weight,
       height: badJob.tpl.height,
-      samples: badJob.tpl.samples,
     };
     const trustedIngest = await Promise.resolve(store.ingest([badBlock], {
       trustedPowHash: easyPowHash(),

@@ -22,8 +22,6 @@ function mine(tpl) {
   return {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: tpl.miner,
     trustedPowHash: pow,
   };
 }

@@ -241,8 +241,6 @@ describe('v3 and v4 datadirs refuse each other', () => {
     assert.equal(store.append({
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
-      miner: dest,
       shareBatch: tpl.shareBatch || [],
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,

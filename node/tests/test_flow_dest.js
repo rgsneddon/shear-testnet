@@ -25,7 +25,7 @@ async function mineGenesis(miner) {
   assert.equal(decodeHeader(Buffer.from(tpl.header)).bits, RT_BITS);
   const found = await mineHeaderParallel(tpl.header, tpl.bits, 8_192, 1);
   assert.ok(found && found.block, 'need pow');
-  return { tpl, block: { header: found.header, txs: tpl.txs, samples: tpl.samples, height: 1 } };
+  return { tpl, block: { header: found.header, txs: tpl.txs, height: 1 } };
 }
 
 function noteOf(dest) {

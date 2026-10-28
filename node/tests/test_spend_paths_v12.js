@@ -195,9 +195,7 @@ describe('spend paths use the note index', { concurrency: 1 }, () => {
       const block = {
         header: forkTpl.header,
         txs: forkTpl.txs,
-        samples: forkTpl.samples,
         shareBatch: forkTpl.shareBatch || [],
-        miner: dest,
         aLeaves: forkTpl.aLeaves,
         bLeaves: forkTpl.bLeaves,
         rootA: forkTpl.rootA,

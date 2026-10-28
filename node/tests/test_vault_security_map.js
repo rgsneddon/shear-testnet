@@ -705,9 +705,7 @@ describe('Vault Security test map', () => {
           const got = await verifyBlock({
             header,
             txs: [cb],
-            samples: tpl.samples,
             shareBatch: tpl.shareBatch || [],
-            miner: tpl.miner,
             height: 1,
           }, null, { probeBody: true });
           assert.equal(got.reason, 'observe_unattested', `${k} ${bps} ${observedAtMs} ${got.reason}`);

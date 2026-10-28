@@ -157,9 +157,7 @@ describe('a real ShearHash chain is the only foreign book that loads', () => {
       const got = store.append({
         header: hit.header,
         txs: tpl.txs,
-        samples: tpl.samples,
         shareBatch: tpl.shareBatch || [],
-        miner: dest,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,

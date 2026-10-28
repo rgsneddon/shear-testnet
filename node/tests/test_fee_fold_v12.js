@@ -93,9 +93,7 @@ function asBlock(tpl, miner, hash) {
   return {
     header: Buffer.from(tpl.header),
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: (tpl.shareBatch || []).map((s) => ({ ...s })),
-    miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

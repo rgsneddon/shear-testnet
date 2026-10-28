@@ -440,9 +440,7 @@ describe('v12 tx input and output cap', { concurrency: 1 }, () => {
       let blockGot = verifyBlock({
         header: encodeHeader(decoded),
         txs,
-        samples: tpl.samples,
         shareBatch: [],
-        miner: dest,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,
@@ -467,9 +465,7 @@ describe('v12 tx input and output cap', { concurrency: 1 }, () => {
       let cbGot = verifyBlock({
         header: encodeHeader(decodedCb),
         txs: cbTxs,
-        samples: tpl.samples,
         shareBatch: [],
-        miner: dest,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,

@@ -59,9 +59,7 @@ function sealNext(store, dest, when) {
   const got = store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -177,7 +175,6 @@ function buildBook(n, dest, t0) {
       txs: tpl.txs,
       shareBatch: tpl.shareBatch || [],
       hashCredits: tpl.hashCredits,
-      miner: dest,
       height: h,
       hash: easyPow(h),
       aLeaves: tpl.aLeaves,
@@ -185,7 +182,6 @@ function buildBook(n, dest, t0) {
       rootA: tpl.rootA,
       rootB: tpl.rootB,
       weight: tpl.weight,
-      samples: tpl.samples,
     };
     chain.push(block);
     flux = applyBlockToFluxset(flux, block);

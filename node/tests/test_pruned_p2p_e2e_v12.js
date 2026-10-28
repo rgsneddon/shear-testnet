@@ -149,9 +149,7 @@ async function mineEmpty(store, dest) {
   const got = await Promise.resolve(store.append({
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -262,9 +260,7 @@ async function mineShareBlock(store, specs, lanes) {
   const got = await Promise.resolve(store.append({
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

@@ -59,9 +59,7 @@ async function mineOne(store, miner, now) {
   return Promise.resolve(store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -322,9 +320,7 @@ describe('FS-1 stage 0 vault gate', () => {
           header: tpl.header,
           height: tpl.height,
           txs: [...tpl.txs, tx],
-          samples: tpl.samples,
           shareBatch: tpl.shareBatch || [],
-          miner: dest,
           hash: Buffer.alloc(32),
         };
         const verdict = await Promise.resolve(quick(`${kind} block`, () => verifyBlock(block, null, {

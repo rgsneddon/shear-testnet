@@ -114,9 +114,7 @@ describe('a restamp that crosses the epoch or holds a reserve row rebuilds', () 
             const probed = await Promise.resolve(pool.store.probeBlock({
               header: tpl.header,
               txs: tpl.txs,
-              samples: tpl.samples,
               shareBatch: tpl.shareBatch || [],
-              miner: tpl.miner,
               poolDest: tpl.poolDest || '',
               aLeaves: tpl.aLeaves,
               bLeaves: tpl.bLeaves,
@@ -149,9 +147,7 @@ describe('a restamp that crosses the epoch or holds a reserve row rebuilds', () 
         const probed = await Promise.resolve(pool.store.probeBlock({
           header: tpl.header,
           txs: tpl.txs,
-          samples: tpl.samples,
           shareBatch: tpl.shareBatch || [],
-          miner: tpl.miner,
           poolDest: tpl.poolDest || '',
           aLeaves: tpl.aLeaves,
           bLeaves: tpl.bLeaves,
@@ -173,9 +169,7 @@ describe('a restamp that crosses the epoch or holds a reserve row rebuilds', () 
       const bareProbe = await Promise.resolve(pool.store.probeBlock({
         header: bareTpl.header,
         txs: bareTpl.txs,
-        samples: bareTpl.samples,
         shareBatch: bareTpl.shareBatch || [],
-        miner: bareTpl.miner,
         poolDest: bareTpl.poolDest || '',
         aLeaves: bareTpl.aLeaves,
         bLeaves: bareTpl.bLeaves,

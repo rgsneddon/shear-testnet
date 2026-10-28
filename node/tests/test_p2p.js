@@ -147,8 +147,6 @@ async function mineOne(store, dest, bits = GENESIS_BITS_PACKED) {
   return store.append({
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: dest,
     shareBatch: tpl.shareBatch || [],
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
@@ -196,8 +194,6 @@ async function appendMined(store, dest, nowMs = null) {
   const got = await Promise.resolve(store.append({
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: dest,
     shareBatch: tpl.shareBatch || [],
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
@@ -224,8 +220,6 @@ async function appendTrusted(store, dest, seq, nowMs = null) {
   const got = await store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: dest,
     shareBatch: tpl.shareBatch || [],
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,

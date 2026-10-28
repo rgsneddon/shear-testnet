@@ -47,9 +47,7 @@ async function sealBlock(tpl, txs = tpl.txs) {
   return {
     header: found.header,
     txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

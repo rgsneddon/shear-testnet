@@ -25,6 +25,7 @@ import { decodeBookSnap } from '../src/book_snap.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
 import { createStore } from '../src/store.js';
 import { auditCirculatingSupply } from '../src/supply.js';
+import { emptyRoundRecord } from './support/blunote_mine.js';
 
 const T0 = 1_700_000_000_000;
 const STEP = 90_000;
@@ -51,9 +52,7 @@ function sealNext(store, dest, tag) {
   return store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -91,9 +90,7 @@ function heavierFork(store, dest, parentIndex, count, tagBase) {
     const block = {
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -102,6 +99,8 @@ function heavierFork(store, dest, parentIndex, count, tagBase) {
       height: Number(prev.height) + 1,
       weight: tpl.weight,
       bSpendIds: [],
+      // R28: the next fork block's coinbase binds this record's root.
+      blunoteRecord: emptyRoundRecord(),
     };
     out.push(block);
     prev = block;

@@ -49,8 +49,6 @@ async function mine(tpl) {
     header: found.header,
     height: tpl.height,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -300,8 +298,6 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     const appended = store.append({
       header: parent.header,
       txs: parent.txs,
-      samples: parent.samples,
-      miner: dest,
     });
     assert.equal(appended.ok, true, appended.reason);
     const rebuilt = fluxsetFromBlocks(store.blocks);
@@ -397,8 +393,6 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     let appended = store.append({
       header: parent.header,
       txs: parent.txs,
-      samples: parent.samples,
-      miner: dest,
     });
     assert.equal(appended.ok, true, appended.reason);
     const genesisHash = appended.block.hash;
@@ -411,9 +405,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       appended = store.append({
         header: found.header,
         txs: tpl.txs,
-        samples: tpl.samples,
         shareBatch: tpl.shareBatch || [],
-        miner: dest,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,

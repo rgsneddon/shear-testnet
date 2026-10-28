@@ -142,9 +142,7 @@ async function sealEmpty(store, dest, now, openings) {
   const block = {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -360,9 +358,7 @@ async function mineAt(store, dest, now, openings, who) {
   const got = await Promise.resolve(store.append({
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -569,9 +565,7 @@ async function sameVerdict(store, tx, reason, wall) {
   const appended = await Promise.resolve(store.append({
     header: block.header,
     txs: block.txs,
-    samples: block.samples,
     shareBatch: block.shareBatch || [],
-    miner: tip.miner,
     aLeaves: block.aLeaves,
     bLeaves: block.bLeaves,
     rootA: block.rootA,

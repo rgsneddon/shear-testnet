@@ -139,7 +139,6 @@ function buildCoinbaseBook(n, noteCount, t0) {
       txs: tpl.txs,
       shareBatch: tpl.shareBatch || [],
       hashCredits: tpl.hashCredits,
-      miner: dests[0],
       height: h,
       hash: tagHash(),
       aLeaves: tpl.aLeaves,
@@ -147,7 +146,6 @@ function buildCoinbaseBook(n, noteCount, t0) {
       rootA: tpl.rootA,
       rootB: tpl.rootB,
       weight: tpl.weight,
-      samples: tpl.samples,
     };
     assert.equal(potCount(block), count);
     chain.push(block);
@@ -217,9 +215,7 @@ describe('v12 own-install snapshot', () => {
     const got = live.append({
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -239,9 +235,7 @@ describe('v12 own-install snapshot', () => {
     const next = again.append({
       header: built.tpl.header,
       txs: built.tpl.txs,
-      samples: built.tpl.samples,
       shareBatch: built.tpl.shareBatch || [],
-      miner: dest,
       aLeaves: built.tpl.aLeaves,
       bLeaves: built.tpl.bLeaves,
       rootA: built.tpl.rootA,
@@ -266,9 +260,7 @@ describe('v12 own-install snapshot', () => {
       const got = live.append({
         header: tpl.header,
         txs: tpl.txs,
-        samples: tpl.samples,
         shareBatch: [],
-        miner: dest,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,
@@ -415,7 +407,6 @@ describe('v12 own-install snapshot', () => {
         header: Buffer.from(tpl.header),
         txs: tpl.txs,
         shareBatch: (tpl.shareBatch || []).map((s) => ({ ...s })),
-        miner: rows[0].dest,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         rootA: tpl.rootA,

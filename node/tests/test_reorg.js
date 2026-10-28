@@ -59,9 +59,7 @@ async function mineOne(store, dest, extra = {}) {
   return store.append({
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -195,7 +193,7 @@ describe('most-work adopt', () => {
     const badHeader = encodeHeader({ ...tplHeader, merkleRoot: merkleRoot(badTxs.map(digestTx)), nonce: 0n });
     const badFound = await mineHeaderParallel(badHeader, tpl.bits, MAX_TRIES, threads);
     assert.ok(badFound && badFound.block, 'need pow on the bad child');
-    const refused = store.ingest([{ header: badFound.header, txs: badTxs, samples: tpl.samples, miner: dest }]);
+    const refused = store.ingest([{ header: badFound.header, txs: badTxs }]);
     assert.equal(refused.ok, false, 'a wrong jroot is refused');
     assert.equal(refused.reason, 'admit_membership');
     assert.equal(store.tip().height, height);
@@ -215,13 +213,13 @@ describe('most-work adopt', () => {
         vout: tpl.txs[0].vout.map((o) => ({ ...o, address: addr })),
       }, ...tpl.txs.slice(1)];
       assert.deepEqual(addressed.map((t) => digestTx(t).toString('hex')), tpl.txs.map((t) => digestTx(t).toString('hex')), 'the address is in no leaf');
-      const framed = store.ingest([{ header: found.header, txs: addressed, samples: tpl.samples, miner: dest }]);
+      const framed = store.ingest([{ header: found.header, txs: addressed }]);
       assert.equal(framed.ok, false, `${reason}: refused, not stripped`);
       assert.equal(framed.reason, reason);
       assert.equal(store.tip().height, height);
       assert.equal(store.blocks.some((b) => JSON.stringify(b.txs).includes(addr)), false, `${reason}: never on chain`);
     }
-    const got = store.ingest([{ header: found.header, txs: tpl.txs, samples: tpl.samples, miner: dest }]);
+    const got = store.ingest([{ header: found.header, txs: tpl.txs }]);
     assert.equal(got.ok, true, `the clean child ${got.reason || ''}`);
     assert.equal(store.tip().height, height + 1);
   });

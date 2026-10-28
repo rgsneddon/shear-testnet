@@ -40,7 +40,6 @@ function genesisBody(store, dest) {
     txs: tpl.txs,
     samples: [],
     shareBatch: [],
-    miner: dest,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,

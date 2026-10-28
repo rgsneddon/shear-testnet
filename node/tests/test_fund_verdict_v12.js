@@ -119,8 +119,6 @@ function blockFrom(tpl, hash) {
   return {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -455,9 +453,7 @@ function jobBlock(pool, job) {
   return {
     header: tpl.header,
     txs: tpl.txs,
-    samples: tpl.samples,
     shareBatch: tpl.shareBatch || [],
-    miner: tpl.miner,
     poolDest: tpl.poolDest || '',
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,

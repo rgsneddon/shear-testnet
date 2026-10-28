@@ -43,8 +43,6 @@ function mine(tpl) {
   return {
     header: found.header,
     txs: tpl.txs,
-    samples: tpl.samples,
-    miner: tpl.miner,
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -201,9 +199,7 @@ describe('verifyBlock Phase B Flow levy', { timeout: fileCapMs(import.meta.url) 
       const funded = await store.append({
         header: foundFund.header,
         txs: fund.txs,
-        samples: fund.samples,
         shareBatch: fund.shareBatch || [],
-        miner: dest,
         aLeaves: fund.aLeaves,
         bLeaves: fund.bLeaves,
         rootA: fund.rootA,

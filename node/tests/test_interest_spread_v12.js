@@ -765,9 +765,7 @@ describe('principal-only withdraw receipts', () => {
       return verifyBlock({
         header,
         txs,
-        samples: tpl.samples,
         shareBatch: tpl.shareBatch || [],
-        miner: tpl.miner,
         aLeaves: tpl.aLeaves,
         bLeaves: tpl.bLeaves,
         weight: tpl.weight,
