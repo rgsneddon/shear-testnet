@@ -77,14 +77,14 @@ function cloneBlocks(blocks) {
 
 /**
  * R28: a coinbase carries no pot note; an empty round carries its pot as
- * carryNanos. Raising that carry by one nano is a parent that claims pot the
- * schedule never minted.
+ * carryNanos. Lowering that carry by one nano is a parent that mints a nano
+ * of pot its record never paid, which only the supply walk can see.
  */
 function withPotFlipped(blocks, index) {
   const copy = cloneBlocks(blocks);
   const cb = copy[index]?.txs?.[0];
   assert.ok(Number(cb?.carryNanos) > 0, `pot carry at ${index}`);
-  cb.carryNanos = Number(cb.carryNanos) + 1;
+  cb.carryNanos = Number(cb.carryNanos) - 1;
   return copy;
 }
 
