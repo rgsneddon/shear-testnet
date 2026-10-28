@@ -2841,6 +2841,9 @@ function verifyBlockBody(block, prev, opts = {}) {
   void mintedPot;
   const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess, () => null, null);
   if (!boundCb.ok) return boundCb;
+  // R28: shares pay by draw, so a block carries no payee leaves; a block
+  // that names some is not storing them unbound.
+  if (Array.isArray(block.aLeaves) && block.aLeaves.length) return { ok: false, reason: 'blunote_leaves' };
   const aLeaves = [];
   const boundLeaves = boundBLeaves(block, txs);
   if (!boundLeaves.ok) return boundLeaves;
