@@ -158,7 +158,7 @@ describe('v12 hash-bonus owed ledger', () => {
   it('keeps a sub-dust balance on its note until the floor, then pays that note', () => {
     const dust = hashOwedDustNanos();
     assert.equal(dust, 256n);
-    assert.equal(HASH_OWED_MAX_ENTRIES, 65536);
+    assert.equal(HASH_OWED_MAX_ENTRIES, 256, 'follows MAX_SHARES_PER_BLOCK (R39)');
     const below = destRow(1, dust - 1n, 2);
     const at = destRow(2, dust, 2);
     const above = destRow(3, dust + 1n, 1);

@@ -3,8 +3,9 @@
 // Floor shares stay at 8 bits: that search is the slow part. jit-full is about
 // 2.5ms per hash here, so a floor share is well under a second. Two lanes
 // each pin a 2GiB dataset and this VM does not have that free, so one lane
-// runs the search. 65536 shares would still be hours, so the near count is 4096.
-// It is still far above the mid count, under MAX_SHARES_PER_BLOCK, and every
+// runs the search. R39 (28 Oct): a block carries at most MAX_SHARES_PER_BLOCK
+// = 256 shares, so the near count is a full block at the cap, far above the
+// mid count, and every
 // hash is findShare / mineHeaderParallel. No claimed digest is passed through.
 // Share search is a child process. jit-full is process-global, and a worker
 // left in this process makes the header lanes about 5x slower.
@@ -39,8 +40,8 @@ const PRUNE = SAMPLE_PRUNE_CONFIRMATIONS;
 const TIP_H = PRUNE * 3 + 16;
 const GAPS = [1, 999, 1000, 1001, PRUNE * 3];
 const SHARE_ONE = 1;
-const SHARE_MID = 1024;
-const SHARE_NEAR = 4096;
+const SHARE_MID = 64;
+const SHARE_NEAR = MAX_SHARES_PER_BLOCK;
 const DEST_ONE = 1;
 const DEST_MID = 3;
 const DEST_NEAR = 17;
@@ -397,8 +398,8 @@ describe('pruned p2p e2e', { timeout: 21_600_000 }, () => {
   it('mines a real ShearHash chain past three prune depths', async () => {
     assert.equal(SHARE_ONE, 1);
     assert.ok(SHARE_MID > 1 && SHARE_MID < MAX_SHARES_PER_BLOCK);
-    assert.ok(SHARE_NEAR > SHARE_MID && SHARE_NEAR < MAX_SHARES_PER_BLOCK);
-    assert.equal(MAX_SHARES_PER_BLOCK, 65536);
+    assert.ok(SHARE_NEAR > SHARE_MID && SHARE_NEAR === MAX_SHARES_PER_BLOCK);
+    assert.equal(MAX_SHARES_PER_BLOCK, 256);
     assert.deepEqual(GAPS, [1, 999, 1000, 1001, 3000]);
     const dest = destAt(0);
     const dir = freshDir('miner');

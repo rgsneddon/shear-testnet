@@ -19,6 +19,7 @@ import {
   SAMPLE_PRUNE_CONFIRMATIONS,
   shareFloorBits,
   asertNextBits,
+  MAX_SHARES_PER_BLOCK,
 } from '../../crypto/asert.js';
 import { pruneSamples } from '../../crypto/chronoflux.js';
 import { decodeHeader, setNonce } from '../../crypto/header.js';
@@ -177,7 +178,8 @@ function eachFrame(packed, edit) {
 
 describe('v12 proofSlot is bound by the block', () => {
   it('rejects a flipped, stripped, or wrong slot and still accepts the honest block', () => {
-    const atCap = Math.floor(SHARE_BYTES_MAX / BLU_FRAME);
+    // R39: the 256-share count cap binds before the byte cap.
+    const atCap = Math.min(MAX_SHARES_PER_BLOCK, Math.floor(SHARE_BYTES_MAX / BLU_FRAME));
     const widths = [
       { miners: 1, count: 1 },
       { miners: 3, count: 1 },

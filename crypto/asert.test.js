@@ -590,7 +590,9 @@ describe('hash-tx consensus law', () => {
     assert.match(fp, /HASH_OWED_CARRY=v1/);
     assert.match(fp, /HASH_OWED_SUBDUST=spare-fifo-v1/);
     assert.match(fp, /HASH_OWED_OVERFLOW=forbidden/);
-    assert.match(fp, /HASH_OWED_INLINE=65536/);
+    // HASH_OWED_MAX_ENTRIES follows MAX_SHARES_PER_BLOCK (R39: 256).
+    assert.match(fp, new RegExp(`HASH_OWED_INLINE=${MAX_SHARES_PER_BLOCK}:`));
+    assert.equal(MAX_SHARES_PER_BLOCK, 256);
     assert.match(fp, /HASH_OWED_BUDGET_SCALE=v1/);
     assert.match(fp, /HASH_OWED_DRAIN=1\/2/);
     assert.match(fp, /HASH_OWED_SCALE_WINDOW=80/);
