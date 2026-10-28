@@ -6,7 +6,7 @@
 // ShearHash coverage of the same rules is in test_r28_share_rules.js.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { decodeHeader, encodeHeader, setNonce } from '../../crypto/header.js';
 import {
   GENESIS_BITS_PACKED,
@@ -46,15 +46,17 @@ function parentHeader() {
   });
 }
 
-/** A raw digest whose leading zeros are exactly `bits`, without ShearHash. */
+/**
+ * A digest whose leading zeros are exactly `bits`, without ShearHash: hashed
+ * candidates hit an exact width about once in 2^(bits+1) draws.
+ */
 function rxExact(bits, seed = 0) {
-  const span = 2 ** Math.min(30, bits + 1);
-  const limit = Math.min(4_000_000, Math.max(20_000, span * 8));
+  const limit = Math.min(1 << 24, Math.max(1 << 16, 2 ** (bits + 1) * 16));
+  const tag = Buffer.alloc(8);
+  tag.writeUInt32LE(seed >>> 0, 0);
   for (let i = 0; i < limit; i += 1) {
-    const rx = Buffer.alloc(32);
-    rx.writeUInt32LE(seed, 12);
-    rx.writeUInt32LE(i, 0);
-    rx.writeUInt32LE((i * 2654435761) >>> 0, 4);
+    tag.writeUInt32LE(i, 4);
+    const rx = createHash('sha256').update('shear-test-rx').update(tag).digest();
     if (meetsTarget(rx, bits) && !meetsTarget(rx, bits + 1)) return rx;
   }
   return null;
