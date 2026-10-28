@@ -316,8 +316,16 @@ void main() {
     expect(openSrc, contains('Isolate.run(() => openReadBlockProofsWire('));
     expect(closureSrc, contains('openWhileCatchingUpOffUi('));
     expect(syncSrc, contains('applyReadPageOffUi('));
-    expect(mainSrc, contains('openProofs: false'));
+    // The wallet's node-log path never opens proofs on the UI isolate: it
+    // parses status lines off it (parseNodeLogBatchOffUi) and does not call
+    // noteSidecarLine, whose default walks the held proofs on the caller.
+    // The walks it does run are the OffUi ones.
+    expect(mainSrc, contains('await parseNodeLogBatchOffUi('));
+    expect(mainSrc.contains('noteSidecarLine('), isFalse);
     expect(mainSrc, contains('openWhileCatchingUpOffUi('));
+    expect(mainSrc.contains('openWhileCatchingUp()'), isFalse);
+    expect(mainSrc, contains('openConnectBareOffUi('));
+    expect(mainSrc.contains('.openConnectBare('), isFalse);
     final book = _book();
     final callerId = identityHashCode(Isolate.current).toString();
     debugReadProofIsolateRuns = 0;
