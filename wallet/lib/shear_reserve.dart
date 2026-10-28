@@ -111,7 +111,7 @@ String reserveVoteWindowCopy() => kBookMagic == 'shear-v1'
 String reserveEpochLengthCopy() => kBookMagic == 'shear-v1' ? 'full 400-day epoch' : 'full 4-day epoch';
 
 String reserveWithdrawDialogCopy([int days = kReserveEpochDays]) =>
-    'Return principal and the Reserve reward for this $days-day epoch to Continuum.\nThis settles the finished epoch.\nSign is local-only (testnet). Not full custody.';
+    'Return principal and the Reserve reward for this $days-day epoch to Continuum.\nThis settles the finished epoch.\nPosts a withdraw transaction. Not full custody.';
 
 const kReserveWithdrawAction =
     'Withdraw: move your funds back to your balance. A network levy applies.';
