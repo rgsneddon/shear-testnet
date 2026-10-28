@@ -16,6 +16,7 @@ import { meetsTarget } from '../../crypto/shear_hash.js';
 import {
   clearLiveSharePow,
   compareBluShares,
+  dropSharePowKeys,
   rememberLiveSharePow,
   stashSharePow,
   unitsForShare,
@@ -111,7 +112,9 @@ describe('v12 share cache binds the key and bits', () => {
     assert.equal(empty.units, 0);
 
     // Cold: no cache entry and no prepared digest is no credit, even with skipPow.
+    // (The first pass answered from the cache, so its prepared digests are unused.)
     clearLiveSharePow();
+    dropSharePowKeys(proven.map((row) => row.header.toString('hex')));
     const cold = verifyShareBatch({ parentHeader: parent, shares: honestRows(), skipPow: true });
     assert.equal(cold.ok, false);
     assert.equal(cold.reason, 'share_pow');
