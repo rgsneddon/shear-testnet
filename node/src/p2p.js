@@ -724,6 +724,12 @@ export function encodeWireBlock(b) {
     rootB: b.rootB,
     samplesPruned: !!b.samplesPruned,
     bLeavesPruned: !!b.bLeavesPruned,
+    // R28: a pruned block keeps only its compact record. A peer re-derives
+    // the record of any block that still has its frames, and the next
+    // block's coinbase binds every record's root under PoW.
+    ...(b.blunoteRecord != null && b.blunoteRecord !== ''
+      ? { blunoteRecord: Buffer.isBuffer(b.blunoteRecord) ? b.blunoteRecord.toString('hex') : String(b.blunoteRecord) }
+      : {}),
   };
 }
 
@@ -748,6 +754,9 @@ export function decodeWireBlock(w) {
     samplesPruned: !!w.samplesPruned,
     bLeavesPruned: !!w.bLeavesPruned,
   };
+  if (typeof w.blunoteRecord === 'string' && /^([0-9a-f]{2})+$/i.test(w.blunoteRecord)) {
+    block.blunoteRecord = w.blunoteRecord.toLowerCase();
+  }
   // A missing credit column is not a record. An own-property set to undefined
   // makes freshForBlock / spillForBlock reject the block as hash_owed.
   if (w.hashCreditPacked) {
