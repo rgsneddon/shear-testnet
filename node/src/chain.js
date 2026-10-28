@@ -31,6 +31,7 @@ import {
   JOIN_KIND_GENESIS,
   SHARE_FLOOR_BITS,
   MAX_SHARES_PER_BLOCK,
+  shareFloorBits,
   POOL_FEE_BPS,
   POOL_FEE_MAX_BPS,
   MTP_WINDOW,
@@ -42,6 +43,7 @@ import { isHistoricalHeader } from '../../crypto/historical_prefix.js';
 import { regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import {
   verifyShareBatch,
+  creditBitsForShare,
   paidWorkKeys,
   collateShareUnits,
   aLeavesFromShares,
@@ -1020,16 +1022,21 @@ export function parentRecordRoot(prevBlock) {
  * Canonical template batch: BluNotes rows only, a decodable P, no repeated
  * work key or P, canonical order, and the share byte cap.
  */
-export function bluTemplateBatch(rows, knownPubs = null) {
+export function bluTemplateBatch(rows, knownPubs = null, { floorBits = SHARE_FLOOR_BITS, cap = MAX_SHARES_PER_BLOCK } = {}) {
   const out = [];
   const seenWork = new Set();
   const seenP = new Set();
-  const sorted = (Array.isArray(rows) ? rows : [])
-    .filter((r) => r && r.shareR != null && r.shareP != null && (r.proofSlot === 0 || r.proofSlot === 1))
+  // R39: a block carries at most `cap` shares, each at or above the block's
+  // floor. When more qualify, the widest (most work) are seated first; the
+  // batch is then written in canonical order, as verify requires.
+  const width = (r) => creditBitsForShare(r, floorBits, { strict: false });
+  const ranked = (Array.isArray(rows) ? rows : [])
+    .filter((r) => r && r.shareR != null && r.shareP != null && (r.proofSlot === 0 || r.proofSlot === 1) && width(r).ok)
     .slice()
-    .sort(compareBluShares);
+    .sort((a, b) => (width(b).bits - width(a).bits) || compareBluShares(a, b));
   let bytes = 0;
-  for (const r of sorted) {
+  for (const r of ranked) {
+    if (out.length >= cap) break;
     const P = Buffer.from(r.shareP);
     try { pointFrom(P); } catch { continue; }
     const pk = P.toString('hex');
@@ -1043,7 +1050,7 @@ export function bluTemplateBatch(rows, knownPubs = null) {
     seenWork.add(wk);
     out.push(r);
   }
-  return out;
+  return out.sort(compareBluShares);
 }
 
 /**
@@ -1632,7 +1639,7 @@ export function buildTemplate({
   const knownPubs = parentFluxset && !Array.isArray(parentFluxset) ? admitPubIndex(parentFluxset) : null;
   const batch = bluTemplateBatch(bindShareProofSlots(selected, prevHeader, priorBlock?.header || null, {
     keepClaim: true,
-  }).slotted, knownPubs);
+  }).slotted, knownPubs, { floorBits: shareFloorBits(bits) });
   const spillBatch = [];
   // R28: shares pay by draw, not per payee, so tree A has no payee leaves.
   const collated = [];
@@ -2822,7 +2829,8 @@ function verifyBlockBody(block, prev, opts = {}) {
       priorHeader: opts.grandparentHeader || null,
       excludeNonces: shareNonceKeys(prev?.shareBatch, opts.grandparentHeader || null),
       shares: shareBatch,
-      floorBits: SHARE_FLOOR_BITS,
+      // R39: the floor follows this block's own bits.
+      floorBits: shareFloorBits(decoded.bits),
       skipPow: trustWork ? false : !!skipSharePow,
       trustWork,
       issuedJobKeys: txs[0]?.issuedJobKeys,

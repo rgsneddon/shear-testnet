@@ -6,7 +6,8 @@
 import { randomBytes } from 'node:crypto';
 import { setNonce } from '../../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits } from '../../../crypto/shear_hash.js';
-import { SHARE_FLOOR_BITS } from '../../../crypto/asert.js';
+import { shareFloorBits } from '../../../crypto/asert.js';
+import { decodeHeader } from '../../../crypto/header.js';
 import { pointBytes } from '../../../crypto/note.js';
 import { admitBasePub, admitBaseScalar } from '../../../crypto/admit.js';
 import {
@@ -36,7 +37,7 @@ export function bluWallet(seed = randomBytes(32)) {
  * One real share for `owner` on `header`: a fresh key, then the 256 nonces
  * its binding allows, then a new key. kin marks a sibling-template share.
  */
-export function mineBluShare(owner, header, { slot = 0, kin = false, bits = SHARE_FLOOR_BITS } = {}) {
+export function mineBluShare(owner, header, { slot = 0, kin = false, bits = shareFloorBits(decodeHeader(Buffer.from(header)).bits) } = {}) {
   for (let keys = 0; keys < 4096; keys += 1) {
     const k = oneTimeKey({ B: owner.B, Y: owner.Y });
     for (let c = 0; c < 256; c += 1) {

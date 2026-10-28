@@ -42,6 +42,7 @@ import {
   LIVE_MIN_BITS,
   MAX_BITS,
   SHARE_FLOOR_BITS,
+  shareFloorBits,
   MAX_SHARES_PER_BLOCK,
   shareCreditMaxBits,
   displayBits,
@@ -2123,7 +2124,9 @@ export function createPool({
     return Number.isFinite(v) && v >= 0 ? v : 1;
   }
   function liveShareMin() {
-    return mintShareMinBits();
+    // R39: no job is issued below the floor a block at these bits accepts,
+    // so every accepted share can be seated (and paid) by the template.
+    return Math.max(mintShareMinBits(), shareFloorBits(blockBitsNow()));
   }
   let lastJob = null;
   let prevJob = null;

@@ -9,8 +9,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { setHashBackend, shearHash, meetsTarget, leadingZeroBits } from '../../crypto/shear_hash.js';
-import { setNonce } from '../../crypto/header.js';
-import { POOL_FEE_BPS, SHARE_FLOOR_BITS } from '../../crypto/asert.js';
+import { decodeHeader, setNonce } from '../../crypto/header.js';
+import { POOL_FEE_BPS, shareFloorBits } from '../../crypto/asert.js';
 import { pointBytes } from '../../crypto/note.js';
 import { admitBasePub, admitPubIndex } from '../../crypto/admit.js';
 import { bindNonce, decodeRecord, oneTimeKey, recordRoot, scanPub } from '../../crypto/blunote.js';
@@ -27,15 +27,17 @@ function wallet() {
 }
 
 function mineShare(owner, header) {
+  // R39: at the floor a block at these bits accepts.
+  const width = shareFloorBits(decodeHeader(Buffer.from(header)).bits);
   for (;;) {
     const k = oneTimeKey(owner);
     for (let c = 0; c < 256; c += 1) {
-      const nonce = bindNonce(header, k.R, k.P, c, SHARE_FLOOR_BITS);
+      const nonce = bindNonce(header, k.R, k.P, c, width);
       const rx = shearHash(setNonce(Buffer.from(header), nonce));
-      if (!meetsTarget(rx, SHARE_FLOOR_BITS)) continue;
+      if (!meetsTarget(rx, width)) continue;
       return {
         shareR: k.R, shareP: k.P, viewTag: k.tag, nonce, lz: leadingZeroBits(rx),
-        shareBits: SHARE_FLOOR_BITS, proofSlot: 0, verifiedHeader: Buffer.from(header),
+        shareBits: width, proofSlot: 0, verifiedHeader: Buffer.from(header),
       };
     }
   }

@@ -18,6 +18,7 @@ import {
   POOL_FEE_BPS,
   SHARE_FLOOR_BITS,
   TARGET_BLOCK_INTERVAL_MS,
+  shareFloorBits,
   asertNextBits,
 } from '../../crypto/asert.js';
 import { pointBytes } from '../../crypto/note.js';
@@ -40,7 +41,8 @@ try { setHashBackend('jit'); } catch { /* interpreter */ }
 
 const MINER = 'ssa1qfqhuqrvxe63785jttt6t35fjs8r7heus2zweyv22twndy8mkcyjqs6c03jaql5q64ragqs6hx6drwr4ddddqwre9sv';
 const NOW = 1_700_000_000_000;
-const BITS = SHARE_FLOOR_BITS;
+// R39: the floor a block at genesis bits accepts.
+const BITS = shareFloorBits(GENESIS_BITS_PACKED);
 
 function wallet() {
   const seed = randomBytes(32);

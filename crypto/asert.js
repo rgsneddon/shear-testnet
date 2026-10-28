@@ -163,12 +163,24 @@ export const POOL_FEE_MAX_BPS = 200;
 /** A digest that meets this floor is worth 2^SHARE_FLOOR_BITS units. */
 export const SHARE_FLOOR_BITS = 8;
 /**
- * Included floor shares per block on shear-testnet-v11.
- * The closed v10 book capped this at 8192. The 32768 rung is cancelled.
- * This book cuts straight to 65536. Do not load this tree onto a v10 datadir.
- * HASH_BONUS_NANOS stays 1. This is headroom, not a bonus-unit retune.
+ * Shares one block may carry (R39 + R28, 28 Oct; Russell ruling 9). Set from
+ * the measured verify cost on the smallest live node class, a 2-core
+ * AMD EPYC-Rome (p2p-a/p2p-b): ShearHash light JIT 37 ms per share, the
+ * interpreter fallback 299 ms (one thread). With 2 verify lanes, 256 shares
+ * cost 4.7 s on JIT (5% of a 90 s block) and 38 s on the interpreter (43%).
+ * v11 allowed 65536, which on that node is 20 minutes of verify per block.
+ * SHARE_BYTES_MAX (2 MiB, D6) stays the byte bound; 256 frames are 55 KiB.
  */
-export const MAX_SHARES_PER_BLOCK = 65536;
+export const MAX_SHARES_PER_BLOCK = 256;
+/**
+ * The share floor follows the block's work: max(SHARE_FLOOR_BITS,
+ * ceil(blockBits) - SHARE_FLOOR_SPAN_BITS). A block of 2^B hashes then has
+ * at most 2^SPAN = 128 floor-width shares expected from the whole network
+ * (ceil, so fractional Q16.16 bits never raise that past 128),
+ * half of MAX_SHARES_PER_BLOCK, so the cap does not drop paid work at any
+ * hashrate (Poisson mean 128: P(more than 256) is below 1e-20).
+ */
+export const SHARE_FLOOR_SPAN_BITS = 7;
 /**
  * Work-unit cap. 2^28 covers a 500 kH/s launch surge at T = 90s (about 4.5e7
  * hashes) with headroom. 2^26 is the floor of that headroom. Do not restore
@@ -208,6 +220,12 @@ export function hashOwedDustNanos(unit = HASH_BONUS_NANOS) {
  * retained at the unit cap, so its expected units per hash would fall below 1.
  * B_MAX = min(52, floor(log2(MAX_HASH_UNITS_PER_BLOCK))). At 2^28 that is 28.
  */
+/** Lowest share width a block of these bits may carry (packed or integer bits). */
+export function shareFloorBits(blockBits) {
+  const b = Math.ceil(unpackBits(blockBits));
+  return Math.max(SHARE_FLOOR_BITS, b - SHARE_FLOOR_SPAN_BITS);
+}
+
 export function shareCreditMaxBits(maxUnits = MAX_HASH_UNITS_PER_BLOCK) {
   const cap = Number(maxUnits);
   if (!Number.isFinite(cap) || cap < 2) return SHARE_FLOOR_BITS;
@@ -472,6 +490,26 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `SHARE_FLOOR_BITS=${SHARE_FLOOR_BITS}`,
     `MAX_SHARES_PER_BLOCK=${MAX_SHARES_PER_BLOCK}`,
     `MAX_HASH_UNITS=${MAX_HASH_UNITS_PER_BLOCK}`,
+    // R39 (28 Oct): the share floor follows the block's bits.
+    `SHARE_FLOOR=max-${SHARE_FLOOR_BITS}-ceilB-minus-${SHARE_FLOOR_SPAN_BITS}`,
+    // R40 (28 Oct): the RandomX key's SHA-512 is FIPS 180-4.
+    'KEY_SHA512=fips180-4',
+    // R28 BluNotes (Russell D1-D6, 27 Oct): one-time share keys bound into
+    // 48 nonce bits, a raw-digest target, a byte cap, a per-block draw paid
+    // as implicit notes, no spill or owed ledger, and a parent-bound record.
+    'SHARE_PAYEE=blunote-v1',
+    'SHARE_BIND=nonce48-job-R-P',
+    'SHARE_TARGET=raw-rx',
+    'SHARE_BYTES=2097152',
+    'SHARE_ORDER=P-nonce-header',
+    'SHARE_KEY=reuse-refused',
+    'PAYOUT=draw-k16-implicit',
+    // Russell 28 Oct, ruling 3 (solo (b)): an empty batch may pay its pot
+    // and finder levy to the coinbase's one-time key, with no carry.
+    'SOLO_POT=empty-batch-to-coinbase-key',
+    'SPILL=retired',
+    'HASH_OWED=retired-scale-in-block',
+    'BLU_RECORD=v1-parent-bound',
     `SPEND_SIG=${SPEND_SIG}`,
     `DEST_HRP_SSA_ONLY=1`,
     `SPEND_SIG_ONLY=1`,
@@ -558,7 +596,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'VORTEX=vort1-pin',
     'VORTICE_NO_MINT=1',
     'LEVY_CAP=0.001-SHE',
-    'LEVY_SPLIT=100-finder-work,empty=public-finder-note',
+    // Russell 28 Oct, ruling 5: into the draw; an empty block's goes to the
+    // coinbase one-time key, else the reserve note; never the carry.
+    'LEVY_SPLIT=finder-to-draw,empty=coinbase-key-else-reserve-note',
     'LEVY=weight',
     'ADMIT=ADMITv3',
     'N1=admit-note-point',
@@ -587,8 +627,8 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'VOTE_FEE=owned-note',
     'VOTE_VETO=none',
     'VOTE_CAP=64',
-    'DINS=pot+hash',
-    'ROOTA=pot-spine+dag-fluxset',
+    'DINS=blunote-draw',
+    'ROOTA=blunote-sum-batch',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
     'BITS=q16.16',
     `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
