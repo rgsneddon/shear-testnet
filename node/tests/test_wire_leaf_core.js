@@ -36,7 +36,7 @@ function mineOne(store, dest) {
     header: tpl.header,
     txs: tpl.txs,
     samples: tpl.samples,
-    miner: dest,
+    // R28: a block names no miner (blunote_miner).
     aLeaves: tpl.aLeaves,
     bLeaves: tpl.bLeaves,
     rootA: tpl.rootA,
@@ -112,14 +112,16 @@ describe('wire block txCores (ruling 6)', () => {
         const withBadCore = rows.map((row, i) => walletLeaf(row, badCore[i]));
         assert.equal(merkleRoot(withBadCore).equals(root), false, 'a wrong core fails the root');
 
-        // A changed output is not a pass, even with the served core.
+        // A changed byte field is not a pass, even with the served core: an
+        // output's commit, or (an R28 coinbase pays no output) the excess.
         const bent = JSON.parse(JSON.stringify(rows));
-        const out = bent[0].vout[0];
-        const c = Buffer.from(out.commit.$hex, 'hex');
+        const holder = bent[0].vout && bent[0].vout.length ? bent[0].vout[0] : bent[0];
+        const field = holder === bent[0] ? 'excess' : 'commit';
+        const c = Buffer.from(holder[field].$hex, 'hex');
         c[0] ^= 1;
-        out.commit = { $hex: c.toString('hex') };
+        holder[field] = { $hex: c.toString('hex') };
         const withBent = bent.map((row, i) => walletLeaf(row, wired.json.txCores[i]));
-        assert.equal(merkleRoot(withBent).equals(root), false, 'a changed output fails the root');
+        assert.equal(merkleRoot(withBent).equals(root), false, 'a changed row fails the root');
       }
     } finally {
       await rpc.close();
