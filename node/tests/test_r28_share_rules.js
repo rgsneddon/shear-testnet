@@ -71,6 +71,13 @@ describe('R28 BluNotes share rules', () => {
     assert.equal(mixed.reason, 'share_frame');
   });
 
+  it('refuses a share whose one-time key is not a point, before any hash', () => {
+    const bad = { ...a, shareP: Buffer.alloc(32, 0xff) };
+    const got = verifyShareBatch({ parentHeader: header, shares: [bad] });
+    assert.equal(got.ok, false);
+    assert.equal(got.reason, 'share_key');
+  });
+
   it('refuses a claimed width the nonce does not carry', () => {
     const wide = verifyShareBatch({ parentHeader: header, shares: [{ ...a, shareBits: a.shareBits + 1 }] });
     assert.equal(wide.ok, false);
