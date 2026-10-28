@@ -18,6 +18,7 @@ log() { echo "[$(date -u +%T)] $*" | tee -a "$OUT/run.log"; }
 git -C $R/src fetch -q https://github.com/rgsneddon/shear-testnet.git claude/miner-opt && git -C $R/src checkout -q FETCH_HEAD
 log "head $(git -C $R/src log --oneline -1) load=$(cut -d' ' -f1-3 /proc/loadavg)"
 J=$(nproc); [ -n "${CPUSET:-}" ] && J=3
+[ -x $R/base/sheark-miner/bench/rxbench ] || JOBS=$J "${pre[@]}" bash $R/src/sheark-miner/bench/build_tree.sh $R/base $R/src/sheark-miner/bench/rxbench.c > "$OUT/build-base.log" 2>&1
 JOBS=$J "${pre[@]}" bash $R/src/sheark-miner/bench/build_tree.sh $R/src > "$OUT/build.log" 2>&1
 log "build rc=$? $(tail -1 "$OUT/build.log")"
 KIT=$R/kits/$LABEL; rm -rf "$KIT"; cp -r $R/src/sheark-miner/bench "$KIT"

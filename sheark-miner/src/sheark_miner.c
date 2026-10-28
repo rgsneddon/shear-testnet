@@ -1772,9 +1772,10 @@ static int choose_threads(int dflt, const char *dflt_why) {
   if (phys > 0 && phys < dflt) cand[nc++] = phys;
   if (dflt - 1 >= 1 && dflt - 1 != phys && dflt - 1 > (phys > 0 ? phys : 0)) cand[nc++] = dflt - 1;
   cand[nc++] = dflt;
-  if (nc == 1 && dflt == 1) {
-    snprintf(g_threads_why, sizeof(g_threads_why), "%s (one usable CPU: nothing to tune)", dflt_why);
-    return 1;
+  if (nc == 1) {
+    /* One candidate (no SMT, no spare count to try): nothing to measure. */
+    snprintf(g_threads_why, sizeof(g_threads_why), "%s (one candidate: nothing to tune)", dflt_why);
+    return dflt;
   }
   outl(stdout, "auto-tune: measuring %d thread counts on this device (once; cached in %s)\n", nc, path[0] ? path : "nowhere");
   double best = -1;
