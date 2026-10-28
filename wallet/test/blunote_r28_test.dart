@@ -112,6 +112,7 @@ void main() {
       expect(rec.n, 9);
       expect(rec.W, BigInt.from(4096));
       expect(rec.winners.length, 4);
+      expect(bluRecordRootHex(_b(vec['record']['hex'] as String)), vec['record']['root']);
       final empty = decodeBluRecord(_b(vec['emptyRecord'] as String))!;
       expect(empty.winners, isEmpty);
       expect(empty.feeV, BigInt.zero);
@@ -212,6 +213,20 @@ void main() {
       return (ledger.spendableOwned(id.address, paymentCode: id.paymentCode) * kUnitsPerShe).round();
     }
 
+    /// Block h with [rec], and block h+1 whose coinbase names its root.
+    List<Map<String, dynamic>> bound(Uint8List rec, {String? prev}) => [
+          {'height': h, 'blunoteRecord': _h(rec)},
+          {
+            'height': h + 1,
+            'txs': [
+              {
+                'coinbase': true,
+                'blunote': {'feeBps': 0, 'prev': prev ?? bluRecordRootHex(rec)},
+              },
+            ],
+          },
+        ];
+
     ({Uint8List R, Uint8List P, int m}) winnerFor(Uint8List seed, int j, int m) {
       final k = bluOneTimeKey(admitBaseBytes(seed), bluScanPub(seed), hashToScalar([utf8Bytes('ledger-r'), Uint8List.fromList([j])]));
       return (R: k.R, P: k.P, m: m);
@@ -238,9 +253,7 @@ void main() {
         winnerFor(stranger, 2, 9),
         winnerFor(seed, 3, 1),
       ]);
-      final blocks = [
-        {'height': h, 'blunoteRecord': _h(rec)},
-      ];
+      final blocks = bound(rec);
 
       // Depth 4: Pending, not Spendable.
       final shallow = ledgerAt(id, h + 3);
@@ -275,23 +288,44 @@ void main() {
       }
     });
 
+    test('a record note is never Spendable until block h+1 names its record root', () {
+      final id = createIdentity();
+      final seed = _seedOf(id);
+      final rec = _record(T: T, winners: [winnerFor(seed, 1, 2)]);
+      final two = (piece * BigInt.from(2)).toInt();
+
+      // Nine confirmations but block h+1 not read yet: Pending, not Spendable.
+      final unbound = ledgerAt(id, h + 8);
+      unbound.setBluMining(true);
+      unbound.ingestBluRecords([
+        {'height': h, 'blunoteRecord': _h(rec)},
+      ]);
+      expect(unbound.notes.where((n) => isBluNoteKind(n['kind'] as String?)).length, 1);
+      expect(spendableUnits(unbound, id), 0);
+      // Block h+1 arrives and names the root: now Spendable.
+      unbound.ingestBluRecords(bound(rec));
+      expect(spendableUnits(unbound, id), two);
+
+      // A coinbase that names another root: never Spendable.
+      final wrong = ledgerAt(id, h + 8);
+      wrong.setBluMining(true);
+      wrong.ingestBluRecords(bound(rec, prev: 'ab' * 32));
+      expect(spendableUnits(wrong, id), 0);
+    });
+
     test('a replaced record (reorg) takes its notes out of Spendable', () {
       final id = createIdentity();
       final seed = _seedOf(id);
       final ledger = ledgerAt(id, h + 8);
       ledger.setBluMining(true);
-      ledger.ingestBluRecords([
-        {'height': h, 'blunoteRecord': _h(_record(T: T, winners: [winnerFor(seed, 1, 2)]))},
-      ]);
+      ledger.ingestBluRecords(bound(_record(T: T, winners: [winnerFor(seed, 1, 2)])));
       expect(spendableUnits(ledger, id), (piece * BigInt.from(2)).toInt());
       // A row sent without its record is not a replaced block.
       ledger.ingestBluRecords([
         {'height': h},
       ]);
       expect(spendableUnits(ledger, id), (piece * BigInt.from(2)).toInt());
-      ledger.ingestBluRecords([
-        {'height': h, 'blunoteRecord': _h(_record(T: T, winners: const [], salt: 1))},
-      ]);
+      ledger.ingestBluRecords(bound(_record(T: T, winners: const [], salt: 1)));
       expect(spendableUnits(ledger, id), 0);
     });
 
@@ -301,12 +335,9 @@ void main() {
       final fee = winnerFor(seed, 9, 0);
       final ledger = ledgerAt(id, h + 8);
       ledger.setBluMining(true);
-      ledger.ingestBluRecords([
-        {
-          'height': h,
-          'blunoteRecord': _h(_record(T: T, feeV: BigInt.from(777), feeR: fee.R, feeP: fee.P, winners: const [])),
-        },
-      ]);
+      ledger.ingestBluRecords(
+        bound(_record(T: T, feeV: BigInt.from(777), feeR: fee.R, feeP: fee.P, winners: const [])),
+      );
       final notes = ledger.notes.where((n) => n['kind'] == kBluKindFee).toList();
       expect(notes.length, 1);
       expect(notes.single['nanos'], 777);

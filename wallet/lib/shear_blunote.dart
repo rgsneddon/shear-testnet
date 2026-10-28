@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' show sha256;
+
 import 'shear_admit.dart';
 import 'shear_note.dart';
 import 'shear_ristretto.dart';
@@ -17,6 +19,7 @@ const int kBluWinners = 16;
 final _scanDst = utf8Bytes('shear-blunote-scan-v1');
 final _deltaDst = utf8Bytes('shear-blunote-delta-v1');
 final _rhoDst = utf8Bytes('shear-blunote-rho-v1');
+final _recDst = utf8Bytes('shear-blunote-record-v1');
 
 /// Wallet kinds of a record note. 'pool-fee' is a different note in the
 /// ledger (the Path 1 pool fee), so the fee note of a record is 'blunote-fee'.
@@ -340,6 +343,7 @@ List<Map<String, dynamic>> scanBluRecordsWire(Map<String, dynamic> input) {
         'C': f.C,
         'rho': scalarBytes(f.rho),
         'recordKey': f.recordKey,
+        'recordRoot': bluRecordRootHex(rec),
         'm': f.m,
       });
     }
@@ -414,6 +418,36 @@ Map<int, String> bluRecordKeysByHeight(Iterable blocks) {
     final rec = bluRecordOfBlock(raw);
     if (rec == null) continue;
     out[height] = bluRecordKey(height, rec);
+  }
+  return out;
+}
+
+
+/// recordRoot = sha256("shear-blunote-record-v1" || record). Block h+1's
+/// coinbase names it as `blunote.prev`, under that block's PoW.
+String bluRecordRootHex(Uint8List record) =>
+    _hex(Uint8List.fromList(sha256.convert([..._recDst, ...record]).bytes));
+
+/// The parent record root each block's coinbase names, by that block's
+/// height. A block with no coinbase blunote field is left out.
+Map<int, String> bluPrevRootsByHeight(Iterable blocks) {
+  final out = <int, String>{};
+  for (final raw in blocks) {
+    if (raw is! Map) continue;
+    final h = raw['height'];
+    final height = h is num ? h.toInt() : int.tryParse('$h') ?? 0;
+    if (height < 1) continue;
+    final txs = raw['txs'];
+    if (txs is! List) continue;
+    for (final tx in txs) {
+      if (tx is! Map || tx['coinbase'] != true) continue;
+      final blu = tx['blunote'];
+      if (blu is! Map) continue;
+      final prev = blu['prev'];
+      if (prev is String && RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(prev)) {
+        out[height] = prev.toLowerCase();
+      }
+    }
   }
   return out;
 }

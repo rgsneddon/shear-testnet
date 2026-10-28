@@ -4873,16 +4873,7 @@ class ShearLedger implements ReadProofSink {
   /// FS-1 notes on the home dest. A note at a height whose record changed
   /// (a reorg) is marked reorged and leaves Spendable.
   void ingestBluRecords(List blocks) {
-    final keys = bluRecordKeysByHeight(blocks);
-    if (keys.isNotEmpty) {
-      for (final n in _notes) {
-        if (!isBluNoteKind(n['kind'] as String?)) continue;
-        final h = (n['height'] as num?)?.toInt() ?? 0;
-        final now = keys[h];
-        if (now == null) continue;
-        n['reorged'] = now != n['bluRecord'];
-      }
-    }
+    _bluBindPass(blocks);
     final seed = spendSeed;
     if (!blu.enabled || seed == null || seed.length != 32) return;
     final todo = blu.pending(blocks);
@@ -4895,20 +4886,38 @@ class ShearLedger implements ReadProofSink {
       ],
     };
     if (bluScanInline) {
-      _applyBluRows(scanBluRecordsWire(input));
+      _applyBluRows(scanBluRecordsWire(input), blocks);
       return;
     }
     final prior = bluScanInFlight ?? Future<void>.value();
     bluScanInFlight = prior.then((_) async {
       final rows = await Isolate.run(() => scanBluRecordsWire(input));
-      _applyBluRows(rows);
+      _applyBluRows(rows, blocks);
     }).catchError((Object _) {
       // The scan did not finish: scan these records again on the next read.
       blu.reset();
     });
   }
 
-  void _applyBluRows(List<Map<String, dynamic>> rows) {
+  /// A record note counts only once block h+1's coinbase names its record
+  /// root (`blunote.prev`), so the record is under PoW, and only while the
+  /// record at h is still the one it came from. Otherwise it is not verified:
+  /// it is Pending and never Spendable.
+  void _bluBindPass(List blocks) {
+    final keys = bluRecordKeysByHeight(blocks);
+    final prevs = bluPrevRootsByHeight(blocks);
+    if (keys.isEmpty && prevs.isEmpty) return;
+    for (final n in _notes) {
+      if (!isBluNoteKind(n['kind'] as String?)) continue;
+      final h = (n['height'] as num?)?.toInt() ?? 0;
+      final now = keys[h];
+      if (now != null) n['reorged'] = now != n['bluRecord'];
+      final prev = prevs[h + 1];
+      if (prev != null) n['verified'] = prev == n['bluRoot'];
+    }
+  }
+
+  void _applyBluRows(List<Map<String, dynamic>> rows, List blocks) {
     final frame = _restFrame;
     if (rows.isEmpty || frame == null || frame.isEmpty) return;
     final dest = homeDest(frame);
@@ -4927,8 +4936,10 @@ class ShearLedger implements ReadProofSink {
         'r': w['rho'],
         'nanos': v.bitLength < 63 ? v.toInt() : v.toString(),
         'amount': v.toDouble() / kUnitsPerShe,
-        'verified': true,
+        // Not verified until block h+1 names this record ([_bluBindPass]).
+        'verified': false,
         'bluRecord': w['recordKey'],
+        'bluRoot': w['recordRoot'],
         'reorged': false,
         if ((w['m'] as int? ?? 0) > 0) 'bluM': w['m'],
       };
@@ -4936,11 +4947,16 @@ class ShearLedger implements ReadProofSink {
         final c = _noteBytes(n['commit']);
         return c != null && _bytesEq(c, w['C'] as Uint8List);
       });
-      // A note this book already holds keeps its spent flag.
-      if (!have) row['spent'] = false;
+      // A note this book already holds keeps its spent and verified flags.
+      if (have) {
+        row.remove('verified');
+      } else {
+        row['spent'] = false;
+      }
       rememberNote(row);
       _creditNoteToShearview(row);
     }
+    _bluBindPass(blocks);
     rememberDest(dest);
     _proofCheckedDests.add(payKey(dest));
     recheckRestFrameSpendable(frame);
