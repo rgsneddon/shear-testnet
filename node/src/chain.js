@@ -954,7 +954,7 @@ function hex32(v) {
  * { feeBps: 0 }. A fee key names the pool's own one-time key (R, P, tag);
  * prev is the parent block's record root.
  */
-const BLUNOTE_FIELD_KEYS = new Set(['feeBps', 'feeR', 'feeP', 'feeTag', 'prev']);
+const BLUNOTE_FIELD_KEYS = new Set(['feeBps', 'feeR', 'feeP', 'feeTag', 'prev', 'potToFee']);
 
 export function blunoteFields(tx) {
   const b = tx?.blunote;
@@ -977,7 +977,11 @@ export function blunoteFields(tx) {
   }
   const prev = b.prev == null || b.prev === '' ? null : hex32(b.prev);
   if (b.prev != null && b.prev !== '' && !prev) return null;
-  return { feeBps, feeKey: P ? { R, P, viewTag: tag } : null, prev };
+  // Option (b): 1 pays an empty round's pot to the coinbase key; it needs one.
+  const potToFee = b.potToFee == null ? 0 : Number(b.potToFee);
+  if (potToFee !== 0 && potToFee !== 1) return null;
+  if (potToFee === 1 && !P) return null;
+  return { feeBps, feeKey: P ? { R, P, viewTag: tag } : null, prev, potToFee: potToFee === 1 };
 }
 
 function blunoteDigestSuffix(tx) {
@@ -993,6 +997,8 @@ function blunoteDigestSuffix(tx) {
     f.feeKey ? f.feeKey.P : Buffer.alloc(32),
     Buffer.from([f.feeKey ? f.feeKey.viewTag : 0]),
     f.prev || Buffer.alloc(32),
+    // Only a coinbase that takes the pot adds the byte, so others keep their digest.
+    ...(f.potToFee ? [Buffer.from('pot1')] : []),
   ]);
 }
 
@@ -1044,9 +1050,9 @@ export function bluTemplateBatch(rows, knownPubs = null) {
  * The part of a BluNotes block's payout fixed before its PoW (carry, fee
  * note value, reserve extra), from the template's batch.
  */
-export function bluPlanFor({ payable, finderLevy = 0, feeNanos = 0n, feeKey = null, shares = [], unitNanos, budgetNanos = null }) {
+export function bluPlanFor({ payable, finderLevy = 0, feeNanos = 0n, feeKey = null, shares = [], unitNanos, budgetNanos = null, potToFee = false }) {
   const hash = shares.length ? blunoteHashNanos(shares, unitNanos, budgetNanos) : 0n;
-  return blunotePlan({ shareCount: shares.length, potPayable: payable, feeNanos, feeKey, finderLevy, hashNanos: hash });
+  return blunotePlan({ shareCount: shares.length, potPayable: payable, feeNanos, feeKey, finderLevy, hashNanos: hash, potToFee });
 }
 
 export function coinbaseTx({
@@ -1614,6 +1620,7 @@ export function buildTemplate({
   prepareCoinbase = null,
   feeKey = null,
   feeBps = 0,
+  potToFee = false,
 }) {
   txs = (Array.isArray(txs) ? txs : []).filter((tx) => !tx?.coinbase && !txNoteRuleRejected(tx, 1) && !feeFieldRejected(tx) && !bSpendFeeRejected(tx));
   // R28: spill is retired (D2); a slot-1 share is simply a share.
@@ -1679,6 +1686,8 @@ export function buildTemplate({
     feeP: Buffer.from(feeKey.P),
     feeTag: Number(feeKey.viewTag ?? feeKey.tag ?? 0) & 0xff,
   } : { feeBps: 0 } });
+  // Option (b): only an empty batch can take the pot.
+  const takePot = !!(potToFee && fields?.feeKey && !batch.length);
   if (!fields) throw new Error('blunote_fee');
   const feeNanos = blunoteFeeNanos(subsidy, fields);
   const budget = series == null ? null : hashBudgetNanos(series, hashBonusNanos);
@@ -1690,6 +1699,7 @@ export function buildTemplate({
     shares: batch,
     unitNanos: hashBonusUnitNanos(hashBonusNanos),
     budgetNanos: budget,
+    potToFee: takePot,
   });
   const carryOut = plan.carryOut;
   const prevRoot = parentRecordRoot(prevBlock);
@@ -1703,6 +1713,7 @@ export function buildTemplate({
       feeBps: fields.feeBps,
       ...(fields.feeKey ? { feeR: fields.feeKey.R, feeP: fields.feeKey.P, feeTag: fields.feeKey.viewTag } : {}),
       ...(prevRoot ? { prev: prevRoot } : {}),
+      ...(takePot ? { potToFee: 1 } : {}),
     },
   };
   if (!Number.isSafeInteger(cb.carryNanos)) throw new Error('pot_carry');
@@ -3198,6 +3209,7 @@ function verifyBlockBody(block, prev, opts = {}) {
         finderLevy: BigInt(levySplit.finder),
         unitNanos: liveUnit,
         budgetNanos: budgetB,
+        potToFee: bluFields.potToFee,
       });
     } catch {
       return { ok: false, reason: 'blunote_payout' };

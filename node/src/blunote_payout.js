@@ -49,12 +49,19 @@ export function blunoteHashNanos(shares, unitNanos, budgetNanos = null) {
  * The parts of a block's payout that are fixed before its PoW: the fee note
  * value, the reserve extra, T, and the carry. The template and verify share it.
  */
-export function blunotePlan({ shareCount, potPayable, feeNanos = 0n, feeKey = null, finderLevy = 0n, hashNanos = 0n, k = BLUNOTE_WINNERS }) {
+export function blunotePlan({ shareCount, potPayable, feeNanos = 0n, feeKey = null, finderLevy = 0n, hashNanos = 0n, k = BLUNOTE_WINNERS, potToFee = false }) {
   const pot = nat(potPayable, 'potPayable');
   const finder = nat(finderLevy, 'finderLevy');
   const fee = feeKey ? nat(feeNanos, 'feeNanos') : 0n;
   if (fee > pot) throw new Error('fee above the pot');
   if (!shareCount) {
+    // Option (b): the builder may take an empty round's pot to its own
+    // one-time key (a solo miner, or a pool with no shares), as today's
+    // solo payout does; the carry is then empty.
+    if (potToFee) {
+      if (!feeKey) throw new Error('pot_to_fee needs a key');
+      return { feeV: pot + finder, reserveExtra: 0n, T: 0n, piece: 0n, carryOut: 0n };
+    }
     return {
       feeV: feeKey ? fee + finder : 0n,
       reserveExtra: feeKey ? 0n : finder,
@@ -90,10 +97,12 @@ export function blunoteSettle({
   unitNanos,
   budgetNanos = null,
   k = BLUNOTE_WINNERS,
+  potToFee = false,
 }) {
   const rows = Array.isArray(shares) ? shares : [];
+  if (potToFee && rows.length) throw new Error('pot_to_fee with shares');
   const hash = rows.length ? blunoteHashNanos(rows, unitNanos, budgetNanos) : 0n;
-  const plan = blunotePlan({ shareCount: rows.length, potPayable, feeNanos, feeKey, finderLevy, hashNanos: hash, k });
+  const plan = blunotePlan({ shareCount: rows.length, potPayable, feeNanos, feeKey, finderLevy, hashNanos: hash, k, potToFee });
   const notes = [];
   if (plan.feeV > 0n) {
     const n = blunoteNote(feeKey.P, plan.feeV);
