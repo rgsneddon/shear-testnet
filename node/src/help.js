@@ -99,7 +99,7 @@ function sectionSolo() {
     '     hashBackend=missing means shares will reject native_missing — build step 1.',
     '  Mining, --solo, and a self-pool need Shear Sentinel v19. A follow-only node may lag.',
     '  5. ./ShearK-Miner --selftest',
-    '     ./ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --blu YOUR_MINING_ADDRESS --solo --threads 8',
+    '     ./ShearK-Miner --pool 127.0.0.1:1111 --user rig1 --blu YOUR_MINING_ADDRESS --solo --threads 8',
     '',
     'BluNotes (R28): a block your node finds pays its epoch pot and finder levy to a fresh one-time key',
     'of your mining address (wallet: this wallet mines). Only your wallet finds it. No pool fee.',

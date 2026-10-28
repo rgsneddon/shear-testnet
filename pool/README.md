@@ -98,7 +98,7 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d mypool.site
 ```
 
-Public miners: `ShearK-Miner --pool mypool.site:1111 --user YOUR_SSA1.worker --blu YOUR_MINING_ADDRESS` (cleartext on a bare `host:port`; use `stratum+ssl://host:port` for TLS)
+Public miners: `ShearK-Miner --pool mypool.site:1111 --user rig1 --blu YOUR_MINING_ADDRESS` (cleartext on a bare `host:port`; use `stratum+ssl://host:port` for TLS)
 
 Unauthenticated stratum login is dest-format only (no ownership proof). Soft-deny is per-IP; dest/tag durable bans require accepted shares or an operator ban.
 
