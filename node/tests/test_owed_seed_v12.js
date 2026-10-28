@@ -25,6 +25,7 @@ import { bookSealKeyFor } from '../src/book_seal_key.js';
 import { BOOK_SNAP_EVERY, createStore, OWED_CHECKPOINT_SPACING } from '../src/store.js';
 import { buildTemplate, retarget, shouldAdopt } from '../src/chain.js';
 import { auditCirculatingSupply } from '../src/supply.js';
+import { emptyRoundRecord } from './support/blunote_mine.js';
 
 const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-owed-keys-'));
 process.env.SHEAR_SEAL_KEY_DIR = keyDir;
@@ -270,6 +271,8 @@ function heavier(store, dest, parentIndex, count, tagBase) {
       height: Number(prev.height) + 1,
       weight: tpl.weight,
       bSpendIds: [],
+      // R28: the next fork block's coinbase binds this record's root.
+      blunoteRecord: emptyRoundRecord(),
     };
     out.push(block);
     prev = block;

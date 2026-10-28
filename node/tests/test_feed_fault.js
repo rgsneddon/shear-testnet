@@ -38,6 +38,7 @@ import {
   OPEN_ROUND_PEER_WINDOW_MS,
   createStore,
 } from '../src/store.js';
+import { emptyRoundRecord } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 
@@ -154,6 +155,8 @@ function heavierFork(store, dest, parentIndex, count, tagBase) {
       height: Number(prev.height) + 1,
       weight: tpl.weight,
       bSpendIds: [],
+      // R28: the next fork block's coinbase binds this record's root.
+      blunoteRecord: emptyRoundRecord(),
     };
     out.push(block);
     prev = block;

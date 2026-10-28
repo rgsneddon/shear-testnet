@@ -220,14 +220,14 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     const genesis = {
       header: genesisTpl.header,
       txs: genesisTpl.txs,
-      samples: genesisTpl.samples,
-      miner,
       hash: Buffer.alloc(32, 4),
       height: 1,
       weight: 1,
     };
     const g = verifyBlock(genesis, null, trust());
     assert.equal(g.ok, true, g.reason);
+    // R28: the child's coinbase binds this record's root (blunote_prev).
+    genesis.blunoteRecord = g.blunoteRecord;
 
     const childTime = t0 + TARGET_BLOCK_INTERVAL_MS;
     const childQuote = quoteAt(t0, t0, 2, childTime);
@@ -245,8 +245,6 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     const child = {
       header: childTpl.header,
       txs: childTpl.txs,
-      samples: childTpl.samples,
-      miner,
       hash: Buffer.alloc(32, 5),
       height: 2,
       weight: 1,
@@ -257,6 +255,7 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
       genesisMs: t0,
     });
     assert.equal(c.ok, true, c.reason);
+    child.blunoteRecord = c.blunoteRecord;
 
     const nextTime = childTime + TARGET_BLOCK_INTERVAL_MS;
     const chain = [
@@ -284,8 +283,6 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     const easy = verifyBlock({
       header: easyTpl.header,
       txs: easyTpl.txs,
-      samples: easyTpl.samples,
-      miner,
       height: 3,
     }, child, {
       ...trust(),
@@ -308,8 +305,6 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     const omitted = verifyBlock({
       header: omittedTpl.header,
       txs: omittedTpl.txs,
-      samples: omittedTpl.samples,
-      miner,
       height: 3,
     }, child, {
       ...trust(),
@@ -335,8 +330,6 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     const ahead = verifyBlock({
       header: aheadTpl.header,
       txs: aheadTpl.txs,
-      samples: aheadTpl.samples,
-      miner,
       height: 3,
     }, child, {
       ...trust(),
@@ -359,8 +352,6 @@ describe('shear-testnet-v8 shared pool and solo work', () => {
     const honest = verifyBlock({
       header: honestTpl.header,
       txs: honestTpl.txs,
-      samples: honestTpl.samples,
-      miner,
       height: 3,
     }, child, {
       ...trust(),

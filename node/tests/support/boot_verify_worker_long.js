@@ -26,6 +26,7 @@ import { merkleRoot } from '../../../crypto/merkle.js';
 import { nativeLoaded } from '../../../crypto/native_admit.js';
 import { meetsTarget } from '../../../crypto/shear_hash.js';
 import { potSubsidyAt } from '../../../crypto/pot_sched.js';
+import { encodeRecord } from '../../../crypto/blunote.js';
 import { bookSealKeyFor } from '../../src/book_seal_key.js';
 import {
   GENESIS_PREV,
@@ -66,6 +67,13 @@ function restamp(block) {
   };
 }
 
+// R28: every block here is an empty round with no fee key, so its record
+// is the empty one: no batch, no fee note, no winners. A child's coinbase
+// binds it (blunote_prev), and the load re-derives and checks it.
+const EMPTY_RECORD = encodeRecord({
+  batchRoot: Buffer.alloc(32), n: 0, W: 0n, T: 0n, feeV: 0n, feeR: null, feeP: null, winners: [],
+}).toString('hex');
+
 function buildBook(n) {
   const dest = minerDest();
   const chain = [];
@@ -94,7 +102,6 @@ function buildBook(n) {
       txs: tpl.txs,
       shareBatch: tpl.shareBatch || [],
       hashCredits: tpl.hashCredits,
-      miner: dest,
       height: h,
       hash: tagHash(),
       aLeaves: tpl.aLeaves,
@@ -103,6 +110,7 @@ function buildBook(n) {
       rootB: tpl.rootB,
       weight: tpl.weight,
       samples: tpl.samples,
+      blunoteRecord: EMPTY_RECORD,
     });
     flux = applyBlockToFluxset(flux, chain[chain.length - 1]);
     prevHash = chain[chain.length - 1].hash;

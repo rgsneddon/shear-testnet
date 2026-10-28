@@ -60,6 +60,7 @@ import {
   decodePortal,
   executeBlockEvm,
 } from './reserve_evm.js';
+import { encodeRecord } from './blunote.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -280,6 +281,15 @@ async function verifyBoundary({
     weight: parentTpl.weight,
     bLeaves: parentTpl.bLeaves,
   };
+  // R28: the child's coinbase binds the parent's record root, so the parent
+  // carries the record its own verify derives.
+  const parentGot = verifyBlock({ ...parent, shareBatch: [], aLeaves: parentTpl.aLeaves }, null, {
+    probeBody: true,
+    magic: MAGIC_TESTNET,
+    genesisMs: T0,
+  });
+  assert.equal(parentGot.ok, true, `parent ${parentGot.reason}`);
+  parent.blunoteRecord = parentGot.blunoteRecord;
   const childTpl = buildTemplate({
     prev: parentHash,
     prevHeader: parentTpl.header,
@@ -2176,10 +2186,17 @@ function extendChain(chain, miner, { from, to, salt, tenths }) {
       txs: [cb],
       miner,
       magic: MAGIC_TESTNET,
+      // R28: an empty round with no fee key has the empty record, which the
+      // next coinbase binds (blunote_prev); every load re-derives it.
+      blunoteRecord: EMPTY_RECORD,
     });
   }
   return chain;
 }
+
+const EMPTY_RECORD = encodeRecord({
+  batchRoot: Buffer.alloc(32), n: 0, W: 0n, T: 0n, feeV: 0n, feeR: null, feeP: null, winners: [],
+}).toString('hex');
 
 function committedRate(blocks) {
   const state = emptyVault();

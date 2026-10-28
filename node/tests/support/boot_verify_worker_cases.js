@@ -31,6 +31,7 @@ import {
   buildTemplate,
   chainLoadSeal,
   digestTx,
+  verifyBlock,
   verifyLoadedChain,
   verifyLoadedChainAsync,
 } from '../../src/chain.js';
@@ -97,7 +98,6 @@ function buildBook(n) {
       txs: tpl.txs,
       shareBatch: tpl.shareBatch || [],
       hashCredits: tpl.hashCredits,
-      miner: dest,
       height: h,
       hash: tagHash(),
       aLeaves: tpl.aLeaves,
@@ -107,6 +107,21 @@ function buildBook(n) {
       weight: tpl.weight,
       samples: tpl.samples,
     };
+    // R28: a child's coinbase binds its parent's record root, so each block
+    // carries the record its own verify derives before the next is built.
+    const parent = chain[chain.length - 1] || null;
+    const got = verifyBlock(block, parent ? {
+      hash: parent.hash, header: parent.header, height: parent.height, txs: parent.txs,
+      weight: parent.weight, bLeaves: parent.bLeaves, blunoteRecord: parent.blunoteRecord,
+    } : null, {
+      trustedPowHash: block.hash,
+      skipSharePow: true,
+      genesisMs,
+      nowMs: now,
+      supplyParents: chain.slice(),
+    });
+    assert.equal(got.ok, true, `book height ${h} ${got.reason || ''}`);
+    block.blunoteRecord = got.blunoteRecord;
     chain.push(block);
     flux = applyBlockToFluxset(flux, block);
     prevHash = block.hash;
