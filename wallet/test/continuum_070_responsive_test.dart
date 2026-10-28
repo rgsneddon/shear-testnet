@@ -18,6 +18,9 @@ import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:shear_wallet/shear_session.dart';
 import 'package:shear_wallet/shear_theme.dart';
+import 'package:shear_wallet/shear_admit_ffi.dart' show AdmitNative;
+
+import 'support/verified_chain.dart';
 
 void main() {
   test('blockInfo returns the node block body off the UI isolate', () async {
@@ -204,6 +207,8 @@ void main() {
       final session = ShearSession(store: File('${dir.path}/session.json'));
       await tester.runAsync(() async {
         await session.loadOrCreate();
+        // Connect bare reads a public node only after the IP choice (22 Oct).
+        session.publicNodeConsent = true;
         await session.setPassword('test-pass-1');
       });
       final ledger = ShearLedger(
@@ -282,6 +287,8 @@ void main() {
       late final String notesBody;
       await tester.runAsync(() async {
         await session.loadOrCreate();
+        // Connect bare reads a public node only after the IP choice (22 Oct).
+        session.publicNodeConsent = true;
         await session.setPassword('test-pass-1');
         final bound = ShearLedger()..bindIdentity(session.identity!);
         final dest = bound
@@ -342,6 +349,9 @@ void main() {
       final ledger = ShearLedger(
         pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server!.port}'),
       );
+      // Spendable counts depth from the verified tip (#125): a fixture pin
+      // at the host height 387.
+      await tester.runAsync(() => VerifiedChain(pinHeight: 387).verify(ledger, 387));
       await tester.pumpWidget(
         ShearWalletApp(
           session: session,
@@ -462,6 +472,8 @@ void main() {
       late final String notesBody;
       await tester.runAsync(() async {
         await session.loadOrCreate();
+        // Connect bare reads a public node only after the IP choice (22 Oct).
+        session.publicNodeConsent = true;
         await session.setPassword('test-pass-1');
         final who = session.identity!;
         final bound = ShearLedger()..bindIdentity(who);
@@ -530,6 +542,9 @@ void main() {
       final ledger = ShearLedger(
         pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server!.port}'),
       );
+      // Spendable counts depth from the verified tip (#125): a fixture pin
+      // at the host height 387.
+      await tester.runAsync(() => VerifiedChain(pinHeight: 387).verify(ledger, 387));
       await tester.pumpWidget(
         ShearWalletApp(
           session: session,
@@ -726,6 +741,10 @@ Map<String, dynamic> _poolFeeWire(
     'r': scalarBytes(r),
     'dest20': d20,
   };
+  // As mined: the node range proof (inbox 030) and this seed's admit key
+  // (an FS-1 leaf, N-1, 14 Oct).
+  note['rangeProof'] = AdmitNative.tryLoad()!.proveRange(BigInt.from(feeNanos), scalarBytes(r));
+  note = attachAdmitPub(note, spendSeed: seed);
   note = wrapNoteBlind(note, pointFrom(admitBaseBytes(seed)));
   note = compactSealedVout(note);
   final vp = Map<String, dynamic>.from(note['valueProof'] as Map)..remove('v');
@@ -737,6 +756,8 @@ Map<String, dynamic> _poolFeeWire(
     'valueProof': {'R': _hex(vp['R']), 'z': _hex(vp['z'])},
     'rEph': _hex(note['rEph']),
     'rCt': _hex(note['rCt']),
+    'rangeProof': _hex(note['rangeProof']),
+    'admitPub': _hex(note['admitPub']),
   };
 }
 

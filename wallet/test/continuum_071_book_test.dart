@@ -4,9 +4,12 @@ import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_admit_ffi.dart' show AdmitNative;
 import 'package:shear_wallet/shear_hash.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_native_prove.dart';
 import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 
@@ -241,14 +244,15 @@ void main() {
         confirmed: false,
       ),
     );
+    // A real sealed pool-fee note (commit, blind, range proof, admit key).
     fee.rememberNote({
-      'dest': feeDest,
+      ..._feeNote(feeDest, fee.spendSeed!, height: 18),
       'address': feeDest,
-      'kind': 'pool-fee',
       'amount': 0.01,
-      'height': 18,
+      'nanos': _feeNanos(),
       'verified': true,
     });
+    expect(_feeNanos(), kUnitsPerShe ~/ 100);
     fee.settleTo(20);
 
     final feePending = fee
@@ -358,21 +362,25 @@ void main() {
       final ledger = ShearLedger()..bindIdentity(id);
       final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
       final d20 = hash20FromAddress(dest)!;
-      final commit = Uint8List.fromList(List<int>.filled(32, 4));
-      final r = Uint8List.fromList(List<int>.filled(32, 5));
-      final z = Uint8List.fromList(List<int>.filled(32, 6));
-      final swappedZ = Uint8List.fromList(List<int>.filled(32, 9));
-      final blind = Uint8List.fromList(List<int>.filled(32, 7));
-      String hex(Uint8List b) =>
-          b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
-      final key = '${hex(commit)}|${hex(r)}|${hex(z)}';
-      // The scan uses the identity spend seed. Admit is absent, so the cached
-      // nanos are the only way this fake proof opens.
+      // A real sealed 25 SHE note: commit, blind and value proof (R, z). Each
+      // row claims v = 1, which that proof does not open, and carries no
+      // amount cipher, so the cached nanos are the only way it opens. Every
+      // row is an FS-1 leaf under the scanning wallet's seed (N-1, 14 Oct).
+      final sealed = nativeSealNote(2500000000, dest20: d20, kind: 'receive');
+      final commit = sealed['commit'] as Uint8List;
+      final blind = sealed['r'] as Uint8List;
+      final sealedVp = sealed['valueProof'] as Map;
+      final r = sealedVp['R'] as Uint8List;
+      final z = sealedVp['z'] as Uint8List;
+      final swappedZ = scalarBytes(randomScalar());
+      final key = proofCacheKey(sealed)!;
       final spend = ledger.spendSeed!;
+      Map<String, dynamic> leaf(Map<String, dynamic> row, Uint8List seed) =>
+          attachAdmitPub(row, spendSeed: seed);
 
       Map<String, dynamic> scan(Uint8List proofZ) => scanSealedVouts({
         'vouts': [
-          {
+          leaf({
             'dest': dest,
             'kind': 'receive',
             'noteCommit': noteCommitOfDest20(d20),
@@ -380,7 +388,7 @@ void main() {
             'r': blind,
             'valueProof': {'R': r, 'z': proofZ, 'v': 1},
             'height': 1,
-          },
+          }, spend),
         ],
         'dests': [dest],
         'dest': dest,
@@ -409,7 +417,7 @@ void main() {
       );
       final otherScan = scanSealedVouts({
         'vouts': [
-          {
+          leaf({
             'dest': otherDest,
             'kind': 'receive',
             'noteCommit': noteCommitOfDest20(hash20FromAddress(otherDest)!),
@@ -417,7 +425,7 @@ void main() {
             'r': blind,
             'valueProof': {'R': r, 'z': z, 'v': 1},
             'height': 1,
-          },
+          }, otherLedger.spendSeed!),
         ],
         'dests': [otherDest],
         'dest': otherDest,
@@ -429,7 +437,7 @@ void main() {
 
       final noCache = scanSealedVouts({
         'vouts': [
-          {
+          leaf({
             'dest': dest,
             'kind': 'receive',
             'noteCommit': noteCommitOfDest20(d20),
@@ -437,7 +445,7 @@ void main() {
             'r': blind,
             'valueProof': {'R': r, 'z': z, 'v': 1},
             'height': 3,
-          },
+          }, spend),
         ],
         'dests': [dest],
         'dest': dest,
@@ -452,7 +460,7 @@ void main() {
 
       final wired = scanSealedWire({
         'vouts': [
-          {
+          leaf({
             'dest': dest,
             'kind': 'receive',
             'noteCommit': noteCommitOfDest20(d20),
@@ -460,7 +468,7 @@ void main() {
             'r': blind,
             'valueProof': {'R': r, 'z': z, 'v': 1},
             'height': 1,
-          },
+          }, spend),
         ],
         'dests': [dest],
         'dest': dest,
@@ -576,13 +584,13 @@ void main() {
     final dest = ledger
         .syncDests(id.address, paymentCode: id.paymentCode)
         .first;
-    final opened = _feeNote(dest, height: 1);
+    final opened = _feeNote(dest, ledger.spendSeed!, height: 1);
     final vp = opened['valueProof'] as Map;
     ledger.restoreOpenedProofs([
       {'k': proofCacheKey(opened), 'n': _feeNanos()},
     ]);
     first = opened;
-    second = _feeNote(dest, height: 12);
+    second = _feeNote(dest, ledger.spendSeed!, height: 12);
     expect(proofCacheKey(second!), isNot(proofCacheKey(opened)));
     expect(vp['v'], _feeNanos());
     final saw = await ledger.collateSpendNotes(
@@ -606,21 +614,26 @@ void main() {
 int _feeNanos() => (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
 
 /// A pool-fee note whose claimed v opens. A stand-in proof never opens and
-/// the 1..200 bps hunt does not return inside the test.
-Map<String, dynamic> _feeNote(String dest, {required int height}) {
+/// the 1..200 bps hunt does not return inside the test. As a mined payout it
+/// carries the node range proof (inbox 030) and the admit key [seed] derives
+/// for it (an FS-1 leaf, N-1, 14 Oct).
+Map<String, dynamic> _feeNote(String dest, Uint8List seed, {required int height}) {
   final d20 = hash20FromAddress(dest)!;
   final fee = _feeNanos();
   final blind = randomScalar();
   final value = proveValue(fee, blind);
-  return {
+  final range = AdmitNative.tryLoad()!.proveRange(BigInt.from(fee), scalarBytes(blind));
+  expect(range, isNotNull, reason: 'node range proof');
+  return attachAdmitPub({
     'dest': dest,
     'kind': 'pool-fee',
     'noteCommit': noteCommitOfDest20(d20),
     'commit': value['C'],
     'r': scalarBytes(blind),
     'valueProof': {'R': value['R'], 'z': value['z'], 'v': fee},
+    'rangeProof': range,
     'height': height,
-  };
+  }, spendSeed: seed);
 }
 
 Uint8List _checkedHeader() {
