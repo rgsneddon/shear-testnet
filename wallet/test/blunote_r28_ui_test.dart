@@ -88,7 +88,59 @@ void main() {
     expect(decodeMiningAddress(addr), isNotNull);
   });
 
-  testWidgets('Restore asks "Did this wallet mine?"; yes turns the scan on', (tester) async {
+  // Ruling 7: a restore asks where the scan starts. The birth is the height
+  // the user gives, or genesis without one; the mining answer does not move it.
+  for (final given in <int?>[1234, null]) {
+    testWidgets('Restore asks for a birth height (${given ?? 'none: genesis'}) and whether the wallet mined', (tester) async {
+      _tall(tester);
+      final id = createIdentity();
+      final backup = File('${Directory.systemTemp.createTempSync('shear-blu-imp-').path}/$shewallName');
+      await tester.runAsync(() async {
+        await exportEncryptedShewall(identity: id, ledger: ShearLedger(), password: _pw, dest: backup);
+      });
+      final dir = Directory.systemTemp.createTempSync('shear-blu-imp-sess-');
+      final session = ShearSession(store: File('${dir.path}/session.json'));
+      await session.loadOrCreate();
+      final ledger = ShearLedger();
+      await tester.pumpWidget(ShearWalletApp(
+        key: UniqueKey(),
+        session: session,
+        ledger: ledger,
+        importSrc: () => backup,
+        skipPoolSync: true,
+      ));
+      await tester.pump();
+      await tester.enterText(find.byType(TextField).first, _pw);
+      late Future<void> done;
+      await tester.runAsync(() async {
+        done = _wallet(tester).importShewallNow();
+        for (var i = 0; i < 40 && find.byKey(const Key('restore-scan')).evaluate().isEmpty; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          tester.binding.scheduleFrame();
+        }
+      });
+      await tester.pump();
+      expect(find.byKey(const Key('restore-scan')), findsOneWidget);
+      expect(session.bluMining, isFalse, reason: 'nothing changes before the answer');
+      if (given != null) {
+        await tester.enterText(find.byKey(const Key('restore-birth-height')), '$given');
+      }
+      await tester.tap(find.byKey(const Key('restore-did-mine')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('restore-scan-start')));
+      await tester.pump();
+      await tester.runAsync(() => done);
+      await tester.pump();
+      expect(find.byKey(const Key('restore-scan')), findsNothing);
+      expect(session.identity!.address, id.address);
+      expect(session.birthHeight, given ?? 0);
+      expect(ledger.birthHeight, given ?? 0);
+      expect(session.bluMining, isTrue);
+      expect(ledger.bluMining, isTrue);
+    });
+  }
+
+  testWidgets('Restore without mining keeps the switch off and still scans from the birth', (tester) async {
     _tall(tester);
     final id = createIdentity();
     final backup = File('${Directory.systemTemp.createTempSync('shear-blu-imp-').path}/$shewallName');
@@ -108,17 +160,22 @@ void main() {
     ));
     await tester.pump();
     await tester.enterText(find.byType(TextField).first, _pw);
-    await tester.runAsync(() => _wallet(tester).importShewallNow());
+    late Future<void> done;
+    await tester.runAsync(() async {
+      done = _wallet(tester).importShewallNow();
+      for (var i = 0; i < 40 && find.byKey(const Key('restore-scan')).evaluate().isEmpty; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        tester.binding.scheduleFrame();
+      }
+    });
     await tester.pump();
+    await tester.tap(find.byKey(const Key('restore-scan-start')));
+    await tester.pump();
+    await tester.runAsync(() => done);
     await tester.pump();
     expect(session.identity!.address, id.address);
-    expect(find.byKey(const Key('restore-did-mine')), findsOneWidget);
-    expect(session.bluMining, isFalse, reason: 'nothing changes before the answer');
-    await tester.tap(find.byKey(const Key('restore-did-mine-yes')));
-    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 300)));
-    await tester.pump();
-    expect(find.byKey(const Key('restore-did-mine')), findsNothing);
-    expect(session.bluMining, isTrue);
-    expect(ledger.bluMining, isTrue);
+    expect(session.birthHeight, 0, reason: 'no height: genesis');
+    expect(session.bluMining, isFalse);
+    expect(ledger.bluMining, isFalse);
   });
 }

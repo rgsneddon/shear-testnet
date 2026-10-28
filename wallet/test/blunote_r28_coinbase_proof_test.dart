@@ -282,6 +282,86 @@ void main() {
     pool.close();
   }, timeout: const Timeout(Duration(minutes: 10)));
 
+  test('ruling 7 birth: a note at birth+1 is found; no block below the birth is fetched or opened', () async {
+    final pool = _client(node);
+    final first = node.payments[0].height;
+    final second = node.payments[1].height;
+    expect(second, first + 1);
+
+    Future<({ShearLedger ledger, Set<int> bodies, Set<int> headers})> scanFrom(int birth) async {
+      final bodies = <int>{};
+      final headers = <int>{};
+      final ledger = walletOn(pool);
+      ledger.setBirthHeight(birth);
+      final ok = await ledger.scanVerifiedBodies(
+        restFrame: id.address,
+        paymentCode: id.paymentCode,
+        hostTip: node.tip,
+        fetch: (h) async {
+          bodies.add(h);
+          return pool.wireBlock(h);
+        },
+        fetchHeaders: (from, to) async {
+          final out = <({int height, Uint8List header})>[];
+          for (var h = from; h <= to; h++) {
+            headers.add(h);
+            final j = await pool.headerAt(h);
+            final hex = j['header'] as String;
+            out.add((
+              height: h,
+              header: Uint8List.fromList([
+                for (var i = 0; i < hex.length; i += 2) int.parse(hex.substring(i, i + 2), radix: 16),
+              ]),
+            ));
+          }
+          return out;
+        },
+      );
+      await ledger.bluScanInFlight;
+      expect(ok, isTrue, reason: ledger.spendableReadError);
+      return (ledger: ledger, bodies: bodies, headers: headers);
+    }
+
+    // Birth at the first paid block: the next block's note (birth+1) is found.
+    final a = await scanFrom(first);
+    expect({for (final n in _bluAt(a.ledger, second)) _hex(n['commit'] as List<int>)}, containsAll(node.payments[1].commits));
+    expect(a.bodies.every((h) => h >= first), isTrue, reason: 'bodies read: ${a.bodies.toList()..sort()}');
+    expect(a.bodies, contains(first), reason: 'the birth block itself is read');
+
+    // Birth one block later: the first paid block is below it. Its body is
+    // never fetched, so nothing in it is opened, and its note is not there.
+    final b = await scanFrom(second);
+    expect(b.bodies.contains(first), isFalse);
+    expect(b.bodies.every((h) => h >= second), isTrue, reason: 'bodies read: ${b.bodies.toList()..sort()}');
+    expect(_bluAt(b.ledger, first), isEmpty);
+    expect({for (final n in _bluAt(b.ledger, second)) _hex(n['commit'] as List<int>)}, containsAll(node.payments[1].commits));
+    // Both births are above the pin: no header below the pin is asked for.
+    for (final s in [a, b]) {
+      expect(s.headers.every((h) => h > node.pin.height), isTrue, reason: 'headers read: ${s.headers.toList()..sort()}');
+    }
+    pool.close();
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
+  test('ruling 7 birth on create, against a real node: ten blocks under the verified tip', () async {
+    final pool = _client(node);
+    final ledger = walletOn(pool);
+    // Before any header is checked the verified tip is the pin itself.
+    expect(ledger.verifiedHeaderTip, node.pin.height);
+    expect(walletBirthForNewWallet(ledger.verifiedHeaderTip), node.pin.height - 10);
+    // A ledger with no checkpoint has verified nothing: genesis.
+    expect(walletBirthForNewWallet((ShearLedger()..bindIdentity(id)).verifiedHeaderTip), 0);
+    final ok = await ledger.scanVerifiedBodies(
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
+      hostTip: node.tip,
+    );
+    await ledger.bluScanInFlight;
+    expect(ok, isTrue, reason: ledger.spendableReadError);
+    expect(ledger.verifiedHeaderTip, node.tip);
+    expect(walletBirthForNewWallet(ledger.verifiedHeaderTip), node.tip - 10);
+    pool.close();
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
   test('the old path: compact rows the node sends never bind a record', () async {
     final paid = node.payments.first;
     final got = await HttpClient()

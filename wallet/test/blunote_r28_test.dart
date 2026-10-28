@@ -176,17 +176,20 @@ void main() {
       expect(s.scanBlocks([block], seedOf('alice')).length, 2, reason: 'reset rescans');
       final late = BluMiningScanner(enabled: true, birthHeight: 4);
       expect(late.scanBlocks([block], seedOf('alice')), isEmpty, reason: 'below birth height');
-      // Ruling 7 birth: a new wallet made at birthMs skips a record whose
-      // verified header is over a day older, and scans one inside the day.
-      const born = 1800000000000;
-      final fresh = BluMiningScanner(enabled: true, birthMs: born);
-      final old = {...block, 'timeMs': born - kBluBirthMarginMs - 1};
-      final near = {...block, 'height': 4, 'timeMs': born - kBluBirthMarginMs + 1};
-      expect(fresh.scanBlocks([old], seedOf('alice')), isEmpty, reason: 'before birth');
-      expect(fresh.scanBlocks([near], seedOf('alice')).length, 2, reason: 'within the margin');
-      // Unknown birth (a restore): every record is scanned.
-      final restored = BluMiningScanner(enabled: true);
-      expect(restored.scanBlocks([old], seedOf('alice')).length, 2);
+      final atBirth = BluMiningScanner(enabled: true, birthHeight: 3);
+      expect(atBirth.scanBlocks([block], seedOf('alice')).length, 2, reason: 'the birth block is scanned');
+      // A clock never decides it: a block's time is not read.
+      final genesis = BluMiningScanner(enabled: true);
+      expect(genesis.scanBlocks([{...block, 'timeMs': 1}], seedOf('alice')).length, 2);
+    });
+
+    test('ruling 7 birth on create: verified tip minus 10, or genesis with no verified tip', () {
+      expect(walletBirthForNewWallet(98), 88);
+      expect(walletBirthForNewWallet(10), 0);
+      expect(walletBirthForNewWallet(0), 0, reason: 'no verified tip: genesis, not a guess');
+      final fresh = ShearLedger()..bindIdentity(createIdentity());
+      expect(fresh.verifiedHeaderTip, 0);
+      expect(walletBirthForNewWallet(fresh.verifiedHeaderTip), 0);
     });
 
     test('a new session has the switch off; it survives a seal and unlock', () async {
@@ -205,23 +208,22 @@ void main() {
       dir.deleteSync(recursive: true);
     });
 
-    test('ruling 7 birth: a new wallet records when it was made, kept across a seal', () async {
+    test('ruling 7 birth: a height kept across a seal and unlock, and the ledger and scanner take it', () async {
       final dir = Directory.systemTemp.createTempSync('shear-blu-birth-');
-      final before = DateTime.now().millisecondsSinceEpoch;
       final session = ShearSession(store: File('${dir.path}/session.json'));
       await session.loadOrCreate();
-      final after = DateTime.now().millisecondsSinceEpoch;
-      expect(session.bluBirthMs, inInclusiveRange(before, after), reason: 'a new wallet');
+      expect(session.birthHeight, 0);
+      session.birthHeight = 4321;
       await session.setPassword('correct horse battery staple 1');
-      final born = session.bluBirthMs;
       final again = ShearSession(store: File('${dir.path}/session.json'));
       await again.loadOrCreate();
-      expect(again.bluBirthMs, 0, reason: 'a sealed file is not a new wallet');
       await again.unlock('correct horse battery staple 1');
-      expect(again.bluBirthMs, born, reason: 'kept across a seal and unlock');
+      expect(again.birthHeight, 4321);
       final ledger = ShearLedger()..bindIdentity(again.identity!);
-      ledger.setBluMining(true, birthMs: again.bluBirthMs);
-      expect(ledger.blu.birthMs, born);
+      ledger.setBluMining(true, birthHeight: again.birthHeight);
+      expect(ledger.birthHeight, 4321);
+      expect(ledger.blu.birthHeight, 4321);
+      expect(ledger.bodyScanTo, 4320, reason: 'no body below the birth is read');
       dir.deleteSync(recursive: true);
     });
   });

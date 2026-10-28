@@ -863,6 +863,9 @@ class ShearWalletAppState extends State<ShearWalletApp>
       });
       return;
     }
+    // A new wallet (ruling 7): its birth is ten blocks under the tip this
+    // device has verified, or genesis when it has verified none.
+    session.birthHeight = walletBirthForNewWallet(ledger.verifiedHeaderTip);
     try {
       await session.setPassword(pw, confirm: confirm);
     } catch (e) {
@@ -929,12 +932,13 @@ class ShearWalletAppState extends State<ShearWalletApp>
         onVortices: (v) => session.deployedVortices = v,
       );
       session.identity = imported;
-      // A restored wallet's birth is unknown: "Did this wallet mine?" yes
-      // scans from height 0 (ruling 7).
-      session.bluBirthMs = 0;
+      // Ruling 7: the scan starts at the height the user gives, or at
+      // genesis. Asked before the first read, so no block below it is read.
+      final restore = await _askRestoreScan();
+      session.birthHeight = restore.birth;
+      session.bluMining = restore.mined;
       await session.setPassword(pw);
       await _enterWallet(pw);
-      unawaited(_askDidThisWalletMine());
     } catch (_) {
       setState(
         () => _lockError = 'Import failed. Check the file and password.',
@@ -942,40 +946,63 @@ class ShearWalletAppState extends State<ShearWalletApp>
     }
   }
 
-  /// Restore (Russell D4): a wallet that mined has winner notes only the
-  /// record scan finds. Yes turns "This wallet mines" on and rescans.
-  Future<void> _askDidThisWalletMine() async {
+  /// Restore (ruling 7): where the scan starts, and whether it reads the
+  /// share-payout records. The birth is the height the user gives, or
+  /// genesis when they give none; the mining answer does not move it. Both
+  /// can change later (Settings has the mining switch).
+  Future<({int birth, bool mined})> _askRestoreScan() async {
     final ctx = _nav.currentContext;
-    if (ctx == null || !mounted) return;
-    final yes = await showDialog<bool>(
+    if (ctx == null || !mounted) return (birth: 0, mined: false);
+    final heightCtrl = TextEditingController();
+    var mined = false;
+    final ok = await showDialog<bool>(
       context: ctx,
-      builder: (c) => AlertDialog(
-        key: const Key('restore-did-mine'),
-        title: const Text('Did this wallet mine?'),
-        content: const Text(
-          'Yes scans the chain for share payouts to this wallet. '
-          'You can change this later in Settings.',
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setLocal) => AlertDialog(
+          key: const Key('restore-scan'),
+          title: const Text('Restore: where to scan from'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Birth height: the first block this wallet could have been paid in. '
+                'Leave it empty to scan from genesis.',
+              ),
+              TextField(
+                key: const Key('restore-birth-height'),
+                controller: heightCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Birth height (optional)'),
+              ),
+              CheckboxListTile(
+                key: const Key('restore-did-mine'),
+                contentPadding: EdgeInsets.zero,
+                value: mined,
+                onChanged: (v) => setLocal(() => mined = v == true),
+                title: const Text('This wallet mined (scan its share payouts)'),
+              ),
+            ],
+          ),
+          actions: [
+            FilledButton(
+              key: const Key('restore-scan-start'),
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Scan'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            key: const Key('restore-did-mine-no'),
-            onPressed: () => Navigator.pop(c, false),
-            child: const Text('No'),
-          ),
-          FilledButton(
-            key: const Key('restore-did-mine-yes'),
-            onPressed: () => Navigator.pop(c, true),
-            child: const Text('Yes'),
-          ),
-        ],
       ),
     );
-    if (yes == true) await _setBluMining(true);
+    final typed = int.tryParse(heightCtrl.text.trim());
+    heightCtrl.dispose();
+    return (birth: ok == true && typed != null && typed > 0 ? typed : 0, mined: ok == true && mined);
   }
 
   Future<void> _setBluMining(bool on) async {
     session.bluMining = on;
-    ledger.setBluMining(on, birthMs: session.bluBirthMs);
+    ledger.setBluMining(on, birthHeight: session.birthHeight);
     if (mounted) setState(() {});
     await session.persist();
   }
@@ -1133,7 +1160,8 @@ class ShearWalletAppState extends State<ShearWalletApp>
       genesis: session.rememberedChainGenesis,
     );
     ledger.restoreOpenedProofs(session.rememberedOpenedProofs);
-    ledger.setBluMining(session.bluMining, birthMs: session.bluBirthMs);
+    ledger.setBirthHeight(session.birthHeight);
+    ledger.setBluMining(session.bluMining, birthHeight: session.birthHeight);
     if (session.rememberedTxs.isNotEmpty) {
       await applyUserArchiveOffUi(ledger, {
         'dests': session.rememberedDests,

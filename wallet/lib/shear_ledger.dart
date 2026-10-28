@@ -1469,6 +1469,10 @@ void noteUiHeavy(String label) {
   debugUiHeavyCount += 1;
 }
 
+/// Ruling 7 birth on create: ten blocks under the verified tip, floored at
+/// 0. With no verified tip at create time it is genesis (0): never a guess.
+int walletBirthForNewWallet(int verifiedTip) => verifiedTip > 10 ? verifiedTip - 10 : 0;
+
 /// [scanBluRecordsWire] in [Isolate.run]. Top level, so the closure carries
 /// only [input]: one made inside a ledger method also captured the ledger
 /// (its HTTP client cannot be sent), the run threw, and the records were
@@ -4883,17 +4887,37 @@ class ShearLedger implements ReadProofSink {
   /// Turn the mining scan on or off. On forgets what was scanned and rescans
   /// the blocks already read, from [birthHeight] (0 is the whole chain).
   /// Off stops new scans; notes already found are real coins and stay.
-  void setBluMining(bool on, {int? birthHeight, int? birthMs}) {
-    if (birthHeight != null && birthHeight >= 0) blu.birthHeight = birthHeight;
-    if (birthMs != null && birthMs >= 0) blu.birthMs = birthMs;
+  void setBluMining(bool on, {int? birthHeight}) {
+    if (birthHeight != null) setBirthHeight(birthHeight);
     final was = blu.enabled;
     blu.enabled = on;
     if (!on || was) return;
     blu.reset();
+    // Bodies already scanned with the switch off carried records nobody
+    // read: scan them again from the birth height.
+    final from = _birthHeight > 0 ? _birthHeight - 1 : 0;
+    if (_bodyScanTo > from) _bodyScanTo = from;
     // The blocks the last read handed this book (all read blocks on the
     // node sync path). Later reads scan the rest.
     if (_nodeBodies.isNotEmpty) ingestBluRecords(List<Map<String, dynamic>>.from(_nodeBodies));
   }
+
+  /// Ruling 7 birth (Russell, 28 Oct): the first block height this wallet
+  /// can have been paid in. No body below it is fetched or scanned. A new
+  /// wallet takes the verified tip minus 10 ([walletBirthForNewWallet]); a
+  /// restore takes the height the user gives, or genesis (0).
+  int _birthHeight = 0;
+  int get birthHeight => _birthHeight;
+
+  void setBirthHeight(int height) {
+    _birthHeight = height < 0 ? 0 : height;
+    blu.birthHeight = _birthHeight;
+    if (_bodyScanTo < _birthHeight - 1) _bodyScanTo = _birthHeight - 1;
+  }
+
+  /// The tip of the header chain this ledger verified itself, or 0 when it
+  /// has none (no checkpoint, or no header checked above it yet).
+  int get verifiedHeaderTip => _pin == null ? 0 : _chainTip;
 
   /// Record notes of [blocks] that belong to this wallet join the book as
   /// FS-1 notes on the home dest. A note at a height whose record changed
@@ -10152,8 +10176,9 @@ class ShearLedger implements ReadProofSink {
     final home = homeDest(restFrame, paymentCode: paymentCode);
     // Blocks at and below the pin: their headers are proven by hash links
     // down from the pin's own hash, then their bodies scanned like any other.
+    if (_bodyScanTo < _birthHeight - 1) _bodyScanTo = _birthHeight - 1;
     if (_bodyScanTo < pin.height) {
-      final linked = await _proveBelowPin(pin, fetchHeaders);
+      final linked = await _proveBelowPin(pin, fetchHeaders, from: _bodyScanTo + 1);
       if (!linked) {
         return _bodyScanFail('headers below the checkpoint do not link to it');
       }
@@ -10209,13 +10234,16 @@ class ShearLedger implements ReadProofSink {
   Future<bool> _proveBelowPin(
     CheckpointPin pin,
     Future<List<({int height, Uint8List header})>> Function(int from, int to)?
-    fetchHeaders,
-  ) async {
-    if (_belowPin != null) return true;
+    fetchHeaders, {
+    int from = 1,
+  }) async {
+    final lowest = from < 1 ? 1 : from;
+    final have = _belowPin;
+    if (have != null && have.containsKey(lowest)) return true;
     final want = _hexToBytes(pin.hashHex.toLowerCase());
     if (want == null) return false;
     final byHeight = <int, Uint8List>{};
-    for (var from = 1; from <= pin.height; from += _kHeaderBackfillCap) {
+    for (var from = lowest; from <= pin.height; from += _kHeaderBackfillCap) {
       final to = from + _kHeaderBackfillCap - 1 > pin.height
           ? pin.height
           : from + _kHeaderBackfillCap - 1;
@@ -10226,7 +10254,7 @@ class ShearLedger implements ReadProofSink {
     }
     final out = <int, ({Uint8List hash, Uint8List root, int timeMs})>{};
     var link = want;
-    for (var h = pin.height; h >= 1; h--) {
+    for (var h = pin.height; h >= lowest; h--) {
       final header = byHeight[h];
       if (header == null || header.length != shearHeaderLen) return false;
       final digest = await _hashHeader(header);
@@ -10306,7 +10334,7 @@ class ShearLedger implements ReadProofSink {
       if (prevRoot != null) _provenBluPrev[h] = prevRoot;
       final rec = wire['blunoteRecord'];
       if (rec is String && rec.isNotEmpty) {
-        provenRecords.add({'height': h, 'blunoteRecord': rec, 'timeMs': below?.timeMs ?? row?.timeMs ?? 0});
+        provenRecords.add({'height': h, 'blunoteRecord': rec});
       }
       last = h;
       await Future<void>.delayed(Duration.zero);
@@ -10709,7 +10737,7 @@ class ShearLedger implements ReadProofSink {
       'bodyProof': _bodyProofRequired,
       'bodyScanTo': _bodyScanTo,
       'bluMining': blu.enabled,
-      'bluBirthMs': blu.birthMs,
+      'birthHeight': _birthHeight,
       if (_bodyScanError.isNotEmpty) 'bodyScanError': _bodyScanError,
       if (networkHashrate != null) 'networkHashrate': networkHashrate,
       if (circulatingNanos != null) 'circulatingNanos': circulatingNanos,
@@ -10898,8 +10926,11 @@ class ShearLedger implements ReadProofSink {
     // The worker's cursor is the book's, including one a reorg moved back.
     if (spec['bodyProof'] == true) _bodyProofRequired = true;
     if (spec.containsKey('bluMining')) blu.enabled = spec['bluMining'] == true;
-    final birth = spec['bluBirthMs'];
-    if (birth is num && birth >= 0) blu.birthMs = birth.toInt();
+    final birth = spec['birthHeight'];
+    if (birth is num && birth >= 0) {
+      _birthHeight = birth.toInt();
+      blu.birthHeight = _birthHeight;
+    }
     final scanTo = spec['bodyScanTo'];
     if (scanTo is num && scanTo >= 0) _bodyScanTo = scanTo.toInt();
     _bodyScanError = spec['bodyScanError']?.toString() ?? '';
@@ -11117,9 +11148,10 @@ class ShearLedger implements ReadProofSink {
       'notesCovered': _notesCovered,
       'bodyProof': _bodyProofRequired,
       'bodyScanTo': _bodyScanTo,
-      // R28: the worker scans records only when this wallet mines.
+      // R28: the worker scans records only when this wallet mines, and no
+      // body below the birth height.
       'bluMining': blu.enabled,
-      'bluBirthMs': blu.birthMs,
+      'birthHeight': _birthHeight,
       'acceptedCommits': <String>[
         for (final n in _notes)
           if (n['verified'] == true)
