@@ -284,6 +284,11 @@ void main() {
         {'height': h, 'blunoteRecord': _h(_record(T: T, winners: [winnerFor(seed, 1, 2)]))},
       ]);
       expect(spendableUnits(ledger, id), (piece * BigInt.from(2)).toInt());
+      // A row sent without its record is not a replaced block.
+      ledger.ingestBluRecords([
+        {'height': h},
+      ]);
+      expect(spendableUnits(ledger, id), (piece * BigInt.from(2)).toInt());
       ledger.ingestBluRecords([
         {'height': h, 'blunoteRecord': _h(_record(T: T, winners: const [], salt: 1))},
       ]);

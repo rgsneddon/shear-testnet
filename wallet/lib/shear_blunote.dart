@@ -401,7 +401,9 @@ class BluMiningScanner {
 }
 
 /// Keys of the records on [blocks] by height. A note whose record key is not
-/// the one now at its height was on a block that was replaced.
+/// the one now at its height was on a block that was replaced. Every R28
+/// block has a record (an empty batch too), so a row without one is a row
+/// the server sent without it, not a replaced block: it is left out.
 Map<int, String> bluRecordKeysByHeight(Iterable blocks) {
   final out = <int, String>{};
   for (final raw in blocks) {
@@ -410,7 +412,8 @@ Map<int, String> bluRecordKeysByHeight(Iterable blocks) {
     final height = h is num ? h.toInt() : int.tryParse('$h') ?? 0;
     if (height < 1) continue;
     final rec = bluRecordOfBlock(raw);
-    out[height] = rec == null ? '' : bluRecordKey(height, rec);
+    if (rec == null) continue;
+    out[height] = bluRecordKey(height, rec);
   }
   return out;
 }
