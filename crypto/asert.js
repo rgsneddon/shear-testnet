@@ -510,6 +510,10 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'SPILL=retired',
     'HASH_OWED=retired-scale-in-block',
     'BLU_RECORD=v1-parent-bound',
+    // Russell 28 Oct, option 2: no block names a miner or carries samples
+    // (blunote_miner, blunote_samples).
+    'BLOCK_MINER=none',
+    'SAMPLES=none',
     `SPEND_SIG=${SPEND_SIG}`,
     `DEST_HRP_SSA_ONLY=1`,
     `SPEND_SIG_ONLY=1`,
