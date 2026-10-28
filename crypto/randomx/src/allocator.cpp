@@ -31,11 +31,29 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "intrin_portable.h"
 #include "virtual_memory.h"
 #include "common.hpp"
+#if defined(__linux__)
+#include <stdint.h>
+#include <sys/mman.h>
+#endif
 
 namespace randomx {
 
 	template<size_t alignment>
 	void* AlignedAllocator<alignment>::allocMemory(size_t count) {
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+		// ShearK R41: a 4K-page block of 2 MiB or more (cache, dataset,
+		// scratchpad) is 2 MiB aligned and advised for transparent huge pages.
+		// Advice only; the bytes are the same either way.
+		constexpr size_t huge = 2u << 20;
+		if (count >= huge) {
+			void *big = rx_aligned_alloc(count, huge);
+			if (big == nullptr)
+				throw std::bad_alloc();
+			if (((uintptr_t)big & (huge - 1)) == 0)
+				madvise(big, count & ~(huge - 1), MADV_HUGEPAGE);
+			return big;
+		}
+#endif
 		void *mem = rx_aligned_alloc(count, alignment);
 		if (mem == nullptr)
 			throw std::bad_alloc();
