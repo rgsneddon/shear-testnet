@@ -93,6 +93,16 @@ function attachLoadedRecords(list, records) {
   }
 }
 
+/**
+ * R28: a fork block as the owed step must read it, with the record its own
+ * verify derived. A peer's block may arrive with no record, or with one that
+ * claims a different W, and W feeds the next block's hash budget.
+ */
+function withVerifiedRecord(block, check) {
+  if (!check?.blunoteRecord) return block;
+  return { ...block, blunoteRecord: check.blunoteRecord };
+}
+
 function throwBookFault(message) {
   const msg = String(message || '');
   let code = '';
@@ -4644,7 +4654,9 @@ export function createStore(dir, {
       const owedNext = advanceHashOwed({
         owedIn: owedWalk.owedIn,
         acceptedSeries: owedWalk.hashAcceptedSeries,
-        block: fork[i],
+        // R28: the record this verify derived, never the one the block came
+        // with. A fork block may arrive with none, or with a forged W.
+        block: withVerifiedRecord(fork[i], c),
         unit: owedUnit,
         // Structural tip. A height field on a later decoy must not bury this block.
         tipHeight: burialTip,
@@ -5469,7 +5481,7 @@ export function createStore(dir, {
       const owedNext = advanceHashOwed({
         owedIn: owedWalk.owedIn,
         acceptedSeries: owedWalk.hashAcceptedSeries,
-        block: fork[i],
+        block: withVerifiedRecord(fork[i], c),
         unit: owedUnit,
         height: structuralH,
         tipHeight: blockTip,

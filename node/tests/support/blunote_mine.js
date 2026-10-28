@@ -8,12 +8,13 @@ import { setNonce } from '../../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits } from '../../../crypto/shear_hash.js';
 import { shareFloorBits } from '../../../crypto/asert.js';
 import { decodeHeader } from '../../../crypto/header.js';
-import { pointBytes } from '../../../crypto/note.js';
+import { pointBytes, scalarBytes } from '../../../crypto/note.js';
 import { admitBasePub, admitBaseScalar } from '../../../crypto/admit.js';
 import {
   bindNonce,
   blunoteRho,
   decodeRecord,
+  encodeRecord,
   notesFromRecord,
   oneTimeKey,
   oneTimeSpendScalar,
@@ -65,6 +66,52 @@ export function mineBluShares(owner, header, n, opts = {}) {
   const out = [];
   for (let i = 0; i < n; i += 1) out.push(mineBluShare(owner, header, opts));
   return out;
+}
+
+/**
+ * The record of an empty round with no fee key: no batch, no fee note, no
+ * winners. A hand-built block of that shape carries it so its child's
+ * coinbase can bind its root (blunote_prev). Verify derives it again: a
+ * wrong one fails the child as blunote_prev.
+ */
+export function emptyRoundRecord() {
+  return encodeRecord({
+    batchRoot: Buffer.alloc(32), n: 0, W: 0n, T: 0n, feeV: 0n, feeR: null, feeP: null, winners: [],
+  }).toString('hex');
+}
+
+/**
+ * Template fields for Russell's solo payout option (b): an empty round pays
+ * its pot (and finder levy) to a fresh one-time key of `owner`, and carries
+ * nothing. Pass them to store.template or buildTemplate. A batch with
+ * shares ignores them (the draw pays instead).
+ */
+export function soloPay(owner) {
+  const k = oneTimeKey({ B: owner.B, Y: owner.Y });
+  return { feeKey: { R: k.R, P: k.P, viewTag: k.tag }, feeBps: 0, potToFee: true };
+}
+
+/**
+ * The coin a solo (b) block paid `owner`: its record's fee note, found with
+ * the wallet's scan key, shaped as a spend input (commit, public blinding r,
+ * opened value v as a Number, spend scalar x). Null when the block paid
+ * `owner` nothing.
+ */
+export function soloCoin(owner, block) {
+  if (!block?.blunoteRecord) return null;
+  const fee = ownBluNotes(owner, block.blunoteRecord).find((n) => n.kind === 'pool-fee');
+  if (!fee) return null;
+  return {
+    kind: 'pool-fee',
+    commit: Buffer.from(fee.commit),
+    admitPub: Buffer.from(fee.admitPub),
+    r: Buffer.from(scalarBytes(fee.rho)),
+    v: Number(fee.v),
+    opened: Number(fee.v),
+    x: fee.x,
+    rho: fee.rho,
+    leaf: fee.leaf,
+  };
 }
 
 /**
