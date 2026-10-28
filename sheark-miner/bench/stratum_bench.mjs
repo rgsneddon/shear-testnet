@@ -102,7 +102,7 @@ async function proxy(upPort) {
         if (j?.id === 1 && j.error) stats.loginErr = String(j.error?.message || j.error);
         if (j?.id !== 2) continue;
         const t = pending.shift();
-        if (t) stats.lat.push(Number(process.hrtime.bigint() - t) / 1e6);
+        if (t && stats.lat.length < 200000) stats.lat.push(Number(process.hrtime.bigint() - t) / 1e6);
         const err = j.error ? String(j.error?.message || j.error) : '';
         if (!err && /ok/i.test(String(j.result?.status || ''))) {
           stats.ok += 1;
@@ -199,7 +199,13 @@ async function mine(kind) {
     const el = (now - t0) / 1000;
     if (warmH == null && el >= warmSecs) { warmH = child.status.hashes; warmT = now; lastH = warmH; lastT = now; }
     if (warmH != null && now - lastT >= sampleSecs * 1000) {
-      samples.push({ t: Math.round(el), hs: (child.status.hashes - lastH) / ((now - lastT) / 1000), rssKb: rssKb(child.pid), ok: px.stats.ok, stale: px.stats.stale, rej: px.stats.rejected });
+      const row = { t: Math.round(el), hs: (child.status.hashes - lastH) / ((now - lastT) / 1000), rssKb: rssKb(child.pid), ok: px.stats.ok, stale: px.stats.stale, rej: px.stats.rejected, blocks: px.stats.blocks, dropped: child.status.dropped };
+      samples.push(row);
+      // A long soak leaves a trail: one line per sample, and the samples so far on disk.
+      console.log(`sample ${JSON.stringify(row)}`);
+      if (outFile) {
+        try { fs.writeFileSync(`${outFile}.partial`, JSON.stringify({ samples, reasons: px.stats.reasons, lat: { p50: pct(px.stats.lat, 50), p95: pct(px.stats.lat, 95) } })); } catch { /* ignore */ }
+      }
       lastH = child.status.hashes;
       lastT = now;
     }
