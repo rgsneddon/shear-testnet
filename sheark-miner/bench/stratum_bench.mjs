@@ -183,8 +183,8 @@ async function mine(kind) {
   const strat = await startStratum(kind);
   const px = await proxy(strat.port);
   const blu = miningAddress();
-  const dest = encodeDest(Buffer.alloc(20, 9));
-  const extra = ['--user', `${dest}.${kind === 'solo' ? 'solo' : 'r41'}`, '--blu', blu];
+  // R28 option 2: the login is a worker name; the mining address is --blu.
+  const extra = ['--user', kind === 'solo' ? 'solo' : 'r41', '--blu', blu];
   if (kind === 'solo') extra.push('--solo');
   const child = runMiner(px.port, extra);
   const t0 = Date.now();
@@ -248,24 +248,51 @@ async function mine(kind) {
 
 async function refusals() {
   const res = {};
-  const dest = encodeDest(Buffer.alloc(20, 9));
-  // 1. need_key: a pool share without a one-time key (no --blu).
+  // 1. need_key. The R28 miner will not start without --blu (exit 2, need_key
+  // named in the message), and the pool refuses a submit that carries no
+  // one-time key. The second is sent raw, as an old or foreign client would.
   {
+    const run = spawnSync(minerBin, ['--pool', '127.0.0.1:1', '--notls', '--user', 'nokey', '--threads', '1'], { encoding: 'utf8', timeout: 60_000 });
     const strat = await startStratum('pool');
-    const px = await proxy(strat.port);
-    const child = runMiner(px.port, ['--user', `${dest}.nokey`, '--threads', '1']);
-    const t0 = Date.now();
-    while (Date.now() - t0 < 240_000 && !(px.stats.reasons.need_key > 0)) await sleep(500);
-    res.need_key = { seen: px.stats.reasons.need_key || 0, accepted: px.stats.ok, pass: (px.stats.reasons.need_key || 0) > 0 && px.stats.ok === 0 };
-    await stopMiner(child);
-    px.close();
+    const reply = await new Promise((resolve) => {
+      const sock = net.connect(strat.port, '127.0.0.1');
+      let buf = '';
+      let job = null;
+      const done = (v) => { try { sock.destroy(); } catch { /* ignore */ } resolve(v); };
+      const timer = setTimeout(() => done({ error: 'timeout' }), 60_000);
+      sock.on('error', (e) => { clearTimeout(timer); done({ error: String(e.message) }); });
+      sock.on('data', (d) => {
+        buf += d.toString('utf8');
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const ln = buf.slice(0, i);
+          buf = buf.slice(i + 1);
+          let j = null;
+          try { j = JSON.parse(ln); } catch { continue; }
+          const jb = j?.params?.header ? j.params : j?.result?.job || j?.job || null;
+          if (!job && jb?.jobId) {
+            job = jb;
+            sock.write(JSON.stringify({ id: 2, method: 'submit', params: { login: 'nokey', name: 'ShearK-Miner', client: 'ShearHash', version: '2.9', algorithm: 'ShearHash', jobId: job.jobId, nonce: '1', hash: 'ab'.repeat(32) } }) + '\n');
+          } else if (j?.id === 2) {
+            clearTimeout(timer);
+            done(j);
+          }
+        }
+      });
+      sock.on('connect', () => sock.write(JSON.stringify({ id: 1, method: 'login', params: { login: 'nokey', name: 'ShearK-Miner', client: 'ShearHash', version: '2.9', algorithm: 'ShearHash' } }) + '\n'));
+    });
     strat.close();
+    const err = String(reply?.error?.message || reply?.error || '');
+    res.need_key = {
+      minerExit: run.status, minerSays: run.stderr.trim().split('\n')[0], poolReply: err,
+      pass: run.status === 2 && /need_key/.test(run.stderr) && /need_key/.test(err),
+    };
   }
   // 2. need_blu: a solo login with no bluAddr (--blu given, --solo absent).
   {
     const strat = await startStratum('solo');
     const px = await proxy(strat.port);
-    const child = runMiner(px.port, ['--user', `${dest}.solo`, '--blu', miningAddress(), '--threads', '1']);
+    const child = runMiner(px.port, ['--user', 'solo', '--blu', miningAddress(), '--threads', '1']);
     const t0 = Date.now();
     while (Date.now() - t0 < 120_000 && !/need_blu/.test(child.tail) && !px.stats.loginErr) await sleep(500);
     res.need_blu = { loginErr: px.stats.loginErr, minerSaw: /need_blu/.test(child.tail), accepted: px.stats.ok, pass: (/need_blu/.test(px.stats.loginErr) || /need_blu/.test(child.tail)) && px.stats.ok === 0 };
@@ -275,7 +302,7 @@ async function refusals() {
   }
   // 3. --solo without --blu exits 2 before mining.
   {
-    const run = spawnSync(minerBin, ['--pool', '127.0.0.1:1', '--notls', '--user', `${dest}.solo`, '--solo'], { encoding: 'utf8', timeout: 60_000 });
+    const run = spawnSync(minerBin, ['--pool', '127.0.0.1:1', '--notls', '--user', 'solo', '--solo'], { encoding: 'utf8', timeout: 60_000 });
     res.solo_no_blu = { status: run.status, stderr: run.stderr.trim(), pass: run.status === 2 && /--solo needs --blu/.test(run.stderr) };
   }
   res.pass = res.need_key.pass && res.need_blu.pass && res.solo_no_blu.pass;
