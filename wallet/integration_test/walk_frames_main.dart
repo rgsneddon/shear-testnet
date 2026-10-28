@@ -22,8 +22,24 @@ import 'package:flutter/scheduler.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_session.dart';
+import 'package:shear_wallet/shear_hash.dart' show shearHashV3;
+import 'package:shear_wallet/shear_v3_ffi.dart' show shearV3Backend;
 
 import 'walk_chain_data.dart';
+
+/// The golden corpus through the app's own native path, in a worker isolate:
+/// how many digests match the node's, and the backend the library reports.
+Map<String, Object?> _goldenCheck(List<List<String>> corpus) {
+  var same = 0;
+  for (final row in corpus) {
+    final h = row[0];
+    final header = Uint8List.fromList([for (var i = 0; i < h.length; i += 2) int.parse(h.substring(i, i + 2), radix: 16)]);
+    final got = shearHashV3(header);
+    final hex = got == null ? '' : got.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    if (hex == row[1]) same++;
+  }
+  return {'backend': shearV3Backend(), 'same': same, 'total': corpus.length};
+}
 
 /// Top level, so the isolate closure carries only [input].
 Future<Map<String, dynamic>> _walkInWorker(Map<String, dynamic> input) =>
@@ -109,6 +125,10 @@ Future<void> main() async {
       }
     }
   });
+  final golden = await Isolate.run(() => _goldenCheck(kWalkGolden));
+  final goldenOk = golden['same'] == golden['total'];
+  // ignore: avoid_print
+  print('SHEAR_V3_GOLDEN ${jsonEncode({...golden, 'ok': goldenOk})}');
   // ignore: avoid_print
   print('SHEAR_WALK_START headers=$total');
   final port = progress.sendPort;
@@ -132,6 +152,7 @@ Future<void> main() async {
     'mode': kReleaseMode ? 'release' : (kProfileMode ? 'profile' : 'debug'),
     'ok': result['ok'],
     'backend': result['backend'],
+    'golden_ok': goldenOk,
     'headers': n,
     'walk_ms': result['ms'],
     'wall_ms': wallMs,
