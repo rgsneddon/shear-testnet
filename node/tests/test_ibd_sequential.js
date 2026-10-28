@@ -206,7 +206,9 @@ describe('sequential IBD', () => {
       shareBatch: [],
     }, null, { trustedPowHash: easyPowHash() });
     assert.equal(got.ok, false);
-    assert.equal(got.reason, 'hash_bonus');
+    // R28: a coinbase carries no hash note at all (shares are paid by the
+    // draw as implicit notes), so a cooked one is refused as blunote_vout.
+    assert.equal(got.reason, 'blunote_vout');
     const storeSrc = fs.readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
     assert.match(storeSrc, /verifyBlock\(toVerify/);
   });
