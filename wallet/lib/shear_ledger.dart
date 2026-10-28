@@ -6289,7 +6289,7 @@ class ShearLedger implements ReadProofSink {
   /// Install a release checkpoint. This block is the anchor. Later headers
   /// still have to link, pass MTP and the future-time bound, and meet ASERT.
   void installCheckpoint(CheckpointPin pin, {String? storePath}) {
-    if (!checkpointPinWellFormed(pin)) return;
+    if (!checkpointPinWellFormed(pin) || !checkpointAllowedFor(pin)) return;
     _pin = pin;
     if (storePath != null && storePath.isNotEmpty) _headerStorePath = storePath;
     _checkedHeaders.clear();

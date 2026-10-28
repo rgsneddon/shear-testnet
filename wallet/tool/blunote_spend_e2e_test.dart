@@ -12,13 +12,19 @@ import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 
-/// R28 wallet product work: the Dart wallet finds and can spend its
-/// BluNotes, both the solo option (b) record coin (the record's fee note) and
-/// a share-paid winner note. Every coin is mined by the node's own code
-/// (fixtures/blunote_spend_node.mjs) and found by the wallet's record scan.
-/// The spend key the FS-1 worker derives from the seed opens each coin
-/// (x·G == P), its spend tag is the JS spec's (crypto/blunote.js), and
-/// Spendable is exactly what the send planner can use.
+/// R28 wallet product work: the Dart wallet spends its BluNotes, both the
+/// solo option (b) record coin (the record's fee note) and a share-paid
+/// winner note, through the real FS-1 path. Runs on the regtest book:
+///
+///   flutter test --dart-define=SHEAR_BOOK_MAGIC=shear-regtest tool/blunote_spend_e2e_test.dart
+///
+/// The node (fixtures/blunote_spend_node.mjs) is a real R28 regtest node on
+/// the pinned regtest checkpoint; every coin is mined by its own code and
+/// found by the wallet's record scan. The spend key the FS-1 worker derives
+/// from the seed opens each coin (x·G == P), its spend tag is the JS spec's
+/// (crypto/blunote.js), Spendable is exactly what the send can use, the
+/// whole of it is sent through the app's send path, and the node mines that
+/// send with exactly the JS spend tags.
 
 final Uint8List _seed = Uint8List.fromList(
   sha256.convert(utf8.encode('shear-blunote-spend-wallet')).bytes,
@@ -42,19 +48,15 @@ class _Node {
   List<Map<String, dynamic>> get coins =>
       [for (final c in info['coins'] as List) Map<String, dynamic>.from(c as Map)];
 
-  CheckpointPin get pin {
-    final p = info['pin'] as Map<String, dynamic>;
-    return CheckpointPin(
-      network: p['network'] as String,
-      height: (p['height'] as num).toInt(),
-      hashHex: p['hashHex'] as String,
-      timeMs: (p['timeMs'] as num).toInt(),
-      bits: (p['bits'] as num).toInt(),
-      anchorHeight: (p['anchorHeight'] as num).toInt(),
-      anchorTimeMs: (p['anchorTimeMs'] as num).toInt(),
-      anchorBits: (p['anchorBits'] as num).toInt(),
-      priorTimesMs: [for (final t in p['priorTimesMs'] as List) (t as num).toInt()],
-    );
+  /// Mine one block from the node's mempool.
+  Future<Map<String, dynamic>> mine() async {
+    proc.stdin.writeln('mine');
+    await proc.stdin.flush();
+    while (await _lines.moveNext().timeout(const Duration(minutes: 5))) {
+      final line = _lines.current.trim();
+      if (line.startsWith('{')) return jsonDecode(line) as Map<String, dynamic>;
+    }
+    throw StateError('node closed');
   }
 
   Future<void> stop() async {
@@ -82,11 +84,20 @@ Future<_Node> _startNode() async {
   return _Node(proc, jsonDecode(line) as Map<String, dynamic>, lines);
 }
 
+CheckpointPin _regtestPin() {
+  final raw = jsonDecode(File('../node/tests/regtest_checkpoint.json').readAsStringSync());
+  final pin = checkpointPinFromJson(Map<String, dynamic>.from(raw as Map));
+  if (pin == null) throw StateError('regtest checkpoint is not well formed');
+  return pin;
+}
+
 void main() {
   final id = createIdentity(Uint8List.fromList(_seed));
   late _Node node;
 
   setUpAll(() async {
+    expect(kBookMagic, kRegtestBookMagic,
+        reason: 'run with --dart-define=SHEAR_BOOK_MAGIC=shear-regtest');
     node = await _startNode();
   });
 
@@ -94,10 +105,10 @@ void main() {
     await node.stop();
   });
 
-  test('a solo (b) record coin and a share-paid note: found, x from the seed, JS spend tags, Spendable is what the send plans', () async {
+  test('a solo (b) record coin and a share-paid note: found, opened from the seed, sent whole, and mined with the JS spend tags', () async {
     final pool = ShearPoolClient(baseUrl: node.base, http: HttpClient());
     final ledger = ShearLedger(pool: pool)..bindIdentity(id);
-    ledger.installCheckpoint(node.pin);
+    ledger.installCheckpoint(_regtestPin());
     ledger.setBluMining(true);
     await ledger.populateSpendableFromNode(id.address, paymentCode: id.paymentCode);
     await ledger.bluScanInFlight;
@@ -132,33 +143,39 @@ void main() {
     expect(ledger.displayedSpendableNanos(id.address, paymentCode: id.paymentCode), total);
     expect(ledger.plannerSelectableNanos(id.address, paymentCode: id.paymentCode), total);
 
-    // The send's own planner (submitContinuumSend plans with it) uses the
-    // whole Spendable: pay plus the weight levy for the two inputs is exactly
-    // the two coins. One unit more is not covered.
+    // The app's send (the Flow button): submitContinuumSend plans the
+    // inputs. Pay plus the weight levy for the two inputs is exactly the two
+    // coins; one unit more is not covered.
+    final bobId = createIdentity();
+    final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(bobId.address, paymentCode: bobId.paymentCode);
+    Future<ContinuumSendResult> sendNanos(BigInt n) => submitContinuumSend(
+          ledger: ledger,
+          restFrame: id.address,
+          paymentCode: id.paymentCode,
+          startTo: bob,
+          enteredTo: bob,
+          amount: n.toDouble() / kUnitsPerShe,
+          nanosWire: '$n',
+          spendSeed: _seed,
+          local: false,
+          publicNode: false,
+          allowPublicHttp: true,
+        );
     final fee = BigInt.from(estimateSendLevyUnits(inputs: 2, outputs: 3));
-    final pay = total - fee;
-    expect(
-      await ledger.quoteConfirmRecipientShe(
-        restFrame: id.address,
-        paymentCode: id.paymentCode,
-        amount: pay.toDouble() / kUnitsPerShe,
-        nanosWire: '$pay',
-      ),
-      formatSheFromNanos(pay.toInt()),
-    );
-    expect(
-      await ledger.quoteConfirmRecipientShe(
-        restFrame: id.address,
-        paymentCode: id.paymentCode,
-        amount: (pay + BigInt.one).toDouble() / kUnitsPerShe,
-        nanosWire: '${pay + BigInt.one}',
-      ),
-      isNull,
-    );
-    // Posting that send to this node, and the node mining it, waits on the
-    // wallet's book magic: the Dart wallet signs FS-1 digests under
-    // shear-testnet-v12 and a regtest node verifies under shear-regtest
-    // (reported with R01b, the same gap).
+    final over = await sendNanos(total - fee + BigInt.one);
+    expect(over.posted, isFalse, reason: 'one unit over what Spendable covers is refused');
+    final sent = await sendNanos(total - fee);
+    expect(sent.posted, isTrue, reason: '${sent.remark} $debugLastContinuumSendError');
+    expect(debugLastFeeNanos, fee);
+    expect(debugLastPayNanos, total - fee);
+    expect(debugLastChangeNanos, BigInt.zero, reason: 'pay + fee is the whole Spendable');
+
+    final mined = await node.mine();
+    expect(mined['mined'], isTrue, reason: '${mined['reason']}');
+    final txs = [for (final t in mined['txs'] as List) Map<String, dynamic>.from(t as Map)];
+    expect(txs.length, 1, reason: 'the node mined the Dart send');
+    expect((txs.single['spendTags'] as List).toSet(), {for (final c in coins) c['spendTag']},
+        reason: 'the node took exactly the JS spend tags of both BluNotes');
     pool.close();
   }, timeout: const Timeout(Duration(minutes: 20)));
 }

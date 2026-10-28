@@ -1,10 +1,13 @@
-// A real R28 node for the wallet BluNote spend test.
+// A real R28 regtest node for the wallet BluNote spend e2e
+// (tool/blunote_spend_e2e_test.dart).
 //
 //   node test/fixtures/blunote_spend_node.mjs <walletSeedHex>
 //
-// A fresh regtest store (the node's 4-bit seed, so a test can mine every
-// block) built with the node's own template and append and served over the
-// node's own RPC. The wallet is paid two ways R28 pays a miner:
+// Replays the kept regtest checkpoint chain (node/tests/support/
+// regtest_checkpoint.js) into a fresh regtest store with the node's own
+// append and refuses unless its tip is the pin in node/tests/
+// regtest_checkpoint.json. On top, with the node's own template and append
+// and real ShearHash, the wallet is paid two ways R28 pays a miner:
 //   - solo option (b): an empty round pays its pot to a fresh one-time key
 //     of the wallet's mining address (template feeKey, feeBps 0, potToFee),
 //     so the coin is the record's fee note;
@@ -12,22 +15,26 @@
 //     wins the block's draw, so the coin is a record winner note.
 // Then empty blocks bury both past 9 confirmations.
 //
-// Prints one JSON line: the RPC port, the checkpoint pin, the tip, and each
-// coin as the JS spec derives it for the seed (crypto/blunote.js): kind,
-// height, admitPub P, commit C, value, and the spend tag Hp(P)·x with
-// x = x_base + H(y·R). The node keeps serving until stdin closes.
+// Prints one JSON line: the RPC port, the tip, and each coin as the JS spec
+// derives it for the seed (crypto/blunote.js): kind, height, admitPub P,
+// commit C, value, and the spend tag Hp(P)·x with x = x_base + H(y·R).
+// Each "mine" line on stdin mines one block from the node's mempool (what
+// /api/wallet/send queued) and prints {mined, height, txs: [{kind,
+// spendTags}]} or {mined: false, reason}. The node serves until stdin closes.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
 import { createRegtestStore } from '../../../node/tests/regtest_store.js';
 import { createRpc } from '../../../node/src/rpc.js';
-import { decodeHeader, setNonce } from '../../../crypto/header.js';
-import { shearHash, meetsTarget, setHashBackend } from '../../../crypto/shear_hash.js';
+import { decodeHeader } from '../../../crypto/header.js';
+import { setHashBackend } from '../../../crypto/shear_hash.js';
 import { encodeDest } from '../../../crypto/address.js';
-import { pointBytes, pointFrom } from '../../../crypto/note.js';
+import { pointBytes, pointFrom, txSpendTags } from '../../../crypto/note.js';
 import { spendTag } from '../../../crypto/admit.js';
 import { oneTimeKey } from '../../../crypto/blunote.js';
 import { bluWallet, mineBluShares, ownBluNotes } from '../../../node/tests/support/blunote_mine.js';
+import { appendMined, mineHeader, replayToCheckpoint } from '../../../node/tests/support/regtest_checkpoint.js';
 
 const [seedHex] = process.argv.slice(2);
 if (!/^[0-9a-f]{64}$/.test(seedHex || '')) {
@@ -35,12 +42,11 @@ if (!/^[0-9a-f]{64}$/.test(seedHex || '')) {
   process.exit(2);
 }
 try { setHashBackend('jit'); } catch { /* interpreter */ }
-const FLOOR_BITS = 4 * 65536;
-const PIN_HEIGHT = 12;
 const BURY = 11;
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-blunote-spend-'));
 const store = createRegtestStore(dir, { bits: 4 });
+await replayToCheckpoint(store);
 const other = encodeDest(Buffer.alloc(20, 3));
 const who = bluWallet(Buffer.from(seedHex, 'hex'));
 const hex = (b) => Buffer.from(b).toString('hex');
@@ -49,41 +55,14 @@ function stampOf(b) {
   return Number(decodeHeader(Buffer.from(b.header)).timestamp);
 }
 
-function mineHeader(tpl) {
-  const bits = decodeHeader(Buffer.from(tpl.header)).bits;
-  if (bits !== FLOOR_BITS) throw new Error(`h=${tpl.height} bits ${bits}, not the 4-bit seed`);
-  for (let nonce = 0; nonce < 1 << 20; nonce += 1) {
-    const header = setNonce(tpl.header, BigInt(nonce));
-    const hash = shearHash(header);
-    if (meetsTarget(hash, bits)) return { header, hash };
-  }
-  throw new Error(`no nonce at h=${tpl.height}`);
-}
-
+// Above the pin the clock is recent: the first block two hours ago.
+let at = Math.max(stampOf(store.tip()) + 90_000, Date.now() - 2 * 60 * 60 * 1000);
 async function mineOne(opts = {}) {
-  const now = store.tip() ? stampOf(store.tip()) + 90_000 : T0;
-  const { tpl } = store.template({ miner: other, now, ...opts });
+  const { tpl } = store.template({ miner: other, now: at, ...opts });
+  at += 90_000;
   const { header, hash } = mineHeader(tpl);
-  const got = await Promise.resolve(store.append({
-    header,
-    height: tpl.height,
-    txs: tpl.txs,
-    samples: tpl.samples,
-    shareBatch: tpl.shareBatch || [],
-    aLeaves: tpl.aLeaves,
-    bLeaves: tpl.bLeaves,
-    rootA: tpl.rootA,
-    rootB: tpl.rootB,
-    weight: tpl.weight,
-  // Shares are always checked: their ShearHash is recomputed on append.
-  }, { trustedPowHash: hash, skipSharePow: !(tpl.shareBatch || []).length }));
-  if (!got || got.ok !== true) throw new Error(`append h=${tpl.height} ${got?.reason || ''}`);
-  return store.tip();
+  return appendMined(store, { ...tpl, header }, hash);
 }
-
-const T0 = Date.now() - 24 * 60 * 60 * 1000;
-while (!store.tip() || store.tip().height < PIN_HEIGHT) await mineOne();
-const pinBlock = store.tip();
 
 const coins = [];
 function take(block, want) {
@@ -111,30 +90,27 @@ const shared = await mineOne({ shareBatch: mineBluShares(who, store.tip().header
 take(shared, 'blunote');
 for (let i = 0; i < BURY; i += 1) await mineOne();
 
-const times = store.blocks.map((b) => stampOf(b));
-const pin = {
-  network: 'testnet-v12',
-  height: pinBlock.height,
-  hashHex: hex(pinBlock.hash),
-  timeMs: times[pinBlock.height - 1],
-  bits: decodeHeader(Buffer.from(pinBlock.header)).bits,
-  anchorHeight: 1,
-  // A wallet pin anchors ASERT at 17 bits; 30 h behind that schedule its
-  // quote is the 4-bit floor these regtest headers carry.
-  anchorTimeMs: times[0] - 30 * 60 * 60 * 1000,
-  anchorBits: 17 * 65536,
-  priorTimesMs: times.slice(pinBlock.height - 11, pinBlock.height - 1),
-};
-
 const rpc = createRpc({ store, port: 0, host: '127.0.0.1' });
 const bound = await rpc.listen();
-process.stdout.write(`${JSON.stringify({ port: bound.port, pin, tip: store.tip().height, coins })}\n`);
+process.stdout.write(`${JSON.stringify({ port: bound.port, tip: store.tip().height, coins })}\n`);
 
 const stop = async () => {
   try { await rpc.close(); } catch { /* closing */ }
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* temp */ }
   process.exit(0);
 };
-process.stdin.on('end', stop);
-process.stdin.on('close', stop);
-process.stdin.resume();
+const lines = readline.createInterface({ input: process.stdin });
+lines.on('line', async (line) => {
+  if (line.trim() !== 'mine') return;
+  try {
+    const block = await mineOne();
+    const txs = (block.txs || []).filter((t) => !t.coinbase).map((t) => ({
+      kind: t.kind || 'send',
+      spendTags: txSpendTags(t).tags.map((g) => hex(g)),
+    }));
+    process.stdout.write(`${JSON.stringify({ mined: true, height: block.height, txs })}\n`);
+  } catch (err) {
+    process.stdout.write(`${JSON.stringify({ mined: false, reason: String(err?.message || err) })}\n`);
+  }
+});
+lines.on('close', stop);
