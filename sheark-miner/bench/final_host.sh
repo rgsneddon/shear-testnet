@@ -15,6 +15,10 @@ export TMPDIR=$R/tmp
 pre=(); [ -n "${CPUSET:-}" ] && pre+=(taskset -c "$CPUSET"); [ -n "${NICE:-}" ] && pre+=(nice -n "$NICE")
 log() { echo "[$(date -u +%T)] $*" | tee -a "$OUT/run.log"; }
 : > "$OUT/run.log"
+# IDLE=1 (agent-box): wait up to 60 min for loadavg < 0.5 before measuring.
+if [ "${IDLE:-0}" = 1 ]; then
+  for i in $(seq 1 120); do awk -v l="$(cut -d' ' -f1 /proc/loadavg)" 'BEGIN{exit !(l<0.5)}' && break; sleep 30; done
+fi
 git -C $R/src fetch -q https://github.com/rgsneddon/shear-testnet.git claude/miner-opt && git -C $R/src checkout -q FETCH_HEAD
 log "head $(git -C $R/src log --oneline -1) load=$(cut -d' ' -f1-3 /proc/loadavg)"
 J=$(nproc); [ -n "${CPUSET:-}" ] && J=3
