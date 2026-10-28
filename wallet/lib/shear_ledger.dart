@@ -13310,6 +13310,7 @@ class ShearLedger implements ReadProofSink {
   /// prover spends the inputs, and the fund proof is bound to that body.
   Future<ShearTx> _sendSealedLock({
     required String from,
+    String? to,
     required Uint8List spendSeed,
     required int lockEpoch,
   }) async {
@@ -13446,14 +13447,19 @@ class ShearLedger implements ReadProofSink {
       });
     }
     lastSealedLock = Map<String, Object?>.from(built);
-    return ShearTx(
+    final tx = ShearTx(
       id: id,
       from: from,
-      to: from,
+      to: (to == null || to.isEmpty) ? from : to,
       amount: kPiSheNanos / kUnitsPerShe,
       kind: 'lock',
       confirmed: false,
     );
+    // The posted lock is on the book, unmined, as a local lock is: the vote
+    // waits on its 9 confirmations (reserveVoteConfirmationWait) instead of
+    // seeing no lock at all and opening the ballot early.
+    if (!_txs.any((t) => t.id == tx.id)) _txs.add(tx);
+    return tx;
   }
 
   /// The body [ _sendSealedLock] just posted, including the leaf opening.
@@ -13525,6 +13531,7 @@ class ShearLedger implements ReadProofSink {
     if (sendKind == 'lock' && !local && pool != null && spendSeed != null && spendSeed.length == 32) {
       return _sendSealedLock(
         from: from,
+        to: destTo,
         spendSeed: spendSeed,
         lockEpoch: lockEpoch ?? currentEpoch ?? 0,
       );

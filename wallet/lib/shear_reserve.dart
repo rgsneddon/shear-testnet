@@ -2119,6 +2119,12 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
       });
     }
   }
+  // This wallet's own choice for this epoch, so the ballot shows the vote it
+  // just posted (and does not offer a second one). The tally is the chain's:
+  // nothing is added to it here.
+  reserve.portal(dest)
+    ..vote = choice
+    ..voteEpoch = reserve.currentEpoch;
   return ReserveVoteResult(enacted: true, remark: 'Vote submitted — Your vote: $choice');
 }
 

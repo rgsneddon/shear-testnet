@@ -720,6 +720,132 @@ void main() {
     }
   });
 
+  // Moved from shear_wallet_test "Reserve deposit requires Sign, lock-in
+  // stays, deposits sum to π then vote+results". Its "deposits sum to π" half
+  // is retired: a lock is exactly one π leaf and partial deposits no longer
+  // exist (Russell, 25 Oct 14:20, Corrections 1). The Sign / lock-in /
+  // vote-results flow stays, on the real-vote pattern: a real FS-1 π lock,
+  // the census from a node block body, one real leaf vote posted.
+  testWidgets('Reserve deposit requires Sign, lock-in stays, the vote waits for 9 confirmations, then vote+results', (tester) async {
+    final pool = SealedNotePool();
+    final reserve = ShearReserve()..currentEpoch = 1;
+    final funded = await fundedSplit(tester, 0, 10, extraOther: const [1], pool: pool, reserve: reserve);
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('Need'), findsWidgets);
+    // No lock yet: the vote is below π.
+    await tester.ensureVisible(find.byKey(Key('reserve-vote-$kVoteIncrease')));
+    await tester.tap(find.byKey(Key('reserve-vote-$kVoteIncrease')));
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-vote-submit')));
+    expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-vote-submit'))).onPressed, isNotNull);
+    await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text(kVoteBelowPi), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
+    // The Deposit asks for Sign, with its one fee.
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-lock-sign-levy')), findsOneWidget);
+    expect(find.textContaining('One fee to add funds to the vault'), findsWidgets);
+    await tester.tap(find.byKey(const Key('reserve-sign-accept')));
+    await tester.pump();
+    final consent = find.byKey(const Key('reserve-unprivate-accept'));
+    if (consent.evaluate().isNotEmpty) {
+      await tester.tap(consent);
+      await tester.pump();
+    }
+    await _waitFor(tester, find.byKey(const Key('reserve-locked-in')));
+    expect(pool.posts.where((b) => b['kind'] == 'lock'), hasLength(1), reason: 'one real FS-1 π lock');
+    expect(find.text(kReserveLockSent), findsWidgets);
+    expect(find.byKey(const Key('reserve-lock-sent')), findsOneWidget);
+    expect(find.textContaining('Coins are locked in your portal'), findsOneWidget);
+    expect(find.byKey(const Key('reserve-locked-in-levy')), findsOneWidget);
+    // Locked but not mined: the vote waits on 9 confirmations.
+    await tester.ensureVisible(find.byKey(const Key('reserve-vote-submit')));
+    await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text(kVoteConfirmWait), findsOneWidget,
+        reason: '${_snacks(tester)} locks=${funded.ledger.transactions.where((t) => t.kind == 'lock').map((t) => '${t.to}@${t.height}').join(',')}');
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
+    // The lock is mined (its change enters the live set) and is 9 deep; the
+    // node's block body commits this epoch's census.
+    final lockHeight = funded.ledger.sealedHeight + 1;
+    final change = funded.ledger.lastSealedLock?['change'];
+    expect(change, isA<Map>());
+    pool.addLive(Map<String, dynamic>.from(change as Map), lockHeight);
+    funded.ledger.confirmRound(address: funded.other, pot: 0, height: lockHeight);
+    final voteTip = lockHeight + ShearLedger.spendableConfirmations - 1;
+    funded.ledger.noteLiveHeight(voteTip);
+    funded.ledger.settleTo(voteTip);
+    funded.ledger.rememberNodeChain(bodies: [
+      {
+        'height': 2,
+        'txs': [
+          {
+            'coinbase': true,
+            'epochCensusCommit': [
+              {'epoch': 1, 'leafCount': 1, 'openHeight': 2},
+            ],
+          },
+        ],
+      },
+    ]);
+    await tester.pump();
+    final portalDest = vaultDest(funded.id.address, viewKey: funded.id.viewKey)!;
+    expect(reserveVoteGate(funded.ledger, reserve, portalDest), isNull);
+    expect(find.byKey(const Key('reserve-vote-results')), findsNothing);
+    await tester.ensureVisible(find.byKey(const Key('reserve-vote-submit')));
+    await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-confirm-levy')), findsOneWidget);
+    expect(find.textContaining('One fee to cast this vote'), findsWidgets);
+    final accept = find.byKey(const Key('reserve-vote-confirm-accept'));
+    expect((tester.widget<FilledButton>(accept).child as Text).data, 'CONFIRM');
+    expect(tester.widget<FilledButton>(accept).onPressed, isNull, reason: 'CONFIRM must be typed');
+    await tester.enterText(find.byKey(const Key('reserve-vote-confirm-field')), 'CONFIRM');
+    await tester.pump();
+    expect(tester.widget<FilledButton>(accept).onPressed, isNotNull);
+    await tester.tap(accept);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const Key('reserve-vote-sign')), findsOneWidget);
+    expect(find.byKey(const Key('reserve-vote-sign-levy')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
+    await _waitFor(tester, find.text('Vote submitted — Your vote: $kVoteIncrease'));
+    await _waitFor(tester, find.byKey(const Key('reserve-vote-results')));
+    expect(pool.posts.where((b) => b['kind'] == 'leaf-vote'), hasLength(1), reason: 'one real leaf vote');
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
+    expect(find.byKey(const Key('reserve-vote-results')), findsOneWidget);
+    expect(find.textContaining('your vote:'), findsNothing);
+    expect(find.byKey(const Key('reserve-your-vote')), findsOneWidget);
+    expect(find.text('Your vote: $kVoteIncrease'), findsOneWidget);
+    expect(find.text('Cast vote'), findsNothing);
+    expect(find.byKey(const Key('reserve-vote-submit')), findsNothing);
+    expect(find.byKey(Key('reserve-vote-$kVoteDecrease')), findsNothing);
+    expect(find.byKey(Key('reserve-vote-$kVoteHold')), findsNothing);
+    expect(find.byKey(Key('reserve-vote-$kVoteIncrease')), findsOneWidget);
+    final check = tester.widget<Icon>(
+      find.descendant(of: find.byKey(Key('reserve-vote-$kVoteIncrease')), matching: find.byIcon(Icons.check)),
+    );
+    expect(check.color, const Color(0xFF1A9A4A));
+    await tester.tap(find.byKey(Key('reserve-vote-$kVoteIncrease')));
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-vote-confirm')), findsNothing);
+    final resultsY = tester.getTopLeft(find.byKey(const Key('reserve-vote-results'))).dy;
+    final yoursY = tester.getTopLeft(find.byKey(const Key('reserve-your-vote'))).dy;
+    expect(yoursY, greaterThan(resultsY));
+    await _dropShell(tester, funded.ledger);
+  });
+
   // A vote is a leaf vote posted to a node (no local vote): the shell runs
   // with pool sync on, over a pool double that serves the live note set of
   // the real notes below and records each post. The lock is a real FS-1 π
@@ -1085,4 +1211,18 @@ Future<void> _dropShell(WidgetTester tester, ShearLedger ledger) async {
   await tester.pumpWidget(const SizedBox.shrink());
   await tester.runAsync(() => Future<void>.delayed(const Duration(seconds: 1)));
   await tester.pump(const Duration(seconds: 12));
+}
+
+/// Pumps fake and real time (an isolate seal, a pool round trip) until [f]
+/// is on screen, as shear_wallet_test's _waitUntil does.
+Future<void> _waitFor(WidgetTester tester, Finder f) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 60));
+  while (DateTime.now().isBefore(deadline)) {
+    await tester.pump();
+    if (f.evaluate().isNotEmpty) return;
+    await tester.pump(const Duration(milliseconds: 50));
+    if (f.evaluate().isNotEmpty) return;
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+  }
+  expect(f, findsWidgets, reason: _snacks(tester));
 }
