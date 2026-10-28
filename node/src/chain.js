@@ -1808,7 +1808,9 @@ export function buildTemplate({
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashCredits: [],
     levyBind: {
-      finderNanos: split.finder,
+      // R28: the finder levy is in the draw (or the coinbase key / reserve
+      // note), so no finder-fee note exists to aim at a login dest.
+      finderNanos: 0,
       reserveNanos: split.reserve,
       poolDest: poolDest && isDestAddress(poolDest) ? poolDest : '',
       feeDest: feeDest && isDestAddress(feeDest) ? feeDest : '',
