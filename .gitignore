@@ -72,3 +72,5 @@ pool-spend.seed
 
 # FS-1 phone bench output (crypto/native/phone-bench.*)
 crypto/native/phone-bench-*.jsonl
+sheark-miner/bench/rxbench
+sheark-miner/bench/rxbench.exe
