@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_admit.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_native_prove.dart';
@@ -9,6 +10,13 @@ import 'package:shear_wallet/shear_note.dart';
 /// Inbox 030. A pot, hash, finder-fee, reserve-fee, or pool-fee note is opened
 /// only when the node range proof accepts. A receive still follows the value
 /// proof. A flat stand-in is not a range proof.
+///
+/// Every row is an FS-1 leaf (N-1, #79, 14 Oct): its admitPub is the one this
+/// wallet's seed derives for that note and kind, as a mined payout carries.
+/// A row with no admit key is not a wallet note at all.
+Map<String, dynamic> _leaf(Map<String, dynamic> note, Uint8List seed) =>
+    attachAdmitPub(Map<String, dynamic>.from(note)..remove('admitPub'), spendSeed: seed);
+
 void main() {
   test('payout ingest verifies the range proof and leaves receive alone', () {
     final id = createIdentity();
@@ -18,8 +26,9 @@ void main() {
     final spend = ledger.spendSeed!;
     const nanos = 7 * 1000000;
     const hashNanos = 512;
-    final honest = nativeSealNote(nanos, dest20: d20, kind: 'pot');
-    final hashNote = nativeSealNote(hashNanos, dest20: d20, kind: 'hash');
+    final honest = _leaf(nativeSealNote(nanos, dest20: d20, kind: 'pot'), spend);
+    final hashNote = _leaf(nativeSealNote(hashNanos, dest20: d20, kind: 'hash'), spend);
+    expect(noteIsFs1Leaf(honest['admitPub'] as Uint8List, honest['commit'] as Uint8List), isTrue);
     final proof = Uint8List.fromList(honest['rangeProof'] as Uint8List);
     expect(proof.length, greaterThan(64));
     expect(proof[0], 2);
@@ -32,7 +41,7 @@ void main() {
       } else if (range != null) {
         note['rangeProof'] = range;
       }
-      return note;
+      return _leaf(note, spend);
     }
 
     Uint8List flipped() {
@@ -103,24 +112,22 @@ void main() {
     final ledger = ShearLedger()..bindIdentity(id);
     final dest = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     final d20 = hash20FromAddress(dest)!;
-    final commit = Uint8List.fromList(List<int>.filled(32, 4));
-    final r = Uint8List.fromList(List<int>.filled(32, 5));
-    final z = Uint8List.fromList(List<int>.filled(32, 6));
-    final blind = Uint8List.fromList(List<int>.filled(32, 7));
-    String hex(Uint8List b) => b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
-    final key = '${hex(commit)}|${hex(r)}|${hex(z)}';
+    // A real sealed note: commit, blind and value proof. Its own range proof
+    // is replaced by a flat stand-in, so only the cached opening could open it.
+    final sealed = nativeSealNote(2500000000, dest20: d20, kind: 'hash');
+    final key = proofCacheKey(sealed)!;
     Map<String, dynamic> scan(String kind) => scanSealedVouts({
           'vouts': [
-            {
+            _leaf({
               'dest': dest,
               'kind': kind,
-              'noteCommit': noteCommitOfDest20(d20),
-              'commit': commit,
-              'r': blind,
-              'valueProof': {'R': r, 'z': z, 'v': 1},
+              'noteCommit': sealed['noteCommit'],
+              'commit': sealed['commit'],
+              'r': sealed['r'],
+              'valueProof': sealed['valueProof'],
               'rangeProof': Uint8List.fromList([2, ...List<int>.filled(64, 4)]),
               'height': 1,
-            },
+            }, ledger.spendSeed!),
           ],
           'dests': [dest],
           'dest': dest,
