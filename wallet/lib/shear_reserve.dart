@@ -1680,6 +1680,11 @@ Future<ReserveDepositResult> postReserveDeposit({
       remark: 'A lock is one π. Amounts below π stay spendable.',
     );
   }
+  // A lock is exactly one π leaf (ruling 25 Oct): a larger amount is refused
+  // here, with the wallet's own sentence, before any note is planned or posted.
+  if (lockNanos != kPiSheNanos) {
+    return const ReserveDepositResult(posted: false, remark: kErrLockAmount);
+  }
   final lockL = levyNanos(lockNanos, depth: depth);
   final need = she + lockL / kUnitsPerShe;
   final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
