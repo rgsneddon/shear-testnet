@@ -768,10 +768,18 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
         trustedHeaderHashes: trusted,
         nowMs: prev.time + STEP,
       }));
+      // Under its own hash the pruned block is buried by the trusted header
+      // run, so it is a valid equal-work side block: held, not adopted. Its
+      // burial is its own (height 2, this hash), not borrowed. Before
+      // 642ef066 the fork walk read this record-less block through the
+      // retired owed ledger and refused it, so no burial was kept.
       assert.equal(matched.ok, false);
       assert.notEqual(matched.reason, 'pow');
+      assert.equal(matched.reason, 'side_hold');
       assert.equal(store.tip().height, 2);
-      assert.equal(store.burialView().proven, 0);
+      assert.notEqual(Buffer.from(store.tip().hash).toString('hex'), claimed.toString('hex'));
+      assert.equal(store.burialView().proven, 1);
+      assert.deepEqual(store.burialView().provenHeights, [2]);
       assert.equal(store.burialView().provenHeaders, SAMPLE_PRUNE_CONFIRMATIONS);
       const ipc = await Promise.resolve(applyVerifiedIpcBlock(store, {
         type: 'ipc_block',
@@ -782,7 +790,8 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       assert.equal(ipc.ok, false);
       assert.equal(ipc.reason, 'pow');
       assert.equal(store.tip().height, 2);
-      assert.equal(store.burialView().proven, 0);
+      // The refused IPC block adds no burial: only the side block's own.
+      assert.equal(store.burialView().proven, 1);
     });
 
     it('a reorg restore fault exits 70 and the restarted book matches disk', async () => {
