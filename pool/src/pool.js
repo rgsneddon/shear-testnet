@@ -1374,7 +1374,28 @@ function nonceHiFromShareHeader(header) {
   }
 }
 
-export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
+/**
+ * R41: a connection's share target changes on its own (per-dest vardiff,
+ * or a broadcast that carries a dest's dial) without a job-level change.
+ * Record the byte it leaves so a share already hashed at that byte, in
+ * flight when the new target lands, keeps the same 12 s grace a job-level
+ * change gives (job.shareBitsPrev / shareBitsHist). Without it every
+ * per-dest step rejected the in-flight share as share_target.
+ */
+export function noteConnShareBits(conn, next, now = Date.now()) {
+  if (!conn) return;
+  const old = Number(conn.shareBits);
+  const nb = Number(next);
+  if (Number.isFinite(old) && old > 0 && old !== nb) {
+    conn.shareBitsHist = [
+      ...(Array.isArray(conn.shareBitsHist) ? conn.shareBitsHist : []).filter((r) => now - Number(r?.at || 0) < PREV_JOB_GRACE_MS),
+      { bits: old, at: now },
+    ].slice(-8);
+  }
+  conn.shareBits = nb;
+}
+
+export function judgeShare({ job, header, hash, dest, shareBits, connHist } = {}) {
   const current = Number(shareBits ?? job?.shareBits);
   const prev = Number(job.shareBitsPrev);
   const prevAt = Number(job.shareBitsAt) || 0;
@@ -1403,6 +1424,7 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
     const hist = [
       ...(Number.isFinite(prev) && prev > 0 ? [{ bits: prev, at: prevAt }] : []),
       ...(Array.isArray(job.shareBitsHist) ? job.shareBitsHist : []),
+      ...(Array.isArray(connHist) ? connHist : []),
     ];
     for (const row of hist) {
       const b = Number(row?.bits);
@@ -1963,7 +1985,7 @@ export function createPool({
       if (destShareBitsKey(m.login || m.payoutDest) !== destKey) continue;
       for (const c of m.connections || []) {
         if (!c || c.shearFeeRoute) continue;
-        c.shareBits = next;
+        noteConnShareBits(c, next);
         const live = lastJob || c.job;
         if (!live || !c.sock) continue;
         c.job = live;
@@ -2089,6 +2111,7 @@ export function createPool({
         hash,
         dest,
         shareBits: conn?.shareBits ?? job?.shareBits,
+        connHist: conn?.shareBitsHist,
       });
       if (judged.ok) return judged;
       last = judged;
@@ -4174,7 +4197,7 @@ export function createPool({
           conn: c.shareBits,
           template: job.shareBits,
         }, { blockBits: blockBitsNow(), minBits: liveShareMin() });
-        c.shareBits = sb;
+        noteConnShareBits(c, sb);
         const aimed = c.shearFeeRoute ? job : jobForSession(job, m);
         const payload = wireJob(aimed || job, sb);
         c.job = aimed || job;

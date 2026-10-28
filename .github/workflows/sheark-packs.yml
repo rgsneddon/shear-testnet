@@ -152,6 +152,7 @@ jobs:
           node --test --test-concurrency=1 sheark-miner/tests/test_golden_corpus_v12.js sheark-miner/tests/test_sha512_fips_v12.js sheark-miner/tests/test_blunote_vectors_v12.js sheark-miner/tests/test_miner.js
           node sheark-miner/bench/stratum_bench.mjs --mode pool --miner "$(pwd)/sheark-miner/ShearK-Miner.exe" --secs 180 --sample 30 || echo "stratum bench (pool) failed on Windows"
           node sheark-miner/bench/stratum_bench.mjs --mode refusals --miner "$(pwd)/sheark-miner/ShearK-Miner.exe" || echo "stratum bench (refusals) failed on Windows"
+          node sheark-miner/bench/win_acl_diag.mjs || echo "acl diag failed"
       - uses: actions/upload-artifact@v4
         with:
           name: ShearK-Miner-${{ env.SHEARK_VER }}-windows
