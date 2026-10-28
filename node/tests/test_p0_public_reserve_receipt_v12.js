@@ -44,6 +44,7 @@ import { setHashBackend } from '../../crypto/shear_hash.js';
 import { nativeLoaded } from '../../crypto/native_admit.js';
 import { createRegtestStore } from './regtest_store.js';
 import { closeMineWorkers, mineHeaderParallel } from './mine_worker.mjs';
+import { emptyRoundRecord } from './support/blunote_mine.js';
 
 try { setHashBackend('jit'); } catch { /* interpreter still hashes */ }
 
@@ -474,10 +475,16 @@ describe('P0 public reserve receipt', () => {
         }
       }
 
+      // R28: the supply audit accounts each block's pot through its record.
+      // The attack block is an empty round with no fee key, so the record a
+      // miner would publish with it is the empty one. Without a record the
+      // audit stops at the retired owed path (hash_owed) and never reaches
+      // the receipts it is here to measure.
       const attackBlock = {
         header: mined.found.header,
         txs: mined.built.txs,
         shareBatch: mined.built.shareBatch || [],
+        blunoteRecord: emptyRoundRecord(),
       };
       report.attackAudit = supplyAudit({
         blocks: store.blocks.concat([attackBlock]),
