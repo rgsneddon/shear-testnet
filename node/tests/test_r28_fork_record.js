@@ -13,7 +13,8 @@ import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { decodeRecord, encodeRecord } from '../../crypto/blunote.js';
-import { bookSealKeyPath } from '../src/book_seal_key.js';
+import { bookSealKeyFor, bookSealKeyPath } from '../src/book_seal_key.js';
+import { readBookSnap } from '../src/book_snap.js';
 import { createStore } from '../src/store.js';
 
 const T0 = 1_700_000_000_000;
@@ -42,9 +43,7 @@ function grow(store, dest, n, tagBase, stepMs = STEP) {
     const got = store.append({
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: dest,
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
       rootA: tpl.rootA,
@@ -67,9 +66,7 @@ function wire(block, record) {
   const out = {
     header: block.header,
     txs: block.txs,
-    samples: block.samples || [],
     shareBatch: block.shareBatch || [],
-    miner: block.miner,
     aLeaves: block.aLeaves,
     bLeaves: block.bLeaves,
     rootA: block.rootA,
@@ -83,11 +80,15 @@ function wire(block, record) {
   return out;
 }
 
-/** The same record with W raised: what a lying peer would send. */
+/**
+ * The same record claiming one share of weight 2^40: what a lying peer would
+ * send. An empty round's record counts 0 accepted units whatever its W, so
+ * the lie names a share too.
+ */
 function forgedW(hex) {
   const rec = decodeRecord(Buffer.from(hex, 'hex'));
   assert.ok(rec);
-  return encodeRecord({ ...rec, W: rec.W + (1n << 40n) }).toString('hex');
+  return encodeRecord({ ...rec, n: Math.max(1, rec.n), W: rec.W + (1n << 40n) }).toString('hex');
 }
 
 /**
@@ -109,6 +110,14 @@ function twoBooks(tag) {
   for (const b of heavier) assert.ok(b.blunoteRecord, 'the heavier book derived each record');
   if (typeof other.close === 'function') other.close();
   return { dir, store, otherDir, heavier };
+}
+
+/** The accepted-W series the book persists (book.snap), one entry per height. */
+function persistedSeries(store, dir) {
+  store.flushBookSnap();
+  const snap = readBookSnap(path.join(dir, 'book.snap'), bookSealKeyFor(dir), {});
+  assert.ok(snap, 'the book wrote a snap');
+  return snap.acceptedSeries.map((n) => BigInt(n));
 }
 
 describe('R28 fork walks step each block with its verified record', () => {
@@ -160,4 +169,26 @@ describe('R28 fork walks step each block with its verified record', () => {
       fs.rmSync(otherDir, { recursive: true, force: true });
     }
   });
+
+  // The accepted W of each block feeds the next block's hash budget
+  // (hashBudgetNanos over the series). A forged record must not enter it.
+  for (const shape of ['suffix', 'book']) {
+    it(`a ${shape} fork with a forged W leaves the derived W in the accepted series`, async () => {
+      const { dir, store, otherDir, heavier } = twoBooks(`series-${shape}`);
+      try {
+        const want = heavier.map((b) => decodeRecord(Buffer.from(b.blunoteRecord, 'hex')).W);
+        const blocks = shape === 'suffix' ? heavier.slice(4) : heavier;
+        const fork = blocks.map((b) => wire(b, forgedW(b.blunoteRecord)));
+        const got = await Promise.resolve(store.ingest(fork, { trustBlockHash: true }));
+        assert.equal(got.ok, true, got.reason);
+        const series = persistedSeries(store, dir);
+        assert.equal(series.length, 7);
+        assert.deepEqual(series, want, 'each entry is the W its own verify derived');
+        for (const w of series) assert.ok(w < (1n << 40n), 'no forged W reached the series');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.rmSync(otherDir, { recursive: true, force: true });
+      }
+    });
+  }
 });
