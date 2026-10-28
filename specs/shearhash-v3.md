@@ -43,6 +43,8 @@ digest = RandomX_lite(K, input)
 valid  iff leading-zero-bits(digest) >= shareBits (share) or blockBits (block)
 ```
 
+SHA-512 is FIPS 180-4 SHA-512 (R40, 28 Oct 2026: `sheark-miner/src/sha512.c` had round constant K[53] mistyped as `0x4ed8aa4ae256485b` until the v12/mainnet genesis; vectors in `sheark-miner/tests/test_sha512_fips_v12.js`).
+
 `K` does not include timestamp or nonce, so a stratum restamp does not rebuild the cache. The digest **does** include timestamp and nonce. digest(H0) submitted against restamp H1 is `bad_hash`. A miner first/next pipeline must hash one exact header: abort the in-flight pair when time/bits/prev change.
 
 Sealed-block shares use the frozen parent header, nonce replaced per share, no restamp (`specs/law.md`).
@@ -74,8 +76,8 @@ Header: byte 0 = `0x01`, 127 zero bytes.
 
 | field | hex |
 |-------|-----|
-| K | `55111f0216ab10a6ba15fc0146990b10d26edcf58c86fa1418c41d96fa40b8e4` |
-| digest | `98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b` |
+| K | `5a09106fcfdc1a4fdcd4ccefed812aae516b2dfa13c4b0606983dd558cb8911b` |
+| digest | `e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4` |
 
 Must fail:
 

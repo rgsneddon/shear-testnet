@@ -23,7 +23,7 @@ static const char V1_SELFTEST[] =
     "5d00a24233609829e59d6e83d9fcd2f262c4014e772a23024fd3db4e66ee2066";
 
 const char SHEAR_SELFTEST_HASH[] =
-    "98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b";
+    "e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4";
 
 #define SHEAR_MAX_VM 256
 

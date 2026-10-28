@@ -24,7 +24,7 @@ Default `--backend jit-full` is the 2 GiB RandomX dataset (same ShearHash-v3 dig
 
 On a new job or restamp (prev, merkle/continuity, bits, time, job id) the miner bumps its job generation and **aborts** in-flight hashes. Results for the old generation are dropped (`dropped`, debug `aborted_stale`) and are **not** counted as Rejected. Pool `stale` / `stale_job` is labelled `stale` on the console, not reject. Hashrate is a time-window / EMA; `round` / `proven_round` is accepted work this block and **may reset at block found**.
 
-`--print-config` includes `rxMode=light`, `rxCacheMiB=128`, `feePct=0`. `--selftest` must print digest `98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b` and must not match the v1 vector `5d00a242…`.
+`--print-config` includes `rxMode=light`, `rxCacheMiB=128`, `feePct=0`. `--selftest` must print digest `e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4` and must not match the v1 vector `5d00a242…`.
 
 Windows zip root: `ShearK-Miner.exe`, `example.bat`, `example.sh`, and the OpenSSL DLLs the exe imports (`libssl-3-x64.dll`, `libcrypto-3-x64.dll`, plus any further non-system DLL). The exe alone does not start. Unix zip root (`linux`, `archlinux`, `fedora`, `opensuse`, `macos`): `ShearK-Miner`, `example.bat`, `example.sh`, and that OS's OpenSSL libraries beside the binary. Each zip is built on that OS. How-to: the `[Testnet] ShearK` README.
 

@@ -113,7 +113,7 @@ jobs:
           python scripts/isa_scan.py sheark-miner/src/*.o sheark-miner/ShearK-Miner.exe crypto/randomx/build/librandomx.a
           st="$(./sheark-miner/ShearK-Miner.exe --backend interpreter --selftest)"
           echo "$st"
-          grep -q 'selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b' <<< "$st"
+          grep -q 'selftest ok e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4' <<< "$st"
           node sheark-miner/tests/pack_windows.js
           # The exe in the shipped zip: the one selftested above, at the baseline.
           python scripts/scan_shipped_zip.py "dist/ShearK-Miner-$SHEARK_VER-windows.zip" --built ShearK-Miner.exe=sheark-miner/ShearK-Miner.exe ShearK-Miner.exe

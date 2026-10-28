@@ -89,4 +89,4 @@ export function assertNotices(names) {
   assert.ok(names.some((n) => n.startsWith('LICENSES/')), `missing LICENSES/: ${names.join(',')}`);
 }
 
-export const SELFTEST = 'selftest ok 98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b';
+export const SELFTEST = 'selftest ok e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4';

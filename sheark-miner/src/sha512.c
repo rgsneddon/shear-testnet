@@ -19,6 +19,9 @@ static void store64_be(unsigned char *p, uint64_t v) {
   }
 }
 
+/* FIPS 180-4 section 4.2.3. K[53] was mistyped 0x4ed8aa4ae256485b until R40
+ * (28 Oct), which gave a non-standard hash and so non-standard RandomX keys;
+ * fixed with the v12/mainnet genesis. sheark-miner/tests/test_sha512_fips_v12.js */
 static const uint64_t K[80] = {
   0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL, 0xb5c0fbcfec4d3b2fULL, 0xe9b5dba58189dbbcULL,
   0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL, 0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL,
@@ -33,7 +36,7 @@ static const uint64_t K[80] = {
   0xa2bfe8a14cf10364ULL, 0xa81a664bbc423001ULL, 0xc24b8b70d0f89791ULL, 0xc76c51a30654be30ULL,
   0xd192e819d6ef5218ULL, 0xd69906245565a910ULL, 0xf40e35855771202aULL, 0x106aa07032bbd1b8ULL,
   0x19a4c116b8d2d0c8ULL, 0x1e376c085141ab53ULL, 0x2748774cdf8eeb99ULL, 0x34b0bcb5e19b48a8ULL,
-  0x391c0cb3c5c95a63ULL, 0x4ed8aa4ae256485bULL, 0x5b9cca4f7763e373ULL, 0x682e6ff3d6b2b8a3ULL,
+  0x391c0cb3c5c95a63ULL, 0x4ed8aa4ae3418acbULL, 0x5b9cca4f7763e373ULL, 0x682e6ff3d6b2b8a3ULL,
   0x748f82ee5defb2fcULL, 0x78a5636f43172f60ULL, 0x84c87814a1f0ab72ULL, 0x8cc702081a6439ecULL,
   0x90befffa23631e28ULL, 0xa4506cebde82bde9ULL, 0xbef9a3f7b2c67915ULL, 0xc67178f2e372532bULL,
   0xca273eceea26619cULL, 0xd186b8c721c0c207ULL, 0xeada7dd6cde0eb1eULL, 0xf57d4f7fee6ed178ULL,
