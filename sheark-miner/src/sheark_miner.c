@@ -15,6 +15,8 @@
 #include "job_bits.h"
 #include "stratum_tls.h"
 #include "blunote.h"
+#include "rig.h"
+#include "stats.h"
 #include "../../crypto/share_stamp.h"
 
 #include <ctype.h>
@@ -22,6 +24,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,9 +40,11 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <io.h>
 #define close_fd closesocket
 #else
 #include <arpa/inet.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/select.h>
@@ -142,14 +147,49 @@ static atomic_int g_inflight = 0;
 static Share g_sent;
 static int g_have_sent = 0;
 static int enqueue_front(const Share *s);
-static uint64_t g_dropped = 0;
+static _Atomic uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
 static uint64_t g_round0 = 0;
-static double g_smooth_hs = 0;
-static uint64_t g_rate_h0 = 0;
-static time_t g_rate_t0 = 0;
-#define RATE_MIN_DT 2
-#define RATE_HOLD_FRAC 0.9
+/* R41: the hash rate everywhere is counted hashes over the last 10 s of
+ * wall time (stats.c), in milli-H/s. The old EMA held its value when the
+ * rate fell (a painted number); it is gone. */
+static atomic_uint_fast64_t g_hs10_milli;
+static double hs10(void) { return (double)atomic_load(&g_hs10_milli) / 1000.0; }
+/* Local stats and rig (never sent: rig.h). */
+static RigInfo g_rig;
+static int g_redact = 0;
+static int g_verbose = 0;
+static int g_stats_interval = 60;
+static int g_leave_free = -1;
+static int g_tune_mode = 0; /* 0 cached or tune, 1 --retune, -1 --no-tune */
+static const char *g_stats_file = NULL;
+static double g_max_temp = 0;
+static int g_threads_user = 0;
+static char g_threads_why[256] = "";
+static char g_mode_why[256] = "";
+static char g_tune_table[512] = "";
+static double g_init_s = -1;
+static atomic_int g_print_req;
+static atomic_int g_thermal_state; /* 0 ok, 1 reduced, 2 minimum */
+static pthread_mutex_t g_st_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_job_at_ns = 0;
+static uint64_t g_sent_ns = 0;
+static double g_lat_last = -1, g_lat_sum = 0;
+static uint64_t g_lat_n = 0;
+static uint64_t g_busy_until_ns = 0, g_busy_backoff_ns = 0;
+static uint64_t g_busy_n = 0;
+typedef struct { char name[40]; uint64_t n; } Reason;
+static Reason g_rej_r[16], g_stl_r[8];
+static void note_reason(Reason *t, int cap, const char *why) {
+  pthread_mutex_lock(&g_st_mu);
+  int i;
+  for (i = 0; i < cap && t[i].name[0]; i++) if (!strcmp(t[i].name, why)) break;
+  if (i < cap) {
+    if (!t[i].name[0]) snprintf(t[i].name, sizeof(t[i].name), "%s", why);
+    t[i].n++;
+  }
+  pthread_mutex_unlock(&g_st_mu);
+}
 static int g_height = 0;
 static char g_last_job[80];
 static uint64_t g_last_nonce = 0;
@@ -162,6 +202,8 @@ static int g_cpu_map_n = 0;
  * (SMT siblings add RandomX throughput), but no more threads than the L3
  * holds 2 MiB scratchpads. */
 static int g_auto_threads = 0;
+/* --max-temp: workers with tid >= this rest. */
+static atomic_int g_active_threads = 1 << 30;
 
 static void fmt_hashrate(double hs, char *buf, size_t n);
 
@@ -197,6 +239,15 @@ static void usage(FILE *out) {
           "  --require-tls               refuse a cleartext URL\n"
           "  --tls-ca FILE               PEM trust anchor\n"
           "  --notls                     plaintext (localhost or lab only)\n"
+          "  --leave-free N              keep N CPUs free (default 1 on a desktop/laptop with 4+, else 0)\n"
+          "  --retune / --no-tune        re-measure the best thread count / use the CPU count\n"
+          "  --max-temp C                run fewer threads while the CPU is at or above C\n"
+          "  --rig                       print this device's details and exit (local only)\n"
+          "  --stats-interval S          print the stats table every S seconds (0 off; default 60)\n"
+          "  --stats-file PATH           also write the stats as JSON to PATH (opt-in, local)\n"
+          "  --redact                    mask host name, home paths and IPs in the output\n"
+          "  --verbose                   every thread in the tables\n"
+          "  type s + Enter (or SIGUSR1) print the stats table now\n"
           "  --bench [SECONDS]\n"
           "  --selftest\n"
           "  --verify HEADERHEX\n"
@@ -658,28 +709,17 @@ static int json_int(const char *json, const char *key, int *out) {
   return 1;
 }
 
+/* R41 (Russell 28 Oct): no rig or device data leaves this machine. The
+ * login, stats and submit carry the worker name, the client name/version
+ * the pool gates on, and the hash counters; never thread or core counts,
+ * CPU, RAM, OS or host name (tests/test_rig_privacy_v12.js). */
 static void identity_json(char *out, size_t cap, const char *login, int threads) {
+  (void)threads;
   unsigned long long hashes = (unsigned long long)atomic_load_explicit(&g_hashes, memory_order_relaxed);
-  double elapsed = (double)(time(NULL) - (g_t0 ? g_t0 : time(NULL)));
-  if (elapsed < 1) elapsed = 1;
-  double hs = g_smooth_hs > 0 ? g_smooth_hs : (double)hashes / elapsed;
-  if (g_dest[0]) {
-    snprintf(out, cap,
-             "\"login\":\"%s\",\"dest\":\"%s\",\"threads\":%d,\"cpuCores\":%d,\"cpuThreads\":%d,"
-             "\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\","
-             "\"hashes\":%llu,\"hashrate\":%.0f",
-             login, g_dest, threads, g_cpu_cores, g_cpu_threads,
-             SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO,
-             hashes, hs);
-  } else {
-    snprintf(out, cap,
-             "\"login\":\"%s\",\"threads\":%d,\"cpuCores\":%d,\"cpuThreads\":%d,"
-             "\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\","
-             "\"hashes\":%llu,\"hashrate\":%.0f",
-             login, threads, g_cpu_cores, g_cpu_threads,
-             SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO,
-             hashes, hs);
-  }
+  snprintf(out, cap,
+           "\"login\":\"%s\",\"name\":\"%s\",\"client\":\"%s\",\"version\":\"%s\",\"algorithm\":\"%s\","
+           "\"hashes\":%llu,\"hashrate\":%.0f",
+           login, SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_VERSION, SHEAR_ALGO, hashes, hs10());
 }
 
 static int send_login(Conn *c, const char *login, int threads) {
@@ -796,6 +836,7 @@ static void apply_job(const char *line) {
 }
 
 static void install_live_job_locked(JobSnap job) {
+  g_job_at_ns = st_now_ns();
   g_job_gen++;
   job.gen = g_job_gen;
   job.have = 1;
@@ -857,7 +898,15 @@ static void apply_ack(const char *line) {
     }
     return;
   }
+  if (inflight > 0 && g_sent_ns) {
+    pthread_mutex_lock(&g_st_mu);
+    g_lat_last = (double)(st_now_ns() - g_sent_ns) / 1e6;
+    g_lat_sum += g_lat_last;
+    g_lat_n++;
+    pthread_mutex_unlock(&g_st_mu);
+  }
   if (strstr(low, "ok") && !err[0]) {
+    g_busy_backoff_ns = 0;
     if (inflight > 0) {
       g_accepted++;
       g_have_sent = 0;
@@ -873,7 +922,7 @@ static void apply_ack(const char *line) {
         double elapsed = (double)(time(NULL) - (g_t0 ? g_t0 : time(NULL)));
         if (elapsed < 1) elapsed = 1;
         char rate[32];
-        fmt_hashrate(g_smooth_hs > 0 ? g_smooth_hs : (double)h / elapsed, rate, sizeof(rate));
+        fmt_hashrate(hs10(), rate, sizeof(rate));
         int height = g_height, sb = 0, bb = 0;
         char jobId[80];
         snprintf(jobId, sizeof(jobId), "%s", g_last_job[0] ? g_last_job : "-");
@@ -915,12 +964,19 @@ static void apply_ack(const char *line) {
   if (strstr(low, "busy")) {
     if (inflight > 0) atomic_fetch_sub(&g_inflight, 1);
     if (g_have_sent) enqueue_front(&g_sent);
+    /* R41: back off before re-sending (100 ms doubling to 2 s). A soak saw
+     * 3910 busy replies in five minutes from an immediate re-send. */
+    g_busy_n++;
+    g_busy_backoff_ns = g_busy_backoff_ns ? g_busy_backoff_ns * 2 : 100000000ull;
+    if (g_busy_backoff_ns > 2000000000ull) g_busy_backoff_ns = 2000000000ull;
+    g_busy_until_ns = st_now_ns() + g_busy_backoff_ns;
     return;
   }
   if (strstr(low, "stale")) {
     if (inflight > 0) {
       g_stale++;
       atomic_fetch_sub(&g_inflight, 1);
+      note_reason(g_stl_r, 8, err[0] ? err : "stale");
     }
     g_have_sent = 0;
     if (g_color) fprintf(stderr, C_YEL "stale %s" C_RST "\n", err[0] ? err : (low[0] ? low : "stale"));
@@ -931,6 +987,7 @@ static void apply_ack(const char *line) {
     if (inflight > 0) {
       g_rejected++;
       atomic_fetch_sub(&g_inflight, 1);
+      note_reason(g_rej_r, 16, err[0] ? err : (low[0] ? low : "unknown"));
     }
     g_have_sent = 0;
     if (g_color) fprintf(stderr, C_RED "reject %s" C_RST "\n", err[0] ? err : (low[0] ? low : "unknown"));
@@ -1038,9 +1095,13 @@ static void *hash_worker(void *arg) {
       cpu = tid % (int)ncpu;
     }
     CPU_SET((unsigned)cpu, &set);
-    pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0 && tid < ST_MAXT) g_tstat[tid].cpu = cpu;
   }
 #endif
+  /* R41 accounting: every digest a worker computes is counted once, as
+   * checked (tested against the target) or discarded (its job changed
+   * while it hashed). busy_ns is the time inside the hash calls. */
+  ThreadStat *ts = &g_tstat[tid < ST_MAXT ? tid : ST_MAXT - 1];
   uint64_t n = g_origin + (uint64_t)tid;
   JobSnap job;
   memset(&job, 0, sizeof(job));
@@ -1060,6 +1121,12 @@ static void *hash_worker(void *arg) {
   memset(&key, 0, sizeof(key));
   memset(&primed_key, 0, sizeof(primed_key));
   while (!g_stop) {
+    /* --max-temp: a worker above the active count rests (counted as idle). */
+    if (tid >= atomic_load_explicit(&g_active_threads, memory_order_relaxed)) {
+      primed = 0;
+      usleep(100000);
+      continue;
+    }
     int seq = atomic_load_explicit(&g_job_seq, memory_order_acquire);
     unsigned stamp = atomic_load_explicit(&g_stamp_seq, memory_order_acquire);
     if (seq != last_gen || !job.have) {
@@ -1114,18 +1181,27 @@ static void *hash_worker(void *arg) {
     }
     shear_set_nonce(header, stamped);
     if (!primed) {
-      if (shear_hash_first(header) != 0) {
+      uint64_t t0 = st_now_ns();
+      int first_rc = shear_hash_first(header);
+      if (first_rc != 0) {
         unsigned char hash[32];
         shear_hash(header, hash);
+        atomic_fetch_add_explicit(&ts->busy_ns, st_now_ns() - t0, memory_order_relaxed);
+        atomic_fetch_add_explicit(&ts->hashes, 1, memory_order_relaxed);
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
-        if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-            && share_or_block_hit(hash, stamped)) {
-          enqueue_share(job.jobId, stamped, hash, job.gen, blu_enabled() ? &key : NULL);
-          have_key = 0;
+        if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen) {
+          atomic_fetch_add_explicit(&ts->checked, 1, memory_order_relaxed);
+          if (share_or_block_hit(hash, stamped)) {
+            enqueue_share(job.jobId, stamped, hash, job.gen, blu_enabled() ? &key : NULL);
+            have_key = 0;
+          }
+        } else {
+          atomic_fetch_add_explicit(&ts->discarded, 1, memory_order_relaxed);
         }
         n += (uint64_t)g_threads;
         continue;
       }
+      atomic_fetch_add_explicit(&ts->busy_ns, st_now_ns() - t0, memory_order_relaxed);
       primed = 1;
       primed_n = stamped;
       primed_key = key;
@@ -1134,13 +1210,18 @@ static void *hash_worker(void *arg) {
       continue;
     }
     unsigned char hash[32];
-    if (shear_hash_next(header, hash) != 0) {
+    uint64_t t1 = st_now_ns();
+    int next_rc = shear_hash_next(header, hash);
+    atomic_fetch_add_explicit(&ts->busy_ns, st_now_ns() - t1, memory_order_relaxed);
+    if (next_rc != 0) {
       primed = 0;
       continue;
     }
+    atomic_fetch_add_explicit(&ts->hashes, 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
-    if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
-        && share_or_block_hit(hash, primed_n)) {
+    int live_gen = atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen;
+    atomic_fetch_add_explicit(live_gen ? &ts->checked : &ts->discarded, 1, memory_order_relaxed);
+    if (live_gen && share_or_block_hit(hash, primed_n)) {
       unsigned char check[32];
       shear_hash(primed_hdr, check);
       if (memcmp(hash, check, 32) != 0) {
@@ -1201,7 +1282,8 @@ static void flush_shares(Conn *mainc) {
       g_dropped++;
       continue;
     }
-    if (atomic_load_explicit(&g_inflight, memory_order_acquire) >= IN_FLIGHT_MAX) {
+    if (atomic_load_explicit(&g_inflight, memory_order_acquire) >= IN_FLIGHT_MAX
+        || (g_busy_until_ns && st_now_ns() < g_busy_until_ns)) {
       enqueue_front(&s);
       return;
     }
@@ -1212,6 +1294,7 @@ static void flush_shares(Conn *mainc) {
     }
     if (wr == 0) {
       g_sent = s;
+      g_sent_ns = st_now_ns();
       g_have_sent = 1;
       atomic_fetch_add_explicit(&g_inflight, 1, memory_order_relaxed);
       g_submitted++;
@@ -1249,6 +1332,500 @@ static void print_config(void) {
          g_have_note ? "true" : "false",
          g_have_note ? g_dest20_hex : "",
          g_tls ? "true" : "false");
+}
+
+/* ------------------------------------------------------------------ R41 */
+/* Local rig banner, live stats, auto-tune and memory mode. Everything here
+ * is printed or written locally; nothing reaches the network (rig.h). */
+
+/* usleep() may refuse a second or more (BSD, macOS); this does not. */
+static void sleep_ms(long ms) {
+#if defined(_WIN32)
+  Sleep((DWORD)ms);
+#else
+  struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
+  while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
+#endif
+}
+
+static const char *PHONE_MSG =
+    "Mining on phones is not supported: it can overheat the device and damage the battery.\n"
+    "Please mine on a desktop, laptop or server.";
+
+static int cpu_node(int cpu) {
+#if defined(__linux__)
+  for (int nd = 0; nd < 64; nd++) {
+    char p[96];
+    snprintf(p, sizeof(p), "/sys/devices/system/cpu/cpu%d/node%d", cpu, nd);
+    if (access(p, F_OK) == 0) return nd;
+  }
+#else
+  (void)cpu;
+#endif
+  return -1;
+}
+
+static long long self_rss(void) {
+#if defined(__linux__)
+  FILE *f = fopen("/proc/self/status", "r");
+  if (!f) return -1;
+  char line[256];
+  long long kb = -1;
+  while (fgets(line, sizeof(line), f)) {
+    if (!strncmp(line, "VmRSS:", 6)) kb = atoll(line + 6);
+  }
+  fclose(f);
+  return kb >= 0 ? kb * 1024 : -1;
+#else
+  return -1;
+#endif
+}
+
+/* Print one line, masking host, home paths and IPs under --redact. */
+static void outl(FILE *out, const char *fmt, ...) {
+  char buf[2048];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  if (g_redact) rig_redact(buf, sizeof(buf), &g_rig);
+  fputs(buf, out);
+}
+
+static const char *pool_shown(void) { return g_redact ? "<pool>" : g_host; }
+
+static void build_flags(char *out, size_t n) {
+  snprintf(out, n, "%s, %s"
+#if defined(__x86_64__) && !defined(__AVX2__)
+           ", x86-64 baseline (RandomX features chosen at run time)"
+#elif defined(__AVX2__)
+           ", -march with AVX2 (local build)"
+#endif
+           , __DATE__,
+#if defined(__clang__)
+           "clang " __clang_version__
+#elif defined(__GNUC__)
+           "gcc " __VERSION__
+#else
+           "unknown compiler"
+#endif
+  );
+}
+
+static void print_banner(FILE *out) {
+  char hb[64];
+  outl(out, "---- ShearK-Miner %s rig (local only: none of this is sent to the pool) ----\n", SHEAR_VERSION);
+  /* rig_print redacts on its own. */
+  rig_print(out, &g_rig, g_redact);
+  char therm[160];
+  rig_thermal("", therm, sizeof(therm), NULL);
+  outl(out, "  %-15s %s\n", "thermal", therm);
+  outl(out, "  %-15s %s; JIT %s; AES %s; huge pages %s\n", "RandomX", g_mode_why,
+       strcmp(shear_hash_backend(), "interpreter") ? "on" : "off (interpreter)",
+       shear_hash_hard_aes() ? "hardware" : "software",
+       shear_hash_huge_pages() ? "hugetlb (reserved 2 MiB pages)"
+#if defined(__linux__)
+       : "none reserved; transparent huge pages asked for (madvise)");
+#else
+       : "not available (4K pages)");
+#endif
+  long long rss = self_rss();
+  if (rss > 0) snprintf(hb, sizeof(hb), "%.0f MiB resident", (double)rss / (1 << 20));
+  else snprintf(hb, sizeof(hb), "memory use unknown");
+  if (g_init_s >= 0) outl(out, "  %-15s %.2f s to build the cache%s; %s\n", "RandomX init", g_init_s,
+                          strcmp(shear_hash_backend(), "jit-full") ? "" : " and dataset", hb);
+  else outl(out, "  %-15s unknown; %s\n", "RandomX init", hb);
+  outl(out, "  %-15s %d used of %d usable (%s)\n", "threads", g_threads,
+       g_rig.allowed > 0 ? g_rig.allowed : g_cpu_threads, g_threads_why);
+  if (g_tune_table[0]) outl(out, "  %-15s %s\n", "auto-tune", g_tune_table);
+  for (int i = 0; i < g_threads && (g_verbose || i < 16); i++) {
+    int cpu = g_cpu_map_n > 0 ? g_cpu_map[i % g_cpu_map_n] : -1;
+    int nd = cpu >= 0 ? cpu_node(cpu) : -1;
+    char cs[16], ns[16];
+    snprintf(cs, sizeof(cs), cpu >= 0 ? "%d" : "unpinned", cpu);
+    snprintf(ns, sizeof(ns), nd >= 0 ? "%d" : "unknown", nd);
+    outl(out, "  thread %-8d CPU %s, NUMA node %s, own RandomX VM and 2 MiB scratchpad\n", i, cs, ns);
+  }
+  if (!g_verbose && g_threads > 16) outl(out, "  (%d more threads; --verbose lists them)\n", g_threads - 16);
+  char flags[256];
+  build_flags(flags, sizeof(flags));
+  char st[65];
+  int ok = shear_selftest(st);
+  outl(out, "  %-15s ShearK-Miner %s, %s; selftest %s %s\n", "version", SHEAR_VERSION, flags, ok ? "ok" : "FAIL", st);
+  outl(out, "------------------------------------------------------------------------------\n");
+  fflush(out);
+}
+
+static void fmt_rate_cell(double v, char *out, size_t n) {
+  if (v < 0) snprintf(out, n, "%9s", "-");
+  else snprintf(out, n, "%9.1f", v);
+}
+
+static void print_stats(FILE *out) {
+  char a[16], b[16], c[16];
+  double span = 0;
+  fmt_rate_cell(stats_rate(-1, 10, &span), a, sizeof(a));
+  fmt_rate_cell(stats_rate(-1, 60, NULL), b, sizeof(b));
+  fmt_rate_cell(stats_rate(-1, 900, NULL), c, sizeof(c));
+  double up = stats_uptime();
+  outl(out, "---- stats  uptime %dh%02dm%02ds  (local only) ----\n", (int)(up / 3600), ((int)up / 60) % 60, (int)up % 60);
+  outl(out, "  %-10s H/s  10s %s   60s %s   15m %s   threads %d active of %d\n", "hashrate", a, b, c,
+       atomic_load(&g_active_threads) < g_threads ? atomic_load(&g_active_threads) : g_threads, g_threads);
+  outl(out, "  %-10s %6s %9s %9s %9s %7s\n", "thread", "cpu", "10s H/s", "60s H/s", "15m H/s", "idle%");
+  int nt = stats_threads();
+  for (int i = 0; i < nt && (g_verbose || i < 32); i++) {
+    char r10[16], r60[16], r900[16], cpu[16];
+    fmt_rate_cell(stats_rate(i, 10, NULL), r10, sizeof(r10));
+    fmt_rate_cell(stats_rate(i, 60, NULL), r60, sizeof(r60));
+    fmt_rate_cell(stats_rate(i, 900, NULL), r900, sizeof(r900));
+    double idle = stats_idle(i, 60);
+    snprintf(cpu, sizeof(cpu), g_tstat[i].cpu >= 0 ? "%d" : "-", g_tstat[i].cpu);
+    if (idle >= 0) outl(out, "  %-10d %6s %s %s %s %7.2f\n", i, cpu, r10, r60, r900, idle);
+    else outl(out, "  %-10d %6s %s %s %s %7s\n", i, cpu, r10, r60, r900, "-");
+  }
+  char rej[256] = "", stl[160] = "";
+  pthread_mutex_lock(&g_st_mu);
+  for (int i = 0; i < 16 && g_rej_r[i].name[0]; i++) {
+    char part[64];
+    snprintf(part, sizeof(part), "%s%s %llu", rej[0] ? ", " : "", g_rej_r[i].name, (unsigned long long)g_rej_r[i].n);
+    if (strlen(rej) + strlen(part) < sizeof(rej)) strcat(rej, part);
+  }
+  for (int i = 0; i < 8 && g_stl_r[i].name[0]; i++) {
+    char part[64];
+    snprintf(part, sizeof(part), "%s%s %llu", stl[0] ? ", " : "", g_stl_r[i].name, (unsigned long long)g_stl_r[i].n);
+    if (strlen(stl) + strlen(part) < sizeof(stl)) strcat(stl, part);
+  }
+  double lat_last = g_lat_last, lat_mean = g_lat_n ? g_lat_sum / (double)g_lat_n : -1;
+  pthread_mutex_unlock(&g_st_mu);
+  outl(out, "  %-10s accepted %d   rejected %d%s%s%s   stale %d%s%s%s   dropped %llu   busy %llu   blocks %d\n", "shares",
+       g_accepted, g_rejected, rej[0] ? " (" : "", rej, rej[0] ? ")" : "", g_stale, stl[0] ? " (" : "", stl, stl[0] ? ")" : "",
+       (unsigned long long)g_dropped, (unsigned long long)g_busy_n, g_blocks);
+  int sb = 0, bb = 0, height = g_height;
+  char jobId[80] = "-";
+  pthread_mutex_lock(&g_job_mu);
+  if (g_have_main && g_main_job.have) {
+    snprintf(jobId, sizeof(jobId), "%s", g_main_job.jobId);
+    sb = g_main_job.share_bits;
+    bb = g_main_job.block_bits;
+    if (g_main_job.height > 0) height = g_main_job.height;
+  }
+  pthread_mutex_unlock(&g_job_mu);
+  double age = g_job_at_ns ? (double)(st_now_ns() - g_job_at_ns) / 1e9 : -1;
+  char lat[96];
+  if (lat_last >= 0) snprintf(lat, sizeof(lat), "last %.0f ms, mean %.0f ms over %llu", lat_last, lat_mean, (unsigned long long)g_lat_n);
+  else snprintf(lat, sizeof(lat), "no reply yet");
+  outl(out, "  %-10s %s height %d shareBits %d blockBits %d age %s   pool %s latency %s\n", "job", jobId, height, sb, bb,
+       age >= 0 ? (snprintf(c, sizeof(c), "%.0fs", age), c) : "-", pool_shown(), lat);
+  uint64_t computed = stats_sum_hashes(), reported = atomic_load(&g_hashes);
+  uint64_t checked = stats_sum_checked(), discarded = stats_sum_discarded();
+  int okid = computed == reported && computed == checked + discarded;
+  outl(out, "  %-10s computed %llu = reported %llu = checked %llu + discarded %llu  %s\n", "hashes",
+       (unsigned long long)computed, (unsigned long long)reported, (unsigned long long)checked,
+       (unsigned long long)discarded, okid ? "OK" : "MISMATCH");
+  char therm[160];
+  rig_thermal("", therm, sizeof(therm), NULL);
+  int tst = atomic_load(&g_thermal_state);
+  outl(out, "  %-10s %s%s\n", "thermal", therm,
+       g_max_temp > 0 ? (tst == 2 ? "; above --max-temp: 1 thread" : tst == 1 ? "; above --max-temp: half the threads" : "; under --max-temp")
+                      : "");
+  fflush(out);
+}
+
+static void write_stats_file(void) {
+  if (!g_stats_file) return;
+  char tmp[600];
+  snprintf(tmp, sizeof(tmp), "%s.tmp", g_stats_file);
+  FILE *f = fopen(tmp, "w");
+  if (!f) return;
+  fprintf(f, "{\"version\":\"%s\",\"uptime\":%.1f,\"threads\":%d,\"hs10\":%.2f,\"hs60\":%.2f,\"hs900\":%.2f,",
+          SHEAR_VERSION, stats_uptime(), g_threads, stats_rate(-1, 10, NULL), stats_rate(-1, 60, NULL), stats_rate(-1, 900, NULL));
+  fprintf(f, "\"accepted\":%d,\"rejected\":%d,\"stale\":%d,\"dropped\":%llu,\"busy\":%llu,\"blocks\":%d,",
+          g_accepted, g_rejected, g_stale, (unsigned long long)g_dropped, (unsigned long long)g_busy_n, g_blocks);
+  fprintf(f, "\"hashes\":{\"computed\":%llu,\"reported\":%llu,\"checked\":%llu,\"discarded\":%llu},\"perThread\":[",
+          (unsigned long long)stats_sum_hashes(), (unsigned long long)atomic_load(&g_hashes),
+          (unsigned long long)stats_sum_checked(), (unsigned long long)stats_sum_discarded());
+  for (int i = 0; i < stats_threads(); i++) {
+    fprintf(f, "%s{\"tid\":%d,\"cpu\":%d,\"hashes\":%llu,\"hs10\":%.2f,\"hs60\":%.2f,\"idle60\":%.2f}", i ? "," : "", i,
+            g_tstat[i].cpu, (unsigned long long)atomic_load(&g_tstat[i].hashes), stats_rate(i, 10, NULL), stats_rate(i, 60, NULL),
+            stats_idle(i, 60));
+  }
+  fprintf(f, "]}\n");
+  fclose(f);
+  remove(g_stats_file);
+  rename(tmp, g_stats_file);
+}
+
+#if !defined(_WIN32)
+static void on_usr1(int s) {
+  (void)s;
+  atomic_store(&g_print_req, 1);
+}
+#endif
+
+static void *stdin_thread(void *arg) {
+  (void)arg;
+  char line[64];
+  while (!g_stop && fgets(line, sizeof(line), stdin)) {
+    if (line[0] == 's' || line[0] == 'S') atomic_store(&g_print_req, 1);
+  }
+  return NULL;
+}
+
+static void *stats_thread(void *arg) {
+  (void)arg;
+  uint64_t last_print = st_now_ns(), last_file = 0, last_therm = 0;
+  while (!g_stop) {
+    sleep_ms(1000);
+    stats_tick();
+    double r = stats_rate(-1, 10, NULL);
+    atomic_store(&g_hs10_milli, r > 0 ? (uint_fast64_t)(r * 1000.0) : 0);
+    uint64_t now = st_now_ns();
+    if (atomic_exchange(&g_print_req, 0) || (g_stats_interval > 0 && now - last_print >= (uint64_t)g_stats_interval * 1000000000ull)) {
+      print_stats(stdout);
+      last_print = now;
+    }
+    if (g_stats_file && now - last_file >= 10000000000ull) {
+      write_stats_file();
+      last_file = now;
+    }
+    if (g_max_temp > 0 && now - last_therm >= 5000000000ull) {
+      last_therm = now;
+      char t[160];
+      double c = -1000;
+      rig_thermal("", t, sizeof(t), &c);
+      int st = atomic_load(&g_thermal_state), next = st;
+      if (c > -999) {
+        if (c >= g_max_temp + 3) next = 2;
+        else if (c >= g_max_temp) next = st > 1 ? 2 : 1;
+        else if (c <= g_max_temp - 5) next = 0;
+      }
+      if (next != st) {
+        atomic_store(&g_thermal_state, next);
+        int act = next == 0 ? g_threads : next == 1 ? (g_threads + 1) / 2 : 1;
+        atomic_store(&g_active_threads, act);
+        outl(stdout, "thermal %.1f C (--max-temp %.0f): %d of %d threads active\n", c, g_max_temp, act, g_threads);
+      }
+    }
+  }
+  return NULL;
+}
+
+/* RandomX mode: full (jit-full) needs the 260 MiB dataset plus the 128 MiB
+ * cache, twice while the next block's pair is built, and a scratchpad per
+ * thread. Light (jit) needs the cache only. */
+static const char *choose_backend(const char *asked, int explicit, int threads) {
+  long long need = 2LL * (260 + 128) * (1 << 20) + (long long)threads * (2 << 20) + (64LL << 20);
+  char avail[48];
+  if (g_rig.mem_avail > 0) snprintf(avail, sizeof(avail), "%.1f GiB available", (double)g_rig.mem_avail / (1 << 30));
+  else snprintf(avail, sizeof(avail), "available RAM unknown");
+  if (explicit) {
+    snprintf(g_mode_why, sizeof(g_mode_why), "%s (--backend given; %s)", asked, avail);
+    return asked;
+  }
+  if (g_rig.mem_avail > 0 && g_rig.mem_avail < need) {
+    snprintf(g_mode_why, sizeof(g_mode_why), "light, jit (full mode needs about %.2f GiB; %s)", (double)need / (1 << 30), avail);
+    return "jit";
+  }
+  snprintf(g_mode_why, sizeof(g_mode_why), "full, jit-full (needs about %.2f GiB; %s)", (double)need / (1 << 30), avail);
+  return asked;
+}
+
+/* --------------------------------------------------------------- tune */
+
+typedef struct {
+  int tid;
+  atomic_int *go;
+  atomic_int *stop;
+  atomic_int *count_on;
+  uint64_t count;
+} TuneArg;
+
+static void *tune_worker(void *arg) {
+  TuneArg *t = (TuneArg *)arg;
+#if defined(__linux__)
+  if (g_cpu_map_n > 0) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET((unsigned)g_cpu_map[t->tid % g_cpu_map_n], &set);
+    pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+  }
+#endif
+  unsigned char hdr[SHEAR_HEADER_LEN], out[32];
+  memset(hdr, 0, sizeof(hdr));
+  hdr[0] = 1;
+  uint64_t n = 1000 + (uint64_t)t->tid;
+  int primed = 0;
+  while (!atomic_load(t->go)) usleep(1000);
+  while (!atomic_load(t->stop)) {
+    shear_set_nonce(hdr, n);
+    n += 256;
+    if (!primed) {
+      primed = shear_hash_first(hdr) == 0;
+      continue;
+    }
+    if (shear_hash_next(hdr, out) != 0) {
+      primed = 0;
+      continue;
+    }
+    if (atomic_load_explicit(t->count_on, memory_order_relaxed)) t->count++;
+  }
+  return NULL;
+}
+
+static double tune_point(int k, double warm, double secs) {
+  pthread_t th[ST_MAXT];
+  TuneArg args[ST_MAXT];
+  atomic_int go = 0, stop = 0, on = 0;
+  if (k > ST_MAXT) k = ST_MAXT;
+  for (int i = 0; i < k; i++) {
+    args[i].tid = i;
+    args[i].go = &go;
+    args[i].stop = &stop;
+    args[i].count_on = &on;
+    args[i].count = 0;
+    pthread_create(&th[i], NULL, tune_worker, &args[i]);
+  }
+  atomic_store(&go, 1);
+  sleep_ms((long)(warm * 1000));
+  uint64_t t0 = st_now_ns();
+  atomic_store(&on, 1);
+  sleep_ms((long)(secs * 1000));
+  atomic_store(&on, 0);
+  uint64_t t1 = st_now_ns();
+  atomic_store(&stop, 1);
+  uint64_t total = 0;
+  for (int i = 0; i < k; i++) {
+    pthread_join(th[i], NULL);
+    total += args[i].count;
+  }
+  return (double)total / ((double)(t1 - t0) / 1e9);
+}
+
+static void tune_cache_path(char *out, size_t n) {
+  out[0] = 0;
+#if defined(_WIN32)
+  const char *ad = getenv("APPDATA");
+  if (ad) snprintf(out, n, "%s\\ShearK\\tune.txt", ad);
+#elif defined(__APPLE__)
+  const char *h = getenv("HOME");
+  if (h) snprintf(out, n, "%s/Library/Application Support/ShearK/tune.txt", h);
+#else
+  const char *x = getenv("XDG_CONFIG_HOME"), *h = getenv("HOME");
+  if (x && *x) snprintf(out, n, "%s/sheark/tune.txt", x);
+  else if (h) snprintf(out, n, "%s/.config/sheark/tune.txt", h);
+#endif
+}
+
+static void mkdir_parent(const char *path) {
+  char d[600];
+  snprintf(d, sizeof(d), "%s", path);
+  for (char *p = d + 1; *p; p++) {
+    if (*p == '/' || *p == '\\') {
+      char c = *p;
+      *p = 0;
+#if defined(_WIN32)
+      CreateDirectoryA(d, NULL);
+#else
+      mkdir(d, 0700);
+#endif
+      *p = c;
+    }
+  }
+}
+
+/* Which thread count is fastest on this device, measured, cached per
+ * device and re-measured when the hardware or limits change. */
+static int choose_threads(int dflt, const char *dflt_why) {
+  char key[512];
+  snprintf(key, sizeof(key), "v=%s|backend=%s|cpu=%s|logical=%d|usable=%d|quota=%.2f|l3=%lld|leave=%d",
+           SHEAR_VERSION, shear_hash_backend(), g_rig.cpu_model, g_rig.logical, g_rig.allowed, g_rig.quota_cpus,
+           g_rig.l3_total, g_leave_free);
+  char path[600];
+  tune_cache_path(path, sizeof(path));
+  if (g_tune_mode == 0 && path[0]) {
+    FILE *f = fopen(path, "r");
+    if (f) {
+      char line[1100];
+      while (fgets(line, sizeof(line), f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = 0;
+        if (strcmp(line, key) != 0) continue;
+        int t = atoi(tab + 1);
+        char *table = strchr(tab + 1, '\t');
+        if (t >= 1 && t <= dflt) {
+          fclose(f);
+          if (table) {
+            table++;
+            table[strcspn(table, "\n")] = 0;
+            snprintf(g_tune_table, sizeof(g_tune_table), "%s (cached)", table);
+          }
+          snprintf(g_threads_why, sizeof(g_threads_why), "auto-tune result for this device, cached; ceiling %s", dflt_why);
+          return t;
+        }
+      }
+      fclose(f);
+    }
+  }
+  int cand[4], nc = 0;
+  int phys = g_rig.physical;
+  if (phys > 0 && phys < dflt) cand[nc++] = phys;
+  if (dflt - 1 >= 1 && dflt - 1 != phys && dflt - 1 > (phys > 0 ? phys : 0)) cand[nc++] = dflt - 1;
+  cand[nc++] = dflt;
+  if (nc == 1 && dflt == 1) {
+    snprintf(g_threads_why, sizeof(g_threads_why), "%s (one usable CPU: nothing to tune)", dflt_why);
+    return 1;
+  }
+  outl(stdout, "auto-tune: measuring %d thread counts on this device (once; cached in %s)\n", nc, path[0] ? path : "nowhere");
+  double best = -1;
+  int best_k = dflt;
+  double rates[4];
+  for (int i = 0; i < nc; i++) {
+    rates[i] = tune_point(cand[i], 2.0, 5.0);
+    outl(stdout, "auto-tune: %d threads %.1f H/s\n", cand[i], rates[i]);
+  }
+  for (int i = 0; i < nc; i++) {
+    /* Prefer fewer threads unless more are at least 1.5% faster. */
+    if (best < 0 || rates[i] > best * 1.015) {
+      best = rates[i];
+      best_k = cand[i];
+    }
+  }
+  g_tune_table[0] = 0;
+  for (int i = 0; i < nc; i++) {
+    char part[64];
+    snprintf(part, sizeof(part), "%s%d thr %.1f H/s%s", i ? ", " : "", cand[i], rates[i], cand[i] == best_k ? " *" : "");
+    if (strlen(g_tune_table) + strlen(part) < sizeof(g_tune_table)) strcat(g_tune_table, part);
+  }
+  snprintf(g_threads_why, sizeof(g_threads_why), "auto-tune measured fastest; ceiling %s", dflt_why);
+  if (path[0]) {
+    mkdir_parent(path);
+    /* Keep other devices' lines; replace this key's. */
+    char *keep = NULL;
+    size_t keep_n = 0;
+    FILE *f = fopen(path, "r");
+    if (f) {
+      char line[1100];
+      while (fgets(line, sizeof(line), f)) {
+        if (!strncmp(line, key, strlen(key)) && line[strlen(key)] == '\t') continue;
+        size_t l = strlen(line);
+        char *nk = realloc(keep, keep_n + l + 1);
+        if (!nk) break;
+        keep = nk;
+        memcpy(keep + keep_n, line, l + 1);
+        keep_n += l;
+      }
+      fclose(f);
+    }
+    f = fopen(path, "w");
+    if (f) {
+      if (keep) fputs(keep, f);
+      fprintf(f, "%s\t%d\t%s\n", key, best_k, g_tune_table);
+      fclose(f);
+    }
+    free(keep);
+  }
+  return best_k;
 }
 
 static int mine_once(void) {
@@ -1297,32 +1874,8 @@ static int mine_once(void) {
       (void)send_stats(&mainc, g_login, g_threads);
       last_stats = now;
       uint64_t h = atomic_load_explicit(&g_hashes, memory_order_relaxed);
-      if (g_rate_t0 == 0) {
-        g_rate_h0 = h;
-        g_rate_t0 = now;
-      }
-      double dt = (double)(now - g_rate_t0);
-      if (dt >= RATE_MIN_DT) {
-        if (h > g_rate_h0) {
-          double inst = (double)(h - g_rate_h0) / dt;
-          if (g_smooth_hs > 0 && inst < g_smooth_hs * RATE_HOLD_FRAC) {
-            /* Blockfound RandomX K pause / between-block quiet — hold paint. */
-            g_rate_h0 = h;
-            g_rate_t0 = now;
-          } else {
-            if (g_smooth_hs <= 0) g_smooth_hs = inst;
-            else {
-              double alpha = 1.0 - exp(-dt / 8.0);
-              g_smooth_hs += alpha * (inst - g_smooth_hs);
-            }
-            g_rate_h0 = h;
-            g_rate_t0 = now;
-          }
-        }
-        /* No hashes this tick: do not reset t0 (that makes the next 2s a burst). */
-      }
       char rate[32];
-      fmt_hashrate(g_smooth_hs, rate, sizeof(rate));
+      fmt_hashrate(hs10(), rate, sizeof(rate));
       char jobId[80] = "-";
       int sb = 0, bb = 0, height = g_height;
       pthread_mutex_lock(&g_job_mu);
@@ -1367,6 +1920,15 @@ static int mine_once(void) {
 }
 
 int main(int argc, char **argv) {
+  /* Russell 28 Oct: phones are refused before anything else runs: no
+   * RandomX, no dataset, no socket. Local signals only, no override. */
+  {
+    char why[512];
+    if (rig_is_phone("", NULL, why, sizeof(why))) {
+      fprintf(stderr, "%s\n(detected: %s)\n", PHONE_MSG, why);
+      return SHEARK_EXIT_PHONE;
+    }
+  }
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--stamp") == 0 && i + 1 < argc) {
       int bits = atoi(argv[++i]);
@@ -1380,11 +1942,16 @@ int main(int argc, char **argv) {
   int do_cfg = 0;
   int bench_secs = 0;
   const char *backend_arg = "jit-full";
+  int backend_explicit = 0;
+  int do_rig = 0;
   const char *verify_hex = NULL;
   int want_help = 0;
   device_inventory();
   for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) backend_arg = argv[++i];
+    if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+      backend_arg = argv[++i];
+      backend_explicit = 1;
+    }
     if (strcmp(argv[i], "--blu-vector") == 0 && i + 3 < argc) {
       /* R28 known-answer check against crypto/blunote.js: one key from a given r, and its binding. */
       BluKey k;
@@ -1480,7 +2047,33 @@ int main(int argc, char **argv) {
     } else if (strcmp(argv[i], "--notls") == 0) {
       g_cleartext_url = 1;
       g_tls = 0;
+    } else if (strcmp(argv[i], "--rig") == 0) {
+      do_rig = 1;
+    } else if (strcmp(argv[i], "--redact") == 0) {
+      g_redact = 1;
+    } else if (strcmp(argv[i], "--verbose") == 0) {
+      g_verbose = 1;
+    } else if (strcmp(argv[i], "--stats-interval") == 0 && i + 1 < argc) {
+      g_stats_interval = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--stats-file") == 0 && i + 1 < argc) {
+      g_stats_file = argv[++i];
+    } else if (strcmp(argv[i], "--leave-free") == 0 && i + 1 < argc) {
+      g_leave_free = atoi(argv[++i]);
+      if (g_leave_free < 0) g_leave_free = 0;
+    } else if (strcmp(argv[i], "--retune") == 0) {
+      g_tune_mode = 1;
+    } else if (strcmp(argv[i], "--no-tune") == 0) {
+      g_tune_mode = -1;
+    } else if (strcmp(argv[i], "--max-temp") == 0 && i + 1 < argc) {
+      g_max_temp = atof(argv[++i]);
     }
+  }
+  g_threads_user = g_threads;
+  rig_detect(&g_rig, "", NULL);
+  /* Leave a CPU for the user's own work on a desktop or laptop. */
+  if (g_leave_free < 0) {
+    int desk = !strcmp(g_rig.device_type, "desktop") || !strcmp(g_rig.device_type, "laptop");
+    g_leave_free = desk && g_rig.allowed >= 4 ? 1 : 0;
   }
   /* Flag order must not matter. Refuse before the dataset alloc so a bad URL
      does not spend seconds on jit-full. print-config exits before mining. */
@@ -1492,9 +2085,25 @@ int main(int argc, char **argv) {
     fprintf(stderr, "requireTls: refusing cleartext\n");
     return 2;
   }
+  {
+    char why[256];
+    int ceiling = rig_default_threads(&g_rig, g_leave_free, why, sizeof(why));
+    if (!do_selftest && !verify_hex) backend_arg = choose_backend(backend_arg, backend_explicit, g_threads ? g_threads : ceiling);
+  }
+  uint64_t init0 = st_now_ns();
   if (shear_hash_set_backend(backend_arg) != 0) {
     fprintf(stderr, "unknown or unavailable --backend %s; using %s\n", backend_arg,
             shear_hash_backend());
+  }
+  g_init_s = (double)(st_now_ns() - init0) / 1e9;
+  if (do_rig) {
+    char why[256];
+    int t = g_threads > 0 ? g_threads : rig_default_threads(&g_rig, g_leave_free, why, sizeof(why));
+    g_threads = t;
+    if (g_threads_user > 0) snprintf(g_threads_why, sizeof(g_threads_why), "user override --threads %d", g_threads_user);
+    else snprintf(g_threads_why, sizeof(g_threads_why), "%s (mining auto-tunes from here)", why);
+    print_banner(stdout);
+    return 0;
   }
   if (do_selftest) {
     char hex[65];
@@ -1524,7 +2133,13 @@ int main(int argc, char **argv) {
     printf("digest %s\nk %s\n", digest, khex);
     return 0;
   }
-  if (g_threads < 1) g_threads = g_auto_threads > 0 ? g_auto_threads : 1;
+  if (g_threads < 1) {
+    char why[256];
+    g_threads = rig_default_threads(&g_rig, g_leave_free, why, sizeof(why));
+    snprintf(g_threads_why, sizeof(g_threads_why), "%s", why);
+  } else {
+    snprintf(g_threads_why, sizeof(g_threads_why), "user override --threads %d", g_threads);
+  }
   if (do_cfg) {
     if (g_user && build_login(g_user) > 0) init_note_commit();
     print_config();
@@ -1618,10 +2233,23 @@ int main(int argc, char **argv) {
       SetConsoleMode(hout, mode | 0x0004);
   }
 #endif
+  /* Threads: the user's --threads, else the measured best for this device
+   * (auto-tune, cached), never above what the CPUs, quota and L3 allow. */
+  if (g_threads_user <= 0) {
+    char why[256];
+    int ceiling = rig_default_threads(&g_rig, g_leave_free, why, sizeof(why));
+    if (g_tune_mode >= 0 && strcmp(shear_hash_backend(), "interpreter") != 0) g_threads = choose_threads(ceiling, why);
+    else {
+      g_threads = ceiling;
+      snprintf(g_threads_why, sizeof(g_threads_why), "%s (%s)", why, g_tune_mode < 0 ? "--no-tune" : "interpreter: not tuned");
+    }
+  }
+  atomic_store(&g_active_threads, g_threads);
   printf("ShearK-Miner %s (ShearHash-v3 light)\n", SHEAR_VERSION);
-  printf("%s://%s:%d user=%s dest=%s threads=%d coin=SHE algo=%s backend=%s hugePages=%s\n",
+  print_banner(stdout);
+  outl(stdout, "%s://%s:%d user=%s dest=%s threads=%d coin=SHE algo=%s backend=%s hugePages=%s\n",
          g_tls ? "stratum+ssl" : "stratum+tcp",
-         g_host, g_port, g_login, g_dest[0] ? g_dest : "-", g_threads, SHEAR_ALGO,
+         pool_shown(), g_port, g_login, g_dest[0] ? g_dest : "-", g_threads, SHEAR_ALGO,
          shear_hash_backend(), shear_hash_huge_pages() ? "yes" : "no");
   printf("device cpuCores=%d cpuThreads=%d", g_cpu_cores, g_cpu_threads);
   if (g_cpu_map_n > 0) {
@@ -1635,6 +2263,23 @@ int main(int argc, char **argv) {
   int n = g_threads;
   pthread_t *th = calloc((size_t)n, sizeof(pthread_t));
   if (!th) return 1;
+  stats_init(n);
+  {
+    pthread_t st;
+    if (pthread_create(&st, NULL, stats_thread, NULL) == 0) pthread_detach(st);
+#if !defined(_WIN32)
+    signal(SIGUSR1, on_usr1);
+    if (isatty(0)) {
+      pthread_t in;
+      if (pthread_create(&in, NULL, stdin_thread, NULL) == 0) pthread_detach(in);
+    }
+#else
+    if (_isatty(0)) {
+      pthread_t in;
+      if (pthread_create(&in, NULL, stdin_thread, NULL) == 0) pthread_detach(in);
+    }
+#endif
+  }
   for (int i = 0; i < n; i++) {
     if (pthread_create(&th[i], NULL, hash_worker, (void *)(intptr_t)i) != 0) {
       fprintf(stderr, "thread start failed\n");

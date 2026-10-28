@@ -82,7 +82,7 @@ ifneq ($(OPENSSL_PREFIX),)
   LIBS += -L$(OPENSSL_PREFIX)/lib
 endif
 
-OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o src/stratum_tls.o src/blunote.o
+OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o src/stratum_tls.o src/blunote.o src/rig.o src/stats.o
 
 .PHONY: all clean selftest randomx
 
@@ -99,7 +99,7 @@ RXSRC := $(wildcard $(RX)/CMakeLists.txt $(RX)/src/*.c $(RX)/src/*.cpp $(RX)/src
 $(RXLIB): $(RXSRC)
 	SHEARK_NATIVE=$(SHEARK_NATIVE) RANDOMX_BUILD_DIR=$(RXBUILD) bash ../scripts/randomx_build.sh $(CMAKE_GEN)
 
-src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h
+src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h src/rig.h src/stats.h
 	$(CC) $(X86_BASELINE) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BIN): $(RXLIB) $(OBJS)

@@ -203,16 +203,16 @@ describe('ShearK-Miner', () => {
     assert.match(src, /primed_hdr/);
     assert.match(src, /hash_next returns the previous header's digest/);
     assert.match(src, /reject %s/);
-    assert.match(src, /g_smooth_hs/);
+    // R41 (Russell 28 Oct: "never smooth or paint a number"): the hash rate is
+    // counted hashes over a 10 s wall-time window; the EMA and its hold
+    // across a K pause (d4856e1a) are gone.
+    assert.match(src, /stats_rate\(-1, 10, NULL\)/);
+    assert.equal(/g_smooth_hs|RATE_HOLD_FRAC/.test(src), false);
     assert.match(src, /promote_pending_job/);
     assert.match(src, /g_have_pending/);
     assert.match(hashc, /shear_prepare/);
     assert.match(hashc, /shear_commit_epoch/);
-    assert.match(src, /Blockfound RandomX K pause/);
-    assert.match(src, /RATE_HOLD_FRAC 0\.9/);
-    assert.match(src, /RATE_MIN_DT 2/);
-    assert.match(src, /g_rate_t0 = now/);
-    assert.equal(/g_smooth_hs \* 0\.5/.test(src), false);
+    assert.equal(/hold paint/.test(src), false);
     {
       const bench = src.slice(src.indexOf('if (bench_secs > 0)'));
       assert.match(bench, /shear_hash_first\(header\)/);
