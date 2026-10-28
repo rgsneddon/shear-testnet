@@ -180,9 +180,9 @@ static void usage(FILE *out) {
   fprintf(out,
           "ShearK-Miner %s (ShearHash-v3 light)\n"
           "Hashes the 128-byte Shear header. One proven share-hash mints units.\n\n"
-          "  --user she1…|ssa1….worker   required (not shear1)\n"
-          "  --dest ssa1…                owned payout dest (she1 login)\n"
-          "  --blu B||Y (128 hex)        BluNotes mining address; shares carry one-time keys\n"
+          "  --user WORKER               required: a worker name (e.g. rig1), never an address\n"
+          "  --blu shm1…                 required: your wallet's mining address (This wallet mines).\n"
+          "                              It stays on this rig; each share carries a fresh one-time key.\n"
           "  --solo                      your own node's solo stratum: login sends the --blu\n"
           "                              address so the node pays its pot to a one-time key.\n"
           "                              Never use it with a public pool.\n"
@@ -233,26 +233,40 @@ static int valid_worker(const char *w) {
   return 1;
 }
 
-static int is_shear_login(const char *a, size_t n) {
-  if (n < 8) return 0;
-  if (n >= 6 && strncmp(a, "shear1", 6) == 0) return 0;
-  if (!(strncmp(a, "she1", 4) == 0 || strncmp(a, "ssa1", 4) == 0)) return 0;
+/* Portable case-insensitive prefix test (no strncasecmp on every toolchain). */
+static int prefix_ci(const char *s, size_t n, const char *pre) {
+  size_t k = strlen(pre);
+  if (n < k) return 0;
+  for (size_t i = 0; i < k; i++) if (tolower((unsigned char)s[i]) != pre[i]) return 0;
   return 1;
 }
 
-static int build_login(const char *user) {
-  if (!user) return 0;
-  const char *dot = strchr(user, '.');
-  size_t alen = dot ? (size_t)(dot - user) : strlen(user);
-  if (!is_shear_login(user, alen)) return 0;
-  const char *worker = DEFAULT_WORKER;
-  char wbuf[40];
-  if (dot) {
-    snprintf(wbuf, sizeof(wbuf), "%s", dot + 1);
-    if (!valid_worker(wbuf)) return 0;
-    worker = wbuf;
+static int all_hex(const char *s, size_t n) {
+  for (size_t i = 0; i < n; i++) if (hex_nibble(s[i]) < 0) return 0;
+  return 1;
+}
+
+/* R28 option 2 (Russell 28 Oct): true when any dot-separated part of `s`
+ * names a wallet (ssa1, she1, shear1, shm1, or a raw 32/64-byte hex key).
+ * Such a login would hand the pool something linkable, so it is refused. */
+static int names_address(const char *s) {
+  const char *p = s;
+  while (p && *p) {
+    const char *dot = strchr(p, '.');
+    size_t n = dot ? (size_t)(dot - p) : strlen(p);
+    if (prefix_ci(p, n, "ssa1") || prefix_ci(p, n, "she1") || prefix_ci(p, n, "shm1") || prefix_ci(p, n, "shear1")) return 1;
+    if ((n == 64 || n == 128) && all_hex(p, n)) return 1;
+    p = dot ? dot + 1 : NULL;
   }
-  snprintf(g_login, sizeof(g_login), "%.*s.%s", (int)alen, user, worker);
+  return 0;
+}
+
+/* The pool login is a worker name only. 1 ok, 0 not a worker name, -1 an address. */
+static int build_login(const char *user) {
+  if (!user || !*user) return 0;
+  if (names_address(user)) return -1;
+  if (!valid_worker(user)) return 0;
+  snprintf(g_login, sizeof(g_login), "%s", user);
   g_user = g_login;
   return 1;
 }
@@ -303,6 +317,51 @@ static int dest20_from_ssa1(const char *addr, unsigned char out[20]) {
     }
   }
   if (got != 20) return -1;
+  return 0;
+}
+
+/* R28 mining address: shm1… is bech32 (the ssa checksum) of B‖Y. Writes the
+ * 128-hex form for blu_set_address. 0 ok; -1 bad prefix, character, checksum
+ * or length. Lowercase only, as the wallet prints it. */
+static int shm1_to_hex(const char *addr, char hex[129]) {
+  if (!addr || strncmp(addr, "shm1", 4) != 0) return -1;
+  const char *body = addr + 4;
+  size_t blen = strlen(body);
+  if (blen != 1 + 103 + 6) return -1;
+  unsigned char vals[110];
+  for (size_t i = 0; i < blen; i++) {
+    const char *p = body[i] ? strchr(BECH32_CS, body[i]) : NULL;
+    if (!p) return -1;
+    vals[i] = (unsigned char)(p - BECH32_CS);
+  }
+  unsigned char chkbuf[8 + 110];
+  size_t n = 0;
+  const char *hrp = "shm";
+  for (size_t i = 0; hrp[i]; i++) chkbuf[n++] = (unsigned char)(hrp[i] >> 5);
+  chkbuf[n++] = 0;
+  for (size_t i = 0; hrp[i]; i++) chkbuf[n++] = (unsigned char)(hrp[i] & 31);
+  memcpy(chkbuf + n, vals, blen);
+  n += blen;
+  if (bech32_polymod(chkbuf, n) != 1) return -1;
+  if (vals[0] != 0) return -1;
+  unsigned char out[64];
+  unsigned acc = 0, bits = 0, got = 0;
+  for (size_t i = 1; i < blen - 6; i++) {
+    acc = (acc << 5) | vals[i];
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      if (got >= 64) return -1;
+      out[got++] = (unsigned char)((acc >> bits) & 0xff);
+    }
+  }
+  if (got != 64 || (acc & ((1u << bits) - 1)) != 0) return -1;
+  static const char *hx = "0123456789abcdef";
+  for (int i = 0; i < 64; i++) {
+    hex[i * 2] = hx[out[i] >> 4];
+    hex[i * 2 + 1] = hx[out[i] & 0xf];
+  }
+  hex[128] = 0;
   return 0;
 }
 
@@ -1387,14 +1446,30 @@ int main(int argc, char **argv) {
       return 2;
     } else if (strcmp(argv[i], "--user") == 0 && i + 1 < argc) {
       g_user = argv[++i];
-    } else if (strcmp(argv[i], "--dest") == 0 && i + 1 < argc) {
-      snprintf(g_dest, sizeof(g_dest), "%s", argv[++i]);
+    } else if (strcmp(argv[i], "--dest") == 0) {
+      /* R28 option 2: nothing names a payee to a pool. */
+      fprintf(stderr, "--dest is retired: R28 pays one-time keys of your --blu mining address, never a dest.\n");
+      return 2;
     } else if (strcmp(argv[i], "--blu") == 0 && i + 1 < argc) {
-      if (blu_init() != 0 || blu_set_address(argv[++i]) != 0) {
-        fprintf(stderr, "--blu: need 128 hex chars, the mining address B||Y (two ristretto255 points)\n");
+      const char *addr = argv[++i];
+      char hex[129];
+      if (strncmp(addr, "shm1", 4) == 0) {
+        if (shm1_to_hex(addr, hex) != 0) {
+          fprintf(stderr, "--blu: the shm1 mining address has a bad checksum or length. Copy it again from the wallet.\n");
+          return 2;
+        }
+      } else if (strcmp(SHEAR_MAGIC, "shear-v1") != 0 && strlen(addr) == 128 && all_hex(addr, 128)) {
+        /* Raw hex has no checksum; accepted off mainnet only. */
+        snprintf(hex, sizeof(hex), "%s", addr);
+      } else {
+        fprintf(stderr, "--blu: need the shm1… mining address from the wallet (\"This wallet mines\").\n");
         return 2;
       }
-      snprintf(g_blu_addr, sizeof(g_blu_addr), "%s", argv[i]);
+      if (blu_init() != 0 || blu_set_address(hex) != 0) {
+        fprintf(stderr, "--blu: the mining address is not two valid ristretto255 points. Copy it again from the wallet.\n");
+        return 2;
+      }
+      snprintf(g_blu_addr, sizeof(g_blu_addr), "%s", addr);
     } else if (strcmp(argv[i], "--solo") == 0) {
       g_solo = 1;
     } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
@@ -1450,12 +1525,8 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (g_threads < 1) g_threads = g_auto_threads > 0 ? g_auto_threads : 1;
-  if (g_dest[0] && strncmp(g_dest, "ssa1", 4) != 0) {
-    fprintf(stderr, "dest must be ssa1... (owned payout dest)\n");
-    return 2;
-  }
   if (do_cfg) {
-    if (g_user && build_login(g_user)) init_note_commit();
+    if (g_user && build_login(g_user) > 0) init_note_commit();
     print_config();
     return 0;
   }
@@ -1500,36 +1571,23 @@ int main(int argc, char **argv) {
     usage(stderr);
     return 2;
   }
-  if (!build_login(g_user)) {
-    fprintf(stderr, "user must be she1... or ssa1....worker (not shear1)\n");
-    fprintf(stderr, "Copy dest from the wallet. An incomplete ssa1 (truncated, missing checksum) is not a login.\n");
-    return 2;
-  }
   {
-    char id[320];
-    snprintf(id, sizeof(id), "%s", g_login);
-    char *dot = strchr(id, '.');
-    if (dot) *dot = 0;
-    if (strncmp(id, "ssa1", 4) == 0) {
-      unsigned char d20[20];
-      if (dest20_from_ssa1(id, d20) != 0) {
-        fprintf(stderr, "ssa1 dest is incomplete or checksum-failed (%zu chars).\n", strlen(id));
-        fprintf(stderr, "Copy dest from the Shear wallet (Copy dest). Do not paste she1. Do not truncate ssa1.\n");
-        fprintf(stderr, "Typical dest20 ssa1 is about 42 characters. Dest20||B is longer and still valid.\n");
-        return 2;
-      }
-    } else if (strncmp(id, "she1", 4) == 0 && !g_dest[0]) {
-      fprintf(stderr, "warning: she1 login has no --dest ssa1. Mining continues; auto-payout cannot send until an owned Copy dest is set.\n");
-      fprintf(stderr, "Pool still books your work under the miner tag. Add --dest ssa1… from the wallet.\n");
+    /* R28 option 2: the login is a worker name; the mining address stays here. */
+    int lr = build_login(g_user);
+    if (lr < 0) {
+      fprintf(stderr, "--user is a worker name (e.g. rig1). An address there would be sent to the pool;\n");
+      fprintf(stderr, "your wallet's mining address goes in --blu, and the pool never sees it.\n");
+      return 2;
     }
-    if (g_dest[0]) {
-      unsigned char d20[20];
-      if (dest20_from_ssa1(g_dest, d20) != 0) {
-        fprintf(stderr, "ssa1 --dest is incomplete or checksum-failed (%zu chars).\n", strlen(g_dest));
-        fprintf(stderr, "Copy dest from the Shear wallet. Do not truncate.\n");
-        return 2;
-      }
+    if (lr == 0) {
+      fprintf(stderr, "--user: a worker name of 1-32 letters, digits, _ or - (e.g. rig1)\n");
+      return 2;
     }
+  }
+  if (!blu_enabled()) {
+    fprintf(stderr, "--blu YOUR_MINING_ADDRESS is required: without it a pool refuses every share (need_key).\n");
+    fprintf(stderr, "Wallet: turn on \"This wallet mines\" and copy the Mining address (shm1...).\n");
+    return 2;
   }
   init_note_commit();
 #if defined(_WIN32)

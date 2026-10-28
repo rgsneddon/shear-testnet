@@ -708,8 +708,8 @@ export function encodeWireBlock(b) {
     hash: Buffer.from(b.hash).toString('hex'),
     height: b.height,
     txs: (b.txs || []).map(compactTx),
-    samples: b.samples,
-    miner: b.miner,
+    // R28: samples and miner are never on the wire (blunote_samples,
+    // blunote_miner), so a relay cannot add one to a valid block.
     sharePacked: packShareBatchBytes(b.shareBatch || []).toString('hex'),
     hashCreditPacked: Array.isArray(b.hashCredits) ? packHashCreditBytes(b.hashCredits).toString('hex') : '',
     ...(Array.isArray(b.hashSpill) && b.hashSpill.length
@@ -739,8 +739,6 @@ export function decodeWireBlock(w) {
     hash: w.hash != null ? wireBytes(w.hash) : undefined,
     height: w.height,
     txs: (w.txs || []).map((tx) => reviveTx(reviveDeep(tx))),
-    samples: reviveDeep(w.samples),
-    miner: w.miner,
     shareBatch: w.sharePacked
       ? unpackShareBatchBytes(Buffer.from(String(w.sharePacked), 'hex'))
       : (Array.isArray(w.shareBatch) ? w.shareBatch : []),

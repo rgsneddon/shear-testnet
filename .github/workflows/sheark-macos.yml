@@ -1,38 +1,105 @@
-# ShearK-Miner macOS pack. No Mac host has packed or checked this zip yet
-# (Apple work is tracked in the Desktop HANDOFF), so it runs only when
-# started by hand and never appears as a skipped check on a PR.
+# ShearK-Miner macOS pack: universal arm64 + x86_64, unsigned (ad-hoc).
+# Each slice is built, selftested and bundled on its own architecture's
+# runner (no cross-compile), joined with lipo, and the universal zip is
+# selftested again on both. Developer ID signing, hardened runtime,
+# notarisation and stapling run on Russell's Mac with his own certificate
+# (Desktop HANDOFF-Apple-R28-libsodium.md); no Apple credential is ever in CI.
+# Runs on PRs that touch the miner or its packs (path-filtered, so it never
+# shows as a skipped check elsewhere), and by hand once it is on main.
 name: sheark-macos
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'sheark-miner/src/**'
+      - 'sheark-miner/Makefile'
+      - 'sheark-miner/pack/**'
+      - '.github/workflows/sheark-macos.yml'
 permissions:
   contents: read
 
 jobs:
-  macos:
-    runs-on: macos-latest
+  slice:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Pack version
         run: echo "SHEARK_VER=$(sed -n 's/^#define SHEAR_VERSION "\([^"]*\)".*/\1/p' sheark-miner/src/shear_hash.h)" >> "$GITHUB_ENV"
-      - name: Build, selftest, and pack the macOS zip
+      - name: Build, selftest, and pack the ${{ matrix.arch }} slice
         run: |
           set -euo pipefail
           test -n "$SHEARK_VER"
+          test "$(uname -m)" = "${{ matrix.arch }}"
           brew install openssl cmake libsodium
           PREFIX="$(brew --prefix openssl)"
           SODIUM="$(brew --prefix libsodium)"
           test -f "$PREFIX/include/openssl/ssl.h"
           test -f "$SODIUM/include/sodium.h"
           make -C sheark-miner OPENSSL_PREFIX="$PREFIX" SODIUM_PREFIX="$SODIUM"
+          test "$(lipo -archs sheark-miner/ShearK-Miner)" = "${{ matrix.arch }}"
           bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
           # R41: every backend gives the 64 golden digests of the R28 base.
           node --test sheark-miner/tests/test_golden_corpus_v12.js
           python3 sheark-miner/pack/zip_unix.py macos
           bash sheark-miner/pack/smoke_zip.sh "dist/ShearK-Miner-${SHEARK_VER}-macos.zip"
+          mv "dist/ShearK-Miner-${SHEARK_VER}-macos.zip" "dist/ShearK-Miner-${SHEARK_VER}-macos-${{ matrix.arch }}.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: ShearK-Miner-${{ env.SHEARK_VER }}-macos
-          path: dist/ShearK-Miner-${{ env.SHEARK_VER }}-macos.zip
+          name: slice-${{ matrix.arch }}
+          path: dist/ShearK-Miner-${{ env.SHEARK_VER }}-macos-${{ matrix.arch }}.zip
           if-no-files-found: error
 
+  universal:
+    needs: slice
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack version
+        run: echo "SHEARK_VER=$(sed -n 's/^#define SHEAR_VERSION "\([^"]*\)".*/\1/p' sheark-miner/src/shear_hash.h)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: slice-*
+          path: slices
+          merge-multiple: true
+      - name: Join with lipo and selftest the universal zip (arm64)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          OUT="dist/ShearK-Miner-${SHEARK_VER}-macos-universal.zip"
+          python3 sheark-miner/pack/lipo_macos.py \
+            "slices/ShearK-Miner-${SHEARK_VER}-macos-arm64.zip" \
+            "slices/ShearK-Miner-${SHEARK_VER}-macos-x86_64.zip" "$OUT"
+          bash sheark-miner/pack/smoke_zip.sh "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShearK-Miner-${{ env.SHEARK_VER }}-macos-universal
+          path: dist/ShearK-Miner-${{ env.SHEARK_VER }}-macos-universal.zip
+          if-no-files-found: error
+
+  universal-x86_64:
+    needs: universal
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack version
+        run: echo "SHEARK_VER=$(sed -n 's/^#define SHEAR_VERSION "\([^"]*\)".*/\1/p' sheark-miner/src/shear_hash.h)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: ShearK-Miner-${{ env.SHEARK_VER }}-macos-universal
+          path: dist
+      - name: Selftest the universal zip on x86_64
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          bash sheark-miner/pack/smoke_zip.sh "dist/ShearK-Miner-${SHEARK_VER}-macos-universal.zip"

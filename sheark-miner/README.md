@@ -12,23 +12,23 @@ Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache). TLS-awar
 - Localhost solo: `stratum+tcp://127.0.0.1:1111` (cleartext only when you ask for it)
 - Header: 128 bytes. Light mode only. Do not recut Shear-Miner **1.1** / **1.0**. Submit includes the ShearHash-v3 digest.
 
-Paid login is an owned `ssa1` dest (wallet **Copy dest**). Copy dest is dest20-sized (~43 chars); long dest20||B still verifies. 2.3 dest-binds both; 2.1 fails the long form (`low_diff`). Each hasher dest that produced proven work receives its own hash bonus on the next sealed block. Share floor is dest-bound (`sha256("shear-share-dest-v1" || rx || noteCommit)`), so a pool cannot restamp dest on a stolen nonce. The 128-byte job is unchanged.
+The login is a worker name; payment goes to one-time keys of your mining address (R28 BluNotes, below), so nothing that names your wallet reaches a pool. The 128-byte job is unchanged.
 
 ```
-ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user YOUR_SSA1.worker --blu YOUR_MINING_ADDRESS --backend jit-full
+ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user rig1 --blu YOUR_MINING_ADDRESS --backend jit-full
 ```
 
-R28 BluNotes: `--blu` is the 128-hex mining address B||Y your wallet shows ("This wallet mines"). Every share carries a fresh one-time key; the pool never learns a payout address, and a submit without a key is refused (`need_key`).
+R28 BluNotes: `--blu` is the `shm1…` mining address your wallet shows ("This wallet mines"; checksummed, so a typo is refused; raw 128-hex B‖Y is accepted off mainnet only). Every share carries a fresh one-time key; the pool never learns a payout address, and a submit without a key is refused (`need_key`).
 
 Solo, on your own node (`npm run solo`, cleartext stratum on 127.0.0.1:1111):
 
 ```
-ShearK-Miner --pool 127.0.0.1:1111 --user YOUR_SSA1.solo --blu YOUR_MINING_ADDRESS --solo
+ShearK-Miner --pool 127.0.0.1:1111 --user rig1 --blu YOUR_MINING_ADDRESS --solo
 ```
 
 `--solo` sends the mining address to your node at login so an empty round's pot is paid to a one-time key of it; without it the node refuses the login (`need_blu`). `--solo` without `--blu` exits 2. Never pass `--solo` to a public pool.
 
-A `she1` login needs `--dest YOUR_SSA1` so the bonus can land on Copy dest. Rest-frame `shear1` stays off stratum.
+R28 option 2: `--user` is a worker name only (e.g. `rig1`). An address there exits 2, because it would be sent to the pool. `--dest` is retired. `YOUR_MINING_ADDRESS` is the `shm1…` string the wallet shows under "This wallet mines"; it never leaves the rig except with `--solo` to your own node.
 
 Default `--backend jit-full` is the 260 MiB RandomX dataset (same ShearHash-v3 digest as light). Pool/node still light-verify. `--backend jit` is the 128 MiB cache path.
 
