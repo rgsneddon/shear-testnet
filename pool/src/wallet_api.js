@@ -15,7 +15,7 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
 import {
   levyNanos,
   levyNeed,
@@ -1743,7 +1743,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       if (lockOuts.length > 1) return { status: 400, json: { ok: false, reason: 'portal_exists' } };
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
-    const isVote = kindIn === 'vote' && programIn === RESERVE_PROGRAM;
+    // Russell ruling 28 Oct: portal vote retired. The node refuses kind=vote
+    // as vote_retired (store.js); the pool refuses it here, before it drafts,
+    // signs or queues anything. A vote is a leaf vote.
+    if (kindIn === 'vote') return { status: 400, json: { ok: false, reason: 'vote_retired' } };
     const isWithdraw = kindIn === 'withdraw' && programIn === RESERVE_PROGRAM;
     const multiProofsEarly = Array.isArray(body.admit_proofs) && body.admit_proofs.length > 1;
     const sealedSendEarly = kindIn === 'send'
@@ -1771,11 +1774,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     if ((!sealedSendEarly && !fundedWithdraw && !isDestAddress(from)) || (!isDestAddress(to) && !hiddenWithdraw)) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
-    const nanosBi = isVote ? 0n : parsed.nanos;
-    if ((nanosBi == null || nanosBi <= 0n) && !isVote && !sealedSendEarly) {
+    const nanosBi = parsed.nanos;
+    if ((nanosBi == null || nanosBi <= 0n) && !sealedSendEarly) {
       return { status: 400, json: { ok: false, reason: 'bad_send' } };
     }
-    if (kindIn !== 'send' && !isVote && !isWithdraw) {
+    if (kindIn !== 'send' && !isWithdraw) {
       return { status: 400, json: { ok: false, reason: 'bad_kind' } };
     }
     const poolPay = isDestAddress(String(poolDest || '')) ? String(poolDest) : '';
@@ -1796,10 +1799,10 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
       && (body.sig || body.signature)
       && body.spendPub;
     // A posted body with no signature is unsigned, including when the book is short.
-    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && !fs1Withdraw && (kindIn === 'send' || isVote || isWithdraw)) {
+    if (clientPostedSpendBody(body) && !clientHasSpendSig(body) && !fs1Withdraw && (kindIn === 'send' || isWithdraw)) {
       return { status: 403, json: { ok: false, reason: 'unsigned' } };
     }
-    if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos) {
+    if (!isWithdraw && !sealedSend && chainNanos < nanos) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     // A withdraw is relayed as posted, so its outputs are not stripped: the
@@ -1811,8 +1814,8 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     const postedOpen = valueOpenRejected({ kind: kindIn, vout: body.vout });
     if (postedOpen) return { status: 400, json: { ok: false, reason: 'value_open' } };
     const memoCt = body.memoCt || null;
-    const kind = isVote ? 'vote' : isWithdraw ? 'withdraw' : 'send';
-    const programId = (isVote || isWithdraw) ? RESERVE_PROGRAM : '';
+    const kind = isWithdraw ? 'withdraw' : 'send';
+    const programId = isWithdraw ? RESERVE_PROGRAM : '';
     const taxed = levyTaxed({ kind, programId });
     const postedFee = (body.fee == null || body.fee === '') ? null : parseIntegerNanos(body.fee);
     if ((body.fee != null && body.fee !== '') && postedFee == null) {
@@ -1821,11 +1824,11 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
     let fee = postedFee != null
       ? wireNanos(postedFee)
       : (taxed ? levyNanos(0) : 0);
-    if (!isVote && !isWithdraw && !sealedSend && chainNanos < nanos + fee) {
+    if (!isWithdraw && !sealedSend && chainNanos < nanos + fee) {
       return { status: 400, json: { ok: false, reason: 'insufficient' } };
     }
     const rawChange = String(body.change || '').trim();
-    const changeDest = !isVote && !isWithdraw
+    const changeDest = !isWithdraw
       ? (isDestAddress(rawChange) ? rawChange : '')
       : '';
     if (changeDest && changeDest === from) {
@@ -1850,17 +1853,7 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         return { status: 400, json: { ok: false, reason: 'kt10_nonce' } };
       }
     }
-    const draft = isVote
-        ? {
-          ...voteTx({ from, dest: to, choice: body.choice, id: `vote-${Date.now()}` }),
-          fee,
-          maxLevy: fee,
-          sig: body.sig || body.signature,
-          spendPub: body.spendPub,
-          payer: from,
-          ...(postedVout.length ? { vout: postedVout } : {}),
-        }
-        : isWithdraw
+    const draft = isWithdraw
         ? buildFundedWithdraw({
           nanos,
           id: typeof body.id === 'string' && body.id ? body.id : `withdraw-${Date.now()}`,
@@ -1893,19 +1886,6 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
           ...(multiProofs ? { admit_proofs: body.admit_proofs } : {}),
           ...(parked ? { change: changeDest, changeNanos: leftover } : {}),
         };
-    if (isVote && draft) {
-      const carriedPortal = String(body.portalId || '').replace(/^0x/i, '').toLowerCase();
-      const carriedPayout = String(body.payoutPortalId || '').replace(/^0x/i, '').toLowerCase();
-      if (/^[0-9a-f]{64}$/.test(carriedPortal)) {
-        draft.portalId = carriedPortal;
-        if (!postedVout.length && Array.isArray(draft.vout)) {
-          for (const row of draft.vout) {
-            if (row && row.kind === 'vote') row.portalId = carriedPortal;
-          }
-        }
-      }
-      if (/^[0-9a-f]{64}$/.test(carriedPayout)) draft.payoutPortalId = carriedPayout;
-    }
     if (isWithdraw && !draft) {
       return { status: 400, json: { ok: false, reason: 'withdraw_funding' } };
     }
