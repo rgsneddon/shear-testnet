@@ -48,10 +48,13 @@ import {
   frontierWindow,
   retainFrontierBlobs,
   blockLeaves,
+  digestTx,
+  blunoteFields,
+  parentRecordRoot,
   arrivedRowsKey,
   earlyRowsRejected,
 } from './chain.js';
-import { merkleRoot } from '../../crypto/merkle.js';
+import { merkleRoot, merkleBound, merkleProof } from '../../crypto/merkle.js';
 
 export { OWED_CHECKPOINT_SPACING, keepsFrontier, frontierWindow, retainFrontierBlobs };
 
@@ -3523,12 +3526,84 @@ export function createStore(dir, {
    * A pruned block this tip does not bury, with no held body, is not served:
    * the asking peer could not bury it either.
    */
+  function storedChild(block) {
+    const hex = blockHex(block);
+    if (!hex) return null;
+    const idx = chainIndexOf(chainIndex, blocks, hex);
+    if (idx >= 0 && idx + 1 < blocks.length) return blocks[idx + 1];
+    return null;
+  }
+
+  // The next block's coinbase binds this block's record under that header's
+  // proof of work. A pruned serve carries the binding so the receiver can
+  // check it before keeping the record.
+  function childProofFor(block) {
+    const child = storedChild(block);
+    if (!child?.txs?.length) return null;
+    let leaves;
+    try {
+      leaves = child.txs.map((tx) => digestTx(tx));
+    } catch {
+      return null;
+    }
+    if (!leaves.length || leaves.some((leaf) => !leaf || Buffer.from(leaf).length !== 32)) return null;
+    return {
+      coinbase: compactTx(child.txs[0]),
+      path: merkleProof(leaves, 0),
+    };
+  }
+
+  // Refuse a pruned body whose child does not bind this block's record.
+  // peerOnly: the hash stays fetchable, so the honest copy can still arrive.
+  // A missing header run is not this refusal; burial answers samples_pruned.
+  function childProofReason(block, proof) {
+    const refuse = () => ({ ok: false, reason: 'blunote_prev', field: 'childProof', peerOnly: true });
+    let hex = '';
+    try { hex = Buffer.from(block.hash).toString('hex'); } catch { hex = ''; }
+    const rows = hex ? offeredPath(hex) : null;
+    if (!rows?.[0]) return null;
+    let childHeader = null;
+    try { childHeader = decodeHeader(Buffer.from(rows[0].header)); } catch { childHeader = null; }
+    let blockHash = null;
+    try {
+      const raw = Buffer.from(block.hash);
+      if (raw.length === 32) blockHash = raw;
+    } catch { blockHash = null; }
+    if (!childHeader || !blockHash || !childHeader.prevBlockHash.equals(blockHash)) return refuse();
+    const cb = proof?.coinbase;
+    const path = proof?.path;
+    if (!cb || !Array.isArray(path)) return refuse();
+    let bound = null;
+    try { bound = merkleBound(digestTx(cb), path, childHeader.merkleRoot); } catch { bound = null; }
+    if (bound !== 0) return refuse();
+    const fields = blunoteFields(cb);
+    const want = parentRecordRoot(block);
+    if (!fields?.prev || !want || !Buffer.from(fields.prev).equals(Buffer.from(want))) return refuse();
+    return null;
+  }
+
+  function tailBurialProved(block, opts) {
+    const at = opts?.provenBurialAt;
+    if (!at || typeof at !== 'object') return false;
+    let hex = '';
+    try { hex = Buffer.from(block.hash).toString('hex'); } catch { return false; }
+    for (const rec of Object.values(at)) {
+      if (!rec?.claimed) continue;
+      try {
+        if (Buffer.from(rec.claimed).toString('hex') === hex) return true;
+      } catch { /* not this row */ }
+    }
+    return false;
+  }
+
   function servableBlock(block) {
     if (!block || block.samplesPruned !== true) return block || null;
     const lifted = liftPrunedBlock(block);
     if (lifted) return lifted;
     const tipH = Number(tip()?.height) || 0;
-    return shouldPruneSamples(Number(block.height) || 0, tipH) ? block : null;
+    if (!shouldPruneSamples(Number(block.height) || 0, tipH)) return null;
+    const proof = childProofFor(block);
+    return proof ? { ...block, childProof: proof } : block;
   }
 
   /**
@@ -3617,6 +3692,7 @@ export function createStore(dir, {
       hashSpillCredits: _hsc,
       hashSpillPacked: _hsp,
       hashSpillCreditPacked: _hscp,
+      childProof: _childProof,
       ...kept
     } = block;
     return { ...kept, hashSpill: [], samples, txs: block.txs.map((tx) => {
@@ -3767,6 +3843,9 @@ export function createStore(dir, {
 
   function append(arrived, verifyOpts = {}) {
     verifyOpts = withArrival(arrived, verifyOpts);
+    if (arrived?.childProof != null && verifyOpts.childProof == null) {
+      verifyOpts = { ...verifyOpts, childProof: arrived.childProof };
+    }
     const block = arrivedBody(arrived);
     const early = unprovenAppendReason(block, verifyOpts);
     if (early) return { ok: false, reason: early, tip: tip() };
@@ -3887,7 +3966,11 @@ export function createStore(dir, {
       }
       const proved = proveBurial(block, verifyOpts);
       const go = (p) => {
-        if (p.ok) return appendVerified(block, verifyOpts, p);
+        if (p.ok) {
+          const stop = childProofReason(block, verifyOpts?.childProof);
+          if (stop) return { ...stop, tip: tip() };
+          return appendVerified(block, verifyOpts, p);
+        }
         if (liedHeight) return appendVerified(block, verifyOpts, null);
         if (earlyHash) discardPreparedHeader(block.header);
         return { ok: false, reason: 'samples_pruned', tip: tip() };
@@ -6175,6 +6258,8 @@ export function createStore(dir, {
   function ingestInner(arrived, verifyOpts = {}) {
     if (!Array.isArray(arrived) || !arrived.length) return { ok: false, reason: 'empty' };
     verifyOpts = withArrival(arrived, verifyOpts);
+    const headProof = arrived[0]?.childProof ?? null;
+    const tailProof = arrived[arrived.length - 1]?.childProof ?? null;
     const fork = arrived.map(arrivedBody);
     const knownBad = knownHashBodyReason(fork);
     if (knownBad) return { ...knownBad, tip: tip() };
@@ -6193,11 +6278,14 @@ export function createStore(dir, {
     // One new block extends the tip in place. A batch is one chain: burial
     // is that batch's own height, so pruned history is not judged at depth 0.
     if (extendsTip && fork.length === 1) {
-      if (verifyOpts.offLoopPow || fork.some((b) => blockNeedsEvm(b?.txs || []))) {
+      const one = headProof != null && verifyOpts.childProof == null
+        ? { ...verifyOpts, childProof: headProof }
+        : verifyOpts;
+      if (one.offLoopPow || fork.some((b) => blockNeedsEvm(b?.txs || []))) {
         return (async () => {
           let last = null;
           for (const b of fork) {
-            const got = await Promise.resolve(append(b, verifyOpts));
+            const got = await Promise.resolve(append(b, one));
             if (!got.ok) return last || got;
             last = got;
           }
@@ -6206,22 +6294,39 @@ export function createStore(dir, {
       }
       let last = null;
       for (const b of fork) {
-        const got = append(b, verifyOpts);
+        const got = append(b, one);
         if (!got.ok) return last || got;
         last = got;
       }
       return last;
     }
+    // A fork batch whose last block is pruned has no child in the batch.
+    // The same child-proof check runs after burial is proved, before the
+    // body is kept. A batch that carries the child still uses that child's
+    // own blunote.prev check.
+    const bury = (apply) => {
+      const opts = tailProof != null && verifyOpts.childProof == null
+        ? { ...verifyOpts, childProof: tailProof }
+        : verifyOpts;
+      return ingestBuried(fork, opts, (ready) => {
+        const last = fork[fork.length - 1];
+        if (fork.length > 1 && last?.samplesPruned === true && tailBurialProved(last, ready)) {
+          const stop = childProofReason(last, ready?.childProof ?? tailProof);
+          if (stop) return { ...stop, tip: tip() };
+        }
+        return apply(ready);
+      });
+    };
     if (extendsTip && fork.length > 1) {
-      if (!blocks.length) return ingestBuried(fork, verifyOpts, (opts) => adopt(fork, opts));
-      return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, blocks.length - 1));
+      if (!blocks.length) return bury((opts) => adopt(fork, opts));
+      return bury((opts) => stageOrAdopt(fork, opts, blocks.length - 1));
     }
     const prevHex = Buffer.from(decoded.prevBlockHash).toString('hex').toLowerCase();
     const anchorIdx = chainIndexOf(chainIndex, blocks, prevHex);
     if (anchorIdx >= 0 || (sideBlocks.length && prevHex === sideTipHash())) {
-      return ingestBuried(fork, verifyOpts, (opts) => stageOrAdopt(fork, opts, anchorIdx));
+      return bury((opts) => stageOrAdopt(fork, opts, anchorIdx));
     }
-    return ingestBuried(fork, verifyOpts, (opts) => adopt(fork, opts));
+    return bury((opts) => adopt(fork, opts));
   }
 
   function ingest(fork, verifyOpts = {}) {
