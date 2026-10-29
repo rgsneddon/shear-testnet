@@ -41,8 +41,9 @@ jobs:
       - name: Build, selftest, and pack the macOS zip
         run: |
           set -euo pipefail
-          brew install openssl cmake
-          PREFIX="$(brew --prefix openssl)"
+          # Pin openssl@3. The floating Homebrew openssl formula is not one major.
+          brew install openssl@3 cmake
+          PREFIX="$(brew --prefix openssl@3)"
           test -f "$PREFIX/include/openssl/ssl.h"
           make -C sheark-miner OPENSSL_PREFIX="$PREFIX"
           bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
