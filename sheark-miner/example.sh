@@ -19,7 +19,7 @@ if [ ! -x ./ShearK-Miner ]; then
   exit 1
 fi
 
-exec ./ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user rig1 --blu YOUR_MINING_ADDRESS --backend jit-full
+exec ./ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user rig1 --blu YOUR_MINING_ADDRESS
 
 # Solo on your own node (npm run solo), cleartext; --solo sends the mining address to your node only:
-# exec ./ShearK-Miner --pool 127.0.0.1:1111 --user rig1 --blu YOUR_MINING_ADDRESS --solo --backend jit-full
+# exec ./ShearK-Miner --pool 127.0.0.1:1111 --user rig1 --blu YOUR_MINING_ADDRESS --solo

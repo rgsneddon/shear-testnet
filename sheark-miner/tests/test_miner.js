@@ -117,10 +117,11 @@ describe('ShearK-Miner', () => {
     // R28 option 2: a worker name and the mining address; no ssa1, no --dest.
     assert.match(srcEx, /--user rig1 --blu YOUR_MINING_ADDRESS/);
     assert.doesNotMatch(srcEx, /YOUR_SSA1|--dest/);
-    assert.match(srcEx, /--backend jit-full/);
+    // PR146 P1-2: the launchers leave the mode to the memory check.
+    assert.doesNotMatch(srcEx, /--backend jit-full/);
     assert.match(bat, /--user pc1 --blu YOUR_MINING_ADDRESS/);
     assert.doesNotMatch(bat, /YOUR_SSA1|--dest/);
-    assert.match(bat, /--backend jit-full/);
+    assert.doesNotMatch(bat, /--backend jit-full/);
     assert.match(bat, /ShearK-Miner-2\.9-windows\.zip/);
     assert.doesNotMatch(bat, /ShearK-Miner-2\.7-windows\.zip/);
     assert.doesNotMatch(help.stdout, /--tls-pin/);

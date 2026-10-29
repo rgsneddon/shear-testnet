@@ -50,6 +50,7 @@ int main(int argc, char **argv) {
          r.cpu_vendor, r.cpu_model, r.cpu_fms, r.features, r.logical, r.allowed, r.physical, r.smt, r.pe_split);
   printf("l1d=%s\nl2=%s\nl3=%s\nl3_domains=%d\nnuma_nodes=%d\nmem_total=%lld\nmem_avail=%lld\nhugepages=%s\ngovernor=%s\n", r.l1d,
          r.l2, r.l3, r.l3_domains, r.numa_nodes, r.mem_total, r.mem_avail, r.hugepages, r.governor);
+  printf("mem_limit=%lld (%s)\n", r.mem_limit, r.mem_limit_src);
   printf("power=%s\nmsr=%s\ndefault_threads=%d\ndefault_why=%s\n", r.power, r.msr, t, tw);
   char therm[160];
   rig_thermal(argv[1], therm, sizeof(therm), NULL);

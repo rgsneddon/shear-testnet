@@ -28,6 +28,9 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -1610,21 +1613,60 @@ static void *stats_thread(void *arg) {
   return NULL;
 }
 
+/* PR146 P1-2: what this process may still allocate. rig.c caps
+ * MemAvailable by the cgroup headroom (v2 memory.max on this process's
+ * path, or v1 memory.limit_in_bytes); this adds RLIMIT_AS (ulimit -v)
+ * less the address space already mapped. -1 unknown. */
+static long long usable_mem(char *src, size_t n) {
+  long long best = g_rig.mem_avail > 0 ? g_rig.mem_avail : -1;
+  if (g_rig.mem_limit >= 0 && g_rig.mem_limit <= best) snprintf(src, n, "%s", g_rig.mem_limit_src);
+  else snprintf(src, n, "%s", best > 0 ? "MemAvailable" : "unknown");
+#if !defined(_WIN32)
+  struct rlimit rl;
+  if (getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
+    long long mapped = 0;
+    FILE *f = fopen("/proc/self/status", "r");
+    if (f) {
+      char line[256];
+      while (fgets(line, sizeof(line), f)) {
+        if (!strncmp(line, "VmSize:", 7)) mapped = atoll(line + 7) * 1024;
+      }
+      fclose(f);
+    }
+    long long head = (long long)rl.rlim_cur > mapped ? (long long)rl.rlim_cur - mapped : 0;
+    if (best < 0 || head < best) {
+      best = head;
+      snprintf(src, n, "RLIMIT_AS %lld, mapped %lld", (long long)rl.rlim_cur, mapped);
+    }
+  }
+#endif
+  return best;
+}
+
 /* RandomX mode: full (jit-full) needs the 260 MiB dataset plus the 128 MiB
  * cache, twice while the next block's pair is built, and a scratchpad per
- * thread. Light (jit) needs the cache only. */
+ * thread. Light (jit) needs the cache only. PR146 P1-2: an explicit
+ * --backend jit-full no longer skips the check; when the usable memory is
+ * known to be short it runs light jit and says so (an OOM kill under a
+ * cgroup gives no allocation failure to fall back from). */
 static const char *choose_backend(const char *asked, int explicit, int threads) {
   long long need = 2LL * (260 + 128) * (1 << 20) + (long long)threads * (2 << 20) + (64LL << 20);
-  char avail[48];
-  if (g_rig.mem_avail > 0) snprintf(avail, sizeof(avail), "%.1f GiB available", (double)g_rig.mem_avail / (1 << 30));
-  else snprintf(avail, sizeof(avail), "available RAM unknown");
+  char src[200];
+  long long usable = usable_mem(src, sizeof(src));
+  char avail[256];
+  if (usable >= 0) snprintf(avail, sizeof(avail), "%.2f GiB usable (%s)", (double)usable / (1 << 30), src);
+  else snprintf(avail, sizeof(avail), "usable memory unknown");
+  int full = !strcmp(asked, "jit-full");
+  if (full && usable >= 0 && usable < need) {
+    if (explicit) {
+      fprintf(stderr, "ShearK-Miner: --backend jit-full needs about %.2f GiB; %s; using light jit\n", (double)need / (1 << 30), avail);
+    }
+    snprintf(g_mode_why, sizeof(g_mode_why), "light, jit (full mode needs about %.2f GiB; %s)", (double)need / (1 << 30), avail);
+    return "jit";
+  }
   if (explicit) {
     snprintf(g_mode_why, sizeof(g_mode_why), "%s (--backend given; %s)", asked, avail);
     return asked;
-  }
-  if (g_rig.mem_avail > 0 && g_rig.mem_avail < need) {
-    snprintf(g_mode_why, sizeof(g_mode_why), "light, jit (full mode needs about %.2f GiB; %s)", (double)need / (1 << 30), avail);
-    return "jit";
   }
   snprintf(g_mode_why, sizeof(g_mode_why), "full, jit-full (needs about %.2f GiB; %s)", (double)need / (1 << 30), avail);
   return asked;

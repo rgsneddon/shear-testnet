@@ -523,6 +523,64 @@ static void linux_cgroup(RigInfo *r, const char *root) {
   }
 }
 
+/* PR146 P1-2: the memory a cgroup (v2 memory.max, tightest on this
+ * process's path; or v1 memory.limit_in_bytes) still lets this process
+ * use. A container with 300 MB on an 8 GB host showed 7+ GB MemAvailable
+ * and jit-full was OOM-killed. -1 when there is no limit or none is known. */
+static long long ll_or(const char *s, long long dflt) {
+  if (!s || !s[0] || !strncmp(s, "max", 3)) return dflt;
+  return atoll(s);
+}
+
+static void linux_memlimit(RigInfo *r, const char *root) {
+  char buf[256], cur[256];
+  r->mem_limit = -1;
+  put(r->mem_limit_src, sizeof(r->mem_limit_src), "none");
+  char self[1024] = "";
+  char path[512] = "/";
+  if (rd(root, "/proc/self/cgroup", self, sizeof(self)) == 0) {
+    char *p = strstr(self, "0::");
+    if (p) {
+      snprintf(path, sizeof(path), "%s", p + 3);
+      path[strcspn(path, "\n")] = 0;
+      if (!path[0]) snprintf(path, sizeof(path), "/");
+    }
+  }
+  int v2 = exists(root, "/sys/fs/cgroup/cgroup.controllers");
+  for (;;) {
+    char f[600], g[600];
+    const char *pp = strcmp(path, "/") ? path : "";
+    snprintf(f, sizeof(f), "/sys/fs/cgroup%s/memory.max", pp);
+    snprintf(g, sizeof(g), "/sys/fs/cgroup%s/memory.current", pp);
+    if (rd_line(root, f, buf, sizeof(buf)) == 0) {
+      v2 = 1;
+      long long mx = ll_or(buf, -1);
+      if (mx > 0) {
+        long long used = rd_line(root, g, cur, sizeof(cur)) == 0 ? atoll(cur) : 0;
+        long long head = mx > used ? mx - used : 0;
+        if (r->mem_limit < 0 || head < r->mem_limit) {
+          r->mem_limit = head;
+          snprintf(r->mem_limit_src, sizeof(r->mem_limit_src), "cgroup v2 memory.max %lld, current %lld at %s", mx, used, path);
+        }
+      }
+    }
+    if (!strcmp(path, "/")) break;
+    char *slash = strrchr(path, '/');
+    if (!slash || slash == path) snprintf(path, sizeof(path), "/");
+    else *slash = 0;
+  }
+  if (!v2 && rd_line(root, "/sys/fs/cgroup/memory/memory.limit_in_bytes", buf, sizeof(buf)) == 0) {
+    long long mx = atoll(buf);
+    /* v1 "unlimited" is PAGE_COUNTER_MAX pages: 0x7ffffffffffff000 or so. */
+    if (mx > 0 && mx < (1LL << 60)) {
+      long long used = rd_line(root, "/sys/fs/cgroup/memory/memory.usage_in_bytes", cur, sizeof(cur)) == 0 ? atoll(cur) : 0;
+      r->mem_limit = mx > used ? mx - used : 0;
+      snprintf(r->mem_limit_src, sizeof(r->mem_limit_src), "cgroup v1 memory.limit_in_bytes %lld, usage %lld", mx, used);
+    }
+  }
+  if (r->mem_limit >= 0 && (r->mem_avail < 0 || r->mem_limit < r->mem_avail)) r->mem_avail = r->mem_limit;
+}
+
 static void linux_misc(RigInfo *r, const char *root) {
   char buf[8192];
   if (rd(root, "/proc/meminfo", buf, sizeof(buf)) == 0) {
@@ -884,6 +942,8 @@ void rig_detect(RigInfo *r, const char *root, rig_env_fn env) {
   put(r->governor, sizeof(r->governor), UNK);
   put(r->hugepages, sizeof(r->hugepages), UNK);
   put(r->msr, sizeof(r->msr), UNK);
+  r->mem_limit = -1;
+  put(r->mem_limit_src, sizeof(r->mem_limit_src), "none");
   r->logical = r->allowed = r->physical = r->l3_domains = r->numa_nodes = r->perf_logical = -1;
   r->mem_total = r->mem_avail = r->l3_total = -1;
   r->quota_cpus = -1;
@@ -901,6 +961,7 @@ void rig_detect(RigInfo *r, const char *root, rig_env_fn env) {
   linux_topology(r, root, env);
   linux_cgroup(r, root);
   linux_misc(r, root);
+  linux_memlimit(r, root);
 #endif
   char why[RIG_S];
   if (rig_is_phone(root, env, why, sizeof(why))) {

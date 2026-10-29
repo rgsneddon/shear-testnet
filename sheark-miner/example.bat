@@ -38,9 +38,9 @@ if not exist "libsodium-26.dll" (
 )
 
 REM Edit this line, then double-click this file:
-ShearK-Miner.exe --pool stratum+ssl://pool.shear.digital:443 --user pc1 --blu YOUR_MINING_ADDRESS --backend jit-full
+ShearK-Miner.exe --pool stratum+ssl://pool.shear.digital:443 --user pc1 --blu YOUR_MINING_ADDRESS
 
 REM Solo on your own node (npm run solo), cleartext; --solo sends the mining address to your node only:
-REM ShearK-Miner.exe --pool 127.0.0.1:1111 --user pc1 --blu YOUR_MINING_ADDRESS --solo --backend jit-full
+REM ShearK-Miner.exe --pool 127.0.0.1:1111 --user pc1 --blu YOUR_MINING_ADDRESS --solo
 
 pause

@@ -49,7 +49,9 @@ typedef struct {
   char freq[96];          /* base / max / current MHz */
   char governor[48];
   long long mem_total;    /* bytes, -1 unknown */
-  long long mem_avail;
+  long long mem_avail;    /* bytes usable: MemAvailable capped by the cgroup headroom, -1 unknown */
+  long long mem_limit;    /* cgroup memory headroom in bytes, -1 none or unknown */
+  char mem_limit_src[160];
   char hugepages[RIG_S];  /* hugetlb pool and THP mode */
   char msr[64];
 } RigInfo;
