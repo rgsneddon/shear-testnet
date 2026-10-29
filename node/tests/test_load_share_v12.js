@@ -405,6 +405,7 @@ describe('v12 load applies the share rules', () => {
         const pays = paysWithFee(rows, null, subsidy, carry, 0);
         const built = childBlock(genesis, genesis, rows, when, pays);
         const checked = verifyLoadedChain([genesis, built.block], {
+        magic: MAGIC_TESTNET,
           trustStoredHash: true,
           trustShareWork: false,
           nowMs: Date.now(),
@@ -442,6 +443,7 @@ describe('v12 load applies the share rules', () => {
     resetSharePowCounters();
     const t1 = Date.now();
     const checked = verifyLoadedChain([genesis, built.block], {
+        magic: MAGIC_TESTNET,
       trustStoredHash: true,
       trustShareWork: false,
       nowMs: Date.now(),

@@ -217,7 +217,7 @@ function tipHex(store) {
 
 describe('boot-verify worker', () => {
   const nowMs = 1_800_000_000_000;
-  const opts = { trustStoredHash: true, nowMs };
+  const opts = { trustStoredHash: true, nowMs, magic: MAGIC_TESTNET };
   const book = loadBook(4);
 
   it('matches the synchronous load on a good book and on a bad height', async () => {
@@ -255,6 +255,7 @@ describe('boot-verify worker', () => {
     setImmediate(spin);
     try {
       const got = await verifyLoadedChainAsync(structuredClone(book), {
+        magic: MAGIC_TESTNET,
         ...opts,
         onProgress: (p) => heights.push(p.height),
       });
@@ -280,7 +281,7 @@ describe('boot-verify worker', () => {
 
 describe('worker re-verify uses the main-thread option set', () => {
   const nowMs = 1_800_000_000_000;
-  const opts = { trustStoredHash: true, nowMs };
+  const opts = { trustStoredHash: true, nowMs, magic: MAGIC_TESTNET };
   const book = loadBook(4);
   const committed = withRateCommit(book);
 

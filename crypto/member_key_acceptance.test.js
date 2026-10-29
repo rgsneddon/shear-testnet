@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GENESIS_BITS_PACKED } from './asert.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from './asert.js';
 import { encodeHeader } from './header.js';
 import { merkleRoot } from './merkle.js';
 import { emptyMempool, admitMempool } from './mempool.js';
@@ -190,6 +190,7 @@ describe('FS-1 member key acceptance', () => {
       // The reload fixture's stored hash is a stand-in that fails a final
       // check; that is its verdict with or without the member fault.
       const reload = (body) => verifyLoadedChain([reloadBlock(body)], {
+        magic: MAGIC_TESTNET,
         trustStoredHash: true,
         nowMs: WHEN,
         genesisHash: '',
@@ -204,7 +205,7 @@ describe('FS-1 member key acceptance', () => {
     assert.equal(admitMempool(emptyMempool(), gated).reason, 'send_unavailable');
     assert.equal(verifyBlock({ txs: [gated] }, null).reason, 'send_unavailable');
     const stub = { txs: [gated], header: Buffer.alloc(80), hash: Buffer.alloc(32) };
-    assert.equal(verifyLoadedChain([stub]).reason, 'send_unavailable');
+    assert.equal(verifyLoadedChain([stub], { magic: MAGIC_TESTNET }).reason, 'send_unavailable');
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-member-reload-'));
     try {

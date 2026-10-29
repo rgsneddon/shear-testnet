@@ -6,6 +6,7 @@
  * same header never stands for a body that applies a tx twice (Russell
  * 26 Oct, pre-existing).
  */
+import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -84,6 +85,7 @@ describe('a repeated merkle leaf is refused', () => {
       // A book reload refuses it too (stepLoaded checks the leaves before the
       // root; its stage-0 pass over the book sees these stand-in sends first).
       const loaded = verifyLoadedChain([{ ...dup, hash: Buffer.alloc(32, 1) }], {
+        magic: MAGIC_TESTNET,
         trustStoredHash: true,
         nowMs: stamp,
         genesisHash: '',

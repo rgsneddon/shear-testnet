@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { decodeHeader, setNonce } from '../../crypto/header.js';
-import { GENESIS_BITS_PACKED, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { writeChainBin, readChainBin } from '../../crypto/chainbin.js';
 import { setHashBackend, shearHash, meetsTarget } from '../../crypto/shear_hash.js';
 import { createStore } from '../src/store.js';
@@ -112,9 +112,9 @@ describe('foreign chain load names a reason before the vault boots', () => {
   it('an empty book loads, and a header this node did not seal fails closed', () => {
     const empty = createStore(tmp('shear-loadv-empty-'));
     assert.equal(empty.tip(), null);
-    assert.equal(verifyLoadedChain([]).ok, true);
-    assert.equal(verifyLoadedChain([{}]).reason, 'no_header');
-    assert.equal(verifyLoadedChain([{ header: Buffer.alloc(10) }]).reason, 'bad_header');
+    assert.equal(verifyLoadedChain([], { magic: MAGIC_TESTNET }).ok, true);
+    assert.equal(verifyLoadedChain([{}], { magic: MAGIC_TESTNET }).reason, 'no_header');
+    assert.equal(verifyLoadedChain([{ header: Buffer.alloc(10) }], { magic: MAGIC_TESTNET }).reason, 'bad_header');
 
     const dir = tmp('shear-loadv-fake-');
     writeChainBin(path.join(dir, 'chain.bin'), [{

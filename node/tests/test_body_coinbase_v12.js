@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { GENESIS_BITS_PACKED } from '../../crypto/asert.js';
+import { GENESIS_BITS_PACKED, MAGIC_TESTNET } from '../../crypto/asert.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { V12_VALUE_KINDS } from '../../crypto/spend.js';
 import { compactLockLeakRejected, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
@@ -232,7 +232,7 @@ describe('a body coinbase cannot mint the levy', () => {
       const verdict = verifyBlock(block, null, { probeBody: true });
       assert.equal(verdict.ok, false, label);
       assert.equal(verdict.reason, 'mint_amount', `${label} ${verdict.reason}`);
-      const loaded = verifyLoadedChain([block], { trustStoredHash: true, nowMs: NOW + 1 });
+      const loaded = verifyLoadedChain([block], { magic: MAGIC_TESTNET, trustStoredHash: true, nowMs: NOW + 1 });
       assert.equal(loaded.ok, false, `${label} load`);
       assert.equal(loaded.reason, 'mint_amount', `${label} load ${loaded.reason}`);
     }

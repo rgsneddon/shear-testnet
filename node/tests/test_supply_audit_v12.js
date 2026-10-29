@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { potSubsidyNanos } from '../../crypto/pot_sched.js';
-import { TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
+import { MAGIC_TESTNET, TARGET_BLOCK_INTERVAL_MS } from '../../crypto/asert.js';
 import { excessOf } from '../../crypto/note.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { coinbaseTx } from '../src/chain.js';
@@ -212,7 +212,7 @@ describe('v12 pool supply publish', () => {
       assert.equal(audited.status, 'verified', audited.reason);
       const inserts = rangeVerifiedInserts();
       const before = coinbaseRangeVerifies();
-      const raw = { blocks, tip: () => blocks[blocks.length - 1], reserveVault: {} };
+      const raw = { blocks, tip: () => blocks[blocks.length - 1], reserveVault: {}, magic: MAGIC_TESTNET };
       const t0 = process.hrtime.bigint();
       const pending = networkSupply(raw);
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
@@ -247,6 +247,7 @@ describe('v12 pool supply publish', () => {
         blocks: inflated,
         tip: () => inflated[inflated.length - 1],
         reserveVault: {},
+        magic: MAGIC_TESTNET,
       });
       assert.equal(drift.supplyStatus, 'mismatch');
       assert.notEqual(drift.differenceNanos, 0);

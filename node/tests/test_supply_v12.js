@@ -5,6 +5,7 @@ import { newIdentity, hash20FromAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { encodeHeader } from '../../crypto/header.js';
 import { potSubsidyNanos, MS_PER_DAY, EPOCH_DAYS_TESTNET } from '../../crypto/pot_sched.js';
+import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import {
   HASH_BONUS_NANOS,
   SHARE_FLOOR_BITS,
@@ -246,7 +247,7 @@ describe('v12 circulating supply is the public mint', () => {
     assert.equal(all.schedulePotNanos, sum);
     assert.equal(all.differenceNanos, 0);
 
-    const store = { blocks: chain, tip: () => chain[chain.length - 1], reserveVault: {} };
+    const store = { blocks: chain, tip: () => chain[chain.length - 1], reserveVault: {}, magic: MAGIC_TESTNET };
     const published = await networkSupplySettled(store);
     assert.equal(published.supplyStatus, 'verified');
     assert.equal(published.circulatingNanos, sum);
@@ -265,7 +266,7 @@ describe('v12 circulating supply is the public mint', () => {
       miner,
       [{ nanos: potSubsidyNanos(epochs[2]) + 1, kind: 'pot' }],
     );
-    const drift = await networkSupplySettled({ blocks: inflated, tip: () => inflated.at(-1), reserveVault: {} });
+    const drift = await networkSupplySettled({ blocks: inflated, tip: () => inflated.at(-1), reserveVault: {}, magic: MAGIC_TESTNET });
     assert.equal(drift.supplyStatus, 'mismatch');
     assert.notEqual(drift.circulatingNanos, drift.schedulePotNanos);
     assert.equal(explorerCirculation({

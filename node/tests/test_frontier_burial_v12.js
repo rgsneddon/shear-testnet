@@ -788,6 +788,7 @@ describe('v12 frontier, burial, and reorg fallback', { timeout: fileCapMs(import
     assert.ok(bufEq(full.tip().hash, tipHash));
 
     const loaded = verifyLoadedChain(chain, {
+        magic: MAGIC_TESTNET,
       trustStoredHash: true,
       nowMs: Date.now(),
       genesisMs,

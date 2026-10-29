@@ -6,6 +6,7 @@
  * bucket proof ADMIT. ADMITv3 names the full-set FS-1 proof, so the name is
  * allowed and only bucket wording beside ADMIT is banned.
  */
+import { MAGIC_TESTNET } from '../../crypto/asert.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -160,7 +161,7 @@ describe('FS-1 stage 0 send gate', () => {
       assert.equal(tpl.txs.some((row) => row.id === tx.id), false);
 
       const block = { txs: [tx], header: Buffer.alloc(80), hash: Buffer.alloc(32) };
-      const loaded = verifyLoadedChain([block]);
+      const loaded = verifyLoadedChain([block], { magic: MAGIC_TESTNET });
       assert.equal(loaded.ok, false);
       assert.equal(loaded.reason, 'send_unavailable');
       assert.equal(chainStage0Rejected([block]).reason, 'send_unavailable');
@@ -190,7 +191,7 @@ describe('FS-1 stage 0 send gate', () => {
     const v2 = flowTx('v2');
     v2.admit_proof.v = 2;
     v2.admit_proof.blob[0] = 2;
-    const loaded = verifyLoadedChain([{ txs: [v2], header: Buffer.alloc(80), hash: Buffer.alloc(32) }]);
+    const loaded = verifyLoadedChain([{ txs: [v2], header: Buffer.alloc(80), hash: Buffer.alloc(32) }], { magic: MAGIC_TESTNET });
     assert.notEqual(loaded.reason, 'send_unavailable');
     assert.equal(chainStage0Rejected([{ txs: [v2] }]), null);
   });
@@ -342,7 +343,7 @@ describe('FS-1 stage 0 vault gate', () => {
         assert.equal(appended.reason, 'vault_unavailable', kind);
         assert.equal(store.blocks.length, 0);
 
-        const loaded = quick(`${kind} load`, () => verifyLoadedChain([block]));
+        const loaded = quick(`${kind} load`, () => verifyLoadedChain([block], { magic: MAGIC_TESTNET }));
         assert.equal(loaded.reason, 'vault_unavailable', kind);
 
         const snapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-fs1-vault-snap-'));
@@ -423,7 +424,7 @@ describe('FS-1 stage 0 vault gate', () => {
       const tx = { ...flowTx(`bare-${kind}`), kind, admit_proof: undefined, spendTag: undefined };
       const block = { txs: [{ coinbase: true, kind: 'coinbase', vout: [] }, tx], header: Buffer.alloc(80), hash: Buffer.alloc(32) };
       assert.equal(quick(kind, () => chainStage0Rejected([block])).reason, 'send_unavailable', kind);
-      assert.equal(verifyLoadedChain([block]).reason, 'send_unavailable', kind);
+      assert.equal(verifyLoadedChain([block], { magic: MAGIC_TESTNET }).reason, 'send_unavailable', kind);
       assert.equal(verifyBlock(block, null, { trustedPowHash: Buffer.alloc(32), skipSharePow: true }).reason, 'send_unavailable', kind);
     }
   });
