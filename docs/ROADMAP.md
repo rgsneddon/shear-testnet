@@ -53,8 +53,9 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
 8. **Consensus.** A row marked `Y` moves consensus or pins. A `Y` row stops
    for Russell's sign-off on the exact diff and the pins before it is
    committed.
-   - **Before mainnet:** every pre-mainnet `Y` row must land before
-     shear-dev starts, or it forces a reset.
+   - **Before mainnet (Russell 2026-10-29):** shear-dev may start before
+     every consensus row lands; late rows land by the 30 Nov freeze and go
+     onto shear-dev.
    - **After mainnet (Russell 2026-10-26):** a post-mainnet `Y` row (R09 and
      R10, and any later ones) lands as its own mainnet activation. It needs
      all of these:
