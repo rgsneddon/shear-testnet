@@ -126,9 +126,12 @@ jobs:
           echo "SHEAR_FS1_TREE_SHA256=$(sha256sum target/release/fs1_tree | cut -d' ' -f1)" >> "$GITHUB_ENV"
       - name: Shard ${{ matrix.shard }} of 16
         run: |
-          # No --test-timeout: each file keeps its own cap.
+          # Per file. ci_shard_run.js kills a stuck file at 2x its
+          # ci_timings weight (3x for pool, stratum and Flutter; floor
+          # 180s, 300s for those, 600s if unmeasured) and clamps the
+          # cap at 330 minutes, under the 360-minute job cap.
           set +e
-          node --test --test-concurrency=1 --test-reporter=tap $(cat shard.txt) | tee shard.tap
+          node tests/ci_shard_run.js shard.txt | tee shard.tap
           rc=${PIPESTATUS[0]}
           set -e
           # A skipped or todo test is not a pass. The suite runs every test.

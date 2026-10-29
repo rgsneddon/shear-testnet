@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HRP_DEST, encodeDest, encodeHrp, encodeAddress, isDestAddress, isShearAddress, isPaymentCode, newIdentity } from '../crypto/address.js';
+import { foreignGrepArgs, keepForeignLine } from './foreign_scan.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -27,30 +28,13 @@ describe('foreign names', () => {
     for (const word of FORBIDDEN) {
       const r = spawnSync(
         'grep',
-        ['-RIn', '--exclude-dir=.git', '--exclude-dir=node_modules', '-E', word, '.'],
+        [...foreignGrepArgs(), word, '.'],
         { timeout: 600_000, cwd: root, encoding: 'utf8' },
       );
       const lines = (r.stdout || '')
         .split('\n')
         .map((l) => l.trim())
-        .filter(Boolean)
-        .filter((l) => !l.includes('forbid_foreign_names.js'))
-        .filter((l) => !l.includes('/tests/'))
-        .filter((l) => !l.includes('specs/'))
-        .filter((l) => !l.includes('crypto/randomx/'))
-        // Licence notices must name upstream copyright holders as they wrote them,
-        // and the vendored FCMP++ tree stays byte-identical to its pinned commit.
-        .filter((l) => !l.includes('crypto/native/vendor/'))
-        .filter((l) => !l.startsWith('./THIRD_PARTY_NOTICES.txt'))
-        .filter((l) => !l.startsWith('./LICENSES/'))
-        .filter((l) => !l.includes('assets/licenses/THIRD_PARTY_NOTICES.txt'))
-        .filter((l) => !l.startsWith('./scripts/licenses/'))
-        .filter((l) => !l.startsWith('./docs/licensing-audit.md'))
-        .filter((l) => !l.includes('package-lock.json'))
-        .filter((l) => !l.includes('package.json'))
-        .filter((l) => !l.includes('crypto/reserve_evm.js'))
-        .filter((l) => !l.includes('wallet/lib/shear_eip712.dart'))
-        ;
+        .filter(keepForeignLine);
       for (const l of lines) hits.push(l);
     }
     assert.deepEqual(hits, []);

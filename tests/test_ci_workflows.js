@@ -66,7 +66,8 @@ describe('CI workflows', () => {
     assert.match(shard, /^\s{6}fail-fast: false\s*$/m);
     assert.match(shard, /shard: \$\{\{ fromJSON\(needs\.pending\.outputs\.shards\) \}\}/);
     assert.match(shard, /node tests\/ci_shard\.js --shard \$\{\{ matrix\.shard \}\} --of 16 > shard\.txt/);
-    assert.match(shard, /node --test --test-concurrency=1 --test-reporter=tap \$\(cat shard\.txt\)/);
+    assert.match(shard, /node tests\/ci_shard_run\.js shard\.txt/);
+    assert.doesNotMatch(shard, /node --test --test-concurrency=1 --test-reporter=tap \$\(cat shard\.txt\)/);
     // A skipped or todo test fails the shard.
     assert.match(shard, /every test must run/);
   });

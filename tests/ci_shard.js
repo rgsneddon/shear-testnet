@@ -8,7 +8,8 @@
  * A `track` row names a file a later PR must change but that still passes:
  * it stays in its shard, and it may be a test helper as well as a test file.
  * Weights come from tests/ci_timings.json (seconds per file, measured on the
- * build servers). An unmeasured file counts as 60 s.
+ * build servers). An unmeasured file counts as 60 s when a shard is planned.
+ * --check names each missing weight. The runner's kill cap for one is 600 s.
  *
  *   node tests/ci_shard.js --check          pending list is well formed
  *   node tests/ci_shard.js --count N        print a JSON matrix of 0..N-1
@@ -123,8 +124,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (process.argv.includes('--check')) {
     const rows = readPending();
     const held = rows.filter((r) => !r.track);
-    console.log(`${allTestFiles().length} test files, ${held.length} pending, ${rows.length - held.length} tracked (still run)`);
+    const files = allTestFiles();
+    const weight = timings();
+    console.log(`${files.length} test files, ${held.length} pending, ${rows.length - held.length} tracked (still run)`);
     for (const r of rows) console.log(`${r.track ? 'tracked' : r.pr === 'SCOPE' ? 'skipped' : 'pending'} ${r.pr} ${r.file}: ${r.reason}`);
+    for (const f of files) {
+      if (!(Number(weight[f]) > 0)) console.log(`unmeasured: add ${f} to tests/ci_timings.json`);
+    }
   } else if (arg('--count')) {
     const n = Number(arg('--count'));
     console.log(JSON.stringify(Array.from({ length: n }, (_, i) => i)));
