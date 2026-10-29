@@ -904,7 +904,8 @@ static void promote_pending_job(void) {
   JobSnap job = g_pending_job;
   pthread_mutex_unlock(&g_job_mu);
   if (!shear_epoch_ready(job.header)) return;
-  if (shear_commit_epoch() != 0 && !shear_epoch_ready(job.header)) return;
+  /* PSA k-change: the pair for this job's key, never another prepared one. */
+  if (shear_commit_epoch_for(job.header) != 0) return;
   pthread_mutex_lock(&g_job_mu);
   if (!g_have_pending) {
     pthread_mutex_unlock(&g_job_mu);
@@ -1263,9 +1264,20 @@ static void *hash_worker(void *arg) {
     if (!primed) {
       uint64_t t0 = st_now_ns();
       int first_rc = shear_hash_first(header);
+      if (first_rc == SHEAR_KEY_NOT_LIVE) {
+        /* PSA k-change: this job's key was just replaced; the new job is
+         * being installed. Wait for it rather than rekey the live cache. */
+        usleep(200);
+        continue;
+      }
       if (first_rc != 0) {
         unsigned char hash[32];
-        if (shear_hash_checked(header, hash) != 0) {
+        int checked_rc = shear_hash_checked(header, hash);
+        if (checked_rc == SHEAR_KEY_NOT_LIVE) {
+          usleep(200);
+          continue;
+        }
+        if (checked_rc != 0) {
           outl(stderr, "ShearK-Miner: hash setup failed on this thread (thread %d, backend %s); skipping job %s\n",
                tid, shear_hash_backend(), job.jobId);
           skip_gen = last_gen;
@@ -1309,7 +1321,15 @@ static void *hash_worker(void *arg) {
     atomic_fetch_add_explicit(live_gen ? &ts->checked : &ts->discarded, 1, memory_order_relaxed);
     if (live_gen && share_or_block_hit(hash, primed_n)) {
       unsigned char check[32];
-      if (shear_hash_checked(primed_hdr, check) != 0) {
+      int check_rc = shear_hash_checked(primed_hdr, check);
+      if (check_rc == SHEAR_KEY_NOT_LIVE) {
+        /* The key changed between the hash and its re-check: it cannot be
+         * re-checked on this key any more, so it is not sent. */
+        g_dropped++;
+        primed = 0;
+        continue;
+      }
+      if (check_rc != 0) {
         g_dropped++;
         outl(stderr, "ShearK-Miner: hash setup failed on this thread (thread %d, backend %s); skipping job %s\n",
              tid, shear_hash_backend(), job.jobId);

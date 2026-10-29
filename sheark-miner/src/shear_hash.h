@@ -25,10 +25,15 @@ void shear_key(const unsigned char header[SHEAR_HEADER_LEN], unsigned char k[32]
 void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
 /* PR146: shear_hash that says when it failed (-1) instead of zero-filling. */
 int shear_hash_checked(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
+/* -2 from shear_bind, shear_hash_checked and shear_hash_first: the header's
+ * key is not the live epoch's (the job switch is in progress); not a failure. */
+#define SHEAR_KEY_NOT_LIVE (-2)
 int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_prepare(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_epoch_ready(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_commit_epoch(void);
+/* PSA k-change: commit only the pair prepared for this header's key. */
+int shear_commit_epoch_for(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_hash_next(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
 int shear_meets_target(const unsigned char hash[32], int bits);

@@ -60,6 +60,10 @@ typedef struct {
   unsigned epoch;
   int tid;
   int primed;
+  /* PSA k-change: the key this thread's VM was bound for. shear_hash_next
+   * compares the header with this, not with the global g_k. */
+  int has_k;
+  unsigned char k[32];
 } RxTls;
 
 static atomic_uint g_epoch;
@@ -71,8 +75,17 @@ static unsigned char g_prep_want_k[32];
 static unsigned char g_prep_k[32];
 static randomx_cache *g_prep_cache;
 static randomx_dataset *g_prep_dataset;
-static randomx_cache *g_stale_cache;
-static randomx_dataset *g_stale_dataset;
+/* PSA k-change review (P1).
+ * - No stale pair any more. shear_commit_epoch drains the workers
+ *   (exclusive_begin: g_gen++, then wait for every in-flight hash), points
+ *   every VM at the new pair under rx_wr, and only then frees the old pair.
+ *   No VM points at a freed cache or dataset, and no hash can be running on
+ *   one: the old "stale" pair was freed by the next shear_prepare while
+ *   workers were still hashing on it (SIGSEGV).
+ * - Once the miner drives epochs (shear_prepare was called), a header whose
+ *   key is not the live epoch's is refused (-2) instead of rekeying the live
+ *   cache back to an old key; the worker waits for the job switch. */
+static atomic_int g_epoch_mode;
 
 static void rx_lock_init(void) {
 #if defined(__linux__)
@@ -99,6 +112,11 @@ static void cpu_relax(void) {
 static void rx_wr(void) {
   pthread_once(&g_rx_once, rx_lock_init);
   pthread_rwlock_wrlock(&g_rx);
+}
+
+static void rx_rd(void) {
+  pthread_once(&g_rx_once, rx_lock_init);
+  pthread_rwlock_rdlock(&g_rx);
 }
 
 static void rx_un(void) {
@@ -236,7 +254,6 @@ static void drop_cache_locked(void) {
     g_prep_join = 0;
   }
   release_rx_pair(&g_prep_cache, &g_prep_dataset);
-  release_rx_pair(&g_stale_cache, &g_stale_dataset);
   atomic_store_explicit(&g_prep_state, 0, memory_order_release);
   pthread_mutex_unlock(&g_prep_mu);
   if (g_dataset) {
@@ -641,6 +658,7 @@ static void *prep_thread(void *arg) {
 int shear_prepare(const unsigned char header[SHEAR_HEADER_LEN]) {
   unsigned char k[32];
   shear_key(header, k);
+  atomic_store_explicit(&g_epoch_mode, 1, memory_order_release);
   if (g_have && memcmp(g_k, k, 32) == 0) return 0;
   pthread_mutex_lock(&g_prep_mu);
   int st = atomic_load_explicit(&g_prep_state, memory_order_acquire);
@@ -654,7 +672,6 @@ int shear_prepare(const unsigned char header[SHEAR_HEADER_LEN]) {
   }
   memcpy(g_prep_want_k, k, 32);
   if (st == 1 || g_prep_join) prep_join_locked();
-  release_rx_pair(&g_stale_cache, &g_stale_dataset);
   atomic_store_explicit(&g_prep_state, 1, memory_order_release);
   if (pthread_create(&g_prep_th, NULL, prep_thread, NULL) != 0) {
     atomic_store_explicit(&g_prep_state, 0, memory_order_release);
@@ -674,33 +691,72 @@ int shear_epoch_ready(const unsigned char header[SHEAR_HEADER_LEN]) {
   return 0;
 }
 
-int shear_commit_epoch(void) {
+/* Make the prepared pair live: for this key (want_k) or, with NULL, for
+ * whatever key is ready. -1 when it is not ready. Drains first (PSA k-change
+ * P1): after exclusive_begin no hash is in flight and none can start on an
+ * old VM binding (g_gen moved); every VM is pointed at the new pair under
+ * rx_wr; only then is the old pair freed. */
+static int commit_epoch(const unsigned char *want_k) {
+  unsigned char k[32];
+  if (want_k && g_have && memcmp(g_k, want_k, 32) == 0) return 0;
   pthread_mutex_lock(&g_prep_mu);
-  if (atomic_load_explicit(&g_prep_state, memory_order_acquire) != 2 || !g_prep_cache) {
+  if (atomic_load_explicit(&g_prep_state, memory_order_acquire) != 2 || !g_prep_cache
+      || (want_k && memcmp(g_prep_k, want_k, 32) != 0)) {
     pthread_mutex_unlock(&g_prep_mu);
     return -1;
   }
-  if (g_have && memcmp(g_k, g_prep_k, 32) == 0) {
+  memcpy(k, g_prep_k, 32);
+  if (g_have && memcmp(g_k, k, 32) == 0) {
     release_rx_pair(&g_prep_cache, &g_prep_dataset);
     atomic_store_explicit(&g_prep_state, 0, memory_order_release);
     pthread_mutex_unlock(&g_prep_mu);
     return 0;
   }
-  release_rx_pair(&g_stale_cache, &g_stale_dataset);
-  g_stale_cache = g_cache;
-  g_stale_dataset = g_dataset;
-  g_cache = g_prep_cache;
-  g_dataset = g_prep_dataset;
+  randomx_cache *nc = g_prep_cache;
+  randomx_dataset *nd = g_prep_dataset;
   g_prep_cache = NULL;
   g_prep_dataset = NULL;
-  memcpy(g_k, g_prep_k, 32);
-  g_have = 1;
   atomic_store_explicit(&g_prep_state, 0, memory_order_release);
-  atomic_fetch_add_explicit(&g_epoch, 1, memory_order_release);
+  prep_join_locked(); /* it published state 2 and returned: no wait */
   pthread_mutex_unlock(&g_prep_mu);
+
+  exclusive_begin();
+  randomx_cache *oc = g_cache;
+  randomx_dataset *od = g_dataset;
+  g_cache = nc;
+  g_dataset = nd;
+  memcpy(g_k, k, 32);
+  g_have = 1;
+  int nvm = atomic_load_explicit(&g_tid_n, memory_order_relaxed);
+  if (nvm > SHEAR_MAX_VM) nvm = SHEAR_MAX_VM;
+  for (int i = 0; i < nvm; i++) {
+    if (!g_vms[i]) continue;
+    if (g_flags & RANDOMX_FLAG_FULL_MEM) randomx_vm_set_dataset(g_vms[i], g_dataset);
+    else randomx_vm_set_cache(g_vms[i], g_cache);
+  }
+  atomic_fetch_add_explicit(&g_epoch, 1, memory_order_release);
+  atomic_fetch_add_explicit(&g_gen, 1, memory_order_release);
+  rx_un();
+  /* No VM points at the old pair and no hash is running on it. */
+  release_rx_pair(&oc, &od);
   return 0;
 }
 
+/* The miner commits for the job it is about to install, so a pair prepared
+ * for a different key is never made live under that job. */
+int shear_commit_epoch_for(const unsigned char header[SHEAR_HEADER_LEN]) {
+  unsigned char k[32];
+  shear_key(header, k);
+  return commit_epoch(k);
+}
+
+int shear_commit_epoch(void) {
+  return commit_epoch(NULL);
+}
+
+/* 0 bound, -1 no VM (allocation failed or no slot), -2 the header's key is
+ * not the live epoch's while the miner drives epochs (wait for the job
+ * switch; PSA k-change: never rekey the live cache back to an old key). */
 int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]) {
   unsigned char k[32];
   RxTls *tls = tls_slot();
@@ -709,23 +765,32 @@ int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]) {
   unsigned gen = atomic_load_explicit(&g_gen, memory_order_acquire);
   unsigned epoch = atomic_load_explicit(&g_epoch, memory_order_acquire);
   int tid = tls->tid;
-  if (g_vms[tid] && g_have && tls->gen == gen && tls->epoch == epoch && memcmp(g_k, k, 32) == 0) {
-    tls->vm = g_vms[tid];
+  if (tls->vm && tls->has_k && tls->gen == gen && tls->epoch == epoch && memcmp(tls->k, k, 32) == 0) {
     tls->primed = 0;
     return 0;
   }
+  /* Every VM already points at the live pair (commit and rekey re-point
+   * them all under rx_wr); record the binding under the read lock. */
+  rx_rd();
   if (g_vms[tid] && g_have && memcmp(g_k, k, 32) == 0) {
-    if (g_flags & RANDOMX_FLAG_FULL_MEM) randomx_vm_set_dataset(g_vms[tid], g_dataset);
-    else randomx_vm_set_cache(g_vms[tid], g_cache);
     tls->vm = g_vms[tid];
-    tls->gen = gen;
-    tls->epoch = epoch;
+    tls->gen = atomic_load_explicit(&g_gen, memory_order_acquire);
+    tls->epoch = atomic_load_explicit(&g_epoch, memory_order_acquire);
+    memcpy(tls->k, k, 32);
+    tls->has_k = 1;
     tls->primed = 0;
+    rx_un();
     return 0;
   }
+  rx_un();
 
   rx_wr();
   if (!g_have || memcmp(g_k, k, 32) != 0) {
+    if (g_have && atomic_load_explicit(&g_epoch_mode, memory_order_acquire)) {
+      rx_un();
+      tls->primed = 0;
+      return -2;
+    }
     atomic_fetch_add_explicit(&g_gen, 1, memory_order_release);
     wait_hash_idle();
     if (init_cache_locked(k) != 0) {
@@ -744,6 +809,9 @@ int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]) {
   if (!g_vms[tid]) g_vms[tid] = create_vm_locked();
   tls->vm = g_vms[tid];
   tls->gen = atomic_load_explicit(&g_gen, memory_order_relaxed);
+  tls->epoch = atomic_load_explicit(&g_epoch, memory_order_relaxed);
+  memcpy(tls->k, g_k, 32);
+  tls->has_k = 1;
   tls->primed = 0;
   rx_un();
   return tls->vm ? 0 : -1;
@@ -765,7 +833,8 @@ int shear_hash_checked(const unsigned char header[SHEAR_HEADER_LEN], unsigned ch
   RxTls *tls = tls_slot();
   if (!tls) return -1;
   for (;;) {
-    if (shear_bind(header) != 0) return -1;
+    int b = shear_bind(header);
+    if (b != 0) return b;
     unsigned gen = 0;
     randomx_vm *vm = hot_vm(tls, &gen);
     if (!vm) continue;
@@ -785,7 +854,8 @@ void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[
 int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]) {
   RxTls *tls = tls_slot();
   if (!tls) return -1;
-  if (shear_bind(header) != 0) return -1;
+  int b = shear_bind(header);
+  if (b != 0) return b;
   unsigned gen = 0;
   randomx_vm *vm = hot_vm(tls, &gen);
   if (!vm) return -1;
@@ -804,7 +874,7 @@ int shear_hash_next(const unsigned char header[SHEAR_HEADER_LEN], unsigned char 
   if (!tls || !tls->primed) return -1;
   unsigned char k[32];
   shear_key(header, k);
-  if (!g_have || memcmp(g_k, k, 32) != 0) {
+  if (!tls->has_k || memcmp(tls->k, k, 32) != 0) {
     tls->primed = 0;
     return -1;
   }
