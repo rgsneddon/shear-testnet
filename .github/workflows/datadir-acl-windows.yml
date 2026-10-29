@@ -1,0 +1,46 @@
+# PR146 (PSA P2-3): the node datadir ACL (node/src/datadir_acl.js) on a real
+# Windows runner. sheark-miner/bench/win_acl_diag.mjs makes fresh datadirs
+# under the temp dir, the user profile and RUNNER_TEMP, checks that
+# ensureDatadir accepts them, leaves a correct ACL alone, and repairs one
+# that grants Everyone read. Any refusal or failed check exits 1 and fails
+# this job; there is no fallback. tests/test_datadir_acl_windows_ci_v12.js
+# checks this file's shape on Linux.
+name: datadir-acl-windows
+on:
+  push:
+    branches: [main, feat/shear-testnet-v12]
+    paths:
+      - 'node/src/datadir_acl.js'
+      - 'sheark-miner/bench/win_acl_diag.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/datadir-acl-windows.yml'
+  pull_request:
+    paths:
+      - 'node/src/datadir_acl.js'
+      - 'sheark-miner/bench/win_acl_diag.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/datadir-acl-windows.yml'
+
+concurrency:
+  group: datadir-acl-windows-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  acl:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # koffi (the Win32 security calls) ships prebuilt; no install scripts.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Datadir ACL on this runner (fails on refusal)
+        shell: pwsh
+        run: node sheark-miner/bench/win_acl_diag.mjs
