@@ -231,15 +231,183 @@ describe('mainnet host files', () => {
     }
   });
 
-  it('check_host knows the three roles, their OSes and the five ports', () => {
+  it('check_host knows the three roles, their OSes, their units and the ports each role opens', () => {
     const text = read('scripts/check_host.sh');
-    assert.match(text, /pool\) +os=ubuntu; units="shear-p2p\.service shear-pool\.service"/);
-    assert.match(text, /p2p-a\) os=debian; units="shear-node\.service"/);
-    assert.match(text, /p2p-b\) os=fedora; units="shear-node\.service"/);
-    assert.match(text, /" 22 80 443 1111 30303 "/);
+    assert.match(text, /pool\) +os=ubuntu; mn="shear-p2p\.service shear-pool\.service"; v12="shear-v12-p2p\.service shear-v12-pool\.service"/);
+    assert.match(text, /p2p-a\) os=debian; mn="shear-node\.service"; v12="shear-v12-node\.service"/);
+    assert.match(text, /p2p-b\) os=fedora; mn="shear-node\.service"; v12="shear-v12-node\.service"/);
+    assert.match(text, /pool\) +ports=" 22 80 443 1111 30303 "/);
+    assert.match(text, /p2p-a\|p2p-b\) ports=" 22 30303 "/);
     assert.match(text, /systemctl show -p Restart --value/);
+    assert.match(text, /systemctl show -p Environment --value/);
+    assert.match(text, /systemctl show -p EnvironmentFiles --value/);
+    assert.match(text, /sshd -T/);
     assert.match(text, /ss -tulnH/);
-    assert.equal(bash([file('scripts/check_host.sh'), 'nope']).status, 2);
+    assert.equal(bash([file('scripts/check_host.sh'), 'nope', '--phase', 'live']).status, 2);
+    assert.doesNotMatch(text, /SHEAR_MAINNET_EMIT=1|SHEAR_MAINNET_EMIT_CONFIRM=/, 'check_host never sets the emit gate');
+  });
+
+  it('check_host needs --phase pre-genesis or live', () => {
+    for (const args of [['pool'], ['pool', '--phase'], ['pool', '--phase', 'later'], ['p2p-a', 'live']]) {
+      const got = bash([file('scripts/check_host.sh'), ...args]);
+      assert.equal(got.status, 2, args.join(' '));
+      assert.match(got.stdout + got.stderr, /--phase pre-genesis\|live/, args.join(' '));
+    }
+  });
+
+  // A host as check_host sees it: a fixture root plus mock systemctl, ss,
+  // sshd, ufw, nft, firewall-cmd, journalctl, curl, git and stat on PATH.
+  // Nothing here reaches a host or a real systemd.
+  const MOCKS = {
+    systemctl: String.raw`R="$SHEAR_CHECK_ROOT"; M="$MOCK"; cmd="$1"; shift
+case "$cmd" in
+  list-unit-files) for f in "$R"/etc/systemd/system/shear*.service; do [ -f "$f" ] && echo "$(basename "$f") disabled"; done ;;
+  is-enabled) u="$(printf '%s\n' "$@" | tail -1)"; if [ -e "$M/enabled/$u" ]; then echo enabled; exit 0; fi; echo disabled; exit 1 ;;
+  is-active) u="$(printf '%s\n' "$@" | tail -1)"; if [ -e "$M/active/$u" ]; then echo active; exit 0; fi; echo inactive; exit 3 ;;
+  show) prop=""; u=""; while [ $# -gt 0 ]; do case "$1" in -p) prop="$2"; shift 2 ;; --value) shift ;; *) u="$1"; shift ;; esac; done
+    files=("$R/etc/systemd/system/$u"); for d in "$R/etc/systemd/system/$u.d"/*.conf; do [ -f "$d" ] && files+=("$d"); done
+    case "$prop" in
+      Environment) grep -h '^Environment=' "\${files[@]}" | sed 's/^Environment=//' | tr '\n' ' ' | sed 's/ $//'; echo ;;
+      EnvironmentFiles) grep -h '^EnvironmentFile=' "\${files[@]}" | sed 's/^EnvironmentFile=-\{0,1\}//; s/$/ (ignore_errors=no)/' ;;
+      DropInPaths) for d in "\${files[@]:1}"; do printf '%s ' "\${d#$R}"; done; echo ;;
+      Restart) v="$(grep -h '^Restart=' "\${files[@]}" | tail -1 | cut -d= -f2)"; echo "\${v:-no}" ;;
+      OnFailure) grep -h '^OnFailure=' "\${files[@]}" | tail -1 | cut -d= -f2- ;;
+      FragmentPath) echo "/etc/systemd/system/$u" ;;
+    esac ;;
+esac`,
+    ss: 'cat "$MOCK/ss"',
+    sshd: 'cat "$MOCK/sshd"',
+    ufw: 'cat "$MOCK/ufw"',
+    nft: 'cat "$MOCK/nft"',
+    'firewall-cmd': 'case "$*" in *--get-default-zone*) echo public ;; *--get-target*) echo DROP ;; *--list-services*) echo ;; *--list-rich-rules*) cat "$MOCK/rich" ;; *--list-ports*) cat "$MOCK/fwports" ;; esac',
+    journalctl: 'u=""; while [ $# -gt 0 ]; do [ "$1" = -u ] && u="$2"; shift; done; cat "$MOCK/journal/$u" 2>/dev/null',
+    curl: String.raw`url="$(printf '%s\n' "$@" | tail -1)"; port="$(echo "$url" | sed -E 's#^http://127\.0\.0\.1:([0-9]+)/.*#\1#')"; p="$(echo "$url" | sed -E 's#^http://[^/]+/##; s#[?].*##')"
+f="$MOCK/rpc/$port-$p"
+if [ -f "$f.seq" ]; then n=$(( $(cat "$f.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$f.n"; sed -n "\${n}p" "$f.seq"; exit 0; fi
+[ -f "$f" ] && cat "$f" || exit 7`,
+    git: '[ -f "$MOCK/tag" ] && cat "$MOCK/tag" || exit 128',
+    stat: 'f="$(printf "%s\\n" "$@" | tail -1)"; if [ -f "$MOCK/stat/$(basename "$f")" ]; then cat "$MOCK/stat/$(basename "$f")"; else exec /usr/bin/stat "$@"; fi',
+  };
+  const v12Of = (name) => {
+    const real = `units/${name.replace('shear-', 'shear-v12-')}`;
+    if (fs.existsSync(file(real))) return read(real);
+    return read(`units/${name}`).replace(/shear-v1\b/g, 'shear-testnet-v12').replace(/shear\/mainnet/g, 'shear/testnet-v12')
+      .replace(/seal-keys\//g, 'seal-keys-v12/').replace(/\/opt\/shear\b/g, '/opt/shear-v12').replace(/pool\.env/g, 'pool-v12.env')
+      .replace(/shear-p2p\.service/g, 'shear-v12-p2p.service');
+  };
+  const FAKE_ASERT = "export const MAGIC_MAINNET = 'shear-v1';\nexport const MAGIC_TESTNET_V12 = 'shear-testnet-v12';\nexport const GENESIS_MAINNET = '2026-09-18T21:00:00+01:00';\n"
+    + 'export function consensusFingerprint(m) { return `law:${m}`; }\n'
+    + 'export function mainnetFingerprint() { return `${consensusFingerprint(MAGIC_MAINNET)}:GENESIS=${GENESIS_MAINNET}`; }\n';
+
+  function hostFixture(role, phase) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'checkhost-'));
+    const mock = path.join(root, '.mock');
+    const put = (p, body = '') => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body); };
+    const R = (p) => path.join(root, p);
+    const M = (p) => path.join(mock, p);
+    for (const [cmd, body] of Object.entries(MOCKS)) { put(M(`bin/${cmd}`), `#!/usr/bin/env bash\n${body.replace(/\\\$\{/g, '${')}\n`); fs.chmodSync(M(`bin/${cmd}`), 0o755); }
+    put(R('etc/os-release'), `ID=${{ pool: 'ubuntu', 'p2p-a': 'debian', 'p2p-b': 'fedora' }[role]}\n`);
+    const mn = role === 'pool' ? ['shear-p2p.service', 'shear-pool.service'] : ['shear-node.service'];
+    const v12 = mn.map((u) => u.replace('shear-', 'shear-v12-'));
+    mn.forEach((u) => put(R(`etc/systemd/system/${u}`), read(`units/${u}`)));
+    mn.forEach((u) => put(R(`etc/systemd/system/${u.replace('shear-', 'shear-v12-')}`), v12Of(u)));
+    put(R('opt/shear/crypto/asert.js'), FAKE_ASERT); put(R('opt/shear-v12/crypto/asert.js'), FAKE_ASERT);
+    put(R('var/lib/shear/mainnet/.keep')); put(R('var/lib/shear/testnet-v12/.keep'));
+    if (role === 'pool') {
+      put(R('etc/shear/pool.env'), 'SHEAR_STRATUM_AUTH_PUB=abc\n'); put(R('etc/shear/pool-v12.env'), 'SHEAR_STRATUM_AUTH_PUB=abc\n');
+      put(M('stat/pool.env'), 'root:shear 640\n'); put(M('stat/pool-v12.env'), 'root:shear 640\n');
+    }
+    const listen = ['tcp LISTEN 0 511 0.0.0.0:22 0.0.0.0:*', 'tcp LISTEN 0 511 0.0.0.0:30303 0.0.0.0:*', 'tcp LISTEN 0 511 127.0.0.1:18333 0.0.0.0:*'];
+    if (role === 'pool') listen.push('tcp LISTEN 0 511 0.0.0.0:1111 0.0.0.0:*', 'tcp LISTEN 0 511 0.0.0.0:443 0.0.0.0:*', 'tcp LISTEN 0 511 127.0.0.1:8088 0.0.0.0:*');
+    put(M('ss'), `${listen.join('\n')}\n`);
+    put(M('sshd'), 'port 22\npermitrootlogin prohibit-password\npasswordauthentication no\n');
+    put(M('ufw'), 'Status: active\n\nTo                         Action      From\n22/tcp                     LIMIT IN    Anywhere\n30303/tcp                  ALLOW IN    Anywhere\n');
+    put(M('nft'), 'table inet filter {\n chain input {\n  type filter hook input priority filter; policy drop;\n  tcp dport 22 ct state new add @ssh4 { ip saddr limit rate over 10/minute burst 5 packets } drop\n  tcp dport { 22, 30303 } accept\n }\n}\n');
+    put(M('rich'), 'rule family="ipv4" service name="ssh" accept limit value="10/m"\nrule family="ipv6" service name="ssh" accept limit value="10/m"\n');
+    put(M('fwports'), '30303/tcp\n');
+    put(M('enabled/nftables'));
+    const rpcPort = role === 'pool' ? 18333 : 18332;
+    const live = phase === 'live';
+    const magic = live ? 'shear-v1' : 'shear-testnet-v12';
+    const stats = (h) => JSON.stringify({ ok: true, height: h, hash: 'ab'.repeat(32), magic, bookLawFingerprint: `law:${magic}` });
+    put(M(`rpc/${rpcPort}-stats.seq`), `${stats(100)}\n${stats(103)}\n`);
+    put(M(`rpc/${rpcPort}-header`), JSON.stringify({ ok: true, height: 0, hash: 'cd'.repeat(32) }));
+    for (const u of live ? mn : v12) { put(M(`active/${u}`)); put(M(`enabled/${u}`)); }
+    if (live) put(M('tag'), 'v1.0.0\n');
+    const env = { SHEAR_CHECK_ROOT: root, MOCK: mock, PATH: `${M('bin')}:${process.env.PATH}`, SHEAR_CHECK_TIP_WAIT: '0' };
+    if (live) env.SHEAR_RELEASE_TAG = 'v1.0.0';
+    return { root, mock, R, M, put, mn, v12, env, rpcPort, stats };
+  }
+  const check = (fx, role, phase, extra = {}) => bash([file('scripts/check_host.sh'), role, '--phase', phase], { ...fx.env, ...extra });
+
+  for (const role of ['pool', 'p2p-a', 'p2p-b']) {
+    for (const phase of ['pre-genesis', 'live']) {
+      it(`check_host ${role} --phase ${phase} passes a good host`, () => {
+        const fx = hostFixture(role, phase);
+        const got = check(fx, role, phase);
+        assert.equal(got.status, 0, got.stdout + got.stderr);
+        assert.match(got.stdout, new RegExp(`check_host ${role} ${phase}: PASS`));
+      });
+    }
+  }
+
+  it('check_host pre-genesis fails on a mainnet unit that could emit, or a v12 net that is not up', () => {
+    const cases = [
+      ['emit in a drop-in', (fx) => fx.put(fx.R(`etc/systemd/system/${fx.mn[0]}.d/emit.conf`), '[Service]\nEnvironment=SHEAR_MAINNET_EMIT=1\n'), /SHEAR_MAINNET_EMIT/],
+      ['mainnet enabled', (fx) => fx.put(fx.M(`enabled/${fx.mn[0]}`)), /enabled before genesis/],
+      ['mainnet active, no emit:false', (fx) => { fx.put(fx.M(`active/${fx.mn[0]}`)); fx.put(fx.M(`journal/${fx.mn[0]}`), '{"event":"boot","emit":true,"mainnet":true}\n'); }, /emit:false/],
+      ['v12 down', (fx) => fs.unlinkSync(fx.M(`active/${fx.v12[0]}`)), /is not active/],
+      ['v12 rpc on the wrong book', (fx) => fx.put(fx.M(`rpc/${fx.rpcPort}-stats.seq`), `${JSON.stringify({ height: 1, magic: 'shear-v1', bookLawFingerprint: 'law:shear-v1' })}\n`), /magic/],
+      ['bootstrap in the env', (fx) => fx.put(fx.R(`etc/systemd/system/${fx.v12[0]}.d/b.conf`), '[Service]\nEnvironment=SHEAR_BOOTSTRAP=1\n'), /SHEAR_BOOTSTRAP/],
+      ['rpc bound in public', (fx) => fx.put(fx.R(`etc/systemd/system/${fx.v12[0]}.d/r.conf`), '[Service]\nEnvironment=SHEAR_RPC_BIND=0.0.0.0\n'), /SHEAR_RPC_BIND/],
+      ['password ssh', (fx) => fx.put(fx.M('sshd'), 'passwordauthentication yes\npermitrootlogin no\n'), /PasswordAuthentication/],
+      ['ssh not limited', (fx) => fx.put(fx.M('ufw'), 'Status: active\n22/tcp ALLOW IN Anywhere\n'), /rate limit/],
+      ['public 8088', (fx) => fx.put(fx.M('ss'), 'tcp LISTEN 0 511 0.0.0.0:8088 0.0.0.0:*\n'), /public tcp listener on 0\.0\.0\.0:8088/],
+    ];
+    for (const [name, tweak, why] of cases) {
+      const fx = hostFixture('pool', 'pre-genesis');
+      tweak(fx);
+      const got = check(fx, 'pool', 'pre-genesis');
+      assert.equal(got.status, 1, `${name}: ${got.stdout}`);
+      assert.match(got.stdout, why, name);
+    }
+    // An active mainnet node that logged a deliberate emit:false is fine.
+    const fx = hostFixture('p2p-a', 'pre-genesis');
+    fx.put(fx.M('active/shear-node.service'));
+    fx.put(fx.M('journal/shear-node.service'), '{"event":"boot","emit":false,"reason":"clock_wait","mainnet":true}\n');
+    const ok = check(fx, 'p2p-a', 'pre-genesis');
+    assert.match(ok.stdout, /emit:false/);
+  });
+
+  it('check_host on p2p-a and p2p-b allows only 22 and 30303', () => {
+    for (const role of ['p2p-a', 'p2p-b']) {
+      const fx = hostFixture(role, 'live');
+      fx.put(fx.M('ss'), 'tcp LISTEN 0 511 0.0.0.0:22 0.0.0.0:*\ntcp LISTEN 0 511 0.0.0.0:30303 0.0.0.0:*\ntcp LISTEN 0 511 0.0.0.0:443 0.0.0.0:*\n');
+      const got = check(fx, role, 'live');
+      assert.equal(got.status, 1, role);
+      assert.match(got.stdout, /public tcp listener on 0\.0\.0\.0:443/, role);
+    }
+  });
+
+  it('check_host live fails on a wrong book, release, a stalled tip or a v12 net still up', () => {
+    const cases = [
+      ['tag', (fx) => fx.put(fx.M('tag'), 'v0.9.0\n'), /release tag/],
+      ['no tag given', (fx) => delete fx.env.SHEAR_RELEASE_TAG, /SHEAR_RELEASE_TAG/],
+      ['stalled', (fx) => fx.put(fx.M(`rpc/${fx.rpcPort}-stats.seq`), `${fx.stats(100)}\n${fx.stats(100)}\n`), /tip did not rise/],
+      ['wrong magic', (fx) => fx.put(fx.M(`rpc/${fx.rpcPort}-stats.seq`), `${JSON.stringify({ height: 1, magic: 'shear-testnet-v12', bookLawFingerprint: 'law:shear-v1' })}\n${JSON.stringify({ height: 2, magic: 'shear-testnet-v12' })}\n`), /magic/],
+      ['wrong fingerprint', (fx) => fx.put(fx.M(`rpc/${fx.rpcPort}-stats.seq`), `${JSON.stringify({ height: 1, magic: 'shear-v1', bookLawFingerprint: 'law:other' })}\n${JSON.stringify({ height: 2, magic: 'shear-v1' })}\n`), /fingerprint/],
+      ['genesis differs from the peer', (fx) => { fx.env.SHEAR_GENESIS_HASH = 'ee'.repeat(32); }, /genesis/],
+      ['v12 still up', (fx) => fx.put(fx.M(`active/${fx.v12[0]}`)), /v12 .*still active/],
+      ['mainnet down', (fx) => fs.unlinkSync(fx.M(`active/${fx.mn[0]}`)), /is not active/],
+      ['no stratum', (fx) => fx.put(fx.M('ss'), 'tcp LISTEN 0 511 0.0.0.0:22 0.0.0.0:*\ntcp LISTEN 0 511 0.0.0.0:30303 0.0.0.0:*\n'), /nothing listens on :1111/],
+    ];
+    for (const [name, tweak, why] of cases) {
+      const fx = hostFixture('pool', 'live');
+      tweak(fx);
+      const got = check(fx, 'pool', 'live');
+      assert.equal(got.status, 1, `${name}: ${got.stdout}`);
+      assert.match(got.stdout, why, name);
+    }
   });
 
   it('the runbook gates every host change on a GO and records the rulings', () => {
