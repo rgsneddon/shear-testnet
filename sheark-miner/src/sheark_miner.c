@@ -61,7 +61,13 @@
 #define LINE_CAP 8192
 #define HEX_CAP (SHEAR_HEADER_LEN * 2 + 16)
 #define QCAP 8192
-#define IN_FLIGHT_MAX 1
+/* PR146: up to 4 submits in flight, each matched to its ack by a unique
+ * submit id (the pool echoes msg.id). One at a time with a busy back-off
+ * left queued shares waiting past the job change that then dropped them. */
+#define IN_FLIGHT_MAX 4
+/* PR146: the pool's PREV_JOB_GRACE_MS (pool/src/pool.js) for a previous
+ * job and for the previous share target (noteConnShareBits). */
+#define SHARE_GRACE_MS 12000
 #define DEFAULT_WORKER "worker"
 
 static const char *g_user = NULL;
@@ -123,6 +129,7 @@ typedef struct {
   /* R28: the one-time key this nonce binds (BluNotes). */
   int have_key;
   BluKey key;
+  uint64_t enq_ns; /* PR146: when the hit was queued, for the 12 s grace */
 } Share;
 
 static pthread_mutex_t g_q_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -147,8 +154,18 @@ static int g_color = 1;
 
 
 static atomic_int g_inflight = 0;
-static Share g_sent;
-static int g_have_sent = 0;
+typedef struct {
+  int used;
+  int id;
+  uint64_t sent_ns;
+  Share s;
+} SentShare;
+static SentShare g_sent_tab[IN_FLIGHT_MAX];
+static int g_submit_id = 1; /* 1 is the login; submits use 2.. */
+/* PR146: the parent block (header bytes 4..36) of recent job gens. */
+#define GEN_RING 64
+static int g_gen_ring_gen[GEN_RING];
+static unsigned char g_gen_ring_parent[GEN_RING][32];
 static int enqueue_front(const Share *s);
 static _Atomic uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
@@ -176,7 +193,6 @@ static atomic_int g_print_req;
 static atomic_int g_thermal_state; /* 0 ok, 1 reduced, 2 minimum */
 static pthread_mutex_t g_st_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_job_at_ns = 0;
-static uint64_t g_sent_ns = 0;
 static double g_lat_last = -1, g_lat_sum = 0;
 static uint64_t g_lat_n = 0;
 static uint64_t g_busy_until_ns = 0, g_busy_backoff_ns = 0;
@@ -743,7 +759,7 @@ static int send_stats(Conn *c, const char *login, int threads) {
   return conn_write(c, line, n);
 }
 
-static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce, const char *hash, const BluKey *key) {
+static int send_submit(Conn *c, const char *login, int threads, int id, const char *jobId, uint64_t nonce, const char *hash, const BluKey *key) {
   char ident[1400], line[3900], keys[200] = "";
   identity_json(ident, sizeof(ident), login, threads);
   if (key) {
@@ -753,14 +769,19 @@ static int send_submit(Conn *c, const char *login, int threads, const char *jobI
     snprintf(keys, sizeof(keys), ",\"shareR\":\"%s\",\"shareP\":\"%s\",\"viewTag\":%u", R, P, (unsigned)key->tag);
   }
   int n = snprintf(line, sizeof(line),
-                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"%s},"
+                   "{\"id\":%d,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"%s},"
                    "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"%s}\n",
-                   ident, jobId, (unsigned long long)nonce, hash, keys,
+                   id, ident, jobId, (unsigned long long)nonce, hash, keys,
                    ident, jobId, (unsigned long long)nonce, hash, keys);
   return conn_write(c, line, n);
 }
 
 static void promote_pending_job(void);
+
+static void note_gen_parent_locked(int gen, const unsigned char header[SHEAR_HEADER_LEN]) {
+  g_gen_ring_gen[gen % GEN_RING] = gen;
+  memcpy(g_gen_ring_parent[gen % GEN_RING], header + 4, 32);
+}
 
 static void apply_job(const char *line) {
   char method[32] = "";
@@ -812,6 +833,7 @@ static void apply_job(const char *line) {
     g_job_gen++;
     job.gen = g_job_gen;
     job.have = 1;
+    note_gen_parent_locked(job.gen, job.header);
     g_main_job = job;
     atomic_store_explicit(&g_share_bits_live, job.share_bits, memory_order_release);
     atomic_store_explicit(&g_block_bits_live, job.block_bits, memory_order_release);
@@ -842,6 +864,7 @@ static void install_live_job_locked(JobSnap job) {
   g_job_at_ns = st_now_ns();
   g_job_gen++;
   job.gen = g_job_gen;
+  note_gen_parent_locked(job.gen, job.header);
   job.have = 1;
   g_main_job = job;
   g_have_main = 1;
@@ -893,17 +916,38 @@ static void apply_ack(const char *line) {
   char low[160];
   snprintf(low, sizeof(low), "%s", err[0] ? err : status);
   for (char *p = low; *p; p++) *p = (char)tolower((unsigned char)*p);
-  int inflight = atomic_load(&g_inflight);
-  /* Login replies with status=OK. Only a submit ACK (in-flight share) counts. */
-  if (msgid == 1 && inflight <= 0) {
+  /* Login replies with status=OK. Only a submit ACK (in-flight share)
+   * counts. Submit ids start at 2, so id 1 is always the login. */
+  if (msgid == 1) {
     if (err[0] || note[0]) {
       fprintf(stderr, "pool refused login: %s\n", note[0] ? note : err);
     }
     return;
   }
-  if (inflight > 0 && g_sent_ns) {
+  /* PR146: the in-flight submit this ack answers, by id; a pool that does
+   * not echo ids gets the oldest (replies are in order). */
+  SentShare acked;
+  memset(&acked, 0, sizeof(acked));
+  {
+    int hit = -1;
+    for (int i = 0; i < IN_FLIGHT_MAX; i++) {
+      if (g_sent_tab[i].used && g_sent_tab[i].id == msgid) hit = i;
+    }
+    if (hit < 0) {
+      for (int i = 0; i < IN_FLIGHT_MAX; i++) {
+        if (g_sent_tab[i].used && (hit < 0 || g_sent_tab[i].sent_ns < g_sent_tab[hit].sent_ns)) hit = i;
+      }
+    }
+    if (hit >= 0) {
+      acked = g_sent_tab[hit];
+      g_sent_tab[hit].used = 0;
+      atomic_fetch_sub(&g_inflight, 1);
+    }
+  }
+  int inflight = acked.used;
+  if (inflight > 0 && acked.sent_ns) {
     pthread_mutex_lock(&g_st_mu);
-    g_lat_last = (double)(st_now_ns() - g_sent_ns) / 1e6;
+    g_lat_last = (double)(st_now_ns() - acked.sent_ns) / 1e6;
     g_lat_sum += g_lat_last;
     g_lat_n++;
     pthread_mutex_unlock(&g_st_mu);
@@ -912,8 +956,6 @@ static void apply_ack(const char *line) {
     g_busy_backoff_ns = 0;
     if (inflight > 0) {
       g_accepted++;
-      g_have_sent = 0;
-      atomic_fetch_sub(&g_inflight, 1);
       char blk[16] = "";
       json_token(line, "block", blk, sizeof(blk));
       json_token(line, "hash", g_last_ack_hash, sizeof(g_last_ack_hash));
@@ -965,8 +1007,7 @@ static void apply_ack(const char *line) {
     return;
   }
   if (strstr(low, "busy")) {
-    if (inflight > 0) atomic_fetch_sub(&g_inflight, 1);
-    if (g_have_sent) enqueue_front(&g_sent);
+    if (inflight > 0) enqueue_front(&acked.s);
     /* R41: back off before re-sending (100 ms doubling to 2 s). A soak saw
      * 3910 busy replies in five minutes from an immediate re-send. */
     g_busy_n++;
@@ -978,10 +1019,8 @@ static void apply_ack(const char *line) {
   if (strstr(low, "stale")) {
     if (inflight > 0) {
       g_stale++;
-      atomic_fetch_sub(&g_inflight, 1);
       note_reason(g_stl_r, 8, err[0] ? err : "stale");
     }
-    g_have_sent = 0;
     if (g_color) fprintf(stderr, C_YEL "stale %s" C_RST "\n", err[0] ? err : (low[0] ? low : "stale"));
     else fprintf(stderr, "stale %s\n", err[0] ? err : (low[0] ? low : "stale"));
     return;
@@ -989,10 +1028,8 @@ static void apply_ack(const char *line) {
   if (err[0] || strstr(low, "error") || strstr(low, "refus")) {
     if (inflight > 0) {
       g_rejected++;
-      atomic_fetch_sub(&g_inflight, 1);
       note_reason(g_rej_r, 16, err[0] ? err : (low[0] ? low : "unknown"));
     }
-    g_have_sent = 0;
     if (g_color) fprintf(stderr, C_RED "reject %s" C_RST "\n", err[0] ? err : (low[0] ? low : "unknown"));
     else fprintf(stderr, "reject %s\n", err[0] ? err : (low[0] ? low : "unknown"));
     if (strstr(low, "old_miner") || strstr(low, "client")) {
@@ -1057,6 +1094,7 @@ static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char 
   s->nonce = nonce;
   s->gen = gen;
   s->share_bits = credit_bits_of_nonce(nonce);
+  s->enq_ns = st_now_ns();
   s->have_key = key != NULL;
   if (key) s->key = *key;
   shear_hash_hex(hash, s->hash);
@@ -1300,35 +1338,65 @@ static void clear_jobs(void) {
   pthread_mutex_lock(&g_q_mu);
   g_qhead = g_qtail = 0;
   pthread_mutex_unlock(&g_q_mu);
+  /* A new connection: nothing of the old one is in flight. */
+  memset(g_sent_tab, 0, sizeof(g_sent_tab));
+  atomic_store(&g_inflight, 0);
+}
+
+/* PR146: keep a queued share on the pool's terms. The live job at the live
+ * target is always credited. Otherwise (a previous job, or a share target
+ * that stepped up since the hit) the pool credits it for 12 s, and only on
+ * the same parent block: a parent change is a stale share at any age. */
+static int share_keep(double age_ms, int same_gen, int same_parent, int share_bits, int live_bits) {
+  int step_up = live_bits > share_bits && share_bits > 0;
+  if (same_gen && !step_up) return 1;
+  if (!same_parent) return 0;
+  return age_ms < (double)SHARE_GRACE_MS;
+}
+
+static int share_still_good(const Share *s) {
+  int live_gen = atomic_load_explicit(&g_job_seq, memory_order_acquire);
+  int live = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
+  int same_parent = 0;
+  pthread_mutex_lock(&g_job_mu);
+  if (g_have_main && g_main_job.have && g_gen_ring_gen[s->gen % GEN_RING] == s->gen) {
+    same_parent = memcmp(g_gen_ring_parent[s->gen % GEN_RING], g_main_job.header + 4, 32) == 0;
+  }
+  pthread_mutex_unlock(&g_job_mu);
+  double age_ms = (double)(st_now_ns() - s->enq_ns) / 1e6;
+  return share_keep(age_ms, s->gen == live_gen, same_parent, s->share_bits, live);
 }
 
 static void flush_shares(Conn *mainc) {
   Share s;
   while (dequeue_share(&s)) {
-    int live_gen = atomic_load_explicit(&g_job_seq, memory_order_acquire);
-    if (s.gen != live_gen) {
+    if (!share_still_good(&s)) {
       g_dropped++;
       continue;
     }
-    int live = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
-    if (live > s.share_bits && s.share_bits > 0) {
-      g_dropped++;
-      continue;
+    int slot = -1;
+    for (int i = 0; i < IN_FLIGHT_MAX; i++) {
+      if (!g_sent_tab[i].used) {
+        slot = i;
+        break;
+      }
     }
-    if (atomic_load_explicit(&g_inflight, memory_order_acquire) >= IN_FLIGHT_MAX
+    if (slot < 0 || atomic_load_explicit(&g_inflight, memory_order_acquire) >= IN_FLIGHT_MAX
         || (g_busy_until_ns && st_now_ns() < g_busy_until_ns)) {
       enqueue_front(&s);
       return;
     }
-    int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce, s.hash, s.have_key ? &s.key : NULL);
+    if (++g_submit_id >= 1000000000 || g_submit_id < 2) g_submit_id = 2;
+    int wr = send_submit(mainc, g_login, g_threads, g_submit_id, s.jobId, s.nonce, s.hash, s.have_key ? &s.key : NULL);
     if (wr == 1) {
       enqueue_front(&s);
       return;
     }
     if (wr == 0) {
-      g_sent = s;
-      g_sent_ns = st_now_ns();
-      g_have_sent = 1;
+      g_sent_tab[slot].used = 1;
+      g_sent_tab[slot].id = g_submit_id;
+      g_sent_tab[slot].sent_ns = st_now_ns();
+      g_sent_tab[slot].s = s;
       atomic_fetch_add_explicit(&g_inflight, 1, memory_order_relaxed);
       g_submitted++;
     }
@@ -1972,6 +2040,8 @@ static int mine_once(void) {
       }
       if (r > 0) drain_lines(&mainc);
     }
+    /* PR146: send what the current job allows before a switch, then after. */
+    flush_shares(&mainc);
     promote_pending_job();
     flush_shares(&mainc);
     time_t now = time(NULL);
@@ -2056,6 +2126,12 @@ int main(int argc, char **argv) {
     if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
       backend_arg = argv[++i];
       backend_explicit = 1;
+    }
+    if (strcmp(argv[i], "--share-keep-vector") == 0 && i + 5 < argc) {
+      /* PR146 test vector: AGE_MS SAME_GEN SAME_PARENT SHARE_BITS LIVE_BITS -> keep|drop. */
+      int k = share_keep(atof(argv[i + 1]), atoi(argv[i + 2]), atoi(argv[i + 3]), atoi(argv[i + 4]), atoi(argv[i + 5]));
+      printf("%s\n", k ? "keep" : "drop");
+      return 0;
     }
     if (strcmp(argv[i], "--blu-vector") == 0 && i + 3 < argc) {
       /* R28 known-answer check against crypto/blunote.js: one key from a given r, and its binding. */

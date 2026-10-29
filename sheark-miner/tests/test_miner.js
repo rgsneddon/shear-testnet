@@ -155,7 +155,8 @@ describe('ShearK-Miner', () => {
     assert.match(hashSrc, /shear-share-dest-v1/);
     assert.match(hashSrc, /shear-note-commit-v1/);
     assert.match(src, /\\033\[1;91m\\033\[1;93m\\033\[1;92m/);
-    assert.match(src, /msgid == 1 && inflight <= 0/);
+    // PR146: submit ids start at 2, so id 1 is always the login reply.
+    assert.match(src, /if \(msgid == 1\) \{/);
     assert.match(src, /\\033\[1;92m/);
     assert.match(src, /\\033\[1;93m/);
     assert.match(src, /\\033\[1;91m/);
@@ -190,7 +191,8 @@ describe('ShearK-Miner', () => {
     assert.equal(/randomx_calculate_hash\(g_vm,/.test(hashc), false);
     assert.match(src, /pthread_setaffinity_np/);
     assert.match(src, /g_cpu_map/);
-    assert.match(src, /s\.gen != live_gen/);
+    // PR146: queued shares keep the pool's 12 s grace (same parent only).
+    assert.match(src, /share_keep\(age_ms, s->gen == live_gen, same_parent/);
     assert.match(src, /enqueue_share\(job\.jobId, stamped, hash, job\.gen, blu_enabled\(\) \? &key : NULL\)/);
     assert.match(src, /never submit a digest for the previous header/);
     assert.match(src, /g_stale\+\+/);
@@ -199,7 +201,8 @@ describe('ShearK-Miner', () => {
     assert.match(src, /enqueue_share\(job\.jobId, primed_n, hash, job\.gen, blu_enabled\(\) \? &primed_key : NULL\)/);
     assert.match(src, /g_stamp_seq/);
     assert.match(src, /stamp != last_stamp/);
-    assert.match(src, /#define IN_FLIGHT_MAX 1/);
+    assert.match(src, /#define IN_FLIGHT_MAX 4/);
+    assert.match(src, /#define SHARE_GRACE_MS 12000/);
     assert.match(src, /strstr\(low, "busy"\)/);
     assert.match(src, /memcmp\(g_main_job\.header, job\.header, 100\)/);
     assert.match(src, /primed_hdr/);

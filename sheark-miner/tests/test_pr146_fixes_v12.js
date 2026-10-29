@@ -221,3 +221,175 @@ describe('PR146 P2: no zero-hash submits on setup failure', { skip: !linux }, ()
     assert.match(r.stdout + r.stderr, /hash setup failed on this thread[^\n]*; skipping job j1/);
   });
 });
+
+// P2 share grace. The pool credits a previous job's share for 12 s
+// (PREV_JOB_GRACE_MS) and a share at the previous share target for 12 s
+// (noteConnShareBits); a share whose parent block changed is never
+// credited. The miner keeps a queued share on exactly those terms.
+describe('PR146 P2: queued shares follow the pool grace', () => {
+  const keep = (age, sameGen, sameParent, sb, live) => {
+    const r = spawnSync(bin, ['--share-keep-vector', String(age), String(sameGen), String(sameParent), String(sb), String(live)], { encoding: 'utf8', timeout: 60_000 });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  it('a share on the live job at the live target is kept at any age', () => {
+    for (const age of [0, 1000, 6000, 11500, 12500, 30000]) assert.equal(keep(age, 1, 1, 20, 20), 'keep', `age ${age}`);
+  });
+  it('a previous job on the same parent: kept below 12 s, dropped after', () => {
+    for (const age of [0, 1000, 6000, 11500]) assert.equal(keep(age, 0, 1, 20, 20), 'keep', `age ${age}`);
+    for (const age of [12500, 30000]) assert.equal(keep(age, 0, 1, 20, 20), 'drop', `age ${age}`);
+  });
+  it('a share target step-up: the old target is kept below 12 s, dropped after', () => {
+    for (const age of [0, 1000, 6000, 11500]) {
+      assert.equal(keep(age, 1, 1, 20, 24), 'keep', `same job age ${age}`);
+      assert.equal(keep(age, 0, 1, 20, 24), 'keep', `prev job age ${age}`);
+    }
+    for (const age of [12500, 30000]) {
+      assert.equal(keep(age, 1, 1, 20, 24), 'drop', `same job age ${age}`);
+      assert.equal(keep(age, 0, 1, 20, 24), 'drop', `prev job age ${age}`);
+    }
+  });
+  it('a parent change drops the share at any age', () => {
+    for (const age of [0, 1000, 6000, 11500, 12500, 30000]) assert.equal(keep(age, 0, 0, 20, 20), 'drop', `age ${age}`);
+  });
+});
+
+function hdr(prevByte, merkleByte) {
+  const h = Buffer.alloc(128);
+  h[0] = 1;
+  h.fill(prevByte, 4, 36);
+  h.fill(merkleByte, 36, 68);
+  return h.toString('hex');
+}
+
+async function waitFor(pred, ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (pred()) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return pred();
+}
+
+function startMiner(port, extra = []) {
+  const child = spawn(bin, ['--backend', 'jit', '--pool', `127.0.0.1:${port}`, '--notls', '--user', 'rig1', '--blu', MINING,
+    '--threads', '4', '--no-tune', ...extra], { stdio: ['ignore', 'pipe', 'pipe'] });
+  child.out = '';
+  child.stdout.on('data', (d) => { child.out += d; });
+  child.stderr.on('data', (d) => { child.out += d; });
+  child.done = new Promise((r) => child.on('close', r));
+  return child;
+}
+
+describe('PR146 P2: queued shares survive busy back-off and a same-parent job change', { skip: !linux }, () => {
+  it('shares of job A queued during busy replies are still sent after job B (same parent) goes live', async () => {
+    const A = { jobId: 'A', header: hdr(0x11, 0x22), shareBits: 8, blockBits: 40, bits: 8 };
+    const B = { jobId: 'B', header: hdr(0x11, 0x33), shareBits: 8, blockBits: 40, bits: 8 };
+    let phase = 'ok';
+    let sockRef = null;
+    const after = [];
+    const pool = await stubPool((msg, sock) => {
+      sockRef = sock;
+      if (msg.method === 'login') return sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' }, job: A })}\n`);
+      if (msg.method !== 'submit') return;
+      if (phase === 'busy') return sock.write(`${JSON.stringify({ id: msg.id, error: 'busy' })}\n`);
+      if (phase === 'after') after.push(msg.params.jobId);
+      sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' } })}\n`);
+    });
+    const m = startMiner(pool.port);
+    try {
+      assert.ok(await waitFor(() => pool.lines.some((l) => /"method":"submit"/.test(l)), 20_000), m.out);
+      phase = 'busy';
+      const seen = pool.lines.length;
+      // Let job A shares pile up behind busy replies.
+      assert.ok(await waitFor(() => pool.lines.slice(seen).filter((l) => /submit/.test(l)).length >= 3, 15_000), m.out);
+      await new Promise((r) => setTimeout(r, 1500));
+      sockRef.write(`${JSON.stringify({ method: 'job', params: B, ...B })}\n`);
+      assert.ok(await waitFor(() => /job B /.test(m.out), 15_000), m.out);
+      phase = 'after';
+      await waitFor(() => after.length >= 1 && after.includes('A'), 8000);
+    } finally {
+      m.kill('SIGTERM');
+      await m.done;
+      pool.server.close();
+    }
+    assert.ok(after.includes('A'), `no job A share was sent after job B went live: ${after.join(',')}\n${m.out.slice(-1500)}`);
+  });
+
+  it('a parent change drops the queued shares of the old parent', async () => {
+    const A = { jobId: 'A', header: hdr(0x11, 0x22), shareBits: 8, blockBits: 40, bits: 8 };
+    const C = { jobId: 'C', header: hdr(0x44, 0x22), shareBits: 8, blockBits: 40, bits: 8 };
+    let phase = 'ok';
+    let sockRef = null;
+    let afterAt = 0;
+    const after = [];
+    const pool = await stubPool((msg, sock) => {
+      sockRef = sock;
+      if (msg.method === 'login') return sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' }, job: A })}\n`);
+      if (msg.method !== 'submit') return;
+      if (phase === 'busy') return sock.write(`${JSON.stringify({ id: msg.id, error: 'busy' })}\n`);
+      if (phase === 'after' && Date.now() > afterAt + 300) after.push(msg.params.jobId);
+      sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' } })}\n`);
+    });
+    const m = startMiner(pool.port);
+    try {
+      assert.ok(await waitFor(() => pool.lines.some((l) => /"method":"submit"/.test(l)), 20_000), m.out);
+      phase = 'busy';
+      const seen = pool.lines.length;
+      assert.ok(await waitFor(() => pool.lines.slice(seen).filter((l) => /submit/.test(l)).length >= 3, 15_000), m.out);
+      sockRef.write(`${JSON.stringify({ method: 'job', params: C, ...C })}\n`);
+      assert.ok(await waitFor(() => /job C /.test(m.out), 15_000), m.out);
+      afterAt = Date.now();
+      phase = 'after';
+      await waitFor(() => after.length >= 3, 8000);
+    } finally {
+      m.kill('SIGTERM');
+      await m.done;
+      pool.server.close();
+    }
+    assert.ok(after.length >= 1, m.out.slice(-1500));
+    assert.deepEqual([...new Set(after)], ['C'], `old-parent shares sent: ${after.join(',')}`);
+  });
+
+  it('up to 4 submits in flight, each ack matched to its submit id', async () => {
+    const A = { jobId: 'A', header: hdr(0x11, 0x22), shareBits: 8, blockBits: 40, bits: 8 };
+    const held = [];
+    let maxOut = 0;
+    const ids = new Set();
+    let busyOnce = null;
+    const resent = [];
+    const pool = await stubPool((msg, sock) => {
+      if (msg.method === 'login') return sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' }, job: A })}\n`);
+      if (msg.method !== 'submit') return;
+      assert.ok(!ids.has(msg.id), `submit id ${msg.id} reused while in flight`);
+      ids.add(msg.id);
+      if (busyOnce && msg.params.nonce === busyOnce) resent.push(msg.id);
+      held.push({ msg, sock });
+      maxOut = Math.max(maxOut, held.length);
+    });
+    const m = startMiner(pool.port);
+    let okCount = 0;
+    try {
+      assert.ok(await waitFor(() => held.length >= 4, 30_000), `held ${held.length}\n${m.out.slice(-800)}`);
+      await new Promise((r) => setTimeout(r, 1000));
+      assert.equal(held.length, 4, 'more than 4 in flight');
+      // Answer out of order: busy for the oldest, OK for the rest.
+      const [first, ...rest] = held.splice(0);
+      for (const h of rest.reverse()) {
+        ids.delete(h.msg.id);
+        okCount++;
+        h.sock.write(`${JSON.stringify({ id: h.msg.id, result: { status: 'OK' } })}\n`);
+      }
+      busyOnce = first.msg.params.nonce;
+      ids.delete(first.msg.id);
+      first.sock.write(`${JSON.stringify({ id: first.msg.id, error: 'busy' })}\n`);
+      assert.ok(await waitFor(() => resent.length >= 1, 8000), 'the busy share was not re-sent');
+      assert.ok(await waitFor(() => new RegExp(`accepted=(\\x1b\\[[0-9;]*m)?${okCount}\\b`).test(m.out), 5000), m.out.slice(-800));
+    } finally {
+      m.kill('SIGTERM');
+      await m.done;
+      pool.server.close();
+    }
+    assert.equal(maxOut, 4);
+  });
+});
