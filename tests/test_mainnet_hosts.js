@@ -105,14 +105,16 @@ describe('mainnet host files', () => {
   });
 
   it('teardown refuses --apply without this host\'s GO token, before it touches anything', () => {
-    const got = bash([file('scripts/teardown.sh'), '--apply']);
+    // Never pass a token that could match the machine running the tests.
+    const token = `not-a-host-${process.pid}-${Date.now()}`;
+    const got = bash([file('scripts/teardown.sh'), '--apply'], { SHEAR_ROLE: 'p2p-a', SHEAR_TEARDOWN_GO: token });
     assert.equal(got.status, 1);
-    assert.match(got.stdout, /^refused: --apply needs SHEAR_TEARDOWN_GO=/);
+    assert.match(got.stdout, /^refused: --apply needs SHEAR_TEARDOWN_GO=/m);
     assert.equal(/would run|rm -rf/.test(got.stdout), false);
-    const host = spawnSync('hostname', { encoding: 'utf8', timeout: 60_000 }).stdout.trim();
-    const fixture = bash([file('scripts/teardown.sh'), '--apply'], { SHEAR_TEARDOWN_GO: host, SHEAR_TEARDOWN_ROOT: os.tmpdir() });
+    const fixture = bash([file('scripts/teardown.sh'), '--apply'], { SHEAR_TEARDOWN_GO: token, SHEAR_TEARDOWN_ROOT: os.tmpdir() });
     assert.equal(fixture.status, 1, 'never --apply on a fixture root');
-    assert.match(fixture.stdout, /refused: --apply with a fixture root/);
+    assert.match(fixture.stdout, /^refused: --apply with a fixture root/, 'the fixture refusal comes before any token check');
+    assert.doesNotMatch(read('../../tests/test_mainnet_hosts.js'), new RegExp(`${'SHEAR_TEARDOWN_GO'}: ${'host'}\\b`), 'no test passes the real hostname as a GO token');
   });
 
   it('teardown on a fixture tree lists every test leftover, keeps renewal hooks, and reaches the end', () => {
@@ -123,16 +125,86 @@ describe('mainnet host files', () => {
     mk('etc/systemd/system/shear-node.service'); mk('etc/cron.d/claude-lanes', '0 * * * * root bash /root/claude-ci/fullhead.sh');
     mk('etc/cron.d/certbot', '0 */12 * * * root certbot renew --deploy-hook /etc/shear/hook # shear.digital');
     mk('root/test.shewall'); mk('var/log/shear-node.log');
-    const got = bash([file('scripts/teardown.sh')], { SHEAR_TEARDOWN_ROOT: root });
+    const got = bash([file('scripts/teardown.sh')], { SHEAR_TEARDOWN_ROOT: root, SHEAR_ROLE: 'p2p-a', SHEAR_TEARDOWN_HOSTNAME: 'p2p-a' });
     assert.equal(got.status, 0, got.stderr + got.stdout);
-    for (const p of ['root/claude-ci', 'var/lib/shear/testnet-v12', 'var/lib/shear/mainnet', 'root/.shear', 'home/ubuntu/.shear',
-      'opt/shear', 'opt/shear-v4', 'etc/systemd/system/shear-node.service', 'etc/cron.d/claude-lanes', 'root/test.shewall', 'var/log/shear-node.log']) {
+    assert.equal(got.stdout.includes(`rm -rf ${root}/var/lib/shear/mainnet\n`), false, 'a mainnet datadir is never removed');
+    for (const p of ['root/claude-ci', 'var/lib/shear/testnet-v12', 'root/.shear', 'home/ubuntu/.shear',
+      'opt/shear-v4', 'etc/systemd/system/shear-node.service', 'etc/cron.d/claude-lanes', 'root/test.shewall', 'var/log/shear-node.log']) {
       assert.ok(got.stdout.includes(`would run: rm -${p.startsWith('etc/cron.d') ? 'f' : 'rf'} ${root}/${p}\n`), p);
     }
     assert.equal(got.stdout.includes(`rm -f ${root}/etc/cron.d/certbot`), false, 'a renewal hook is never removed');
     assert.ok(got.stdout.includes(`check by hand (names shear): ${root}/etc/cron.d/certbot`));
     assert.match(got.stdout, /teardown dry run, nothing changed on /);
     assert.ok(fs.existsSync(path.join(root, 'root/claude-ci/lane1.txt')), 'a dry run removes nothing');
+  });
+
+  function teardownFixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teardown-mn-'));
+    const mk = (p, body = '') => { fs.mkdirSync(path.dirname(path.join(root, p)), { recursive: true }); fs.writeFileSync(path.join(root, p), body); };
+    // Mainnet state R18a installs: it must survive every teardown.
+    mk('var/lib/shear/mainnet/chain.bin'); mk('var/lib/shear/mainnet-p2p/chain.bin');
+    mk('var/lib/shear/mainnet-pool/pool-spend.seed', 'seed-bytes-for-a-fixture\n'); mk('var/lib/shear/seal-keys/node/k');
+    mk('etc/systemd/system/shear-node.service', '[Service]\nEnvironment=SHEAR_NETWORK=shear-v1\n');
+    mk('etc/systemd/system/shear-pool.service', '[Service]\nEnvironment=SHEAR_NETWORK=shear-v1\n');
+    mk('etc/systemd/system/multi-user.target.wants/shear-node.service', '[Service]\nEnvironment=SHEAR_NETWORK=shear-v1\n');
+    mk('opt/shear/node/src/node.js');
+    // v12 testnet state: a later teardown removes it.
+    mk('var/lib/shear/testnet-v12/chain.bin'); mk('var/lib/shear/seal-keys-v12/node/k');
+    mk('etc/systemd/system/shear-v12-node.service', '[Service]\nEnvironment=SHEAR_NETWORK=shear-testnet-v12\n');
+    mk('opt/shear-v12/node/src/node.js');
+    return root;
+  }
+
+  it('teardown never touches mainnet state, and still removes the v12 testnet', () => {
+    const root = teardownFixture();
+    const got = bash([file('scripts/teardown.sh')], { SHEAR_TEARDOWN_ROOT: root, SHEAR_ROLE: 'pool', SHEAR_TEARDOWN_HOSTNAME: 'pool' });
+    assert.equal(got.status, 0, got.stderr + got.stdout);
+    for (const p of ['var/lib/shear/mainnet', 'var/lib/shear/mainnet-p2p', 'var/lib/shear/mainnet-pool', 'var/lib/shear/seal-keys',
+      'etc/systemd/system/shear-node.service', 'etc/systemd/system/shear-pool.service',
+      'etc/systemd/system/multi-user.target.wants/shear-node.service', 'opt/shear']) {
+      assert.equal(got.stdout.includes(`would run: rm -rf ${root}/${p}\n`), false, `${p} is mainnet and is kept`);
+      assert.ok(got.stdout.includes(`keep (mainnet): ${root}/${p}\n`), `${p} is listed as kept`);
+    }
+    for (const p of ['var/lib/shear/testnet-v12', 'var/lib/shear/seal-keys-v12', 'etc/systemd/system/shear-v12-node.service', 'opt/shear-v12']) {
+      assert.ok(got.stdout.includes(`would run: rm -rf ${root}/${p}\n`), `${p} is v12 testnet and goes`);
+    }
+    assert.ok(fs.existsSync(path.join(root, 'var/lib/shear/mainnet-pool/pool-spend.seed')));
+  });
+
+  it('teardown --apply needs an attested offline backup of the pool spend seed', () => {
+    const root = teardownFixture();
+    const env = { SHEAR_TEARDOWN_ROOT: root, SHEAR_ROLE: 'pool', SHEAR_TEARDOWN_HOSTNAME: 'pool' };
+    const none = bash([file('scripts/teardown.sh')], env);
+    assert.match(none.stdout, /seed backup: no attestation, --apply refuses until SHEAR_SEED_BACKUP_SHA256 is set/);
+    const wrong = bash([file('scripts/teardown.sh')], { ...env, SHEAR_SEED_BACKUP_SHA256: '0'.repeat(64) });
+    assert.match(wrong.stdout, /seed backup: SHEAR_SEED_BACKUP_SHA256 does not match/);
+    const sha = spawnSync('sha256sum', [path.join(root, 'var/lib/shear/mainnet-pool/pool-spend.seed')], { encoding: 'utf8', timeout: 60_000 }).stdout.split(' ')[0];
+    const good = bash([file('scripts/teardown.sh')], { ...env, SHEAR_SEED_BACKUP_SHA256: sha });
+    assert.match(good.stdout, /seed backup: attested, sha256 matches/);
+  });
+
+  it('teardown refuses agent-box, the explorer and any host that is not pool, p2p-a or p2p-b', () => {
+    const root = teardownFixture();
+    const cases = [
+      ['agent-box', 'pool', /refused: agent-box/],
+      ['explorer', 'p2p-a', /refused: agent-box/],
+      ['p2p-a', 'explorer', /refused: agent-box/],
+      ['p2p-a', 'agent-box', /refused: agent-box/],
+      ['web1', 'web1', /refused: role must be pool, p2p-a or p2p-b/],
+      ['p2p-a', '', /refused: role must be pool, p2p-a or p2p-b/],
+    ];
+    for (const [hostName, role, why] of cases) {
+      const got = bash([file('scripts/teardown.sh')], { SHEAR_TEARDOWN_ROOT: root, SHEAR_ROLE: role, SHEAR_TEARDOWN_HOSTNAME: hostName });
+      assert.equal(got.status, 1, `${hostName}/${role}: ${got.stdout}`);
+      assert.match(got.stdout, why, `${hostName}/${role}`);
+      assert.equal(/would run/.test(got.stdout), false, `${hostName}/${role} lists nothing`);
+    }
+    // A role file written at install must agree with SHEAR_ROLE.
+    fs.mkdirSync(path.join(root, 'etc/shear'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'etc/shear/role'), 'p2p-b\n');
+    const clash = bash([file('scripts/teardown.sh')], { SHEAR_TEARDOWN_ROOT: root, SHEAR_ROLE: 'p2p-a', SHEAR_TEARDOWN_HOSTNAME: 'p2p-a' });
+    assert.equal(clash.status, 1);
+    assert.match(clash.stdout, /refused: \/etc\/shear\/role says p2p-b/);
   });
 
   it('check_host --unit-file passes the shipped units and fails the bad ones', () => {
