@@ -156,7 +156,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
         to: owner.dest,
         payer: owner.dest,
       });
-      signSpendTx(honest, owner.key);
+      signSpendTx(honest, owner.key, { magic: 'shear-testnet-v12' });
       const canon = bindAt(honest, block, tipHeight);
       assert.equal(canon.raw.ok, true, `${amount} canon ${canon.raw.reason}`);
       assert.equal(canon.compact.ok, true, `${amount} canon compact ${canon.compact.reason}`);
@@ -177,7 +177,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
         unit: amount,
         payer: owner.dest,
       });
-      signSpendTx(bad, owner.key);
+      signSpendTx(bad, owner.key, { magic: 'shear-testnet-v12' });
       const badBound = bindAt(bad, block, tipHeight);
       assert.equal(badBound.raw.ok, false, amount);
       assert.equal(badBound.raw.reason, 'leaf', `${amount} bad ${badBound.raw.reason}`);
@@ -191,7 +191,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
         payer: owner.dest,
         dropLeaf: true,
       });
-      signSpendTx(bare, owner.key);
+      signSpendTx(bare, owner.key, { magic: 'shear-testnet-v12' });
       const bareBound = bindAt(bare, block, tipHeight);
       assert.equal(bareBound.sealed.to, undefined, amount);
       assert.equal(bareBound.sealed.nanos, undefined, amount);
@@ -205,7 +205,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
         dropLeaf: true,
         dropUnit: true,
       });
-      signSpendTx(byNanos, owner.key);
+      signSpendTx(byNanos, owner.key, { magic: 'shear-testnet-v12' });
       const nanosBound = bindAt(byNanos, block, tipHeight);
       assert.equal(nanosBound.sealed.to, undefined, amount);
       assert.equal(nanosBound.sealed.nanos, undefined, amount);
@@ -217,7 +217,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
         dropLeaf: true,
         dropTo: true,
       });
-      signSpendTx(byAddr, owner.key);
+      signSpendTx(byAddr, owner.key, { magic: 'shear-testnet-v12' });
       const addrBound = bindAt(byAddr, block, tipHeight);
       assert.equal(addrBound.sealed.to, undefined, amount);
       assert.equal(addrBound.sealed.vout[0].address, undefined, amount);
@@ -230,7 +230,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
         to: owner.dest,
         payer: owner.dest,
       });
-      signSpendTx(partial, owner.key);
+      signSpendTx(partial, owner.key, { magic: 'shear-testnet-v12' });
       const partBound = bindAt(partial, block, tipHeight);
 
       const row = [
@@ -327,7 +327,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
           proof: rec.proof,
           dropLeaf: true,
         });
-        signSpendTx(bare, owner.key);
+        signSpendTx(bare, owner.key, { magic: 'shear-testnet-v12' });
         const bareBound = bindOn(bare);
         assert.equal(bareBound.sealed.to, undefined, amount);
         assert.equal(bareBound.sealed.leaf, undefined, amount);
@@ -342,7 +342,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
           dropLeaf: true,
           dropUnit: true,
         });
-        signSpendTx(byNanos, owner.key);
+        signSpendTx(byNanos, owner.key, { magic: 'shear-testnet-v12' });
         const nanosBound = bindOn(byNanos);
 
         const byAddr = spendOf(rec.leaf, [sealMintOut(amount, owner.dest, 'b-spend')], {
@@ -353,7 +353,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
           dropLeaf: true,
           dropTo: true,
         });
-        signSpendTx(byAddr, owner.key);
+        signSpendTx(byAddr, owner.key, { magic: 'shear-testnet-v12' });
         const addrBound = bindOn(byAddr);
         assert.equal(addrBound.sealed.vout[0].address, undefined, amount);
 
@@ -367,7 +367,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
           commitHeight: rec.height,
           proof: rec.proof,
         });
-        signSpendTx(partial, owner.key);
+        signSpendTx(partial, owner.key, { magic: 'shear-testnet-v12' });
         const partBound = bindOn(partial);
 
         const queued = {
@@ -469,7 +469,7 @@ describe('v12 b-spend leaf is canonical on the raw and lean body', () => {
           commitHeight: rec.height,
           proof: rec.proof,
         });
-        signSpendTx(tx, owner.key);
+        signSpendTx(tx, owner.key, { magic: 'shear-testnet-v12' });
         return tx;
       });
       for (const tx of honest) {

@@ -216,10 +216,11 @@ export function encodeDeposit(dest, amountOrCommit, nowTs, ownerCommit = undefin
   rememberLock(dest, word, nowTs);
   // A missing owner, or the one-time owner commit, is signed here. The
   // commitment is chosen above, so the signature has to be made after it.
+  // The fixture owner signs the fixture book (testnet), as withdrawAuthBind does.
   let auth = ownerCommit;
-  if (auth == null) auth = { key: ownerFor(dest).key };
+  if (auth == null) auth = { key: ownerFor(dest).key, magic: MAGIC_TESTNET };
   else if (isCommitWord(auth) && commitBuf(auth).equals(Buffer.from(ownerFor(dest).commit))) {
-    auth = { key: ownerFor(dest).key };
+    auth = { key: ownerFor(dest).key, magic: MAGIC_TESTNET };
   }
   return encodeDepositRaw(dest, word, nowTs, auth, joined === true);
 }

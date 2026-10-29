@@ -611,9 +611,9 @@ describe('aggregated reward root', () => {
     const plan = rewardCommitment(state, draw);
     assert.equal(plan.rows.length, 0);
     const commit = Buffer.from(state.portals[portalIdFromDest(dest)].tranches[0].commit, 'hex');
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(dest, commit, when, { key: alice.key }))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, commit, when, { key: alice.key, magic: 'shear-testnet-v12' }))).ok, true);
     const committed = await callReserve(session, encodeCommitRewards(draw, plan.root));
     assert.equal(committed.ok, true, committed.reason);
     assert.equal(decodeBytes32(committed.returnValue), plan.root);
@@ -870,7 +870,7 @@ describe('empty reward epochs leave principal in the vault', () => {
     assert.equal(settled.ok, true, settled.reason);
     assert.equal(state.rewardRoots[String(plan.index)], undefined);
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(dest, Buffer.alloc(32, 3), T0 + 1_000))).ok, true);
     const committed = await callReserve(session, encodeCommitRewards(draw));
@@ -881,7 +881,7 @@ describe('empty reward epochs leave principal in the vault', () => {
     );
     assert.equal(view.totalLockedNanos, 0);
 
-    const again = await bootReserveEvm();
+    const again = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(again, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(again, encodeDeposit(dest, Buffer.alloc(32, 3), T0 + 1_000))).ok, true);
     const ran = await executeBlockEvm(again, [{
@@ -937,7 +937,7 @@ describe('empty reward epochs leave principal in the vault', () => {
       inbound,
     );
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(lateDest, Buffer.alloc(32, 9), lateWhen))).ok, true);
     const lateCommit = await callReserve(session, encodeCommitRewards(draw));

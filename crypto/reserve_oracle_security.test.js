@@ -245,7 +245,7 @@ describe('oracle security pack (attester keys held)', () => {
   });
 
   it('O0-d EVM reward matches JS and is never a principal haircut', async () => {
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const stakes = [PI_SHE_NANOS, PI_SHE_NANOS * 3, 2 ** 40];
     for (const stake of stakes) {
       for (const bps of [0, 1, GENESIS_BPS, 10001]) {
@@ -283,7 +283,7 @@ describe('oracle security pack (attester keys held)', () => {
       vectors.push(row);
     }
     const py = pythonTrimmed(vectors);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     for (let i = 0; i < vectors.length; i += 1) {
       const js = trimmedMeanBps(vectors[i]);
       assert.equal(py[i], js, `python ${i}`);

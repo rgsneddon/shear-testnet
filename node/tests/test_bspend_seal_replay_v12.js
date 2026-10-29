@@ -97,7 +97,7 @@ describe('sealed b-spend signature', () => {
       vin: [{ address: owner.dest }],
       vout: [out],
     };
-    signSpendTx(tx, owner.key);
+    signSpendTx(tx, owner.key, { magic: 'shear-testnet-v12' });
     const tipHeight = 9;
     const raw = bindBSpend(tx, { history: [commit], tipHeight, spent: new Set() });
     assert.equal(raw.ok, true, raw.reason);

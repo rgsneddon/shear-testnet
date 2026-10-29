@@ -244,7 +244,7 @@ async function reserveLockVote() {
   lock.open = open;
   bindWeightFee(lock);
   lock.maxLevy = lock.fee;
-  signSpendTx(lock, box.key);
+  signSpendTx(lock, box.key, { magic: store.magic });
   const q = store.queueTx(lock);
   assert.equal(q.ok, true, q.reason);
   await mineOne(store, dest, undefined, t0 + (fund + SPENDABLE_CONFIRMATIONS) * 90_000);

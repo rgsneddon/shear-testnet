@@ -177,7 +177,7 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
           r: [Buffer.alloc(32, 6)],
         },
       };
-      signSpendTx(draft, alice.privateKey);
+      signSpendTx(draft, alice.privateKey, { magic: 'shear-testnet-v12' });
       bindWeightFee(draft);
       const { posted, queueSend } = queue();
       const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
@@ -229,7 +229,7 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     const samples = [1n, SCALE, (1n << 53n) + 1n, (1n << 58n) + 9n];
     for (const n of samples) {
       const draft = withdrawTx({ from, to, nanos: n.toString(), id: `withdraw-${n}` });
-      signSpendTx(draft, alice.privateKey);
+      signSpendTx(draft, alice.privateKey, { magic: 'shear-testnet-v12' });
       const { posted, queueSend } = queue();
       const got = handleWalletApi(url('/api/wallet/send'), 'POST', {
         from,
@@ -487,7 +487,7 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     vote.payer = from;
     bindWeightFee(vote);
     const bound = vote.fee;
-    signSpendTx(vote, alice.privateKey);
+    signSpendTx(vote, alice.privateKey, { magic: 'shear-testnet-v12' });
     const { posted, queueSend } = queue();
     const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from,

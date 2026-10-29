@@ -69,7 +69,7 @@ function noteLock(portal, key, ownerPub) {
     fee = next;
     arm(fee);
   }
-  signSpendTx(tx, key);
+  signSpendTx(tx, key, { magic: 'shear-testnet-v12' });
   const held = lockWitnessOf(tx);
   const scalar = randomScalar();
   const unlock = consensusUnlockPeriod(0);

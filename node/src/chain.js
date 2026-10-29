@@ -61,6 +61,7 @@ import {
 } from '../../crypto/share_batch.js';
 import {
   bootReserveEvm,
+  reserveBookOf,
   blockNeedsEvm,
   executeBlockEvm,
 } from '../../crypto/reserve_evm.js';
@@ -3175,7 +3176,7 @@ function verifyBlockBody(block, prev, opts = {}) {
     if (!summed.ok) return summed;
     const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws, Number(decoded.timestamp) || 0);
     if (!stake.ok) return stake;
-    const auth = reserveAuth(tx, reserveState, seenOwners);
+    const auth = reserveAuth(tx, reserveState, seenOwners, magic);
     if (!auth.ok) return auth;
     const claimAuth = rewardClaimRejected(tx, reserveState, height);
     if (claimAuth) return claimAuth;
@@ -3402,7 +3403,8 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   let fresh = false;
   try {
     if (!session) {
-      session = await bootReserveEvm();
+      // The EVM runs as this chain's own book (LOCK_AUTH=book-magic).
+      session = await bootReserveEvm({ network: reserveBookOf(opts.magic || MAGIC_TESTNET) });
       fresh = true;
     }
   } catch (e) {

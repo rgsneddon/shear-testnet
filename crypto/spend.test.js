@@ -77,7 +77,7 @@ describe('funded spend / no double-spend', () => {
     };
     const sealed = compactTx(signed);
     // Compact writes payoutPortalId into the signed body. Sign that body.
-    signSpendTx(sealed, id.privateKey);
+    signSpendTx(sealed, id.privateKey, { magic: 'shear-testnet-v12' });
     assert.equal(spendPubFromTx(sealed)?.toString('hex'), sealed.spendPub);
     assert.equal(verifyReservePortalOpen(sealed), true);
     delete sealed.sig;
@@ -240,7 +240,7 @@ describe('funded spend / no double-spend', () => {
       vin: [{ prev: Buffer.alloc(32), index: 0 }],
       vout: [{ address: from, nanos: 1, kind: 'send' }],
     };
-    signSpendTx(tx, key);
+    signSpendTx(tx, key, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig(tx), true);
   });
 
@@ -261,11 +261,11 @@ describe('funded spend / no double-spend', () => {
       }],
       vout: [{ address: from, nanos: 1, kind: 'send' }],
     };
-    signSpendTx(fat, key);
+    signSpendTx(fat, key, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig(fat), true);
     const lean = { ...fat, vin: [{ commit }] };
     assert.equal(verifySpendSig(lean), false);
-    signSpendTx(lean, key);
+    signSpendTx(lean, key, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig(lean), true);
     assert.deepEqual(Object.keys(lean.vin[0]), ['commit']);
   });
@@ -283,11 +283,11 @@ describe('funded spend / no double-spend', () => {
       vin: [{ prev: Buffer.alloc(32, 1), index: 0, commit: Buffer.alloc(32, 2) }],
       vout: [paid],
     };
-    signSpendTx(tx, key);
+    signSpendTx(tx, key, { magic: 'shear-testnet-v12' });
     const destMap = verifyFundedBody([tx], () => 0);
     assert.equal(destMap.ok, true, destMap.reason);
     const unbound = { ...tx, vin: [{ address: from }] };
-    signSpendTx(unbound, key);
+    signSpendTx(unbound, key, { magic: 'shear-testnet-v12' });
     const refused = verifyFundedBody([unbound], () => Number.MAX_SAFE_INTEGER);
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'kind');
@@ -309,7 +309,7 @@ describe('funded spend / no double-spend', () => {
       vin: [{ address: from }],
       vout: [{ address: from, nanos: 0, kind: 'vote' }],
     };
-    signSpendTx(tx, key);
+    signSpendTx(tx, key, { magic: 'shear-testnet-v12' });
     const empty = verifyFundedBody([tx], () => 0);
     assert.equal(empty.ok, false);
     assert.equal(empty.reason, 'admit_version');
@@ -369,7 +369,7 @@ describe('funded spend / no double-spend', () => {
       spendPackDigest(withBlob).equals(spendPackDigest({ ...withBlob, admit_proof: { blob: flipped } })),
       false,
     );
-    signSpendTx(withBlob, key);
+    signSpendTx(withBlob, key, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig(withBlob), true);
     assert.equal(verifySpendSig({ ...withBlob, fee: withBlob.fee + 1 }), false);
     assert.equal(verifySpendSig({ ...withBlob, admit_proof: { ...withBlob.admit_proof, blob: flipped } }), false);

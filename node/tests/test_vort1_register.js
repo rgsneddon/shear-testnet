@@ -136,7 +136,7 @@ describe('vort1 register consensus tx', () => {
       from: pay, bytesHash, vort1: 'vort1.ok-dapp', ticker: 'ABC', fee: L,
     });
     fundedTx.open = destOpeningFromView(id.viewKey, id.spendPub, 0);
-    signSpendTx(fundedTx, box.key);
+    signSpendTx(fundedTx, box.key, { magic: 'shear-testnet-v12' });
     assert.equal(JSON.stringify(fundedTx).includes('she1'), false);
     const store2 = regtestStore('shear-vort1b-');
     for (let i = 0; i < SPENDABLE_CONFIRMATIONS + 1; i += 1) {

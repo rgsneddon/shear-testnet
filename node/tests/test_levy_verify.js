@@ -239,7 +239,7 @@ describe('verifyBlock Phase B Flow levy', { timeout: fileCapMs(import.meta.url) 
     }, { spent: lastPot });
     attachStubAdmitV2(sendTx);
     bindWeightFee(sendTx);
-    signSpendTx(sendTx, box.key);
+    signSpendTx(sendTx, box.key, { magic: 'shear-testnet-v12' });
     const queued = store.queueTx(sendTx);
     assert.equal(queued.ok, false);
     assert.equal(queued.reason, 'value_open', queued.reason);

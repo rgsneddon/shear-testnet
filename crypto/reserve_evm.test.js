@@ -177,9 +177,12 @@ function indexedDraw(state, dest, when, planted, id, ownerKey, to = dest) {
 }
 
 describe('Reserve bytecode on the Shear EVM', () => {
-  it('bootReserveEvm defaults to MAGIC_TESTNET', async () => {
+  it('bootReserveEvm has no default book, and testnet boots as MAGIC_TESTNET', async () => {
     const src = fs.readFileSync(fileURLToPath(new URL('./reserve_evm.js', import.meta.url)), 'utf8');
-    assert.match(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET\b/);
+    // LOCK_AUTH=book-magic: the EVM runs as the book that boots it.
+    assert.match(src, /bootReserveEvm\(\{ network, bytecode = null \} = \{\}\)/);
+    assert.doesNotMatch(src, /bootReserveEvm\(\{ network = MAGIC_TESTNET\b/);
+    await assert.rejects(() => bootReserveEvm(), /unknown_magic/);
     assert.match(src, /shearMagicBytes\(network = MAGIC_TESTNET\)/);
     assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
     assert.equal(MAGIC_TESTNET_V12, 'shear-testnet-v12');
@@ -187,7 +190,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(reservePinOk(), true);
     assert.equal(reservePinOk('shear-testnet-v11'), true);
     assert.equal(reservePinOk('shear-testnet-not-a-book'), false);
-    const live = await bootReserveEvm();
+    const live = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.ok(live.address);
     const got = await callReserve(live, selector('magic()'), { staticCall: true });
     assert.equal(got.ok, true, got.reason);
@@ -220,7 +223,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
   });
 
   it('only the tx-level piProof qualifies a lock', async () => {
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const now = 1_700_000_000_000;
     assert.equal((await callReserve(session, encodePinClock(now))).ok, true);
     const blind = randomScalar();
@@ -236,7 +239,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
       nanos: PI_SHE_NANOS,
       vout: [{ kind: 'lock', commit: C, dest20: destA, piProof: proof }],
     };
-    attachLockAuth(outOnlyTx, alice.privateKey);
+    attachLockAuth(outOnlyTx, alice.privateKey, 'shear-testnet-v12');
     const outOnly = await executeReserveTx(session, outOnlyTx, now);
     assert.equal(outOnly.ok, true, outOnly.reason);
     const viewA = await callReserve(session, encodePortalOf(destA), { staticCall: true });
@@ -249,7 +252,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
       piProof: proof,
       vout: [{ kind: 'lock', commit: C, dest20: destB }],
     };
-    attachLockAuth(txLevelTx, bob.privateKey);
+    attachLockAuth(txLevelTx, bob.privateKey, 'shear-testnet-v12');
     const txLevel = await executeReserveTx(session, txLevelTx, now);
     assert.equal(txLevel.ok, true, txLevel.reason);
     const viewB = await callReserve(session, encodePortalOf(destB), { staticCall: true });
@@ -262,7 +265,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const commit = Buffer.alloc(32, 0x11);
     const ownerPub = Buffer.alloc(32, 0x22);
     const cases = [Buffer.from([1, 2, 3]), Buffer.alloc(0)];
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     for (const piProof of cases) {
       const tx = {
         kind: 'lock',
@@ -366,21 +369,21 @@ describe('Reserve bytecode on the Shear EVM', () => {
   });
 
   it('a 20-byte dest20 binds the lockAuth key and a raw 32-byte id is unsigned', async () => {
-    const s = await bootReserveEvm();
+    const s = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const t0 = 1_700_000_000_000;
     assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     const ownerA = newIdentity();
     const ownerB = newIdentity();
     const dest20 = destCommitFromSpendPub(ownerA.spendPub);
-    const first = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 9), t0, { key: ownerA.privateKey }, false));
+    const first = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 9), t0, { key: ownerA.privateKey, magic: 'shear-testnet-v12' }, false));
     assert.equal(first.ok, true, first.reason);
-    const front = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 8), t0 + 1, { key: ownerB.privateKey }, false));
+    const front = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 8), t0 + 1, { key: ownerB.privateKey, magic: 'shear-testnet-v12' }, false));
     assert.equal(front.ok, false, 'front-run was accepted');
     assert.equal(front.reason, 'unsigned');
-    const same = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 6), t0 + 2, { key: ownerA.privateKey }, false));
+    const same = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 6), t0 + 2, { key: ownerA.privateKey, magic: 'shear-testnet-v12' }, false));
     assert.equal(same.ok, false);
     assert.equal(same.reason, 'portal_exists');
-    const raw = await callReserve(s, encodeDepositRaw(Buffer.alloc(32, 7), Buffer.alloc(32, 4), t0 + 3, { key: ownerA.privateKey }, false));
+    const raw = await callReserve(s, encodeDepositRaw(Buffer.alloc(32, 7), Buffer.alloc(32, 4), t0 + 3, { key: ownerA.privateKey, magic: 'shear-testnet-v12' }, false));
     assert.equal(raw.ok, false, 'raw 32-byte id was accepted');
     assert.equal(raw.reason, 'unsigned');
     const copied = await callReserve(s, encodeDepositRaw(dest20, Buffer.alloc(32, 5), t0 + 4, Buffer.alloc(32, 1), false));
@@ -389,7 +392,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
   });
 
   it('deploys, takes a π lock, lets a late first deposit vote, and enacts +1', async () => {
-    const s = await bootReserveEvm();
+    const s = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const t0 = 1_700_000_000_000;
     assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     const d = await callReserve(s, encodeDeposit(destA, PI_SHE_NANOS, t0));
@@ -434,7 +437,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
   });
 
   it('constructor freezes the plain-average bundle; second vote is VoteLocked; mid-epoch observe does not mint', async () => {
-    const s = await bootReserveEvm();
+    const s = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const t0 = 1_700_000_000_000;
     assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     const view0 = decodePublicView((await callReserve(s, encodePublicView(t0), { staticCall: true })).returnValue);
@@ -463,7 +466,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
   });
 
   it('withdraw after a new epoch opens does not decrement the new piles', async () => {
-    const s = await bootReserveEvm();
+    const s = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const t0 = 1_700_000_000_000;
     assert.equal((await callReserve(s, encodePinClock(t0))).ok, true);
     assert.equal((await callReserve(s, encodeDeposit(destA, PI_SHE_NANOS, t0))).ok, true);
@@ -490,7 +493,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const line = 'if (clockGenesis == 0) revert ClockUnpinned();';
     assert.equal(sol.includes(line), true);
     const t0 = 1_700_000_000_000;
-    const live = await bootReserveEvm();
+    const live = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const denied = await callReserve(live, encodeDeposit(destA, PI_SHE_NANOS, t0));
     assert.equal(denied.ok, false);
     const stripped = sol.replace(line, '');
@@ -499,7 +502,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.notEqual(bad.bytecode, String(
       JSON.parse(fs.readFileSync(new URL('../contracts/Reserve.json', import.meta.url), 'utf8')).bytecode || '',
     ).replace(/^0x/i, '').toLowerCase());
-    const open = await bootReserveEvm({ bytecode: bad.bytecode });
+    const open = await bootReserveEvm({ network: 'shear-testnet-v12', bytecode: bad.bytecode });
     const allowed = await callReserve(open, encodeDeposit(destA, PI_SHE_NANOS, t0));
     assert.equal(allowed.ok, true, allowed.reason);
   });
@@ -516,7 +519,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
       const state = emptyVault();
       state.genesisMs = t0;
       state.magic = MAGIC_TESTNET;
-      const session = await bootReserveEvm();
+      const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
       assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
       for (let i = 0; i < n; i += 1) {
         const raw = Buffer.alloc(20);
@@ -572,7 +575,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     for (const n of sizes) {
       const js = emptyVault();
       js.genesisMs = t0;
-      const session = await bootReserveEvm();
+      const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
       assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
       let firstDest = '';
       let firstOwner = null;
@@ -599,7 +602,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
           dest,
           PI_SHE_NANOS,
           t0,
-          i === 0 ? { key: firstOwner.privateKey } : undefined,
+          i === 0 ? { key: firstOwner.privateKey, magic: 'shear-testnet-v12' } : undefined,
         ));
         assert.equal(evmLock.ok, true, `${n} evm ${i} ${evmLock.reason}`);
       }
@@ -657,7 +660,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const dest = encodeDest(Buffer.alloc(20, 0x61));
     const js = emptyVault();
     js.genesisMs = t0;
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     assert.equal(deposit({ state: js, dest, nanos: PI_SHE_NANOS, nowMs: t0 }).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0))).ok, true);
@@ -760,9 +763,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(Number(js.openedLockNanos || 0), 0);
     assert.equal(Number(js.openedWithdrawNanos), PI_SHE_NANOS);
     assert.equal(after.ok, false);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, { key: owner.privateKey }))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, { key: owner.privateKey, magic: 'shear-testnet-v12' }))).ok, true);
     const drawn = await callReserve(session, encodeWithdraw(dest, end, undefined, 0, {
       ownerKey: owner.privateKey,
     }));
@@ -781,7 +784,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const nanos = PI_SHE_NANOS;
     const js = emptyVault();
     js.genesisMs = t0;
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     const planted = indexPiLock(js, dest, t0, undefined, 1);
     assert.equal(planted.ok, true, planted.reason);
@@ -904,9 +907,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(after.ok, true, after.reason);
     assert.equal(after.totalNanos, 0);
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, { key: owner.privateKey }))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, { key: owner.privateKey, magic: 'shear-testnet-v12' }))).ok, true);
     const stored = await callReserve(session, encodeCommitRewards(end, plan.root));
     assert.equal(stored.ok, true, stored.reason);
     const stolenAuth = packRewardAuth({ ownerPub: stolen.spendPub, sig: stolen.sig, dest: payout });
@@ -935,7 +938,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(stripped.ok, false);
     assert.equal(stripped.reason, 'owner_missing');
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     const bareLock = await callReserve(session, encodeDepositRaw(dest, Buffer.alloc(32, 4), t0, null));
     assert.equal(bareLock.ok, false);
@@ -1013,9 +1016,9 @@ describe('Reserve bytecode on the Shear EVM', () => {
     assert.equal(paid.earned, earned);
     assert.equal(paid.principal, PI_SHE_NANOS);
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, { key: owner.privateKey }))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, { key: owner.privateKey, magic: 'shear-testnet-v12' }))).ok, true);
     const bareEvm = await callReserve(session, encodeWithdraw(dest, end));
     assert.equal(bareEvm.ok, false);
     const stolenAuth = packRewardAuth({ ownerPub: stolen.ownerPub, sig: stolen.rewardSig, dest: payout });
@@ -1061,7 +1064,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
       assert.equal(paid.interest, 0, `js ${at}`);
       assert.equal(paid.earned, 0, `js earned ${at}`);
       assert.equal(paid.principal, PI_SHE_NANOS);
-      const session = await bootReserveEvm();
+      const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
       assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
       assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, lateAt))).ok, true);
       const evm = await callReserve(session, encodeWithdraw(dest, at, undefined, PI_SHE_NANOS, {
@@ -1082,7 +1085,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const plan = rewardCommitment(js, end);
     assert.equal(plan.rows.length, 0);
     const tx = withdrawTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'missing-root' });
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0))).ok, true);
     const missing = await executeBlockEvm(session, [
@@ -1110,7 +1113,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     below.genesisMs = t0;
     assert.equal(deposit({ state: below, dest: quiet, nanos: small, nowMs: t0 }).ok, true);
     assert.equal(rewardCommitment(below, end).rows.length, 0);
-    const session2 = await bootReserveEvm();
+    const session2 = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session2, encodePinClock(t0))).ok, true);
     assert.equal((await callReserve(session2, encodeDeposit(quiet, small, t0))).ok, true);
     const quietTx = withdrawTx({ from: quiet, to: quiet, nanos: 0, id: 'no-rows' });
@@ -1133,7 +1136,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     const who = ownerFor(dest);
     const js = emptyVault();
     js.genesisMs = t0;
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     const locks = [];
     let planted = null;
@@ -1184,7 +1187,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     js.genesisMs = t0;
     const planted = indexPiLock(js, dest, t0, who.pub, 1);
     assert.equal(planted.ok, true, planted.reason);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, t0, who.commit))).ok, true);
     const end = t0 + epoch;
@@ -1276,7 +1279,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
           valueProof: { v: PI_SHE_NANOS },
         }],
       };
-      signSpendTx(tx, spender.privateKey);
+      signSpendTx(tx, spender.privateKey, { magic: 'shear-testnet-v12' });
       tx.ownerPub = owner;
       return tx;
     }
@@ -1318,7 +1321,7 @@ describe('Reserve bytecode on the Shear EVM', () => {
     });
     stolenId.portalId = portalIdFromDest(dest);
     stolenId.ownerPub = strangerPub;
-    signSpendTx(stolenId, stranger.privateKey);
+    signSpendTx(stolenId, stranger.privateKey, { magic: 'shear-testnet-v12' });
     const honest = publicLock({
       spender: victim,
       portalDest: dest,

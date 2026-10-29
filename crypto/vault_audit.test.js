@@ -1002,10 +1002,10 @@ describe('hidden vault claims', () => {
   });
 
   it('the EVM root matches, a zero root is refused, and the cap is charged', async () => {
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     const who = dest20();
-    assert.equal((await callReserve(session, encodeDeposit(who.dest, Buffer.alloc(32, 7), T0, { key: who.id.privateKey }, true))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(who.dest, Buffer.alloc(32, 7), T0, { key: who.id.privateKey, magic: 'shear-testnet-v12' }, true))).ok, true);
     const root = 'ab'.repeat(32);
     const zero = await callReserve(session, encodeCommitVaultRoot(0, '00'.repeat(32)));
     assert.equal(zero.ok, false);
@@ -1110,8 +1110,8 @@ describe('hidden vault claims', () => {
       vaultLockNote: note,
       vout: [{ kind: 'lock', commit: funded, rangeProof: range, dest20: lockD20 }],
     };
-    const session = await bootReserveEvm();
-    attachLockAuth(tx, who.id.privateKey);
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
+    attachLockAuth(tx, who.id.privateKey, 'shear-testnet-v12');
     assert.ok(tx.lockAuth, 'lockAuth');
     // The π proof over the funded output (blind rIn), as a wallet attaches it.
     tx.vout[0].fundProof = proveLockEquality(funded, PI_SHE_NANOS, rIn, tx, MAGIC_TESTNET);
@@ -1129,11 +1129,11 @@ describe('hidden vault claims', () => {
     const badNote = Buffer.concat([note.subarray(0, 32), Buffer.alloc(32, 9)]);
     const badTx = { ...tx, id: 'evm-unlock-bad', vaultLockNote: badNote };
     delete badTx.lockAuth;
-    attachLockAuth(badTx, who.id.privateKey);
+    attachLockAuth(badTx, who.id.privateKey, 'shear-testnet-v12');
     assert.ok(badTx.lockAuth, 'bad lockAuth');
     // A second lock on the session that already took the good one is
     // portal_exists. The unlock check is the first lock of a fresh book.
-    const badBook = await bootReserveEvm();
+    const badBook = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const bad = await executeBlockEvm(
       badBook,
       [{ coinbase: true, vout: [] }, badTx],

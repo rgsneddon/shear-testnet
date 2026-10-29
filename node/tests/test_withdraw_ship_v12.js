@@ -314,7 +314,7 @@ describe('shipped withdraws', { concurrency: false, timeout: 1_800_000 }, () => 
     // Compact lock. `to` is vote_leak. The wallet lock carries lockAuth
     // and no spendPub or signature.
     tx.dest20 = Buffer.from(hash20FromAddress(who.dest));
-    signSpendTx(tx, who.key);
+    signSpendTx(tx, who.key, { magic: 'shear-testnet-v12' });
     delete tx.spendPub;
     delete tx.sig;
     delete tx.signature;

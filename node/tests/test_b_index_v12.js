@@ -165,7 +165,7 @@ describe('v12 one B leaf per position', () => {
             vin: [{ address: owner.dest }],
             vout: outs,
           };
-          signSpendTx(boundTx, owner.key);
+          signSpendTx(boundTx, owner.key, { magic: 'shear-testnet-v12' });
           const bound = bindBSpend(boundTx, {
             history: [block],
             tipHeight: matureTip(HEIGHT),
@@ -183,7 +183,7 @@ describe('v12 one B leaf per position', () => {
               vin: [{ address: owner.dest }],
               vout: outs,
             };
-            signSpendTx(missTx, owner.key);
+            signSpendTx(missTx, owner.key, { magic: 'shear-testnet-v12' });
             const miss = bindBSpend(missTx, {
               history: [block],
               tipHeight: matureTip(HEIGHT),
@@ -265,7 +265,7 @@ describe('v12 one B leaf per position', () => {
         vout: outs,
       };
       const signed = { ...base, id: 'draw-1', index: 0 };
-      signSpendTx(signed, payer.key);
+      signSpendTx(signed, payer.key, { magic: 'shear-testnet-v12' });
       const foreigners = [1, 7, 123456, '7', true, -1];
       for (const foreign of foreigners) {
         const tx = { ...signed, id: `foreign-${String(foreign)}`, index: foreign };

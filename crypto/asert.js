@@ -596,6 +596,9 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'CLAIM_KIND=reward-claim-only',
     // F1: each block's mint-bank delta equals the ledger's minted interest.
     'VAULT_MINT=ledger-delta',
+    // The lock owner signs, and the JS and the EVM check, the book's own
+    // magic (chainId 2701). A missing magic is unknown_magic, not testnet.
+    'LOCK_AUTH=book-magic',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,

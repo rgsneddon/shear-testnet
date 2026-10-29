@@ -249,14 +249,14 @@ describe('a note lock proves π for every leaf, or it is refused', () => {
         vaultLockNote: note,
         vout: [{ kind: 'lock', commit: funded, rangeProof: range, dest20: d20 }],
       };
-      attachLockAuth(tx, who.privateKey);
+      attachLockAuth(tx, who.privateKey, 'shear-testnet-v12');
       assert.ok(tx.lockAuth, `${id} lockAuth`);
       tx.vout[0].fundProof = proveLockEquality(funded, PI_SHE_NANOS, rIn, tx, MAGIC_TESTNET);
       assert.ok(tx.vout[0].fundProof, `${id} π proof`);
       return tx;
     };
     const run = async (tx) => executeBlockEvm(
-      await bootReserveEvm(),
+      await bootReserveEvm({ network: 'shear-testnet-v12' }),
       [{ coinbase: true, vout: [] }, tx],
       GENESIS,
       GENESIS,

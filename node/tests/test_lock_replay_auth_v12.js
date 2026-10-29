@@ -39,7 +39,7 @@ describe('compact FS-1 lock replay', { timeout: 20000 }, () => {
         spendTag: Buffer.alloc(32, 3),
       }],
     };
-    signSpendTx(tx, who.privateKey);
+    signSpendTx(tx, who.privateKey, { magic: 'shear-testnet-v12' });
     delete tx.spendPub;
     delete tx.sig;
     delete tx.signature;
@@ -49,11 +49,11 @@ describe('compact FS-1 lock replay', { timeout: 20000 }, () => {
     const sealed = compactTx(tx);
     assert.equal(sealed.spendPub, undefined);
     assert.ok(sealed.lockAuth);
-    const again = reserveAuth(sealed);
+    const again = reserveAuth(sealed, null, null, 'shear-testnet-v12');
     assert.equal(again.ok, true, again.reason || 'compact replay');
     const copied = compactTx({ ...tx, ownerPub: '11'.repeat(32) });
     delete copied.spendPub;
-    const spoof = reserveAuth(copied);
+    const spoof = reserveAuth(copied, null, null, 'shear-testnet-v12');
     assert.equal(spoof.ok, false);
     assert.equal(spoof.reason, 'unsigned');
   });

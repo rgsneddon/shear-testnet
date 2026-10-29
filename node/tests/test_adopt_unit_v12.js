@@ -587,7 +587,7 @@ describe('v12 adopt keeps the walked hash-bonus unit', { timeout: fileCapMs(impo
       }
       assert.ok(lock, 'lock fee');
       lock.dest20 = Buffer.from(d20);
-      signSpendTx(lock, who.key);
+      signSpendTx(lock, who.key, { magic: 'shear-testnet-v12' });
       delete lock.spendPub;
       delete lock.sig;
       delete lock.signature;

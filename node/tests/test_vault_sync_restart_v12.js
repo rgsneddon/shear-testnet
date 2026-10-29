@@ -344,7 +344,7 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     // Current law: the queued lock carries portalId and dest20. The address is not on the wire.
     assert.equal(tx.to, undefined);
     tx.dest20 = Buffer.from(hash20FromAddress(person.dest));
-    signSpendTx(tx, person.key);
+    signSpendTx(tx, person.key, { magic: 'shear-testnet-v12' });
     delete tx.spendPub;
     delete tx.sig;
     delete tx.signature;

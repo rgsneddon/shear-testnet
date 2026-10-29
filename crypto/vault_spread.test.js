@@ -176,7 +176,7 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
     assert.equal(outside.ok, false);
     assert.equal(outside.reason, 'stake_reward');
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeCommitEpochStartRoot(0, root))).ok, true);
     for (let i = 0; i < proved.length; i += 1) {
@@ -187,13 +187,13 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
       assert.equal(evm.ok, true, `${i} ${evm.reason}`);
       assert.equal(word(evm.returnValue), BigInt(proved[i].nanos));
     }
-    const late = await bootReserveEvm();
+    const late = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(late, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(late, encodeDeposit(
       owner.dest,
       proved[0].locks[0].commit,
       T0,
-      { key: owner.key },
+      { key: owner.key, magic: 'shear-testnet-v12' },
       true,
     ))).ok, true);
     assert.equal((await callReserve(late, encodeCommitEpochStartRoot(0, root))).ok, true);
@@ -250,7 +250,7 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
     );
     assert.equal(ratedClaim.ok, true, ratedClaim.reason);
     assert.equal(rated.mintBankNanos, nextEach.nanos);
-    const ratedEvm = await bootReserveEvm();
+    const ratedEvm = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(ratedEvm, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(ratedEvm, encodeCommitRate(1, NEXT_BPS, at, T0))).ok, true);
     assert.equal((await callReserve(ratedEvm, encodeCommitEpochStartRoot(16, nextLeaf.rootHex))).ok, true);
@@ -334,9 +334,9 @@ describe('JS and EVM vault spread', { timeout: 300000 }, () => {
     const restored = applyAt(undo, [rewardClaimTx({ to: pay, vault: proved[0], id: 'spread-restored' })], root, at);
     assert.equal(restored.ok, true, restored.reason);
 
-    const evmUndo = await bootReserveEvm();
+    const evmUndo = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(evmUndo, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(evmUndo, encodeDeposit(owner.dest, note.commit, T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(evmUndo, encodeDeposit(owner.dest, note.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     assert.equal((await callReserve(evmUndo, encodeCommitEpochStartRoot(0, root))).ok, true);
     const sm = evmUndo.evm.stateManager;
     await sm.checkpoint();

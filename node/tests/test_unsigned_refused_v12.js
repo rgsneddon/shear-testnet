@@ -62,7 +62,7 @@ describe('unsigned refused spend', () => {
       for (const kind of UNSIGNED_KINDS) {
         for (const nanos of AMOUNTS) {
           const tx = refusedTx({ kind, nanos, notes: 1, dest });
-          signSpendTx(tx, box.key);
+          signSpendTx(tx, box.key, { magic: 'shear-testnet-v12' });
           const got = store.queueTx(tx);
           assert.equal(got.reason, 'kind', `signed ${kind} ${nanos} ${got.reason}`);
         }

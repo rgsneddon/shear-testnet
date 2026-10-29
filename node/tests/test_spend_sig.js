@@ -100,7 +100,7 @@ describe('Flow spend is an Ed25519 signature', () => {
     const other = newIdentity();
     const { tx, from } = signedSend(id);
     const origPub = tx.spendPub;
-    signSpendTx(tx, other.privateKey);
+    signSpendTx(tx, other.privateKey, { magic: 'shear-testnet-v12' });
     tx.spendPub = origPub;
     assert.equal(verifySpendSig(tx), false);
     const got = verifyFundedBody([tx], (addr) => (addr === from ? 2 * NANOS_PER_SHE : 0));

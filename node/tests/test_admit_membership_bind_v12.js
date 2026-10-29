@@ -179,7 +179,7 @@ describe('v12 membership proofs are bound 1:1', () => {
         assert.ok(fee >= need && need <= LEVY_CAP_NANOS, spec.id);
         assert.ok(tx.excess, spec.id);
         assert.equal(verifyFlowConservation(tx), true, spec.id);
-        return signSpendTx(tx, key);
+        return signSpendTx(tx, key, { magic: 'shear-testnet-v12' });
       };
 
       const honest = [

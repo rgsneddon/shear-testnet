@@ -197,7 +197,7 @@ describe('vault FS-1 funding rules', () => {
     assert.equal(got.tags, undefined);
     assert.equal(reads, 0);
     assert.equal(typedCommitSum(tx).reason, 'commit_sum');
-    assert.equal(reserveAuth(tx).reason, 'unsigned');
+    assert.equal(reserveAuth(tx, null, null, 'shear-testnet-v12').reason, 'unsigned');
   });
 
   it('rejects a cleartext debit, a vote that spends, and a vote fee', () => {
@@ -645,7 +645,7 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
     // compact does not rebuild from the portal address.
     tx.dest20 = Buffer.from(d20);
     // A compact lock carries dest20. The address is vote_leak.
-    signSpendTx(tx, who.id.privateKey);
+    signSpendTx(tx, who.id.privateKey, { magic: 'shear-testnet-v12' });
     delete tx.spendPub;
     delete tx.sig;
     delete tx.signature;
@@ -894,7 +894,7 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
         });
         vote.dest20 = Buffer.from(hash20FromAddress(who.dest));
         vote.to = who.dest;
-        signSpendTx(vote, who.id.privateKey);
+        signSpendTx(vote, who.id.privateKey, { magic: 'shear-testnet-v12' });
         assert.equal(txVerifyWeight(vote), W_TX + W_SEAL);
         assert.equal(vote.fs1, undefined);
         const priced = { ...vote, id: 'vault-vote-fee', fee: 1 };
@@ -1055,7 +1055,7 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
     // The payout is dest20. `to` on a withdraw is the address, which is vote_leak.
     tx.dest20 = Buffer.from(d20);
     tx.ownerPub = who.id.spendPub.toString('hex');
-    signSpendTx(tx, who.id.privateKey);
+    signSpendTx(tx, who.id.privateKey, { magic: 'shear-testnet-v12' });
     assert.equal(txVerifyWeight(tx), W_TX + W_FS1_BASE + W_FS1_PER_INPUT + W_OUT * 2);
     assert.equal(levyTaxed(tx), true);
     assert.equal(levyTaxed({ ...tx, mint: true }), true);

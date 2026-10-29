@@ -13,7 +13,7 @@ import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote, leafVoteConserved } from './note.js';
 import { consensusUnlockPeriod, hiddenPrincipalOpens, indexedWithdrawQuote, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest20, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
-import { attachLockAuth, verifyLockAuth } from './reserve_evm.js';
+import { attachLockAuth, lockAuthMagicBytes, verifyLockAuth } from './reserve_evm.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -213,7 +213,10 @@ export function sealedCompactSpend(tx) {
   return !!(vin.commit || vin.pseudo || vin.cTilde);
 }
 
-export function signSpendTx(tx, privateKey) {
+/** `magic` is the book a lock's owner signature binds (LOCK_AUTH=book-magic). */
+export function signSpendTx(tx, privateKey, { magic } = {}) {
+  // Refuse a lock with no book before any field is written.
+  if (tx && String(tx.kind || tx.vout?.[0]?.kind || '') === 'lock') lockAuthMagicBytes(magic);
   const msg = spendMessage(tx);
   if (isStealthKey(privateKey)) {
     const longPub = ed25519RawPub(ed25519PrivateFromSeed(privateKey.seed));
@@ -224,7 +227,7 @@ export function signSpendTx(tx, privateKey) {
   tx.spendPub = ed25519RawPub(privateKey).toString('hex');
   const sig = sign(null, msg, privateKey);
   tx.sig = Buffer.from(sig).toString('hex');
-  attachLockAuth(tx, privateKey);
+  attachLockAuth(tx, privateKey, magic);
   return tx;
 }
 
@@ -991,7 +994,7 @@ function freshLockBound(tx, pubRaw) {
   return want === pid;
 }
 
-export function reserveAuth(tx, reserveState = null, seenOwners = null) {
+export function reserveAuth(tx, reserveState = null, seenOwners = null, magic = reserveState?.magic) {
   if (!reserveNeedsPortalOpen(tx)) return { ok: true };
   const kind = reserveKindOf(tx);
   const pubRaw = spendPubFromTx(tx);
@@ -1012,7 +1015,12 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
     if (!(kind === 'lock' && fs1Carry(tx))) {
       return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
     }
-    spend = verifyLockAuth(tx);
+    // The owner signed this book's magic. No book is refused, not testnet.
+    try {
+      spend = verifyLockAuth(tx, magic);
+    } catch {
+      return { ok: false, reason: 'unknown_magic', from: reservePortalDest(tx) };
+    }
     if (!spend) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
     ownerKey = Buffer.from(spend, 'hex');
   } else if (pubRaw) {
@@ -1288,7 +1296,7 @@ export function verifyFundedBody(body, spendableOf, {
         for (const th of noteFund.tags) tags.add(th);
       }
     }
-    const auth = reserveAuth(tx, reserveState, seenOwners);
+    const auth = reserveAuth(tx, reserveState, seenOwners, magic || reserveState?.magic);
     if (!auth.ok) return auth;
     if (stake.mintId) drawn.add(stake.mintId);
     const d = fundedDebit(tx);

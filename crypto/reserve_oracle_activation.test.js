@@ -79,7 +79,7 @@ function piLock(args, signer = null) {
   const leaf = held && vaultLockNote(held.amount, randomScalar(), held.blind, consensusUnlockPeriod(0));
   if (leaf) tx.vaultLockNote = leaf.note;
   if (signer) {
-    attachLockAuth(tx, signer.key);
+    attachLockAuth(tx, signer.key, 'shear-testnet-v12');
     assert.ok(tx.lockAuth, 'lockAuth');
   }
   // The π proof a wallet attaches with the note, last. A note with no proof
@@ -583,7 +583,7 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     assert.equal(bps, 250);
     const boundary = T0 + RESERVE_EPOCH_MS;
     const inside = T0 + Math.floor(RESERVE_EPOCH_MS / 2);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     const locked = await callReserve(session, encodeDeposit('portal-idx', PI_SHE_NANOS, T0));
     assert.equal(locked.ok, true, locked.reason);
@@ -626,7 +626,7 @@ describe('3b activation changes the lock issuance rate across epochs', () => {
     assert.equal(beforeGenesis.reason, 'rate_commit');
     const evmPre = await callReserve(session, encodeCommitRate(1, bps, inside, T0));
     assert.equal(evmPre.ok, false);
-    const evmUnopened = await callReserve(await bootReserveEvm(), encodeCommitRate(1, bps, T0, 0));
+    const evmUnopened = await callReserve(await bootReserveEvm({ network: 'shear-testnet-v12' }), encodeCommitRate(1, bps, T0, 0));
     assert.equal(evmUnopened.ok, false);
 
     for (const epochIndex of [999, -5, 0, 2]) {
@@ -689,7 +689,7 @@ async function satInterest(offset, holdEpochs, rates) {
   const drawAt = lockAt + holdEpochs * epoch;
   const state = emptyVault();
   state.magic = MAGIC_TESTNET;
-  const session = await bootReserveEvm();
+  const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
   const indexes = Object.keys(rates).map(Number).sort((a, b) => a - b);
   for (const idx of indexes) {
     const bps = rates[idx];
@@ -836,7 +836,7 @@ async function jsEvmStake({ locks, drawOffset, rates = null }) {
   const state = emptyVault();
   state.magic = MAGIC_TESTNET;
   state.genesisMs = T0;
-  const session = await bootReserveEvm();
+  const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
   assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
   if (rates) {
     for (const idx of Object.keys(rates).map(Number).sort((a, b) => a - b)) {
@@ -1041,7 +1041,7 @@ describe('the stake-reward cutoff is per network', () => {
     const none = indexedHiddenWithdraw(state, lateWho, end, late.planted, 'cutoff-late');
     assertPaidPi(none, 'late');
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(earlyWho, PI_SHE_NANOS, earlyAt))).ok, true);
     const evmTopUp = await callReserve(session, encodeDeposit(earlyWho, PI_SHE_NANOS, addAt));
@@ -1079,7 +1079,7 @@ describe('the stake-reward cutoff is per network', () => {
     const mainCut = await callReserve(main, encodeCutoffLengthMs(), { staticCall: true });
     assert.equal(mainCut.ok, true, mainCut.reason);
     assert.equal(word(mainCut.returnValue), BigInt(STAKE_CUTOFF_DAYS_MAINNET) * BigInt(day));
-    const test = await bootReserveEvm();
+    const test = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const testCut = await callReserve(test, encodeCutoffLengthMs(), { staticCall: true });
     assert.equal(testCut.ok, true, testCut.reason);
     assert.equal(word(testCut.returnValue), BigInt(Math.floor(RESERVE_EPOCH_MS / STAKE_CUTOFF_QUARTER_DEN)));
@@ -1122,7 +1122,7 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
       assert.equal(paid.ok, false, `one ${nanos}`);
       assert.equal(paid.reason, 'stake_reward');
     }
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, nanos, lockAt))).ok, true);
     const evm = await callReserve(session, encodeWithdraw(who, drawAt, undefined, indexed ? PI_SHE_NANOS : 0, {
@@ -1171,7 +1171,7 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     assert.equal(paidOther.ok, false);
     assert.equal(paidOther.reason, 'stake_reward');
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, first, T0))).ok, true);
     const evmTopUp = await callReserve(session, encodeDeposit(who, second, addAt));
@@ -1210,7 +1210,7 @@ describe('a pre-cutoff sum below pi earns no stake reward', () => {
     assert.equal(paid.reason, 'stake_reward');
     assertPaidPi(indexedHiddenWithdraw(state, lateWho, end, late.planted, 'post-cutoff'), 'late');
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS - 1, T0))).ok, true);
     const evmTopUp = await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lateAt));
@@ -1239,10 +1239,10 @@ describe('pinClock runs before the first lock in a block', () => {
     const lockAt = T0 + 1.5 * epoch;
     const drawAt = T0 + 3.5 * epoch;
     const bps = 400;
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const pinner = lockSigner();
     const pinLock = lockTx({ from: pinner.dest, to: pinner.dest, nanos: PI_SHE_NANOS, id: 'pin-lock' });
-    attachLockAuth(pinLock, pinner.key);
+    attachLockAuth(pinLock, pinner.key, 'shear-testnet-v12');
     assert.ok(pinLock.lockAuth, 'pin lockAuth');
     const ran = await executeBlockEvm(session, [
       { coinbase: true, vout: [] },
@@ -1272,7 +1272,7 @@ describe('pinClock runs before the first lock in a block', () => {
     assertPaidPi(jsPaid, 'pin');
     assert.notEqual(jsPaid.earned, want);
 
-    const late = await bootReserveEvm();
+    const late = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const beforePin = await callReserve(late, encodeDeposit('late-pin', PI_SHE_NANOS, lockAt));
     assert.equal(beforePin.ok, false);
     assert.equal((await callReserve(late, encodePinClock(T0))).ok, true);
@@ -1375,7 +1375,7 @@ describe('the block path rolls before its transactions', () => {
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
     for (const idx of [1, 2, 3]) state.pendingRates[idx] = rates[idx];
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     for (const idx of [1, 2, 3]) {
       const committed = await callReserve(session, encodeCommitRate(idx, rates[idx], T0 + idx * epoch, T0));
       assert.equal(committed.ok, true, `commit ${idx} ${committed.reason}`);
@@ -1460,7 +1460,7 @@ describe('a ≥π withdraw in the second epoch', () => {
     const who = signer.dest;
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const lock = [
       { coinbase: true, vout: [] },
       piLock({ from: who, to: who, nanos: PI_SHE_NANOS, id: 'pi-second-lock' }, signer),
@@ -1578,7 +1578,7 @@ describe('a withdraw stays open after the enacting block', () => {
     const who = signer.dest;
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const cb = { coinbase: true, vout: [] };
     const half = epoch / 2;
     if (gapBps != null) {
@@ -1695,7 +1695,7 @@ describe('a no-commit gap keeps the last adopted rate', () => {
     state.magic = MAGIC_TESTNET;
     state.pendingRates[1] = adopted;
     state.pendingRates[3] = later;
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodeCommitRate(1, adopted, T0 + epoch, T0))).ok, true);
     assert.equal((await callReserve(session, encodeCommitRate(3, later, T0 + 3 * epoch, T0))).ok, true);
     const cb = { coinbase: true, vout: [] };
@@ -1767,7 +1767,7 @@ describe('a skipped commit carries forward', () => {
     state.magic = MAGIC_TESTNET;
     state.pendingRates[2] = 0;
     state.pendingRates[3] = 10000;
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodeCommitRate(2, 0, T0 + 2 * epoch, T0))).ok, true);
     assert.equal((await callReserve(session, encodeCommitRate(3, 10000, T0 + 3 * epoch, T0))).ok, true);
     const cb = { coinbase: true, vout: [] };
@@ -1846,7 +1846,7 @@ describe('the rate lookback is load-bearing', () => {
     const drawAt = T0 + 5 * epoch;
     const paid = indexedHiddenWithdraw(state, who, drawAt, locked.planted, 'lookback-draw');
     assert.equal(paid.ok, true, paid.reason);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, T0))).ok, true);
     assert.equal((await callReserve(session, encodeEnact(T0 + epoch))).ok, true);
@@ -1875,7 +1875,7 @@ describe('a lock stays until its epoch ends', () => {
     state.magic = MAGIC_TESTNET;
     const locked = depositIndexed(state, who, lockAt);
     assert.equal(locked.ok, true, locked.reason);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lockAt))).ok, true);
     return { state, session, epoch, lockAt, planted: locked.planted };
@@ -1917,7 +1917,7 @@ describe('a lock stays until its epoch ends', () => {
     assert.equal(atLock.ok, true, atLock.reason);
     const laterLock = depositIndexed(state, after, lockAt);
     assert.equal(laterLock.ok, true, laterLock.reason);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(boundary, PI_SHE_NANOS, lockAt))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(after, PI_SHE_NANOS, lockAt))).ok, true);
@@ -1991,7 +1991,7 @@ describe('a top-up does not re-lock earlier principal', () => {
     assert.equal(again.ok, false);
     assert.equal(again.reason, 'double_mint');
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(who, PI_SHE_NANOS, lockAt))).ok, true);
     assert.equal((await callReserve(session, encodeEnact(T0 + epoch))).ok, true);
@@ -2066,7 +2066,7 @@ describe('an epoch with no commit keeps the running rate', () => {
     const adopted = 350;
     const state = emptyVault();
     state.magic = MAGIC_TESTNET;
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     state.pendingRates[1] = adopted;
     const committed = await callReserve(session, encodeCommitRate(1, adopted, T0 + epoch, T0));
     assert.equal(committed.ok, true, committed.reason);
@@ -2203,7 +2203,7 @@ function committedRate(blocks) {
 
 describe('activation reaches the store, the EVM, a reorg, and a sealed boot', () => {
   it('Reserve bytecode adopts the committed rate as nextEpochBps', async () => {
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const ran = await executeBlockEvm(session, [{
       coinbase: true,
       vout: [],
@@ -2219,7 +2219,7 @@ describe('activation reaches the store, the EVM, a reorg, and a sealed boot', ()
   });
 
   it('commitRate stores the vortex index, including 0 and an index past currentEpoch', async () => {
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const epoch = RESERVE_EPOCH_MS;
     const opened = await executeBlockEvm(session, [{
       coinbase: true,
@@ -2256,7 +2256,7 @@ describe('activation reaches the store, the EVM, a reorg, and a sealed boot', ()
   });
 
   it('the next epoch open adopts the committed rate end to end', async () => {
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const epoch = RESERVE_EPOCH_MS;
     const pinned = await callReserve(session, encodePinClock(T0));
     assert.equal(pinned.ok, true, pinned.reason);

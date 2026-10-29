@@ -199,7 +199,7 @@ describe('v12 b-spend stamps survive a restart', () => {
       vout: [sealMintOut(leaf.unit, dest, 'b-spend')],
     };
     spendTx.excess = excessOf(spendTx.vout);
-    signSpendTx(spendTx, who.key);
+    signSpendTx(spendTx, who.key, { magic: 'shear-testnet-v12' });
     const spent = sealBuilt(live, dest, { txs: [spendTx] });
     assert.equal(spent.ok, true, spent.reason);
     assert.equal(live.tip().height, matureParent + 1);

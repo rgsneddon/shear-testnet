@@ -210,7 +210,7 @@ describe('v12 b-spend mint is the chain leaf', () => {
           vin: [{ address: dest }],
           vout: [sealMintOut(amount, dest, 'b-spend')],
         };
-        signSpendTx(forged, payer.key);
+        signSpendTx(forged, payer.key, { magic: 'shear-testnet-v12' });
         const forgedBlock = await probe([forged]);
         assert.equal(forgedBlock.ok, false, `${amount} ${forgedBlock.reason}`);
         assert.ok(
@@ -257,7 +257,7 @@ describe('v12 b-spend mint is the chain leaf', () => {
           commitRootA: Buffer.alloc(32, 4),
           commitRootB: Buffer.alloc(32, 5),
         });
-        signSpendTx(tx, payer.key);
+        signSpendTx(tx, payer.key, { magic: 'shear-testnet-v12' });
         return tx;
       });
       const honestProbe = await probe(honest);
@@ -293,7 +293,7 @@ describe('v12 b-spend mint is the chain leaf', () => {
         vin: [{ address: dest }],
         vout: [sealMintOut(REJECT[0], dest, 'b-spend')],
       };
-      signSpendTx(parkedForged, payer.key);
+      signSpendTx(parkedForged, payer.key, { magic: 'shear-testnet-v12' });
       store.mempool.push(parkedForged);
       const parentTs = Number(decodeHeader(Buffer.from(store.tip().header)).timestamp);
       const { tpl } = store.template({ miner: dest, shareBits: 4, now: parentTs + 90_000 });

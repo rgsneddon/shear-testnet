@@ -82,7 +82,7 @@ describe('checkpoint-bound Reserve on the store', () => {
     lock.open = open;
     bindWeightFee(lock);
     lock.maxLevy = lock.fee;
-    signSpendTx(lock, box.key);
+    signSpendTx(lock, box.key, { magic: 'shear-testnet-v12' });
     assert.equal(local.queueTx(lock).ok, true, 'lock must queue');
     while (local.tip().height < firstCheckpoint + 2) {
       const h = local.tip().height;
@@ -153,7 +153,7 @@ describe('checkpoint-bound Reserve on the store', () => {
     lock.open = open;
     bindWeightFee(lock);
     lock.maxLevy = lock.fee;
-    signSpendTx(lock, box.key);
+    signSpendTx(lock, box.key, { magic: 'shear-testnet-v12' });
     assert.equal(store.queueTx(lock).ok, true);
     while (store.tip().height < firstCheckpoint) {
       const h = store.tip().height;

@@ -643,7 +643,7 @@ async function lifeLock(store, person, coins, spent, id) {
   // The output dest is the one-time portal. The body dest is the owner key,
   // which is what the spend signature binds. The proof names this inclusion.
   tx.dest20 = Buffer.from(person.spend20);
-  signSpendTx(tx, person.key);
+  signSpendTx(tx, person.key, { magic: 'shear-testnet-v12' });
   delete tx.spendPub;
   delete tx.sig;
   delete tx.signature;
@@ -1036,7 +1036,7 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
         excess: Buffer.alloc(32, 9),
       });
       tx.dest20 = Buffer.from(d20);
-      signSpendTx(tx, who.key);
+      signSpendTx(tx, who.key, { magic: 'shear-testnet-v12' });
       delete tx.spendPub;
       delete tx.sig;
       delete tx.signature;

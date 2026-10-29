@@ -173,7 +173,7 @@ describe('bootPoolOperator matching spend seed', () => {
       nanos: PI_SHE_NANOS,
       fee: 100,
     });
-    signSpendTx(hand, boot.operatorSpendKey);
+    signSpendTx(hand, boot.operatorSpendKey, { magic: 'shear-testnet-v12' });
     const sealed = compactTx(hand);
     assert.equal(verifyPoolWithdrawBound(sealed).ok, true);
     const stolen = { ...sealed, spendPub: undefined, sig: undefined, vin: sealed.vin.map((v) => ({ ...v })) };

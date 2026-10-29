@@ -44,14 +44,14 @@ function boundLock() {
   const d20 = Buffer.from(destCommitFromSpendPub(who.spendPub));
   const tx = lockBody({ fs1: Buffer.from([0xf1, 7, 1]), portalId: portalIdFromDest20(d20) });
   tx.vout[0].dest20 = d20;
-  attachLockAuth(tx, who.privateKey);
+  attachLockAuth(tx, who.privateKey, 'shear-testnet-v12');
   assert.ok(tx.lockAuth, 'lockAuth');
   tx.ownerPub = Buffer.from(tx.lockAuth).subarray(0, 32).toString('hex');
   return tx;
 }
 
 async function session() {
-  const s = await bootReserveEvm();
+  const s = await bootReserveEvm({ network: 'shear-testnet-v12' });
   assert.equal((await callReserve(s, encodePinClock(NOW))).ok, true);
   return s;
 }

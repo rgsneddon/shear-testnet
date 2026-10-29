@@ -355,9 +355,9 @@ describe('vault-lock reward proof', () => {
     assert.equal(Number(state.mintBankNanos), pair.first.nanos + pair.second.nanos);
     assert.equal(state.epochMintNanos['0'], BigInt(pair.first.nanos) + BigInt(pair.second.nanos));
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(owner.dest, Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex'), T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(owner.dest, Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex'), T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     const stored = await callReserve(session, encodeCommitEpochStartRoot(0, pair.first.rootHex));
     assert.equal(stored.ok, true, stored.reason);
     const evmPaid = await callReserve(
@@ -428,9 +428,9 @@ describe('vault-lock reward proof', () => {
     assert.equal(after.ok, true, after.reason);
     assert.equal(state.mintedIds[pair.first.nullifier], true);
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(owner.dest, Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex'), T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(owner.dest, Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex'), T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     assert.equal((await callReserve(session, encodeCommitVaultRoot(0, pair.first.rootHex))).ok, true);
     const roll = ownerRoll(owner, pair.second, 'roll-evm', state);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: roll.rewardSig, dest: owner.dest });
@@ -497,9 +497,9 @@ describe('vault-lock reward proof', () => {
     assert.equal(paid.reason, 'stake_reward');
     assert.equal(Number(state.mintBankNanos || 0), 0);
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(owner.dest, lockedCommit, T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(owner.dest, lockedCommit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: evmTx.rewardSig, dest: to });
     const evm = await callReserve(session, encodeWithdraw(owner.dest, at, auth));
     assert.equal(evm.ok, false);
@@ -537,14 +537,14 @@ describe('vault-lock reward proof', () => {
     assert.equal(top.reason, 'portal_exists');
     assert.equal(topped.portals[portalId].tranches.length, state.portals[portalId].tranches.length);
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(owner.dest, Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex'), T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(owner.dest, Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex'), T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: signed.rewardSig, dest: payout });
     assert.equal((await callReserve(session, encodeWithdraw(owner.dest, T0 + 2 * span, auth))).ok, false);
-    const fresh = await bootReserveEvm();
+    const fresh = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(fresh, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(fresh, encodeDeposit(owner.dest, Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex'), T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(fresh, encodeDeposit(owner.dest, Buffer.from(state.portals[portalIdFromDest(owner.dest)].tranches.at(-1).commit, 'hex'), T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     const paid = await callReserve(fresh, encodeWithdraw(owner.dest, at, auth));
     assert.equal(paid.ok, false);
     assert.equal(paid.reason, 'unsigned');
@@ -1061,7 +1061,7 @@ describe('vault-lock reward proof', () => {
     assert.equal(missing.ok, false);
     assert.equal(missing.reason, 'stake_reward');
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeCommitEpochStartRoot(0, inclusive))).ok, true);
     const burned = await callReserve(session, encodeRetire(retire.nullifierHex, retire.proof));
@@ -1137,9 +1137,9 @@ describe('vault-lock reward proof', () => {
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: evmTx.rewardSig, dest: owner.dest });
     const blob = packRetireBlob([retire.proof]);
     assert.ok(blob);
-    const atomic = await bootReserveEvm();
+    const atomic = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(atomic, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(atomic, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(atomic, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     assert.equal((await callReserve(atomic, encodeCommitEpochStartRoot(0, inclusive))).ok, true);
     const drew = await callReserve(atomic, encodeWithdrawRetire(owner.dest, at, auth, blob));
     assert.equal(drew.ok, true, drew.reason);
@@ -1156,9 +1156,9 @@ describe('vault-lock reward proof', () => {
     assert.equal(burnedPeriod.ok, false);
     assert.equal(burnedPeriod.reason, 'already_minted');
 
-    const fork = await bootReserveEvm();
+    const fork = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(fork, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(fork, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(fork, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     assert.equal((await callReserve(fork, encodeCommitEpochStartRoot(0, inclusive))).ok, true);
     const kept = await callReserve(
       fork,
@@ -1166,9 +1166,9 @@ describe('vault-lock reward proof', () => {
     );
     assert.equal(kept.ok, true, kept.reason);
 
-    const bare = await bootReserveEvm();
+    const bare = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(bare, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(bare, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(bare, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     assert.equal((await callReserve(bare, encodeCommitEpochStartRoot(0, inclusive))).ok, true);
     const three = await callReserve(bare, encodeWithdraw(owner.dest, at, auth));
     assert.equal(three.ok, false);
@@ -1319,12 +1319,12 @@ describe('vault-lock reward proof', () => {
     });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    const firstLeaf = await callReserve(session, encodeDeposit(owner.dest, made[0].note.commit, T0, { key: owner.key }, true));
+    const firstLeaf = await callReserve(session, encodeDeposit(owner.dest, made[0].note.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true));
     assert.equal(firstLeaf.ok, true, firstLeaf.reason);
     // R1: the EVM has no same-lock bypass. A second lock of this portal is a duplicate.
-    const secondLeaf = await callReserve(session, encodeDeposit(owner.dest, made[1].note.commit, T0, { key: owner.key }, true));
+    const secondLeaf = await callReserve(session, encodeDeposit(owner.dest, made[1].note.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true));
     assert.equal(secondLeaf.ok, false);
     assert.equal(secondLeaf.reason, 'portal_exists');
   });
@@ -1400,9 +1400,9 @@ describe('vault-lock reward proof', () => {
       tx,
     });
     assert.equal(paid.ok, true, paid.reason);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     const auth = packRewardAuth({ ownerPub: owner.pub, sig: tx.rewardSig, dest: owner.dest });
     const drew = await callReserve(session, encodeWithdrawRetire(owner.dest, late, auth, packRetireBlob([short.proof])));
     assert.equal(drew.ok, true, drew.reason);
@@ -1452,9 +1452,9 @@ describe('vault-lock reward proof', () => {
     });
     assert.equal(early.ok, false);
     assert.equal(early.reason, 'epoch_open');
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    assert.equal((await callReserve(session, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key }, true))).ok, true);
+    assert.equal((await callReserve(session, encodeDeposit(owner.dest, leaf.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
     const evmEarly = await callReserve(session, encodeWithdraw(owner.dest, mid, new Uint8Array()));
     assert.equal(evmEarly.ok, false);
     assert.equal(evmEarly.reason, 'epoch_open');
@@ -1619,11 +1619,11 @@ describe('vault-lock reward proof', () => {
     });
     assert.equal(paid.ok, true, paid.reason);
     assert.equal(paid.principal, PI_SHE_NANOS);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-    const firstOfSixteen = await callReserve(session, encodeDeposit(owner.dest, made[0].note.commit, T0, { key: owner.key }, true));
+    const firstOfSixteen = await callReserve(session, encodeDeposit(owner.dest, made[0].note.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true));
     assert.equal(firstOfSixteen.ok, true, firstOfSixteen.reason);
-    const secondOfSixteen = await callReserve(session, encodeDeposit(owner.dest, made[1].note.commit, T0, { key: owner.key }, true));
+    const secondOfSixteen = await callReserve(session, encodeDeposit(owner.dest, made[1].note.commit, T0, { key: owner.key, magic: 'shear-testnet-v12' }, true));
     assert.equal(secondOfSixteen.ok, false);
     assert.equal(secondOfSixteen.reason, 'portal_exists');
   });

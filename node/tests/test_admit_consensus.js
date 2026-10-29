@@ -87,7 +87,7 @@ function withOpenedPay(tx, id, nanos, key) {
   opened.vout[0] = openedFlowVout(tx.vout[0].address, nanos);
   opened.excess = kernelExcess(opened.vout, opened.vin);
   assert.ok(opened.excess, 'opened excess');
-  signSpendTx(opened, key);
+  signSpendTx(opened, key, { magic: 'shear-testnet-v12' });
   return opened;
 }
 
@@ -177,7 +177,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     };
 
     const honest = attachStubAdmitV2(mkSend());
-    signSpendTx(honest, key);
+    signSpendTx(honest, key, { magic: 'shear-testnet-v12' });
     const honestTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -197,7 +197,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     assert.equal(gotOk.reason, 'admit_version', gotOk.reason);
 
     const missing = mkSend({ id: 'missing-proof' });
-    signSpendTx(missing, key);
+    signSpendTx(missing, key, { magic: 'shear-testnet-v12' });
     const missingTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -219,7 +219,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
 
     const sampled = attachStubAdmitV2(mkSend({ id: 'sampled' }), { tagFill: 4 });
     assert.equal(sampled.admit_proof.blob[0], 2);
-    signSpendTx(sampled, key);
+    signSpendTx(sampled, key, { magic: 'shear-testnet-v12' });
     const sampledTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -256,7 +256,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       ],
     }, { spent: fakeIn });
     attachStubAdmitV2(attack, { tagFill: 5 });
-    signSpendTx(attack, key);
+    signSpendTx(attack, key, { magic: 'shear-testnet-v12' });
     const attackTpl = buildTemplate({
       prev: okP.hash,
       prevHeader: parent.header,
@@ -334,7 +334,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
 
     const sampled = attachStubAdmitV2(body(), { tagFill: 6 });
     assert.equal(sampled.admit_proof.blob[0], 2);
-    signSpendTx(sampled, key);
+    signSpendTx(sampled, key, { magic: 'shear-testnet-v12' });
     const sampFat = store.queueTx(sampled);
     assert.equal(sampFat.reason, 'admit_version', sampFat.reason);
     const sampOpen = store.queueTx(withOpenedPay(sampled, `${sampled.id}-open`, 2, key));
@@ -344,7 +344,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     assert.equal(sampQ.reason, 'admit_version');
 
     const honest = attachStubAdmitV2(body(), { tagFill: 7 });
-    signSpendTx(honest, key);
+    signSpendTx(honest, key, { magic: 'shear-testnet-v12' });
     const okFat = store.queueTx(honest);
     assert.equal(okFat.reason, 'admit_version', okFat.reason);
     const okOpen = store.queueTx(withOpenedPay(honest, `${honest.id}-open`, 2, key));
@@ -358,7 +358,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     const reuse = attachStubAdmitV2(body(), { tagFill: 8 });
     reuse.admit_proof.spendTag = honest.admit_proof.spendTag;
     reuse.spendTag = honest.spendTag;
-    signSpendTx(reuse, key);
+    signSpendTx(reuse, key, { magic: 'shear-testnet-v12' });
     const reuseFat = store.queueTx(reuse);
     assert.equal(reuseFat.reason, 'admit_version', reuseFat.reason);
     const reuseOpen = store.queueTx(withOpenedPay(reuse, `${reuse.id}-open`, 2, key));
@@ -428,7 +428,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
       ],
     }, { spent });
     attachStubAdmitV2(honest, { tagFill: 9 });
-    signSpendTx(honest, key);
+    signSpendTx(honest, key, { magic: 'shear-testnet-v12' });
     const toHex = (tx) => JSON.parse(JSON.stringify(tx, (_, v) => (
       Buffer.isBuffer(v) || v instanceof Uint8Array ? Buffer.from(v).toString('hex') : v
     )));
@@ -492,7 +492,7 @@ describe('AdmitV1 is consensus on Flow spends (verifyBlock + queueTx)', { timeou
     }, { spent });
     attachStubAdmitV2(body, { tagFill: 10 });
     for (const o of body.vout) o.rangeProof = true;
-    signSpendTx(body, key);
+    signSpendTx(body, key, { magic: 'shear-testnet-v12' });
     const stubTpl = buildTemplate({
       prev: parent.hash,
       prevHeader: parent.header,

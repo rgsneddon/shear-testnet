@@ -136,7 +136,7 @@ describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
     bindWeightFee(lock);
     lock.maxLevy = lock.fee;
     const lockL = lock.fee;
-    signSpendTx(lock, aliceBox.key);
+    signSpendTx(lock, aliceBox.key, { magic: 'shear-testnet-v12' });
 
     const unfunded = store.queueTx(lock);
     assert.equal(unfunded.ok, false);
@@ -169,7 +169,7 @@ describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
     tooMuch.open = open;
     bindWeightFee(tooMuch);
     tooMuch.maxLevy = tooMuch.fee;
-    signSpendTx(tooMuch, aliceBox.key);
+    signSpendTx(tooMuch, aliceBox.key, { magic: 'shear-testnet-v12' });
     const refused = store.queueTx(tooMuch);
     assert.equal(refused.ok, false);
     assert.equal(refused.reason, 'insufficient');
@@ -265,7 +265,7 @@ describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
     }, { spent });
     admitSend(tx, { id: alice, spent, blocks: store.blocks });
     bindWeightFee(tx);
-    signSpendTx(tx, aliceBox.key);
+    signSpendTx(tx, aliceBox.key, { magic: 'shear-testnet-v12' });
     const a = store.queueTx(tx);
     assert.equal(a.ok, true, a.reason);
     assert.equal(a.tx?.to || dest, dest);
@@ -287,7 +287,7 @@ describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
     lock.open = open;
     bindWeightFee(lock);
     lock.maxLevy = lock.fee;
-    signSpendTx(lock, aliceBox.key);
+    signSpendTx(lock, aliceBox.key, { magic: 'shear-testnet-v12' });
     const q = store.queueTx(lock);
     assert.equal(q.ok, true, q.reason);
     const painted = explorerRecentTxs(store);
@@ -309,7 +309,7 @@ describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
     bindWeightFee(vt);
     vt.maxLevy = vt.fee;
     vt.payer = continuum;
-    signSpendTx(vt, aliceBox.key);
+    signSpendTx(vt, aliceBox.key, { magic: 'shear-testnet-v12' });
     const qv = store.queueTx(vt);
     assert.equal(qv.ok, false);
     assert.equal(qv.reason, 'vote_retired');
@@ -410,7 +410,7 @@ describe('node Reserve vault', { timeout: fileCapMs(import.meta.url) }, () => {
     }, { spent: lastPot });
     admitSend(flowTx, { id: alice, spent: { ...lastPot, kind: 'pot' }, blocks: store.blocks });
     bindWeightFee(flowTx);
-    signSpendTx(flowTx, aliceBox.key);
+    signSpendTx(flowTx, aliceBox.key, { magic: 'shear-testnet-v12' });
     const queued = store.queueTx(flowTx);
     assert.equal(queued.ok, true, queued.reason);
 

@@ -210,7 +210,7 @@ describe('leaf ballot window, step, and wording', () => {
   });
 
   it('JS and the EVM step the hash bonus 1 to 2 to 3 with no ceiling', async () => {
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const pairs = [[1, 1, 2], [2, 1, 3], [3, -1, 2], [1, -1, 0], [0, -1, 0], [0, 1, 1]];
     for (const [cur, dir, want] of pairs) {
       assert.equal(stepHashBonus(cur, dir), want, `${cur} ${dir}`);
@@ -368,7 +368,7 @@ describe('one proof per live leaf', () => {
     assert.equal(held.ok, true, held.reason);
     assert.equal(held.step, 0);
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const root = base.rootHex;
     const packed = packVaultOutput(base.note);
     // The period-1 claim root alone does not open epoch 1's ballot: a vote
@@ -534,7 +534,7 @@ describe('one proof per live leaf', () => {
   });
 
   it('keeps the hash-bonus unit inside the emission bound on the EVM roll', async () => {
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const dest = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeDeposit(dest, PI_SHE_NANOS, T0))).ok, true);
@@ -660,7 +660,7 @@ describe('hash-bonus rho through mined blocks', () => {
     assert.equal(stay.live, 0);
     assert.equal(back.live, 1);
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     for (const [current, dir, want] of [[1, 1, 2], [1, -1, 0], [0, -1, 0], [0, 1, 1]]) {
       const got = await callReserve(session, encodeStepBonus(current, dir));
       assert.equal(got.ok, true, got.reason);
@@ -686,7 +686,7 @@ describe('hash-bonus rho through mined blocks', () => {
     const bumped = await callReserve(session, encodeStepBonus(1, decodeTallyStep(evmStep.returnValue)));
     assert.equal(decodeTallyStep(bumped.returnValue), up.live);
 
-    const downSession = await bootReserveEvm();
+    const downSession = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(downSession, encodeCommitEpochStartRoot(1, down.proved.rootHex))).ok, true);
     assert.equal((await callReserve(downSession, encodeCommitEpochCensus(1, 1, down.open, down.proved.rootHex))).ok, true);
     const downOnly = await callReserve(downSession, encodeCastVote({

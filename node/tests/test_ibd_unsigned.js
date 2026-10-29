@@ -174,7 +174,7 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
     }, { spent: lastPot });
     attachStubAdmitV2(sendTx);
     bindWeightFee(sendTx);
-    signSpendTx(sendTx, box.key);
+    signSpendTx(sendTx, box.key, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig(sendTx), true);
     // Send outputs are hidden (e2bd74cf), so the full body reaches the version
     // gate and the byte-2 stub is admit_version.
@@ -194,7 +194,7 @@ describe('IBD compact Flow ingest vs mempool unsigned', () => {
     openedTx.excess = kernelExcess(openedTx.vout, openedTx.vin);
     assert.ok(openedTx.excess);
     bindWeightFee(openedTx);
-    signSpendTx(openedTx, box.key);
+    signSpendTx(openedTx, box.key, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig(openedTx), true);
     const openedQ = a.queueTx(openedTx);
     assert.equal(openedQ.ok, false);

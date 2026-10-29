@@ -4407,7 +4407,7 @@ export function createStore(dir, {
         }
       }
     }
-    const auth = reserveAuth(tx, reserveVault, null);
+    const auth = reserveAuth(tx, reserveVault, null, bookMagic);
     if (!auth.ok) {
       try {
         console.error(JSON.stringify({ event: 'admit_fail', id: String(tx?.id || ''), reason: auth.reason || 'unsigned' }));

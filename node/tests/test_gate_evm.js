@@ -181,7 +181,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const lock = compactReserve(lockTx({ from: dest, to: dest, nanos: PI_SHE_NANOS, id: 'lock-p' }));
     lock.fee = levyNeed(lock, []);
     lock.maxLevy = lock.fee;
-    signSpendTx(lock, key);
+    signSpendTx(lock, key, { magic: 'shear-testnet-v12' });
     const b1 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,
@@ -200,7 +200,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
     const want = PI_SHE_NANOS;
     const wd = compactReserve(withdrawTx({ from: dest, to: dest, nanos: want, id: 'wd-p' }));
     wd.fee = 0;
-    signSpendTx(wd, key);
+    signSpendTx(wd, key, { magic: 'shear-testnet-v12' });
     const b2 = mine(buildTemplate({
       prev: GENESIS_PREV,
       height: 1,

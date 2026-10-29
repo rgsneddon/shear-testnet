@@ -91,7 +91,7 @@ describe('fork trial vault (VS-R1)', () => {
     lock.open = open;
     bindWeightFee(lock);
     lock.maxLevy = lock.fee;
-    signSpendTx(lock, box.key);
+    signSpendTx(lock, box.key, { magic: 'shear-testnet-v12' });
     const queued = store.queueTx(lock);
     assert.equal(queued.ok, true, queued.reason);
     const sealed = await Promise.resolve(mineOne(store, continuum, { now: t0 + fund * 90_000 }));
@@ -117,7 +117,7 @@ describe('fork trial vault (VS-R1)', () => {
     lock.open = open;
     bindWeightFee(lock);
     lock.maxLevy = lock.fee;
-    signSpendTx(lock, box.key);
+    signSpendTx(lock, box.key, { magic: 'shear-testnet-v12' });
     const queued = peer.queueTx(lock);
     assert.equal(queued.ok, true, queued.reason);
     assert.equal((await Promise.resolve(mineOne(peer, continuum, { now: t0 + fund * 90_000 }))).ok, true);
@@ -170,7 +170,7 @@ describe('fork trial vault (VS-R1)', () => {
     lock.open = open;
     bindWeightFee(lock);
     lock.maxLevy = lock.fee;
-    signSpendTx(lock, box.key);
+    signSpendTx(lock, box.key, { magic: 'shear-testnet-v12' });
     assert.equal(local.queueTx(lock).ok, true);
     assert.equal((await Promise.resolve(mineOne(local, continuum, { now: t0 + fund * 90_000 }))).ok, true);
     assert.equal(Number(local.reserveVault.totalLockedNanos), PI_SHE_NANOS);

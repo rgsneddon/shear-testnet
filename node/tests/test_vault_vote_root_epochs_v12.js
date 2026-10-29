@@ -246,7 +246,7 @@ describe('vault vote root is the epoch census root (regtest, three epochs)', { c
     }
     assert.ok(tx, `${id} fee`);
     tx.dest20 = Buffer.from(d20);
-    signSpendTx(tx, person.key);
+    signSpendTx(tx, person.key, { magic: 'shear-testnet-v12' });
     delete tx.spendPub;
     delete tx.sig;
     delete tx.signature;

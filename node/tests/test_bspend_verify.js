@@ -48,7 +48,7 @@ describe('verifyBlock B-spend uses the committing header', () => {
         vout: [sealMintOut(9, dest, 'b-spend')],
       };
       spendTx.excess = excessOf(spendTx.vout);
-      signSpendTx(spendTx, who.key);
+      signSpendTx(spendTx, who.key, { magic: 'shear-testnet-v12' });
 
       const pre = await attempt(book.store, dest, [{ ...spendTx, id: 'bspend-pre', commitHeight: funded.height + 3 }]);
       assert.equal(pre.ok, false);

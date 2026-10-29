@@ -119,7 +119,7 @@ describe('v12 b-spend pays its owner', () => {
       const stolenBody = spendBody(leaf, [foreign], { id: `foreign-${amount}`, from: stranger.dest });
       stolenBody.vin = [{}];
       delete stolenBody.from;
-      signSpendTx(stolenBody, stranger.key);
+      signSpendTx(stolenBody, stranger.key, { magic: 'shear-testnet-v12' });
       const foreignBound = bindBSpend(stolenBody, {
         history: [block],
         tipHeight,
@@ -137,7 +137,7 @@ describe('v12 b-spend pays its owner', () => {
       const strangerBody = spendBody(leaf, [own], { id: `stranger-${amount}` });
       strangerBody.vin = [{}];
       delete strangerBody.from;
-      signSpendTx(strangerBody, stranger.key);
+      signSpendTx(strangerBody, stranger.key, { magic: 'shear-testnet-v12' });
       const strangerBound = bindBSpend(strangerBody, {
         history: [block],
         tipHeight,
@@ -150,7 +150,7 @@ describe('v12 b-spend pays its owner', () => {
           sealMintOut(amount - 1, stranger.dest, 'b-spend'),
         ];
         const mixedBody = spendBody(leaf, mixed, { id: `split-${amount}` });
-        signSpendTx(mixedBody, owner.key);
+        signSpendTx(mixedBody, owner.key, { magic: 'shear-testnet-v12' });
         const mixedBound = bindBSpend(mixedBody, {
           history: [block],
           tipHeight,
@@ -220,7 +220,7 @@ describe('v12 b-spend pays its owner', () => {
       const spent = new Set();
       const honest = spendBody(leaf, [own], { id: `honest-${amount}`, from: owner.dest });
       honest.vin = [{ address: owner.dest }];
-      signSpendTx(honest, owner.key);
+      signSpendTx(honest, owner.key, { magic: 'shear-testnet-v12' });
       const bound = bindBSpend(honest, { history: [block], tipHeight, spent });
       assert.equal(bound.ok, true, `${amount} ${bound.reason}`);
       assert.equal(spent.size, 1, amount);
@@ -235,7 +235,7 @@ describe('v12 b-spend pays its owner', () => {
         assert.equal(parts.every((o) => sameCommit(o, leaf.dest20)), true);
         const split = spendBody(leaf, parts, { id: `ownersplit-${amount}`, from: owner.dest });
         split.vin = [{ address: owner.dest }];
-        signSpendTx(split, owner.key);
+        signSpendTx(split, owner.key, { magic: 'shear-testnet-v12' });
         const opened = bindBSpend(split, {
           history: [block],
           tipHeight,
@@ -327,7 +327,7 @@ describe('v12 b-spend pays its owner', () => {
           vin: [{}],
           vout: [foreignOut],
         };
-        signSpendTx(foreign, stranger.key);
+        signSpendTx(foreign, stranger.key, { magic: 'shear-testnet-v12' });
         const bare = {
           id: `atk-bare-${amount}`,
           kind: 'b-spend',
@@ -352,7 +352,7 @@ describe('v12 b-spend pays its owner', () => {
           vin: [{}],
           vout: [own],
         };
-        signSpendTx(strangerTx, stranger.key);
+        signSpendTx(strangerTx, stranger.key, { magic: 'shear-testnet-v12' });
         const qForeign = book.store.queueTx(foreign);
         const qBare = book.store.queueTx(bare);
         const qStranger = book.store.queueTx(strangerTx);
@@ -412,7 +412,7 @@ describe('v12 b-spend pays its owner', () => {
           vin: [{ address: owner.dest }],
           vout: outs,
         };
-        signSpendTx(tx, owner.key);
+        signSpendTx(tx, owner.key, { magic: 'shear-testnet-v12' });
         return tx;
       });
       for (const tx of honest) {

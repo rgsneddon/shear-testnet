@@ -991,7 +991,7 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       proveHeight: seeded.tip().height + 1,
     });
     assert.ok(mined, 'fs1 lock');
-    signSpendTx(mined.tx, ownerKey);
+    signSpendTx(mined.tx, ownerKey, { magic: 'shear-testnet-v12' });
     delete mined.tx.spendPub;
     delete mined.tx.sig;
     delete mined.tx.signature;
@@ -1075,7 +1075,7 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       proveHeight: seeded.tip().height + 1,
     });
     assert.ok(pending, 'pending lock');
-    signSpendTx(pending.tx, pendingKey);
+    signSpendTx(pending.tx, pendingKey, { magic: 'shear-testnet-v12' });
     delete pending.tx.spendPub;
     delete pending.tx.sig;
     delete pending.tx.signature;
