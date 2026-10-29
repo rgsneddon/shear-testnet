@@ -68,7 +68,9 @@ describe('datadir ACL on Windows CI', () => {
   it('the Windows repair spread covers Everyone, Users, Authenticated Users and a second user, on the dir and a file', () => {
     const src = fs.readFileSync(diag, 'utf8');
     for (const grant of ['*S-1-1-0:(R)', '*S-1-5-32-545:(RX)', '*S-1-5-11:(M)']) assert.ok(src.includes(grant), grant);
-    assert.match(src, /net(\.exe)?['"]?,\s*\[\s*['"]user['"]/, 'a second local user is created for the :(F) case');
+    const userSrc = fs.readFileSync(path.join(path.dirname(diag), 'win_acl_user.mjs'), 'utf8');
+    assert.match(src, /other\.grant\(/, 'a second local user is granted for the :(F) case');
+    assert.match(userSrc, /net(\.exe)?['"]?,\s*\[\s*['"]user['"]/, 'a second local user is created for the :(F) case');
     assert.match(src, /shewall\.bin/, 'the file case uses a file inside the datadir');
     assert.match(src, /fixed\.applied !== true/);
     assert.match(src, /removed/, 'the repair must report the stray trustee it removed');

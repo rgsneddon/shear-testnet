@@ -22,6 +22,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { otherUser } from './win_acl_user.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.argv[2] || path.join(here, '..', '..'));
@@ -53,26 +54,17 @@ const bases = process.env.SHEAR_ACL_DIAG_BASES
   ? process.env.SHEAR_ACL_DIAG_BASES.split(path.delimiter).filter(Boolean)
   : [os.tmpdir(), os.homedir(), process.env.RUNNER_TEMP || ''].filter(Boolean);
 
-// The second local user for the :(F) case. Created on the runner only, and
-// deleted at the end.
-const OTHER = `shearacl${randomBytes(3).toString('hex')}`;
-let otherMade = false;
-function makeOther() {
-  if (otherMade) return true;
-  try {
-    execFileSync('net', ['user', OTHER, `Aa1!${randomBytes(12).toString('base64url')}`, '/add'], { encoding: 'utf8' });
-    otherMade = true;
-  } catch (e) {
-    failures.push(`could not create the second local user for the :(F) case: ${e.message}`);
-  }
-  return otherMade;
-}
+// The second local user for the :(F) case. Created on the runner only, at
+// most once, with a 14-character random password so `net user /add` does not
+// stop on its Y/N prompt (PSA r3-2), and deleted at the end. A failed
+// creation fails each case that needed it.
+const other = otherUser({ exec: execFileSync, name: `shearacl${randomBytes(3).toString('hex')}`, failures });
 
 const SPREAD = [
   ['Everyone:(R)', () => '*S-1-1-0:(R)'],
   ['Users:(RX)', () => '*S-1-5-32-545:(RX)'],
   ['Authenticated Users:(M)', () => '*S-1-5-11:(M)'],
-  ['a second local user:(F)', () => (makeOther() ? `${OTHER}:(F)` : null)],
+  ['a second local user:(F)', (label) => other.grant(label)],
 ];
 
 function repairCase(base, label, grantOf, onFile) {
@@ -89,7 +81,7 @@ function repairCase(base, label, grantOf, onFile) {
     const file = path.join(dir, 'shewall.bin');
     fs.writeFileSync(file, 'diag');
     if (!check(dir, `${label} on ${where}: with shewall.bin`, () => ensureDatadir(dir))) return;
-    const grant = grantOf();
+    const grant = grantOf(`${base} ${label} on ${where}`);
     if (!grant) return;
     execFileSync('icacls', [onFile ? file : dir, '/grant', grant], { encoding: 'utf8' });
     const fixed = check(dir, `after ${label} was granted on ${where}`, () => ensureDatadir(dir));
@@ -134,9 +126,7 @@ for (const base of [...new Set(bases)]) {
     }
   }
 }
-if (otherMade) {
-  try { execFileSync('net', ['user', OTHER, '/delete'], { encoding: 'utf8' }); } catch (e) { console.log(`net user /delete: ${e.message}`); }
-}
+other.cleanup();
 if (checked === 0) failures.push('no directory was checked (every base refused mkdtemp)');
 if (win) {
   try { console.log(execFileSync('whoami', ['/user', '/groups', '/fo', 'list'], { encoding: 'utf8' }).split('\n').filter((l) => /SID|Group Name|User Name/.test(l)).slice(0, 40).join('\n')); } catch (e) { console.log(String(e.message)); }
