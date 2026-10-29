@@ -304,7 +304,7 @@ export function emptyFluxset() {
     spendTags: new Set(),
     // R28: hex of every admit-set P, so a share key that is already a note
     // is refused (two notes on one P would share a key image).
-    pubHex: new Set(),
+    pubHex: keyIndex([], 0),
     jroot: blank?.root || jroot({ pubs: [], commits: [] }),
     frontier: blank?.frontier || null,
     zeroFrontier: zero?.frontier || null,
@@ -339,11 +339,28 @@ export function receiptAdmitRejected(tx) {
   return null;
 }
 
-/** The admit-set key index of `live`, built once from its pubs when missing. */
+/**
+ * A key index: hex keys plus `count`, the number of admit-set pubs it
+ * covers. A Set alone cannot tell "no notes" from "never built".
+ */
+function keyIndex(keys, count) {
+  const out = new Set(keys);
+  out.count = count;
+  return out;
+}
+
+/**
+ * The admit-set key index of `live`. It is rebuilt from the pubs whenever
+ * it does not cover exactly the pubs `live` holds: missing, or a fluxset
+ * whose pubs were installed without it (a book.snap or suffix load, CA
+ * A-1). An index that missed keys would let `share_key` pass a reused key
+ * on that node only, and split it from the rest of the network.
+ */
 export function admitPubIndex(live) {
-  if (live?.pubHex instanceof Set) return live.pubHex;
-  const out = new Set();
-  for (const p of live?.pubs || []) {
+  const pubs = Array.isArray(live?.pubs) ? live.pubs : [];
+  if (live?.pubHex instanceof Set && live.pubHex.count === pubs.length) return live.pubHex;
+  const out = keyIndex([], pubs.length);
+  for (const p of pubs) {
     try { out.add(Buffer.from(pointBytes(pubFromAdmit(p))).toString('hex')); } catch { /* not a point */ }
   }
   if (live && typeof live === 'object') live.pubHex = out;
@@ -364,7 +381,10 @@ function absorbFluxBlock(pubs, commits, spendTags, block, pubHex = null) {
       if (!fs1LeafFor(o)) throw new Error('admit_note_point');
       pubs.push(pubFromAdmit(note.admitPub));
       commits.push(Buffer.from(note.commit));
-      if (pubHex) pubHex.add(Buffer.from(note.admitPub).toString('hex'));
+      if (pubHex) {
+        pubHex.add(Buffer.from(note.admitPub).toString('hex'));
+        pubHex.count += 1;
+      }
     }
   }
   // R28: the notes a block paid by draw join after its own outputs. They are
@@ -376,7 +396,10 @@ function absorbFluxBlock(pubs, commits, spendTags, block, pubHex = null) {
     for (const note of notesFromRecord(bytes)) {
       pubs.push(pubFromAdmit(note.admitPub));
       commits.push(Buffer.from(note.commit));
-      if (pubHex) pubHex.add(Buffer.from(note.admitPub).toString('hex'));
+      if (pubHex) {
+        pubHex.add(Buffer.from(note.admitPub).toString('hex'));
+        pubHex.count += 1;
+      }
     }
   }
 }
@@ -387,7 +410,10 @@ export function applyBlockToFluxset(live, block) {
     pubs: Array.isArray(live?.pubs) ? live.pubs.slice() : [],
     commits: Array.isArray(live?.commits) ? live.commits.slice() : [],
     spendTags: new Set(live?.spendTags || []),
-    pubHex: new Set(admitPubIndex(live || {})),
+    pubHex: (() => {
+      const idx = admitPubIndex(live || {});
+      return keyIndex(idx, idx.count);
+    })(),
     jroot: live?.jroot || null,
     frontier: live?.frontier || null,
     zeroFrontier: live?.zeroFrontier || null,
@@ -486,6 +512,9 @@ export function fluxWithLeaves(pubs, commits, spendTags, opts = {}) {
   live.frontier = null;
   live.zeroFrontier = null;
   installFrontiers(live, [], []);
+  // R28 (CA A-1): the snap's keys, so share_key holds on a snap or suffix boot.
+  live.pubHex = null;
+  admitPubIndex(live);
   return live;
 }
 
