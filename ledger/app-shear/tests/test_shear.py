@@ -15,7 +15,11 @@ SPECULOS_MNEMONIC = (
     "glory promote mansion idle axis finger extra february uncover one trip resource "
     "lawn turtle enact monster seven myth punch hobby comfort wild raise skin"
 )
-COIN = 1  # SHEAR_COIN_TYPE until D2
+import pathlib
+import re
+
+# The one SLIP-44 placeholder lives in the Makefile (D2).
+COIN = int(re.search(r"^SHEAR_COIN_TYPE \?= (\d+)", (pathlib.Path(__file__).parents[1] / "Makefile").read_text(), re.M).group(1))
 PATH = [44 | 0x80000000, COIN | 0x80000000, 0x80000000]
 PKCS8 = bytes.fromhex("302e020100300506032b657004220420")
 
