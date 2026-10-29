@@ -2473,7 +2473,14 @@ class ShearWalletAppState extends State<ShearWalletApp>
         ),
       ),
       actions: [
-        FittedBox(
+        // The toolbar lays actions out in an unbounded Row, so the FittedBox
+        // needs its own width bound to scale down on a narrow window instead
+        // of overflowing the bar.
+        ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.sizeOf(context).width * 0.55,
+          ),
+          child: FittedBox(
           fit: BoxFit.scaleDown,
           child: Row(
             children: [
@@ -2530,6 +2537,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
                 ),
               ),
             ],
+          ),
           ),
         ),
       ],
@@ -4319,9 +4327,16 @@ class ShearWalletAppState extends State<ShearWalletApp>
     );
   }
 
+  /// A Deposit needs an amount and a ready node.
   bool get _reserveSendReady {
     final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
     if (!unprivateAmountPermitted(she)) return false;
+    return _reserveNodeReady;
+  }
+
+  /// Withdraw, roll, and the vote carry no Deposit amount. They wait only on
+  /// the node, never on what is typed in the Deposit field.
+  bool get _reserveNodeReady {
     if (sidecar.committed == ClosureSendMode.localNode ||
         sidecar.committed == ClosureSendMode.localNodeFull) {
       return sidecar.honest || walletAtTip(_syncLabel);
@@ -5228,7 +5243,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
             ),
             FilledButton(
               key: const Key('reserve-withdraw'),
-              onPressed: _reserveSendReady
+              onPressed: _reserveNodeReady
                   ? () => _reserveWithdraw(context, ident)
                   : null,
               child: Text(
@@ -5247,7 +5262,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
             ),
             FilledButton(
               key: const Key('reserve-roll'),
-              onPressed: _reserveSendReady
+              onPressed: _reserveNodeReady
                   ? () => _reserveRoll(context, ident)
                   : null,
               child: const Text('Roll over'),
@@ -5389,7 +5404,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
       ));
       voteKids.add(FilledButton(
         key: const Key('reserve-vote-submit'),
-        onPressed: draft == null || _reserveVoteBusy || !_reserveSendReady
+        onPressed: draft == null || _reserveVoteBusy || !_reserveNodeReady
             ? null
             : () => _reserveVote(context, ident, draft),
         child: Text(p.nanos ~/ kPiSheNanos > 0

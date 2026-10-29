@@ -79,9 +79,13 @@ class AdmitNative {
       for (var i = 0; i < 32; i++) {
         rr[i] = r[i];
       }
+      // The C argument is a u64. BigInt.toInt() clamps at 2^63-1 on native,
+      // so v >= 2^63 would be proved as 2^63-1. toSigned(64) keeps the same
+      // 64 bits, which the Uint64 FFI argument passes through unchanged.
+      final bits = v.toSigned(64).toInt();
       final rc = debugRange != null
-          ? debugRange!(v.toInt(), rr, out, olen, rangeCap)
-          : _range(v.toInt(), rr, out, rangeCap, olen);
+          ? debugRange!(bits, rr, out, olen, rangeCap)
+          : _range(bits, rr, out, rangeCap, olen);
       final n = olen.value;
       if (rc != 1 || n <= 0 || n > rangeCap) return null;
       final blob = Uint8List.fromList(out.asTypedList(n));

@@ -6,12 +6,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/main.dart';
 import 'package:shear_wallet/shear_ctf.dart';
-import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_session.dart';
 
+import 'support/sealed_book.dart';
+
+// A Vault lock is exactly one π leaf (Russell, 25 Oct 14:20, Corrections 1):
+// a deposit of any other amount is refused in the wallet before anything is
+// posted, so there are no top-ups that sum to π. Every book here is funded
+// from one real sealed 10 SHE note mined 9 deep, never from a round credit or
+// a pool figure, and a π lock posts a real FS-1 lock body.
 void main() {
   tearDown(() {
     debugReserveIsolateRuns = 0;
@@ -19,11 +26,11 @@ void main() {
     debugUiHeavyCount = 0;
   });
 
-  test('4-coin lock waits on 9 confirmations', () async {
+  test('a π lock from a 10 SHE note waits on 9 confirmations', () async {
     final caller = reserveIsolateStamp;
-    final book = await _lockedParts([4]);
+    final book = await _lockedPi();
     final lock = book.ledger.transactions.lastWhere((t) => t.kind == 'lock');
-    expect(lock.amount, 4);
+    expect((lock.amount * kUnitsPerShe).round(), kPiSheNanos);
     expect(
       reserveLockConfirmations(book.ledger, lock),
       lessThan(ShearLedger.spendableConfirmations),
@@ -42,20 +49,31 @@ void main() {
     expect(book.ledger.transactions.where((t) => t.kind == 'vote'), isEmpty);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('several top-ups that sum past Pi wait on 9 confirmations', () async {
-    final book = await _lockedParts([1.6, 1.7]);
-    expect(book.reserve.portal(book.dest).canVote, isTrue);
-    expect(book.ledger.transactions.where((t) => t.kind == 'lock').length, 2);
+  test('top-ups below π are refused before posting, so they never sum to a vote', () async {
+    final book = _funded();
+    for (final she in [1.6, 1.7]) {
+      final r = await _deposit(book, she);
+      expect(r.posted, isFalse, reason: '$she SHE');
+      expect(r.remark, kLockBelowPi, reason: '$she SHE');
+    }
+    expect(book.pool.posts, isEmpty, reason: 'nothing reached the pool');
+    expect(book.ledger.transactions.where((t) => t.kind == 'lock'), isEmpty);
+    expect(book.reserve.portal(book.dest).canVote, isFalse);
+    expect(book.spendableUnits, 10 * kUnitsPerShe, reason: 'the note stays Spendable');
     final shown = await _vote(book, local: true);
     // ignore: avoid_print
-    print('VOTE_WAIT_SUM $shown');
-    expect(shown, kVoteConfirmWait);
+    print('VOTE_TOPUPS_REFUSED $shown');
+    expect(shown, kVoteBelowPi);
     expect(book.reserve.votesIncrease, 0);
     expect(book.ledger.transactions.where((t) => t.kind == 'vote'), isEmpty);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('under Pi sum is ineligible', () async {
-    final book = await _lockedParts([1]);
+  test('a 1 SHE deposit is refused and the vote is ineligible below π', () async {
+    final book = _funded();
+    final r = await _deposit(book, 1);
+    expect(r.posted, isFalse);
+    expect(r.remark, kLockBelowPi);
+    expect(book.pool.posts, isEmpty);
     expect(book.reserve.portal(book.dest).canVote, isFalse);
     final shown = await _vote(book, local: true);
     // ignore: avoid_print
@@ -65,11 +83,13 @@ void main() {
     expect(book.ledger.transactions.where((t) => t.kind == 'vote'), isEmpty);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('one nano deposit is accepted and the vote stays ineligible', () async {
-    final nano = 1 / kUnitsPerShe;
-    final book = await _lockedParts([nano], fund: 1);
-    expect(book.reserve.portal(book.dest).nanos, greaterThan(0));
-    expect(book.reserve.portal(book.dest).nanos, lessThan(kPiSheNanos));
+  test('a one-nano deposit is refused and the vote stays ineligible', () async {
+    final book = _funded();
+    final r = await _deposit(book, 1 / kUnitsPerShe);
+    expect(r.posted, isFalse);
+    expect(r.remark, kLockBelowPi);
+    expect(book.pool.posts, isEmpty);
+    expect(book.reserve.portal(book.dest).nanos, 0);
     final shown = await _vote(book, local: true);
     // ignore: avoid_print
     print('VOTE_NANO $shown');
@@ -77,8 +97,26 @@ void main() {
     expect(book.reserve.votesIncrease, 0);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('9 confirmations then the fee enact one vote', () async {
-    final book = await _lockedParts([4]);
+  test('a deposit above π (4 SHE, π + 1 nano, 2π) is refused with the one-π sentence and posts nothing', () async {
+    final book = _funded();
+    for (final she in [4.0, (kPiSheNanos + 1) / kUnitsPerShe, 2 * kPiSheNanos / kUnitsPerShe]) {
+      final r = await _deposit(book, she);
+      expect(r.posted, isFalse, reason: '$she SHE');
+      expect(r.remark, kErrLockAmount, reason: '$she SHE');
+    }
+    expect(book.pool.posts, isEmpty);
+    expect(book.ledger.transactions.where((t) => t.kind == 'lock'), isEmpty);
+    expect(book.spendableUnits, 10 * kUnitsPerShe);
+    // The same book, the same path, exactly π: one real FS-1 lock body posts,
+    // so the refusals above are the amount law and not a dead path.
+    final ok = await _deposit(book, kPiSheNanos / kUnitsPerShe);
+    expect(ok.posted, isTrue, reason: ok.remark);
+    expect(book.pool.posts, hasLength(1));
+    expect(book.pool.posts.single['kind'], 'lock');
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('a π lock at 9 confirmations with no census enacts no vote', () async {
+    final book = await _lockedPi();
     _matureLock(book.ledger);
     // Current law: no synced census fails closed. The vote is not enacted
     // and no portal vote is posted.
@@ -106,7 +144,7 @@ void main() {
     expect(body.contains('debugNative'), isFalse);
     expect(body.contains('Future<Map<String, dynamic>>.value(sealSignReserveWire'), isFalse);
     final caller = reserveIsolateStamp;
-    final book = await _lockedParts([4]);
+    final book = await _lockedPi();
     expect(debugReserveIsolateRuns, greaterThan(0));
     expect(debugReserveOffIsolateStamp, isNot(caller));
     expect(debugReserveOffIsolateStamp, isNotEmpty);
@@ -195,30 +233,17 @@ void main() {
     );
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('top-ups that reach Pi enact once after 9 confirmations', () async {
-    final book = await _lockedParts([1.6, 1.6]);
+  test('a π lock votes only after 9 confirmations, and a later top-up is refused', () async {
+    final book = await _lockedPi();
     expect(book.reserve.portal(book.dest).canVote, isTrue);
     final early = await _vote(book, local: true);
     expect(early, kVoteConfirmWait);
     _matureLock(book.ledger);
-    final dust = await postReserveDeposit(
-      ledger: book.ledger,
-      reserve: book.reserve,
-      restFrame: book.id.address,
-      paymentCode: book.id.paymentCode,
-      dest: book.dest,
-      she: 0.01,
-      depth: 0,
-      spendSeed: hexToBytes(book.id.seedHex),
-      local: true,
-    );
-    expect(dust.posted, isTrue, reason: dust.remark);
-    final held = await _vote(book, local: true);
-    // ignore: avoid_print
-    print('VOTE_TOPUP_HELD $held');
-    expect(held, kVoteConfirmWait);
-    expect(book.reserve.votesIncrease, 0);
-    _matureLock(book.ledger);
+    final posted = book.pool.posts.length;
+    final dust = await _deposit(book, 0.01);
+    expect(dust.posted, isFalse, reason: 'a top-up is not a lock');
+    expect(dust.remark, kLockBelowPi);
+    expect(book.pool.posts.length, posted, reason: 'the refused top-up posted nothing');
     final first = await _vote(book, local: true);
     // ignore: avoid_print
     print('VOTE_TOPUP_ENACT $first tally=${book.reserve.votesIncrease}');
@@ -231,40 +256,53 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
 
+const kLockBelowPi = 'A lock is one π. Amounts below π stay spendable.';
+
 class _Book {
-  _Book(this.ledger, this.reserve, this.id, this.dest);
-  final ShearLedger ledger;
+  _Book(this.sealed, this.reserve, this.dest);
+  final SealedBook sealed;
   final ShearReserve reserve;
-  final ShearIdentity id;
   final String dest;
+  ShearLedger get ledger => sealed.ledger;
+  SealedNotePool get pool => sealed.pool;
+  ShearIdentity get id => sealed.id;
+  int get spendableUnits => sealed.spendableUnits;
 }
 
-Future<_Book> _lockedParts(List<double> parts, {double? fund}) async {
-  final id = createIdentity();
-  final reserve = ShearReserve();
-  final ledger = ShearLedger()..bindIdentity(id);
-  final from = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
-  final dest = vaultDest(id.address, viewKey: id.viewKey)!;
-  final sum = parts.fold<double>(0, (a, b) => a + b);
-  ledger.confirmRound(address: from, pot: fund ?? (sum + 4), height: 1);
-  ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-  for (final she in parts) {
-    final lock = await postReserveDeposit(
-      ledger: ledger,
-      reserve: reserve,
-      restFrame: id.address,
-      paymentCode: id.paymentCode,
-      dest: dest,
+/// One real sealed 10 SHE note, mined 9 deep: Spendable is exactly that note.
+_Book _funded() {
+  final sealed = SealedBook.fund([10 * kUnitsPerShe]);
+  expect(sealed.spendableUnits, 10 * kUnitsPerShe);
+  final dest = vaultDest(sealed.id.address, viewKey: sealed.id.viewKey)!;
+  return _Book(sealed, ShearReserve(), dest);
+}
+
+/// [local] true is the book-only lock this file has always used (no pool
+/// post; the seal still runs off the UI isolate). A refused amount is tried
+/// with local false and consent, so a missing refusal would reach the pool.
+Future<ReserveDepositResult> _deposit(_Book book, double she, {bool local = false}) => postReserveDeposit(
+      ledger: book.ledger,
+      reserve: book.reserve,
+      restFrame: book.id.address,
+      paymentCode: book.id.paymentCode,
+      dest: book.dest,
       she: she,
       depth: 0,
-      spendSeed: hexToBytes(id.seedHex),
-      local: true,
+      spendSeed: book.sealed.seed,
+      local: local,
+      publicIpConsent: !local,
     );
-    expect(lock.posted, isTrue, reason: lock.remark);
-  }
-  final locked = ledger.transactions.lastWhere((t) => t.kind == 'lock');
-  expect(reserveLockConfirmations(ledger, locked), lessThan(ShearLedger.spendableConfirmations));
-  return _Book(ledger, reserve, id, dest);
+
+/// A π lock, not yet mined: the real FS-1 lock body reached the pool.
+Future<_Book> _lockedPi() async {
+  final book = _funded();
+  final lock = await _deposit(book, kPiSheNanos / kUnitsPerShe, local: true);
+  expect(lock.posted, isTrue, reason: lock.remark);
+  // The π and its levy came off the one note; the rest is its change.
+  expect(book.spendableUnits, lessThanOrEqualTo(10 * kUnitsPerShe - kPiSheNanos - levyNanos(kPiSheNanos, depth: 0)));
+  final locked = book.ledger.transactions.lastWhere((t) => t.kind == 'lock');
+  expect(reserveLockConfirmations(book.ledger, locked), lessThan(ShearLedger.spendableConfirmations));
+  return book;
 }
 
 void _matureLock(ShearLedger ledger) {
@@ -322,7 +360,7 @@ Future<String> _vote(_Book book, {required bool local}) async {
     paymentCode: book.id.paymentCode,
     dest: book.dest,
     choice: kVoteIncrease,
-    spendSeed: hexToBytes(book.id.seedHex),
+    spendSeed: book.sealed.seed,
     local: local,
   );
   return result.remark;

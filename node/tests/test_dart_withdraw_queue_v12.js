@@ -48,7 +48,9 @@ import { amountBoundsRefused, coinbaseObserveRefused } from './amount_bounds.js'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const wallet = path.join(root, 'wallet');
 const T0 = 1_700_000_000_000;
-const FLUTTER_BIN = '/tmp/flutter-sdk/flutter/bin';
+// FLUTTER_BIN (a flutter/bin dir) is put first on PATH; the default is the
+// old fixed path, and PATH is searched after it either way.
+const FLUTTER_BIN = process.env.FLUTTER_BIN || '/tmp/flutter-sdk/flutter/bin';
 
 const BYTE_KEYS = new Set([
   'dest20', 'spendPub', 'sig', 'withdrawNonce', 'excess', 'fs1',

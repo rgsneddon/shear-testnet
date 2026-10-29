@@ -7,6 +7,8 @@ import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_session.dart';
 
+import 'support/sealed_book.dart';
+
 /// A throw from the Flow send must clear the latch. The next tap can send.
 void main() {
   testWidgets('a thrown Flow send clears the latch and can be tapped again', (tester) async {
@@ -29,8 +31,21 @@ void main() {
     addTearDown(pool.close);
     final ledger = _ThrowFundLedger(pool: pool)..bindIdentity(ident);
     ledger.viewSecret = ident.viewKey;
-    ledger.confirmRound(address: ident.address, pot: 2, height: 2);
+    // A real sealed 2 SHE note on a receive dest, mined 9 deep: the send
+    // reaches funding, which throws. A bare round credit is never Spendable.
+    final seed = seedOf(ident);
+    ledger.spendSeed = seed;
+    final from = ledger.allocateReceiveDest(ident.address, paymentCode: ident.paymentCode);
+    final note = sealedNoteOn(from, seed, 2 * kUnitsPerShe, height: 2);
+    ledger.rememberNote(note);
+    pool.addLive(note, 2);
+    ledger.noteLiveHeight(2 + ShearLedger.spendableConfirmations);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations);
+    ledger.recheckRestFrameSpendable(ident.address, paymentCode: ident.paymentCode);
+    expect(
+      (ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode) * kUnitsPerShe).round(),
+      2 * kUnitsPerShe,
+    );
     final bobId = createIdentity();
     final bob = (ShearLedger()..bindIdentity(bobId)).homeDest(bobId.address, paymentCode: bobId.paymentCode);
 
@@ -93,13 +108,7 @@ class _ThrowFundLedger extends ShearLedger {
   }
 }
 
-class _QuietPool extends ShearPoolClient {
-  _QuietPool()
-      : super(
-          baseUrl: 'http://127.0.0.1:9',
-          http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
-        );
-
+class _QuietPool extends SealedNotePool {
   @override
   Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
 }

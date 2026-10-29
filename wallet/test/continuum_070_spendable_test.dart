@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_admit.dart';
+import 'package:shear_wallet/shear_admit_ffi.dart' show AdmitNative;
 import 'package:shear_wallet/shear_ctf.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_hash.dart';
@@ -16,6 +17,9 @@ import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:shear_wallet/shear_session.dart';
+
+import 'support/sealed_book.dart';
+import 'support/verified_chain.dart';
 
 void main() {
   test(
@@ -31,17 +35,10 @@ void main() {
       final id = session.identity!;
       final ledger = ShearLedger()..bindIdentity(id);
       final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-      ledger.rememberNote({
-        'address': home,
-        'dest': home,
-        'verified': true,
-        'height': 1,
-        'amount': 1.0,
-        'nanos': kUnitsPerShe,
-        'commit': Uint8List(32)..[0] = 4,
-        'noteCommit': Uint8List(32)..[0] = 6,
-        'r': Uint8List(32)..[0] = 5,
-      });
+      // One real sealed 4 SHE note (commit, note commit, blind, range proof,
+      // admit key). A lock is exactly one π leaf (4e1ea9bc, 26 Oct); 4 SHE
+      // covers π and its levy.
+      ledger.rememberNote(sealedNoteOn(home, seedOf(id), 4 * kUnitsPerShe, height: 1));
       ledger.rememberDest(home);
       ledger.restoreSealedTip(20);
       ledger.settleTo(20);
@@ -51,7 +48,7 @@ void main() {
         id.address,
         paymentCode: id.paymentCode,
       );
-      expect(opened, closeTo(1.0, 1e-9));
+      expect(opened, closeTo(4.0, 1e-9));
       expect(
         paintedContinuumSpendable(
           ledger,
@@ -113,9 +110,10 @@ void main() {
         ledger,
         restFrame: id.address,
         paymentCode: id.paymentCode,
-        needShe: 0.4,
+        needShe: kPiShe,
       );
       expect(cover.have, closeTo(shown, 1e-9));
+      expect(lockFundingShortfall(cover), isEmpty);
       final dest = vaultDest(id.address, viewKey: id.viewKey)!;
       final posted = await postReserveDeposit(
         ledger: ledger,
@@ -123,12 +121,12 @@ void main() {
         restFrame: id.address,
         paymentCode: id.paymentCode,
         dest: dest,
-        she: 0.4,
+        she: kPiShe,
         depth: 0,
         spendSeed: hexToBytes(id.seedHex),
         local: true,
       );
-      expect(posted.posted, isTrue);
+      expect(posted.posted, isTrue, reason: posted.remark);
       expect(
         ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
         lessThan(shown),
@@ -322,18 +320,12 @@ void main() {
       );
       final ledger = ShearLedger(pool: ShearPoolClient(sync: sync))
         ..bindIdentity(id);
+      // The worker probes the seeds for a live base only with the IP choice
+      // made (68c1553b, 22 Oct).
+      ledger.pool!.publicConsent = true;
       final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-      ledger.rememberNote({
-        'address': home,
-        'dest': home,
-        'verified': true,
-        'height': 1,
-        'amount': 1.0,
-        'nanos': kUnitsPerShe,
-        'commit': Uint8List(32)..[0] = 9,
-        'noteCommit': Uint8List(32)..[0] = 6,
-        'r': Uint8List(32)..[0] = 4,
-      });
+      // One real sealed 1 SHE note, already opened on this book.
+      ledger.rememberNote(sealedNoteOn(home, seedOf(id), kUnitsPerShe, height: 1));
       ledger.rememberDest(home);
       ledger.restoreSealedTip(387);
       ledger.settleTo(387);
@@ -463,6 +455,8 @@ void main() {
       )..bindIdentity(id);
       final seed = ledger.spendSeed;
       expect(seed, isNotNull);
+      // Spendable counts depth from the verified tip (#125): a pin at 20.
+      await VerifiedChain(pinHeight: 20).verify(ledger, 20);
       // Login asks syncDests, which is the mining mailbox when the fingerprint
       // address is not that mailbox. The fee constant is not one of them.
       final queried = ledger
@@ -596,7 +590,7 @@ void main() {
       final feeNanos =
           (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
       final feeShe = feeNanos / kUnitsPerShe;
-      var tip = 9;
+      var tip = 29;
       final headerHex = _checkedHeaderHex();
       final wires = <Map<String, dynamic>>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -639,7 +633,11 @@ void main() {
       final dest = ledger
           .syncDests(id.address, paymentCode: id.paymentCode)
           .first;
-      wires.add(_poolFeeWire(dest, seed, height: 1));
+      wires.add(_poolFeeWire(dest, seed, height: 21));
+      // Spendable counts depth from the verified tip (#125): a fixture pin.
+      // Heights sit 20 above the original 1..10, since a pin is at 11 or above.
+      final chain = VerifiedChain(pinHeight: 29);
+      await chain.verify(ledger, 29);
       Future<void> poll() => ledger.followOffUi(
         restFrame: id.address,
         paymentCode: id.paymentCode,
@@ -663,25 +661,27 @@ void main() {
 
       // The header moves to 10. The notes host is still on 9, so the new fee
       // is not in this read and the book must stay due.
-      ledger.noteLiveHeight(10);
+      ledger.noteLiveHeight(30);
       expect(ledger.notesBehindSealedTip, isTrue);
       await poll();
-      expect(ledger.sealedHeight, 10);
+      expect(ledger.sealedHeight, 30);
       expect(ledger.notesBehindSealedTip, isTrue);
       expect(
-        ledger.pendingTxs(id.address).where((t) => (t.height ?? 0) == 10),
+        ledger.pendingTxs(id.address).where((t) => (t.height ?? 0) == 30),
         isEmpty,
       );
 
-      tip = 10;
-      wires.add(_poolFeeWire(dest, seed, height: 10));
+      tip = 30;
+      // The header sync verifies header 30; the host height alone does not.
+      await chain.verify(ledger, 30);
+      wires.add(_poolFeeWire(dest, seed, height: 30));
       await poll();
       final pending = ledger
           .pendingTxs(id.address)
           .where((t) => t.kind == 'pool-fee')
           .toList();
       expect(ledger.notesBehindSealedTip, isFalse);
-      expect(pending.map((t) => t.height).toList(), [10]);
+      expect(pending.map((t) => t.height).toList(), [30]);
       expect(pending.single.amount, closeTo(feeShe, 1e-9));
       expect(
         ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
@@ -701,7 +701,7 @@ void main() {
       final feeNanos =
           (kBlockPotShe * kUnitsPerShe).round() * kPoolFeeBps ~/ 10000;
       final feeShe = feeNanos / kUnitsPerShe;
-      var tip = 9;
+      var tip = 29;
       final headerHex = _checkedHeaderHex();
       final wires = <Map<String, dynamic>>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -744,8 +744,12 @@ void main() {
       final dest = ledger
           .syncDests(id.address, paymentCode: id.paymentCode)
           .first;
-      wires.add(_poolFeeWire(dest, seed, height: 1));
-      wires.add(_poolFeeWire(dest, seed, height: 2));
+      wires.add(_poolFeeWire(dest, seed, height: 21));
+      wires.add(_poolFeeWire(dest, seed, height: 22));
+      // Spendable counts depth from the verified tip (#125): a fixture pin.
+      // Heights sit 20 above the original 1..10, since a pin is at 11 or above.
+      final chain = VerifiedChain(pinHeight: 29);
+      await chain.verify(ledger, 29);
       Future<void> poll() => ledger.followOffUi(
         restFrame: id.address,
         paymentCode: id.paymentCode,
@@ -761,7 +765,7 @@ void main() {
         sessionPassword: session.password,
       );
       await poll();
-      expect(ledger.bookTip, 9);
+      expect(ledger.bookTip, 29);
       expect(
         ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
         closeTo(feeShe, 1e-9),
@@ -771,9 +775,9 @@ void main() {
         closeTo(feeShe, 1e-9),
       );
 
-      ledger.noteLiveHeight(10);
-      expect(ledger.sealedHeight, 10);
-      expect(ledger.bookTip, 9);
+      ledger.noteLiveHeight(30);
+      expect(ledger.sealedHeight, 30);
+      expect(ledger.bookTip, 29);
       expect(
         ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
         closeTo(feeShe, 1e-9),
@@ -788,13 +792,15 @@ void main() {
             .where((t) => t.kind == 'pool-fee')
             .map((t) => t.height)
             .toList(),
-        [2],
+        [22],
       );
 
-      tip = 10;
-      wires.add(_poolFeeWire(dest, seed, height: 10));
+      tip = 30;
+      // The header sync verifies header 30; the host height alone does not.
+      await chain.verify(ledger, 30);
+      wires.add(_poolFeeWire(dest, seed, height: 30));
       await poll();
-      expect(ledger.bookTip, 10);
+      expect(ledger.bookTip, 30);
       expect(
         ledger.spendableOwned(id.address, paymentCode: id.paymentCode),
         closeTo(feeShe * 2, 1e-9),
@@ -809,7 +815,7 @@ void main() {
             .where((t) => t.kind == 'pool-fee')
             .map((t) => t.height)
             .toList(),
-        [10],
+        [30],
       );
     },
     timeout: const Timeout(Duration(minutes: 2)),
@@ -879,6 +885,8 @@ void main() {
       final dest = ledger
           .syncDests(id.address, paymentCode: id.paymentCode)
           .first;
+      // Spendable counts depth from the verified tip (#125): a fixture pin.
+      await VerifiedChain(pinHeight: 20).verify(ledger, 20);
       final potLabeled = _poolFeeWire(dest, seed)..['kind'] = 'pot';
       final unlabeled = Map<String, dynamic>.from(_poolFeeWire(dest, seed))
         ..remove('kind');
@@ -978,6 +986,8 @@ void main() {
       final dest = ledger
           .syncDests(id.address, paymentCode: id.paymentCode)
           .first;
+      // Spendable counts depth from the verified tip (#125): a fixture pin.
+      await VerifiedChain(pinHeight: 20).verify(ledger, 20);
       feeWire = _poolFeeWire(dest, seed);
       Future<void> poll() => ledger.followOffUi(
         restFrame: id.address,
@@ -1077,6 +1087,9 @@ void main() {
       final dest = ledger
           .syncDests(id.address, paymentCode: id.paymentCode)
           .first;
+      // Spendable counts depth from the verified tip (#125): a fixture pin.
+      final chain = VerifiedChain(pinHeight: 14);
+      await chain.verify(ledger, 14);
       for (var h = 1; h <= 6; h++) {
         wires.add(_poolFeeWire(dest, seed, height: h));
       }
@@ -1118,6 +1131,8 @@ void main() {
       }
       tip = 31;
       ledger.noteLiveHeight(31);
+      // The header sync verifies the new headers; the host height alone does not.
+      await chain.verify(ledger, 31);
       expect(ledger.notesBehindSealedTip, isTrue);
       await poll();
 
@@ -1297,6 +1312,8 @@ void main() {
     final dest = ledger
         .syncDests(id.address, paymentCode: id.paymentCode)
         .first;
+    // Spendable counts depth from the verified tip (#125): a fixture pin.
+    await VerifiedChain(pinHeight: 20).verify(ledger, 20);
     feeWire = _poolFeeWire(dest, seed);
     final painted = Completer<void>();
     final follow = ledger.followOffUi(
@@ -1477,7 +1494,10 @@ String _hex(Object? v) {
   return out.toString();
 }
 
-/// Pool-fee compact: R and z stay, v is gone, r is wrapped. No range proof.
+/// Pool-fee compact: R and z stay, v is gone, r is wrapped. As a mined
+/// payout carries them, it has the node range proof (a payout kind opens
+/// only when that proof accepts, inbox 030) and the admit key this seed
+/// derives for it (every admit-set output is an FS-1 leaf, N-1, 14 Oct).
 /// The logged-in pin is the note's dest, not [kPoolFeeDest].
 Map<String, dynamic> _poolFeeWire(
   String dest,
@@ -1496,6 +1516,10 @@ Map<String, dynamic> _poolFeeWire(
     'r': scalarBytes(r),
     'dest20': d20,
   };
+  final range = AdmitNative.tryLoad()!.proveRange(BigInt.from(feeNanos), scalarBytes(r));
+  expect(range, isNotNull, reason: 'node range proof');
+  note['rangeProof'] = range;
+  note = attachAdmitPub(note, spendSeed: seed);
   note = wrapNoteBlind(note, pointFrom(admitBaseBytes(seed)));
   note = compactSealedVout(note);
   final vp = Map<String, dynamic>.from(note['valueProof'] as Map)..remove('v');
@@ -1507,5 +1531,7 @@ Map<String, dynamic> _poolFeeWire(
     'valueProof': {'R': _hex(vp['R']), 'z': _hex(vp['z'])},
     'rEph': _hex(note['rEph']),
     'rCt': _hex(note['rCt']),
+    'rangeProof': _hex(note['rangeProof']),
+    'admitPub': _hex(note['admitPub']),
   };
 }

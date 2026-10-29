@@ -14,6 +14,8 @@ import 'package:shear_wallet/shear_qr.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_vortex.dart';
 
+import 'support/sealed_book.dart';
+
 void main() {
   test('next owed sum matures in 6 seconds', () {
     expect(kNextOwedMatureMs, 6000);
@@ -77,13 +79,14 @@ void main() {
     expect(ledger.spendSeed, seed);
   });
 
+  // Books below hold real sealed notes mined 9 deep (Spendable is never a
+  // round credit, Gate 3, 25 Oct); a lock is exactly one π leaf (25 Oct 14:20).
   test('reserve lock stays on the mining dest that holds the coins', () async {
     final id = createIdentity();
     final ledger = ShearLedger()..bindIdentity(id);
     final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-    ledger.confirmRound(address: home, pot: 3.96, height: 1);
-    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-    const need = 3.2;
+    _fund(ledger, id, home, 3.96);
+    const need = kPiShe;
     final from = ledger.consolidateSpendableForLock(
       id.address,
       paymentCode: id.paymentCode,
@@ -114,8 +117,7 @@ void main() {
     final id = createIdentity();
     final ledger = ShearLedger()..bindIdentity(id);
     final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-    ledger.confirmRound(address: home, pot: 1, height: 1);
-    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    _fund(ledger, id, home, 1);
     const levy = 0.001;
     final plan = planLockFunding(ledger, restFrame: id.address, paymentCode: id.paymentCode, needShe: levy);
     expect(plan.from, home);
@@ -125,8 +127,7 @@ void main() {
     expect(ledger.spendable(from), closeTo(1, 1e-9));
     final posted = ShearLedger()..bindIdentity(id);
     final postedHome = posted.homeDest(id.address, paymentCode: id.paymentCode);
-    posted.confirmRound(address: postedHome, pot: 1, height: 1);
-    posted.settleTo(1 + ShearLedger.spendableConfirmations);
+    _fund(posted, id, postedHome, 1);
     final tx = await posted.send(
       from: postedHome,
       to: postedHome,
@@ -159,15 +160,15 @@ void main() {
     expect(flowSendAdvisoryOf(StateError(kFlowMiningRefuse)), kFlowMiningRefuse);
   });
 
-  test('70 plus 61 consolidates to one lock from; shortfall names need and have', () {
+  test('2 plus 1.5 consolidates to one π lock from; shortfall names need and have', () {
     final id = createIdentity();
     final ledger = ShearLedger()..bindIdentity(id);
     final a = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     final b = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
-    ledger.confirmRound(address: a, pot: 70, height: 1);
-    ledger.confirmRound(address: b, pot: 61, height: 1);
-    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-    const need = 100.001;
+    _fund(ledger, id, a, 2);
+    _fund(ledger, id, b, 1.5);
+    // Neither note covers a π lock and its levy alone; the two together do.
+    final need = kPiShe + levyNanos(kPiSheNanos, depth: 0) / kUnitsPerShe;
     final plan = planLockFunding(ledger, restFrame: id.address, paymentCode: id.paymentCode, needShe: need);
     expect(plan.consolidate, isTrue);
     expect(plan.from, isNull);
@@ -582,8 +583,7 @@ void main() {
       ledger.bindIdentity(id);
       home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
       other = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
-      ledger.confirmRound(address: other, pot: 5, height: 1);
-      ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+      _fund(ledger, id, other, 5);
       final bobId = createIdentity();
       final bobLedger = ShearLedger()..bindIdentity(bobId);
       bob = bobLedger.homeDest(bobId.address, paymentCode: bobId.paymentCode);
@@ -616,42 +616,77 @@ void main() {
     expect(sent.from, isNot(home));
   });
 
-  testWidgets('Deposit sum consolidates 70+61 into a non-mailbox lock of 100', (tester) async {
-    final funded = await fundedSplit(tester, 70, 61);
-    await depositSum(tester, '100', consolidate: true);
-    expect(find.text(kReserveLockSent), findsWidgets);
+  // The Deposit folds split notes onto the dest holding the most, and a lock
+  // may stay on the mining mailbox when that is it (keepHome, 0.62, 29 Sep:
+  // "reserve lock stays on the mining dest that holds the coins" above). Here
+  // the larger note is on the other dest, so the lock is not the mailbox's.
+  testWidgets('Deposit sum consolidates 1.5+2 into a non-mailbox lock of π', (tester) async {
+    final funded = await fundedSplit(tester, 1.5, 2);
+    await depositSum(tester, '3.14159265358', consolidate: true);
+    expect(find.text(kReserveLockSent), findsWidgets, reason: _snacks(tester));
     expect(find.text('insufficient'), findsNothing);
     final lock = funded.ledger.transactions.lastWhere((t) => t.kind == 'lock');
-    expect(lock.amount, closeTo(100, 1e-9));
-    expect(lock.from, isNot(funded.home));
+    expect((lock.amount * kUnitsPerShe).round(), kPiSheNanos);
+    expect(lock.from, funded.other);
+    // The mailbox note folded onto the lock's dest; what is left of the two
+    // notes after π and its levy is Spendable there, exactly.
+    final left = 3.5 - kPiShe - levyNanos(kPiSheNanos) / kUnitsPerShe;
     expect(funded.ledger.spendable(funded.home), 0);
-    expect(funded.ledger.spendable(funded.other), 0);
+    expect(funded.ledger.spendable(funded.other), closeTo(left, 1e-9));
+    expect(funded.ledger.spendableOwned(funded.id.address, paymentCode: funded.id.paymentCode), closeTo(left, 1e-9));
     expect(funded.ledger.spendSeed, isNotNull);
   });
 
-  testWidgets('Deposit sum locks max spendable minus levy from split notes', (tester) async {
-    final funded = await fundedSplit(tester, 70, 61);
+  testWidgets('Deposit sum locks π from split notes and the rest stays Spendable', (tester) async {
+    final funded = await fundedSplit(tester, 1.5, 2.5);
     final owned = funded.ledger.spendableOwned(funded.id.address, paymentCode: funded.id.paymentCode);
-    final levyShe = levyNanos((owned * kUnitsPerShe).round()) / kUnitsPerShe;
-    final maxShe = owned - levyShe;
-    await depositSum(tester, _trimAmount(maxShe), consolidate: true);
-    expect(find.text(kReserveLockSent), findsWidgets);
+    final levyShe = levyNanos(kPiSheNanos) / kUnitsPerShe;
+    await depositSum(tester, '3.14159265358', consolidate: true);
+    expect(find.text(kReserveLockSent), findsWidgets, reason: _snacks(tester));
     expect(find.text('insufficient'), findsNothing);
     final lock = funded.ledger.transactions.lastWhere((t) => t.kind == 'lock');
-    expect(lock.from, isNot(funded.home));
-    expect(lock.amount, closeTo(maxShe, 1e-6));
+    expect(lock.from, funded.other, reason: 'the larger note is on the other dest');
+    expect((lock.amount * kUnitsPerShe).round(), kPiSheNanos);
     final left = funded.ledger.spendableOwned(funded.id.address, paymentCode: funded.id.paymentCode);
-    expect(left, lessThan(levyShe + 1e-6));
+    expect(left, closeTo(owned - kPiShe - levyShe, 1e-9));
   });
 
+  // A vote is a leaf vote posted to a node (no local vote): the shell runs
+  // with pool sync on, over a pool double that serves the live note set of
+  // the real notes below and records each post. The lock is a real FS-1 π
+  // lock, the census is the node block body that commits it, and the vote
+  // fee is a second real note.
   testWidgets('Cast vote posts spendSeed and shows the submitted snack', (tester) async {
-    final funded = await fundedSplit(tester, 0, 20);
-    await depositSum(tester, '10');
+    final pool = SealedNotePool();
+    final reserve = ShearReserve()..currentEpoch = 1;
+    final funded = await fundedSplit(tester, 0, 10, extraOther: const [1], pool: pool, reserve: reserve);
+    await depositSum(tester, '3.14159265358');
+    expect(pool.posts.where((b) => b['kind'] == 'lock'), hasLength(1), reason: _snacks(tester));
     final lockHeight = funded.ledger.sealedHeight + 1;
+    // The lock is mined at lockHeight: its hidden change enters the node's
+    // live note set there, as it would on chain.
+    final change = funded.ledger.lastSealedLock?['change'];
+    expect(change, isA<Map>(), reason: 'the posted lock kept its change note');
+    pool.addLive(Map<String, dynamic>.from(change as Map), lockHeight);
     funded.ledger.confirmRound(address: funded.other, pot: 0, height: lockHeight);
-    funded.ledger.settleTo(lockHeight + ShearLedger.spendableConfirmations - 1);
+    final voteTip = lockHeight + ShearLedger.spendableConfirmations - 1;
+    funded.ledger.noteLiveHeight(voteTip);
+    funded.ledger.settleTo(voteTip);
+    funded.ledger.rememberNodeChain(bodies: [
+      {
+        'height': 2,
+        'txs': [
+          {
+            'coinbase': true,
+            'epochCensusCommit': [
+              {'epoch': 1, 'leafCount': 1, 'openHeight': 2},
+            ],
+          },
+        ],
+      },
+    ]);
     await tester.pump();
-    expect(find.text('Locked stake can vote'), findsOneWidget);
+    expect(find.text('Locked stake can vote'), findsOneWidget, reason: _snacks(tester));
     await tester.ensureVisible(find.byKey(const Key('reserve-vote-increase bonus')));
     await tester.tap(find.byKey(const Key('reserve-vote-increase bonus')));
     await tester.pump();
@@ -689,8 +724,11 @@ void main() {
     expect(snacks.where((s) => s.toLowerCase().contains('privacy hop')), isEmpty);
     expect(find.text('Privacy hop'), findsNothing);
     expect(funded.ledger.spendSeed, hexToBytes(funded.id.seedHex));
-    final vote = funded.ledger.transactions.lastWhere((t) => t.kind == 'vote');
-    expect(vote.from, isNot(funded.home));
+    final posted = pool.posts.where((b) => b['kind'] == 'leaf-vote').toList();
+    expect(posted, hasLength(1), reason: 'one real leaf vote reached the node');
+    expect(posted.single.containsKey('from'), isFalse);
+    expect(posted.single['voteProof'], isNotNull);
+    await _dropShell(tester, funded.ledger);
   });
 
   test('the device tunnel and extended scale client are gone', () {
@@ -852,7 +890,14 @@ void main() {
 }
 
 Future<({ShearSession session, ShearLedger ledger, ShearIdentity id, String home, String other})>
-    fundedSplit(WidgetTester tester, double homeShe, double otherShe) async {
+    fundedSplit(
+  WidgetTester tester,
+  double homeShe,
+  double otherShe, {
+  List<double> extraOther = const [],
+  SealedNotePool? pool,
+  ShearReserve? reserve,
+}) async {
   tester.view.physicalSize = const Size(900, 2600);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
@@ -862,7 +907,7 @@ Future<({ShearSession session, ShearLedger ledger, ShearIdentity id, String home
     if (dir.existsSync()) dir.deleteSync(recursive: true);
   });
   final session = ShearSession(store: File('${dir.path}/session.json'));
-  final ledger = ShearLedger();
+  final ledger = ShearLedger(pool: pool);
   late ShearIdentity id;
   late String home;
   late String other;
@@ -870,21 +915,41 @@ Future<({ShearSession session, ShearLedger ledger, ShearIdentity id, String home
     await session.loadOrCreate();
     await session.setPassword('test-pass-1');
     id = session.identity!;
+    ledger.spendSeed = seedOf(id);
+    if (pool != null) {
+      // The user already chose the public node (first-run screen answered).
+      session
+        ..publicNodeConsent = true
+        ..publicNodeChoiceMade = true;
+    }
     ledger.bindIdentity(id);
     home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
     other = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
-    if (homeShe > 0) ledger.confirmRound(address: home, pot: homeShe, height: 1);
-    if (otherShe > 0) ledger.confirmRound(address: other, pot: otherShe, height: 1);
-    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    if (homeShe > 0) _fund(ledger, id, home, homeShe, pool: pool);
+    if (otherShe > 0) _fund(ledger, id, other, otherShe, pool: pool);
+    for (final she in extraOther) {
+      _fund(ledger, id, other, she, pool: pool);
+    }
   });
   await tester.pumpWidget(ShearWalletApp(
     session: session,
     ledger: ledger,
+    reserve: reserve,
     startUnlocked: true,
-    skipPoolSync: true,
+    skipPoolSync: pool == null,
   ));
   await tester.pump();
   await tester.pump();
+  if (pool != null) {
+    // With sync on the shell paints after the first (refused) reads return.
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (find.text('Vortex').evaluate().isEmpty && DateTime.now().isBefore(deadline)) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+      await tester.pump();
+    }
+    expect(find.text('Vortex'), findsWidgets,
+        reason: 'the shell painted with sync on: ${tester.widgetList<Text>(find.byType(Text)).map((t) => t.data).join(' | ')}');
+  }
   return (session: session, ledger: ledger, id: id, home: home, other: other);
 }
 
@@ -903,6 +968,12 @@ Future<void> depositSum(WidgetTester tester, String amount, {bool consolidate = 
   expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
   await tester.tap(find.byKey(const Key('reserve-sign-accept')));
   await tester.pump();
+  // With pool sync on the lock goes to a public node, which asks once.
+  final consent = find.byKey(const Key('reserve-unprivate-accept'));
+  if (consent.evaluate().isNotEmpty) {
+    await tester.tap(consent);
+    await tester.pump();
+  }
   if (consolidate) {
     expect(find.byKey(const Key('reserve-deposit-progress')), findsOneWidget);
     expect(find.text('Consolidating Continuum notes for Deposit…'), findsOneWidget);
@@ -912,14 +983,35 @@ Future<void> depositSum(WidgetTester tester, String amount, {bool consolidate = 
   await tester.pump();
 }
 
-String _trimAmount(double she) {
-  var s = she.toStringAsFixed(9);
-  s = s.replaceFirst(RegExp(r'0+$'), '');
-  s = s.replaceFirst(RegExp(r'\.$'), '');
-  return s;
-}
-
 String ledgerDest(ShearIdentity id) {
   final ledger = ShearLedger()..bindIdentity(id);
   return ledger.homeDest(id.address, paymentCode: id.paymentCode);
+}
+
+/// One real sealed note of [she] on [dest], mined at height 1 and read at
+/// tip 1 + 9: Spendable is exactly the notes, never a round credit.
+void _fund(ShearLedger ledger, ShearIdentity id, String dest, double she, {SealedNotePool? pool}) {
+  final note = sealedNoteOn(dest, seedOf(id), (she * kUnitsPerShe).round(), height: 1);
+  ledger.rememberNote(note);
+  pool?.addLive(note, 1);
+  final tip = 1 + ShearLedger.spendableConfirmations;
+  ledger.noteLiveHeight(tip);
+  ledger.settleTo(tip);
+  ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
+}
+
+/// Every SnackBar text on screen, for a failure reason.
+String _snacks(WidgetTester tester) => tester
+    .widgetList<SnackBar>(find.byType(SnackBar))
+    .map((s) {
+      final c = s.content;
+      return c is Text ? (c.data ?? c.textSpan?.toPlainText() ?? '') : c.toString();
+    })
+    .join(' | ');
+
+Future<void> _dropShell(WidgetTester tester, ShearLedger ledger) async {
+  ledger.pool?.close();
+  await tester.pumpWidget(const SizedBox.shrink());
+  await tester.runAsync(() => Future<void>.delayed(const Duration(seconds: 1)));
+  await tester.pump(const Duration(seconds: 12));
 }

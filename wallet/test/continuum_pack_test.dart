@@ -10,6 +10,8 @@ import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_session.dart';
 
+import 'support/sealed_book.dart';
+
 void main() {
   test('epoch day is 1-based and never 0', () {
     const start = 1_700_000_000_000;
@@ -132,11 +134,12 @@ void main() {
   });
 
   test('withdraw sign does not credit Continuum spendable', () async {
-    final alice = createIdentity();
-    final ledger = ShearLedger()..bindIdentity(alice);
-    final continuum = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
-    ledger.confirmRound(address: continuum, pot: 10, height: 1);
-    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    // A real sealed 10 SHE note mined 9 deep: a bare round credit is never Spendable.
+    final book = SealedBook.fund([10 * kUnitsPerShe]);
+    final alice = book.id;
+    final ledger = book.ledger;
+    final continuum = book.from;
+    expect(book.spendableUnits, 10 * kUnitsPerShe);
     final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
     const t0 = 1700000000000;
     final reserve = ShearReserve();
@@ -144,10 +147,13 @@ void main() {
     await ledger.send(
       from: continuum,
       to: vault,
-      amount: kPiShe,
+      amount: kPiSheNanos / kUnitsPerShe,
       local: true,
       kind: 'lock',
       programId: kReserveProgram,
+      restFrame: alice.address,
+      paymentCode: alice.paymentCode,
+      spendSeed: book.seed,
     );
     final afterLock = ledger.spendable(continuum);
     expect(afterLock, lessThan(10));
@@ -169,14 +175,16 @@ void main() {
   });
 
   test('confirmed lock lowers spendableOwned by lock plus levy once', () async {
-    final alice = createIdentity();
-    final ledger = ShearLedger()..bindIdentity(alice);
-    final continuum = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
-    ledger.confirmRound(address: continuum, pot: 101, height: 1);
-    ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+    // A Vault lock is exactly one π leaf (4e1ea9bc, 26 Oct), funded from a
+    // real sealed 5 SHE note mined 9 deep.
+    final book = SealedBook.fund([5 * kUnitsPerShe]);
+    final alice = book.id;
+    final ledger = book.ledger;
+    final continuum = book.from;
     final before = ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode);
-    const lockShe = 100.0;
-    final lockNanos = (lockShe * kUnitsPerShe).round();
+    expect(before, closeTo(5, 1e-12));
+    final lockNanos = kPiSheNanos;
+    final lockShe = lockNanos / kUnitsPerShe;
     final levy = levyNanos(lockNanos);
     final vault = vaultDest(alice.address, viewKey: alice.viewKey)!;
     const t0 = 1700000000000;
@@ -189,6 +197,9 @@ void main() {
       local: true,
       kind: 'lock',
       programId: kReserveProgram,
+      restFrame: alice.address,
+      paymentCode: alice.paymentCode,
+      spendSeed: book.seed,
     );
     expect(tx.kind, 'lock');
     final after = ledger.spendableOwned(alice.address, paymentCode: alice.paymentCode);

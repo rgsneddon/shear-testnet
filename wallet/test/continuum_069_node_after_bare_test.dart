@@ -90,6 +90,28 @@ void main() {
       await handle?.kill();
       if (dir.existsSync()) dir.deleteSync(recursive: true);
     });
+    // The v12 book has no live peers until the genesis cut, and a node never
+    // invents a chain: from an empty datadir it writes one only once a peer
+    // serves blocks. The seed is a local v12 peer serving three real mined
+    // blocks (fixtures/v12_seed_peer.mjs), so the node syncs them over P2P.
+    final seed = await Process.start('node', ['test/fixtures/v12_seed_peer.mjs']);
+    addTearDown(() async {
+      await seed.stdin.close();
+      seed.kill();
+    });
+    final seedErr = StringBuffer();
+    seed.stderr.transform(utf8.decoder).listen(seedErr.write);
+    final seedLine = Completer<String>();
+    seed.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
+      if (!seedLine.isCompleted && line.trim().startsWith('{')) seedLine.complete(line);
+    });
+    unawaited(seed.exitCode.then((code) {
+      if (!seedLine.isCompleted) seedLine.completeError(StateError('seed exited $code: $seedErr'));
+    }));
+    final seedInfo = jsonDecode(await seedLine.future.timeout(const Duration(minutes: 2))) as Map<String, dynamic>;
+    final seedPort = (seedInfo['port'] as num).toInt();
+    final seedTip = (seedInfo['tip'] as num).toInt();
+    expect(seedTip, greaterThan(0));
     final rpcBusy = !await _portFree(18332);
     final p2pBusy = !await _portFree(30303);
     final rpcPort = rpcBusy ? await _freePort() : 18332;
@@ -102,6 +124,7 @@ void main() {
         final merged = Map<String, String>.from(Platform.environment)..addAll(env);
         merged['SHEAR_RPC_PORT'] = '$rpcPort';
         merged['SHEAR_P2P_PORT'] = '$p2pPort';
+        merged['SHEAR_SEEDS'] = '127.0.0.1:$seedPort';
         final work = packed.workDir;
         if (work != null && work.isNotEmpty) {
           final delim = Platform.isWindows ? ';' : ':';
