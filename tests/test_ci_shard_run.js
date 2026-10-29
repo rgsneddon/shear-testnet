@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runFile, stopActive } from './ci_shard_run.js';
+import { fileCapMs, runFile, stopActive } from './ci_shard_run.js';
 
 test.after(() => { stopActive(); });
 
@@ -22,6 +22,13 @@ test('a stuck file fails the shard instead of hanging', async () => {
   assert.equal(result.timedOut, true, 'stuck file');
   assert.notEqual(result.code, 0, 'stuck file');
   assert.ok(result.ms < 4_000, `stuck file took ${result.ms}ms`);
+});
+
+test('the file cap is twice the measured time, with a floor', () => {
+  assert.equal(fileCapMs('pool/tests/test_vardiff.js', { 'pool/tests/test_vardiff.js': 10 }, {}), 180_000);
+  assert.equal(fileCapMs('node/tests/test_p2p.js', { 'node/tests/test_p2p.js': 200 }, {}), 400_000);
+  assert.equal(fileCapMs('unmeasured.js', {}, {}), 180_000);
+  assert.equal(fileCapMs('x', { x: 10 }, { SHEAR_CI_FILE_TIMEOUT_MS: '1500' }), 1500);
 });
 
 test('a finished file is not a timeout', async () => {
