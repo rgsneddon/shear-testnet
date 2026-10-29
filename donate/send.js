@@ -37,7 +37,7 @@
     (hasUsb && hasBle ? '' : '<p class="send-warn">' + (hasUsb ? 'Bluetooth is not available in this browser; USB works.' : 'USB is not available in this browser; Bluetooth (Nano X) works.') + '</p>') +
     '<label>Network<select id="s-chain">' + opts + '</select></label>' +
     '<label>Amount<input id="s-amt" inputmode="decimal" placeholder="0.01" autocomplete="off" /></label>' +
-    '<div class="send-row"><button type="button" class="btn" id="s-send" disabled>Review and sign on Ledger</button></div>' +
+    '<div class="send-row"><button type="button" class="btn" id="s-send">Review and sign on Ledger</button></div>' +
     '<div class="send-status" id="s-status" aria-live="polite"></div></div>'));
   var st = document.getElementById('s-status');
   function status(t, warn) { st.textContent = t; st.className = 'send-status' + (warn ? ' send-warn' : ''); }
@@ -75,7 +75,7 @@
     else if (connecting && /NotFound|No device selected|cancel/i.test(name + ' ' + m)) msg = 'No Ledger was chosen in the browser prompt. Plug in or switch on the Ledger, unlock it, and try Connect again.';
     else if (connecting && /NotAllowed|Security|permission/i.test(name + ' ' + m)) msg = 'The browser blocked access to the device. Allow it when prompted (on Android, also allow Bluetooth and Nearby devices for Chrome), then try again.';
     else if (connecting && /Access denied|claimInterface|in use/i.test(m)) msg = 'Another app (such as Ledger Live) is using the Ledger. Close it, then try again.';
-    else if (/disconnected|DisconnectedDevice/i.test(name + ' ' + m)) { transport = null; document.getElementById('s-send').disabled = true; msg = 'The Ledger disconnected. Connect again.'; }
+    else if (/disconnected|DisconnectedDevice/i.test(name + ' ' + m)) { transport = null; msg = 'The Ledger disconnected. Connect again.'; }
     else msg = connecting ? 'Could not connect to the Ledger.' : 'The send did not complete. Nothing was sent unless a transaction link appears.';
     return msg + ' [' + name + ': ' + m + ']';
   }
@@ -84,6 +84,7 @@
   document.getElementById('s-send').addEventListener('click', function () {
     var btn = this, c = chainSel(), to = addrFor(c.addr);
     var amt = document.getElementById('s-amt').value.trim();
+    if (!transport) return status('Connect your Ledger first: use "Connect Ledger by USB" or "Connect Nano X by Bluetooth" above, unlock it and open the coin app.', true);
     if (!to) return status('Address list not loaded yet.', true);
     var mm = /^[0-9]+(?:[.]([0-9]+))?$/.exec(amt);
     if (!mm || (mm[1] && mm[1].length > c.dp)) return status('Enter an amount like 0.01 (up to ' + c.dp + ' decimals)', true);
