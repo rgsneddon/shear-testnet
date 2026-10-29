@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "note": "Russell's donation addresses, read and confirmed on his Ledger Nano X. Shared by the wallet Ledger vortice and donate.shear.digital.",
+  "addresses": {
+    "BTC": "bc1qta4g6q5r8d2u2a5dl2ucmqvm9txt008qhug5lq",
+    "ETH": "0xC6D546B4d188A7A695eafcd396817c23e6fb9356",
+    "SOL": "98Yv4z6J3fB7R7dUGKYA68ZrTZqaxAQ9xiJidHHMPA5m",
+    "LTC": "ltc1q229vsncyysh2w30q0nq75tjxqff4ramdt9r26k",
+    "DOGE": "DKkYtnH5WAVucb39j6RSny344VKYovx5hz",
+    "XMR": "46EiQrQHhv5MZA31tG59XfEH7rKo7om3saCEeruKtoU54UfPQt8Zh9JB58gmo97JJBj4z5DWZRPred7MvU4rXrK6LThQoQi",
+    "KAS": "kaspa:qpcq70e6yclghd62chmmgz4r57mtkcz4krggmqhhdc57pn222g0c6hx34vcxl"
+  },
+  "evmChains": "ETH address is used for every EVM chain"
+}
