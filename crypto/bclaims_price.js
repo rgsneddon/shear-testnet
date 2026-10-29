@@ -1,6 +1,6 @@
 // R28 B-claims price. Pure integers. Every constant is a parameter.
 // Not consensus: nothing in chain, pins, or fingerprints imports this module.
-// Frozen note 8f8ba8760572b304565bd575b3b12ec83057419f63db28995f017cf6a8c50774.
+// Frozen note dc1e64a173886f9c156c3c105250e84db3261b5b7a30848b4d6089750b35682f.
 // Reference r28-bclaims-mix-price.mjs 623f3f0a0cb5db32c6f1e658e34f5f6a66e2b8ba2b2ef92ca630661b103ea6b2.
 // R28 B-claims pricing: pure integer reference. No pins: every constant is a parameter.
 // PA r28-draw-redesign-pa.md v10 §2.3 (G-3/G-4/G-5/G-6/G-7 fixes from review-145-price-pa.md 4c7ed924). MF-1 (own-round subsidy, fees into carry), ME r28-me-bclaims.md
