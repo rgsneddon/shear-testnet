@@ -16,3 +16,6 @@
 .send-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .send-status { min-height: 1.4em; font-size: 0.9rem; white-space: pre-wrap; word-break: break-word; }
 .send-warn { color: #f59e0b; }
+.donate-send { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px dashed var(--border, rgba(148,163,184,.25)); }
+.donate-send .send-grid { margin-top: 0.6rem; }
+.donate-send-note { margin: 0; font-size: 0.85rem; opacity: 0.8; }
