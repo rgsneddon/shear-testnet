@@ -180,6 +180,7 @@ Map<String, dynamic>? vaultRewardProveInput({
         'amount': p.lockAmount,
         'seed': seed,
         'index': p.lockIndex,
+        'lockEpoch': p.lockEpoch,
         'lockMs': p.lockRemainMs,
       },
     ],
