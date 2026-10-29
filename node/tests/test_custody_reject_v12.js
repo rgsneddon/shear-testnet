@@ -596,7 +596,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
       jobId: boot.job.jobId,
       nonce: 0n,
       miner: hasher,
-      powHash: '00'.repeat(32),
+      powHash: `${'00'.repeat(31)}01`,
     }, { trusted: true });
     assert.equal(booted.ok, true, booted.reason);
     const parentTip = store.tip();
@@ -662,7 +662,7 @@ describe('v12 consensus rejects a custodial coinbase', () => {
       jobId: rpcBoot.job.jobId,
       nonce: 0n,
       miner: hasher,
-      powHash: '00'.repeat(32),
+      powHash: `${'00'.repeat(31)}01`,
     }, { trusted: true }).ok, true);
     const rpcParent = rpcStore.tip();
     const rpcNonce = nonceWithShareTarget(2n, SHARE_FLOOR_BITS);

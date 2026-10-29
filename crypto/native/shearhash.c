@@ -13,7 +13,10 @@ static napi_value hash_fn(napi_env env, napi_callback_info info) {
     return NULL;
   }
   unsigned char out[32];
-  shear_hash((const unsigned char *)data, out);
+  if (shear_hash_checked((const unsigned char *)data, out) != 0) {
+    napi_throw_error(env, "shearhash_failed", "shearhash_failed");
+    return NULL;
+  }
   napi_value buf;
   napi_create_buffer_copy(env, 32, out, NULL, &buf);
   return buf;

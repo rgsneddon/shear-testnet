@@ -1399,7 +1399,7 @@ describe('p2p hello deadline and idle eviction', () => {
       hash: claimed,
       height: 1,
     }, null, {
-      preparedHash: Buffer.alloc(32),
+      preparedHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'),
       stopAfterPow: true,
       magic: MAGIC_TESTNET,
     });

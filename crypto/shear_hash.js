@@ -118,14 +118,34 @@ function hashViaMiner(header) {
   return Buffer.from(m[1], 'hex');
 }
 
+/** 32 zero bytes is the native failure fill. It meets every target. */
+export function isZeroDigest(hash) {
+  const h = Buffer.isBuffer(hash) ? hash : Buffer.from(hash || []);
+  if (h.length !== 32) return false;
+  for (let i = 0; i < 32; i += 1) {
+    if (h[i] !== 0) return false;
+  }
+  return true;
+}
+
+function digestOrThrow(out) {
+  const buf = Buffer.from(out);
+  if (buf.length !== 32 || isZeroDigest(buf)) {
+    const err = new Error('shearhash_failed');
+    err.code = 'shearhash_failed';
+    throw err;
+  }
+  return buf;
+}
+
 /** ShearHash-v3: RandomX light interpreter. Not a JS VM. */
 export function shearHash(header) {
   const h = Buffer.isBuffer(header) ? header : Buffer.from(header);
   if (h.length !== HEADER_LEN) {
     throw new Error(`header must be ${HEADER_LEN} bytes`);
   }
-  if (native?.hash) return Buffer.from(native.hash(h));
-  return hashViaMiner(h);
+  if (native?.hash) return digestOrThrow(native.hash(h));
+  return digestOrThrow(hashViaMiner(h));
 }
 
 export function shearKey(header) {

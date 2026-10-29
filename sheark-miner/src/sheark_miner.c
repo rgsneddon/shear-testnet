@@ -972,7 +972,10 @@ static void *hash_worker(void *arg) {
     if (!primed) {
       if (shear_hash_first(header) != 0) {
         unsigned char hash[32];
-        shear_hash(header, hash);
+        if (shear_hash_checked(header, hash) != 0) {
+          n += (uint64_t)g_threads;
+          continue;
+        }
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
         if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
             && share_or_block_hit(hash, stamped)) {
@@ -996,7 +999,13 @@ static void *hash_worker(void *arg) {
     if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
         && share_or_block_hit(hash, primed_n)) {
       unsigned char check[32];
-      shear_hash(primed_hdr, check);
+      if (shear_hash_checked(primed_hdr, check) != 0) {
+        g_dropped++;
+        primed_n = stamped;
+        memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
+        n += (uint64_t)g_threads;
+        continue;
+      }
       if (memcmp(hash, check, 32) != 0) {
         memcpy(hash, check, 32);
         if (!share_or_block_hit(hash, primed_n)) {
@@ -1327,8 +1336,9 @@ int main(int argc, char **argv) {
   if (verify_hex) {
     char digest[65];
     char khex[65];
-    if (shear_verify_header_hex(verify_hex, digest, khex) != 0) {
-      fprintf(stderr, "bad header hex\n");
+    int vrc = shear_verify_header_hex(verify_hex, digest, khex);
+    if (vrc != 0) {
+      fprintf(stderr, "%s\n", vrc == -2 ? "shearhash_failed" : "bad header hex");
       return 1;
     }
     printf("digest %s\nk %s\n", digest, khex);
@@ -1356,7 +1366,10 @@ int main(int argc, char **argv) {
       shear_set_nonce(header, n);
       if (!primed) {
         if (shear_hash_first(header) != 0) {
-          shear_hash(header, hash);
+          if (shear_hash_checked(header, hash) != 0) {
+            n += 1;
+            continue;
+          }
           h += 1;
           n += 1;
           continue;

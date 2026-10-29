@@ -18,7 +18,7 @@ import { decodeHeader } from '../../crypto/header.js';
 import { txWeight } from '../../crypto/levy.js';
 import { heldBodyKey } from '../../crypto/mempool.js';
 import { reviveBytes } from '../../crypto/note.js';
-import { meetsTarget, shearHash } from '../../crypto/shear_hash.js';
+import { meetsTarget, shearHash, isZeroDigest } from '../../crypto/shear_hash.js';
 import { decodeWireBlock, encodeWireBlock, headerPrevHash } from './p2p.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
 import { classifyByPhase, deliverProcessFault, staysUpOnFault } from './process_guard.js';
@@ -226,7 +226,9 @@ function childMeetsTarget(block) {
     const header = Buffer.from(block.header);
     const decoded = decodeHeader(header);
     if (!declaredBitsAdmit(decoded.bits)) return false;
-    return meetsTarget(shearHash(header), decoded.bits);
+    const hash = shearHash(header);
+    if (hash.length !== 32 || isZeroDigest(hash)) return false;
+    return meetsTarget(hash, decoded.bits);
   } catch {
     return false;
   }

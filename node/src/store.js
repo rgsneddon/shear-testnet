@@ -6,7 +6,7 @@ import { MAGIC_TESTNET, templateStampMs, HASH_TX_LIVE, consensusFingerprint, HAS
 import { oracleContextFor, reserveApplyFields, windowBlocksFor, coinbaseObserveRejected } from '../../crypto/reserve_oracle.js';
 import { MAGIC_REGTEST, regtestPermitOk } from '../../crypto/regtest_bits.js';
 
-import { HEADER_LEN, hashHex } from '../../crypto/shear_hash.js';
+import { HEADER_LEN, hashHex, isZeroDigest } from '../../crypto/shear_hash.js';
 import { chainIndexOf, emptyChainIndex } from './chain_index.js';
 import { asCommitFault } from './process_guard.js';
 import { chainBSpendsRejected } from '../../crypto/clearing.js';
@@ -6710,6 +6710,9 @@ export function createStore(dir, {
     // after it has already verified the claimed digest.
     const allowTrust = verifyOpts?.trusted === true;
     const claimed = powHash ? Buffer.from(String(powHash), 'hex') : null;
+    if (allowTrust && claimed && claimed.length === 32 && isZeroDigest(claimed)) {
+      return { ok: false, reason: 'pow' };
+    }
     const okHash = allowTrust && claimed && claimed.length === 32 ? claimed : null;
     if (claimed && claimed.length === 32) block.hash = claimed;
     void skipSharePow;

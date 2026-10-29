@@ -444,7 +444,7 @@ async function mine(store, dest) {
     rootA: tpl.rootA,
     rootB: tpl.rootB,
     weight: tpl.weight,
-  }, { trustedPowHash: Buffer.alloc(32), skipSharePow: true }));
+  }, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'), skipSharePow: true }));
   assert.equal(got.ok, true, `append ${got.reason || ''}`);
   return tpl;
 }
@@ -487,7 +487,7 @@ function blockVerdict(store, dest, txs) {
     rootB: built.rootB,
     weight: built.weight,
   }, tip, {
-    trustedPowHash: Buffer.alloc(32),
+    trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'),
     skipSharePow: true,
     noteAtAnchor: (anchor) => store.anchorNote(anchor),
     evmHistory: store.blocks,
@@ -706,7 +706,7 @@ describe('v12 FS-1 vault operations', { concurrency: false, timeout: 1_800_000 }
       rootA: built.rootA,
       rootB: built.rootB,
       weight: built.weight,
-    }, { trustedPowHash: Buffer.alloc(32), skipSharePow: true });
+    }, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'), skipSharePow: true });
   }
 
   async function seal(built, label) {

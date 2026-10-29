@@ -66,7 +66,7 @@ describe('a repeated merkle leaf is refused', () => {
         height: 1,
       };
       const stamp = Number(decodeHeader(Buffer.from(tpl.header)).timestamp);
-      const opts = { genesisMs: stamp, trustedPowHash: Buffer.alloc(32), skipSharePow: true, nowMs: stamp };
+      const opts = { genesisMs: stamp, trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'), skipSharePow: true, nowMs: stamp };
       // Three leaves: the coinbase and two sends. The fourth repeats the last.
       const odd = resealed(base, [tpl.txs[0], send(1), send(3)]);
       const dup = { ...odd, txs: [...odd.txs, odd.txs[2]] };

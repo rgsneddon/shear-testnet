@@ -17,7 +17,7 @@ import { txBodyKey } from '../../crypto/mempool.js';
 import { reviveTx, reviveBytes } from '../../crypto/note.js';
 import { isInitialBlockDownload } from './status.js';
 import { parseBoundedJson } from '../../crypto/json_bounds.js';
-import { HEADER_LEN, meetsTarget } from '../../crypto/shear_hash.js';
+import { HEADER_LEN, meetsTarget, isZeroDigest } from '../../crypto/shear_hash.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import { headerPowReason, holdPreparedHeader, UPGRADEABLE_REASONS } from './chain.js';
@@ -3020,6 +3020,7 @@ export function createP2p({
       const header = headerBufOf(block);
       const claimed = Buffer.from(wireHash(block?.hash), 'hex');
       if (!header || header.length !== HEADER_LEN || claimed.length !== 32) return true;
+      if (isZeroDigest(claimed)) return true;
       return !meetsTarget(claimed, decodeHeader(header).bits);
     } catch {
       return true;

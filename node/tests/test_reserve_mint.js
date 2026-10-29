@@ -169,7 +169,7 @@ describe('Reserve mint is sealed-state pure', () => {
     await softNeverMasks({
       block: blockOf(bad),
       without: blockOf(without(bad, ['ticker', 'vort1', 'bytesHash'])),
-      verify: (b) => verifyBlock(b, null, { trustedPowHash: Buffer.alloc(32) }),
+      verify: (b) => verifyBlock(b, null, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex') }),
       label: 'SHE ticker',
     });
   });

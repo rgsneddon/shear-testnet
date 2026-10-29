@@ -83,7 +83,7 @@ function blockVerdict(tx, height, prev) {
     now: 1_700_000_000_000 + (height - 1) * 90_000,
     txs: [tx],
   });
-  return verifyBlock(mine(tpl), prev, { trustedPowHash: Buffer.alloc(32) });
+  return verifyBlock(mine(tpl), prev, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex') });
 }
 
 describe('v12 flow spends reject a non-v3 byte before the v2 verifier', () => {
@@ -127,7 +127,7 @@ describe('v12 flow spends reject a non-v3 byte before the v2 verifier', () => {
         bits: GENESIS_BITS_PACKED,
         now: 1_700_000_000_000,
       }));
-      const sealed = verifyBlock(parent, null, { trustedPowHash: Buffer.alloc(32) });
+      const sealed = verifyBlock(parent, null, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex') });
       assert.equal(sealed.ok, true, sealed.reason);
       parent.hash = sealed.hash;
       const later = blockVerdict(flowTx({ kind: 'send', amount: AMOUNTS[1], version: 2, id: 'h2' }), 2, parent);

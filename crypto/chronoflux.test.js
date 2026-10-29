@@ -546,7 +546,7 @@ describe('chronoflux prune + collate', () => {
       weight: tpl.weight,
       shareBatch: tpl.shareBatch || [],
     };
-    const got = verifyBlock(block, null, { trustedPowHash: Buffer.alloc(32) });
+    const got = verifyBlock(block, null, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex') });
     assert.equal(got.ok, false);
     // A v12 send with no proof is refused before any vin check.
     assert.equal(got.reason, 'send_unavailable');
