@@ -7,6 +7,7 @@ import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
 import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET, MAX_LOCK_LEAVES } from './asert.js';
+import { devRow } from './chain_params.js';
 import { EMPTY_ROOT } from './merkle.js';
 import {
   reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth,
@@ -46,9 +47,31 @@ export function shearMagicBytes(network = MAGIC_TESTNET) {
 
 /** True when the pinned creation bytecode contains this book's magic.
  *  A miss is the constructor revert `reserve_deploy`. */
+let devPinCache = null;
+/** contracts/dev/ReserveDev.json, the shear-dev Reserve. Read only when the dev book asks for it. */
+function devPin() {
+  if (!devPinCache) {
+    const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '../contracts/dev/ReserveDev.json');
+    devPinCache = JSON.parse(fs.readFileSync(file, 'utf8'));
+  }
+  return devPinCache;
+}
+
+function devBytecode() {
+  const raw = String(devPin().bytecode || '');
+  return raw.startsWith('0x') ? raw : `0x${raw}`;
+}
+
+/** Epoch width a booted session settles on: the dev row on shear-dev, RESERVE_EPOCH_MS otherwise. */
+function sessionEpochMs(session) {
+  const n = Number(session?.epochMs);
+  return Number.isFinite(n) && n > 0 ? n : RESERVE_EPOCH_MS;
+}
+
 export function reservePinOk(network = MAGIC_TESTNET) {
   const hash = Buffer.from(shearMagicBytes(network)).toString('hex');
-  const code = String(RESERVE_BYTECODE || '').replace(/^0x/i, '').toLowerCase();
+  const pinned = devRow(network) ? devBytecode() : RESERVE_BYTECODE;
+  const code = String(pinned || '').replace(/^0x/i, '').toLowerCase();
   return hash.length === 64 && code.includes(hash);
 }
 
@@ -628,9 +651,10 @@ function evmRevertReason(res) {
   return String(res?.execResult?.exceptionError?.error || 'revert');
 }
 
-function shearCommon() {
+function shearCommon(chainId = Number(SHEAR_EVM_CHAIN_ID)) {
+  const id = Number(chainId);
   return createCustomCommon(
-    { chainId: Number(SHEAR_EVM_CHAIN_ID), networkId: Number(SHEAR_EVM_CHAIN_ID) },
+    { chainId: id, networkId: id },
     Mainnet,
     { hardfork: Hardfork.Shanghai },
   );
@@ -765,7 +789,8 @@ function vaultZkPrecompile(opts) {
 export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null } = {}) {
   const { resetLockWitnesses } = await import('./owned_portal.js');
   resetLockWitnesses();
-  const common = shearCommon();
+  const dev = devRow(network);
+  const common = dev ? shearCommon(dev.evmChainId) : shearCommon();
   const evm = await createEVM({
     common,
     customPrecompiles: [
@@ -775,7 +800,7 @@ export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null 
   });
   const magic = shearMagicBytes(network);
   const code = bytecode == null
-    ? RESERVE_BYTECODE
+    ? (dev ? devBytecode() : RESERVE_BYTECODE)
     : (String(bytecode).startsWith('0x') ? String(bytecode) : `0x${bytecode}`);
   const ctor = concat(hexToBytes(code), magic);
   const created = await evm.runCall({
@@ -790,7 +815,9 @@ export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null 
   }
   const to = created.createdAddress;
   if (!to) throw new Error('reserve_deploy: no address');
-  return { evm, address: to, common };
+  return dev
+    ? { evm, address: to, common, network: String(network), epochMs: dev.epochMs }
+    : { evm, address: to, common };
 }
 
 export async function callReserve(session, data, { staticCall = false, value = 0n, caller } = {}) {
@@ -954,7 +981,7 @@ function lockCommitForEvm(tx) {
  * Pub hex when lockAuth is the owner signature over this lock's portal and
  * leaf commit. A copied ownerPub with no matching signature is not an owner.
  */
-export function verifyLockAuth(tx, magic = null) {
+export function verifyLockAuth(tx, magic = null, chainId = SHEAR_EVM_CHAIN_ID) {
   let raw;
   try { raw = Buffer.from(asU8(tx?.lockAuth)); } catch { return null; }
   if (raw.length !== 96) return null;
@@ -965,18 +992,18 @@ export function verifyLockAuth(tx, magic = null) {
   if (!id) return null;
   const pub = raw.subarray(0, 32).toString('hex');
   const sig = raw.subarray(32).toString('hex');
-  const message = lockOwnerMessage(id, commit, magic);
+  const message = lockOwnerMessage(id, commit, magic, chainId);
   if (!verifyRewardAuth(message, pub, sig)) return null;
   return pub;
 }
 
 /** Stamp the owner signature a block replay will check. The spend sig is separate. */
-export function attachLockAuth(tx, privateKey) {
+export function attachLockAuth(tx, privateKey, magic = null, chainId = SHEAR_EVM_CHAIN_ID) {
   if (!tx || String(tx.kind || tx.vout?.[0]?.kind || '') !== 'lock') return tx;
   if (tx.lockAuth) return tx;
   const commit = lockCommitForEvm(tx);
   if (!commit || !privateKey) return tx;
-  const auth = signLockAuth(destBytesForEvm(tx, null), commit, privateKey);
+  const auth = signLockAuth(destBytesForEvm(tx, null), commit, privateKey, magic, chainId);
   if (auth) tx.lockAuth = auth;
   return tx;
 }
@@ -1131,7 +1158,7 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
     if (viewGot.ok) {
       const view = decodePublicView(viewGot.returnValue);
-      const ended = view.epochStartMs && nowMs >= view.epochStartMs + RESERVE_EPOCH_MS;
+      const ended = view.epochStartMs && nowMs >= view.epochStartMs + sessionEpochMs(session);
       if (ended && !view.bonusEnacted) {
         const en = await callReserve(session, encodeEnact(nowMs));
         if (!en.ok) return en;
@@ -1164,8 +1191,7 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
 }
 
 /** Chain settlement index from the public view. Epoch 0 before it ends is 0. */
-function evmSettlementIndex(view, nowMs, genesisMs) {
-  const span = RESERVE_EPOCH_MS;
+function evmSettlementIndex(view, nowMs, genesisMs, span = RESERVE_EPOCH_MS) {
   const g = Number(genesisMs) || 0;
   const now = Number(nowMs) || 0;
   const chain = g > 0 && now > g ? Math.floor((now - g) / span) : 0;
@@ -1245,7 +1271,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
         const again = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
         if (again.ok) view0 = decodePublicView(again.returnValue);
       }
-      const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + RESERVE_EPOCH_MS;
+      const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + sessionEpochMs(session);
       if (ended && !view0.bonusEnacted) {
         const en = await callReserve(session, encodeEnact(nowMs));
         if (!en.ok) return fail(en.reason || 'enact');
@@ -1267,7 +1293,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     // root it is given. It does not build the tree. A non-empty owed root
     // with nothing on the coinbase is stake_reward. An empty earning set
     // still commits the empty root and does not store it.
-    const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs) > 0;
+    const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs, sessionEpochMs(session)) > 0;
     const owedGiven = owedRoot != null;
     // No JS expectation is not permission to store whatever root arrived.
     if (oweRoot && !owedGiven) return fail('stake_reward');
@@ -1281,7 +1307,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     if (oweRoot && !rootHex && owedRoot !== '') return fail('stake_reward');
     const vaultHex = hex32Of(cb?.vaultLockRoot);
     const startHex = hex32Of(cb?.epochStartRoot);
-    const settleIdx = evmSettlementIndex(view0, nowMs, genesisMs);
+    const settleIdx = evmSettlementIndex(view0, nowMs, genesisMs, sessionEpochMs(session));
     // A listed commit is the claim's earn epoch. The settlement index is
     // only the fallback for a coinbase that names one root and no list.
     const listed = epochStartRows(cb);

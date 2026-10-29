@@ -242,6 +242,7 @@ export function epochIndexAt(timeMs, genesisMs, magic) {
     nowMs: timeMs,
     genesisMs,
     epochDays: epochDays(magic),
+    epochMs: epochMs(magic),
   });
 }
 

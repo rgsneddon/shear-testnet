@@ -2350,10 +2350,10 @@ export function createPool({
           const mtp = medianTimePast((rows).slice(-MTP_WINDOW).map((b) => {
             try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
           }));
-          stamp = templateStampMs(parent.timestamp, Date.now(), null, mtp);
+          stamp = templateStampMs(parent.timestamp, Date.now(), null, mtp, store?.magic);
         }
       }
-      return retarget(rows, Number.isFinite(stamp) ? stamp : undefined);
+      return retarget(rows, Number.isFinite(stamp) ? stamp : undefined, store?.magic);
     } catch {
       return null;
     }
@@ -2450,7 +2450,7 @@ export function createPool({
     if (!tip?.header) {
       if (Number(decoded.bits) !== Number(GENESIS_BITS_PACKED)) return 'bits';
     } else {
-      const quote = retargetQuote(store.blocks || [], ts);
+      const quote = retargetQuote(store.blocks || [], ts, store?.magic);
       if (!quote?.ok || !bitsAcceptAsert(Number(decoded.bits), quote)) return 'bits';
     }
     if (!(ts > 0) || ts > Number(now) + HEADER_AHEAD_MS) return 'timestamp';
@@ -4232,7 +4232,7 @@ export function createPool({
         const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
           try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
         }));
-        stamp = templateStampMs(parent.timestamp, wall, null, mtp);
+        stamp = templateStampMs(parent.timestamp, wall, null, mtp, store?.magic);
         overMtp = Number(decoded.timestamp) > Number(mtp) + MTP_FUTURE_MS;
       } catch { /* keep live stamp */ }
     }
@@ -4281,8 +4281,8 @@ export function createPool({
         const mtp = medianTimePast((store.blocks || []).slice(-MTP_WINDOW).map((b) => {
           try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
         }));
-        const stamp = templateStampMs(parent.timestamp, wall, null, mtp);
-        const quote = retargetQuote(store.blocks || [], stamp);
+        const stamp = templateStampMs(parent.timestamp, wall, null, mtp, store?.magic);
+        const quote = retargetQuote(store.blocks || [], stamp, store?.magic);
         // Past 8·T the same job eases to the verify floor. Before that window
         // a sealable header stays up so a short tick does not restart the search.
         const easing = !!(quote?.ok && quote.easeBits > 0);

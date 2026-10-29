@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
-import { potSubsidyAt, chainGenesisMs as genesisMsOf, epochDays, vortexEpochIndex } from '../../crypto/pot_sched.js';
+import { potSubsidyAt, chainGenesisMs as genesisMsOf, epochDays, epochMs, vortexEpochIndex } from '../../crypto/pot_sched.js';
+import { devRow, isDevMagic } from '../../crypto/chain_params.js';
 import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import { encodeHeader, decodeHeader, setNonce, VERSION } from '../../crypto/header.js';
 import { merkleRoot, EMPTY_ROOT } from '../../crypto/merkle.js';
 import {
   GENESIS_BITS_PACKED,
+  genesisSeedPacked,
   LIVE_MIN_BITS,
   MAX_BITS,
   asertNextBits,
@@ -224,6 +226,31 @@ function ref32(x) {
 }
 
 /** Non-negative safe-integer carry, 0 when absent. Null is not a carry. */
+
+/**
+ * Book clock. shear-dev reads its row; every other book keeps the
+ * b3efdc26 constants (regtest keeps its own sealed seed).
+ */
+function seedBits(magic) {
+  const reg = regtestBitsOverride(magic);
+  return reg != null ? reg : genesisSeedPacked(magic);
+}
+
+function mtpFutureFor(magic) {
+  const dev = devRow(magic);
+  return dev ? dev.mtpFutureMs : MTP_FUTURE_MS;
+}
+
+function headerAheadFor(magic) {
+  const dev = devRow(magic);
+  return dev ? dev.headerAheadMs : HEADER_AHEAD_MS;
+}
+
+function targetMsFor(magic) {
+  const dev = devRow(magic);
+  return dev ? dev.targetBlockMs : TARGET_BLOCK_INTERVAL_MS;
+}
+
 export function canonicalCarry(tx) {
   if (tx == null || tx.carryNanos == null || tx.carryNanos === '') return 0;
   const n = typeof tx.carryNanos === 'bigint' ? Number(tx.carryNanos) : Number(tx.carryNanos);
@@ -2231,16 +2258,16 @@ export function assessHeader(block, prev, opts = {}) {
     // After genesis, testnet and mainnet anchor on the genesis seed. Those
     // books seal that seed in the genesis header, so this is the same bits.
     // The regtest override is that seed only after the test factory seals it.
-    const regtestBits = regtestBitsOverride(magic);
     const quote = asertNextBits({
-      anchorBits: parentIsGenesis ? parent.bits : (regtestBits != null ? regtestBits : GENESIS_BITS_PACKED),
+      anchorBits: parentIsGenesis ? parent.bits : seedBits(magic),
       anchorTimeMs: resolvedGenesisMs,
       anchorHeight: parentIsGenesis ? Number(prev.height || 1) : 1,
       blockTimeMs: ts,
       blockHeight: heightNow,
       parentTimeMs: parentTs,
+      magic,
     });
-    const closedBook = String(magic) !== MAGIC_TESTNET_V12 && String(magic) !== MAGIC_MAINNET;
+    const closedBook = String(magic) !== MAGIC_TESTNET_V12 && String(magic) !== MAGIC_MAINNET && !isDevMagic(magic);
     if ((!quote.ok || !bitsAcceptAsert(decoded.bits, quote)) && !(closedBook && isHistoricalHeader(h))) {
       return finish({ ok: false, reason: 'bits' });
     }
@@ -2257,17 +2284,17 @@ export function assessHeader(block, prev, opts = {}) {
       ? mtpTimestamps.slice(-MTP_WINDOW)
       : [parentTs];
     const mtp = medianTimePast(window);
-    if (ts > mtp + MTP_FUTURE_MS) return finish({ ok: false, reason: 'timestamp' });
-    if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + HEADER_AHEAD_MS) {
+    if (ts > mtp + mtpFutureFor(magic)) return finish({ ok: false, reason: 'timestamp' });
+    if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + headerAheadFor(magic)) {
       return finish({ ok: false, reason: 'timestamp' });
     }
-    if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + MTP_FUTURE_MS) {
+    if (nowMs != null && Number.isFinite(Number(nowMs)) && ts > Number(nowMs) + mtpFutureFor(magic)) {
       return finish({ ok: false, reason: 'timestamp' });
     }
   } else {
     // Testnet and mainnet stay on the genesis seed. regtestBitsOverride is
     // null for those books, and null until the test-only store factory seals.
-    const wantBits = regtestBitsOverride(magic) ?? GENESIS_BITS_PACKED;
+    const wantBits = seedBits(magic);
     if (decoded.bits !== wantBits || !isPackedBits(decoded.bits)) {
       return finish({ ok: false, reason: 'bits' });
     }
@@ -2327,7 +2354,7 @@ export function rootHeaderReason(header, hash, magic = '') {
   }
   if (decoded.version !== VERSION) return { ok: false, reason: 'version' };
   if (!decoded.prevBlockHash.equals(GENESIS_PREV)) return { ok: false, reason: 'prev' };
-  const wantBits = regtestBitsOverride(magic) ?? GENESIS_BITS_PACKED;
+  const wantBits = seedBits(magic);
   if (decoded.bits !== wantBits || !isPackedBits(decoded.bits)) return { ok: false, reason: 'bits' };
   const pow = Buffer.from(hash || []);
   if (pow.length !== 32 || !meetsTarget(pow, decoded.bits)) return { ok: false, reason: 'pow' };
@@ -2361,14 +2388,14 @@ export function headerLinkReason(header, hash, parent, { genesisMs = 0, mtpTimes
   const anchorMs = parentIsGenesis ? parentTs : Number(genesisMs);
   if (!Number.isFinite(anchorMs) || anchorMs <= 0) return { ok: false, reason: 'genesis_ms' };
   // Same regtest seed as block verify. A peer height is not an anchor.
-  const regtestBits = regtestBitsOverride(magic);
   const quote = asertNextBits({
-    anchorBits: parentIsGenesis ? up.bits : (regtestBits != null ? regtestBits : GENESIS_BITS_PACKED),
+    anchorBits: parentIsGenesis ? up.bits : seedBits(magic),
     anchorTimeMs: anchorMs,
     anchorHeight: parentIsGenesis ? Number(parent.height || 1) : 1,
     blockTimeMs: ts,
     blockHeight: Number(parent.height) + 1,
     parentTimeMs: parentTs,
+    magic,
   });
   if (!quote.ok || !bitsAcceptAsert(decoded.bits, quote) || !isPackedBits(decoded.bits)) {
     return { ok: false, reason: 'bits' };
@@ -2378,9 +2405,9 @@ export function headerLinkReason(header, hash, parent, { genesisMs = 0, mtpTimes
   const window = Array.isArray(mtpTimestamps) && mtpTimestamps.length
     ? mtpTimestamps.slice(-MTP_WINDOW)
     : [parentTs];
-  if (ts > medianTimePast(window) + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
+  if (ts > medianTimePast(window) + mtpFutureFor(magic)) return { ok: false, reason: 'timestamp' };
   if (nowMs != null && Number.isFinite(Number(nowMs))) {
-    if (ts > Number(nowMs) + HEADER_AHEAD_MS || ts > Number(nowMs) + MTP_FUTURE_MS) {
+    if (ts > Number(nowMs) + headerAheadFor(magic) || ts > Number(nowMs) + mtpFutureFor(magic)) {
       return { ok: false, reason: 'timestamp' };
     }
   }
@@ -2644,7 +2671,7 @@ function verifyBlockBody(block, prev, opts = {}) {
     if (rule === 'median3b' && !boundary) return { ok: false, reason: 'rate_commit' };
     const days = epochDays(magic);
     const epochIndex = resolvedGenesisMs > 0
-      ? vortexEpochIndex({ nowMs: headerMs, genesisMs: resolvedGenesisMs, epochDays: days })
+      ? vortexEpochIndex({ nowMs: headerMs, genesisMs: resolvedGenesisMs, epochDays: days, epochMs: epochMs(magic) })
       : Math.floor(Number(txs[0].rateCommit.epochIndex) || 0);
     const prevEpochBps = Math.floor(Number(opts.committedBps ?? opts.reserveState?.epochBps ?? GENESIS_BPS));
     const windowSize = opts.oracleWindowSize == null ? windowBlocksFor(magic) : opts.oracleWindowSize;
@@ -3395,7 +3422,7 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   let fresh = false;
   try {
     if (!session) {
-      session = await bootReserveEvm();
+      session = await bootReserveEvm({ network: opts.magic || MAGIC_TESTNET });
       fresh = true;
     }
   } catch (e) {
@@ -3582,13 +3609,19 @@ function beginLoaded(blocks, {
   prior = null,
   reorgHaltDepth = 0,
   burialOf = null,
-  magic = MAGIC_TESTNET,
+  magic = null,
   oracleActivationHeight = undefined,
 } = {}) {
   const list = Array.isArray(blocks) ? blocks : [];
   if (!list.length) return { ok: true, empty: true };
   const gated = chainStage0Rejected(list);
   if (gated) return gated;
+  // PR #128 fc600180: a load that omits its book is not the v12 clock.
+  if (magic == null || magic === '') {
+    const err = new Error('unknown_magic');
+    err.code = 'unknown_magic';
+    throw err;
+  }
   // N-1 runs inside each block, after the header and the budget. A load
   // does not walk leaves before proof-of-work.
   const givenClock = Number(nowMs);
@@ -3749,7 +3782,7 @@ function stepLoaded(state, list, i) {
   const ts = Number(decoded.timestamp);
   if (!Number.isFinite(ts) || ts <= 0) return { ok: false, reason: 'timestamp' };
   if (state.prevDecoded && !(ts > Number(state.prevDecoded.timestamp))) return { ok: false, reason: 'timestamp' };
-  if (ts > state.clock + MTP_FUTURE_MS) return { ok: false, reason: 'timestamp' };
+  if (ts > state.clock + mtpFutureFor(state.magic)) return { ok: false, reason: 'timestamp' };
   const stored = asBuf(block.hash);
   if (stored.length !== 32) return { ok: false, reason: 'pow' };
   let link = stored;
@@ -3769,21 +3802,21 @@ function stepLoaded(state, list, i) {
   }
   if (!state.prevDecoded) {
     // Same regtest seed as block verify. Public books keep GENESIS_BITS_PACKED.
-    const wantBits = regtestBitsOverride(state.magic) ?? GENESIS_BITS_PACKED;
+    const wantBits = seedBits(state.magic);
     if (decoded.bits !== wantBits || !isPackedBits(decoded.bits)) {
       return { ok: false, reason: 'bits' };
     }
     state.genesisMs = ts;
   } else {
     const parentIsGenesis = state.prevDecoded.prevBlockHash.equals(GENESIS_PREV);
-    const regtestBits = regtestBitsOverride(state.magic);
     const quote = asertNextBits({
-      anchorBits: parentIsGenesis ? state.prevDecoded.bits : (regtestBits != null ? regtestBits : GENESIS_BITS_PACKED),
+      anchorBits: parentIsGenesis ? state.prevDecoded.bits : seedBits(state.magic),
       anchorTimeMs: parentIsGenesis ? Number(state.prevDecoded.timestamp) : state.genesisMs,
       anchorHeight: parentIsGenesis ? state.prevHeight : 1,
       blockTimeMs: ts,
       blockHeight: height,
       parentTimeMs: Number(state.prevDecoded.timestamp),
+      magic: state.magic,
     });
     if (!quote.ok || !bitsAcceptAsert(decoded.bits, quote) || !isPackedBits(decoded.bits)) {
       return { ok: false, reason: 'bits' };
@@ -4132,7 +4165,7 @@ export function parentSolveIntervalMs(blocks) {
  *  the parent bits. Template issuance uses `packed`. A stall timer may issue
  *  `eased` only when `easeBits > 0`.
  */
-export function retargetQuote(chain, candidateTimestamp) {
+export function retargetQuote(chain, candidateTimestamp, magic = MAGIC_TESTNET) {
   if (!chain.length) return { ok: false, reason: 'asert_anchor' };
   let genesis;
   let last;
@@ -4144,14 +4177,15 @@ export function retargetQuote(chain, candidateTimestamp) {
   }
   const parentTime = Number(last.timestamp);
   let blockTime = Number(candidateTimestamp);
-  if (!Number.isFinite(blockTime)) blockTime = parentTime + TARGET_BLOCK_INTERVAL_MS;
+  if (!Number.isFinite(blockTime)) blockTime = parentTime + targetMsFor(magic);
   return asertNextBits({
-    anchorBits: Number(genesis.bits) || GENESIS_BITS_PACKED,
+    anchorBits: Number(genesis.bits) || seedBits(magic),
     anchorTimeMs: Number(genesis.timestamp),
     anchorHeight: Number(chain[0].height || 1),
     blockTimeMs: blockTime,
     blockHeight: Number(chain[chain.length - 1].height || chain.length) + 1,
     parentTimeMs: parentTime,
+    magic,
   });
 }
 
@@ -4160,12 +4194,13 @@ export function retargetQuote(chain, candidateTimestamp) {
  *  issues the full target. `retargetQuote` carries the ease window.
  */
 export function retarget(chain, candidateTimestamp, magic = undefined) {
-  const quote = retargetQuote(chain, candidateTimestamp);
-  if (!quote.ok) return regtestBitsOverride(magic) ?? GENESIS_BITS_PACKED;
+  const quote = retargetQuote(chain, candidateTimestamp, magic);
+  if (!quote.ok) return seedBits(magic);
   return quote.packed;
 }
 
-export function genesisBlock({ miner, now = Date.now() }) {
+export function genesisBlock({ miner, now = Date.now(), magic = MAGIC_TESTNET } = {}) {
+  const seed = seedBits(magic);
   const tpl = buildTemplate({
     prev: GENESIS_PREV,
     height: 1,
@@ -4173,20 +4208,20 @@ export function genesisBlock({ miner, now = Date.now() }) {
     samples: [],
     txs: [],
     now,
-    bits: GENESIS_BITS_PACKED,
+    bits: seed,
   });
   let found = null;
   for (let n = 0n; n < 5_000_000n; n += 1n) {
     const header = setNonce(tpl.header, n);
     const hash = shearHash(header);
-    if (meetsTarget(hash, GENESIS_BITS_PACKED)) {
+    if (meetsTarget(hash, seed)) {
       found = { header, hash, nonce: n };
       break;
     }
   }
   if (!found) throw new Error('genesis_pow');
   return {
-    magic: MAGIC_TESTNET,
+    magic,
     height: 1,
     header: found.header,
     hash: found.hash,

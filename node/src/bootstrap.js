@@ -163,7 +163,8 @@ export function readLatestBootstrap(fromDir) {
     }
   }
   // Header and proof-of-work before N-1. A bad header does not derive a leaf.
-  const checked = verifyLoadedChain(blocks, { nowMs: Date.now() });
+  // The gate above admits only the testnet book; name it (beginLoaded no longer defaults).
+  const checked = verifyLoadedChain(blocks, { nowMs: Date.now(), magic: MAGIC_TESTNET });
   if (!checked.ok) throw new Error(checked.reason || 'pow');
   const notes = chainNoteRuleRejected(blocks);
   if (notes) throw new Error(notes.reason);

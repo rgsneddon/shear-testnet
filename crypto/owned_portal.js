@@ -5,6 +5,7 @@
  */
 import { ed25519RawPub, hash20FromAddress, newIdentity } from './address.js';
 import { MAGIC_TESTNET, PI_SHE_NANOS, RESERVE_EPOCH_MS } from './asert.js';
+import { devRow } from './chain_params.js';
 import { commit, pointBytes, randomScalar } from './note.js';
 import {
   deposit as depositRaw,
@@ -52,11 +53,11 @@ export function ownerFor(dest, seed = null) {
 
 export const portalOwnerCommit = ownerFor('portal-owner').commit;
 
-function chainAt(nowMs, genesisMs) {
+function chainAt(nowMs, genesisMs, span = RESERVE_EPOCH_MS) {
   const g = Number(genesisMs) || 0;
   const now = Number(nowMs) || 0;
   if (!(g > 0) || now < g) return 0;
-  return Math.floor((now - g) / RESERVE_EPOCH_MS);
+  return Math.floor((now - g) / span);
 }
 
 function amountBig(nanos) {
@@ -88,10 +89,9 @@ function rememberLock(dest, commitWord, nowTs) {
   LOCKS.set(key, list);
 }
 
-function trancheAt(nanos, at, genesisMs) {
+function trancheAt(nanos, at, genesisMs, span = RESERVE_EPOCH_MS) {
   const g = Number(genesisMs) || 0;
   const when = Number(at);
-  const span = RESERVE_EPOCH_MS;
   const epoch = g > 0 && when >= g ? Math.floor((when - g) / span) : 0;
   const end = g > 0 ? g + (epoch + 1) * span : 0;
   let remainMs = end > when ? end - when : 0;
@@ -104,11 +104,11 @@ export function lockTranches(dest, genesisMs = BIND_GENESIS_MS) {
   return recordedTranches(dest, genesisMs) || [];
 }
 
-function recordedTranches(dest, genesisMs) {
+function recordedTranches(dest, genesisMs, span = RESERVE_EPOCH_MS) {
   const list = LOCKS.get(String(dest || ''));
   if (!list?.length) return null;
   return list.map((lock) => {
-    const row = trancheAt(0, lock.at, genesisMs);
+    const row = trancheAt(0, lock.at, genesisMs, span);
     row.commit = lock.commit;
     return row;
   });
@@ -118,16 +118,19 @@ function recordedTranches(dest, genesisMs) {
 export function withdrawAuthBind(nowMs, principal, bind = null) {
   const genesisMs = bind?.genesisMs ?? BIND_GENESIS_MS;
   const dest = bind?.dest || '';
+  // shear-dev only: its 288 s epoch and EVM chain 2799. Public books unchanged.
+  const dev = devRow(bind?.magic);
+  const span = dev ? dev.epochMs : RESERVE_EPOCH_MS;
   const locks = bind?.locks || [{ nanos: principal, at: bind?.lockAt ?? genesisMs }];
-  const recorded = recordedTranches(dest, genesisMs);
-  const tranches = bind?.tranches || recorded || locks.map((lock) => trancheAt(lock.nanos, lock.at, genesisMs));
-  const epoch = bind?.epoch != null ? bind.epoch : chainAt(bind?.nowMs ?? nowMs, genesisMs);
+  const recorded = recordedTranches(dest, genesisMs, span);
+  const tranches = bind?.tranches || recorded || locks.map((lock) => trancheAt(lock.nanos, lock.at, genesisMs, span));
+  const epoch = bind?.epoch != null ? bind.epoch : chainAt(bind?.nowMs ?? nowMs, genesisMs, span);
   return {
     epoch,
     tranches,
     trancheSet: trancheSetHash(tranches, epoch),
     magic: reserveMagicBytes(bind?.magic || MAGIC_TESTNET),
-    chainId: 2701n,
+    chainId: dev ? BigInt(dev.evmChainId) : 2701n,
     genesisMs,
   };
 }

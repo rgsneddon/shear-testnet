@@ -2,6 +2,7 @@
  * Epoch-indexed block pot. Testnet 4-day / mainnet 400-day clocks.
  * Votes and the Reserve oracle cannot move this schedule.
  */
+import { devRow } from './chain_params.js';
 export const MS_PER_DAY = 86_400_000;
 export const EPOCH_DAYS_TESTNET = 4;
 export const EPOCH_DAYS_MAINNET = 400;
@@ -18,10 +19,14 @@ export function epochDaysForMagic(magic) {
 /** Mainnet cannot shorten epochs. Magic is the only switch. */
 export function epochDays(magic) {
   if (String(magic) === MAGIC_MAINNET) return EPOCH_DAYS_MAINNET;
+  const dev = devRow(magic);
+  if (dev) return dev.epochDays;
   return epochDaysForMagic(magic);
 }
 
 export function epochMs(magic) {
+  const dev = devRow(magic);
+  if (dev) return dev.epochMs;
   return epochDays(magic) * MS_PER_DAY;
 }
 
@@ -35,17 +40,31 @@ export const STAKE_CUTOFF_QUARTER_DEN = 4;
  * a stake reward. Mainnet is 99 days. Testnet is the last quarter.
  */
 export function joinCutoffMs(magic) {
+  const dev = devRow(magic);
+  if (dev) return dev.joinCutoffMs;
   if (String(magic) === MAGIC_MAINNET) return STAKE_CUTOFF_DAYS_MAINNET * MS_PER_DAY;
   return Math.floor(epochMs(magic) / STAKE_CUTOFF_QUARTER_DEN);
 }
 
 export function joinCutoffDays(magic) {
+  const dev = devRow(magic);
+  if (dev) return Math.floor(dev.joinCutoffMs / dev.dayMs);
   return Math.floor(joinCutoffMs(magic) / MS_PER_DAY);
 }
 
-export function vortexEpochIndex({ nowMs, genesisMs, epochDays: days } = {}) {
+/**
+ * Chain epoch index. `epochMs`, when given, is the epoch width (shear-dev's
+ * 288 s epoch is not a whole number of 86.4 Ms days); otherwise days × 86.4 Ms.
+ */
+export function vortexEpochIndex({ nowMs, genesisMs, epochDays: days, epochMs: spanMs } = {}) {
   const g = Number(genesisMs);
   const t = Number(nowMs);
+  const span = Number(spanMs);
+  if (spanMs != null && Number.isFinite(span) && span > 0) {
+    if (!Number.isFinite(g) || !Number.isFinite(t)) return 0;
+    if (!(t >= g)) return 0;
+    return Math.floor((t - g) / span);
+  }
   const d = Number(days);
   if (!Number.isFinite(g) || !Number.isFinite(t) || !Number.isFinite(d) || d <= 0) return 0;
   if (!(t >= g)) return 0;
@@ -64,7 +83,7 @@ export function nextPotNanos(epoch) {
 
 export function potSubsidyAt({ nowMs, genesisMs, magic } = {}) {
   const days = epochDays(magic);
-  return potSubsidyNanos(vortexEpochIndex({ nowMs, genesisMs, epochDays: days }));
+  return potSubsidyNanos(vortexEpochIndex({ nowMs, genesisMs, epochDays: days, epochMs: epochMs(magic) }));
 }
 
 export function potSchedPin(days) {
@@ -76,9 +95,9 @@ export function epochView({ nowMs, genesisMs, magic } = {}) {
   const days = epochDays(magic);
   const g = Number(genesisMs) || 0;
   const t = Number(nowMs) || 0;
-  const epoch = vortexEpochIndex({ nowMs: t, genesisMs: g, epochDays: days });
+  const span = epochMs(magic);
+  const epoch = vortexEpochIndex({ nowMs: t, genesisMs: g, epochDays: days, epochMs: span });
   const pot = potSubsidyNanos(epoch);
-  const span = days * MS_PER_DAY;
   const elapsed = Math.max(0, t - g);
   const into = span > 0 ? elapsed % span : 0;
   return {

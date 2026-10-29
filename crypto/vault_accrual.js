@@ -24,6 +24,7 @@
  * prefix subtraction and one floor, not a loop over days.
  */
 import { epochDays, MAGIC_MAINNET } from './pot_sched.js';
+import { devRow } from './chain_params.js';
 
 export const VAULT_BLOCK_MS = 90_000;
 export const VAULT_DAY_MS = 86_400_000;
@@ -37,6 +38,8 @@ export const VAULT_DAY_BLOCKS = VAULT_DAY_MS / VAULT_BLOCK_MS;
 export const VAULT_TESTNET_DAY_BLOCKS = 24;
 
 export function vaultDayBlocks(magic) {
+  const dev = devRow(magic);
+  if (dev) return dev.stubBlocks;
   return String(magic) === MAGIC_MAINNET ? VAULT_DAY_BLOCKS : VAULT_TESTNET_DAY_BLOCKS;
 }
 /** Splits a 400-day epoch into 25-day periods. Testnet (4 days) uses the same count. */
@@ -44,8 +47,18 @@ export const VAULT_PERIODS_PER_EPOCH = 16;
 export const VAULT_BPS_DENOM = 10000n;
 const MAX_NANOS = 9007199254740991n;
 
+/**
+ * Blocks in one calendar day of the vault clock. VAULT_DAY_BLOCKS (960) on
+ * every public book. shear-dev uses its row's own day (8 blocks of 9 s):
+ * Russell 2026-10-29 16:07 GMT, ruling A, a dev-only exception.
+ */
+export function vaultCalendarDayBlocks(magic) {
+  const dev = devRow(magic);
+  return dev ? dev.dayBlocks : VAULT_DAY_BLOCKS;
+}
+
 export function vaultEpochBlocks(magic) {
-  return epochDays(magic) * VAULT_DAY_BLOCKS;
+  return epochDays(magic) * vaultCalendarDayBlocks(magic);
 }
 
 export function vaultPeriodBlocks(magic) {

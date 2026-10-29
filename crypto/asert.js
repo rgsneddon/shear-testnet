@@ -29,6 +29,8 @@ import {
 } from './reserve_oracle.js';
 export { GENESIS_BPS };
 import { HISTORICAL_TIP } from './historical_prefix.js';
+import { MAGIC_DEV, devRow, paramsDigest } from './chain_params.js';
+export { MAGIC_DEV };
 import {
   MAGIC_TESTNET_V1,
   MAGIC_TESTNET_V2,
@@ -426,16 +428,30 @@ export const ADMIT_CYCLE_ID = `fs1-${FS1_CYCLE_C1}-${FS1_CYCLE_C2}`;
 export const ADMIT_ARITY_ID = `fs1-selene${FS1_LAYER_ONE_LEN}-helios${FS1_LAYER_TWO_LEN}-d${FS1_DEPTH}`;
 export const ADMIT_LEAF_ID = `fs1-ed25519-OIC${FS1_LEAF_LEN}-Hp-${FS1_LEAF_HP_DST}`;
 
-/** Consensus fingerprint. Mainnet genesis seals this; it is not revertible. */
+/**
+ * Day-0 packed seed. shear-dev reads genesisBits from its row. Every other
+ * book stays on GENESIS_BITS_PACKED.
+ */
+export function genesisSeedPacked(magic = MAGIC_TESTNET) {
+  const dev = devRow(magic);
+  return dev ? (dev.genesisBits * BITS_FP_SCALE) >>> 0 : GENESIS_BITS_PACKED;
+}
+
+/**
+ * Consensus fingerprint. Mainnet genesis seals this; it is not revertible.
+ * Only shear-dev substitutes row values and appends PARAMS=sha256(row);
+ * every other book's string is byte-identical to b3efdc26.
+ */
 export function consensusFingerprint(magic = MAGIC_TESTNET) {
   const days = epochDays(magic);
-  const network = String(magic) === MAGIC_MAINNET ? MAGIC_MAINNET : MAGIC_TESTNET;
+  const dev = devRow(magic);
+  const network = String(magic) === MAGIC_MAINNET ? MAGIC_MAINNET : (dev ? MAGIC_DEV : MAGIC_TESTNET);
   return [
     BOOK_LAW_ID,
     MAGIC_MAINNET,
-    TARGET_BLOCK_INTERVAL_MS,
+    dev ? dev.targetBlockMs : TARGET_BLOCK_INTERVAL_MS,
     LIVE_MIN_BITS,
-    GENESIS_BITS,
+    dev ? dev.genesisBits : GENESIS_BITS,
     HASH_BONUS_NANOS,
     NANOS_PER_SHE,
     BLOCK_SUBSIDY_NANOS,
@@ -446,7 +462,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     MINER_MINT_ONLY,
     HASH_TX_LIVE,
     DEST_HRP,
-    FEE_TAU_MS,
+    dev ? dev.feeTauMs : FEE_TAU_MS,
     FEE_TARGET_WEIGHT,
     FEE_SPLIT_FINDER_BPS,
     LEAF_A_LAYOUT,
@@ -517,7 +533,7 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     `POT_PROP=${POT_PROP}`,
     `POT_SCHED=${potSchedPin(days)}`,
     `EPOCH_DAYS=${days}`,
-    `RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2/3:windowMain=${ORACLE_WINDOW_MAINNET}:windowTest=${ORACLE_WINDOW_TESTNET}:windowMs=${ORACLE_WINDOW_MS}:floorBps=0:sourceTenths=-1000..100000:activation=${oracleActivationPin()}`,
+    `RESERVE_ORACLE=median3b:banks=14:sourceQuorum=10:super=2/3:windowMain=${ORACLE_WINDOW_MAINNET}:windowTest=${dev ? dev.oracleWindowBlocks : ORACLE_WINDOW_TESTNET}:windowMs=${ORACLE_WINDOW_MS}:floorBps=0:sourceTenths=-1000..100000:activation=${oracleActivationPin()}`,
     `RESERVE_RATE=epoch-fixed:quorum=10:genesis=${GENESIS_BPS}:floor=0:trim=0:root=${bundleObservationRoot()}`,
     `POOL_WITHDRAW=${POOL_WITHDRAW_LAW}`,
     `NETWORK=${network}`,
@@ -591,16 +607,17 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
     'BITS=q16.16',
-    `ASERT_TAU_MS=${ASERT_HALFLIFE_MS}`,
+    `ASERT_TAU_MS=${dev ? dev.asertTauMs : ASERT_HALFLIFE_MS}`,
     `ASERT_STEP=${ASERT_STEP_ID}`,
     `ASERT_HARDEN=${asertHardenMax(magic)}`,
     `ASERT_EASE=${asertEaseMax(magic)}`,
     `ASERT_EMERGENCY=${ASERT_EMERGENCY_EASE_MAX}`,
     `ASERT_EMERGENCY_GAP=${ASERT_EMERGENCY_GAP_FACTOR}`,
     `ASERT_FLOOR=${ASERT_FLOOR_ID}`,
-    `HEADER_AHEAD_MS=${HEADER_AHEAD_MS}`,
-    `MTP_FUTURE_MS=${MTP_FUTURE_MS}`,
-    ...(String(magic) === MAGIC_MAINNET || String(magic) === MAGIC_TESTNET_V12 ? [] : [`HISTORICAL_TIP=${HISTORICAL_TIP}`]),
+    `HEADER_AHEAD_MS=${dev ? dev.headerAheadMs : HEADER_AHEAD_MS}`,
+    `MTP_FUTURE_MS=${dev ? dev.mtpFutureMs : MTP_FUTURE_MS}`,
+    ...(String(magic) === MAGIC_MAINNET || String(magic) === MAGIC_TESTNET_V12 || dev ? [] : [`HISTORICAL_TIP=${HISTORICAL_TIP}`]),
+    ...(dev ? [`PARAMS=${paramsDigest(MAGIC_DEV)}`] : []),
   ].join(':');
 }
 
@@ -622,12 +639,13 @@ export function mainnetMayEmit(nowMs = Date.now()) {
   return Number(nowMs) >= GENESIS_MAINNET_MS;
 }
 
-export function consensusLaw() {
+export function consensusLaw(magic = MAGIC_TESTNET) {
+  const dev = devRow(magic);
   return {
     bookLawId: BOOK_LAW_ID,
     productVersion: PRODUCT_VERSION,
     minerVersion: MINER_VERSION,
-    bookLawFingerprint: consensusFingerprint(),
+    bookLawFingerprint: consensusFingerprint(magic),
     hashCommitOnAccept: HASH_COMMIT_ON_ACCEPT,
     hashTxCollate: HASH_TX_COLLATE,
     hashTxConfirmOnBlock: HASH_TX_CONFIRM_ON_BLOCK,
@@ -642,7 +660,7 @@ export function consensusLaw() {
     epochDaysMainnet: EPOCH_DAYS_MAINNET,
     magicMainnet: MAGIC_MAINNET,
     destHrp: DEST_HRP,
-    feeTauMs: FEE_TAU_MS,
+    feeTauMs: dev ? dev.feeTauMs : FEE_TAU_MS,
     feeTargetWeight: FEE_TARGET_WEIGHT,
     feeSplitFinderBps: FEE_SPLIT_FINDER_BPS,
     leafALayout: LEAF_A_LAYOUT,
@@ -776,7 +794,12 @@ export function asertNextBits({
   blockTimeMs,
   blockHeight,
   parentTimeMs = null,
+  magic = MAGIC_TESTNET,
 } = {}) {
+  const dev = devRow(magic);
+  const targetMs = dev ? dev.targetBlockMs : TARGET_BLOCK_INTERVAL_MS;
+  const tauMs = dev ? dev.asertTauMs : ASERT_HALFLIFE_MS;
+  const gapFactor = dev ? dev.emergencyGapFactor : ASERT_EMERGENCY_GAP_FACTOR;
   const anchorT = Math.floor(Number(anchorTimeMs));
   const blockT = Math.floor(Number(blockTimeMs));
   const height = Math.floor(Number(blockHeight));
@@ -787,8 +810,8 @@ export function asertNextBits({
   if (height <= anchorH) return { ok: false, reason: 'asert_anchor' };
   const heightDelta = BigInt(height - anchorH);
   const timeDelta = BigInt(blockT - anchorT);
-  const numer = heightDelta * BigInt(TARGET_BLOCK_INTERVAL_MS) - timeDelta;
-  const deltaQ = divRoundNearest(numer * BigInt(BITS_FP_SCALE), BigInt(ASERT_HALFLIFE_MS));
+  const numer = heightDelta * BigInt(targetMs) - timeDelta;
+  const deltaQ = divRoundNearest(numer * BigInt(BITS_FP_SCALE), BigInt(tauMs));
   const minQ = BigInt(Math.round(LIVE_MIN_BITS * BITS_FP_SCALE));
   const maxQ = BigInt(Math.round(MAX_BITS * BITS_FP_SCALE));
   let nextQ = BigInt(clampBits(anchorBits)) + deltaQ;
@@ -799,10 +822,10 @@ export function asertNextBits({
   let eased = packed;
   if (parentTimeMs != null && Number.isFinite(Number(parentTimeMs))) {
     const gap = blockT - Math.floor(Number(parentTimeMs));
-    const trigger = ASERT_EMERGENCY_GAP_FACTOR * TARGET_BLOCK_INTERVAL_MS;
+    const trigger = gapFactor * targetMs;
     if (gap > trigger) {
       const raw = Math.log2(gap / trigger);
-      easeBits = Math.min(ASERT_EMERGENCY_EASE_MAX, Math.max(0, raw));
+      easeBits = Math.min(dev ? dev.emergencyEaseMax : ASERT_EMERGENCY_EASE_MAX, Math.max(0, raw));
       let easedQ = nextQ - BigInt(Math.round(easeBits * BITS_FP_SCALE));
       if (easedQ < minQ) easedQ = minQ;
       eased = Number(easedQ);
@@ -890,7 +913,7 @@ export function bitsForBlock(parentBits, parentTimestamp, blockTimestamp, magic 
  * Never before parent. Clock skew `wall < parent` stamps parent+1.
  * `wallIntervalMs` is accepted for callers and ignored: wall is the interval.
  */
-export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalMs = null, mtpTimestamp = null) {
+export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalMs = null, mtpTimestamp = null, magic = MAGIC_TESTNET) {
   void wallIntervalMs;
   const wall = Number(now);
   const parent = Number(parentTimestamp);
@@ -899,7 +922,8 @@ export function templateStampMs(parentTimestamp, now = Date.now(), wallIntervalM
   // verifyBlock requires ts > parentTs. A 1ms gap is one fast parent step.
   let stamp = wall <= parent ? parent + 1 : wall;
   if (mtpTimestamp != null && Number.isFinite(Number(mtpTimestamp))) {
-    const cap = Number(mtpTimestamp) + MTP_FUTURE_MS;
+    const dev = devRow(magic);
+    const cap = Number(mtpTimestamp) + (dev ? dev.mtpFutureMs : MTP_FUTURE_MS);
     if (stamp > cap) stamp = cap;
     if (stamp <= parent && cap > parent) stamp = parent + 1;
   }

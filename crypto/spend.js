@@ -12,8 +12,9 @@ import { indexedDestHash, closureCommit } from './flow_sheet.js';
 import { packTx, packDigest } from './pack.js';
 import { claimedVoutNanos, flowNeedsDummy, publicReserveReceiptRejected } from './dummy.js';
 import { asU8, verifyFlowConservation, verifySealedNote, leafVoteConserved } from './note.js';
-import { consensusUnlockPeriod, hiddenPrincipalOpens, indexedWithdrawQuote, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest20, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest } from './reserve_vault.js';
+import { consensusUnlockPeriod, hiddenPrincipalOpens, indexedWithdrawQuote, lockFundingRejected, lockUnlockOf, maturedHiddenCount, portalIdFromDest20, principalProofReused, reserveDigestSuffix, withdrawablePrincipal, withdrawMintId, withdrawPaysInterest, reserveMagicBytes } from './reserve_vault.js';
 import { attachLockAuth, verifyLockAuth } from './reserve_evm.js';
+import { devRow, devWithdrawClosed, evmChainIdFor } from './chain_params.js';
 import { verifyTypedAdmitFunding } from './admit_v3.js';
 import { MEMBER_KEYS } from './member_keys.js';
 
@@ -213,7 +214,7 @@ export function sealedCompactSpend(tx) {
   return !!(vin.commit || vin.pseudo || vin.cTilde);
 }
 
-export function signSpendTx(tx, privateKey) {
+export function signSpendTx(tx, privateKey, opts = {}) {
   const msg = spendMessage(tx);
   if (isStealthKey(privateKey)) {
     const longPub = ed25519RawPub(ed25519PrivateFromSeed(privateKey.seed));
@@ -224,7 +225,11 @@ export function signSpendTx(tx, privateKey) {
   tx.spendPub = ed25519RawPub(privateKey).toString('hex');
   const sig = sign(null, msg, privateKey);
   tx.sig = Buffer.from(sig).toString('hex');
-  attachLockAuth(tx, privateKey);
+  // shear-dev signs its Reserve lock for its own book and EVM chain;
+  // every other book keeps the b3efdc26 call unchanged.
+  const dev = devRow(opts?.magic);
+  if (dev) attachLockAuth(tx, privateKey, reserveMagicBytes(opts.magic), BigInt(dev.evmChainId));
+  else attachLockAuth(tx, privateKey);
   return tx;
 }
 
@@ -1012,7 +1017,12 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
     if (!(kind === 'lock' && fs1Carry(tx))) {
       return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
     }
-    spend = verifyLockAuth(tx);
+    // shear-dev binds its own magic word and chain id 2799; every other
+    // book keeps the b3efdc26 call unchanged.
+    const devBook = devRow(reserveState?.magic) ? String(reserveState.magic) : null;
+    spend = devBook
+      ? verifyLockAuth(tx, reserveMagicBytes(devBook), BigInt(evmChainIdFor(devBook)))
+      : verifyLockAuth(tx);
     if (!spend) return { ok: false, reason: 'unsigned', from: reservePortalDest(tx) };
     ownerKey = Buffer.from(spend, 'hex');
   } else if (pubRaw) {
@@ -1064,6 +1074,8 @@ export function reserveAuth(tx, reserveState = null, seenOwners = null) {
 export function boundReserveWithdraw(tx, reserveState = null, drawn = null, clockMs = null) {
   const kind = String(tx?.kind || tx?.vout?.[0]?.kind || '');
   if (kind !== 'withdraw') return { ok: true };
+  // shear-dev only: the same withdraw-slot gate verifyReservePayout applies.
+  if (devWithdrawClosed(reserveState?.magic, reserveState?.genesisMs, clockMs)) return { ok: false, reason: 'withdraw_closed' };
   const outs = Array.isArray(tx?.vout) ? tx.vout : [];
   const receipts = outs.filter((row) => String(row?.kind || '') === 'withdraw');
   if (receipts.length !== 1) return { ok: false, reason: 'mint_amount' };

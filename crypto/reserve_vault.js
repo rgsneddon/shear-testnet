@@ -43,6 +43,7 @@ import {
   bundleObservationRoot,
 } from './reserve_oracle.js';
 import { vortexEpochIndex, epochDays, epochMs, joinCutoffMs, MAGIC_MAINNET } from './pot_sched.js';
+import { evmChainIdFor, devWithdrawClosed } from './chain_params.js';
 import {
   VAULT_PERIODS_PER_EPOCH,
   vaultEpochBlocks,
@@ -509,6 +510,15 @@ export const PORTAL_OWNER_TAG = 'shear-portal-owner-v1';
 /** Shear EVM chain id. The withdraw signature binds this, not a caller nonce. */
 export const WITHDRAW_CHAIN_ID = 2701n;
 
+/**
+ * Chain id a withdraw (and a roll) signature binds. 2701 on v12, shear-v1
+ * and every other public book; shear-dev binds its own row id (2799), the
+ * id its ReserveDev EVM runs under.
+ */
+export function withdrawChainId(magic = MAGIC_TESTNET) {
+  return BigInt(evmChainIdFor(magic));
+}
+
 /** keccak256(magic string). The same word the Reserve stores as `magic`. */
 export function reserveMagicBytes(magic = MAGIC_TESTNET) {
   return Buffer.from(keccak_256(Buffer.from(String(magic || MAGIC_TESTNET), 'utf8')));
@@ -597,7 +607,7 @@ export function withdrawBinding(state, portal, nowMs) {
     epoch,
     trancheSet: trancheSetHash(portal?.tranches || [], epoch),
     magic: reserveMagicBytes(state?.magic || MAGIC_TESTNET),
-    chainId: WITHDRAW_CHAIN_ID,
+    chainId: withdrawChainId(state?.magic || MAGIC_TESTNET),
   };
 }
 
@@ -1680,7 +1690,7 @@ function rollOwnerMessage(portalId, epoch, { magic = null, chainId = null, tranc
   const id = Buffer.from(String(portalId || '').replace(/^0x/i, ''), 'hex');
   if (id.length !== 32) return null;
   const mag = reserveMagicBytes(magic || MAGIC_TESTNET);
-  let chain = WITHDRAW_CHAIN_ID;
+  let chain = withdrawChainId(magic || MAGIC_TESTNET);
   try { if (chainId != null) chain = BigInt(chainId); } catch { return null; }
   if (chain < 0n || chain > 0xffffffffffffffffn) return null;
   const set = trancheSet && trancheSet.length === 32 ? trancheSet : Buffer.alloc(32);
@@ -2988,6 +2998,7 @@ function derivedCommitIndex(nowMs, genesisMs, magic) {
     nowMs: now,
     genesisMs: genesis,
     epochDays: epochDays(magic || MAGIC_TESTNET),
+    epochMs: epochMs(magic || MAGIC_TESTNET),
   });
 }
 
@@ -4160,6 +4171,8 @@ export function verifyReservePayout(state, tx, clockMs) {
   if (String(tx?.programId || '') !== RESERVE_PROGRAM) {
     return { ok: false, reason: 'mint_forbidden' };
   }
+  // shear-dev only: the withdraw slots of the chain epoch (PR #128 b6419b17).
+  if (devWithdrawClosed(state?.magic, state?.genesisMs, clockMs)) return { ok: false, reason: 'withdraw_closed' };
   const p = act.portalId ? state?.portals?.[act.portalId] : null;
   if (act.payoutPortalId && p?.payoutPortalId && act.payoutPortalId !== p.payoutPortalId) {
     return { ok: false, reason: 'payout_mismatch' };

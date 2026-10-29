@@ -949,7 +949,7 @@ function runSupplyAudit(store, key) {
     const waiter = supplyWaiters.get(id);
     if (!waiter || waiter.key !== key) return;
     try {
-      if (index === 0) worker.postMessage({ id, type: 'start', length: blocks.length });
+      if (index === 0) worker.postMessage({ id, type: 'start', length: blocks.length, magic: store?.magic });
       if (index >= blocks.length) {
         worker.postMessage({ id, type: 'end' });
         return;

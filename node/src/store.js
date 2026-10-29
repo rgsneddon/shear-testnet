@@ -184,6 +184,7 @@ import { performance } from 'node:perf_hooks';
 import { asU8, flowInputsBound, unboundMembershipCarry, txSpendTags, canonicalSpendTag, txIoCap } from '../../crypto/note.js';
 import { txBudget, selectBodyIndexes, TEMPLATE_BUDGET_MS, W_PAYEE, payeeCapLive } from '../../crypto/block_budget.js';
 import { blockWork, HEADER_AHEAD_MS } from '../../crypto/asert.js';
+import { devRow } from '../../crypto/chain_params.js';
 import {
   emptyPolicyState,
   recordReorg,
@@ -1321,7 +1322,7 @@ export function createStore(dir, {
     try {
       const parent = decodeHeader(Buffer.from(t.header));
       const mtp = medianTimePast(blocks.slice(-MTP_WINDOW).map((b) => blockTimeMs(b)));
-      return templateStampMs(parent.timestamp, wall, null, mtp);
+      return templateStampMs(parent.timestamp, wall, null, mtp, bookMagic);
     } catch {
       return wall;
     }
@@ -3264,7 +3265,7 @@ export function createStore(dir, {
       }
       let decoded;
       try { decoded = decodeHeader(header); } catch { out.dropped = true; break; }
-      if (Number(decoded.timestamp) > nowMs + HEADER_AHEAD_MS) { offerStats.orphaned += 1; continue; }
+      if (Number(decoded.timestamp) > nowMs + (devRow(bookMagic)?.headerAheadMs ?? HEADER_AHEAD_MS)) { offerStats.orphaned += 1; continue; }
       const prevHex = decoded.prevBlockHash.toString('hex');
       let parent = null;
       let rootMs = localGenesisMs();
@@ -6418,7 +6419,7 @@ export function createStore(dir, {
       try {
         const parent = decodeHeader(Buffer.from(t.header));
         const mtp = medianTimePast(blocks.slice(-MTP_WINDOW).map((b) => blockTimeMs(b)));
-        now = templateStampMs(parent.timestamp, wall, wallIntervalMs, mtp);
+        now = templateStampMs(parent.timestamp, wall, wallIntervalMs, mtp, bookMagic);
       } catch { /* keep wall */ }
     }
     // Sealed parent interval only. Caller bits (share target, boot override,

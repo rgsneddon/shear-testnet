@@ -12,7 +12,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import { MAGIC_TESTNET, HASH_BONUS_NANOS, HASH_BONUS_NANOS_FLOOR } from './asert.js';
 import { epochDays, joinCutoffDays } from './pot_sched.js';
-import { VAULT_DAY_BLOCKS } from './vault_accrual.js';
+import { VAULT_DAY_BLOCKS, vaultCalendarDayBlocks } from './vault_accrual.js';
+import { devRow } from './chain_params.js';
 import { scalarBytes } from './note.js';
 
 export const VOTE_TAG_DST = 'shear-vote-v1';
@@ -35,6 +36,31 @@ export const VOTE_EDGE_BLOCKS = 10;
 /** Two leaves of one wallet are at least this many blocks apart. */
 export const VOTE_MIN_SEPARATION = 30;
 const VOTE_PLAN_FILE = 'vote-plan.json';
+
+/**
+ * Vote constants for a book. Every public book keeps VOTE_FINALITY_BLOCKS,
+ * VOTE_GAP_BLOCKS, VOTE_EDGE_BLOCKS, VOTE_MIN_SEPARATION and 960-block days.
+ * shear-dev reads its own row (Russell 2026-10-29 16:07 GMT, ruling A).
+ */
+export function voteParams(magic = MAGIC_TESTNET) {
+  const dev = devRow(magic);
+  if (dev) {
+    return {
+      finality: dev.voteFinality,
+      gap: dev.voteGap,
+      edge: dev.voteEdge,
+      separation: dev.voteSep,
+      dayBlocks: dev.dayBlocks,
+    };
+  }
+  return {
+    finality: VOTE_FINALITY_BLOCKS,
+    gap: VOTE_GAP_BLOCKS,
+    edge: VOTE_EDGE_BLOCKS,
+    separation: VOTE_MIN_SEPARATION,
+    dayBlocks: VAULT_DAY_BLOCKS,
+  };
+}
 
 const PARAMS = new Set(['hb', 'rr']);
 
@@ -153,13 +179,14 @@ export function voteCloseDay(magic = MAGIC_TESTNET) {
 
 /**
  * First block of voteCloseDay. The day count is VAULT_DAY_BLOCKS (960) on
- * every book, including testnet. It is not the 24-block testnet vault day.
+ * every public book, including testnet. It is not the 24-block testnet vault
+ * day. shear-dev alone uses its row's 8-block day (ruling A, 2026-10-29).
  */
 export function voteCloseHeight(openHeight, magic = MAGIC_TESTNET) {
   const openH = Math.floor(Number(openHeight));
   const day = voteCloseDay(magic);
   if (!Number.isInteger(openH) || openH < 0 || day == null) return null;
-  return openH + day * VAULT_DAY_BLOCKS;
+  return openH + day * vaultCalendarDayBlocks(magic);
 }
 
 /** Inclusive. Day 301 of a 400-day epoch is inside. Day 302 is not. */
@@ -175,7 +202,7 @@ export function voteTallyReady(openHeight, height, magic = MAGIC_TESTNET) {
   const closeH = voteCloseHeight(openHeight, magic);
   const h = Math.floor(Number(height));
   if (closeH == null || !Number.isInteger(h)) return false;
-  return h >= closeH + VOTE_FINALITY_BLOCKS;
+  return h >= closeH + voteParams(magic).finality;
 }
 
 /**
@@ -450,11 +477,11 @@ function combination(n, k, draw) {
   return left === 0 ? chosen : null;
 }
 
-function planHeights(count, lo, hi, draw = (bound) => randomInt(bound)) {
+function planHeights(count, lo, hi, draw = (bound) => randomInt(bound), separation = VOTE_MIN_SEPARATION) {
   const span = hi - lo + 1;
-  const need = count <= 1 ? 1 : (count - 1) * VOTE_MIN_SEPARATION + 1;
+  const need = count <= 1 ? 1 : (count - 1) * separation + 1;
   if (span < need) return null;
-  const gap = VOTE_MIN_SEPARATION - 1;
+  const gap = separation - 1;
   const reduced = hi - (count - 1) * gap - lo + 1;
   const picks = combination(reduced, count, draw);
   if (!picks) return null;
@@ -519,17 +546,18 @@ export function castVotePlan(n, {
   const count = Math.max(0, Math.floor(Number(n) || 0));
   const open = Math.max(0, Math.floor(Number(openHeight) || 0));
   const day = voteCloseDay(magic);
+  const vp = voteParams(magic);
   const close = closeHeight == null
-    ? open + (day == null ? 0 : day * VAULT_DAY_BLOCKS)
+    ? open + (day == null ? 0 : day * vp.dayBlocks)
     : Math.floor(Number(closeHeight));
-  const lo = open + VOTE_EDGE_BLOCKS;
-  const hi = close - VOTE_EDGE_BLOCKS;
+  const lo = open + vp.edge;
+  const hi = close - vp.edge;
   const label = `Cast your ${count} votes`;
   if (count === 0) return { label, openHeight: open, closeHeight: close, txs: [] };
   const owned = Array.isArray(feeInputs) ? feeInputs.map(ownedFeeInput) : null;
   if (!owned || owned.length !== count || owned.some((row) => !row)) return null;
   if (new Set(owned).size !== count) return null;
-  const heights = planHeights(count, lo, hi);
+  const heights = planHeights(count, lo, hi, undefined, vp.separation);
   if (!heights) return null;
   const txs = heights.map((height, leaf) => ({
     leaf,
