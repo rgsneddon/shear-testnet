@@ -6,16 +6,14 @@ export function foreignGrepArgs() {
     '-RIn',
     '--exclude-dir=.git',
     '--exclude-dir=node_modules',
-    '--exclude=shard.tap',
-    '--exclude=shard.txt',
     '-E',
   ];
 }
 
+// full-suite writes these two names at the checkout root only.
 function shardOutput(line) {
   const file = line.split(':')[0].replace(/\\/g, '/');
-  const base = file.split('/').pop();
-  return base === 'shard.tap' || base === 'shard.txt';
+  return file === './shard.tap' || file === './shard.txt';
 }
 
 // One grep hit. True means the line is a shipped-artifact hit.

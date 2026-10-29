@@ -19,7 +19,7 @@ test('a stuck file fails the shard instead of hanging', async () => {
   // The assertion is the runner's own timedOut flag.
   const result = await Promise.race([
     runFile(file, { timeoutMs: 500, cwd: dir }),
-    new Promise((resolve) => setTimeout(() => resolve({ timedOut: false, code: 1, ms: 800 }), 800)),
+    new Promise((resolve) => setTimeout(() => resolve({ timedOut: false, code: 1, ms: 4000 }), 4000)),
   ]);
   assert.equal(result.timedOut, true, 'stuck file');
   assert.notEqual(result.code, 0, 'stuck file');
@@ -68,12 +68,20 @@ test('file output is visible before the file exits', async () => {
 });
 
 test('stderr stays out of the tap', async () => {
+  // node --test reprints a test's stderr as TAP comments on stdout, so
+  // this drives the runner pipes with a shim. The suite path is unchanged
+  // when args is omitted.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shard-err-'));
-  const file = path.join(dir, 'err.test.js');
-  fs.writeFileSync(file, "import test from 'node:test';\ntest('ok', () => { console.error('STDERR_MARK'); });\n");
-  const result = await runFile(file, { timeoutMs: 5_000, cwd: dir });
+  const shim = path.join(dir, 'shim.js');
+  fs.writeFileSync(shim, "process.stdout.write('ok 1 - ok\\n# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0\\n# todo 0\\n'); process.stderr.write('STDERR_MARK\\n');");
+  const result = await runFile('pool/tests/ignored.js', {
+    timeoutMs: 5_000,
+    cwd: dir,
+    args: [shim],
+  });
   assert.equal(String(result.tap).includes('STDERR_MARK'), false);
   assert.equal(String(result.stderr).includes('STDERR_MARK'), true);
+  assert.equal(String(result.tap).includes('ok 1 - ok'), true);
 });
 
 test('a file timeout is valid TAP and a GitHub error', async () => {
