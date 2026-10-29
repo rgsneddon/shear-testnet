@@ -95,6 +95,8 @@ end:
     return ok;
 }
 
+static void ui_home(void);
+
 static void on_view_choice(bool approve) {
     if (approve) {
         uint8_t out[64];
@@ -102,10 +104,10 @@ static void on_view_choice(bool approve) {
         memcpy(out + 32, G_pending.view_key, 32);
         io_send_response_pointer(out, sizeof(out), SW_OK);
         explicit_bzero(out, sizeof(out));
-        nbgl_useCaseStatus("View key exported", true, nbgl_useCaseHome_cb);
+        nbgl_useCaseStatus("View key exported", true, ui_home);
     } else {
         io_send_sw(SW_DENY);
-        nbgl_useCaseStatus("Rejected", false, nbgl_useCaseHome_cb);
+        nbgl_useCaseStatus("Rejected", false, ui_home);
     }
     explicit_bzero(&G_pending, sizeof(G_pending));
 }
@@ -159,10 +161,19 @@ static int dispatch(const command_t *cmd) {
     }
 }
 
+static void on_quit(void) {
+    os_sched_exit(-1);
+}
+
+static void ui_home(void) {
+    nbgl_useCaseHomeAndSettings(APPNAME, &ICON_APP, "Keys stay on this device", INIT_HOME_PAGE, NULL, NULL, NULL,
+                                on_quit);
+}
+
 void app_main(void) {
     command_t cmd;
     io_init();
-    nbgl_useCaseHome(APPNAME, &ICON_APP, "Keys stay on this device", false, NULL, NULL);
+    ui_home();
     for (;;) {
         int len = io_recv_command();
         if (len < 0) return;
