@@ -133,8 +133,12 @@ void main() {
       await tester.pump();
       expect(find.byKey(const Key('restore-scan')), findsNothing);
       expect(session.identity!.address, id.address);
-      expect(session.birthHeight, given ?? 0);
-      expect(ledger.birthHeight, given ?? 0);
+      // WH P1-4: a typed birth is capped at the verified tip (none in this
+      // book: genesis), and the user is told.
+      final want = given == null ? 0 : restoreBirthFor(given, verifiedTip: ledger.verifiedHeaderTip).birth;
+      expect(session.birthHeight, want);
+      expect(ledger.birthHeight, want);
+      expect(find.byKey(const Key('restore-birth-warning')), given == null ? findsNothing : findsOneWidget);
       expect(session.bluMining, isTrue);
       expect(ledger.bluMining, isTrue);
     });

@@ -963,10 +963,22 @@ class ShearWalletAppState extends State<ShearWalletApp>
       // Ruling 7: the scan starts at the height the user gives, or at
       // genesis. Asked before the first read, so no block below it is read.
       final restore = await _askRestoreScan();
-      session.birthHeight = restore.birth;
+      // WH P1-4: never above the tip this wallet verified, and the user is
+      // told what the birth hides (or that it was capped).
+      final birth = restoreBirthFor(restore.birth, verifiedTip: ledger.verifiedHeaderTip);
+      session.birthHeight = birth.birth;
       session.bluMining = restore.mined;
       await session.setPassword(pw);
       await _enterWallet(pw);
+      if (birth.warning.isNotEmpty) {
+        _snack.currentState?.showSnackBar(
+          SnackBar(
+            key: const Key('restore-birth-warning'),
+            content: Text(birth.warning),
+            duration: const Duration(seconds: 12),
+          ),
+        );
+      }
     } catch (_) {
       setState(
         () => _lockError = 'Import failed. Check the file and password.',
@@ -996,7 +1008,8 @@ class ShearWalletAppState extends State<ShearWalletApp>
             children: [
               const Text(
                 'Birth height: the first block this wallet could have been paid in. '
-                'Leave it empty to scan from genesis.',
+                'Coins paid below it are not found, so if unsure leave it empty to '
+                'scan from genesis. It cannot be above the verified chain tip.',
               ),
               TextField(
                 key: const Key('restore-birth-height'),
@@ -1026,6 +1039,52 @@ class ShearWalletAppState extends State<ShearWalletApp>
     final typed = int.tryParse(heightCtrl.text.trim());
     heightCtrl.dispose();
     return (birth: ok == true && typed != null && typed > 0 ? typed : 0, mined: ok == true && mined);
+  }
+
+  /// Settings (WH P1-4): lower the birth height, so the body scan reads
+  /// again from an earlier block. A coin hidden by a too-high birth is found.
+  Future<void> _lowerBirth() async {
+    final ctx = _nav.currentContext;
+    if (ctx == null || !mounted) return;
+    final ctrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: ctx,
+      builder: (c) => AlertDialog(
+        key: const Key('settings-lower-birth-dialog'),
+        title: const Text('Scan from an earlier block'),
+        content: TextField(
+          key: const Key('settings-lower-birth-height'),
+          controller: ctrl,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(
+            labelText: 'Birth height (now ${session.birthHeight}; 0 is genesis)',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
+          FilledButton(
+            key: const Key('settings-lower-birth-start'),
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Scan'),
+          ),
+        ],
+      ),
+    );
+    final typed = int.tryParse(ctrl.text.trim());
+    ctrl.dispose();
+    if (ok != true || typed == null) return;
+    if (!ledger.lowerBirthHeight(typed)) {
+      _snack.currentState?.showSnackBar(
+        SnackBar(content: Text('The birth height is already ${session.birthHeight}. Give a lower block.')),
+      );
+      return;
+    }
+    session.birthHeight = ledger.birthHeight;
+    await session.persist();
+    if (mounted) setState(() {});
+    _snack.currentState?.showSnackBar(
+      SnackBar(content: Text('Scanning again from block ${ledger.birthHeight}.')),
+    );
   }
 
   Future<void> _setBluMining(bool on) async {
@@ -5883,6 +5942,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
         onChanged: (on) => unawaited(_setBluMining(on)),
       ),
       if (session.bluMining) ..._miningAddressPane(ident),
+      const SizedBox(height: 8),
+      OutlinedButton(
+        key: const Key('settings-lower-birth'),
+        onPressed: () => unawaited(_lowerBirth()),
+        child: Text('Scan from an earlier block (birth ${session.birthHeight})'),
+      ),
       const SizedBox(height: 8),
       const Text(
         'Password seals shewall.bin (AES-256-GCM). Export that file and the '

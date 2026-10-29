@@ -1511,6 +1511,27 @@ void noteUiHeavy(String label) {
 /// 0. With no verified tip at create time it is genesis (0): never a guess.
 int walletBirthForNewWallet(int verifiedTip) => verifiedTip > 10 ? verifiedTip - 10 : 0;
 
+/// Ruling 7 birth on restore, checked (WH P1-4). The typed height is capped
+/// at the tip this wallet verified ([ShearLedger.verifiedHeaderTip]): a
+/// birth above it can only hide coins. [warning] is what the user is told:
+/// the cap, or which coins a birth leaves unfound. No birth is genesis.
+({int birth, String warning}) restoreBirthFor(int typed, {required int verifiedTip}) {
+  if (typed <= 0) return (birth: 0, warning: '');
+  if (typed > verifiedTip) {
+    final cap = verifiedTip > 0 ? verifiedTip : 0;
+    return (
+      birth: cap,
+      warning: 'Birth height $typed is above the verified chain tip ($verifiedTip). '
+          'Scanning from ${cap == 0 ? 'genesis' : 'block $cap'} instead, so no coin is skipped.',
+    );
+  }
+  return (
+    birth: typed,
+    warning: 'Coins paid to this wallet below block $typed will not be found. '
+        'If one is missing, lower the birth height in Settings.',
+  );
+}
+
 /// [scanBluRecordsWire] in [Isolate.run]. Top level, so the closure carries
 /// only [input]: one made inside a ledger method also captured the ledger
 /// (its HTTP client cannot be sent), the run threw, and the records were
@@ -4970,6 +4991,20 @@ class ShearLedger implements ReadProofSink {
     _birthHeight = height < 0 ? 0 : height;
     blu.birthHeight = _birthHeight;
     if (_bodyScanTo < _birthHeight - 1) _bodyScanTo = _birthHeight - 1;
+  }
+
+  /// Settings (WH P1-4): scan again from an earlier birth. Only lowers.
+  /// Bodies from the new birth up are read again; proofs already made stay,
+  /// since their headers did not change (a reorg or a window reset still
+  /// rewinds them). Returns false when [height] is not lower.
+  bool lowerBirthHeight(int height) {
+    final h = height < 0 ? 0 : height;
+    if (h >= _birthHeight) return false;
+    _birthHeight = h;
+    blu.birthHeight = h;
+    final from = h > 0 ? h - 1 : 0;
+    if (_bodyScanTo > from) _bodyScanTo = from;
+    return true;
   }
 
   /// The tip of the header chain this ledger verified itself: at least the
