@@ -41,6 +41,17 @@ def expected():
     return pub, view
 
 
+def nano_choice(backend, rights):
+    """NBGL Nano choice: question page, then "Export", then "Reject".
+    Raw button presses: the screen-event stream stalls on this flow."""
+    import time
+    time.sleep(1.5)
+    for _ in range(rights):
+        backend.right_click()
+        time.sleep(0.5)
+    backend.both_click()
+
+
 def path_bytes(path):
     return bytes([len(path)]) + b"".join(struct.pack(">I", p) for p in path)
 
@@ -59,8 +70,7 @@ def test_view_key_export_needs_consent(backend, navigator, device):
     pub, view = expected()
     with backend.exchange_async(0xE0, 0x10, 1, 0, path_bytes(PATH)):
         if device.is_nano:
-            # NBGL Nano choice: question, then "Export", then "Reject".
-            navigator.navigate([NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK], screen_change_after_last_instruction=False)
+            nano_choice(backend, 1)
         else:
             navigator.navigate([NavInsID.USE_CASE_CHOICE_CONFIRM], screen_change_after_last_instruction=False)
     assert backend.last_async_response.data == pub + view
@@ -71,8 +81,7 @@ def test_view_key_export_rejected(backend, navigator, device):
     try:
         with backend.exchange_async(0xE0, 0x10, 1, 0, path_bytes(PATH)):
             if device.is_nano:
-                navigator.navigate([NavInsID.RIGHT_CLICK, NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK],
-                               screen_change_after_last_instruction=False)
+                nano_choice(backend, 2)
             else:
                 navigator.navigate([NavInsID.USE_CASE_CHOICE_REJECT], screen_change_after_last_instruction=False)
         assert False
