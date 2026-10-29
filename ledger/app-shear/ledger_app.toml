@@ -4,4 +4,4 @@ sdk = "C"
 devices = ["nanox", "nanos+", "stax", "flex"]
 
 [tests]
-pytest_directories = ["./tests/"]
+pytest_directory = "./tests/"

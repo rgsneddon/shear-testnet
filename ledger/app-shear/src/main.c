@@ -22,6 +22,12 @@
 #include "parser.h"
 #include "nbgl_use_case.h"
 
+#if defined(TARGET_STAX) || defined(TARGET_FLEX)
+#define ICON_APP C_shear_64px
+#else
+#define ICON_APP C_shear_16px
+#endif
+
 #define CLA 0xE0
 #define INS_GET_VERSION 0x01
 #define INS_GET_ACCOUNT 0x10
