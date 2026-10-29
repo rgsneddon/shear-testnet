@@ -5,8 +5,14 @@
 // the user SID, the security descriptor and icacls's view, and checks:
 //   1. ensureDatadir accepts the fresh directory (a refusal fails),
 //   2. a second call finds it already correct (applied false),
-//   3. Windows only: after icacls grants Everyone read, ensureDatadir
-//      repairs it (applied true) and a further call finds it correct.
+//   3. Windows only (PSA r2-2): for each stray ACE in the spread, granted on
+//      the directory and on shewall.bin inside it, ensureDatadir repairs it
+//      (applied true, the trustee in `removed`) and a further call finds it
+//      correct (applied false). A refusal there fails: the stray ACE must be
+//      removed, not left for an operator. The spread is Everyone:(R),
+//      Users:(RX), Authenticated Users:(M) and a second local user:(F).
+// At least one directory must be checked; none is a failure, not a pass.
+// SHEAR_ACL_DIAG_BASES (path-delimited) replaces the base list, for tests.
 // Any failure exits 1 (".github/workflows/datadir-acl-windows.yml" runs it
 // with no fallback). Local only; nothing is sent anywhere.
 // Usage: node win_acl_diag.mjs [REPO_ROOT]
@@ -14,6 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -42,7 +49,64 @@ function check(dir, label, fn) {
   }
 }
 
-for (const base of [...new Set([os.tmpdir(), os.homedir(), process.env.RUNNER_TEMP || ''].filter(Boolean))]) {
+const bases = process.env.SHEAR_ACL_DIAG_BASES
+  ? process.env.SHEAR_ACL_DIAG_BASES.split(path.delimiter).filter(Boolean)
+  : [os.tmpdir(), os.homedir(), process.env.RUNNER_TEMP || ''].filter(Boolean);
+
+// The second local user for the :(F) case. Created on the runner only, and
+// deleted at the end.
+const OTHER = `shearacl${randomBytes(3).toString('hex')}`;
+let otherMade = false;
+function makeOther() {
+  if (otherMade) return true;
+  try {
+    execFileSync('net', ['user', OTHER, `Aa1!${randomBytes(12).toString('base64url')}`, '/add'], { encoding: 'utf8' });
+    otherMade = true;
+  } catch (e) {
+    failures.push(`could not create the second local user for the :(F) case: ${e.message}`);
+  }
+  return otherMade;
+}
+
+const SPREAD = [
+  ['Everyone:(R)', () => '*S-1-1-0:(R)'],
+  ['Users:(RX)', () => '*S-1-5-32-545:(RX)'],
+  ['Authenticated Users:(M)', () => '*S-1-5-11:(M)'],
+  ['a second local user:(F)', () => (makeOther() ? `${OTHER}:(F)` : null)],
+];
+
+function repairCase(base, label, grantOf, onFile) {
+  let dir;
+  try {
+    dir = fs.mkdtempSync(path.join(base, 'shear-acl-'));
+  } catch (e) {
+    failures.push(`${base} ${label}: cannot create a directory (${e.message})`);
+    return;
+  }
+  const where = onFile ? 'shewall.bin' : 'the dir';
+  try {
+    if (!check(dir, `${label} on ${where}: fresh`, () => ensureDatadir(dir))) return;
+    const file = path.join(dir, 'shewall.bin');
+    fs.writeFileSync(file, 'diag');
+    if (!check(dir, `${label} on ${where}: with shewall.bin`, () => ensureDatadir(dir))) return;
+    const grant = grantOf();
+    if (!grant) return;
+    execFileSync('icacls', [onFile ? file : dir, '/grant', grant], { encoding: 'utf8' });
+    const fixed = check(dir, `after ${label} was granted on ${where}`, () => ensureDatadir(dir));
+    if (fixed && fixed.applied !== true) failures.push(`${dir} accepted ${label} on ${where} (applied ${fixed.applied})`);
+    if (fixed && !(Array.isArray(fixed.removed) && fixed.removed.length)) failures.push(`${dir} ${label} on ${where}: repair removed no trustee`);
+    const settled = check(dir, `after the ${label} repair`, () => ensureDatadir(dir));
+    if (settled && settled.applied !== false) failures.push(`${dir} ${label} repair did not settle (applied ${settled.applied})`);
+  } catch (e) {
+    failures.push(`${dir} ${label} on ${where}: ${e.message}`);
+  } finally {
+    if (failures.some((f) => f.startsWith(dir))) console.log(icacls(dir));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+let checked = 0;
+for (const base of [...new Set(bases)]) {
   let dir;
   try {
     dir = fs.mkdtempSync(path.join(base, 'shear-acl-'));
@@ -51,21 +115,11 @@ for (const base of [...new Set([os.tmpdir(), os.homedir(), process.env.RUNNER_TE
     continue;
   }
   console.log(`== ${dir}`);
+  checked += 1;
   const first = check(dir, 'fresh', () => ensureDatadir(dir));
   if (first) {
     const again = check(dir, 'second call', () => ensureDatadir(dir));
     if (again && again.applied !== false) failures.push(`${dir} second call rewrote a correct ACL (applied ${again.applied})`);
-    if (win) {
-      try {
-        execFileSync('icacls', [dir, '/grant', '*S-1-1-0:(R)'], { encoding: 'utf8' });
-        const fixed = check(dir, 'after Everyone:(R) was granted', () => ensureDatadir(dir));
-        if (fixed && fixed.applied !== true) failures.push(`${dir} accepted a directory Everyone can read (applied ${fixed.applied})`);
-        const settled = check(dir, 'after the repair', () => ensureDatadir(dir));
-        if (settled && settled.applied !== false) failures.push(`${dir} repair did not settle (applied ${settled.applied})`);
-      } catch (e) {
-        failures.push(`${dir} icacls /grant failed: ${e.message}`);
-      }
-    }
   }
   if (win) {
     console.log(icacls(dir));
@@ -74,7 +128,16 @@ for (const base of [...new Set([os.tmpdir(), os.homedir(), process.env.RUNNER_TE
     } catch (e) { console.log(String(e.message)); }
   }
   fs.rmSync(dir, { recursive: true, force: true });
+  if (win) {
+    for (const [label, grantOf] of SPREAD) {
+      for (const onFile of [false, true]) repairCase(base, label, grantOf, onFile);
+    }
+  }
 }
+if (otherMade) {
+  try { execFileSync('net', ['user', OTHER, '/delete'], { encoding: 'utf8' }); } catch (e) { console.log(`net user /delete: ${e.message}`); }
+}
+if (checked === 0) failures.push('no directory was checked (every base refused mkdtemp)');
 if (win) {
   try { console.log(execFileSync('whoami', ['/user', '/groups', '/fo', 'list'], { encoding: 'utf8' }).split('\n').filter((l) => /SID|Group Name|User Name/.test(l)).slice(0, 40).join('\n')); } catch (e) { console.log(String(e.message)); }
 }

@@ -21,6 +21,18 @@
  * wrong owner is a mismatch. One icacls /T /L call rewrites a mismatch, then
  * the DACL is read back.
  *
+ * PR146 (PSA r2-2): /grant:r replaces only the named trustees' ACEs and
+ * /inheritance:r drops only inherited ones, so an extra explicit ACE (for
+ * example icacls /grant *S-1-1-0:(R)) survived the rewrite and the read-back
+ * refused the datadir every time. Each trustee other than the user, SYSTEM
+ * and Administrators that is still on the dir or a child after the rewrite
+ * is removed (icacls /remove *SID /T /L, grant and deny ACEs), and the DACL
+ * is read back again. If the re-check still shows any of them, the datadir
+ * is refused (datadir_acl:verify): it is never accepted with the ACE in
+ * place. When a stray explicit ACE was found, or a stray inherited one on a
+ * datadir that already held files, a warning says that keys in the datadir
+ * may have been readable by those trustees.
+ *
  * The walk is capped and fails closed. /L tells icacls not to follow a link.
  * A symlink or junction (the datadir, a parent, or a nested link) refuses
  * startup before icacls. A file with more than one name (a hard link) does too.
@@ -375,6 +387,37 @@ function readOne(readSecurity, target) {
   };
 }
 
+// Trustees on any row other than the user, SYSTEM and Administrators.
+// explicitOnly skips inherited (ID) ACEs. A row whose DACL does not parse
+// adds nothing here; aclMatches refuses it.
+function straySids(rows, sid, { explicitOnly = false } = {}) {
+  const allowed = new Set([sid, SYSTEM_SID, ADMINISTRATORS_SID].map((t) => normalizeSid(t)));
+  const out = new Set();
+  for (const row of rows || []) {
+    let dacl;
+    try {
+      dacl = daclOf(row.sddl);
+    } catch {
+      continue;
+    }
+    for (const a of dacl.aces) {
+      if (explicitOnly && a.flags.includes('ID')) continue;
+      if (!allowed.has(a.sid)) out.add(a.sid);
+    }
+  }
+  return [...out].sort();
+}
+
+function removeStrays(dir, sids, execFileSync, systemDir, systemRoot, realpathSync) {
+  // Only a literal SID can be named to icacls; anything else stays and the
+  // re-check refuses it.
+  for (const stray of sids.filter((t) => /^S-1-\d+(?:-\d+)+$/.test(t))) {
+    runIcacls(execFileSync, systemDir, systemRoot, realpathSync, [
+      dir, '/remove', `*${stray}`, '/T', '/L',
+    ]);
+  }
+}
+
 function applyWindows(dir, sid, execFileSync, systemDir, systemRoot, realpathSync) {
   const user = `*${sid}:(OI)(CI)F`;
   const system = `*${SYSTEM_SID}:(OI)(CI)F`;
@@ -473,6 +516,7 @@ function ensureWindows(dir, {
   readUserSid,
   maxEntries,
   maxDepth,
+  warn,
 }) {
   const targets = assertNoLinks(dir, lstatSync, readdirSync, { maxEntries, maxDepth });
   const { systemDir, systemRoot } = resolveSystem32({ getSystemDirectory, readSystemRoot, realpathSync });
@@ -488,10 +532,25 @@ function ensureWindows(dir, {
   if (current && aclMatches(current, targets, sid)) {
     return { applied: false, sid, shewall };
   }
+  // What was exposed before the rewrite: any explicit stray ACE, or an
+  // inherited one once the datadir holds files (a fresh, empty datadir
+  // inherits its parent's ACEs and has nothing to read yet).
+  const exposed = straySids(current, sid, { explicitOnly: targets.length < 2 });
   applyWindows(dir, sid, execFileSync, systemDir, systemRoot, realpathSync);
-  const after = withAliases(targets.map((target) => readOne(readSecurity, target)), sid);
-  if (!aclMatches(after, targets, sid)) throw fail('datadir_acl:verify');
-  return { applied: true, sid, shewall };
+  let after = withAliases(targets.map((target) => readOne(readSecurity, target)), sid);
+  const left = straySids(after, sid);
+  const strays = [...new Set([...exposed, ...left])].sort();
+  if (strays.length) {
+    warn(`datadir_acl: ${dir} granted access to ${strays.join(', ')} beyond the user, SYSTEM and `
+      + 'Administrators; keys in the datadir (shewall.bin) may have been readable by them. '
+      + 'Removing those ACEs and re-checking; the node refuses the datadir if they remain.');
+  }
+  if (left.length) {
+    removeStrays(dir, left, execFileSync, systemDir, systemRoot, realpathSync);
+    after = withAliases(targets.map((target) => readOne(readSecurity, target)), sid);
+  }
+  if (!aclMatches(after, targets, sid) || straySids(after, sid).length) throw fail('datadir_acl:verify');
+  return { applied: true, sid, shewall, removed: left };
 }
 
 export function ensureDatadir(dir, {
@@ -510,6 +569,7 @@ export function ensureDatadir(dir, {
   readUserSid,
   maxEntries = MAX_WALK_ENTRIES,
   maxDepth = MAX_WALK_DEPTH,
+  warn = (msg) => console.warn(msg),
 } = {}) {
   mkdirSync(dir, { recursive: true, mode: DATADIR_MODE });
   if (platform !== 'win32') {
@@ -521,6 +581,6 @@ export function ensureDatadir(dir, {
     readSystemRoot: readSystemRoot || (() => win32Api().readSystemRoot()),
     readSecurity: readSecurity || ((file) => win32Api().readSecurity(file)),
     readUserSid: readUserSid || (() => win32Api().readUserSid()),
-    maxEntries, maxDepth,
+    maxEntries, maxDepth, warn,
   });
 }

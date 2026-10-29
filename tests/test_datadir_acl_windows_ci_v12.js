@@ -54,6 +54,26 @@ describe('datadir ACL on Windows CI', () => {
     assert.equal(out.status, 0, out.stdout + out.stderr);
     assert.match(out.stdout, /ACL check ok/);
   });
+  // PSA r2-2: no vacuous pass, and the repair spread on the runner.
+  it('the diagnostic fails when no directory could be checked', () => {
+    const r = fakeRoot("export function ensureDatadir() { return { applied: false }; }\n");
+    const missing = path.join(r, 'no-such-dir', 'deeper');
+    const out = spawnSync(process.execPath, [diag, r], {
+      encoding: 'utf8', timeout: 60_000, env: { ...process.env, SHEAR_ACL_DIAG_BASES: missing },
+    });
+    fs.rmSync(r, { recursive: true, force: true });
+    assert.notEqual(out.status, 0, out.stdout + out.stderr);
+    assert.match(out.stdout, /no directory was checked/);
+  });
+  it('the Windows repair spread covers Everyone, Users, Authenticated Users and a second user, on the dir and a file', () => {
+    const src = fs.readFileSync(diag, 'utf8');
+    for (const grant of ['*S-1-1-0:(R)', '*S-1-5-32-545:(RX)', '*S-1-5-11:(M)']) assert.ok(src.includes(grant), grant);
+    assert.match(src, /net(\.exe)?['"]?,\s*\[\s*['"]user['"]/, 'a second local user is created for the :(F) case');
+    assert.match(src, /shewall\.bin/, 'the file case uses a file inside the datadir');
+    assert.match(src, /fixed\.applied !== true/);
+    assert.match(src, /removed/, 'the repair must report the stray trustee it removed');
+    assert.match(src, /settled\.applied !== false/);
+  });
   it('on this host the real datadir_acl.js accepts a fresh directory', () => {
     const out = spawnSync(process.execPath, [diag], { encoding: 'utf8', timeout: 120_000 });
     assert.equal(out.status, 0, out.stdout + out.stderr);
