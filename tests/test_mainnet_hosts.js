@@ -52,6 +52,20 @@ describe('mainnet host files', () => {
     });
   }
 
+  const HARDENING = ['StateDirectoryMode=0700', 'UMask=0077', 'CapabilityBoundingSet=', 'AmbientCapabilities=', 'NoNewPrivileges=yes',
+    'PrivateTmp=yes', 'PrivateDevices=yes', 'ProtectSystem=strict', 'ProtectHome=yes', 'ProtectKernelTunables=yes',
+    'ProtectKernelModules=yes', 'ProtectKernelLogs=yes', 'ProtectControlGroups=yes', 'ProtectClock=yes', 'ProtectHostname=yes',
+    'ProtectProc=invisible', 'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX', 'RestrictNamespaces=yes', 'RestrictRealtime=yes',
+    'RestrictSUIDSGID=yes', 'LockPersonality=yes', 'RemoveIPC=yes', 'SystemCallArchitectures=native',
+    'SystemCallFilter=@system-service', 'SystemCallErrorNumber=EPERM'];
+  for (const name of UNITS) {
+    it(`${name}: systemd hardening, state 0700, and no MemoryDenyWriteExecute (V8 JIT)`, () => {
+      const keys = keysOf(read(`units/${name}`));
+      for (const k of HARDENING) assert.ok(keys.includes(k), `${name} has ${k}`);
+      assert.equal(keys.some((l) => l.startsWith('MemoryDenyWriteExecute')), false, 'node needs W^X off for its JIT');
+    });
+  }
+
   it('each unit has its own datadir and seal keys', () => {
     const dirs = UNITS.flatMap((u) => { const k = keysOf(read(`units/${u}`)); return [val(k, 'SHEAR_DATA'), val(k, 'SHEAR_SEAL_KEY_DIR')]; });
     assert.equal(new Set(dirs).size, dirs.length);

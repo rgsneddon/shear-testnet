@@ -22,6 +22,7 @@ User=shear
 Group=shear
 WorkingDirectory=/opt/shear
 StateDirectory=shear/mainnet-pool shear/seal-keys/pool
+StateDirectoryMode=0700
 # Operator settings that are not in the repo: SHEAR_STRATUM_AUTH_PUB, and
 # the fee or admin dest if they differ from the shipped pin. Root-owned,
 # mode 0640, group shear (RUNBOOK step 8). The spend seed never goes here:
@@ -46,10 +47,32 @@ Environment=SHEAR_HTTP=8088
 Environment=SHEAR_RPC_BIND=127.0.0.1
 ExecStart=/usr/bin/node pool/src/main.js
 Restart=no
+# Hardening. The datadir and seal keys are 0700 for the shear user only.
+# No MemoryDenyWriteExecute: node's V8 JIT needs writable executable pages.
+UMask=0077
 NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
 PrivateTmp=yes
+PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
