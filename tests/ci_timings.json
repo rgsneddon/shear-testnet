@@ -62,6 +62,7 @@
  "crypto/t21_split.test.js": 3,
  "crypto/vault_accrual.test.js": 1,
  "crypto/vault_audit.test.js": 28,
+ "crypto/vault_claim_carry.test.js": 20,
  "crypto/vault_epoch_sum.test.js": 9,
  "crypto/vault_review_pass.test.js": 1,
  "crypto/vault_reward_fs1.test.js": 41,

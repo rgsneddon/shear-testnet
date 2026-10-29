@@ -157,12 +157,19 @@ function indexedWithdrawTx(state, planted, who, extra = {}) {
     id: extra.id,
   });
   if (extra.carry) {
-    tx.vout.push({ ...extra.carry.note, kind: 'reward-claim', address: who.dest });
+    tx.vout.push(extra.carry.out || { ...extra.carry.note, kind: 'reward-claim', address: who.dest });
     tx.vaultProof = extra.carry.blob;
     tx.nullifier = extra.carry.nullifier;
     tx.rootEpoch = 0;
     tx.earnEpoch = 0;
     tx.full = true;
+  }
+  if (extra.bare) {
+    // Portal on the output only: no tx-level portalId, from, to or payout.
+    delete tx.portalId;
+    delete tx.payoutPortalId;
+    delete tx.from;
+    delete tx.to;
   }
   const portal = portalIdFromDest(who.dest);
   const proof = provePrincipalOpen(
@@ -840,7 +847,7 @@ describe('hidden vault claims', () => {
     assert.equal(next.mintBankNanos, BigInt(later.nanos));
   });
 
-  it('spends a claim once, refuses a withdraw that carries the claim, and leaves a roll unmarked', () => {
+  it('spends a claim once, refuses any withdraw that carries the claim (claim_carried), and leaves a roll unmarked', () => {
     const who = dest20();
     const row = proveLock(PI_SHE_NANOS, 0);
     const ownerPub = who.id.spendPub.toString('hex');
@@ -860,9 +867,10 @@ describe('hidden vault claims', () => {
       tx.full = true;
       return tx;
     };
-    const take = (book, id) => indexedWithdrawTx(book.state, book.planted, who, {
+    const take = (book, id, bare = false) => indexedWithdrawTx(book.state, book.planted, who, {
       id,
-      carry: row.proved,
+      carry: { ...row.proved, out: claim().vout[0] },
+      bare,
     });
     const roll = (state) => {
       const tx = rollTx({ from: who.dest, id: 'roll-spent' });
@@ -882,16 +890,25 @@ describe('hidden vault claims', () => {
     const claimed = fresh();
     assert.equal(run(claimed.state, claim()).ok, true);
     assert.equal(claimed.state.mintedIds[row.proved.nullifier], true);
-    // The indexed withdraw is accepted. The carried nullifier was already minted.
+    // A withdraw carrying the claim is refused by kind, before any claim
+    // check, whether or not the nullifier was already minted.
+    const bankAfterClaim = claimed.state.mintBankNanos;
     const claimThenWithdraw = run(claimed.state, take(claimed, `wd-${claimed.state.vaultLockRoot.slice(0, 8)}`).tx);
     assert.equal(claimThenWithdraw.ok, false);
-    assert.equal(claimThenWithdraw.reason, 'double_mint');
+    assert.equal(claimThenWithdraw.reason, 'claim_carried');
+    assert.equal(claimed.state.mintBankNanos, bankAfterClaim);
 
-    const refusedBook = fresh();
-    const refusedWithdraw = run(refusedBook.state, take(refusedBook, 'wd-carry').tx);
-    assert.equal(refusedWithdraw.ok, false);
-    // The body still has from and to, so the carried claim is not a claim.
-    assert.equal(refusedWithdraw.reason, 'stake_reward');
+    // With from and to, and with the portal named on the output only (the
+    // body that used to pass vaultClaimRejected and mint), both refused.
+    for (const bare of [false, true]) {
+      const refusedBook = fresh();
+      const bankBefore = refusedBook.state.mintBankNanos;
+      const refusedWithdraw = run(refusedBook.state, take(refusedBook, `wd-carry-${bare}`, bare).tx);
+      assert.equal(refusedWithdraw.ok, false, `bare=${bare}`);
+      assert.equal(refusedWithdraw.reason, 'claim_carried', `bare=${bare}`);
+      assert.equal(refusedBook.state.mintBankNanos, bankBefore, `bare=${bare}`);
+      assert.equal(refusedBook.state.mintedIds?.[row.proved.nullifier], undefined, `bare=${bare}`);
+    }
 
     const withdrawn = fresh();
     const plain = indexedWithdrawTx(withdrawn.state, withdrawn.planted, who, { id: 'wd-plain' });

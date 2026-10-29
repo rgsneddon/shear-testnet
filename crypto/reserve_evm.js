@@ -12,6 +12,7 @@ import {
   reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth,
   lockQualifies, lockFundingRejected, lockNotePrincipal, lockUnlockOf, consensusUnlockPeriod,
   portalIdFromDest, portalIdFromDest20, withdrawSignedDest, signRewardAuth, verifyRewardAuth,
+  claimCarriedRejected,
 } from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { ED25519_SPKI_PREFIX, ed25519RawPub } from './address.js';
@@ -1021,6 +1022,9 @@ function destBytesForEvm(tx, act) {
 }
 
 export async function executeReserveTx(session, tx, nowMs, ctx = null) {
+  // Same refusal as applyReserveBlock: no claim rides on another kind.
+  const carried = claimCarriedRejected(tx);
+  if (carried) return carried;
   const kind = txKindOf(tx);
   const act = reserveAction(tx);
   const dest = destBytesForEvm(tx, act);

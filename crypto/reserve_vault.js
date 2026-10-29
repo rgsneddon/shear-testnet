@@ -1571,6 +1571,10 @@ function publishedClaimReward(tx) {
 
 function vaultClaimRejected(tx, state) {
   if (tx?.portalId || tx?.from || tx?.payoutPortalId || tx?.to) return { ok: false, reason: 'stake_reward' };
+  // A portal named on an output links the claim the same way (reserveAction
+  // reads tx.portalId || o.portalId). Honest claim outputs drop it.
+  const claimOuts = Array.isArray(tx?.vout) ? tx.vout : [];
+  if (claimOuts.some((o) => o?.portalId || o?.payoutPortalId || o?.from)) return { ok: false, reason: 'stake_reward' };
   const nullifier = String(tx?.nullifier || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(nullifier)) return { ok: false, reason: 'unsigned' };
   const tip = Number(state?.tipMs) || 0;
@@ -3892,6 +3896,25 @@ function txKind(tx) {
   return String(tx?.kind || tx?.vout?.[0]?.kind || '');
 }
 
+/**
+ * A reward claim is only a `reward-claim` tx. Any other vault kind (withdraw,
+ * lock, vote, leaf vote) that carries a claim proof, a nullifier or a
+ * reward-claim output is refused, whatever else it names. A roll keeps its
+ * own refusal (rollRewardRejected).
+ */
+export function claimCarriedRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = txKind(tx);
+  if (kind === KIND_REWARD_CLAIM || kind === 'roll') return null;
+  const present = (v) => v != null && v !== '' && v !== false;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  if (present(tx.vaultProof) || present(tx.nullifier)
+    || outs.some((row) => String(row?.kind || '') === KIND_REWARD_CLAIM)) {
+    return { ok: false, reason: 'claim_carried' };
+  }
+  return null;
+}
+
 /** Public integer on the action. Null is not zero: zero would pass an over-mint check. */
 function publicNanos(raw) {
   if (typeof raw === 'bigint') {
@@ -4384,6 +4407,24 @@ function openedReserveFeeNanos(cb) {
   return sum;
 }
 
+/** Mint the accepted rows report: claim nanos plus withdraw arrival stubs. Null if one is not an integer. */
+function reportedVaultMint(results) {
+  let sum = 0n;
+  for (const row of results) {
+    if (!row || row.ok !== true) continue;
+    let raw = null;
+    if (row.action === KIND_REWARD_CLAIM) raw = row.nanos;
+    else if (row.action === KIND_WITHDRAW) raw = row.arrival;
+    else continue;
+    if (raw == null || raw === '') continue;
+    let v;
+    try { v = BigInt(String(raw)); } catch { return null; }
+    if (v < 0n) return null;
+    sum += v;
+  }
+  return sum;
+}
+
 function finishReserveApply(results) {
   const bad = results.find((row) => row && row.ok === false);
   results.ok = !bad;
@@ -4698,10 +4739,19 @@ export function applyReserveBlock({
   const reservePaid = openedReserveFeeNanos(cb);
   if (reservePaid > 0) creditFeeBank(state, reservePaid);
   state.deferEpochRoll = true;
+  // Per-block mint invariant: the mint bank moves only by the claims and
+  // arrival stubs this loop reports, the rows the supply ledger counts.
+  const mintBankStart = asBig(state.mintBankNanos);
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
     reserveApplyCount += 1;
+    const carried = claimCarriedRejected(tx);
+    if (carried) {
+      results.push({ action: txKind(tx) || 'reserve', ...carried });
+      state.deferEpochRoll = false;
+      return finishReserveApply(results);
+    }
     if (String(tx.kind || '') === 'roll') {
       const got = applyRoll(state, tx, nowMs, blockHeight);
       results.push({ action: 'roll', ...got });
@@ -4916,33 +4966,13 @@ export function applyReserveBlock({
         state.deferEpochRoll = false;
         return finishReserveApply(results);
       }
-      if (tx.vaultProof) {
-        const nullifier = String(tx?.nullifier || '').toLowerCase();
-        if (state.mintedIds?.[nullifier]) {
-          results.push({ action: KIND_WITHDRAW, ok: false, reason: 'double_mint' });
-          state.deferEpochRoll = false;
-          return finishReserveApply(results);
-        }
-        const reward = vaultPublicReward(tx.vaultProof);
-        if (reward == null || reward <= 0n) {
-          results.push({ action: KIND_WITHDRAW, ok: false, reason: 'stake_reward' });
-          state.deferEpochRoll = false;
-          return finishReserveApply(results);
-        }
-        const claimTx = { ...tx, nanos: reward <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(reward) : reward.toString() };
-        const claimRefused = vaultClaimRejected(claimTx, state);
-        if (claimRefused) {
-          results.push({ action: KIND_WITHDRAW, ...claimRefused });
-          state.deferEpochRoll = false;
-          return finishReserveApply(results);
-        }
-        state.mintedIds = state.mintedIds || Object.create(null);
-        rememberMint(state, nullifier);
-        state.mintedIds[nullifier] = true;
-        state.mintBankNanos = asBig(state.mintBankNanos) + reward;
-        state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + reward;
-      }
+      // A withdraw never carries a claim (claimCarriedRejected, above).
     }
+  }
+  const mintBankWant = reportedVaultMint(results);
+  if (mintBankWant == null || asBig(state.mintBankNanos) - mintBankStart !== mintBankWant) {
+    state.deferEpochRoll = false;
+    return finishReserveApply([...results, { ok: false, reason: 'vault_mint', action: 'mint' }]);
   }
   // Include this block's locks. The first write wins, so a later block of
   // the same period does not replace the root.

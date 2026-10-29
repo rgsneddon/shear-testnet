@@ -590,6 +590,14 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     // Vault Y row (a), 28 Oct: a leaf vote proves against the root frozen
     // with its epoch's census, keyed by epoch. The claim root stays per period.
     'VOTE_ROOT=census-epoch',
+    // The claim root is keyed by period only (snapshotPeriodRoot); an epoch
+    // open no longer writes it. VOTE_ROOT names only the vote half.
+    'CLAIM_ROOT=period',
+    // F1: a claim proof, nullifier or reward-claim output rides only on a
+    // reward-claim tx; any other vault kind carrying one is refused.
+    'CLAIM_KIND=reward-claim-only',
+    // F1: each block's mint-bank delta equals the ledger's minted interest.
+    'VAULT_MINT=ledger-delta',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
