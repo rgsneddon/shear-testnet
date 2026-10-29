@@ -1,0 +1,61 @@
+# Shear mainnet P2P sidecar on the pool host (Ubuntu). Owns :30303 and feeds
+# verified blocks to the pool on 127.0.0.1:30313. The pool is never consensus
+# or a transaction authority: this node owns the tip.
+# R18a, deploy/mainnet/RUNBOOK.md. Installed only on Russell's GO.
+#
+# No silent recovery (Restart=no), no phone-home, no copies: see
+# shear-node.service.
+[Unit]
+Description=Shear mainnet P2P sidecar for the pool host (owns :30303)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shear
+Group=shear
+WorkingDirectory=/opt/shear
+# Its own datadir and seal keys: the pool and this node share no chain files.
+StateDirectory=shear/mainnet-p2p shear/seal-keys/p2p
+StateDirectoryMode=0700
+Environment=SHEAR_DATA=/var/lib/shear/mainnet-p2p
+Environment=SHEAR_SEAL_KEY_DIR=/var/lib/shear/seal-keys/p2p
+Environment=SHEAR_NETWORK=shear-v1
+Environment=SHEAR_P2P_PORT=30303
+Environment=SHEAR_P2P_BIND=0.0.0.0
+Environment=SHEAR_P2P_IPC=127.0.0.1:30313
+Environment=SHEAR_RPC_PORT=18333
+Environment=SHEAR_RPC_BIND=127.0.0.1
+Environment=SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303
+Environment=SHEAR_REORG_HALT_DEPTH=0
+ExecStart=/usr/bin/node node/src/node.js --mode=p2p-sync
+Restart=no
+# Hardening. The datadir and seal keys are 0700 for the shear user only.
+# No MemoryDenyWriteExecute: node's V8 JIT needs writable executable pages.
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
