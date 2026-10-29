@@ -6,7 +6,9 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 img=ghcr.io/ledgerhq/ledger-app-builder/ledger-app-dev-tools:latest
 devices=${DEVICES:-nanox nanosp stax flex}
-docker run --rm --network host -v "$here:/app" -w /app "$img" bash -lc '
+pyenv=${LEDGER_PYENV:-/root/claude-ci/ledger-pyenv}
+mkdir -p "$pyenv"
+docker run --rm --network host -v "$here:/app" -v "$pyenv:/pyenv" -w /app "$img" bash -lc '
   set -e
   [ -d .git ] || git init -q
   for dev in '"$devices"'; do
@@ -15,7 +17,7 @@ docker run --rm --network host -v "$here:/app" -w /app "$img" bash -lc '
     make -j4 BOLOS_SDK=$sdk >/tmp/build-$dev.log 2>&1 || { tail -40 /tmp/build-$dev.log; exit 1; }
     echo "built $dev"
   done
-  pip install -q --break-system-packages cryptography >/dev/null 2>&1 || true
+  [ -x /pyenv/bin/pytest ] || { python3 -m venv /pyenv && /pyenv/bin/pip install -q "ragger[speculos]" pytest cryptography; }
   for dev in '"$devices"'; do
-    pytest -q tests --tb=short --device $dev
+    /pyenv/bin/pytest -q tests --tb=short --device $dev
   done'
