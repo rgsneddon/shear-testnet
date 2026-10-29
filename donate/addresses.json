@@ -51,6 +51,48 @@
       "ticker": "KAS",
       "address": "kaspa:qpcq70e6yclghd62chmmgz4r57mtkcz4krggmqhhdc57pn222g0c6hx34vcxl",
       "send": false
+    },
+    {
+      "id": "zec",
+      "name": "Zcash (transparent)",
+      "ticker": "ZEC",
+      "address": "t1UHsA223TQRAZEtFiBt8xmsJo8rGenqBSg"
+    },
+    {
+      "id": "rvn",
+      "name": "Ravencoin",
+      "ticker": "RVN",
+      "address": "RQkBJNHHmuuao1JDsfAMFtZJJRsx83DgB3"
+    },
+    {
+      "id": "btcp",
+      "name": "Bitcoin Private",
+      "ticker": "BTCP",
+      "address": "b1FG79n6CeLAdRbYuEs3UtDefNBbFRWNYJw"
+    },
+    {
+      "id": "vtc",
+      "name": "Vertcoin",
+      "ticker": "VTC",
+      "address": "vtc1qnaunltz4k22x26tqhj8sv43lrh8795z07jr9tf"
+    },
+    {
+      "id": "firo",
+      "name": "Firo",
+      "ticker": "FIRO",
+      "address": "a8jLyuBWFVJSxqHZKyS2xDEx8AhGuNoDTr"
+    },
+    {
+      "id": "sdn",
+      "name": "Shiden (EVM)",
+      "ticker": "SDN",
+      "address": "0xFCb2cc7b87b8dCd5426801a6D8926d03Ce7F22B2"
+    },
+    {
+      "id": "music",
+      "name": "Musicoin",
+      "ticker": "MUSIC",
+      "address": "0x9b57292Cf718eb959E8bE80AFaEBd16046C48d69"
     }
   ]
 }

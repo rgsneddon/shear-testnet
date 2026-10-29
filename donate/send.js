@@ -18,6 +18,7 @@
     evm: { nets: ['eth', 'base', 'arb', 'pol'], app: 'Ethereum' },
     sol: { nets: ['sol'], app: 'Solana' },
     btc: { soon: true }, ltc: { soon: true }, doge: { soon: true }, kas: { soon: true },
+    zec: { soon: true }, rvn: { soon: true }, btcp: { soon: true }, vtc: { soon: true }, firo: { soon: true }, sdn: { soon: true }, music: { soon: true },
     xmr: { note: 'Ledger send is not offered for Monero: a Monero send needs a full wallet (scanning outputs, building ring signatures, talking to a daemon), which a web page cannot do safely. Copy the address or scan the QR in your Monero wallet.' }
   };
   var transport = null;
