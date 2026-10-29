@@ -691,9 +691,10 @@ int shear_hash_checked(const unsigned char header[SHEAR_HEADER_LEN], unsigned ch
   }
 }
 
-/* Failure fills zeros so the selftest vector misses. Do not submit that fill. */
+/* Failure must not write an all-zero digest. Zeros meet every target.
+ * 0xff is not a digest either; callers that need a status use shear_hash_checked. */
 void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]) {
-  if (shear_hash_checked(header, out) != 0) memset(out, 0, 32);
+  if (shear_hash_checked(header, out) != 0) memset(out, 0xff, 32);
 }
 
 int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]) {

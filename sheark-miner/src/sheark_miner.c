@@ -999,10 +999,7 @@ static void *hash_worker(void *arg) {
     if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
         && share_or_block_hit(hash, primed_n)) {
       unsigned char check[32];
-      shear_hash(primed_hdr, check);
-      int check_live = 0;
-      for (int i = 0; i < 32; i++) if (check[i]) check_live = 1;
-      if (!check_live) {
+      if (shear_hash_checked(primed_hdr, check) != 0) {
         g_dropped++;
         primed_n = stamped;
         memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
