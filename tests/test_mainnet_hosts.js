@@ -18,7 +18,10 @@ const dir = new URL('../deploy/mainnet/', import.meta.url);
 const file = (p) => fileURLToPath(new URL(p, dir));
 const read = (p) => fs.readFileSync(new URL(p, dir), 'utf8').replace(/\r/g, '');
 const PORTS = ['22', '80', '443', '1111', '30303'];
-const UNITS = ['shear-node.service', 'shear-p2p.service', 'shear-pool.service'];
+const MAINNET_UNITS = ['shear-node.service', 'shear-p2p.service', 'shear-pool.service'];
+const V12_UNITS = MAINNET_UNITS.map((u) => u.replace('shear-', 'shear-v12-'));
+const UNITS = [...MAINNET_UNITS, ...V12_UNITS];
+const NETWORK = (u) => (u.startsWith('shear-v12-') ? 'shear-testnet-v12' : 'shear-v1');
 const keysOf = (unit) => unit.split('\n').filter((l) => /^[A-Za-z]+=/.test(l));
 const val = (keys, name) => keys.find((l) => l.startsWith(`Environment=${name}=`))?.split('=')[2];
 
@@ -42,7 +45,7 @@ describe('mainnet host files', () => {
       assert.deepEqual(ips.filter((ip) => ip !== '127.0.0.1' && ip !== '0.0.0.0'), [], 'no host IP');
       const seeds = val(keys, 'SHEAR_SEEDS');
       if (seeds) for (const s of seeds.split(',')) assert.match(s, /^[a-z0-9.-]+\.shear\.digital:30303$/, s);
-      assert.equal(val(keys, 'SHEAR_NETWORK'), 'shear-v1', 'mainnet book');
+      assert.equal(val(keys, 'SHEAR_NETWORK'), NETWORK(name), 'its book');
       assert.ok(keys.includes('User=shear') && keys.includes('ProtectSystem=strict') && keys.includes('ProtectHome=yes'));
       // The datadir and the seal key dir are its StateDirectory, nothing else is writable.
       assert.equal(keys.some((l) => l.startsWith('ReadWritePaths=')), false);
@@ -86,6 +89,25 @@ describe('mainnet host files', () => {
     assert.doesNotMatch(pool.replace(/^#.*$/gm, ''), /LAB_CLEARTEXT/);
     assert.match(pool, /^EnvironmentFile=\/etc\/shear\/pool\.env$/m);
     assert.doesNotMatch(pool, /SPEND_SEED|SPEND_KEY|AUTH_PUB=/, 'no secret or operator key in the unit');
+  });
+
+  it('the v12 testnet units mirror the mainnet ones, on their own book, state and release tree', () => {
+    for (const name of MAINNET_UNITS) {
+      const v12name = name.replace('shear-', 'shear-v12-');
+      const strip = (t) => keysOf(t).filter((l) => !/^(Description|Environment=SHEAR_(NETWORK|DATA|SEAL_KEY_DIR)|StateDirectory|WorkingDirectory|EnvironmentFile|Requisite|PartOf|After)=/.test(l));
+      assert.deepEqual(strip(read(`units/${v12name}`)), strip(read(`units/${name}`)), `${v12name} differs from ${name} only in book, paths and its pair`);
+      const k = keysOf(read(`units/${v12name}`));
+      assert.ok(k.includes('WorkingDirectory=/opt/shear-v12'), v12name);
+      assert.match(val(k, 'SHEAR_DATA'), /^\/var\/lib\/shear\/testnet-v12(-p2p|-pool)?$/, v12name);
+      assert.match(val(k, 'SHEAR_SEAL_KEY_DIR'), /^\/var\/lib\/shear\/seal-keys-v12\/(node|p2p|pool)$/, v12name);
+    }
+    const pool = read('units/shear-v12-pool.service');
+    assert.match(pool, /^Requisite=shear-v12-p2p\.service$/m);
+    assert.match(pool, /^PartOf=shear-v12-p2p\.service$/m);
+    assert.match(pool, /^EnvironmentFile=\/etc\/shear\/pool-v12\.env$/m);
+    // The mainnet units are installed but stay off until the genesis GO.
+    assert.match(read('RUNBOOK.md'), /systemctl enable --now shear-v12-/);
+    assert.doesNotMatch(read('RUNBOOK.md'), /systemctl enable --now shear-(node|p2p|pool)\.service[^\n]*before genesis/);
   });
 
   it('each firewall opens exactly the five ports, TCP only, and 8080 is closed', () => {

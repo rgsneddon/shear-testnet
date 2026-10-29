@@ -1,0 +1,79 @@
+# Shear v12 public testnet pool (Ubuntu host). Stratum on :1111 with TLS;
+# HTTP on loopback :8088 behind nginx. Takes verified blocks from
+# shear-v12-p2p.service on 127.0.0.1:30313. Pool is never consensus.
+# R18a, deploy/mainnet/RUNBOOK.md. Installed only on Russell's GO.
+#
+# Mirrors shear-pool.service on the v12 book, with its own datadir, seal
+# keys, release tree and operator file (/etc/shear/pool-v12.env). It shares
+# its ports with the mainnet pool, so only one of the two runs.
+[Unit]
+Description=Shear v12 testnet pool (stratum :1111, TLS)
+After=network-online.target shear-v12-p2p.service
+Wants=network-online.target
+# Requisite, not Requires: the pool refuses to start unless its own node is
+# already running, and starting the pool never starts the node (each start
+# is its own GO). If the node stops, the pool stops with it (PartOf), so it
+# never serves work without its own verified tip.
+Requisite=shear-v12-p2p.service
+PartOf=shear-v12-p2p.service
+
+[Service]
+Type=simple
+User=shear
+Group=shear
+WorkingDirectory=/opt/shear-v12
+StateDirectory=shear/testnet-v12-pool shear/seal-keys-v12/pool
+StateDirectoryMode=0700
+# Operator settings that are not in the repo: SHEAR_STRATUM_AUTH_PUB, and
+# the fee or admin dest if they differ from the shipped pin. Root-owned,
+# mode 0640, group shear (RUNBOOK step 8). The spend seed never goes here:
+# it is the 0600 file pool-spend.seed in the pool datadir.
+EnvironmentFile=/etc/shear/pool-v12.env
+Environment=SHEAR_DATA=/var/lib/shear/testnet-v12-pool
+Environment=SHEAR_SEAL_KEY_DIR=/var/lib/shear/seal-keys-v12/pool
+Environment=SHEAR_NETWORK=shear-testnet-v12
+Environment=SHEAR_P2P_IPC=127.0.0.1:30313
+Environment=SHEAR_STRATUM=1111
+Environment=SHEAR_STRATUM_BIND=0.0.0.0
+Environment=SHEAR_STRATUM_AUTH=1
+# A public stratum bind needs TLS (pool/src/posture.js stratumListenPlan);
+# without the cert the pool refuses to start, it never falls back to
+# cleartext. The cert pair is copied for the shear group by the certbot
+# deploy hook (RUNBOOK step 8). TLS only, as on mainnet (Russell 26 Oct): no
+# cleartext listener, and SHEAR_STRATUM_LAB_CLEARTEXT never runs here.
+Environment=SHEAR_STRATUM_REQUIRE_TLS=1
+Environment=SHEAR_STRATUM_TLS_CERT=/etc/shear/stratum-tls/fullchain.pem
+Environment=SHEAR_STRATUM_TLS_KEY=/etc/shear/stratum-tls/privkey.pem
+Environment=SHEAR_HTTP=8088
+Environment=SHEAR_RPC_BIND=127.0.0.1
+ExecStart=/usr/bin/node pool/src/main.js
+Restart=no
+# Hardening. The datadir and seal keys are 0700 for the shear user only.
+# No MemoryDenyWriteExecute: node's V8 JIT needs writable executable pages.
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -40,7 +40,8 @@ which serves the site and the client downloads, goes last.
 | `scripts/teardown.sh` | Removes everything testing left behind | Dry run by default. `--apply` also needs `SHEAR_TEARDOWN_GO=<hostname>` |
 | `scripts/check_host.sh <role>` | Verify, don't paint. Fails on a wrong OS, a firewall that is not on, an extra public TCP or UDP listener, test leftovers, or a unit that restarts itself (drop-ins included), copies or fetches files, or names an IP | No, read-only |
 | `firewall/*` | The three firewalls | The two scripts are dry runs without `--apply`. The nft file is checked with `nft -c` first |
-| `units/*.service` | Mainnet units | Only when installed |
+| `units/shear-{node,p2p,pool}.service` | Mainnet units | Only when installed |
+| `units/shear-v12-{node,p2p,pool}.service` | v12 public testnet units, the same rules on the v12 book | Only when installed |
 
 ## The unit rules
 
@@ -120,10 +121,18 @@ and no secret ever goes in the repo:
 8. **Install:**
    - Node.js from the OS packages, at the version the release pins.
    - A `shear` system user and group.
-   - The release tree at `/opt/shear`, from a tagged commit only.
-   - Copy the role's units from `units/` to `/etc/systemd/system/`, then run `systemctl daemon-reload`.
-   - On the pool host also: `/etc/shear/pool.env`, the stratum TLS pair and its certbot deploy hook, and Russell's `pool-spend.seed`, all as described above.
-   - Starting the units is its own GO. On the pool host, start `shear-p2p` first, then `shear-pool`.
+   - Two release trees, each from a tagged commit only: the v12 testnet tree at `/opt/shear-v12`, and the mainnet tree at `/opt/shear`.
+   - Copy the role's units from `units/` to `/etc/systemd/system/`, then run `systemctl daemon-reload`. Each role has a v12 testnet set and a mainnet set:
+
+     | Role | v12 testnet (before genesis) | mainnet (from genesis) |
+     |------|------------------------------|------------------------|
+     | pool | `shear-v12-p2p`, `shear-v12-pool` | `shear-p2p`, `shear-pool` |
+     | p2p-a, p2p-b | `shear-v12-node` | `shear-node` |
+
+     The two sets have the same hardening and rules and share the role's ports (:30303, the RPC port, and on the pool :1111 and loopback :8088 and :30313), so only one set runs at a time. The v12 set runs `SHEAR_NETWORK=shear-testnet-v12` from `/opt/shear-v12` with its own state (`/var/lib/shear/testnet-v12*`, `/var/lib/shear/seal-keys-v12`); the mainnet set runs `SHEAR_NETWORK=shear-v1` from `/opt/shear` with `/var/lib/shear/mainnet*` and `/var/lib/shear/seal-keys`.
+   - On the pool host also: `/etc/shear/pool.env` (and `/etc/shear/pool-v12.env` for the v12 pool), the stratum TLS pair and its certbot deploy hook, and Russell's `pool-spend.seed`, all as described above.
+   - Starting units is its own GO. Before genesis only the v12 set is enabled and started: `systemctl enable --now shear-v12-node.service` (p2p-a, p2p-b), or `systemctl enable --now shear-v12-p2p.service`, then `systemctl enable --now shear-v12-pool.service` (pool). The mainnet units are installed but stay disabled and stopped; nothing sets `SHEAR_MAINNET_EMIT` before the genesis GO. `check_host.sh <role> --phase pre-genesis` checks this.
+   - **At genesis** (its own GO, one host at a time): stop and disable the v12 set, then enable and start the mainnet set (on the pool host `shear-p2p` first, then `shear-pool`), then run `check_host.sh <role> --phase live`.
 9. **Update routine:** write it down per host.
    - Unattended upgrades are limited to security updates: `unattended-upgrades` on Ubuntu and Debian, `dnf-automatic` with `upgrade_type = security` on Fedora.
    - Kernel reboots are done by hand and logged.
