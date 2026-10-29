@@ -445,8 +445,9 @@ describe('ShearK-Miner', () => {
     assert.match(run, /--blu "\$\{SHEARK_BLU:\?\}"/);
     assert.equal(/^SHEARK_BLU=/m.test(defs), false);
     assert.equal(defs.includes('shm1'), false);
-    assert.match(run, /\$\{SHEARK_BACKEND:-jit\}/);
-    assert.match(run, /\$\{SHEARK_THREADS:-1\}/);
+    // PR146: jit-full by default; --threads only when set (test_pr146_fixes_v12.js runs it).
+    assert.match(run, /\$\{SHEARK_BACKEND:-jit-full\}/);
+    assert.match(run, /\$\{SHEARK_THREADS:-\}/);
     assert.match(run, /--require-tls/);
     assert.match(run, /--pool "\$\{SHEARK_POOL:\?\}"/);
     assert.equal(run.includes('ssa1'), false);
@@ -454,7 +455,7 @@ describe('ShearK-Miner', () => {
     assert.equal(unit.includes('ssa1'), false);
     assert.match(defs, /SHEARK_POOL=stratum\+ssl:\/\/pool\.shear\.digital:443/);
     assert.match(defs, /SHEARK_THREADS=1/);
-    assert.match(defs, /SHEARK_BACKEND=jit/);
+    assert.match(defs, /^SHEARK_BACKEND=jit-full$/m);
     assert.equal(/^SHEARK_USER=/m.test(defs), false);
     assert.match(unit, /EnvironmentFile=\/etc\/default\/sheark-v4-afk/);
     assert.match(unit, /MemoryMax=2G/);

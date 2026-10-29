@@ -393,3 +393,53 @@ describe('PR146 P2: queued shares survive busy back-off and a same-parent job ch
     assert.equal(maxOut, 4);
   });
 });
+
+// P2: the AFK launcher and both default files run jit-full (the miner's
+// memory check now covers an explicit jit-full); --threads only when set.
+describe('PR146 P2: AFK launcher defaults', { skip: process.platform === 'win32' }, () => {
+  function runAfk(defaults) {
+    const tmp = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || '/tmp'), 'shear-afk-'));
+    const fake = path.join(tmp, 'ShearK-Miner');
+    fs.writeFileSync(fake, '#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done\n', { mode: 0o755 });
+    const defs = path.join(tmp, 'defaults');
+    fs.writeFileSync(defs, defaults);
+    const script = fs.readFileSync(path.join(root, 'run-afk.sh'), 'utf8')
+      .replace('/etc/default/sheark-v4-afk', defs)
+      .replace('/opt/shear-v4/sheark-miner/ShearK-Miner', fake);
+    const sp = path.join(tmp, 'run-afk.sh');
+    fs.writeFileSync(sp, script, { mode: 0o755 });
+    const r = spawnSync('bash', [sp], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+    fs.rmSync(tmp, { recursive: true, force: true });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.split('\n').filter(Boolean);
+  }
+  const base = 'SHEARK_POOL=stratum+ssl://pool.example:443\nSHEARK_USER=rig1\nSHEARK_BLU=shm1x\n';
+  it('the shipped defaults run jit-full', () => {
+    for (const f of [path.join(root, 'sheark-v4-afk.default'), path.join(repo, 'scripts', 'packaging', 'sheark-miner.default.example')]) {
+      const d = fs.readFileSync(f, 'utf8');
+      assert.match(d, /^SHEARK_BACKEND=jit-full$/m, f);
+      assert.doesNotMatch(d, /^SHEARK_BACKEND=jit$/m, f);
+    }
+  });
+  it('the packaged launcher (sheark-run) also defaults to jit-full', () => {
+    const run = fs.readFileSync(path.join(repo, 'scripts', 'packaging', 'sheark-run'), 'utf8');
+    assert.match(run, /--backend "\$\{SHEARK_BACKEND:-jit-full\}"/);
+  });
+  it('no SHEARK_BACKEND means jit-full; no SHEARK_THREADS lets the miner choose', () => {
+    const args = runAfk(base);
+    assert.equal(args[args.indexOf('--backend') + 1], 'jit-full');
+    assert.equal(args.includes('--threads'), false, args.join(' '));
+    assert.ok(args.includes('--require-tls'));
+  });
+  it('SHEARK_THREADS and SHEARK_BACKEND still override', () => {
+    const args = runAfk(`${base}SHEARK_THREADS=3\nSHEARK_BACKEND=jit\n`);
+    assert.equal(args[args.indexOf('--backend') + 1], 'jit');
+    assert.equal(args[args.indexOf('--threads') + 1], '3');
+  });
+  it('a bad SHEARK_THREADS is ignored, not passed through', () => {
+    for (const t of ['0', 'abc', '-2']) {
+      const args = runAfk(`${base}SHEARK_THREADS=${t}\n`);
+      assert.equal(args.includes('--threads'), false, `${t}: ${args.join(' ')}`);
+    }
+  });
+});
