@@ -10199,10 +10199,13 @@ class ShearLedger implements ReadProofSink {
       final blockHash = below?.hash ?? row?.hash;
       if (root == null || blockHash == null) {
         // The header left the checked window before its body was read.
-        // Walk the headers again from the pin; the cursor stays.
-        _resetChainToPin();
-        stop = 'rechecking headers from the checkpoint';
-        break;
+        // Walk the headers again from the pin. Every body proof above the
+        // pin was made against headers this drops, and the re-walk adopts
+        // whatever branch is served next, so each body is proven again:
+        // the cursor goes back to the pin, and the rows read in this range
+        // are not applied.
+        _rebackfillFromPin();
+        return _bodyScanFail('rechecking headers from the checkpoint');
       }
       Map<String, dynamic>? wire;
       try {
