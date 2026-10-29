@@ -397,104 +397,108 @@ static randomx_vm *create_vm_locked(void) {
 static int init_cache_locked(const unsigned char k[32]);
 static int backend_matches_selftest_locked(void);
 
+/* Why the last stand_up_locked() failed, for the fallback log line. */
+static const char *g_standup_why = "";
+
+/* Stand up one backend from scratch: cache (2 MiB pages first, then 4K),
+ * the probe key, the dataset when FULL_MEM, and a probe VM (W^X retry with
+ * RANDOMX_FLAG_SECURE). 0 when it works; on failure everything is dropped
+ * and g_standup_why says what failed. */
+static int stand_up_locked(randomx_flags f) {
+  unsigned char header[SHEAR_HEADER_LEN];
+  unsigned char k[32];
+  drop_cache_locked();
+  g_flags = f;
+  g_standup_why = "";
+  g_cache = alloc_cache(g_flags);
+  if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+    g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+    g_cache = alloc_cache(g_flags);
+    if (g_cache) note_no_hugepages();
+  }
+  if (!g_cache) {
+    g_standup_why = "cache alloc failed";
+    return -1;
+  }
+  memset(header, 0, SHEAR_HEADER_LEN);
+  header[0] = 1;
+  shear_key(header, k);
+  if (init_cache_locked(k) != 0) {
+    g_standup_why = (g_flags & RANDOMX_FLAG_FULL_MEM) ? "dataset alloc failed" : "cache init failed";
+    drop_cache_locked();
+    return -1;
+  }
+  if (g_flags & RANDOMX_FLAG_JIT) {
+    randomx_vm *probe = create_vm_locked();
+    if (!probe) {
+      g_flags = (randomx_flags)(g_flags | RANDOMX_FLAG_SECURE);
+      probe = create_vm_locked();
+    }
+    if (!probe) {
+      g_standup_why = "JIT VM create failed";
+      drop_cache_locked();
+      return -1;
+    }
+    randomx_destroy_vm(probe);
+  }
+  return 0;
+}
+
+/* PR146 fix (P1-1): jit-full -> light JIT -> interpreter, in that order.
+ * A dataset that cannot be allocated (cgroup/ulimit/RAM) used to drop
+ * straight to the interpreter (~140x slower than jit-full, ~17x slower than
+ * light JIT); it now lands on light JIT and the log line says why. */
 int shear_hash_set_backend(const char *name) {
   randomx_flags next = flags_jit_light();
   const char *label = "jit";
-  int want_full = 0;
   if (name && (strcmp(name, "jit") == 0 || strcmp(name, "auto") == 0)) {
     next = flags_jit_light();
     label = "jit";
   } else if (name && strcmp(name, "jit-full") == 0) {
     next = flags_jit_full();
     label = "jit-full";
-    want_full = 1;
     fprintf(stderr, "ShearK-Miner: jit-full uses the 260 MiB dataset; pool/node still light-verify (same digest)\n");
   } else if (name && strcmp(name, "interpreter") == 0) {
     next = flags_interpreter();
     label = "interpreter";
   }
   exclusive_begin();
-  if (next != g_flags) {
-    drop_cache_locked();
-    g_flags = next;
-  }
-  if (!g_cache) {
-    g_cache = alloc_cache(g_flags);
-    if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
-      g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
-      g_cache = alloc_cache(g_flags);
-      note_no_hugepages();
-    }
-    if (!g_cache && (g_flags & RANDOMX_FLAG_JIT)) {
-      g_flags = flags_interpreter();
-      label = "interpreter";
-      g_cache = alloc_cache(g_flags);
-      if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
-        g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
-        g_cache = alloc_cache(g_flags);
+  int ok = -1;
+  if (next & RANDOMX_FLAG_FULL_MEM) {
+    if (stand_up_locked(next) == 0) {
+      if (backend_matches_selftest_locked()) {
+        ok = 0;
+      } else {
+        drop_cache_locked();
+        fprintf(stderr, "ShearK-Miner: dataset path failed selftest, using light JIT\n");
       }
-      fprintf(stderr, "ShearK-Miner: JIT unavailable, using interpreter\n");
-    }
-  }
-  if (g_cache && (g_flags & RANDOMX_FLAG_JIT)) {
-    unsigned char header[SHEAR_HEADER_LEN];
-    unsigned char k[32];
-    memset(header, 0, SHEAR_HEADER_LEN);
-    header[0] = 1;
-    shear_key(header, k);
-    if (init_cache_locked(k) != 0) {
-      drop_cache_locked();
-      g_flags = flags_interpreter();
-      label = "interpreter";
-      g_cache = alloc_cache(g_flags);
-      if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
-        g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
-        g_cache = alloc_cache(g_flags);
-      }
-      fprintf(stderr, "ShearK-Miner: JIT cache init failed, using interpreter\n");
-    }
-    randomx_vm *probe = g_cache ? create_vm_locked() : NULL;
-    if (!probe && g_cache) {
-      g_flags = (randomx_flags)(g_flags | RANDOMX_FLAG_SECURE);
-      probe = create_vm_locked();
-    }
-    if (!probe) {
-      drop_cache_locked();
-      g_flags = flags_interpreter();
-      label = "interpreter";
-      g_cache = alloc_cache(g_flags);
-      if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
-        g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
-        g_cache = alloc_cache(g_flags);
-      }
-      fprintf(stderr, "ShearK-Miner: JIT VM create failed, using interpreter\n");
     } else {
-      randomx_destroy_vm(probe);
+      unsigned long mib = (unsigned long)(((unsigned long long)randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) >> 20);
+      fprintf(stderr, "ShearK-Miner: jit-full unavailable (%s, %lu MiB dataset); using light JIT\n", g_standup_why, mib);
     }
-  } else if (!(g_flags & RANDOMX_FLAG_LARGE_PAGES) && (next & RANDOMX_FLAG_LARGE_PAGES)) {
-    /* cache already stood up without huge pages */
-  }
-  if (g_cache && (g_flags & RANDOMX_FLAG_FULL_MEM)) {
-    unsigned char header[SHEAR_HEADER_LEN];
-    unsigned char k[32];
-    memset(header, 0, SHEAR_HEADER_LEN);
-    header[0] = 1;
-    shear_key(header, k);
-    if (init_cache_locked(k) != 0 || !backend_matches_selftest_locked()) {
-      drop_cache_locked();
-      g_flags = flags_jit_light();
+    if (ok != 0) {
+      next = flags_jit_light();
       label = "jit";
-      g_cache = alloc_cache(g_flags);
-      if (!g_cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
-        g_flags = (randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES);
-        g_cache = alloc_cache(g_flags);
-      }
-      fprintf(stderr, "ShearK-Miner: dataset path failed selftest, using light JIT\n");
+    }
+  }
+  if (ok != 0 && (next & RANDOMX_FLAG_JIT)) {
+    if (stand_up_locked(next) == 0) {
+      ok = 0;
+    } else {
+      fprintf(stderr, "ShearK-Miner: light JIT unavailable (%s); using interpreter\n", g_standup_why);
+      next = flags_interpreter();
+      label = "interpreter";
+    }
+  }
+  if (ok != 0) {
+    if (stand_up_locked(next) == 0) {
+      ok = 0;
+    } else {
+      fprintf(stderr, "ShearK-Miner: interpreter unavailable (%s); no hash backend\n", g_standup_why);
+      label = "none";
     }
   }
   g_backend = label;
-  (void)want_full;
-  int ok = g_cache ? 0 : -1;
   rx_un();
   return ok;
 }
