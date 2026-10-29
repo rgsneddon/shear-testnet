@@ -10,7 +10,8 @@
 #    share carries a fresh one-time key, and only your wallet finds its pay.
 # 2) Set --user to a worker name for this box (e.g. rig1). Never an address:
 #    ShearK refuses one there, because it would be sent to the pool.
-# 3) Set --threads to this machine's logical CPUs ($(nproc) on Linux).
+# 3) Threads: ShearK runs one per logical CPU (at most one per 2 MiB of L3).
+#    Add --threads N only to leave CPUs free for other work.
 
 cd "$(dirname "$0")"
 if [ ! -x ./ShearK-Miner ]; then
@@ -18,7 +19,7 @@ if [ ! -x ./ShearK-Miner ]; then
   exit 1
 fi
 
-exec ./ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user rig1 --blu YOUR_MINING_ADDRESS --backend jit-full --threads 8
+exec ./ShearK-Miner --pool stratum+ssl://pool.shear.digital:443 --user rig1 --blu YOUR_MINING_ADDRESS
 
 # Solo on your own node (npm run solo), cleartext; --solo sends the mining address to your node only:
-# exec ./ShearK-Miner --pool 127.0.0.1:1111 --user rig1 --blu YOUR_MINING_ADDRESS --solo --backend jit-full --threads 8
+# exec ./ShearK-Miner --pool 127.0.0.1:1111 --user rig1 --blu YOUR_MINING_ADDRESS --solo

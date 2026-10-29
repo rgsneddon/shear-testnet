@@ -28,3 +28,6 @@ fi
 cmake -S "$RX" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DARCH="$ARCH" \
   -DCMAKE_C_FLAGS="$BASE" -DCMAKE_CXX_FLAGS="$BASE" "$@"
 cmake --build "$BUILD" --target randomx -j"$JOBS"
+# A no-op build leaves the archive older than an untouched-but-newer source
+# checkout; make (sheark-miner/Makefile) compares mtimes, so mark it current.
+touch "$BUILD/librandomx.a" 2>/dev/null || true

@@ -117,6 +117,50 @@ jobs:
           node sheark-miner/tests/pack_windows.js
           # The exe in the shipped zip: the one selftested above, at the baseline.
           python scripts/scan_shipped_zip.py "dist/ShearK-Miner-$SHEARK_VER-windows.zip" --built ShearK-Miner.exe=sheark-miner/ShearK-Miner.exe ShearK-Miner.exe
+      # R41: a manual run (workflow_dispatch) also benches the Windows exe
+      # against the R28 base (13fb9376) on the same runner, and checks the
+      # golden digest corpus and the vectors. Push and PR runs skip it.
+      - name: R41 bench and vectors (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          export PATH="/mingw64/bin:$PATH"
+          export OPENSSL_BIN="$(cygpath -m /mingw64/bin)"
+          export OPENSSL_INC="$(cygpath -m /mingw64/include)"
+          powershell -NoProfile -Command "Get-CimInstance Win32_Processor | Format-List Name,NumberOfCores,NumberOfLogicalProcessors,L2CacheSize,L3CacheSize,MaxClockSpeed; (Get-CimInstance Win32_OperatingSystem).Caption"
+          rxb() {
+            def=""; grep -q shear_hash_hard_aes "$1/sheark-miner/src/shear_hash.h" && def=-DRXBENCH_HAVE_HARD_AES
+            gcc -march=x86-64 -mtune=generic -O3 -std=c11 -pthread $def -I"$1/sheark-miner/src" -I"$1/crypto/randomx/src" -c -o "$1/sheark-miner/bench-rxbench.o" sheark-miner/bench/rxbench.c
+            g++ -march=x86-64 -mtune=generic -O3 -pthread -o "$1/sheark-miner/bench/rxbench.exe" "$1/sheark-miner/bench-rxbench.o" \
+              "$1/sheark-miner/src/shear_hash.o" "$1/sheark-miner/src/sha256.o" "$1/sheark-miner/src/sha512.o" "$1/crypto/randomx/build/librandomx.a" \
+              -static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive,-Bdynamic
+          }
+          git fetch --no-tags --depth=1 origin 13fb937689aa778cbf8dcca5253b819e531f7c27
+          git worktree add ../r41-base FETCH_HEAD
+          mingw32-make -C ../r41-base/sheark-miner CC=gcc CXX=g++
+          mkdir -p ../r41-base/sheark-miner/bench
+          rxb ../r41-base
+          rxb .
+          for i in 1 2; do
+            for t in ../r41-base .; do
+              echo "== $t pass $i"
+              "$t/sheark-miner/bench/rxbench.exe" --backend jit-full --threads 1,2,3,4 --secs 20 --warm 5 --epochs 3
+            done
+          done
+          for b in interpreter jit jit-full; do ./sheark-miner/bench/rxbench.exe --backend $b --golden sheark-miner/bench/golden_v12.txt --threads 0; done
+          npm ci --ignore-scripts --no-audit --no-fund
+          node --test --test-concurrency=1 sheark-miner/tests/test_golden_corpus_v12.js sheark-miner/tests/test_sha512_fips_v12.js sheark-miner/tests/test_blunote_vectors_v12.js sheark-miner/tests/test_miner.js
+          # Before vs after end to end: the same loopback pool, the base miner then this one.
+          # R28 option 2 logins, so the before exe is the R28 head's (it speaks --user worker).
+          git fetch --no-tags --depth=1 origin 1eb2414708f984b85789f426bcb9d3a8a8c45a8a
+          git worktree add ../r41-r28 FETCH_HEAD
+          mingw32-make -C ../r41-r28/sheark-miner CC=gcc CXX=g++
+          for m in ../r41-r28/sheark-miner/ShearK-Miner.exe sheark-miner/ShearK-Miner.exe; do
+            echo "== e2e $m"
+            node sheark-miner/bench/stratum_bench.mjs --mode pool --miner "$(cygpath -m "$(realpath "$m")")" --secs 180 --sample 30 --warm 45 || echo "stratum bench (pool) failed on Windows for $m"
+          done
+          node sheark-miner/bench/stratum_bench.mjs --mode refusals --miner "$(pwd)/sheark-miner/ShearK-Miner.exe" || echo "stratum bench (refusals) failed on Windows"
+          node sheark-miner/bench/win_acl_diag.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: ShearK-Miner-${{ env.SHEARK_VER }}-windows

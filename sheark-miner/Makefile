@@ -82,7 +82,7 @@ ifneq ($(OPENSSL_PREFIX),)
   LIBS += -L$(OPENSSL_PREFIX)/lib
 endif
 
-OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o src/stratum_tls.o src/blunote.o
+OBJS := src/sheark_miner.o src/shear_hash.o src/sha256.o src/sha512.o src/stratum_tls.o src/blunote.o src/rig.o src/stats.o
 
 .PHONY: all clean selftest randomx
 
@@ -90,10 +90,16 @@ all: $(BIN)
 
 randomx: $(RXLIB)
 
-$(RXLIB):
+# R41: librandomx.a depends on the RandomX sources, so an edit under
+# crypto/randomx rebuilds it (cmake --build is incremental). Without this an
+# existing tree kept linking the old library. randomx_build.sh touches the
+# library, so a no-op cmake build still leaves it newer than the sources.
+RXSRC := $(wildcard $(RX)/CMakeLists.txt $(RX)/src/*.c $(RX)/src/*.cpp $(RX)/src/*.h $(RX)/src/*.hpp $(RX)/src/*.S $(RX)/src/blake2/*.c $(RX)/src/blake2/*.h)
+
+$(RXLIB): $(RXSRC)
 	SHEARK_NATIVE=$(SHEARK_NATIVE) RANDOMX_BUILD_DIR=$(RXBUILD) bash ../scripts/randomx_build.sh $(CMAKE_GEN)
 
-src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h
+src/%.o: src/%.c src/shear_hash.h src/sha512.h src/stratum_tls.h src/tls_roots.h src/rig.h src/stats.h
 	$(CC) $(X86_BASELINE) $(CFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BIN): $(RXLIB) $(OBJS)

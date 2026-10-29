@@ -1374,7 +1374,28 @@ function nonceHiFromShareHeader(header) {
   }
 }
 
-export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
+/**
+ * R41: a connection's share target changes on its own (per-dest vardiff,
+ * or a broadcast that carries a dest's dial) without a job-level change.
+ * Record the byte it leaves so a share already hashed at that byte, in
+ * flight when the new target lands, keeps the same 12 s grace a job-level
+ * change gives (job.shareBitsPrev / shareBitsHist). Without it every
+ * per-dest step rejected the in-flight share as share_target.
+ */
+export function noteConnShareBits(conn, next, now = Date.now()) {
+  if (!conn) return;
+  const old = Number(conn.shareBits);
+  const nb = Number(next);
+  if (Number.isFinite(old) && old > 0 && old !== nb) {
+    conn.shareBitsHist = [
+      ...(Array.isArray(conn.shareBitsHist) ? conn.shareBitsHist : []).filter((r) => now - Number(r?.at || 0) < PREV_JOB_GRACE_MS),
+      { bits: old, at: now },
+    ].slice(-8);
+  }
+  conn.shareBits = nb;
+}
+
+export function judgeShare({ job, header, hash, dest, shareBits, connHist } = {}) {
   const current = Number(shareBits ?? job?.shareBits);
   const prev = Number(job.shareBitsPrev);
   const prevAt = Number(job.shareBitsAt) || 0;
@@ -1403,6 +1424,7 @@ export function judgeShare({ job, header, hash, dest, shareBits } = {}) {
     const hist = [
       ...(Number.isFinite(prev) && prev > 0 ? [{ bits: prev, at: prevAt }] : []),
       ...(Array.isArray(job.shareBitsHist) ? job.shareBitsHist : []),
+      ...(Array.isArray(connHist) ? connHist : []),
     ];
     for (const row of hist) {
       const b = Number(row?.bits);
@@ -1688,6 +1710,14 @@ function easeHashrate(miner, instant, now, tauS = HASHRATE_EMA_TAU_S) {
 /** Match ShearK `RATE_MIN_DT` (2s). 8s hid the miner paint and left proven 2^bits as HUD. */
 export const SELF_RATE_MIN_DT_S = 2;
 
+/**
+ * PR146 (display only): ShearK 2.9 sends no `threads` (privacy), and a
+ * session's `threads` then defaults to 1, which capped the self-rate HUD at
+ * 2500 R/s for every rig. With no reported count the HUD ceiling is this many
+ * threads (still 2500 R/s each). Payout and credit never read clientHs.
+ */
+export const SELF_RATE_UNKNOWN_THREADS = 256;
+
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
   if (isCminerFeeLogin(session.workerKey || session.login || params.login)) return session;
@@ -1699,7 +1729,9 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
     if (hashes < Number(session.clientHashesRound0)) session.clientHashesRound0 = hashes;
   }
   if (!Number.isFinite(hashes) || hashes < 0) return session;
-  const threads = Math.max(1, Number(session.threads) || Number(session.claimedThreads) || Number(params.threads) || 1);
+  const threads = session.threadsReported === false
+    ? Math.max(1, Number(params.threads) || SELF_RATE_UNKNOWN_THREADS)
+    : Math.max(1, Number(session.threads) || Number(session.claimedThreads) || Number(params.threads) || 1);
   const cap = threads * 2500;
   const claimed = Number(params.hashrate);
   if (Number.isFinite(claimed) && claimed > 1 && claimed <= cap) {
@@ -1963,7 +1995,7 @@ export function createPool({
       if (destShareBitsKey(m.login || m.payoutDest) !== destKey) continue;
       for (const c of m.connections || []) {
         if (!c || c.shearFeeRoute) continue;
-        c.shareBits = next;
+        noteConnShareBits(c, next);
         const live = lastJob || c.job;
         if (!live || !c.sock) continue;
         c.job = live;
@@ -1976,6 +2008,13 @@ export function createPool({
   const prefixLoginAt = new Map();
   let p2pNet = p2p;
   let hashWorker = null;
+  // R41: resolves once the hash worker thread has exited. close() returns
+  // it, so a caller that exits the process afterwards never leaves the
+  // worker inside native RandomX code while Node tears the process down
+  // (exit 139 seen at shutdown in pool-mode R41 runs, never in solo mode,
+  // which has no hash worker).
+  let hashWorkerGone = Promise.resolve();
+  let hashWorkerThreads = 0;
   let hashSeq = 0;
   let hashLive = 0;
   const hashWait = new Map();
@@ -1995,6 +2034,9 @@ export function createPool({
   function bootHashWorker() {
     if (hashWorker) return hashWorker;
     const w = new Worker(HASH_WORKER);
+    let gone;
+    hashWorkerGone = new Promise((resolve) => { gone = resolve; });
+    hashWorkerThreads += 1;
     w.on('message', (msg) => {
       const pending = hashWait.get(msg.id);
       if (pending && !pending.settled) {
@@ -2020,7 +2062,7 @@ export function createPool({
       hashWait.clear();
     };
     w.on('error', drop);
-    w.on('exit', drop);
+    w.on('exit', () => { hashWorkerThreads -= 1; drop(); gone(); });
     hashWorker = w;
     return w;
   }
@@ -2089,6 +2131,7 @@ export function createPool({
         hash,
         dest,
         shareBits: conn?.shareBits ?? job?.shareBits,
+        connHist: conn?.shareBitsHist,
       });
       if (judged.ok) return judged;
       last = judged;
@@ -4174,7 +4217,7 @@ export function createPool({
           conn: c.shareBits,
           template: job.shareBits,
         }, { blockBits: blockBitsNow(), minBits: liveShareMin() });
-        c.shareBits = sb;
+        noteConnShareBits(c, sb);
         const aimed = c.shearFeeRoute ? job : jobForSession(job, m);
         const payload = wireJob(aimed || job, sb);
         c.job = aimed || job;
@@ -4859,6 +4902,7 @@ export function createPool({
             stale: 0,
             blocks: 0,
             threads: Number(params.threads) || 1,
+            threadsReported: Number(params.threads) > 0,
             connections: [],
             acceptAt: [],
             acceptWork: [],
@@ -6043,6 +6087,10 @@ export function createPool({
     try { stratumTls?.close(); } catch { /* ignore */ }
     try { httpServer.closeAllConnections?.(); } catch { /* ignore */ }
     try { httpServer.close(); } catch { /* ignore */ }
+    // The worker finishes its in-flight hash, then releaseHashWorker
+    // terminates it. A hung worker cannot hold shutdown past the cap.
+    const cap = new Promise((resolve) => { const t = setTimeout(resolve, HASH_WORKER_TIMEOUT_MS); t.unref?.(); });
+    return Promise.race([hashWorkerGone, cap]);
   }
 
   // The first /api/stats read is the snap. A listen-time setImmediate is too
@@ -6093,6 +6141,8 @@ export function createPool({
     get pendingPayout() { return pendingPayout; },
     get prevJob() { return prevJob; },
     get paused() { return paused; },
+    /** Hash worker threads still running (0 once close() has resolved). */
+    get hashWorkerThreads() { return hashWorkerThreads; },
     adminOps,
     pullBook,
   };

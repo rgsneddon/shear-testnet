@@ -10,7 +10,8 @@ REM    Paste it below as YOUR_MINING_ADDRESS. It stays on this PC; every
 REM    share carries a fresh one-time key, and only your wallet finds its pay.
 REM 2) Set --user to a worker name for this PC (e.g. pc1). Never an address:
 REM    ShearK refuses one there, because it would be sent to the pool.
-REM 3) Set --threads to this machine's logical CPUs (echo %NUMBER_OF_PROCESSORS%).
+REM 3) Threads: ShearK runs one per logical CPU (%NUMBER_OF_PROCESSORS%).
+REM    Add --threads N only to leave CPUs free for other work.
 REM 4) Keep the OpenSSL and libsodium DLLs from ShearK-Miner-2.9-windows.zip beside this exe.
 
 cd /d "%~dp0"
@@ -37,9 +38,9 @@ if not exist "libsodium-26.dll" (
 )
 
 REM Edit this line, then double-click this file:
-ShearK-Miner.exe --pool stratum+ssl://pool.shear.digital:443 --user pc1 --blu YOUR_MINING_ADDRESS --backend jit-full --threads 8
+ShearK-Miner.exe --pool stratum+ssl://pool.shear.digital:443 --user pc1 --blu YOUR_MINING_ADDRESS
 
 REM Solo on your own node (npm run solo), cleartext; --solo sends the mining address to your node only:
-REM ShearK-Miner.exe --pool 127.0.0.1:1111 --user pc1 --blu YOUR_MINING_ADDRESS --solo --backend jit-full --threads 8
+REM ShearK-Miner.exe --pool 127.0.0.1:1111 --user pc1 --blu YOUR_MINING_ADDRESS --solo
 
 pause

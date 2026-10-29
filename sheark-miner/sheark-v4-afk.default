@@ -3,5 +3,9 @@
 # SHEARK_BLU is the host wallet's mining address, set in the host file only.
 # Do not put a mining address or payout dest in this file in git. The pool host keeps the unit disabled.
 SHEARK_POOL=stratum+ssl://pool.shear.digital:443
+# One mining thread on purpose: these soak hosts also run a p2p node.
+# Leave SHEARK_THREADS empty to let the miner choose. jit-full needs about
+# 0.85 GiB and falls back to light jit by itself when memory is short; the
+# dataset build briefly uses up to 4 CPUs at start and on each new key.
 SHEARK_THREADS=1
-SHEARK_BACKEND=jit
+SHEARK_BACKEND=jit-full

@@ -23,10 +23,17 @@ void shear_hash_hex(const unsigned char hash[32], char hex[65]);
 void shear_set_nonce(unsigned char header[SHEAR_HEADER_LEN], uint64_t nonce);
 void shear_key(const unsigned char header[SHEAR_HEADER_LEN], unsigned char k[32]);
 void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
+/* PR146: shear_hash that says when it failed (-1) instead of zero-filling. */
+int shear_hash_checked(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
+/* -2 from shear_bind, shear_hash_checked and shear_hash_first: the header's
+ * key is not the live epoch's (the job switch is in progress); not a failure. */
+#define SHEAR_KEY_NOT_LIVE (-2)
 int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_prepare(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_epoch_ready(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_commit_epoch(void);
+/* PSA k-change: commit only the pair prepared for this header's key. */
+int shear_commit_epoch_for(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_hash_next(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
 int shear_meets_target(const unsigned char hash[32], int bits);
@@ -36,7 +43,10 @@ int shear_selftest(char got_hex[65]);
 int shear_verify_header_hex(const char *header_hex, char digest_hex[65], char k_hex[65]);
 const char *shear_hash_backend(void);
 int shear_hash_huge_pages(void);
+int shear_hash_hard_aes(void);
 int shear_hash_set_backend(const char *name);
+/* Hashing threads this build can give their own RandomX VM (PR146 P1-3). */
+int shear_hash_max_threads(void);
 
 #ifdef __cplusplus
 }

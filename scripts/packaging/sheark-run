@@ -35,6 +35,6 @@ esac
 exec /opt/shear-v12/bin/ShearK-Miner \
   --pool "$SHEARK_POOL" \
   --user "$SHEARK_USER" \
-  --backend "${SHEARK_BACKEND:-jit}" \
+  --backend "${SHEARK_BACKEND:-jit-full}" \
   --threads "$threads" \
   --require-tls

@@ -47,6 +47,8 @@ jobs:
           make -C sheark-miner OPENSSL_PREFIX="$PREFIX" SODIUM_PREFIX="$SODIUM"
           test "$(lipo -archs sheark-miner/ShearK-Miner)" = "${{ matrix.arch }}"
           bash sheark-miner/pack/selftest.sh sheark-miner/ShearK-Miner
+          # R41: every backend gives the 64 golden digests of the R28 base.
+          node --test sheark-miner/tests/test_golden_corpus_v12.js
           python3 sheark-miner/pack/zip_unix.py macos
           bash sheark-miner/pack/smoke_zip.sh "dist/ShearK-Miner-${SHEARK_VER}-macos.zip"
           mv "dist/ShearK-Miner-${SHEARK_VER}-macos.zip" "dist/ShearK-Miner-${SHEARK_VER}-macos-${{ matrix.arch }}.zip"

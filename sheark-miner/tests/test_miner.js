@@ -117,10 +117,11 @@ describe('ShearK-Miner', () => {
     // R28 option 2: a worker name and the mining address; no ssa1, no --dest.
     assert.match(srcEx, /--user rig1 --blu YOUR_MINING_ADDRESS/);
     assert.doesNotMatch(srcEx, /YOUR_SSA1|--dest/);
-    assert.match(srcEx, /--backend jit-full/);
+    // PR146 P1-2: the launchers leave the mode to the memory check.
+    assert.doesNotMatch(srcEx, /--backend jit-full/);
     assert.match(bat, /--user pc1 --blu YOUR_MINING_ADDRESS/);
     assert.doesNotMatch(bat, /YOUR_SSA1|--dest/);
-    assert.match(bat, /--backend jit-full/);
+    assert.doesNotMatch(bat, /--backend jit-full/);
     assert.match(bat, /ShearK-Miner-2\.9-windows\.zip/);
     assert.doesNotMatch(bat, /ShearK-Miner-2\.7-windows\.zip/);
     assert.doesNotMatch(help.stdout, /--tls-pin/);
@@ -138,7 +139,12 @@ describe('ShearK-Miner', () => {
     assert.match(src, /aborted_stale/);
     assert.match(src, /g_dropped\+\+/);
     assert.match(src, /primed = 0;/);
-    assert.match(src, /shear_hash\(primed_hdr, check\)/);
+    // PR146: the hit re-check uses the checked call (a failed call is not a digest).
+    // PSA k-change: the return code is kept so a key that is no longer live
+    // (SHEAR_KEY_NOT_LIVE) is dropped too; every non-zero code is a drop.
+    assert.match(src, /int check_rc = shear_hash_checked\(primed_hdr, check\);/);
+    assert.match(src, /if \(check_rc == SHEAR_KEY_NOT_LIVE\) \{[^}]*g_dropped\+\+;[^}]*continue;/);
+    assert.match(src, /if \(check_rc != 0\) \{\s*g_dropped\+\+;/);
     assert.match(src, /accepted=" C_GRN "%d"/);
     assert.match(src, /rejected=" C_RED "%d"/);
     assert.match(src, /C_RED "reject %s"/);
@@ -153,7 +159,8 @@ describe('ShearK-Miner', () => {
     assert.match(hashSrc, /shear-share-dest-v1/);
     assert.match(hashSrc, /shear-note-commit-v1/);
     assert.match(src, /\\033\[1;91m\\033\[1;93m\\033\[1;92m/);
-    assert.match(src, /msgid == 1 && inflight <= 0/);
+    // PR146: submit ids start at 2, so id 1 is always the login reply.
+    assert.match(src, /if \(msgid == 1\) \{/);
     assert.match(src, /\\033\[1;92m/);
     assert.match(src, /\\033\[1;93m/);
     assert.match(src, /\\033\[1;91m/);
@@ -175,7 +182,8 @@ describe('ShearK-Miner', () => {
     assert.match(hashc, /randomx_calculate_hash_next/);
     assert.match(hashc, /RANDOMX_FLAG_FULL_MEM/);
     assert.match(hashc, /backend_matches_selftest_locked/);
-    assert.match(hashc, /if \(shear_bind\(header\) != 0\)/);
+    // PSA k-change: the bind code is passed on (-2: key not live), never hashed past.
+    assert.match(hashc, /int b = shear_bind\(header\);\s*if \(b != 0\) return b;/);
     assert.match(hashc, /if \(!g_have \|\| memcmp\(g_k, k, 32\) != 0\)/);
     assert.match(hashc, /RANDOMX_FLAG_LARGE_PAGES/);
     assert.match(hashc, /RANDOMX_FLAG_HARD_AES/);
@@ -188,7 +196,8 @@ describe('ShearK-Miner', () => {
     assert.equal(/randomx_calculate_hash\(g_vm,/.test(hashc), false);
     assert.match(src, /pthread_setaffinity_np/);
     assert.match(src, /g_cpu_map/);
-    assert.match(src, /s\.gen != live_gen/);
+    // PR146: queued shares keep the pool's 12 s grace (same parent only).
+    assert.match(src, /share_keep\(age_ms, s->gen == live_gen, same_parent/);
     assert.match(src, /enqueue_share\(job\.jobId, stamped, hash, job\.gen, blu_enabled\(\) \? &key : NULL\)/);
     assert.match(src, /never submit a digest for the previous header/);
     assert.match(src, /g_stale\+\+/);
@@ -197,22 +206,23 @@ describe('ShearK-Miner', () => {
     assert.match(src, /enqueue_share\(job\.jobId, primed_n, hash, job\.gen, blu_enabled\(\) \? &primed_key : NULL\)/);
     assert.match(src, /g_stamp_seq/);
     assert.match(src, /stamp != last_stamp/);
-    assert.match(src, /#define IN_FLIGHT_MAX 1/);
+    assert.match(src, /#define IN_FLIGHT_MAX 4/);
+    assert.match(src, /#define SHARE_GRACE_MS 12000/);
     assert.match(src, /strstr\(low, "busy"\)/);
     assert.match(src, /memcmp\(g_main_job\.header, job\.header, 100\)/);
     assert.match(src, /primed_hdr/);
     assert.match(src, /hash_next returns the previous header's digest/);
     assert.match(src, /reject %s/);
-    assert.match(src, /g_smooth_hs/);
+    // R41 (Russell 28 Oct: "never smooth or paint a number"): the hash rate is
+    // counted hashes over a 10 s wall-time window; the EMA and its hold
+    // across a K pause (d4856e1a) are gone.
+    assert.match(src, /stats_rate\(-1, 10, NULL\)/);
+    assert.equal(/g_smooth_hs|RATE_HOLD_FRAC/.test(src), false);
     assert.match(src, /promote_pending_job/);
     assert.match(src, /g_have_pending/);
     assert.match(hashc, /shear_prepare/);
     assert.match(hashc, /shear_commit_epoch/);
-    assert.match(src, /Blockfound RandomX K pause/);
-    assert.match(src, /RATE_HOLD_FRAC 0\.9/);
-    assert.match(src, /RATE_MIN_DT 2/);
-    assert.match(src, /g_rate_t0 = now/);
-    assert.equal(/g_smooth_hs \* 0\.5/.test(src), false);
+    assert.equal(/hold paint/.test(src), false);
     {
       const bench = src.slice(src.indexOf('if (bench_secs > 0)'));
       assert.match(bench, /shear_hash_first\(header\)/);
@@ -278,7 +288,8 @@ describe('ShearK-Miner', () => {
     assert.equal(loginLine.includes(MINING), false, loginLine);
     assert.equal(/bluAddr|ssa1|she1|shm1/.test(loginLine), false, loginLine);
     assert.equal(/"version":"1\.[019]"/.test(loginLine), false, loginLine);
-    assert.match(out, /ShearK-Miner 2\.9 \(ShearHash-v3 light\)/);
+    // PR146: the run banner names the RandomX mode in use (interpreter: light).
+    assert.match(out, /ShearK-Miner 2\.9 \(ShearHash-v3, RandomX light\)/);
     assert.match(stripAnsi(out), /hashes=\d+/);
     assert.match(stripAnsi(out), /accepted=0/);
     assert.match(stripAnsi(out), /rejected=0/);
@@ -440,8 +451,9 @@ describe('ShearK-Miner', () => {
     assert.match(run, /--blu "\$\{SHEARK_BLU:\?\}"/);
     assert.equal(/^SHEARK_BLU=/m.test(defs), false);
     assert.equal(defs.includes('shm1'), false);
-    assert.match(run, /\$\{SHEARK_BACKEND:-jit\}/);
-    assert.match(run, /\$\{SHEARK_THREADS:-1\}/);
+    // PR146: jit-full by default; --threads only when set (test_pr146_fixes_v12.js runs it).
+    assert.match(run, /\$\{SHEARK_BACKEND:-jit-full\}/);
+    assert.match(run, /\$\{SHEARK_THREADS:-\}/);
     assert.match(run, /--require-tls/);
     assert.match(run, /--pool "\$\{SHEARK_POOL:\?\}"/);
     assert.equal(run.includes('ssa1'), false);
@@ -449,7 +461,7 @@ describe('ShearK-Miner', () => {
     assert.equal(unit.includes('ssa1'), false);
     assert.match(defs, /SHEARK_POOL=stratum\+ssl:\/\/pool\.shear\.digital:443/);
     assert.match(defs, /SHEARK_THREADS=1/);
-    assert.match(defs, /SHEARK_BACKEND=jit/);
+    assert.match(defs, /^SHEARK_BACKEND=jit-full$/m);
     assert.equal(/^SHEARK_USER=/m.test(defs), false);
     assert.match(unit, /EnvironmentFile=\/etc\/default\/sheark-v4-afk/);
     assert.match(unit, /MemoryMax=2G/);
