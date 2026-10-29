@@ -2,7 +2,7 @@
 
 Frozen numbers. `consensusFingerprint()` pins every line. A later flip is a new book.
 
-Network: `shear-testnet-v11` (privacy-class). Frozen `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. v8 and v9 do not soft-merge. Mainnet `shear-v1` genesis is `2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). Do not invent a different datetime. Do not emit before that instant. invent-must-not-return is unchanged by the v10 cut.
+Network: `shear-testnet-v11` (privacy-class). Frozen `shear-testnet-v9`, `shear-testnet-v8`, `shear-testnet-v6`, `shear-testnet-v5`, `shear-testnet-v4`, and `shear-testnet-v2` are different books. v8 and v9 do not soft-merge. Mainnet `shear-v1` genesis target is `2026-12-21T14:00:00+00:00` (Mon 21 Dec 2026 14:00 UK, GMT; `2026-12-21T14:00:00Z`). It moves only with Russell's sign-off on the mainnet pins. Do not invent a different datetime. Do not emit before that instant. invent-must-not-return is unchanged by the v10 cut.
 
 ## Numbers
 
@@ -12,7 +12,7 @@ Network: `shear-testnet-v11` (privacy-class). Frozen `shear-testnet-v9`, `shear-
 | `BLOCK_SUBSIDY_NANOS` | `100_000_000_000` (1 SHE, 11 decimals) |
 | `HASH_BONUS_NANOS` | `1` (10⁻¹¹ SHE). Kill every 10⁻¹⁰ line. |
 | `HASH_BONUS_VOTE_DELTA_NANOS` | `1` |
-| `HASH_BONUS_NANOS_FLOOR` | `1` — **the per-hash unit is never 0**. Votes, vault load, coinbase, and verify all clamp through `hashBonusUnitNanos`. A book that pays 0 per proven hash is a different book. |
+| `HASH_BONUS_NANOS_FLOOR` | `1` — FLOOR 1 is the clamp for a malformed unit only. The unit moves only by passed votes, 1 rho per vote, with floor 0 and no ceiling; a governance-set 0 switches the bonus off and stays 0 until a vote moves it. |
 | `SHE_PUBLIC_DIGITS` | `8` (sealed book still holds 11) |
 | `SPENDABLE_CONFIRMATIONS` | `9` |
 | `SAMPLE_PRUNE_CONFIRMATIONS` | `1000` |
@@ -78,7 +78,7 @@ SPEND_SIG=ed25519-shear-spend-v1
 POOL_WITHDRAW=eip712-spend-bound
 ```
 
-Mainnet `shear-v1` uses the same privacy-class law with `NETWORK=shear-v1` and `GENESIS=2026-09-18T21:00:00+01:00` (BST; `2026-09-18T20:00:00Z`). `HASH_TX_LIVE=1`. `HASH_BONUS_NANOS=1`. **Hash bonus never goes to 0** (`HASH_UNIT_FLOOR=1`). Votes cannot zero the unit or move the pot schedule. Clients refuse to emit before that instant.
+Mainnet `shear-v1` uses the same privacy-class law with `NETWORK=shear-v1` and `GENESIS=2026-12-21T14:00:00+00:00` (GMT; `2026-12-21T14:00:00Z`). `HASH_TX_LIVE=1`. `HASH_BONUS_NANOS=1`. The hash bonus moves only by passed governance votes, 1 rho per vote, with no ceiling and floor 0. A down vote at 1 sets it to 0 (bonus off), and a governance-set 0 stays 0 until an up vote returns it to 1. `HASH_UNIT_FLOOR=1` is only the clamp for a malformed unit. Votes cannot move the pot schedule. Clients refuse to emit before that instant.
 
 ## Hash unit (proven)
 
@@ -120,7 +120,7 @@ Miner login is `ssa1.worker`. `she1` login is RAM-only and must resolve to an ow
 
 Vector: staked = 1 SHE, bps = 425, interest = `4_250_000_000`.
 
-`liveHashBonusNanos` floor = 1. A vote that would set it below 1 is invalid. Votes still ±1 per epoch. Votes never touch the 1 SHE pot.
+`liveHashBonusNanos` moves only by passed votes, 1 rho per vote, floor 0 (a governance-set 0 switches the bonus off and stays 0), no ceiling. FLOOR 1 is only the clamp for a malformed unit. Votes never touch the 1 SHE pot.
 
 ## Pool money
 
