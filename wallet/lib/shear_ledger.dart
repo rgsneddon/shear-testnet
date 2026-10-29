@@ -1871,6 +1871,8 @@ List<Map<String, dynamic>> stampChainScanVouts(List<dynamic> txs) {
       for (final item in list) {
         if (item is! Map) continue;
         final row = Map<String, dynamic>.from(item);
+        // A node cannot say a body was proven. Only the body scan sets it.
+        row.remove('bodyProven');
         final havePortal = (row['portalId'] ?? '').toString();
         if (havePortal.isEmpty && portal != null && portal.toString().isNotEmpty) {
           row['portalId'] = portal;
@@ -2142,7 +2144,6 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
         'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
         if (o['height'] != null) 'height': o['height'],
-        if (o['bodyProven'] == true) 'bodyProven': true,
         'nanos': cachedEarly,
         if (amtEarly != null) 'amount': amtEarly,
         'proofKey': proofKeyEarly,
@@ -2217,7 +2218,6 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
       'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
       if (o['height'] != null) 'height': o['height'],
-      if (o['bodyProven'] == true) 'bodyProven': true,
       if (amt != null) 'amount': amt,
       if (proofKey != null) 'proofKey': proofKey,
       if (verifiedNanos != null) 'verifiedNanos': verifiedNanos,
@@ -4903,7 +4903,18 @@ class ShearLedger implements ReadProofSink {
       for (var i = 0; i < _notes.length; i++) {
         final have = _noteBytes(_notes[i]['commit']);
         if (have != null && _bytesEq(have, commit)) {
-          _notes[i] = {..._notes[i], ...incoming};
+          final was = _notes[i];
+          final merged = {...was, ...incoming};
+          // A proven note keeps the height its body was proven at. A row
+          // that says nothing about the proof (every node row: their
+          // bodyProven is dropped) cannot move it. The book's own rows (a
+          // rewind that cleared the proof, a new proof) carry the key.
+          if (was['bodyProven'] == true &&
+              !incoming.containsKey('bodyProven') &&
+              was.containsKey('height')) {
+            merged['height'] = was['height'];
+          }
+          _notes[i] = merged;
           return;
         }
       }
@@ -4958,6 +4969,9 @@ class ShearLedger implements ReadProofSink {
         'verified': true,
         'spent': false,
       };
+      // The page is the node's JSON. A proven body is this wallet's own
+      // mark, set only by the body scan.
+      row.remove('bodyProven');
       if ((row['kind'] ?? '').toString() == 'lock') {
         row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
       }
