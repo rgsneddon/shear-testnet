@@ -1,0 +1,17 @@
+{
+  "name": "shear-donate-ledger",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Ledger connect-and-send bundle for donate.shear.digital (built to ../vendor/ledger-bundle.js)",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --format=iife --global-name=ShearLedger --target=es2020 --minify --legal-comments=eof --inject:src/shim.js --define:global=globalThis --outfile=../vendor/ledger-bundle.js"
+  },
+  "dependencies": {
+    "@ledgerhq/hw-app-eth": "7.11.1",
+    "@ledgerhq/hw-transport-web-ble": "6.35.0",
+    "@ledgerhq/hw-transport-webhid": "6.36.0",
+    "buffer": "6.0.3",
+    "esbuild": "0.28.2",
+    "ethers": "6.17.0"
+  }
+}

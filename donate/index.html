@@ -111,7 +111,7 @@
     <section class="wrap section" id="send">
       <div class="panel">
         <h3>Send from your Ledger</h3>
-        <div id="send-app"><p>Connect-and-send from a Ledger is coming soon. For now, copy an address above or scan its QR code with your wallet.</p></div>
+        <div id="send-app"><p>Connect-and-send needs JavaScript. You can still copy an address above.</p></div>
       </div>
     </section>
 
@@ -121,6 +121,7 @@
         <ul id="privacy-list">
           <li>This page sends nothing anywhere unless you use connect-and-send. There are no analytics, no trackers and no external fonts.</li>
           <li>QR codes are drawn in your browser by a bundled copy of qrcode-generator 1.4.4. Copying an address uses your browser's clipboard only.</li>
+          <li>Connect-and-send: only after you click Connect does the page load its bundled Ledger library (from this site) and talk to your Ledger over USB (WebHID) or Bluetooth. To build and send the transaction it then calls the public RPC for the network you pick, run by PublicNode (Allnodes): ethereum-rpc.publicnode.com, base-rpc.publicnode.com, arbitrum-one-rpc.publicnode.com or polygon-bor-rpc.publicnode.com. That provider sees your IP address, your Ledger account address and the transaction. Nothing else is contacted, and the site's security policy blocks any other host.</li>
           <li>The page loads its style, logo and navigation bar from shear.digital, our own site. Our web server keeps standard access logs, as described in the <a href="https://shear.digital/privacy.html">privacy policy</a>.</li>
         </ul>
       </div>
@@ -141,5 +142,6 @@
   </footer>
   <script src="vendor/qrcode-generator-1.4.4.js"></script>
   <script src="donate.js"></script>
+  <script src="send.js"></script>
 </body>
 </html>

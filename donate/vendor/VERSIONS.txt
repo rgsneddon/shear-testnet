@@ -3,3 +3,12 @@ Vendored browser libraries for donate.shear.digital. No CDN is used at runtime.
 qrcode-generator 1.4.4 (MIT, Kazuhiko Arase)
   source: npm qrcode-generator@1.4.4, file qrcode.js, unmodified
   sha256: 18ae399f81182bc9de916e9c77b195df20cc58d6f2d55a62b085a299f1bf1780
+
+ledger-bundle.js (built from ledger-src/ with esbuild 0.28.2, npm run build; lockfile ledger-src/package-lock.json)
+  @ledgerhq/hw-transport-webhid 6.36.0 (Apache-2.0)
+  @ledgerhq/hw-transport-web-ble 6.35.0 (Apache-2.0)
+  @ledgerhq/hw-app-eth 7.11.1 (Apache-2.0)
+  ethers 6.17.0 (MIT)
+  buffer 6.0.3 (MIT)
+  plus their transitive deps; licence texts are in the bundle's trailing legal comments
+  sha256: 2b3fbcc6cdae4fb8ec221677fc13069cd9fcd5c682c894924104bdf3610d177f
