@@ -4,6 +4,9 @@ import TransportWebHID from '@ledgerhq/hw-transport-webhid';
 import TransportWebBLE from '@ledgerhq/hw-transport-web-ble';
 import Eth from '@ledgerhq/hw-app-eth';
 import { Transaction, Signature, parseEther, formatEther, getAddress } from 'ethers';
+import Solana from '@ledgerhq/hw-app-solana';
+import { PublicKey, SystemProgram, Transaction as SolTx } from '@solana/web3.js';
+import { Buffer } from 'buffer';
 
 export const support = {
   usb: typeof navigator !== 'undefined' && !!navigator.hid,
@@ -72,4 +75,52 @@ export async function evmSend(transport, chain, to, amountStr, onStatus) {
   onStatus('Broadcasting through ' + chain.rpcHost + ' ...');
   const hash = await rpc(chain.rpc, 'eth_sendRawTransaction', [tx.serialized]);
   return { hash, from };
+}
+
+// ---- Solana ----
+const SOL_PATH = "44'/501'/0'";
+
+export function parseUnits(str, decimals) {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(String(str).trim());
+  if (!m) throw new Error('Enter an amount like 0.01');
+  const frac = m[2] || '';
+  if (frac.length > decimals) throw new Error('Too many decimal places (max ' + decimals + ')');
+  return BigInt(m[1]) * 10n ** BigInt(decimals) + BigInt((frac + '0'.repeat(decimals)).slice(0, decimals) || '0');
+}
+export function formatUnits(v, decimals) {
+  const s = v.toString().padStart(decimals + 1, '0');
+  const i = s.slice(0, -decimals), f = s.slice(-decimals).replace(/0+$/, '');
+  return f ? i + '.' + f : i;
+}
+
+export async function solAccount(transport) {
+  const sol = new Solana(transport);
+  const { address } = await sol.getAddress(SOL_PATH);
+  return new PublicKey(address).toBase58();
+}
+
+export async function solSend(transport, net, to, amountStr, onStatus) {
+  const sol = new Solana(transport);
+  const from = new PublicKey(await solAccount(transport));
+  const dest = new PublicKey(to);
+  const lamports = parseUnits(amountStr, 9);
+  if (lamports < 1000000n) throw new Error('Minimum 0.001 SOL');
+  onStatus('Reading balance and a recent blockhash from ' + net.rpcHost + ' ...');
+  const [bal, bh] = await Promise.all([
+    rpc(net.rpc, 'getBalance', [from.toBase58(), { commitment: 'confirmed' }]),
+    rpc(net.rpc, 'getLatestBlockhash', [{ commitment: 'confirmed' }]),
+  ]);
+  const fee = 5000n;
+  if (BigInt(bal.value) < lamports + fee) {
+    throw new Error('Balance too low: need ' + formatUnits(lamports + fee, 9) + ' SOL including the fee, have ' + formatUnits(BigInt(bal.value), 9));
+  }
+  const tx = new SolTx({ feePayer: from, recentBlockhash: bh.value.blockhash })
+    .add(SystemProgram.transfer({ fromPubkey: from, toPubkey: dest, lamports: Number(lamports) }));
+  onStatus('Check the Ledger screen: ' + formatUnits(lamports, 9) + ' SOL to ' + dest.toBase58() + '. Approve only if both match.');
+  const { signature } = await sol.signTransaction(SOL_PATH, tx.serializeMessage());
+  tx.addSignature(from, Buffer.from(signature));
+  if (!tx.verifySignatures()) throw new Error('Signature does not match the Ledger account');
+  onStatus('Broadcasting through ' + net.rpcHost + ' ...');
+  const hash = await rpc(net.rpc, 'sendTransaction', [tx.serialize().toString('base64'), { encoding: 'base64', preflightCommitment: 'confirmed' }]);
+  return { hash, from: from.toBase58() };
 }

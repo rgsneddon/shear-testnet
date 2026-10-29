@@ -8,7 +8,9 @@ ledger-bundle.js (built from ledger-src/ with esbuild 0.28.2, npm run build; loc
   @ledgerhq/hw-transport-webhid 6.36.0 (Apache-2.0)
   @ledgerhq/hw-transport-web-ble 6.35.0 (Apache-2.0)
   @ledgerhq/hw-app-eth 7.11.1 (Apache-2.0)
+  @ledgerhq/hw-app-solana 7.12.0 (Apache-2.0)
+  @solana/web3.js 1.99.0 (MIT)
   ethers 6.17.0 (MIT)
   buffer 6.0.3 (MIT)
   plus their transitive deps; licence texts are in the bundle's trailing legal comments
-  sha256: 2b3fbcc6cdae4fb8ec221677fc13069cd9fcd5c682c894924104bdf3610d177f
+  sha256: edf30e72d49bae0ff3292d227d91cac51f6b89351ebab1f4b594b322f75b0b11
