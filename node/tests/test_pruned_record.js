@@ -229,6 +229,29 @@ test('forged batchRoot is refused before it is stored', async () => {
   await forgedCase('batchRoot', await ready);
 });
 
+// A multi-block fork whose last block is pruned has no child in the batch.
+// Burial is the offered header run, not the batch length. A forged record
+// is refused before anything is stored.
+test('a fork batch whose last block is pruned is refused', async () => {
+  const ctx = await ready;
+  const dir = keep(fs.mkdtempSync(path.join(os.tmpdir(), 'pruned-record-fork-')));
+  const store = createRegtestStore(dir, { bits: 4, fastSync: false });
+  const offered = offerFrom(store, ctx.chain);
+  assert.ok(offered.accepted >= SAMPLE_PRUNE_CONFIRMATIONS, `fork headers ${offered.accepted}`);
+  const forged = { ...ctx.honest, blunoteRecord: ctx.forgeries.W };
+  const got = await Promise.resolve(store.ingest([roundTrip(ctx.chain[0]), forged]));
+  const row = {
+    ...refusalOf(got),
+    tipHeight: store.tip() ? Number(store.tip().height) : 0,
+  };
+  console.log(`PRUNED_RECORD forkTail ${JSON.stringify(row)}`);
+  assert.equal(row.ok, false, `fork tail ${row.reason}`);
+  assert.equal(row.reason, 'blunote_prev', 'fork tail');
+  assert.equal(row.peerOnly, true, 'fork tail');
+  assert.equal(row.field, 'childProof', 'fork tail');
+  assert.equal(row.tipHeight, 0, 'fork tail stored nothing');
+});
+
 after(() => {
   for (const dir of dirs) {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* temp */ }
