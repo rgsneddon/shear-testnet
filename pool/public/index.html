@@ -500,7 +500,6 @@
             <th>Found in</th>
             <th>Status</th>
             <th>Type</th>
-            <th>FINDER</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -730,7 +729,7 @@
       let n = 0;
       for (let i = 0; i < (workers || []).length; i += 1) {
         const w = workers[i] || {};
-        n += Number(w.roundHashes != null ? w.roundHashes : (w.hashes != null ? w.hashes : w.provenHashes)) || 0;
+        n += Number(w.hashes) || 0;
       }
       return n;
     }
@@ -967,9 +966,9 @@
             : '';
           return '<tr><td><span class="miner-hover"><a href="' + href + '">' + esc(tag) + '</a>' + pop + '</span></td><td>' +
             ([w.name, w.version].filter(Boolean).join(' ') || '—') + '</td><td>' + fmtRate(w.hashrate) + '</td><td>' +
-            (Number(w.blocksSession != null ? w.blocksSession : w.blocks) || 0) + '</td><td>' +
-            (Number(w.blocksLifetime) || 0) + '</td><td>' + acceptedThisRoundCell(w, roundShareState) + '</td><td>' +
-            (w.hashes != null ? w.hashes : (w.roundHashes || w.provenHashes || 0)) + '</td><td>' +
+            (Number(w.blocks) || 0) + '</td><td>' +
+            0 + '</td><td>' + acceptedThisRoundCell(w, roundShareState) + '</td><td>' +
+            (w.hashes != null ? w.hashes : 0) + '</td><td>' +
             (w.stale || 0) + '</td><td>' + (w.threads || 0) + '</td></tr>';
         }).join('');
       }
@@ -1038,15 +1037,7 @@
       if (String(row.kind || 'block') !== 'block') return false;
       var h = Math.floor(Number(row.height) || 0);
       if (!(h >= 1)) return false;
-      if (row.poolFound === false) return false;
-      if (row.poolFound === true) return true;
-      var tag = String(row.finder || row.finderTag || '').trim().toLowerCase();
-      if (!/^m[0-9a-f]{8}$/.test(tag)) return false;
-      var known = poolTagSet(stats);
-      var n = 0;
-      for (var k in known) if (Object.prototype.hasOwnProperty.call(known, k)) n += 1;
-      if (!n) return true;
-      return !!known[tag];
+      return row.poolFound === true;
     }
     function stampOwner(book, at) {
       var want = Math.floor(Number(at) || 0);
@@ -1214,12 +1205,6 @@
       const n = Math.max(1, Math.floor(Number(limit) || 10));
       return pending.concat(sealed).slice(0, n);
     }
-    function maskFinder(tag, worker) {
-      const t = String(tag || '').trim().toLowerCase();
-      if (!/^m[0-9a-f]{8}$/.test(t)) return '—';
-      const w = String(worker || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
-      return 'm*****/' + (w || '—');
-    }
     function paintRecent(txs, s) {
       window.__shearRecentTxs = Array.isArray(txs) ? txs : [];
       const body = document.querySelector('#recent-txs tbody');
@@ -1244,15 +1229,14 @@
             const statusCell = reserve
               ? '<span class="reserve-chip">Reserve</span>' + esc(kind) + ' ' + esc(pendingLabel)
               : esc(pendingLabel);
-            const finderCell = maskFinder(t.finder || t.finderTag, t.finderWorker || t.worker);
             const idCell = t.id
               ? '<a href="' + href + '">' + esc(shortId(t.id)) + '</a>'
               : '—';
             return '<tr><td class="mono">' + idCell + '</td><td>' +
               esc(fmtFoundIn(foundInMs(t, s, findLedger))) + '</td><td>' + statusCell + '</td><td class="mono">' +
-              esc(kind) + '</td><td class="mono">' + esc(finderCell) + '</td></tr>';
+              esc(kind) + '</td></tr>';
           }).join('')
-        : '<tr><td colspan="5">No sealed blocks yet.</td></tr>';
+        : '<tr><td colspan="4">No sealed blocks yet.</td></tr>';
       body.innerHTML = html;
       recentSig = sig;
     }
