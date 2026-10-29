@@ -1710,6 +1710,14 @@ function easeHashrate(miner, instant, now, tauS = HASHRATE_EMA_TAU_S) {
 /** Match ShearK `RATE_MIN_DT` (2s). 8s hid the miner paint and left proven 2^bits as HUD. */
 export const SELF_RATE_MIN_DT_S = 2;
 
+/**
+ * PR146 (display only): ShearK 2.9 sends no `threads` (privacy), and a
+ * session's `threads` then defaults to 1, which capped the self-rate HUD at
+ * 2500 R/s for every rig. With no reported count the HUD ceiling is this many
+ * threads (still 2500 R/s each). Payout and credit never read clientHs.
+ */
+export const SELF_RATE_UNKNOWN_THREADS = 256;
+
 export function applyMinerSelfRate(session, params, now = Date.now()) {
   if (!session || !params) return session;
   if (isCminerFeeLogin(session.workerKey || session.login || params.login)) return session;
@@ -1721,7 +1729,9 @@ export function applyMinerSelfRate(session, params, now = Date.now()) {
     if (hashes < Number(session.clientHashesRound0)) session.clientHashesRound0 = hashes;
   }
   if (!Number.isFinite(hashes) || hashes < 0) return session;
-  const threads = Math.max(1, Number(session.threads) || Number(session.claimedThreads) || Number(params.threads) || 1);
+  const threads = session.threadsReported === false
+    ? Math.max(1, Number(params.threads) || SELF_RATE_UNKNOWN_THREADS)
+    : Math.max(1, Number(session.threads) || Number(session.claimedThreads) || Number(params.threads) || 1);
   const cap = threads * 2500;
   const claimed = Number(params.hashrate);
   if (Number.isFinite(claimed) && claimed > 1 && claimed <= cap) {
@@ -4895,6 +4905,7 @@ export function createPool({
             stale: 0,
             blocks: 0,
             threads: Number(params.threads) || 1,
+            threadsReported: Number(params.threads) > 0,
             connections: [],
             acceptAt: [],
             acceptWork: [],
