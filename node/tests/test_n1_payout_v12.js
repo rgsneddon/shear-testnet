@@ -272,7 +272,7 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
 
     const spendDest = spendDestOf(id.spendPub);
     const signed = withdrawTx({ from: spendDest, to: spendDest, nanos: 1000, id: 'w', nonce });
-    signSpendTx(signed, id.privateKey);
+    signSpendTx(signed, id.privateKey, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig(signed), true);
     assert.equal(verifySpendSig({ ...signed, id: 'w-other' }), false);
     const otherNonce = Buffer.alloc(32, 8).toString('hex');
@@ -282,7 +282,7 @@ describe('N-1 payout leaves (PSA-1f69-1)', () => {
     assert.equal(bare.equals(moved), false);
     const lock = lockTx({ from: spendDest, to: spendDest, nanos: 1000, id: 'lock-a' });
     assert.equal(reserveDigestSuffix(lock).equals(reserveDigestSuffix({ ...lock, id: 'lock-b' })), true);
-    signSpendTx(lock, id.privateKey);
+    signSpendTx(lock, id.privateKey, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig({ ...lock, id: 'lock-b' }), true);
   });
 

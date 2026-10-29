@@ -181,7 +181,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
           vout: [compact ? { ...note, kind } : { ...note, kind, address: dest }],
         };
         // No FS-1 blob here, so spendPub and sig are not the FS-1 identity leak.
-        signSpendTx(tx, box.key);
+        signSpendTx(tx, box.key, { magic: 'shear-testnet-v12' });
         assertNoLeak(tx, `${kind} ${nanos}`);
         assert.equal(typedCommitRejected(tx)?.reason, 'admit_membership', `${kind} ${nanos}`);
         const refused = kind === 'vortice-register';
@@ -242,7 +242,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
             vout: [{ ...note, kind, address: dest }],
             ...carry,
           };
-          signSpendTx(tx, box.key);
+          signSpendTx(tx, box.key, { magic: 'shear-testnet-v12' });
           const label = `${kind} ${nanos} ${Object.keys(carry)[0]}`;
           const body = verifyFundedBody([tx], () => nanos * 4, { reserveState: { portals: {}, epochBps: 0 } });
           assert.equal(body.reason, 'kind', `${label} body ${body.reason}`);
@@ -295,7 +295,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         admit_proof: { blob: Buffer.alloc(8, 4) },
         spendTag: Buffer.alloc(32, 5),
       };
-      signSpendTx(tx, box.key);
+      signSpendTx(tx, box.key, { magic: 'shear-testnet-v12' });
       assert.equal(store.queueTx(tx).reason, 'custodial_pull', `pool-withdraw ${nanos}`);
       assert.equal(verifyFundedBody([tx], () => nanos * 4).reason, 'custodial_pull', `pool-withdraw ${nanos}`);
       assert.equal(admitMempool(emptyMempool(), tx, { baseFee: 1 }).reason, 'custodial_pull', `pool-withdraw ${nanos}`);
@@ -405,7 +405,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         vin: [],
         vout: [{ ...note, kind: 'withdraw', address: thief.dest }],
       };
-      signSpendTx(redirected, thief.key);
+      signSpendTx(redirected, thief.key, { magic: 'shear-testnet-v12' });
       const state = {
         epochBps: 0,
         genesisMs: LUMP_GENESIS,
@@ -430,7 +430,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         vin: [],
         vout: [{ ...sealNote(nanos, { dest20: hash20FromAddress(owner.dest), kind: 'withdraw' }), kind: 'withdraw', address: owner.dest }],
       };
-      signSpendTx(foreign, thief.key);
+      signSpendTx(foreign, thief.key, { magic: 'shear-testnet-v12' });
       const auth = reserveAuth(foreign, state, new Map());
       assert.equal(auth.reason, 'unsigned', String(nanos));
     }

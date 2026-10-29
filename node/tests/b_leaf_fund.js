@@ -231,7 +231,7 @@ export function balancedSend(store, payer, {
   tx = attachDummyOuts(tx, { spent });
   tx = attachStubAdmitV2(tx);
   if (!tx.admit_proof || !tx.excess) return { ok: false, reason: 'prove', tx };
-  signSpendTx(tx, payer.key);
+  signSpendTx(tx, payer.key, { magic: 'shear-testnet-v12' });
   const wire = compactTx(tx);
   const need = levyNeed(wire);
   return { ok: true, tx, wire, need, fee, opened, change };

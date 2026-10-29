@@ -68,7 +68,7 @@ describe('one portal per lock', () => {
     // The spend sig binds the lockAuth key. The identity `from` is a different dest.
     first.from = spendDestOf(ed25519RawPub(ownerKey));
     first.vin = [{ dest20: Buffer.from(rows[0].dest20) }];
-    signSpendTx(first, ownerKey);
+    signSpendTx(first, ownerKey, { magic: 'shear-testnet-v12' });
     const auth = reserveAuth(first, emptyVault());
     assert.equal(auth.ok, true, auth.reason);
   });

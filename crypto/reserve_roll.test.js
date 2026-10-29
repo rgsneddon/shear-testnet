@@ -63,9 +63,9 @@ function openState(owner, when = T0) {
 }
 
 async function openEvm(owner, commit = Buffer.alloc(32, 9), when = T0) {
-  const session = await bootReserveEvm();
+  const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
   assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
-  assert.equal((await callReserve(session, encodeDeposit(owner.dest, commit, when, { key: owner.key }, true))).ok, true);
+  assert.equal((await callReserve(session, encodeDeposit(owner.dest, commit, when, { key: owner.key, magic: 'shear-testnet-v12' }, true))).ok, true);
   return session;
 }
 

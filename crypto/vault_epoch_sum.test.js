@@ -238,7 +238,7 @@ describe('epoch sums stay commitments', () => {
     assert.equal(Number(state.mintBankNanos), proved.nanos);
     assert.equal(state.epochMintNanos['0'], BigInt(proved.nanos));
     assert.equal(state.epochMintSum, undefined);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeCommitEpochStartRoot(0, proved.rootHex))).ok, true);
     const evm = await callReserve(
@@ -342,13 +342,13 @@ describe('epoch sums stay commitments', () => {
     assert.equal(borrowedPaid.ok, false);
     assert.equal(borrowedPaid.reason, 'stake_reward');
 
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(session, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(session, encodeCommitEpochStartRoot(0, first.rootHex))).ok, true);
     const evmWrong = await callReserve(session, encodeClaim(first.nullifier, Number(wrong.readBigUInt64LE(off)), wrong, 0, packVaultOutput(first.note)));
     assert.equal(evmWrong.ok, false);
 
-    const honest = await bootReserveEvm();
+    const honest = await bootReserveEvm({ network: 'shear-testnet-v12' });
     assert.equal((await callReserve(honest, encodePinClock(T0))).ok, true);
     assert.equal((await callReserve(honest, encodeCommitEpochStartRoot(0, first.rootHex))).ok, true);
     const evmHonest = await callReserve(honest, encodeClaim(first.nullifier, first.nanos, first.blob, 0, packVaultOutput(first.note)));

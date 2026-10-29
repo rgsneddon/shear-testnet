@@ -94,7 +94,7 @@ describe('a pruned b-spend restarts spent', () => {
       vout: [sealMintOut(leaf.unit, dest, 'b-spend')],
     };
     spendTx.excess = excessOf(spendTx.vout);
-    signSpendTx(spendTx, who.key);
+    signSpendTx(spendTx, who.key, { magic: 'shear-testnet-v12' });
     const flux = live.fluxThrough(live.blocks.length - 1);
     const now = Number(decodeHeader(Buffer.from(live.tip().header)).timestamp) + 90_000;
     const tpl = buildTemplate({

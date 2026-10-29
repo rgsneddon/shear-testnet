@@ -55,7 +55,7 @@ describe('a b-spend fee is signed', () => {
       vin: [{ address: who.dest }],
       vout: [{ kind: 'b-spend', nanos: 9 }],
     };
-    signSpendTx(tx, who.key);
+    signSpendTx(tx, who.key, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig(tx), true);
     assert.equal(verifySpendSig({ ...tx, fee: 1 }), false);
     assert.equal(verifySpendSig({ ...tx, fee: 0 }), true);
@@ -72,7 +72,7 @@ describe('a b-spend fee is signed', () => {
       vin: [{ address: who.dest }],
       vout: [{ kind: 'b-spend', nanos: 9 }],
     };
-    signSpendTx(priced, who.key);
+    signSpendTx(priced, who.key, { magic: 'shear-testnet-v12' });
     assert.equal(verifySpendSig(priced), true);
     assert.equal(verifySpendSig({ ...priced, fee: 4 }), false);
     assert.equal(verifySpendSig({ ...priced, fee: 2 }), false);

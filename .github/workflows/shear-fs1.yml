@@ -92,6 +92,10 @@ jobs:
         run: node --test --test-concurrency=1 crypto/asert.test.js node/tests/test_admit_keys_v12.js node/tests/test_portal_per_lock_v12.js node/tests/test_lock_owner_bind_v12.js node/tests/test_lock_replay_auth_v12.js node/tests/test_withdraw_leak_v12.js node/tests/test_snap_fill_linear_v12.js node/tests/test_claim_mint_bound_v12.js node/tests/test_p2p_fingerprint_v12.js
       - name: Hash bonus law, including the JS and EVM 1 to 2 to 3 pin
         run: node --test --test-concurrency=1 --test-timeout=1800000 crypto/leaf_vote.test.js
+      - name: F1, a claim rides only on reward-claim, and the vault mint equals the supply ledger
+        run: node --test --test-concurrency=1 crypto/vault_claim_carry.test.js crypto/vault_audit.test.js
+      - name: LOCK_AUTH=book-magic, a lock signs and is checked as its own book, JS and EVM
+        run: node --test --test-concurrency=1 crypto/vault_lockauth_book.test.js
       - name: Flutter for the Dart withdraw body
         uses: subosito/flutter-action@v2
         with:

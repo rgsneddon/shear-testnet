@@ -34,7 +34,7 @@ function paintedSend(from, to, nanos, key, id) {
     vin: [{ address: from }],
     vout: [{ ...pay, address: to }, dummy],
   };
-  signSpendTx(tx, key);
+  signSpendTx(tx, key, { magic: 'shear-testnet-v12' });
   return tx;
 }
 
@@ -58,7 +58,7 @@ function hiddenPaintedSend(from, to, toAdmitBase, nanos, key, id) {
     vin: [{ address: from }],
     vout: [{ ...pay, address: to }, dummy],
   };
-  signSpendTx(tx, key);
+  signSpendTx(tx, key, { magic: 'shear-testnet-v12' });
   return tx;
 }
 

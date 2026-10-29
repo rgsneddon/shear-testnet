@@ -21,7 +21,7 @@ import { readyHeight, walletAnchor } from '../../crypto/admit_v3.js';
 import { compactTx } from '../../crypto/chronoflux.js';
 import { viewTagOf } from '../../crypto/dummy.js';
 import { proveLeafVote, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
-import { censusOf, proposalId } from '../../crypto/leaf_vote.js';
+import { censusOf, censusRoot, proposalId } from '../../crypto/leaf_vote.js';
 import {
   FS1_RECORD_BYTES,
   FS1_WIRE,
@@ -991,7 +991,7 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       proveHeight: seeded.tip().height + 1,
     });
     assert.ok(mined, 'fs1 lock');
-    signSpendTx(mined.tx, ownerKey);
+    signSpendTx(mined.tx, ownerKey, { magic: 'shear-testnet-v12' });
     delete mined.tx.spendPub;
     delete mined.tx.sig;
     delete mined.tx.signature;
@@ -1048,7 +1048,7 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       dest20: hash20FromAddress(box.dest),
     });
     assert.ok(voteProof, 'vote proof');
-    assert.equal(voteProof.rootHex, seeded.reserveVault.epochStartRoots['1'], 'vote root');
+    assert.equal(voteProof.rootHex, censusRoot(seeded.reserveVault, 1), 'vote root is the epoch-1 census root');
     const late = bindCoins(seeded, recent.map((row) => ({
       commit: row.opening.commit,
       r: row.opening.r,
@@ -1075,7 +1075,7 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       proveHeight: seeded.tip().height + 1,
     });
     assert.ok(pending, 'pending lock');
-    signSpendTx(pending.tx, pendingKey);
+    signSpendTx(pending.tx, pendingKey, { magic: 'shear-testnet-v12' });
     delete pending.tx.spendPub;
     delete pending.tx.sig;
     delete pending.tx.signature;

@@ -69,7 +69,7 @@ import {
 import { FS1_RECORD_BYTES, FS1_WIRE, fs1BlobLen, fs1ProveSpend, resetFs1Tree, txBodyDigestFs1 } from '../../crypto/fs1_spend.js';
 import { fs1NativeLoaded } from '../../crypto/native_admit.js';
 import { proveLeafRetire, proveLeafVote, vaultLockNote } from '../../crypto/vault_reward_fs1.js';
-import { censusOf, proposalId } from '../../crypto/leaf_vote.js';
+import { censusOf, censusRoot, proposalId } from '../../crypto/leaf_vote.js';
 
 const KINDS = ['lock', 'vote', 'withdraw'];
 const AMOUNTS = [1, 1_000_000, 50_000_000_000];
@@ -643,7 +643,7 @@ async function lifeLock(store, person, coins, spent, id) {
   // The output dest is the one-time portal. The body dest is the owner key,
   // which is what the spend signature binds. The proof names this inclusion.
   tx.dest20 = Buffer.from(person.spend20);
-  signSpendTx(tx, person.key);
+  signSpendTx(tx, person.key, { magic: 'shear-testnet-v12' });
   delete tx.spendPub;
   delete tx.sig;
   delete tx.signature;
@@ -692,7 +692,7 @@ async function lifeVote(store, person, coins, spent, row) {
     dest20: hash20FromAddress(person.dest),
   });
   assert.ok(voteProof, 'vote proof');
-  assert.equal(voteProof.rootHex, store.reserveVault.epochStartRoots['1'], 'vote root');
+  assert.equal(voteProof.rootHex, censusRoot(store.reserveVault, 1), 'vote root is the epoch-1 census root');
   const view = lifeCoins(store, coins, spent);
   const use = view.coins.filter((c) => c.who === person).slice(0, 1);
   assert.equal(use.length, 1, 'vote input');
@@ -1036,7 +1036,7 @@ describe('ADMITv3 note consumption', { timeout: fileCapMs(import.meta.url) }, ()
         excess: Buffer.alloc(32, 9),
       });
       tx.dest20 = Buffer.from(d20);
-      signSpendTx(tx, who.key);
+      signSpendTx(tx, who.key, { magic: 'shear-testnet-v12' });
       delete tx.spendPub;
       delete tx.sig;
       delete tx.signature;

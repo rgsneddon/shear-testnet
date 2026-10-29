@@ -142,7 +142,7 @@ describe('v12 custodial pull stays off while coinbase still pays', () => {
       const signed = poolWithdrawTx({
         from: box.dest, to, nanos: 1, fee: 0, id: 'plain-any',
       });
-      signSpendTx(signed, box.key);
+      signSpendTx(signed, box.key, { magic: 'shear-testnet-v12' });
       const queued = pool.store.queueTx(signed);
       assert.equal(queued.ok, false);
       assert.equal(queued.reason, 'custodial_pull');
@@ -158,7 +158,7 @@ describe('v12 custodial pull stays off while coinbase still pays', () => {
         vout: [{ address: payTo, nanos: 1, kind: 'send' }],
       });
       for (const o of bare.vout) delete o.r;
-      signSpendTx(bare, box.key);
+      signSpendTx(bare, box.key, { magic: 'shear-testnet-v12' });
       assert.equal(bare.nanos, undefined);
       assert.equal(bare.vout[0].nanos, undefined);
       assert.ok(bare.vout[0].amtCt && bare.vout[0].rEph && bare.vout[0].rCt);

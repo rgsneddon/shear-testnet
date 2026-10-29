@@ -689,7 +689,7 @@ function fs1LockOf(store, who, saved) {
   assert.ok(tx, 'lock fee');
   tx.dest20 = destCommitFromSpendPub(ed25519RawPub(ownerKey));
   tx.ownerPub = ownerPub;
-  signSpendTx(tx, ownerKey);
+  signSpendTx(tx, ownerKey, { magic: 'shear-testnet-v12' });
   delete tx.spendPub;
   delete tx.sig;
   delete tx.signature;

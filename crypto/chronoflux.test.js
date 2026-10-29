@@ -566,13 +566,17 @@ describe('chronoflux prune + collate', () => {
       vout: [fat],
       epochStartRoot: 'ab'.repeat(32),
       epochStartCommits: [{ epoch: 1, root: 'ab'.repeat(32) }],
-      epochCensusCommit: [{ epoch: 1, leafCount: 1, openHeight: 240 }],
+      // The census row carries its vote root. A row with no root is dropped.
+      epochCensusCommit: [
+        { epoch: 1, leafCount: 1, openHeight: 240, root: 'ef'.repeat(32) },
+        { epoch: 2, leafCount: 1, openHeight: 3840 },
+      ],
       vaultLockRoot: 'cd'.repeat(32),
     };
     const sealed = compactTx(tx);
     assert.equal(sealed.epochStartRoot, 'ab'.repeat(32));
     assert.deepEqual(sealed.epochStartCommits, [{ epoch: 1, root: 'ab'.repeat(32) }]);
-    assert.deepEqual(sealed.epochCensusCommit, [{ epoch: 1, leafCount: 1, openHeight: 240 }]);
+    assert.deepEqual(sealed.epochCensusCommit, [{ epoch: 1, leafCount: 1, openHeight: 240, root: 'ef'.repeat(32) }]);
     assert.equal(sealed.vaultLockRoot, 'cd'.repeat(32));
     const o = sealed.vout[0];
     assert.equal(o.kind, 'hash');

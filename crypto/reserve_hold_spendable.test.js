@@ -93,7 +93,7 @@ describe('reserve principal is not spendable', () => {
         id: 'lock-hold-seal',
       });
       raw.fee = levyNanos(0, { tx: raw });
-      const lock = signSpendTx(raw, id.privateKey);
+      const lock = signSpendTx(raw, id.privateKey, { magic: 'shear-testnet-v12' });
       const queued = live.queueTx(lock);
       assert.equal(queued.ok, false, queued.reason || 'queue');
       // A plaintext lock names from/to. Since a5760821 the mempool refuses that

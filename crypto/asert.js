@@ -382,7 +382,6 @@ export const MINER_MINT_ONLY = 1;
  */
 export const HASH_TX_LIVE = 1;
 export const DEST_HRP = 'ssa';
-export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
 /** Every transaction-fee unit is paid to that block's miners. None is reserved. */
 export const FEE_SPLIT_FINDER_BPS = 10000;
@@ -446,7 +445,6 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     MINER_MINT_ONLY,
     HASH_TX_LIVE,
     DEST_HRP,
-    FEE_TAU_MS,
     FEE_TARGET_WEIGHT,
     FEE_SPLIT_FINDER_BPS,
     LEAF_A_LAYOUT,
@@ -587,6 +585,20 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     'VOTE_FEE=owned-note',
     'VOTE_VETO=none',
     'VOTE_CAP=64',
+    // Vault Y row (a), 28 Oct: a leaf vote proves against the root frozen
+    // with its epoch's census, keyed by epoch. The claim root stays per period.
+    'VOTE_ROOT=census-epoch',
+    // The claim root is keyed by period only (snapshotPeriodRoot); an epoch
+    // open no longer writes it. VOTE_ROOT names only the vote half.
+    'CLAIM_ROOT=period',
+    // F1: a claim proof, nullifier or reward-claim output rides only on a
+    // reward-claim tx; any other vault kind carrying one is refused.
+    'CLAIM_KIND=reward-claim-only',
+    // F1: each block's mint-bank delta equals the ledger's minted interest.
+    'VAULT_MINT=ledger-delta',
+    // The lock owner signs, and the JS and the EVM check, the book's own
+    // magic (chainId 2701). A missing magic is unknown_magic, not testnet.
+    'LOCK_AUTH=book-magic',
     'DINS=pot+hash',
     'ROOTA=pot-spine+dag-fluxset',
     `POOL_FEE_MAX_BPS=${POOL_FEE_MAX_BPS}`,
@@ -642,7 +654,6 @@ export function consensusLaw() {
     epochDaysMainnet: EPOCH_DAYS_MAINNET,
     magicMainnet: MAGIC_MAINNET,
     destHrp: DEST_HRP,
-    feeTauMs: FEE_TAU_MS,
     feeTargetWeight: FEE_TARGET_WEIGHT,
     feeSplitFinderBps: FEE_SPLIT_FINDER_BPS,
     leafALayout: LEAF_A_LAYOUT,

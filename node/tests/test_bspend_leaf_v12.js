@@ -131,7 +131,7 @@ describe('v12 b-spend leaf is canonical', () => {
           vin: [{ address: dest }],
           vout: [opened],
         };
-        signSpendTx(honest, key);
+        signSpendTx(honest, key, { magic: 'shear-testnet-v12' });
         const accepted = bindBSpend(honest, {
           history: [packed.block],
           tipHeight: SPENDABLE_CONFIRMATIONS + amount,

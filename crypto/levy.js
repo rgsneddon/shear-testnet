@@ -27,7 +27,6 @@ import {
 
 export { poolFeeDest };
 
-export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
 export const LEVY_FLOOR_UNITS = 100;
 export const LEVY_BPS = 0;

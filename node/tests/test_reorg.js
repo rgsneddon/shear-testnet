@@ -126,7 +126,7 @@ describe('most-work adopt', () => {
     }, { spent });
     admitSend(bounce, { id, spent, blocks: local.blocks });
     bindWeightFee(bounce);
-    signSpendTx(bounce, box.key);
+    signSpendTx(bounce, box.key, { magic: 'shear-testnet-v12' });
     // admitSend is a byte-2 stub. Stage 0 refuses it, so it never sits in
     // the mempool for the reorg to bounce. The fork checks below still run.
     const queued = local.queueTx(bounce);

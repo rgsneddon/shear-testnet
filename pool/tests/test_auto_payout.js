@@ -288,7 +288,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
       id: 'compact-plain',
     });
-    signSpendTx(tx, poolBox.key);
+    signSpendTx(tx, poolBox.key, { magic: 'shear-testnet-v12' });
     const sealed = compactTx(tx);
     assert.equal(sealed.from, undefined);
     assert.equal(sealed.vin[0].address, undefined);
@@ -399,7 +399,7 @@ describe('auto payout at π SHE to miner ssa1', () => {
       fee: 100,
       id: 'pi-plain',
     });
-    signSpendTx(signed, poolBox.key);
+    signSpendTx(signed, poolBox.key, { magic: 'shear-testnet-v12' });
     const queued = store.queueTx(signed);
     assert.equal(queued.ok, false);
     assert.equal(queued.reason, 'custodial_pull');

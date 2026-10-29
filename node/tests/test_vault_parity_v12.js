@@ -275,7 +275,7 @@ function proveVote(store, who, opening, id, choice) {
     receiptNanos: 0,
     base: admitBaseFromAddress(who.dest),
   });
-  signSpendTx(tx, who.key);
+  signSpendTx(tx, who.key, { magic: 'shear-testnet-v12' });
   return tx;
 }
 
@@ -305,7 +305,7 @@ function proveWithdraw(store, who, opening, id) {
     receiptNanos: preview.payout,
     base: admitBaseFromAddress(who.dest),
   });
-  signSpendTx(tx, who.key);
+  signSpendTx(tx, who.key, { magic: 'shear-testnet-v12' });
   return tx;
 }
 
@@ -876,7 +876,7 @@ const store = createStore(dir, {
       }
       assert.ok(lock, 'lock fee');
       lock.dest20 = Buffer.from(d20);
-      signSpendTx(lock, who.key);
+      signSpendTx(lock, who.key, { magic: 'shear-testnet-v12' });
       delete lock.spendPub;
       delete lock.sig;
       delete lock.signature;

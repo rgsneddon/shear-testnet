@@ -180,7 +180,7 @@ function withOpenedPay(tx, id, nanos, key) {
   opened.vout[0] = openedFlowVout(tx.vout[0].address, nanos);
   opened.excess = kernelExcess(opened.vout, opened.vin);
   assert.ok(opened.excess);
-  signSpendTx(opened, key);
+  signSpendTx(opened, key, { magic: 'shear-testnet-v12' });
   omitTags(opened);
   return opened;
 }
@@ -338,7 +338,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     const spend = sendBody({ id: 'omit', dest, notes: [pot], pay, fee, change });
     attachStubAdmitV2(spend);
     assert.equal(spend.admit_proof.blob[0], 2);
-    signSpendTx(spend, key);
+    signSpendTx(spend, key, { magic: 'shear-testnet-v12' });
     const real = blobTag(spend.admit_proof);
     omitTags(spend);
     // Send outputs are hidden (e2bd74cf), so the full body reaches the
@@ -457,7 +457,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     const againLive = loaded.fluxset();
     const respent = sendBody({ id: 'respent', dest, notes: [pot], pay, fee, change });
     attachStubAdmitV2(respent, { tagFill: 3 });
-    signSpendTx(respent, key);
+    signSpendTx(respent, key, { magic: 'shear-testnet-v12' });
     omitTags(respent);
     const againQ = loaded.queueTx(respent);
     assert.equal(againQ.ok, false);
@@ -513,7 +513,7 @@ describe('v12 spend tags come from the proof bytes', () => {
     const fresh = store.fluxset();
     const restored = sendBody({ id: 'restored', dest, notes: [pot], pay, fee, change });
     attachStubAdmitV2(restored, { tagFill: 4 });
-    signSpendTx(restored, key);
+    signSpendTx(restored, key, { magic: 'shear-testnet-v12' });
     omitTags(restored);
     const restoredQ = store.queueTx(restored);
     assert.equal(restoredQ.ok, true, restoredQ.reason);
@@ -557,7 +557,7 @@ describe('v12 spend tags come from the proof bytes', () => {
       tx.admit_proofs = proofs;
       tx.excess = kernelExcess(tx.vout, tx.vin);
       assert.ok(tx.excess);
-      signSpendTx(tx, key);
+      signSpendTx(tx, key, { magic: 'shear-testnet-v12' });
       omitTags(tx);
       const need = levyNanos(0, { tx });
       if (fee >= need) break;

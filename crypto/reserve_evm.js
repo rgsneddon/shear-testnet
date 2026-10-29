@@ -6,12 +6,14 @@ import { createCustomCommon, Mainnet, Hardfork } from '@ethereumjs/common';
 import { hexToBytes, bytesToHex, createAddressFromString, createAccount } from '@ethereumjs/util';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash20FromAddress, encodeDest } from './address.js';
-import { RESERVE_PROGRAM, RESERVE_EPOCH_MS, MAGIC_TESTNET, MAX_LOCK_LEAVES } from './asert.js';
+import { RESERVE_PROGRAM, MAGIC_TESTNET, MAX_LOCK_LEAVES } from './asert.js';
+import { epochMs } from './pot_sched.js';
 import { EMPTY_ROOT } from './merkle.js';
 import {
   reserveAction, blockRewardRoot, packRewardProof, rewardOwnerCommit, packRewardAuth,
   lockQualifies, lockFundingRejected, lockNotePrincipal, lockUnlockOf, consensusUnlockPeriod,
   portalIdFromDest, portalIdFromDest20, withdrawSignedDest, signRewardAuth, verifyRewardAuth,
+  claimCarriedRejected,
 } from './reserve_vault.js';
 import { createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { ED25519_SPKI_PREFIX, ed25519RawPub } from './address.js';
@@ -114,8 +116,45 @@ export function evmPortalId(dest) {
   return Buffer.from(keccak256(Buffer.concat([Buffer.from('shear-portal-v1'), raw])));
 }
 
+/**
+ * The book's 32-byte magic for the lock-owner domain (LOCK_AUTH=book-magic).
+ * A book name is hashed as the EVM constructor hashes it; 32 raw bytes pass
+ * as they are. A missing magic throws `unknown_magic`: there is no testnet
+ * default, so a lock is always signed and checked as the book that applies it.
+ */
+export function lockAuthMagicBytes(magic) {
+  if (magic == null || magic === '') throw new Error('unknown_magic');
+  if (typeof magic === 'string') return Buffer.from(shearMagicBytes(reserveBookOf(magic)));
+  let raw;
+  try { raw = Buffer.from(asU8(magic)); } catch { throw new Error('unknown_magic'); }
+  if (raw.length !== 32) throw new Error('unknown_magic');
+  return raw;
+}
+
+/**
+ * The Reserve book a chain magic runs as. A book the pinned Reserve knows is
+ * itself (shear-v1, the testnets). Any other named book (regtest, dev) runs
+ * testnet law, as consensusFingerprint names it, since the constructor
+ * accepts no other magic. A missing magic throws `unknown_magic`.
+ */
+export function reserveBookOf(magic) {
+  if (typeof magic !== 'string' || !magic) throw new Error('unknown_magic');
+  return reservePinOk(magic) ? magic : MAGIC_TESTNET;
+}
+
+/**
+ * The book whose proofs and clock a Reserve call checks: the applying chain's
+ * magic, else the one the session was booted as. Neither is refused.
+ */
+export function sessionBook(session, ctx = null) {
+  const book = ctx?.magic || session?.magic;
+  if (typeof book !== 'string' || !book) throw new Error('unknown_magic');
+  return book;
+}
+
 /** shear-lock-owner-v1 || portalId || commit || magic || chainId le64. */
-export function lockOwnerMessage(portalId, commit, magic = null, chainId = SHEAR_EVM_CHAIN_ID) {
+export function lockOwnerMessage(portalId, commit, magic, chainId = SHEAR_EVM_CHAIN_ID) {
+  const mag = lockAuthMagicBytes(magic);
   let id;
   let word;
   try {
@@ -125,8 +164,6 @@ export function lockOwnerMessage(portalId, commit, magic = null, chainId = SHEAR
     return null;
   }
   if (id.length !== 32 || word.length !== 32) return null;
-  const mag = Buffer.from(magic ? asU8(magic) : shearMagicBytes());
-  if (mag.length !== 32) return null;
   return Buffer.concat([
     Buffer.from('shear-lock-owner-v1'),
     id,
@@ -137,7 +174,8 @@ export function lockOwnerMessage(portalId, commit, magic = null, chainId = SHEAR
 }
 
 /** ownerPub(32) || sig(64). A 32-byte owner hash is not this blob. */
-export function signLockAuth(dest, commit, privateKey, magic = null, chainId = SHEAR_EVM_CHAIN_ID) {
+export function signLockAuth(dest, commit, privateKey, magic, chainId = SHEAR_EVM_CHAIN_ID) {
+  lockAuthMagicBytes(magic);
   if (!privateKey) return null;
   const id = evmPortalId(dest);
   let word;
@@ -237,12 +275,17 @@ export function encodeNoteBlockHeight(height) {
   return concat(selector('noteBlockHeight(uint256)'), pad32(Math.max(0, Math.floor(Number(height) || 0))));
 }
 
-export function encodeCommitEpochCensus(epoch, leafCount, openHeight) {
+/** Census of an epoch with the vote root frozen at that same point. */
+export function encodeCommitEpochCensus(epoch, leafCount, openHeight, rootHex) {
+  const word = new Uint8Array(32);
+  const raw = String(rootHex || '').replace(/^0x/i, '');
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) word.set(Buffer.from(raw, 'hex'));
   return concat(
-    selector('commitEpochCensus(uint256,uint256,uint256)'),
+    selector('commitEpochCensus(uint256,uint256,uint256,bytes32)'),
     pad32(epoch),
     pad32(leafCount),
     pad32(openHeight),
+    word,
   );
 }
 
@@ -762,7 +805,9 @@ function vaultZkPrecompile(opts) {
   return { executionGasUsed: gasUsed, returnValue: out };
 }
 
-export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null } = {}) {
+export async function bootReserveEvm({ network, bytecode = null } = {}) {
+  // The EVM runs as the book that boots it: no testnet default.
+  if (typeof network !== 'string' || !network) throw new Error('unknown_magic');
   const { resetLockWitnesses } = await import('./owned_portal.js');
   resetLockWitnesses();
   const common = shearCommon();
@@ -790,7 +835,7 @@ export async function bootReserveEvm({ network = MAGIC_TESTNET, bytecode = null 
   }
   const to = created.createdAddress;
   if (!to) throw new Error('reserve_deploy: no address');
-  return { evm, address: to, common };
+  return { evm, address: to, common, magic: network };
 }
 
 export async function callReserve(session, data, { staticCall = false, value = 0n, caller } = {}) {
@@ -954,7 +999,8 @@ function lockCommitForEvm(tx) {
  * Pub hex when lockAuth is the owner signature over this lock's portal and
  * leaf commit. A copied ownerPub with no matching signature is not an owner.
  */
-export function verifyLockAuth(tx, magic = null) {
+export function verifyLockAuth(tx, magic) {
+  lockAuthMagicBytes(magic);
   let raw;
   try { raw = Buffer.from(asU8(tx?.lockAuth)); } catch { return null; }
   if (raw.length !== 96) return null;
@@ -970,13 +1016,17 @@ export function verifyLockAuth(tx, magic = null) {
   return pub;
 }
 
-/** Stamp the owner signature a block replay will check. The spend sig is separate. */
-export function attachLockAuth(tx, privateKey) {
+/**
+ * Stamp the owner signature a block replay will check, under the book's
+ * magic. The spend sig is separate. A lock with no magic throws unknown_magic.
+ */
+export function attachLockAuth(tx, privateKey, magic) {
   if (!tx || String(tx.kind || tx.vout?.[0]?.kind || '') !== 'lock') return tx;
+  lockAuthMagicBytes(magic);
   if (tx.lockAuth) return tx;
   const commit = lockCommitForEvm(tx);
   if (!commit || !privateKey) return tx;
-  const auth = signLockAuth(destBytesForEvm(tx, null), commit, privateKey);
+  const auth = signLockAuth(destBytesForEvm(tx, null), commit, privateKey, magic);
   if (auth) tx.lockAuth = auth;
   return tx;
 }
@@ -1016,6 +1066,9 @@ function destBytesForEvm(tx, act) {
 }
 
 export async function executeReserveTx(session, tx, nowMs, ctx = null) {
+  // Same refusal as applyReserveBlock: no claim rides on another kind.
+  const carried = claimCarriedRejected(tx);
+  if (carried) return carried;
   const kind = txKindOf(tx);
   const act = reserveAction(tx);
   const dest = destBytesForEvm(tx, act);
@@ -1046,7 +1099,7 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
       // The deposit checks the consensus unlock itself. A leaf that is not
       // the funding output plus that unlock is not credited.
       const height = Math.floor(Number(ctx?.blockHeight ?? ctx?.height) || 0);
-      const magic = ctx?.magic || MAGIC_TESTNET;
+      const magic = sessionBook(session, ctx);
       const clock = lockUnlockOf({
         genesisMs: Number(ctx?.genesisMs) || 0,
         magic,
@@ -1128,10 +1181,11 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
     return callReserve(session, encodeRoll(from, nowMs, Math.floor(Number(tx?.earnEpoch) || 0), auth || new Uint8Array()));
   }
   if (kind === 'withdraw') {
+    const book = sessionBook(session, ctx);
     const viewGot = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
     if (viewGot.ok) {
       const view = decodePublicView(viewGot.returnValue);
-      const ended = view.epochStartMs && nowMs >= view.epochStartMs + RESERVE_EPOCH_MS;
+      const ended = view.epochStartMs && nowMs >= view.epochStartMs + epochMs(book);
       if (ended && !view.bonusEnacted) {
         const en = await callReserve(session, encodeEnact(nowMs));
         if (!en.ok) return en;
@@ -1154,7 +1208,7 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
       ? tx.retireProofs
       : (tx?.retireProof ? [tx.retireProof] : []);
     if (retireList.length) {
-      const blob = packRetireBlob(retireList);
+      const blob = packRetireBlob(retireList, book);
       if (!blob) return { ok: false, reason: 'stake_reward' };
       return callReserve(session, encodeWithdrawRetire(from, nowMs, auth || new Uint8Array(), blob));
     }
@@ -1164,8 +1218,7 @@ export async function executeReserveTx(session, tx, nowMs, ctx = null) {
 }
 
 /** Chain settlement index from the public view. Epoch 0 before it ends is 0. */
-function evmSettlementIndex(view, nowMs, genesisMs) {
-  const span = RESERVE_EPOCH_MS;
+function evmSettlementIndex(view, nowMs, genesisMs, span) {
   const g = Number(genesisMs) || 0;
   const now = Number(nowMs) || 0;
   const chain = g > 0 && now > g ? Math.floor((now - g) / span) : 0;
@@ -1205,10 +1258,12 @@ function epochCensusRows(cb) {
     const epoch = Math.floor(Number(item?.epoch));
     const leafCount = Math.floor(Number(item?.leafCount));
     const openHeight = Math.floor(Number(item?.openHeight));
+    const root = hex32Of(item?.root);
     if (!Number.isInteger(epoch) || epoch < 0) continue;
     if (!Number.isInteger(leafCount) || leafCount < 1) continue;
     if (!Number.isInteger(openHeight) || openHeight < 0) continue;
-    out.push({ epoch, leafCount, openHeight });
+    if (!root) continue;
+    out.push({ epoch, leafCount, openHeight, root });
   }
   return out;
 }
@@ -1219,6 +1274,9 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
   const cb = list[0] || null;
   let held = false;
   const fail = (reason) => ({ ok: false, reason });
+  let book;
+  try { book = sessionBook(session, evmCtx); } catch { return fail('unknown_magic'); }
+  const bookSpan = epochMs(book);
   try {
     if (Number(genesisMs) > 0) {
       const pinned = await callReserve(session, encodePinClock(genesisMs));
@@ -1245,7 +1303,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
         const again = await callReserve(session, encodePublicView(nowMs), { staticCall: true });
         if (again.ok) view0 = decodePublicView(again.returnValue);
       }
-      const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + RESERVE_EPOCH_MS;
+      const ended = view0.epochStartMs && nowMs >= view0.epochStartMs + bookSpan;
       if (ended && !view0.bonusEnacted) {
         const en = await callReserve(session, encodeEnact(nowMs));
         if (!en.ok) return fail(en.reason || 'enact');
@@ -1267,7 +1325,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     // root it is given. It does not build the tree. A non-empty owed root
     // with nothing on the coinbase is stake_reward. An empty earning set
     // still commits the empty root and does not store it.
-    const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs) > 0;
+    const oweRoot = withdrawing && evmSettlementIndex(view0, nowMs, genesisMs, bookSpan) > 0;
     const owedGiven = owedRoot != null;
     // No JS expectation is not permission to store whatever root arrived.
     if (oweRoot && !owedGiven) return fail('stake_reward');
@@ -1281,7 +1339,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
     if (oweRoot && !rootHex && owedRoot !== '') return fail('stake_reward');
     const vaultHex = hex32Of(cb?.vaultLockRoot);
     const startHex = hex32Of(cb?.epochStartRoot);
-    const settleIdx = evmSettlementIndex(view0, nowMs, genesisMs);
+    const settleIdx = evmSettlementIndex(view0, nowMs, genesisMs, bookSpan);
     // A listed commit is the claim's earn epoch. The settlement index is
     // only the fallback for a coinbase that names one root and no list.
     const listed = epochStartRows(cb);
@@ -1297,13 +1355,15 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
       const wantCensus = vaultBind.census || {};
       for (const row of censusListed) {
         const want = wantCensus[String(row.epoch)];
-        if (!want || want.leafCount !== row.leafCount || want.openHeight !== row.openHeight) {
+        if (!want || want.leafCount !== row.leafCount || want.openHeight !== row.openHeight
+          || want.root !== row.root) {
           return fail('stake_reward');
         }
       }
       for (const [epoch, want] of Object.entries(wantCensus)) {
         const got = censusListed.find((row) => String(row.epoch) === epoch);
-        if (!got || got.leafCount !== want.leafCount || got.openHeight !== want.openHeight) {
+        if (!got || got.leafCount !== want.leafCount || got.openHeight !== want.openHeight
+          || got.root !== want.root) {
           return fail('stake_reward');
         }
       }
@@ -1317,7 +1377,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
       evm.calls += 1;
     }
     for (const row of censusListed) {
-      const noted = await callReserve(session, encodeCommitEpochCensus(row.epoch, row.leafCount, row.openHeight));
+      const noted = await callReserve(session, encodeCommitEpochCensus(row.epoch, row.leafCount, row.openHeight, row.root));
       if (!noted.ok) return fail(noted.reason || 'stake_reward');
       evm.calls += 1;
     }
@@ -1352,7 +1412,7 @@ export async function executeBlockEvm(session, txs, nowMs, genesisMs = 0, owedRo
       const got = await executeReserveTx(session, tx, nowMs, {
         blockHeight: Math.floor(Number(evmCtx?.height) || Number(cb?.height) || 0),
         genesisMs: Number(genesisMs) || 0,
-        magic: evmCtx?.magic || MAGIC_TESTNET,
+        magic: book,
       });
       if (!got.ok) {
         if (isEvmValueTx(tx)) {

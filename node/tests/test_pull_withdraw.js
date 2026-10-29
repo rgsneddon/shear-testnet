@@ -86,7 +86,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const from = poolBox.dest;
     const L = levyNanos(off.nanos);
     const tx = poolWithdrawTx({ from, to: dest, nanos: off.nanos, fee: L });
-    signSpendTx(tx, poolBox.key);
+    signSpendTx(tx, poolBox.key, { magic: 'shear-testnet-v12' });
     assert.equal(containsShe1(tx), false);
     assert.equal(JSON.stringify(tx).includes('she1'), false);
     assert.equal(tx.vout[0].address.startsWith('ssa1'), true);
@@ -276,7 +276,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     assert.equal(built.ok, false);
     assert.equal(built.reason, 'custodial_pull');
     const signed = poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100, id: 'signed-plain' });
-    signSpendTx(signed, poolBox.key);
+    signSpendTx(signed, poolBox.key, { magic: 'shear-testnet-v12' });
     assert.equal(verifyPoolWithdrawBound(signed).ok, true);
     const queued = store.queueTx(signed);
     assert.equal(queued.ok, false);
@@ -290,7 +290,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       vin: [{ address: pool }],
       vout: [{ address: dest, nanos: 1, kind: 'send' }],
     };
-    signSpendTx(bare, poolBox.key);
+    signSpendTx(bare, poolBox.key, { magic: 'shear-testnet-v12' });
     assert.equal(admitMempool(emptyMempool(), bare).reason, 'amount_field');
     const missing = store.queueTx(bare);
     assert.equal(missing.ok, false);

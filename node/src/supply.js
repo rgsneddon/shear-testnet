@@ -142,6 +142,26 @@ function vaultAccruedNanos(vault) {
   return n;
 }
 
+/**
+ * Per-block mint invariant. The vault's mint bank may move only by what the
+ * supply ledger counts as minted interest for the same block (claims plus
+ * withdraw arrival stubs). Null when they agree; vault_mint otherwise.
+ */
+export function vaultMintDeltaRejected(parentVault, afterVault, ledgerDelta) {
+  const bank = (v) => {
+    const raw = v?.mintBankNanos;
+    if (raw == null || raw === '') return 0n;
+    try { return BigInt(String(raw)); } catch { return null; }
+  };
+  const before = bank(parentVault);
+  const after = bank(afterVault);
+  let want;
+  try { want = BigInt(String(ledgerDelta ?? 0)); } catch { want = null; }
+  if (before == null || after == null || want == null) return { ok: false, reason: 'vault_mint' };
+  if (after - before !== want) return { ok: false, reason: 'vault_mint' };
+  return null;
+}
+
 function openedLockNanos(tx) {
   if (!tx || tx.coinbase || String(tx.kind || '') !== 'lock') return 0n;
   if (publicReserveReceipt(tx)) return publicReceiptNanos(tx);
@@ -869,6 +889,7 @@ function accountBlock(prev, block, opts = {}) {
  */
 export function supplyStep(prev, block, opts = {}) {
   if (!prev || prev.owedKnown === false) return { ok: false, reason: 'supply_state', state: null };
+  const mintedBefore = BigInt(prev.mintedInterest || 0n);
   const next = accountBlock(prev, block, opts);
   if (next.reason) return { ok: false, reason: next.reason, state: null };
   let outstanding = next.state.dust + next.state.overflow;
@@ -902,6 +923,8 @@ export function supplyStep(prev, block, opts = {}) {
       magic: opts.magic || undefined,
     });
     if (!advanced.ok || !advanced.vault) return { ok: false, reason: 'supply', state: null };
+    const mintGap = vaultMintDeltaRejected(opts.vault, advanced.vault, next.state.mintedInterest - mintedBefore);
+    if (mintGap) return { ok: false, reason: mintGap.reason, state: null };
     const identity = supplyIdentity(advanced.vault);
     if (!identity.ok) return { ok: false, reason: 'supply', state: null };
     if (BigInt(identity.principalNanos) !== notePrincipal) {
@@ -946,6 +969,7 @@ export function foldSupply(blocks, opts = {}) {
       vault,
     });
     if (!stepped.ok) return stepped;
+    const mintedBefore = BigInt(state.mintedInterest || 0n);
     state = stepped.state;
     // Same prior and stake-reward rule as the store's vault apply.
     const foldMagic = opts.magic || MAGIC_TESTNET;
@@ -954,6 +978,10 @@ export function foldSupply(blocks, opts = {}) {
       magic: foldMagic,
     });
     if (!advanced.ok) return { ok: false, reason: 'supply', state: null };
+    if (advanced.vault) {
+      const mintGap = vaultMintDeltaRejected(vault, advanced.vault, state.mintedInterest - mintedBefore);
+      if (mintGap) return { ok: false, reason: mintGap.reason, state: null };
+    }
     vault = advanced.vault;
     if (vault) {
       const identity = supplyIdentity(vault);

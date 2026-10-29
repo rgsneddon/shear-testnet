@@ -143,7 +143,7 @@ function signedWithdraw(who, state, dest, nanos) {
     nanos,
     id: `w-${nanos}-${String(dest).slice(-6)}`,
   });
-  return signSpendTx(tx, who.id.privateKey);
+  return signSpendTx(tx, who.id.privateKey, { magic: 'shear-testnet-v12' });
 }
 
 /** The opened lock integer, with the principal proof bound to this tx. */
@@ -154,7 +154,7 @@ function provedWithdraw(who, state, dest, when, id) {
   const open = hiddenWithdrawOpening(state, who.dest, when, tx);
   assert.ok(open?.proof, id);
   tx.principalProof = open.proof;
-  signSpendTx(tx, who.id.privateKey);
+  signSpendTx(tx, who.id.privateKey, { magic: 'shear-testnet-v12' });
   return { tx, open };
 }
 
@@ -233,7 +233,7 @@ function indexedWithdraw(state, who, when, id, payout, planted) {
   });
   assert.ok(retire?.proof, id);
   tx.retireProof = retire.proof;
-  signSpendTx(tx, who.id.privateKey);
+  signSpendTx(tx, who.id.privateKey, { magic: 'shear-testnet-v12' });
   const paid = withdraw({
     state,
     dest: who.dest,
@@ -793,10 +793,10 @@ describe('Vault Security test map', () => {
     const views = [];
     const results = [];
     for (const caller of callers) {
-      const s = await bootReserveEvm();
+      const s = await bootReserveEvm({ network: 'shear-testnet-v12' });
       const lockDest = 'ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
       const lockOwner = ownerFor(lockDest);
-      const lock = await callReserve(s, encodeDeposit(lockDest, Buffer.alloc(32, 9), T0, { key: lockOwner.key }), { caller });
+      const lock = await callReserve(s, encodeDeposit(lockDest, Buffer.alloc(32, 9), T0, { key: lockOwner.key, magic: 'shear-testnet-v12' }), { caller });
       const vote = await callReserve(s, encodeVote('ssa1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq', 1, T0 + 2), { caller });
       const observe = await callReserve(s, encodeObserveRate(9999, Math.floor(T0 / 1000)), { caller, staticCall: true });
       const enacted = await callReserve(s, encodeEnact(END), { caller });
@@ -818,7 +818,7 @@ describe('Vault Security test map', () => {
       const { who, state } = openPortal(principal);
       for (const key of keys) {
         const tx = withdrawTx({ from: who.dest, to: who.dest, nanos: principal, id: `fk-${principal}-${key.dest.slice(-4)}` });
-        signSpendTx(tx, key.id.privateKey);
+        signSpendTx(tx, key.id.privateKey, { magic: 'shear-testnet-v12' });
         assert.equal(verifyReservePortalOpen(tx), false);
         assert.equal(reserveAuth(tx, state).reason, 'unsigned');
       }

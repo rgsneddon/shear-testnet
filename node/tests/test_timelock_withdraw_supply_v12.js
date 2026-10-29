@@ -540,7 +540,7 @@ describe('time-locked withdraw supply', () => {
     // Reserve.sol deposit). The owner here is the identity whose spendPub is dest20.
     const who = newIdentity();
     const dest = spendDestOf(who.spendPub);
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const stamp = lockUnlockOf({ genesisMs: T0, magic: MAGIC_TESTNET }, T0);
     const lock = attachPiNote(lockTx({
       from: dest,
@@ -555,10 +555,10 @@ describe('time-locked withdraw supply', () => {
     // A lock with no lockAuth has no owner on the EVM.
     const bare = { ...lock };
     delete bare.lockAuth;
-    const unauthed = await executeBlockEvm(await bootReserveEvm(), [{ coinbase: true, vout: [] }, bare], T0, T0);
+    const unauthed = await executeBlockEvm(await bootReserveEvm({ network: 'shear-testnet-v12' }), [{ coinbase: true, vout: [] }, bare], T0, T0);
     assert.equal(unauthed.ok, false);
     assert.equal(unauthed.reason, 'owner_missing');
-    attachLockAuth(lock, who.privateKey);
+    attachLockAuth(lock, who.privateKey, 'shear-testnet-v12');
     assert.ok(lock.lockAuth, 'lockAuth');
     const locked = await executeBlockEvm(session, [{ coinbase: true, vout: [] }, lock], T0, T0);
     assert.equal(locked.ok, true, locked.reason);

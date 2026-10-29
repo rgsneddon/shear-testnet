@@ -33,4 +33,4 @@ jobs:
           test -f crypto/native/shearadmit.node
           node -e 'const n = require("module").createRequire(process.cwd()+"/")("./crypto/native/shearadmit.node"); if (!n || typeof n.proveRange !== "function" || typeof n.verifyRange !== "function") throw new Error("shearadmit");'
       - name: Reserve pin, bytecode, and vault security map
-        run: node --test --test-concurrency=1 crypto/reserve_evm.test.js node/tests/test_reserve_pin_v12.js node/tests/test_vault_security_map.js node/tests/test_oracle_seal_v12.js
+        run: node --test --test-concurrency=1 crypto/reserve_evm.test.js node/tests/test_reserve_pin_v12.js node/tests/test_vault_security_map.js node/tests/test_oracle_seal_v12.js crypto/vault_claim_carry.test.js crypto/vault_lockauth_book.test.js

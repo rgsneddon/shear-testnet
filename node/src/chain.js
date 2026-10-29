@@ -61,6 +61,7 @@ import {
 } from '../../crypto/share_batch.js';
 import {
   bootReserveEvm,
+  reserveBookOf,
   blockNeedsEvm,
   executeBlockEvm,
 } from '../../crypto/reserve_evm.js';
@@ -3175,7 +3176,7 @@ function verifyBlockBody(block, prev, opts = {}) {
     if (!summed.ok) return summed;
     const stake = boundReserveWithdraw(tx, reserveState, drawnWithdraws, Number(decoded.timestamp) || 0);
     if (!stake.ok) return stake;
-    const auth = reserveAuth(tx, reserveState, seenOwners);
+    const auth = reserveAuth(tx, reserveState, seenOwners, magic);
     if (!auth.ok) return auth;
     const claimAuth = rewardClaimRejected(tx, reserveState, height);
     if (claimAuth) return claimAuth;
@@ -3379,13 +3380,20 @@ function vaultCoinbaseBind(state, txs) {
     if (kind === 'leaf-vote' && !tx.voteProof) continue;
     need = true;
     const earn = String(Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0));
-    const start = String(state.epochStartRoots?.[earn] || '').toLowerCase();
-    if (/^[0-9a-f]{64}$/.test(start)) roots[earn] = start;
-    if (kind !== 'leaf-vote') continue;
+    if (kind === 'reward-claim') {
+      // Period-keyed claim root.
+      const start = String(state.epochStartRoots?.[earn] || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(start)) roots[earn] = start;
+      continue;
+    }
+    // Epoch-keyed census and vote root.
     const row = state.epochCensus?.[earn];
     const leaves = Math.floor(Number(row?.leafCount) || 0);
     const openH = Math.floor(Number(row?.openHeight) || 0);
-    if (row?.known && leaves >= 1 && openH >= 0) census[earn] = { leafCount: leaves, openHeight: openH };
+    const voteRoot = String(row?.root || '').toLowerCase();
+    if (row?.known && leaves >= 1 && openH >= 0 && /^[0-9a-f]{64}$/.test(voteRoot)) {
+      census[earn] = { leafCount: leaves, openHeight: openH, root: voteRoot };
+    }
   }
   return need ? { roots, census } : undefined;
 }
@@ -3395,7 +3403,8 @@ async function verifyBlockEvm(consensus, block, opts = {}) {
   let fresh = false;
   try {
     if (!session) {
-      session = await bootReserveEvm();
+      // The EVM runs as this chain's own book (LOCK_AUTH=book-magic).
+      session = await bootReserveEvm({ network: reserveBookOf(opts.magic || MAGIC_TESTNET) });
       fresh = true;
     }
   } catch (e) {

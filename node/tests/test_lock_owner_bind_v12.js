@@ -29,7 +29,7 @@ function signedLock(signer, portalId, ownerPub) {
     vin: [{ dest20: Buffer.from(d20), address: signer.dest }],
     vout: [{ kind: 'lock', dest20: Buffer.from(d20) }],
   };
-  signSpendTx(tx, signer.id.privateKey);
+  signSpendTx(tx, signer.id.privateKey, { magic: 'shear-testnet-v12' });
   return tx;
 }
 
@@ -87,19 +87,19 @@ describe('later lock owner binding', () => {
   it('the EVM refuses a front-run and a raw 32-byte portal id', async () => {
     const owner = who();
     const stranger = who();
-    const session = await bootReserveEvm();
+    const session = await bootReserveEvm({ network: 'shear-testnet-v12' });
     const t0 = 1_700_000_000_000;
     assert.equal((await callReserve(session, encodePinClock(t0))).ok, true);
     const dest20 = destCommitFromSpendPub(owner.id.spendPub);
-    const first = await callReserve(session, encodeDeposit(dest20, Buffer.alloc(32, 9), t0, { key: owner.id.privateKey }, false));
+    const first = await callReserve(session, encodeDeposit(dest20, Buffer.alloc(32, 9), t0, { key: owner.id.privateKey, magic: 'shear-testnet-v12' }, false));
     assert.equal(first.ok, true, first.reason);
-    const copied = await callReserve(session, encodeDeposit(dest20, Buffer.alloc(32, 8), t0 + 1, { key: stranger.id.privateKey }, false));
+    const copied = await callReserve(session, encodeDeposit(dest20, Buffer.alloc(32, 8), t0 + 1, { key: stranger.id.privateKey, magic: 'shear-testnet-v12' }, false));
     assert.equal(copied.ok, false, 'EVM accepted a later lock from another key');
     assert.equal(copied.reason, 'unsigned');
-    const again = await callReserve(session, encodeDeposit(dest20, Buffer.alloc(32, 7), t0 + 2, { key: owner.id.privateKey }, false));
+    const again = await callReserve(session, encodeDeposit(dest20, Buffer.alloc(32, 7), t0 + 2, { key: owner.id.privateKey, magic: 'shear-testnet-v12' }, false));
     assert.equal(again.ok, false);
     assert.equal(again.reason, 'portal_exists');
-    const raw = await callReserve(session, encodeDeposit(Buffer.alloc(32, 4), Buffer.alloc(32, 3), t0 + 3, { key: owner.id.privateKey }, false));
+    const raw = await callReserve(session, encodeDeposit(Buffer.alloc(32, 4), Buffer.alloc(32, 3), t0 + 3, { key: owner.id.privateKey, magic: 'shear-testnet-v12' }, false));
     assert.equal(raw.ok, false, 'EVM accepted a raw 32-byte portal id');
     assert.equal(raw.reason, 'unsigned');
   });

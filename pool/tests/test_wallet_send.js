@@ -60,7 +60,7 @@ function spendSig({ from, to, amount, open, identity, kind = 'send', choice = 'h
       r: [Buffer.alloc(32, 9)],
     };
   }
-  signSpendTx(tx, identity.privateKey);
+  signSpendTx(tx, identity.privateKey, { magic: 'shear-testnet-v12' });
   return {
     sig: tx.sig,
     spendPub: tx.spendPub,
@@ -962,7 +962,7 @@ describe('pool send reconstruct and Join vault', () => {
 
     const bare = lockTx({ from: silent, to: vault, nanos: Math.round(3.2 * NANOS_PER_SHE), id: 'bare-lock' });
     bare.fee = levyNanos(bare.nanos);
-    signSpendTx(bare, alice.privateKey);
+    signSpendTx(bare, alice.privateKey, { magic: 'shear-testnet-v12' });
     const noOwed = chain.queueTx(bare);
     assert.equal(noOwed.ok, false);
     // A lock that still carries from/to is a leak. The leak gate refuses it before ADMITv3.
@@ -984,7 +984,7 @@ describe('pool send reconstruct and Join vault', () => {
         sealCoinbaseNote(0, { dest20: Buffer.alloc(20, 8), kind: 'dummy' }),
       ],
     };
-    signSpendTx(bound, alice.privateKey);
+    signSpendTx(bound, alice.privateKey, { magic: 'shear-testnet-v12' });
     const noteMiss = chain.queueTx(bound, { paintedOwedNanos: Math.round(100 * NANOS_PER_SHE) });
     assert.equal(noteMiss.ok, false);
     assert.equal(noteMiss.reason, 'admit_membership');
@@ -1020,7 +1020,7 @@ describe('pool send reconstruct and Join vault', () => {
         sealCoinbaseNote(0, { dest20: Buffer.alloc(20, 9), kind: 'dummy' }),
       ],
     };
-    signSpendTx(sendBody, alice.privateKey);
+    signSpendTx(sendBody, alice.privateKey, { magic: 'shear-testnet-v12' });
     const send = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
       to: bob,

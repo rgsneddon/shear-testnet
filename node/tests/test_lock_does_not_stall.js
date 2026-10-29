@@ -223,7 +223,7 @@ describe('reserve lock does not stall the next block', () => {
       bareStuck.open = open;
       bindWeightFee(bareStuck);
       bareStuck.maxLevy = bareStuck.fee;
-      signSpendTx(bareStuck, aliceBox.key);
+      signSpendTx(bareStuck, aliceBox.key, { magic: 'shear-testnet-v12' });
       const refusedStuck = stuck.queueTx(bareStuck);
       assert.equal(refusedStuck.ok, false);
       assert.equal(refusedStuck.reason, 'insufficient');
@@ -258,7 +258,7 @@ describe('reserve lock does not stall the next block', () => {
       bare.open = open;
       bindWeightFee(bare);
       bare.maxLevy = bare.fee;
-      signSpendTx(bare, aliceBox.key);
+      signSpendTx(bare, aliceBox.key, { magic: 'shear-testnet-v12' });
       const unfunded = store.queueTx(bare);
       assert.equal(unfunded.ok, false);
       assert.equal(unfunded.reason, 'insufficient');
@@ -295,7 +295,7 @@ describe('reserve lock does not stall the next block', () => {
       tooMuch.open = open;
       bindWeightFee(tooMuch);
       tooMuch.maxLevy = tooMuch.fee;
-      signSpendTx(tooMuch, aliceBox.key);
+      signSpendTx(tooMuch, aliceBox.key, { magic: 'shear-testnet-v12' });
       const refused = store.queueTx(tooMuch);
       assert.equal(refused.ok, false);
       assert.equal(refused.reason, 'insufficient');
@@ -312,7 +312,7 @@ describe('reserve lock does not stall the next block', () => {
       lock.open = open;
       bindWeightFee(lock);
       lock.maxLevy = lock.fee;
-      signSpendTx(lock, aliceBox.key);
+      signSpendTx(lock, aliceBox.key, { magic: 'shear-testnet-v12' });
       const queued = store.queueTx(lock);
       assert.equal(queued.ok, true, queued.reason);
       assert.equal(mempoolHas(store, 'lock-funded'), true);

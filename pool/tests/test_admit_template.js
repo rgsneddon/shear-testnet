@@ -48,7 +48,7 @@ function publicReceipt(who, kind, id) {
     bindWeightFee(tx);
     if (levyNeed(tx) === tx.fee) break;
   }
-  signSpendTx(tx, who.key);
+  signSpendTx(tx, who.key, { magic: 'shear-testnet-v12' });
   return tx;
 }
 

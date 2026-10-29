@@ -279,7 +279,7 @@ describe('v12 B leaves are debited', () => {
           vin: [{ address: payer.dest }],
           vout: outs,
         };
-        signSpendTx(tx, payer.key);
+        signSpendTx(tx, payer.key, { magic: 'shear-testnet-v12' });
         return tx;
       });
       const tpl = templateOn(book.store, { miner: payer.dest, txs: spends });

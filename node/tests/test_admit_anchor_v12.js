@@ -91,7 +91,7 @@ describe('ADMITv3 anchor on queue and verify', () => {
         };
         // The spend signature binds vin dest20. This lock has no FS-1 blob,
         // so spendPub and sig are not the FS-1 identity leak.
-        signSpendTx(unanchored, who.key);
+        signSpendTx(unanchored, who.key, { magic: 'shear-testnet-v12' });
         assert.equal(verifySpendSig(unanchored), true, `${nanos} sig`);
         assert.equal(compactLockLeakRejected(unanchored), null, `${nanos} plain leak`);
         const queuedPlain = store.queueTx(unanchored);

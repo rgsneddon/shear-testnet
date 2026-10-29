@@ -4407,7 +4407,7 @@ export function createStore(dir, {
         }
       }
     }
-    const auth = reserveAuth(tx, reserveVault, null);
+    const auth = reserveAuth(tx, reserveVault, null, bookMagic);
     if (!auth.ok) {
       try {
         console.error(JSON.stringify({ event: 'admit_fail', id: String(tx?.id || ''), reason: auth.reason || 'unsigned' }));
@@ -6652,8 +6652,8 @@ export function createStore(dir, {
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
         // The contract reads the frozen period root and the census from this
-        // coinbase. A claim looks the root up by its earn epoch, and a leaf
-        // vote is NotVoter until both are stored.
+        // coinbase. A claim looks the root up by its period. A leaf vote is
+        // NotVoter until its epoch's census, with the vote root, is stored.
         const starts = new Map();
         const censusRows = new Map();
         for (const tx of pendingTxs) {
@@ -6664,14 +6664,19 @@ export function createStore(dir, {
           if (kind === 'leaf-vote' && !tx.voteProof) continue;
           const earn = Math.floor(Number(tx.earnEpoch ?? tx.rootEpoch) || 0);
           if (!Number.isInteger(earn) || earn < 0) continue;
-          const start = String(reserveVault.epochStartRoots?.[String(earn)] || '').toLowerCase();
-          if (/^[0-9a-f]{64}$/.test(start)) starts.set(earn, start);
-          if (kind !== 'leaf-vote') continue;
+          if (kind === 'reward-claim') {
+            // A claim's earnEpoch is a period. Its root is the period start.
+            const start = String(reserveVault.epochStartRoots?.[String(earn)] || '').toLowerCase();
+            if (/^[0-9a-f]{64}$/.test(start)) starts.set(earn, start);
+            continue;
+          }
+          // A leaf vote's earnEpoch is an epoch. Its root rides with the census.
           const census = reserveVault.epochCensus?.[String(earn)];
           const leaves = Math.floor(Number(census?.leafCount) || 0);
           const openH = Math.floor(Number(census?.openHeight) || 0);
-          if (census?.known && leaves >= 1 && openH >= 0) {
-            censusRows.set(earn, { epoch: earn, leafCount: leaves, openHeight: openH });
+          const voteRoot = String(census?.root || '').toLowerCase();
+          if (census?.known && leaves >= 1 && openH >= 0 && /^[0-9a-f]{64}$/.test(voteRoot)) {
+            censusRows.set(earn, { epoch: earn, leafCount: leaves, openHeight: openH, root: voteRoot });
           }
         }
         if (starts.size) {

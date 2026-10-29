@@ -78,6 +78,7 @@ import {
 } from '../../crypto/vault_reward_fs1.js';
 import {
   censusOf,
+  censusRoot,
   proposalId,
   storedStep,
   VOTE_FINALITY_BLOCKS,
@@ -343,7 +344,7 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
     // Current law: the queued lock carries portalId and dest20. The address is not on the wire.
     assert.equal(tx.to, undefined);
     tx.dest20 = Buffer.from(hash20FromAddress(person.dest));
-    signSpendTx(tx, person.key);
+    signSpendTx(tx, person.key, { magic: 'shear-testnet-v12' });
     delete tx.spendPub;
     delete tx.sig;
     delete tx.signature;
@@ -588,7 +589,7 @@ describe('fresh peer and restart across lock, claim, vote, and withdraw', { conc
       dest20: hash20FromAddress(pay.dest),
     });
     assert.ok(voteProof, 'vote proof');
-    assert.equal(voteProof.rootHex, store.reserveVault.epochStartRoots['1'], 'vote root');
+    assert.equal(voteProof.rootHex, censusRoot(store.reserveVault, 1), 'vote root is the epoch-1 census root');
     const view = liveCoins(store, coins, spent);
     const use = view.coins.filter((c) => c.who === who).slice(0, 1);
     assert.equal(use.length, 1, 'vote input');

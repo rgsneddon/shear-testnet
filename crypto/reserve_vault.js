@@ -66,6 +66,7 @@ import {
 import {
   activateBallot,
   censusOf,
+  censusRoot,
   commitCensus,
   proposalId,
   recordVote,
@@ -1570,6 +1571,10 @@ function publishedClaimReward(tx) {
 
 function vaultClaimRejected(tx, state) {
   if (tx?.portalId || tx?.from || tx?.payoutPortalId || tx?.to) return { ok: false, reason: 'stake_reward' };
+  // A portal named on an output links the claim the same way (reserveAction
+  // reads tx.portalId || o.portalId). Honest claim outputs drop it.
+  const claimOuts = Array.isArray(tx?.vout) ? tx.vout : [];
+  if (claimOuts.some((o) => o?.portalId || o?.payoutPortalId || o?.from)) return { ok: false, reason: 'stake_reward' };
   const nullifier = String(tx?.nullifier || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(nullifier)) return { ok: false, reason: 'unsigned' };
   const tip = Number(state?.tipMs) || 0;
@@ -2420,11 +2425,9 @@ function portalOf(state, destOrId) {
 }
 
 function applyEpochOpen(state, nowMs, idx) {
-  if (!state.epochStartRoots) state.epochStartRoots = Object.create(null);
-  const rootKey = String(idx);
-  if (!Object.prototype.hasOwnProperty.call(state.epochStartRoots, rootKey)) {
-    state.epochStartRoots[rootKey] = String(state.vaultLockRoot || '');
-  }
+  // epochStartRoots is keyed by period (snapshotPeriodRoot). An epoch index
+  // written here took the claim slot of period idx whenever the epoch opened
+  // before block 240·idx. The epoch's vote root is frozen with its census.
   const magic = state.magic || MAGIC_TESTNET;
   const activationHeight = state.oracleActivationHeight === undefined
     ? ORACLE_ACTIVATION_HEIGHT
@@ -2510,15 +2513,40 @@ function applyEpochOpen(state, nowMs, idx) {
   void MAGIC_MAINNET;
 }
 
-/** Leaf count for this epoch, once. Later blocks do not rewrite it. */
+/**
+ * Root of the live leaves now. A withdraw earlier in this block only marked
+ * its leaf, so a dirty tree is rebuilt on a scratch handle. The state's root
+ * and handle are not touched: the period snapshot keeps its own timing.
+ */
+function liveVaultRootHex(state) {
+  const live = liveVaultNotes(state);
+  if (!live.length) return EMPTY_VAULT_ROOT;
+  if (!state?.vaultLockDirty) {
+    const hex = String(state?.vaultLockRoot || '');
+    if (/^[0-9a-f]{64}$/.test(hex)) return hex;
+  }
+  const handle = fs1TreeNew();
+  if (!handle) return null;
+  if (!fs1TreeAppend(handle, Buffer.concat(live.map((hex) => Buffer.from(hex, 'hex'))))) return null;
+  const root = fs1TreeRoot(handle);
+  return root && root.length === 32 ? root.toString('hex') : null;
+}
+
+/**
+ * Leaf count and vote root for this epoch, once, at the same point. Later
+ * blocks do not rewrite them. The vote root is keyed by the epoch index;
+ * epochStartRoots is the claim root and is keyed by period.
+ */
 function ensureEpochCensus(state, height) {
   if (!(Number(state?.epochStartMs) > 0)) return;
   const idx = Math.floor(Number(state.currentEpoch) || 0);
   if (censusOf(state, idx)) return;
   const leaves = liveVaultNotes(state).length;
   if (leaves < 1) return;
+  const root = liveVaultRootHex(state);
+  if (!root) return;
   const openH = Math.max(0, Math.floor(Number(height) || 0));
-  commitCensus(state, idx, leaves, openH);
+  commitCensus(state, idx, leaves, openH, root);
 }
 
 /** Prospective and append-only. A second write does not rewrite a frozen rate. */
@@ -3868,6 +3896,25 @@ function txKind(tx) {
   return String(tx?.kind || tx?.vout?.[0]?.kind || '');
 }
 
+/**
+ * A reward claim is only a `reward-claim` tx. Any other vault kind (withdraw,
+ * lock, vote, leaf vote) that carries a claim proof, a nullifier or a
+ * reward-claim output is refused, whatever else it names. A roll keeps its
+ * own refusal (rollRewardRejected).
+ */
+export function claimCarriedRejected(tx) {
+  if (!tx || tx.coinbase) return null;
+  const kind = txKind(tx);
+  if (kind === KIND_REWARD_CLAIM || kind === 'roll') return null;
+  const present = (v) => v != null && v !== '' && v !== false;
+  const outs = Array.isArray(tx.vout) ? tx.vout : [];
+  if (present(tx.vaultProof) || present(tx.nullifier)
+    || outs.some((row) => String(row?.kind || '') === KIND_REWARD_CLAIM)) {
+    return { ok: false, reason: 'claim_carried' };
+  }
+  return null;
+}
+
 /** Public integer on the action. Null is not zero: zero would pass an over-mint check. */
 function publicNanos(raw) {
   if (typeof raw === 'bigint') {
@@ -4360,6 +4407,24 @@ function openedReserveFeeNanos(cb) {
   return sum;
 }
 
+/** Mint the accepted rows report: claim nanos plus withdraw arrival stubs. Null if one is not an integer. */
+function reportedVaultMint(results) {
+  let sum = 0n;
+  for (const row of results) {
+    if (!row || row.ok !== true) continue;
+    let raw = null;
+    if (row.action === KIND_REWARD_CLAIM) raw = row.nanos;
+    else if (row.action === KIND_WITHDRAW) raw = row.arrival;
+    else continue;
+    if (raw == null || raw === '') continue;
+    let v;
+    try { v = BigInt(String(raw)); } catch { return null; }
+    if (v < 0n) return null;
+    sum += v;
+  }
+  return sum;
+}
+
 function finishReserveApply(results) {
   const bad = results.find((row) => row && row.ok === false);
   results.ok = !bad;
@@ -4516,8 +4581,10 @@ export function applyLeafVote(state, tx, blockHeight) {
   if (!voteWindowOpen(census.openHeight, blockHeight, magic)) {
     return { ok: false, reason: 'epoch_closed' };
   }
-  const rootHex = String(state?.epochStartRoots?.[String(epoch)] || '');
-  if (!/^[0-9a-f]{64}$/.test(rootHex)) return { ok: false, reason: 'not_voter' };
+  // earnEpoch on a leaf vote is the epoch index the proof binds, not a
+  // period. Its root is the one frozen with that epoch's census.
+  const rootHex = censusRoot(state, epoch);
+  if (!rootHex) return { ok: false, reason: 'not_voter' };
   const proof = tx?.voteProof;
   if (!proof) return { ok: false, reason: 'unsigned' };
   const pid = proposalId(epoch, param);
@@ -4672,10 +4739,19 @@ export function applyReserveBlock({
   const reservePaid = openedReserveFeeNanos(cb);
   if (reservePaid > 0) creditFeeBank(state, reservePaid);
   state.deferEpochRoll = true;
+  // Per-block mint invariant: the mint bank moves only by the claims and
+  // arrival stubs this loop reports, the rows the supply ledger counts.
+  const mintBankStart = asBig(state.mintBankNanos);
   for (const tx of txs) {
     if (!tx || tx.coinbase) continue;
     if (String(tx.programId || '') !== RESERVE_PROGRAM) continue;
     reserveApplyCount += 1;
+    const carried = claimCarriedRejected(tx);
+    if (carried) {
+      results.push({ action: txKind(tx) || 'reserve', ...carried });
+      state.deferEpochRoll = false;
+      return finishReserveApply(results);
+    }
     if (String(tx.kind || '') === 'roll') {
       const got = applyRoll(state, tx, nowMs, blockHeight);
       results.push({ action: 'roll', ...got });
@@ -4890,33 +4966,13 @@ export function applyReserveBlock({
         state.deferEpochRoll = false;
         return finishReserveApply(results);
       }
-      if (tx.vaultProof) {
-        const nullifier = String(tx?.nullifier || '').toLowerCase();
-        if (state.mintedIds?.[nullifier]) {
-          results.push({ action: KIND_WITHDRAW, ok: false, reason: 'double_mint' });
-          state.deferEpochRoll = false;
-          return finishReserveApply(results);
-        }
-        const reward = vaultPublicReward(tx.vaultProof);
-        if (reward == null || reward <= 0n) {
-          results.push({ action: KIND_WITHDRAW, ok: false, reason: 'stake_reward' });
-          state.deferEpochRoll = false;
-          return finishReserveApply(results);
-        }
-        const claimTx = { ...tx, nanos: reward <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(reward) : reward.toString() };
-        const claimRefused = vaultClaimRejected(claimTx, state);
-        if (claimRefused) {
-          results.push({ action: KIND_WITHDRAW, ...claimRefused });
-          state.deferEpochRoll = false;
-          return finishReserveApply(results);
-        }
-        state.mintedIds = state.mintedIds || Object.create(null);
-        rememberMint(state, nullifier);
-        state.mintedIds[nullifier] = true;
-        state.mintBankNanos = asBig(state.mintBankNanos) + reward;
-        state.rewardPermittedNanos = asBig(state.rewardPermittedNanos) + reward;
-      }
+      // A withdraw never carries a claim (claimCarriedRejected, above).
     }
+  }
+  const mintBankWant = reportedVaultMint(results);
+  if (mintBankWant == null || asBig(state.mintBankNanos) - mintBankStart !== mintBankWant) {
+    state.deferEpochRoll = false;
+    return finishReserveApply([...results, { ok: false, reason: 'vault_mint', action: 'mint' }]);
   }
   // Include this block's locks. The first write wins, so a later block of
   // the same period does not replace the root.

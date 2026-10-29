@@ -785,10 +785,12 @@ function compactEpochCensus(list) {
     const epoch = Math.floor(Number(item?.epoch));
     const leafCount = Math.floor(Number(item?.leafCount));
     const openHeight = Math.floor(Number(item?.openHeight));
+    const root = hex32Field(item?.root);
     if (!Number.isInteger(epoch) || epoch < 0) continue;
     if (!Number.isInteger(leafCount) || leafCount < 1) continue;
     if (!Number.isInteger(openHeight) || openHeight < 0) continue;
-    out.push({ epoch, leafCount, openHeight });
+    if (!root) continue;
+    out.push({ epoch, leafCount, openHeight, root });
   }
   return out;
 }

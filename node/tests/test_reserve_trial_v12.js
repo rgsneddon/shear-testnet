@@ -525,7 +525,7 @@ function realFs1Lock(store, who, saved) {
   assert.ok(tx, 'live lock fee');
   tx.dest20 = destCommitFromSpendPub(ed25519RawPub(ownerKey));
   tx.ownerPub = ownerPub;
-  signSpendTx(tx, ownerKey);
+  signSpendTx(tx, ownerKey, { magic: 'shear-testnet-v12' });
   delete tx.spendPub;
   delete tx.sig;
   delete tx.signature;
