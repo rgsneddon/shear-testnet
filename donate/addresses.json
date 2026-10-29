@@ -1,0 +1,48 @@
+{
+  "note": "Donation addresses read by Russell Sneddon from his own Ledger Nano X and confirmed on the device. Never derive or alter them. No Shear (SHE) address until mainnet.",
+  "addresses": [
+    {
+      "id": "btc",
+      "name": "Bitcoin",
+      "ticker": "BTC",
+      "address": "bc1qta4g6q5r8d2u2a5dl2ucmqvm9txt008qhug5lq"
+    },
+    {
+      "id": "evm",
+      "name": "Ethereum and all EVM chains",
+      "ticker": "ETH / EVM",
+      "address": "0xC6D546B4d188A7A695eafcd396817c23e6fb9356"
+    },
+    {
+      "id": "sol",
+      "name": "Solana",
+      "ticker": "SOL",
+      "address": "98Yv4z6J3fB7R7dUGKYA68ZrTZqaxAQ9xiJidHHMPA5m"
+    },
+    {
+      "id": "ltc",
+      "name": "Litecoin",
+      "ticker": "LTC",
+      "address": "ltc1q229vsncyysh2w30q0nq75tjxqff4ramdt9r26k"
+    },
+    {
+      "id": "doge",
+      "name": "Dogecoin",
+      "ticker": "DOGE",
+      "address": "DKkYtnH5WAVucb39j6RSny344VKYovx5hz"
+    },
+    {
+      "id": "xmr",
+      "name": "Monero",
+      "ticker": "XMR",
+      "address": "46EiQrQHhv5MZA31tG59XfEH7rKo7om3saCEeruKtoU54UfPQt8Zh9JB58gmo97JJBj4z5DWZRPred7MvU4rXrK6LThQoQi"
+    },
+    {
+      "id": "kas",
+      "name": "Kaspa",
+      "ticker": "KAS",
+      "address": "kaspa:qpcq70e6yclghd62chmmgz4r57mtkcz4krggmqhhdc57pn222g0c6hx34vcxl",
+      "send": false
+    }
+  ]
+}

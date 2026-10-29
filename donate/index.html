@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Donate — Shear</title>
+  <meta name="description" content="Support Shear with a donation in BTC, ETH and EVM chains, SOL, LTC, DOGE, XMR or KAS. No tracking; the page sends nothing unless you use connect-and-send." />
+  <link rel="icon" href="https://shear.digital/brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="https://shear.digital/brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="https://shear.digital/css/site.css" />
+  <link rel="stylesheet" href="https://shear.digital/shared/shear-chrome.css?v=20261014nav" />
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css" />
+  <link rel="stylesheet" href="donate.css" />
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="DONATE" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn" href="https://shear.digital/">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
+      <a class="nav-btn" href="https://blunote.shear.digital/">BLU</a>
+      <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
+      <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
+      <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn is-on active" href="https://donate.shear.digital/">DONATE</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="https://shear.digital/shared/shear-chrome.js?v=20261014nav"></script>
+
+  <main>
+    <div class="wrap page-hero">
+      <p class="section-label">Donate</p>
+      <h1>Support Shear</h1>
+      <p class="lede">Shear is built in the open. If you would like to help fund development, servers and audits, you can send a donation to any address below. Thank you.</p>
+      <p class="card-kicker">These addresses were read from Russell Sneddon's own Ledger Nano X and confirmed on the device. Always check the address you paste matches the one shown here. There is no Shear (SHE) address until mainnet.</p>
+    </div>
+
+    <section class="wrap section">
+      <div class="panel">
+        <h3>Donation addresses</h3>
+        <div id="donate-list" class="donate-list" aria-live="polite">
+          <noscript><p>JavaScript is off, so the list cannot load. The addresses are in <a href="addresses.json">addresses.json</a>.</p></noscript>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section" id="send">
+      <div class="panel">
+        <h3>Send from your Ledger</h3>
+        <div id="send-app"><p>Connect-and-send from a Ledger is coming soon. For now, copy an address above or scan its QR code with your wallet.</p></div>
+      </div>
+    </section>
+
+    <section class="wrap section" id="privacy">
+      <div class="panel">
+        <h3>Privacy</h3>
+        <ul id="privacy-list">
+          <li>This page sends nothing anywhere unless you use connect-and-send. There are no analytics, no trackers and no external fonts.</li>
+          <li>QR codes are drawn in your browser by a bundled copy of qrcode-generator 1.4.4. Copying an address uses your browser's clipboard only.</li>
+          <li>The page loads its style, logo and navigation bar from shear.digital, our own site. Our web server keeps standard access logs, as described in the <a href="https://shear.digital/privacy.html">privacy policy</a>.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div>Shear · Donate</div>
+      <nav>
+        <a href="https://shear.digital/">Home</a>
+        <a href="https://shear.digital/network.html">Network</a>
+        <a href="https://shear.digital/docs/index.html">Docs</a>
+        <a href="https://shear.digital/privacy.html">Privacy</a>
+        <a href="https://shear.digital/legal.html">Legal &amp; licences</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="vendor/qrcode-generator-1.4.4.js"></script>
+  <script src="donate.js"></script>
+</body>
+</html>
