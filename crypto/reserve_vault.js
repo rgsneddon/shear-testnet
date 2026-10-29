@@ -55,7 +55,8 @@ import { extraMint } from './mint.js';
 import { reserveFeeDest, levyNanos } from './levy.js';
 import { decodeHeader } from './header.js';
 import { merkleRoot, merkleProof, merkleVerify } from './merkle.js';
-import { fs1TreeAppend, fs1TreeNew, fs1TreeRoot } from './native_admit.js';
+import { fs1TreeAppend, fs1TreeRoot } from './native_admit.js';
+import { vaultLockTreeFromNotes } from './vault_lock_tree.js';
 import { txDigestV3 } from './admit_v3.js';
 import { publicReserveReceipt } from './dummy.js';
 import {
@@ -1058,10 +1059,17 @@ function lockNoteBytes(note) {
  * Append one vault-lock note. Many locks share an epoch. Each stores its
  * own remainder commitment. The remainder integer is not recorded.
  */
-function liveVaultNotes(state) {
+export function liveVaultNotes(state) {
   const notes = Array.isArray(state?.vaultLockNotes) ? state.vaultLockNotes : [];
   const retired = state?.vaultRetired || {};
   return notes.filter((hex) => !retired[hex]);
+}
+
+/** One read of the live lock notes and the chain root. No opening, no spendable. */
+export function vaultLockCensus(state) {
+  const notes = liveVaultNotes(state).map((hex) => String(hex).toLowerCase());
+  const root = String(state?.vaultLockRoot || '').replace(/^0x/i, '').toLowerCase();
+  return { ok: true, public: false, notes, root };
 }
 
 /** A snapshot that lost the index still names each leaf by its note. */
@@ -1080,17 +1088,15 @@ function rebuildVaultLockIndex(state) {
 /** Rebuild the FS-1 root from notes a withdraw has not retired. */
 function rebuildVaultLockRoot(state) {
   const live = liveVaultNotes(state);
-  const handle = fs1TreeNew();
-  if (!handle) return null;
-  if (live.length && !fs1TreeAppend(handle, Buffer.concat(live.map((hex) => Buffer.from(hex, 'hex'))))) return null;
-  VAULT_LOCK_HANDLES.set(state, { handle, n: live.length });
+  const built = vaultLockTreeFromNotes(live);
+  if (!built) return null;
+  VAULT_LOCK_HANDLES.set(state, { handle: built.handle, n: live.length });
   if (!live.length) {
     state.vaultLockRoot = EMPTY_VAULT_ROOT;
     return state.vaultLockRoot;
   }
-  const root = fs1TreeRoot(handle);
-  if (!root || root.length !== 32) return null;
-  state.vaultLockRoot = root.toString('hex');
+  if (!built.root || built.root.length !== 32) return null;
+  state.vaultLockRoot = built.rootHex;
   return state.vaultLockRoot;
 }
 
@@ -1128,10 +1134,9 @@ export function appendVaultLockNote(state, note, terms = null) {
   if (liveBefore.length >= MAX_LIVE_VAULT_LEAVES) return null;
   let slot = VAULT_LOCK_HANDLES.get(state);
   if (!slot || slot.n !== liveBefore.length) {
-    const handle = fs1TreeNew();
-    if (!handle) return null;
-    if (liveBefore.length && !fs1TreeAppend(handle, Buffer.concat(liveBefore.map((hex) => Buffer.from(hex, 'hex'))))) return null;
-    slot = { handle, n: liveBefore.length };
+    const built = vaultLockTreeFromNotes(liveBefore);
+    if (!built) return null;
+    slot = { handle: built.handle, n: liveBefore.length };
     VAULT_LOCK_HANDLES.set(state, slot);
   }
   if (!fs1TreeAppend(slot.handle, buf)) return null;

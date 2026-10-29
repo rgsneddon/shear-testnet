@@ -4565,7 +4565,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
           seed: seed,
         );
         if (input == null) throw StateError('unsigned');
-        final proved = await compute(proveVaultLockRewardWire, input);
+        var claimInput = input;
+        if (!local && ledger.pool != null) {
+          final census = await readVaultLockCensus(() => ledger.pool!.vaultLockCensus());
+          claimInput = attachVaultLockCensus(input, census);
+        }
+        final proved = await proveVaultLockOffUi(claimInput);
         posted = await postReserveVaultClaim(
           ledger,
           reserve: reserve,
@@ -4686,7 +4691,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
           seed: seed,
         );
         if (input == null) throw StateError('unsigned');
-        proved = await compute(proveVaultLockRewardWire, input);
+        var rollInput = input;
+        if (!local && ledger.pool != null) {
+          final census = await readVaultLockCensus(() => ledger.pool!.vaultLockCensus());
+          rollInput = attachVaultLockCensus(input, census);
+        }
+        proved = await proveVaultLockOffUi(rollInput);
       }
       posted = await postReserveRoll(
         ledger,

@@ -180,6 +180,7 @@ Map<String, dynamic>? vaultRewardProveInput({
         'amount': p.lockAmount,
         'seed': seed,
         'index': p.lockIndex,
+        'lockEpoch': p.lockEpoch,
         'lockMs': p.lockRemainMs,
       },
     ],
@@ -352,7 +353,12 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveVaultClaim(
       seed: spendSeed,
     );
     if (input == null) throw StateError('unsigned');
-    proof = proveVaultLockRewardWire(input);
+    if (!local && ledger.pool != null) {
+      final census = await readVaultLockCensus(() => ledger.pool!.vaultLockCensus());
+      proof = await proveVaultLockOffUi(attachVaultLockCensus(input, census));
+    } else {
+      proof = await proveVaultLockOffUi(input);
+    }
   }
   final body = _vaultPostBody(
     kind: 'reward-claim',
@@ -887,7 +893,12 @@ Future<({ShearTx tx, Map<String, int> settled})?> postReserveRoll(
       seed: spendSeed,
     );
     if (input == null) throw StateError('unsigned');
-    proof = proveVaultLockRewardWire(input);
+    if (!local && ledger.pool != null) {
+      final census = await readVaultLockCensus(() => ledger.pool!.vaultLockCensus());
+      proof = await proveVaultLockOffUi(attachVaultLockCensus(input, census));
+    } else {
+      proof = await proveVaultLockOffUi(input);
+    }
   }
   if (proof != null) {
     final body = _vaultPostBody(
@@ -1907,6 +1918,14 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
   if (proposal == null) {
     return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
   }
+  VaultLockCensus? lockCensus;
+  if (!local && ledger.pool != null) {
+    try {
+      lockCensus = await readVaultLockCensus(() => ledger.pool!.vaultLockCensus());
+    } catch (e) {
+      return ReserveVoteResult(enacted: false, remark: voteFailCopy(e));
+    }
+  }
   final used = <String>{};
   for (final row in txs) {
     if (row is! Map) {
@@ -1922,14 +1941,34 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
     if (seq > 8 || leaf < 0 || leaf >= locks.length) {
       return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
     }
-    final voteProof = proveLeafVote(
-      locks: locks,
-      which: leaf,
-      epoch: reserve.currentEpoch,
-      choice: picked,
-      seq: seq,
-      proposalId: proposal,
-    );
+    final Map<String, Object?>? voteProof;
+    if (lockCensus != null) {
+      final one = Map<String, dynamic>.from(locks[leaf]);
+      final mine = vaultVoteLeafNote(one);
+      final index = mine == null ? -1 : vaultLockNoteIndex(lockCensus.notes, mine);
+      if (index < 0) {
+        return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('vault_root')));
+      }
+      voteProof = await proveLeafVoteOffUi({
+        'locks': [one],
+        'which': index,
+        'notes': lockCensus.notes,
+        'chainRoot': lockCensus.root,
+        'epoch': reserve.currentEpoch,
+        'choice': picked,
+        'seq': seq,
+        'proposalId': proposal,
+      });
+    } else {
+      voteProof = await proveLeafVoteOffUi({
+        'locks': locks,
+        'which': leaf,
+        'epoch': reserve.currentEpoch,
+        'choice': picked,
+        'seq': seq,
+        'proposalId': proposal,
+      });
+    }
     final blob = voteProof?['blob'];
     if (voteProof == null || blob is! Uint8List || blob.isEmpty || blob[0] != kVoteVer) {
       return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));

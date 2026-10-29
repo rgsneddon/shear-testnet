@@ -15,7 +15,8 @@ import {
   extraMintAllowed,
   MAGIC_TESTNET,
 } from '../../crypto/asert.js';
-import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums, withdrawLeakRejected } from '../../crypto/reserve_vault.js';
+import { portalRewards, publicVaultView, publicTrancheRows, publicTrancheBook, voteTx, buildFundedWithdraw, postedPayoutDest20, withdrawNonceBytes, portalPrincipalNanos, vortexSums, withdrawLeakRejected, vaultLockCensus } from '../../crypto/reserve_vault.js';
+import { keyedFetchRejected } from '../../node/src/fs1_sync.js';
 import {
   levyNanos,
   levyNeed,
@@ -1982,6 +1983,14 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
         log: submitLine,
       },
     };
+  }
+  if (path === '/api/vault/locks' && verb === 'GET') {
+    if (keyedFetchRejected(url.searchParams)) {
+      return { status: 400, json: { ok: false, reason: 'keyed_fetch', public: false } };
+    }
+    const vault = store?.reserveVault;
+    if (!vault) return { status: 503, json: { ok: false, reason: 'no_vault', public: false } };
+    return { status: 200, json: vaultLockCensus(vault) };
   }
   if (path === '/api/vault/reserve' && verb === 'GET') {
     if (url.searchParams.get('view') === 'tranches') {

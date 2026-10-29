@@ -14650,6 +14650,9 @@ class ShearPoolClient {
   Future<Map<String, dynamic>> reservePortal(String dest) =>
       _get('/api/vault/reserve?dest=$dest');
 
+  /// Whole live lock list and chain root. One read. No leaf index, no opening.
+  Future<Map<String, dynamic>> vaultLockCensus() => _get('/api/vault/locks');
+
   /// Every portal's matured-tranche rows. No portal id is on the query.
   Future<Map<String, dynamic>> reserveTrancheBook() =>
       _get('/api/vault/reserve?view=tranches');

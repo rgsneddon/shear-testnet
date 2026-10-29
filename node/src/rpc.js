@@ -9,7 +9,7 @@ import { isDestAddress, encodeDest } from '../../crypto/address.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { networkReport } from './network_report.js';
 import { oracleView } from './oracle_feed.js';
-import { cloneVault, portalRewards, publicVaultView } from '../../crypto/reserve_vault.js';
+import { cloneVault, portalRewards, publicVaultView, vaultLockCensus } from '../../crypto/reserve_vault.js';
 import { reservePinOk } from '../../crypto/reserve_evm.js';
 import { HTTP_BODY_MAX, HTTP_TX_BODY_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
 import { keyedFetchRejected, syncVerdict, witnessRouteBanned } from './fs1_sync.js';
@@ -540,6 +540,12 @@ export function createRpc({
       const vault = store.reserveVault || null;
       return { ok: true, ...oracleView(vault, store.oracleSnapshot, Date.now()) };
     }
+    if (m === 'getvaultlocks' || m === 'vaultlocks') {
+      if (keyedFetchRejected(params)) return { ok: false, reason: 'keyed_fetch', public: false };
+      const vault = store.reserveVault;
+      if (!vault) return { ok: false, reason: 'no_vault', public: false };
+      return vaultLockCensus(vault);
+    }
     if (m === 'getreserve' || m === 'reserve') {
       const vault = store.reserveVault;
       if (!vault) return { ok: false, reason: 'no_reserve' };
@@ -671,6 +677,19 @@ export function createRpc({
     }
     if (req.method === 'GET' && (url.pathname === '/oracle' || url.pathname === '/getoracle' || url.pathname === '/api/oracle')) {
       json(res, 200, dispatch('getoracle'));
+      return;
+    }
+    if (req.method === 'GET' && (url.pathname === '/api/vault/locks' || url.pathname === '/vaultlocks')) {
+      if (keyedFetchRejected(url.searchParams)) {
+        json(res, 400, { ok: false, reason: 'keyed_fetch', public: false });
+        return;
+      }
+      const vault = store.reserveVault;
+      if (!vault) {
+        json(res, 503, { ok: false, reason: 'no_vault', public: false });
+        return;
+      }
+      json(res, 200, vaultLockCensus(vault));
       return;
     }
     if (req.method === 'GET' && (url.pathname === '/reserve' || url.pathname === '/getreserve' || url.pathname === '/api/reserve')) {
