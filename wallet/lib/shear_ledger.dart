@@ -9357,6 +9357,11 @@ class ShearLedger implements ReadProofSink {
     return total;
   }
 
+  /// True when [n] is a note Spendable counts now (mined, confirmed, its
+  /// body proven where that is required). A fee note for a vote is one.
+  bool isSpendableNote(Map<String, dynamic> n) =>
+      n['verified'] == true && n['spent'] != true && _noteIsSpendable(n);
+
   bool _noteIsSpendable(Map<String, dynamic> n, {bool ignoreConfs = false}) {
     if (_bodyProofRequired && n['bodyProven'] != true) return false;
     // Ruling 6: a note opened from a read page (its value proof checked, its
@@ -13314,7 +13319,49 @@ class ShearLedger implements ReadProofSink {
 
   /// Production lock. [sealSignReserveWire] funds the π leaf, the wallet FS-1
   /// prover spends the inputs, and the fund proof is bound to that body.
+  /// The lock in flight. A second lock waits for it, so it reads the next
+  /// lock index and the inputs the first one left (never the same ones).
+  Future<void>? _lockFlight;
+
   Future<ShearTx> _sendSealedLock({
+    required String from,
+    String? to,
+    required Uint8List spendSeed,
+    required int lockEpoch,
+  }) async {
+    final prior = _lockFlight;
+    final done = Completer<void>();
+    _lockFlight = done.future;
+    if (prior != null) {
+      try {
+        await prior;
+      } catch (_) {}
+    }
+    try {
+      return await _sendSealedLockNow(from: from, to: to, spendSeed: spendSeed, lockEpoch: lockEpoch);
+    } finally {
+      done.complete();
+      if (identical(_lockFlight, done.future)) _lockFlight = null;
+    }
+  }
+
+  /// This wallet's own change notes that are not Spendable yet because they
+  /// are still confirming (no height, or under 9 confirmations). Never part
+  /// of Spendable.
+  BigInt confirmingOwnChangeNanos() {
+    var n = BigInt.zero;
+    for (final note in _notes) {
+      if (note['spent'] == true || note['verified'] != true) continue;
+      if (note['changeSeed'] == null) continue;
+      if ((note['kind'] ?? '').toString() == 'lock') continue;
+      if (_noteIsSpendable(note)) continue;
+      final units = noteNanosExact(note);
+      if (units != null && units > BigInt.zero) n += units;
+    }
+    return n;
+  }
+
+  Future<ShearTx> _sendSealedLockNow({
     required String from,
     String? to,
     required Uint8List spendSeed,
@@ -13427,6 +13474,8 @@ class ShearLedger implements ReadProofSink {
         'commit': built['commit'],
         'vaultLock': true,
         'verified': true,
+        // Its confirmations until the chain read gives the leaf a height.
+        'lockTxId': id,
       });
       if (portalId.isNotEmpty) noteChainPortals([portalId]);
     }

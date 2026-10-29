@@ -4064,7 +4064,21 @@ class ShearWalletAppState extends State<ShearWalletApp>
     return _mempoolDepth;
   }
 
+  /// One Lock π at a time: a second tap while the first is still signing or
+  /// posting is ignored, so it can never reuse the lock index or inputs.
+  bool _reserveLockBusy = false;
+
   Future<void> _reserveSend(BuildContext context, ShearIdentity ident) async {
+    if (!claimSingleSubmit(held: _reserveLockBusy)) return;
+    _reserveLockBusy = true;
+    try {
+      await _reserveSendBody(context, ident);
+    } finally {
+      _reserveLockBusy = false;
+    }
+  }
+
+  Future<void> _reserveSendBody(BuildContext context, ShearIdentity ident) async {
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
     // A lock is exactly one π leaf (ruling 25 Oct): the amount is fixed.
@@ -4080,19 +4094,29 @@ class ShearWalletAppState extends State<ShearWalletApp>
       paymentCode: ident.paymentCode,
     );
     if (painted + 1e-12 < need) {
-      final remark = lockFundingShortfall(
-        LockFundingPlan(
-          sources: const [],
-          from: null,
-          consolidate: false,
-          have: painted,
-          need: need,
-        ),
-      );
+      // The coins are there but still confirming as change: say when the
+      // next lock is possible, never "insufficient", and paint nothing.
+      final remark = changeConfirmingCoversLock(
+        ledger,
+        ident.address,
+        paymentCode: ident.paymentCode,
+        needShe: need,
+      )
+          ? kNextLockWhenChangeConfirms
+          : lockFundingShortfall(
+              LockFundingPlan(
+                sources: const [],
+                from: null,
+                consolidate: false,
+                have: painted,
+                need: need,
+              ),
+            );
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(remark)));
+        // The answer to this tap, at once: not queued behind an older snack.
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text(remark)));
       }
       return;
     }
@@ -4203,6 +4227,20 @@ class ShearWalletAppState extends State<ShearWalletApp>
       anchorMs: _owedAnchorMs,
       nowMs: DateTime.now().millisecondsSinceEpoch,
     );
+  }
+
+  /// This epoch's vote is done only when every π leaf of this wallet has
+  /// posted its vote. A wallet with no local leaf rows (a portal read from
+  /// the node) keeps the portal's own vote mark.
+  bool _reserveAllLeavesVoted(String dest) {
+    final p = reserve.portal(dest);
+    if (p.vote == null || p.voteEpoch != reserve.currentEpoch) return false;
+    final status = reserveLeafVoteStatus(
+      ledger: ledger,
+      reserve: reserve,
+      planDir: votePlanFolder(session.store.parent.path),
+    );
+    return status.total == 0 || status.voted >= status.total;
   }
 
   /// A Deposit locks exactly one π leaf, so it needs only a ready node.
@@ -4805,8 +4843,9 @@ class ShearWalletAppState extends State<ShearWalletApp>
       }
       return;
     }
-    final already = reserve.portal(dest);
-    if (already.vote != null && already.voteEpoch == reserve.currentEpoch) {
+    // Per leaf: only a wallet whose every leaf already voted this epoch is
+    // done. A leaf locked after the wallet voted still votes.
+    if (_reserveAllLeavesVoted(dest)) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(voteFailCopy(StateError('vote_locked')))),
@@ -4954,7 +4993,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
     final accruedShe = formatShe(rw.accrued / kUnitsPerShe);
     final endShe = formatShe(rw.projected / kUnitsPerShe);
     final rate = '${(rw.oracleBps / 100).toStringAsFixed(2)}%';
-    final voted = p.vote != null && p.voteEpoch == reserve.currentEpoch;
+    final voted = _reserveAllLeavesVoted(dest);
     final draft = _reserveVoteDraft ?? p.vote;
     final yours = _panel(context, [
             const Text('The Reserve', style: TextStyle(fontWeight: FontWeight.w700)),

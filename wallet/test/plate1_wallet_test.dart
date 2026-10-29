@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -836,6 +837,176 @@ void main() {
     await _dropShell(tester, funded.ledger);
   });
 
+  // Russell's GO (28 Oct): unlimited separate π locks, each voting in its own
+  // right. A leaf locked after the wallet voted reopens the ballot for that
+  // leaf only; the leaf that voted is not asked again.
+  testWidgets('a leaf locked after the wallet voted reopens the ballot and votes', (tester) async {
+    final pool = SealedNotePool();
+    final reserve = ShearReserve()..currentEpoch = 1;
+    final funded = await fundedSplit(tester, 0, 10, extraOther: const [10, 1, 1], pool: pool, reserve: reserve);
+    await _lockUi(tester);
+    _mineAll(funded, pool);
+    _censusAt(funded.ledger);
+    await tester.pump();
+    await _voteUi(tester, kVoteIncrease);
+    expect(pool.posts.where((b) => b['kind'] == 'leaf-vote'), hasLength(1));
+    expect(find.byKey(const Key('reserve-your-vote')), findsOneWidget, reason: 'the only leaf voted');
+    // A second π lock after the vote.
+    await _lockUi(tester);
+    _mineAll(funded, pool);
+    tester.element(find.byType(ShearWalletApp)).markNeedsBuild();
+    await tester.pump();
+    expect(find.byKey(const Key('reserve-your-vote')), findsNothing, reason: 'the new leaf has not voted');
+    expect(find.byKey(const Key('reserve-vote-submit')), findsOneWidget);
+    await _voteUi(tester, kVoteIncrease);
+    final votes = pool.posts.where((b) => b['kind'] == 'leaf-vote').toList();
+    expect(votes, hasLength(2), reason: 'the new leaf voted, and only it');
+    expect(votes.map((b) => b['voteSeq']).toList(), [1, 1]);
+    expect(find.byKey(const Key('reserve-your-vote')), findsOneWidget);
+    await _dropShell(tester, funded.ledger);
+  });
+
+  testWidgets('a double tap on Lock π signs and posts one lock; the next lock takes the next index', (tester) async {
+    // The node's mempool read is held open, so the second tap lands while
+    // the first is still in flight, as on a slow link.
+    final pool = _SlowDepthPool();
+    final funded = await fundedSplit(tester, 0, 10, extraOther: const [10], pool: pool, reserve: ShearReserve()..currentEpoch = 1);
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    expect(pool.depthReads, 1, reason: 'the second tap did not start a second lock');
+    pool.release();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('reserve-sign')), findsOneWidget, reason: 'one Sign for one lock');
+    await tester.tap(find.byKey(const Key('reserve-sign-accept')));
+    await tester.pump();
+    final consent = find.byKey(const Key('reserve-unprivate-accept'));
+    if (consent.evaluate().isNotEmpty) {
+      await tester.tap(consent);
+      await tester.pump();
+    }
+    await _waitFor(tester, find.byKey(const Key('reserve-locked-in')));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('reserve-sign')), findsNothing, reason: 'no second Sign was queued');
+    expect(pool.posts.where((b) => b['kind'] == 'lock'), hasLength(1));
+    // A second, deliberate lock once the first is acknowledged.
+    await _lockUi(tester);
+    expect(pool.posts.where((b) => b['kind'] == 'lock'), hasLength(2));
+    final indexes = [
+      for (final n in funded.ledger.notes)
+        if ((n['kind'] ?? '').toString() == 'lock' && n['lockIndex'] is int) n['lockIndex'] as int,
+    ]..sort();
+    expect(indexes, [0, 1]);
+    await _dropShell(tester, funded.ledger);
+  });
+
+  // The guard is the claimSingleSubmit at the start of _reserveSend. This
+  // drives a second tap into allocation when that call is missing: the post
+  // is held open, the second Sign is accepted, and the second lock then
+  // takes an index or the inputs. With the guard there is no second Sign.
+  testWidgets('lockGuardOverlap: a second Lock π tap while the first is posting does not allocate another index', (tester) async {
+    final pool = _HoldPostPool();
+    addTearDown(pool.release);
+    final funded = await fundedSplit(tester, 0, 10, extraOther: const [10], pool: pool, reserve: ShearReserve()..currentEpoch = 1);
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byKey(const Key('reserve-sign')), findsOneWidget, reason: _snacks(tester));
+    await tester.tap(find.byKey(const Key('reserve-sign-accept')));
+    await tester.pump();
+    final consent = find.byKey(const Key('reserve-unprivate-accept'));
+    if (consent.evaluate().isNotEmpty) {
+      await tester.tap(consent);
+      await tester.pump();
+    }
+    final started = DateTime.now().add(const Duration(minutes: 3));
+    while (pool.postEntries < 1 && DateTime.now().isBefore(started)) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    }
+    expect(pool.postEntries, 1, reason: 'the first lock reached the post: ${_snacks(tester)}');
+    // The Sign route is popped before the post, and its exit animation is
+    // still up on the frame that reaches postRaw.
+    final signedOff = DateTime.now().add(const Duration(seconds: 5));
+    while (find.byKey(const Key('reserve-sign')).evaluate().isNotEmpty && DateTime.now().isBefore(signedOff)) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(find.byKey(const Key('reserve-sign')), findsNothing, reason: _snacks(tester));
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    if (find.byKey(const Key('reserve-sign')).evaluate().isNotEmpty) {
+      await tester.tap(find.byKey(const Key('reserve-sign-accept')));
+      await tester.pump();
+      final consent2 = find.byKey(const Key('reserve-unprivate-accept'));
+      if (consent2.evaluate().isNotEmpty) {
+        await tester.tap(consent2);
+        await tester.pump();
+      }
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    pool.release();
+    final done = DateTime.now().add(const Duration(minutes: 3));
+    var idle = 0;
+    while (DateTime.now().isBefore(done) && idle < 4) {
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+      final posts = pool.posts.where((b) => b['kind'] == 'lock').length;
+      // A queued second lock reads the tranche book before it seals. Wait
+      // until every read has posted, so a slow second seal is not missed.
+      if (posts >= 1 && posts == pool.trancheReads && find.byKey(const Key('reserve-sign')).evaluate().isEmpty) {
+        idle++;
+      } else {
+        idle = 0;
+      }
+    }
+    final locks = pool.posts.where((b) => b['kind'] == 'lock').toList();
+    final spends = [
+      for (final b in locks)
+        ((b['admit_proofs'] as List?) ?? const []).map((p) => '${(p as Map)['spendTag']}').join(','),
+    ];
+    final indexes = [
+      for (final n in funded.ledger.notes)
+        if ((n['kind'] ?? '').toString() == 'lock' && n['lockIndex'] is int) n['lockIndex'] as int,
+    ]..sort();
+    expect(spends.toSet().length, spends.length, reason: 'a second Lock π tap reused the inputs: $spends');
+    expect(indexes.toSet().length, indexes.length, reason: 'a second Lock π tap reused a lock index: $indexes');
+    expect(indexes, [0], reason: 'a second Lock π tap double-allocated a lock index: $indexes');
+    await _dropShell(tester, funded.ledger);
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
+  testWidgets('Lock π while the change is still confirming says when the next lock is possible', (tester) async {
+    final pool = SealedNotePool();
+    final funded = await fundedSplit(tester, 0, 10, pool: pool, reserve: ShearReserve()..currentEpoch = 1);
+    await _lockUi(tester);
+    expect(pool.posts.where((b) => b['kind'] == 'lock'), hasLength(1));
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    final button = tester.widget<FilledButton>(find.byKey(const Key('reserve-send')));
+    expect(button.onPressed, isNotNull, reason: 'the button stays enabled and explains');
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    // The tap reads the mempool depth from the node first (real time).
+    await _waitFor(tester, find.text(kNextLockWhenChangeConfirms));
+    expect(find.byKey(const Key('reserve-sign')), findsNothing);
+    expect(find.text(kNextLockWhenChangeConfirms), findsOneWidget, reason: _snacks(tester));
+    expect(_snacks(tester).toLowerCase(), isNot(contains('insufficient')));
+    expect(_snacks(tester), isNot(contains('Not enough')));
+    expect(pool.posts.where((b) => b['kind'] == 'lock'), hasLength(1));
+    expect(funded.ledger.spendableOwned(funded.id.address, paymentCode: funded.id.paymentCode), 0,
+        reason: 'the confirming change is not painted as Spendable');
+    await _dropShell(tester, funded.ledger);
+  });
+
   // A vote is a leaf vote posted to a node (no local vote): the shell runs
   // with pool sync on, over a pool double that serves the live note set of
   // the real notes below and records each post. The lock is a real FS-1 π
@@ -1215,4 +1386,139 @@ Future<void> _waitFor(WidgetTester tester, Finder f) async {
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
   }
   expect(f, findsWidgets, reason: _snacks(tester));
+}
+
+/// Lock π through the Vortex Deposit: Sign, the one public-node consent,
+/// then wait for the lock notice.
+Future<void> _lockUi(WidgetTester tester) async {
+  await tester.tap(find.text('Vortex'));
+  await tester.pump();
+  await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+  await tester.tap(find.byKey(const Key('reserve-send')));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 50));
+  expect(find.byKey(const Key('reserve-sign')), findsOneWidget, reason: _snacks(tester));
+  await tester.tap(find.byKey(const Key('reserve-sign-accept')));
+  await tester.pump();
+  final consent = find.byKey(const Key('reserve-unprivate-accept'));
+  if (consent.evaluate().isNotEmpty) {
+    await tester.tap(consent);
+    await tester.pump();
+  }
+  await _waitFor(tester, find.text(kReserveLockSent));
+  await tester.pump(const Duration(milliseconds: 200));
+}
+
+/// Everything posted so far is mined one block up and read 9 deep: every
+/// change output enters the pool's live note set.
+void _mineAll(
+  ({ShearSession session, ShearLedger ledger, ShearIdentity id, String home, String other}) funded,
+  SealedNotePool pool,
+) {
+  final ledger = funded.ledger;
+  final h = ledger.sealedHeight + 1;
+  bool live(List<int> c) => pool.commits.any((x) {
+        if (x.length != c.length) return false;
+        for (var i = 0; i < c.length; i++) {
+          if (x[i] != c[i]) return false;
+        }
+        return true;
+      });
+  for (final n in ledger.notes) {
+    if ((n['kind'] ?? '').toString() == 'lock' || n['spent'] == true) continue;
+    final c = n['commit'];
+    final pub = n['admitPub'];
+    if (c is! List<int> || pub is! List<int> || live(c)) continue;
+    pool.addLive(n, h);
+  }
+  ledger.confirmRound(address: funded.other, pot: 0, height: h);
+  final tip = h + ShearLedger.spendableConfirmations - 1;
+  ledger.noteLiveHeight(tip);
+  ledger.settleTo(tip);
+}
+
+/// The node block body that commits epoch 1's census.
+void _censusAt(ShearLedger ledger) {
+  ledger.rememberNodeChain(bodies: [
+    {
+      'height': 2,
+      'txs': [
+        {
+          'coinbase': true,
+          'epochCensusCommit': [
+            {'epoch': 1, 'leafCount': 1, 'openHeight': 2},
+          ],
+        },
+      ],
+    },
+  ]);
+}
+
+/// Cast [choice] through the ballot: pick, submit, CONFIRM, Sign, then wait
+/// for the submitted snack.
+Future<void> _voteUi(WidgetTester tester, String choice) async {
+  await tester.tap(find.text('Vortex'));
+  await tester.pump();
+  await tester.ensureVisible(find.byKey(Key('reserve-vote-$choice')));
+  await tester.tap(find.byKey(Key('reserve-vote-$choice')));
+  await tester.pump();
+  await tester.ensureVisible(find.byKey(const Key('reserve-vote-submit')));
+  await tester.tap(find.byKey(const Key('reserve-vote-submit')));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 50));
+  expect(find.byKey(const Key('reserve-vote-confirm')), findsOneWidget, reason: _snacks(tester));
+  await tester.enterText(find.byKey(const Key('reserve-vote-confirm-field')), 'CONFIRM');
+  await tester.pump();
+  await tester.tap(find.byKey(const Key('reserve-vote-confirm-accept')));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+  await tester.tap(find.byKey(const Key('reserve-vote-sign-accept')));
+  await _waitFor(tester, find.textContaining('Vote submitted'));
+  await tester.pump(const Duration(milliseconds: 200));
+}
+
+/// A pool whose mempool-depth read waits until [release]: a slow node.
+class _SlowDepthPool extends SealedNotePool {
+  final _gate = Completer<void>();
+  int depthReads = 0;
+
+  void release() {
+    if (!_gate.isCompleted) _gate.complete();
+  }
+
+  @override
+  Future<Map<String, dynamic>> mempoolPressure() async {
+    depthReads++;
+    await _gate.future;
+    return {'depth': 0};
+  }
+}
+
+/// Holds the lock body at the post, after the index and the inputs are chosen,
+/// so a second tap lands while the first submission is still in flight.
+class _HoldPostPool extends SealedNotePool {
+  final _gate = Completer<void>();
+  int postEntries = 0;
+  int trancheReads = 0;
+
+  void release() {
+    if (!_gate.isCompleted) _gate.complete();
+  }
+
+  @override
+  Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
+
+  @override
+  Future<Map<String, dynamic>> reserveTrancheBook() async {
+    trancheReads++;
+    return {'ok': true, 'tranches': const []};
+  }
+
+  @override
+  Future<Map<String, dynamic>> postRaw(Map<String, dynamic> body) async {
+    postEntries++;
+    await _gate.future;
+    posts.add(body);
+    return {'ok': true, 'id': body['id'] ?? 'tx-${posts.length}'};
+  }
 }

@@ -1656,6 +1656,26 @@ bool reserveLockPostsLocal({
   return !hasPool || (skipPoolSync && !postReserveLock);
 }
 
+/// The next π lock waits on this wallet's own change: what is Spendable
+/// does not cover it, Spendable plus the change still confirming does.
+const kNextLockWhenChangeConfirms = 'Next lock available when change confirms';
+
+/// True when [needShe] is short of Spendable only by this wallet's own change
+/// that is still confirming (a lock's or a send's hidden change, not yet 9
+/// deep). Spendable itself is never raised by it.
+bool changeConfirmingCoversLock(
+  ShearLedger ledger,
+  String restFrame, {
+  String? paymentCode,
+  required double needShe,
+}) {
+  final have = ledger.spendableOwned(restFrame, paymentCode: paymentCode);
+  if (have + 1e-12 >= needShe) return false;
+  final change = ledger.confirmingOwnChangeNanos();
+  if (change <= BigInt.zero) return false;
+  return have + change.toDouble() / kUnitsPerShe + 1e-12 >= needShe;
+}
+
 /// Reserve deposit the vault control posts. Funded from verified confirmed
 /// coins, including the tx fee.
 Future<ReserveDepositResult> postReserveDeposit({
@@ -1688,6 +1708,10 @@ Future<ReserveDepositResult> postReserveDeposit({
   final lockL = levyNanos(lockNanos, depth: depth);
   final need = she + lockL / kUnitsPerShe;
   final painted = paintedContinuumSpendable(ledger, restFrame, paymentCode: paymentCode);
+  if (painted + 1e-12 < need &&
+      changeConfirmingCoversLock(ledger, restFrame, paymentCode: paymentCode, needShe: need)) {
+    return const ReserveDepositResult(posted: false, remark: kNextLockWhenChangeConfirms);
+  }
   LockFundingPlan shortPlan() => LockFundingPlan(
         sources: const [],
         from: null,
@@ -1772,12 +1796,12 @@ int reserveLockConfirmations(ShearLedger ledger, ShearTx tx) {
   return ledger.confirmationsOf(h);
 }
 
-/// Null when this dest has no reserve lock, or every lock already has the
-/// spendable confirmation floor. Any positive amount counts, including a
-/// top-up that is only part of the sum. The least-confirmed lock holds the
-/// vote. A sum under π is not this wait.
+/// Null when this dest has no reserve lock, or some lock already has the
+/// spendable confirmation floor. Only when no lock has the floor yet: a
+/// confirmed lock votes while a younger one waits (castPlannedLeafVotes
+/// names the young leaves). A sum under π is not this wait.
 String? reserveVoteConfirmationWait(ShearLedger ledger, String dest) {
-  var worst = 1 << 30;
+  var best = -1;
   var found = false;
   for (final t in ledger.transactions) {
     if (t.kind != 'lock') continue;
@@ -1785,15 +1809,18 @@ String? reserveVoteConfirmationWait(ShearLedger ledger, String dest) {
     if (t.amount <= 0) continue;
     found = true;
     final c = reserveLockConfirmations(ledger, t);
-    if (c < worst) worst = c;
+    if (c > best) best = c;
   }
   if (!found) return null;
-  if (worst < ShearLedger.spendableConfirmations) return kVoteConfirmWait;
+  // Only when every lock is still young: one confirmed lock can vote.
+  if (best < ShearLedger.spendableConfirmations) return kVoteConfirmWait;
   return null;
 }
 
 /// Ineligible while this user's own vault sum is under π. Otherwise the
-/// confirmation wait, if any lock of any size is still under the floor.
+/// confirmation wait only when no lock has its 9 confirmations yet: a young
+/// lock never holds back the leaves already confirmed (they vote; the young
+/// one waits, castPlannedLeafVotes names it).
 String? reserveVoteGate(ShearLedger ledger, ShearReserve reserve, String dest) {
   if (reserve.portal(dest).nanos < kPiSheNanos) return kVoteBelowPi;
   return reserveVoteConfirmationWait(ledger, dest);
@@ -1902,6 +1929,165 @@ void _notePostRefusal(ShearLedger ledger, Map<String, dynamic> ack) {
 /// the wallet already synced. A missing census fails closed. Each vote carries
 /// a real vote proof, a fresh fee-note spend, and the allowlisted admit fields.
 /// There is no portal vote.
+/// One leaf's vote row in this epoch's plan: its slot height, its fee note,
+/// the seq it last posted with, and whether that post went through.
+class _LeafRow {
+  _LeafRow(this.key, this.index, this.height, this.fee, this.seq, this.posted, this.choice);
+  final String key;
+  final int index;
+  int height;
+  String? fee;
+  int seq;
+  bool posted;
+  String choice;
+
+  Map<String, Object?> toJson() => {
+        'leaf': index,
+        'leafKey': key,
+        'height': height,
+        if (fee != null) 'feeInput': fee,
+        'seq': seq,
+        'posted': posted,
+        if (choice.isNotEmpty) 'choice': choice,
+      };
+}
+
+String _hexBytes(Object? raw) {
+  final b = _noteBytes(raw);
+  if (b == null) return '';
+  final out = StringBuffer();
+  for (final x in b) {
+    out.write(x.toRadixString(16).padLeft(2, '0'));
+  }
+  return out.toString();
+}
+
+/// The lock notes [reserveLockLeaves] turns into leaves, in the same order.
+List<Map<String, dynamic>> _lockLeafRows(List<Map<String, dynamic>> notes) => [
+      for (final row in notes)
+        if (row['scalar'] != null &&
+            row['blind'] != null &&
+            row['note'] != null &&
+            ((row['kind'] ?? '').toString().isEmpty || (row['kind'] ?? '').toString() == 'lock') &&
+            row['epochs'] is List &&
+            (row['epochs'] as List).isNotEmpty)
+          row,
+    ];
+
+/// Confirmations of one lock leaf: its own mined height, else the height of
+/// the lock tx this wallet posted it with (0 while that tx is unmined). A
+/// leaf read from the chain's book with no height of its own is not known
+/// to be young: null, and the node judges it against the census.
+int? reserveLeafConfirmations(ShearLedger ledger, Map<String, dynamic> lock) {
+  final h = lock['height'];
+  if (h is num && h >= 1) return ledger.confirmationsOf(h.toInt());
+  final id = lock['lockTxId']?.toString() ?? '';
+  if (id.isEmpty) return null;
+  for (final t in ledger.transactions) {
+    if (t.id != id) continue;
+    final th = t.height;
+    if (th != null && th >= 1) return ledger.confirmationsOf(th);
+  }
+  return 0;
+}
+
+bool _leafYoung(ShearLedger ledger, Map<String, dynamic> lock) {
+  final c = reserveLeafConfirmations(ledger, lock);
+  return c != null && c < ShearLedger.spendableConfirmations;
+}
+
+/// This epoch's plan rows by leaf key. A row from an older plan (no leaf key)
+/// is matched to the leaf at its index, unposted.
+Map<String, _LeafRow> _planRows(Map<String, Object?>? plan, List<String> keys) {
+  final out = <String, _LeafRow>{};
+  final txs = plan?['txs'];
+  if (txs is! List) return out;
+  for (final raw in txs) {
+    if (raw is! Map) continue;
+    final idx = raw['leaf'];
+    var key = raw['leafKey']?.toString() ?? '';
+    if (key.isEmpty && idx is int && idx >= 0 && idx < keys.length) key = keys[idx];
+    if (key.isEmpty) continue;
+    final height = raw['height'];
+    if (height is! int) continue;
+    final seq = raw['seq'] is int ? raw['seq'] as int : 0;
+    out[key] = _LeafRow(
+      key,
+      idx is int ? idx : -1,
+      height,
+      raw['feeInput'] is String ? raw['feeInput'] as String : null,
+      seq,
+      raw['posted'] == true,
+      raw['choice']?.toString() ?? '',
+    );
+  }
+  return out;
+}
+
+Map<String, Object?>? _readLeafPlan(String dir, int epoch, int open, int close) {
+  final plan = loadWalletVotePlan(dir, epoch: epoch);
+  if (plan == null) return null;
+  if (plan['openHeight'] != open || plan['closeHeight'] != close) return null;
+  return plan;
+}
+
+void _saveLeafPlan(String dir, int epoch, int open, int close, Iterable<_LeafRow> rows) {
+  final list = rows.toList()..sort((a, b) => a.height.compareTo(b.height));
+  saveWalletVotePlan(
+    dir,
+    {
+      'epoch': epoch,
+      'label': 'Cast your ${list.length} votes',
+      'openHeight': open,
+      'closeHeight': close,
+      'txs': [for (final r in list) r.toJson()],
+    },
+    replace: true,
+  );
+}
+
+/// Per-leaf standing for this epoch: how many π leaves this wallet holds,
+/// how many already posted a vote, and how many are still under 9
+/// confirmations. Reads the local plan; posts nothing.
+({int total, int voted, int young}) reserveLeafVoteStatus({
+  required ShearLedger ledger,
+  required ShearReserve reserve,
+  required String planDir,
+}) {
+  final rows = _lockLeafRows(ledger.pickableNotes);
+  var young = 0;
+  final keys = <String>[];
+  for (final r in rows) {
+    keys.add(_hexBytes(r['note']));
+    if (_leafYoung(ledger, r)) young++;
+  }
+  var voted = 0;
+  if (planDir.isNotEmpty && keys.isNotEmpty) {
+    try {
+      final plan = loadWalletVotePlan(planDir, epoch: reserve.currentEpoch);
+      final byKey = _planRows(plan, keys);
+      for (final k in keys) {
+        if (byKey[k]?.posted == true) voted++;
+      }
+    } catch (_) {}
+  }
+  return (total: keys.length, voted: voted, young: young);
+}
+
+/// "N of M leaves could not vote in this window", with the reason.
+String reserveLeavesUnvotedCopy(int n, int m, String why) => '$n of $m leaves could not vote in this window: $why';
+
+const kVoteSlotReason = 'votes are spaced $voteMinSeparation blocks apart, one per slot, and the window has no free slot left';
+const kVoteFeeNoteReason = 'each vote spends its own fee note, and no spare one is ready yet';
+const kVoteSeqReason = 'a leaf can re-vote at most 8 times an epoch';
+
+/// Votes every π leaf this wallet can vote now, one leaf vote each, with the
+/// census window and 30-block spacing (one vote per slot). Each leaf's first
+/// vote is seq 1; a re-vote with another choice is that leaf's seq + 1 (the
+/// consensus cap is per tag, not per leaf index). A leaf that already voted
+/// this choice is skipped, a leaf under 9 confirmations waits, and a leaf
+/// that does not fit the window or has no fee note is named in the remark:
+/// nothing is skipped silently.
 Future<ReserveVoteResult> castPlannedLeafVotes({
   required ShearLedger ledger,
   required ShearReserve reserve,
@@ -1914,6 +2100,7 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
   bool local = true,
   bool publicIpConsent = false,
   int? nowMs,
+  Random? random,
 }) async {
   nowMs;
   if (!local && !publicNodePostAllowed(consent: publicIpConsent)) {
@@ -1921,18 +2108,16 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
   }
   final gate = reserveVoteGate(ledger, reserve, dest);
   if (gate != null) return ReserveVoteResult(enacted: false, remark: gate);
-  final count = reserve.portal(dest).nanos ~/ kPiSheNanos;
-  if (count < 1) return ReserveVoteResult(enacted: false, remark: kVoteBelowPi);
+  if (reserve.portal(dest).nanos ~/ kPiSheNanos < 1) {
+    return ReserveVoteResult(enacted: false, remark: kVoteBelowPi);
+  }
   final picked = _leafChoice(choice);
   if (picked == null) {
     return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('bad_amount')));
   }
   final voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
   final needShe = voteL / kUnitsPerShe;
-  if (!spendableCoversLevy(
-    ledger.spendableOwned(restFrame, paymentCode: paymentCode),
-    voteL * count,
-  )) {
+  if (!spendableCoversLevy(ledger.spendableOwned(restFrame, paymentCode: paymentCode), voteL)) {
     return ReserveVoteResult(
       enacted: false,
       remark: 'Not enough Continuum spendable for vote tx fee ${formatShe(needShe)} SHE',
@@ -1946,24 +2131,8 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
   if (close == null) {
     return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('epoch_closed')));
   }
-  Map<String, Object?>? plan;
-  try {
-    plan = plannedLeafVotes(
-      dir: planDir,
-      leaves: count,
-      notes: ledger.pickableNotes,
-      openHeight: census.openHeight,
-      closeHeight: close,
-      epoch: reserve.currentEpoch,
-    );
-  } catch (e) {
-    return ReserveVoteResult(enacted: false, remark: voteFailCopy(e));
-  }
-  final txs = plan?['txs'];
-  if (plan == null || txs is! List || txs.length != count) {
-    return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('not_voter')));
-  }
-  final locks = reserveLockLeaves(ledger.pickableNotes);
+  final lockRows = _lockLeafRows(ledger.pickableNotes);
+  final locks = reserveLockLeaves(lockRows);
   if (locks == null || spendSeed == null || spendSeed.length != 32) {
     return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
   }
@@ -1971,161 +2140,295 @@ Future<ReserveVoteResult> castPlannedLeafVotes({
   if (proposal == null) {
     return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
   }
-  final used = <String>{};
-  for (final row in txs) {
-    if (row is! Map) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('not_voter')));
+  final epoch = reserve.currentEpoch;
+  final open = census.openHeight;
+  final keys = [for (final r in lockRows) _hexBytes(r['note'])];
+  Map<String, _LeafRow> rows;
+  try {
+    rows = _planRows(_readLeafPlan(planDir, epoch, open, close), keys);
+  } catch (e) {
+    return ReserveVoteResult(enacted: false, remark: voteFailCopy(e));
+  }
+  final rng = random ?? Random.secure();
+  // Which leaves vote now, and with which seq.
+  final ready = <int>[];
+  final seqOf = <int, int>{};
+  var young = 0;
+  var sameChoice = 0;
+  var seqCapped = 0;
+  for (var i = 0; i < keys.length; i++) {
+    if (_leafYoung(ledger, lockRows[i])) {
+      young++;
+      continue;
     }
-    final height = row['height'];
-    final leaf = row['leaf'];
-    final feeCommit = row['feeInput'];
-    if (height is! int || leaf is! int || feeCommit is! String || !used.add(feeCommit)) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('not_voter')));
+    final row = rows[keys[i]];
+    if (row != null && row.posted && row.choice == choice) {
+      sameChoice++;
+      continue;
     }
-    final seq = leaf + 1;
-    if (seq > 8 || leaf < 0 || leaf >= locks.length) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
+    final seq = row != null && row.posted ? row.seq + 1 : 1;
+    if (seq > kVoteSeqCap) {
+      seqCapped++;
+      continue;
     }
-    final voteProof = proveLeafVote(
-      locks: locks,
-      which: leaf,
-      epoch: reserve.currentEpoch,
-      choice: picked,
-      seq: seq,
-      proposalId: proposal,
-    );
-    final blob = voteProof?['blob'];
-    if (voteProof == null || blob is! Uint8List || blob.isEmpty || blob[0] != kVoteVer) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
-    }
-    final feeNote = _noteByCommit(ledger.notes, feeCommit);
-    final noteNanos = feeNote == null ? null : _rowNanos(feeNote);
-    final feeDest = feeNote == null ? null : _rowDest20(feeNote);
-    final feeCommitBytes = _commitHexBytes(feeCommit);
-    final changeSeedBytes = feeCommitBytes == null ? null : voteChangeSeed(spendSeed, feeCommitBytes);
-    final changeDest = changeSeedBytes == null ? null : destCommitFromSpendPub(ed25519PublicFromSeed(changeSeedBytes));
-    if (feeNote == null || noteNanos == null || noteNanos < voteL || changeDest == null || changeSeedBytes == null) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
-    }
-    if (feeDest != null && _same20(changeDest, feeDest)) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
-    }
-    // The plan stores the commit as hex. A scanned note keeps those 32 bytes.
-    // The leaf-vote builder only selects a string commit.
-    final feeRow = Map<String, dynamic>.from(feeNote);
-    feeRow['commit'] = feeCommit;
-    Map<String, dynamic>? change;
-    if (noteNanos > voteL) {
-      change = hiddenChangeNote(
-        noteNanos - voteL,
-        changeDest,
-        spendSeed: changeSeedBytes,
-        admitBase: admitPub(admitBaseScalar(spendSeed)),
+    ready.add(i);
+    seqOf[i] = seq;
+  }
+  if (ready.isEmpty) {
+    if (seqCapped > 0) {
+      return ReserveVoteResult(
+        enacted: false,
+        remark: reserveLeavesUnvotedCopy(seqCapped, keys.length, kVoteSeqReason),
       );
-      if (change == null) {
-        return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
-      }
     }
-    late final ({
-      List<Map<String, dynamic>> vin,
-      List<Map<String, dynamic>> proofs,
-      Uint8List fs1,
-      int anchor,
-      Uint8List excess,
-      List<Uint8List> t,
-    }) spent;
-    try {
-      spent = await ledger.spendFs1Notes(
-        notes: [feeRow],
-        sealed: change == null ? const <Map<String, dynamic>>[] : [change],
-        fee: voteL,
-        spendSeed: spendSeed,
-        kind: 'leaf-vote',
-        programId: kReserveProgram,
-      );
-    } catch (e) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(e));
+    if (young > 0 && sameChoice == 0) return const ReserveVoteResult(enacted: false, remark: kVoteConfirmWait);
+    return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('vote_locked')));
+  }
+  // A slot for every ready leaf that has none: 30 blocks from every other
+  // vote of this wallet in the window. As many as fit.
+  final lo = open + voteEdgeBlocks;
+  final hi = close - voteEdgeBlocks;
+  final needSlot = [for (final i in ready) if (rows[keys[i]] == null) i];
+  final taken = [for (final r in rows.values) r.height];
+  final fresh = fitVoteHeights(needSlot.length, lo, hi, taken, rng);
+  var unslotted = 0;
+  for (var j = 0; j < needSlot.length; j++) {
+    final i = needSlot[j];
+    if (j >= fresh.length) {
+      unslotted++;
+      continue;
     }
-    if (spent.proofs.length != 1 || spent.t.length != 1) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
-    }
-    final proof = spent.proofs.first;
-    final postedChange = change == null ? null : Map<String, Object?>.from(compactSealedVout(change));
-    final built = buildLeafVote(
-      vote: {
-        'choice': picked,
-        'voteProof': blob,
-        'voteOutput': voteProof['note'],
-        'voteSeq': seq,
-        'voteParam': 'hb',
-        'earnEpoch': reserve.currentEpoch,
-        'height': height,
-      },
-      notes: [feeRow],
-      fee: voteL,
-      anchor: spent.anchor,
-      change: postedChange,
-      prove: (note) {
-        if (note['commit']?.toString() != feeCommit) return null;
-        final rawBlob = proof['blob'];
-        final tilde = proof['cTilde'];
-        final tag = proof['spendTag'];
-        if (rawBlob is! List<int> || tilde is! List<int> || tag is! List<int>) return null;
-        return {
-          'fs1': spent.fs1,
-          'excess': spent.excess,
-          't': spent.t.first,
-          'admitProof': {
-            'blob': rawBlob,
-            'cTilde': tilde,
-            'spendTag': tag,
-          },
-        };
-      },
-    );
-    if (built == null || built['voteProof'] == null) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
-    }
-    if (built.containsKey('from') || built.containsKey('to') || built.containsKey('portalId') ||
-        built.containsKey('payoutPortalId') || built.containsKey('feeInput') ||
-        built.containsKey('parentTx') || built.containsKey('parent')) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('vote_leak')));
-    }
-    built['programId'] = kReserveProgram;
-    built['kind'] = 'leaf-vote';
-    if (local || ledger.pool == null) {
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
-    }
-    final ack = await ledger.pool!.postRaw(_wireBody(built));
-    if (!_votePostOk(ack)) {
-      final reason = (ack['reason'] ?? 'unsigned').toString();
-      return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError(reason)));
-    }
-    _markCommitSpent(ledger.notes, feeCommit);
-    if (change != null) {
-      ledger.rememberNote(<String, dynamic>{
-        'kind': 'send',
-        'dest20': Uint8List.fromList(changeDest),
-        'commit': change['commit'],
-        'noteCommit': change['noteCommit'],
-        'r': change['r'],
-        'admitPub': change['admitPub'],
-        'rEph': change['rEph'],
-        'rCt': change['rCt'],
-        'amtCt': change['amtCt'],
-        'nanos': noteNanos - voteL,
-        'spendSeed': changeSeedBytes,
-        'changeSeed': changeSeedBytes,
-      });
+    rows[keys[i]] = _LeafRow(keys[i], i, fresh[j], null, 0, false, '');
+  }
+  // A fee note for every slotted leaf that has none unspent. Only notes
+  // Spendable counts: an unmined change note is not in the node's note set
+  // yet, so a vote could not spend it.
+  final feeable = [
+    for (final n in ledger.pickableNotes)
+      if (ledger.isSpendableNote(n)) n,
+  ];
+  final unspent = ownedFeeInputs(feeable).toSet();
+  final reserved = <String>{
+    for (final r in rows.values)
+      if (!r.posted && r.fee != null && unspent.contains(r.fee)) r.fee!,
+  };
+  final needFee = <_LeafRow>[
+    for (final i in ready)
+      if (rows[keys[i]] != null && (rows[keys[i]]!.fee == null || !unspent.contains(rows[keys[i]]!.fee) || rows[keys[i]]!.posted))
+        rows[keys[i]]!,
+  ];
+  final pool = [
+    for (final n in feeable)
+      if (!reserved.contains(_commitHex(n['commit']) ?? '')) n,
+  ];
+  var feeShort = 0;
+  final spare = countVoteFeeNotes(pool);
+  final fees = pickVoteFeeNotes(pool, needFee.length < spare ? needFee.length : spare, rng) ?? const <String>[];
+  for (var j = 0; j < needFee.length; j++) {
+    if (j < fees.length) {
+      needFee[j].fee = fees[j];
+    } else {
+      needFee[j].fee = null;
+      feeShort++;
     }
   }
+  try {
+    _saveLeafPlan(planDir, epoch, open, close, rows.values);
+  } catch (e) {
+    return ReserveVoteResult(enacted: false, remark: voteFailCopy(e));
+  }
+  if (local || ledger.pool == null) {
+    return ReserveVoteResult(enacted: false, remark: voteFailCopy(StateError('unsigned')));
+  }
+  var posted = 0;
+  String? failed;
+  for (final i in ready) {
+    final row = rows[keys[i]];
+    if (row == null || row.fee == null) continue;
+    final err = await _postOneLeafVote(
+      ledger: ledger,
+      reserve: reserve,
+      locks: locks,
+      which: i,
+      picked: picked,
+      seq: seqOf[i]!,
+      proposal: proposal,
+      height: row.height,
+      feeCommit: row.fee!,
+      voteL: voteL,
+      spendSeed: spendSeed,
+    );
+    if (err != null) {
+      failed = err;
+      break;
+    }
+    row
+      ..posted = true
+      ..seq = seqOf[i]!
+      ..choice = choice;
+    posted++;
+    try {
+      _saveLeafPlan(planDir, epoch, open, close, rows.values);
+    } catch (_) {}
+  }
+  final notes = <String>[];
+  if (unslotted > 0) notes.add(reserveLeavesUnvotedCopy(unslotted, keys.length, kVoteSlotReason));
+  if (feeShort > 0) notes.add(reserveLeavesUnvotedCopy(feeShort, keys.length, kVoteFeeNoteReason));
+  if (seqCapped > 0) notes.add(reserveLeavesUnvotedCopy(seqCapped, keys.length, kVoteSeqReason));
+  if (young > 0) notes.add('$young of ${keys.length} leaves wait on 9 confirmations and vote once confirmed');
+  if (posted == 0) {
+    if (failed != null) return ReserveVoteResult(enacted: false, remark: failed);
+    return ReserveVoteResult(enacted: false, remark: notes.isEmpty ? voteFailCopy(StateError('not_voter')) : notes.join('. '));
+  }
+  if (failed != null) notes.insert(0, '${ready.length - posted} of ${keys.length} leaves were not posted: $failed');
   // This wallet's own choice for this epoch, so the ballot shows the vote it
-  // just posted (and does not offer a second one). The tally is the chain's:
-  // nothing is added to it here.
+  // just posted. The tally is the chain's: nothing is added to it here.
   reserve.portal(dest)
     ..vote = choice
     ..voteEpoch = reserve.currentEpoch;
-  return ReserveVoteResult(enacted: true, remark: 'Vote submitted — Your vote: $choice');
+  final head = 'Vote submitted — Your vote: $choice';
+  return ReserveVoteResult(enacted: true, remark: notes.isEmpty ? head : '$head. ${notes.join('. ')}');
+}
+
+/// The consensus cap on one tag's re-votes in an epoch (VOTE_SEQ_CAP).
+const kVoteSeqCap = 8;
+
+/// Proves, funds and posts one leaf vote. Null on success, else the remark.
+Future<String?> _postOneLeafVote({
+  required ShearLedger ledger,
+  required ShearReserve reserve,
+  required List<Map<String, Object?>> locks,
+  required int which,
+  required int picked,
+  required int seq,
+  required Uint8List proposal,
+  required int height,
+  required String feeCommit,
+  required int voteL,
+  required Uint8List spendSeed,
+}) async {
+  final voteProof = proveLeafVote(
+    locks: locks,
+    which: which,
+    epoch: reserve.currentEpoch,
+    choice: picked,
+    seq: seq,
+    proposalId: proposal,
+  );
+  final blob = voteProof?['blob'];
+  if (voteProof == null || blob is! Uint8List || blob.isEmpty || blob[0] != kVoteVer) {
+    return voteFailCopy(StateError('unsigned'));
+  }
+  final feeNote = _noteByCommit(ledger.notes, feeCommit);
+  final noteNanos = feeNote == null ? null : _rowNanos(feeNote);
+  final feeDest = feeNote == null ? null : _rowDest20(feeNote);
+  final feeCommitBytes = _commitHexBytes(feeCommit);
+  final changeSeedBytes = feeCommitBytes == null ? null : voteChangeSeed(spendSeed, feeCommitBytes);
+  final changeDest = changeSeedBytes == null ? null : destCommitFromSpendPub(ed25519PublicFromSeed(changeSeedBytes));
+  if (feeNote == null || noteNanos == null || noteNanos < voteL || changeDest == null || changeSeedBytes == null) {
+    return voteFailCopy(StateError('unsigned'));
+  }
+  if (feeDest != null && _same20(changeDest, feeDest)) return voteFailCopy(StateError('unsigned'));
+  // The plan stores the commit as hex. A scanned note keeps those 32 bytes.
+  // The leaf-vote builder only selects a string commit.
+  final feeRow = Map<String, dynamic>.from(feeNote);
+  feeRow['commit'] = feeCommit;
+  Map<String, dynamic>? change;
+  if (noteNanos > voteL) {
+    change = hiddenChangeNote(
+      noteNanos - voteL,
+      changeDest,
+      spendSeed: changeSeedBytes,
+      admitBase: admitPub(admitBaseScalar(spendSeed)),
+    );
+    if (change == null) return voteFailCopy(StateError('unsigned'));
+  }
+  late final ({
+    List<Map<String, dynamic>> vin,
+    List<Map<String, dynamic>> proofs,
+    Uint8List fs1,
+    int anchor,
+    Uint8List excess,
+    List<Uint8List> t,
+  }) spent;
+  try {
+    spent = await ledger.spendFs1Notes(
+      notes: [feeRow],
+      sealed: change == null ? const <Map<String, dynamic>>[] : [change],
+      fee: voteL,
+      spendSeed: spendSeed,
+      kind: 'leaf-vote',
+      programId: kReserveProgram,
+    );
+  } catch (e) {
+    return voteFailCopy(e);
+  }
+  if (spent.proofs.length != 1 || spent.t.length != 1) return voteFailCopy(StateError('unsigned'));
+  final proof = spent.proofs.first;
+  final postedChange = change == null ? null : Map<String, Object?>.from(compactSealedVout(change));
+  final built = buildLeafVote(
+    vote: {
+      'choice': picked,
+      'voteProof': blob,
+      'voteOutput': voteProof['note'],
+      'voteSeq': seq,
+      'voteParam': 'hb',
+      'earnEpoch': reserve.currentEpoch,
+      'height': height,
+    },
+    notes: [feeRow],
+    fee: voteL,
+    anchor: spent.anchor,
+    change: postedChange,
+    prove: (note) {
+      if (note['commit']?.toString() != feeCommit) return null;
+      final rawBlob = proof['blob'];
+      final tilde = proof['cTilde'];
+      final tag = proof['spendTag'];
+      if (rawBlob is! List<int> || tilde is! List<int> || tag is! List<int>) return null;
+      return {
+        'fs1': spent.fs1,
+        'excess': spent.excess,
+        't': spent.t.first,
+        'admitProof': {
+          'blob': rawBlob,
+          'cTilde': tilde,
+          'spendTag': tag,
+        },
+      };
+    },
+  );
+  if (built == null || built['voteProof'] == null) return voteFailCopy(StateError('unsigned'));
+  if (built.containsKey('from') || built.containsKey('to') || built.containsKey('portalId') ||
+      built.containsKey('payoutPortalId') || built.containsKey('feeInput') ||
+      built.containsKey('parentTx') || built.containsKey('parent')) {
+    return voteFailCopy(StateError('vote_leak'));
+  }
+  built['programId'] = kReserveProgram;
+  built['kind'] = 'leaf-vote';
+  final ack = await ledger.pool!.postRaw(_wireBody(built));
+  if (!_votePostOk(ack)) {
+    final reason = (ack['reason'] ?? 'unsigned').toString();
+    return voteFailCopy(StateError(reason));
+  }
+  _markCommitSpent(ledger.notes, feeCommit);
+  if (change != null) {
+    ledger.rememberNote(<String, dynamic>{
+      'kind': 'send',
+      'dest20': Uint8List.fromList(changeDest),
+      'commit': change['commit'],
+      'noteCommit': change['noteCommit'],
+      'r': change['r'],
+      'admitPub': change['admitPub'],
+      'rEph': change['rEph'],
+      'rCt': change['rCt'],
+      'amtCt': change['amtCt'],
+      'nanos': noteNanos - voteL,
+      'spendSeed': changeSeedBytes,
+      'changeSeed': changeSeedBytes,
+    });
+  }
+  return null;
 }
 
 /// One column of the Reserve ballot. Left to right: −1, hold, +1.
