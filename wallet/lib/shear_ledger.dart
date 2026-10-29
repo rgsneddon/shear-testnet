@@ -20,6 +20,7 @@ import 'shear_public_confirm.dart';
 import 'shear_admit.dart';
 import 'shear_admit_ffi.dart';
 import 'shear_body_scan.dart';
+import 'shear_v3_ffi.dart' show shearV3Backend;
 import 'shear_fs1.dart';
 import 'shear_native_prove.dart';
 import 'shear_note.dart';
@@ -1339,6 +1340,38 @@ Future<void> creditFollowEntry(List<dynamic> args) async {
   }
 }
 
+/// The production walk below a checkpoint ([ShearLedger] _proveBelowPin),
+/// run in this worker isolate with the native hash inline. Input: 'headers'
+/// (128-byte headers, height 1 first), 'pin' (checkpointPinToJson), and
+/// 'progress' (a SendPort, or null). Returns whether the chain linked and
+/// the walk time. Used by the walk-frames measurement build; the Spendable
+/// path does not call it.
+Future<Map<String, dynamic>> walkBelowCheckpointWorker(Map<String, dynamic> input) async {
+  final pin = checkpointPinFromJson(Map<String, dynamic>.from(input['pin'] as Map));
+  if (pin == null) return {'ok': false, 'reason': 'pin'};
+  final raw = input['headers'] as Uint8List;
+  final ledger = ShearLedger();
+  ledger._v3HashInline = true;
+  ledger.installCheckpoint(pin);
+  Future<List<({int height, Uint8List header})>> rows(int from, int to) async => [
+        for (var h = from; h <= to && h * 128 <= raw.length; h++)
+          (height: h, header: Uint8List.sublistView(raw, (h - 1) * 128, h * 128)),
+      ];
+  final sw = Stopwatch()..start();
+  final ok = await ledger._proveBelowPin(
+    pin,
+    rows,
+    from: (input['from'] as num?)?.toInt() ?? 1,
+    progress: input['progress'] as SendPort?,
+  );
+  return {
+    'ok': ok,
+    'ms': sw.elapsedMilliseconds,
+    'headers': pin.height - ((input['from'] as num?)?.toInt() ?? 1) + 1,
+    'backend': shearV3Backend() ?? 'none',
+  };
+}
+
 Future<Map<String, dynamic>> creditFollowWorker(
   String specJson, [
   SendPort? partials,
@@ -1393,6 +1426,11 @@ Future<Map<String, dynamic>> creditFollowWorker(
   ledger._v3HashInline = true;
   final sessionPath = spec['sessionPath']?.toString() ?? '';
   final headerStore = verifiedHeaderStorePath(sessionPath);
+  final pinJson = spec['checkpoint'];
+  if (pinJson is Map) {
+    final pin = checkpointPinFromJson(Map<String, dynamic>.from(pinJson));
+    if (pin != null) ledger.installCheckpoint(pin, storePath: headerStore.isEmpty ? null : headerStore);
+  }
   if (headerStore.isNotEmpty) ledger.bindHeaderStore(headerStore);
   try {
     ledger.installCreditFollow(spec);
@@ -1790,6 +1828,18 @@ List<dynamic> notesNotYetAccepted(List<dynamic> rows, Set<String> known) {
 /// commits stay at 0.
 int debugNotesOpenedThisScan = 0;
 
+/// Ruling 6 in every shipped build. A release or profile wallet, and a
+/// compiled CLI, proves each block body against a header it verified from
+/// its first read. A node that still answers the notes route cannot hold it
+/// on the legacy path. Only a debug or test build starts on that path.
+const bool kBodyProofShipped =
+    bool.fromEnvironment('dart.vm.product') ||
+    bool.fromEnvironment('dart.vm.profile');
+
+/// Tests set this to run a book as a shipped build. It can only add body
+/// mode; a shipped build is in body mode whatever this says.
+bool debugBodyProofShipped = false;
+
 /// Hexify the scan snapshot inside the worker, then scan. The caller sends
 /// the raw snapshot; the JSON clone does not run on the UI isolate.
 /// [openedProofs] stays on the snapshot so an already opened proof is not
@@ -1833,6 +1883,8 @@ List<Map<String, dynamic>> stampChainScanVouts(List<dynamic> txs) {
       for (final item in list) {
         if (item is! Map) continue;
         final row = Map<String, dynamic>.from(item);
+        // A node cannot say a body was proven. Only the body scan sets it.
+        row.remove('bodyProven');
         final havePortal = (row['portalId'] ?? '').toString();
         if (havePortal.isEmpty && portal != null && portal.toString().isNotEmpty) {
           row['portalId'] = portal;
@@ -2104,7 +2156,6 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
         'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
         if (o['height'] != null) 'height': o['height'],
-        if (o['bodyProven'] == true) 'bodyProven': true,
         'nanos': cachedEarly,
         if (amtEarly != null) 'amount': amtEarly,
         'proofKey': proofKeyEarly,
@@ -2179,7 +2230,6 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
       'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
       if (o['height'] != null) 'height': o['height'],
-      if (o['bodyProven'] == true) 'bodyProven': true,
       if (amt != null) 'amount': amt,
       if (proofKey != null) 'proofKey': proofKey,
       if (verifiedNanos != null) 'verifiedNanos': verifiedNanos,
@@ -4878,7 +4928,18 @@ class ShearLedger implements ReadProofSink {
       for (var i = 0; i < _notes.length; i++) {
         final have = _noteBytes(_notes[i]['commit']);
         if (have != null && _bytesEq(have, commit)) {
-          _notes[i] = {..._notes[i], ...incoming};
+          final was = _notes[i];
+          final merged = {...was, ...incoming};
+          // A proven note keeps the height its body was proven at. A row
+          // that says nothing about the proof (every node row: their
+          // bodyProven is dropped) cannot move it. The book's own rows (a
+          // rewind that cleared the proof, a new proof) carry the key.
+          if (was['bodyProven'] == true &&
+              !incoming.containsKey('bodyProven') &&
+              was.containsKey('height')) {
+            merged['height'] = was['height'];
+          }
+          _notes[i] = merged;
           return;
         }
       }
@@ -4960,6 +5021,9 @@ class ShearLedger implements ReadProofSink {
         'verified': true,
         'spent': false,
       };
+      // The page is the node's JSON. A proven body is this wallet's own
+      // mark, set only by the body scan.
+      row.remove('bodyProven');
       if ((row['kind'] ?? '').toString() == 'lock') {
         row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
       }
@@ -5816,6 +5880,11 @@ class ShearLedger implements ReadProofSink {
   /// would, are the same wait — not a short balance.
   StateError fundsRefusal([double amount = 0]) {
     if (bookTip < 1) return StateError(kErrHeaderSync);
+    // Body mode: the bodies are not proven up to the verified headers yet
+    // (or the walk below the checkpoint is running). A coin may be there.
+    if (_bodyProofRequired && (_belowPinTotal > _belowPinDone || _bodyScanTo < _chainTip)) {
+      return StateError(kErrHeaderSync);
+    }
     var spendableSum = 0.0;
     var depthSum = 0.0;
     var anySpendable = false;
@@ -5892,6 +5961,10 @@ class ShearLedger implements ReadProofSink {
   /// First-run catch-up. Null once the checked chain has reached the host.
   /// A missing native hasher is its own line, not a stuck `0/N`.
   String? get headerVerifyLine {
+    // The walk below the checkpoint: one ShearHash per header, pin down.
+    if (_belowPinTotal > 0 && _belowPinDone < _belowPinTotal) {
+      return 'Verifying checkpoint headers $_belowPinDone/$_belowPinTotal';
+    }
     final pin = _pin;
     final host = _headerHostTip;
     final behind = pin != null && host > bookTip && host > pin.height;
@@ -9905,7 +9978,7 @@ class ShearLedger implements ReadProofSink {
   /// From then on Spendable counts only a note whose block body was proven
   /// against a header this ledger verified, at its confirmations. Every
   /// other note is Pending.
-  bool _bodyProofRequired = false;
+  bool _bodyProofRequired = kBodyProofShipped || debugBodyProofShipped;
   bool get bodyProofRequired => _bodyProofRequired;
 
   /// The node answered the notes route 404: the route is gone (AL-5), not
@@ -10006,7 +10079,7 @@ class ShearLedger implements ReadProofSink {
     // Blocks at and below the pin: their headers are proven by hash links
     // down from the pin's own hash, then their bodies scanned like any other.
     if (_bodyScanTo < pin.height) {
-      final linked = await _proveBelowPin(pin, fetchHeaders);
+      final linked = await _proveBelowPin(pin, fetchHeaders, from: _bodyScanTo + 1, progress: partials);
       if (!linked) {
         return _bodyScanFail('headers below the checkpoint do not link to it');
       }
@@ -10059,16 +10132,60 @@ class ShearLedger implements ReadProofSink {
   /// this ledger's life; the pin never moves under it.
   Map<int, ({Uint8List hash, Uint8List root, int timeMs})>? _belowPin;
 
+  /// Progress of the walk below the checkpoint, for [headerVerifyLine].
+  int _belowPinDone = 0;
+  int _belowPinTotal = 0;
+
+  /// How long the last walk below the checkpoint took, for measurement.
+  int lastBelowPinWalkMs = 0;
+
   Future<bool> _proveBelowPin(
     CheckpointPin pin,
     Future<List<({int height, Uint8List header})>> Function(int from, int to)?
-    fetchHeaders,
-  ) async {
-    if (_belowPin != null) return true;
+    fetchHeaders, {
+    int from = 1,
+    SendPort? progress,
+  }) async {
+    // Only the range the body scan still needs: from the cursor up to the
+    // pin. Each header is still hashed and linked; nothing is skipped.
+    final lowest = from < 1 ? 1 : from;
+    final have = _belowPin;
+    if (have != null && have.containsKey(lowest)) return true;
     final want = _hexToBytes(pin.hashHex.toLowerCase());
     if (want == null) return false;
+    _belowPinTotal = pin.height - lowest + 1;
+    _belowPinDone = 0;
+    _paintHeaderProgress(_headerHostTip);
+    final sw = Stopwatch()..start();
+    try {
+      return await _walkBelowPin(pin, fetchHeaders, lowest, want, progress);
+    } finally {
+      lastBelowPinWalkMs = sw.elapsedMilliseconds;
+      _belowPinTotal = 0;
+      _belowPinDone = 0;
+      progress?.send(<String, dynamic>{'event': 'walk', 'done': 0, 'total': 0});
+      _paintHeaderProgress(_headerHostTip);
+    }
+  }
+
+  Future<bool> _walkBelowPin(
+    CheckpointPin pin,
+    Future<List<({int height, Uint8List header})>> Function(int from, int to)?
+    fetchHeaders,
+    int lowest,
+    Uint8List want,
+    SendPort? progress,
+  ) async {
     final byHeight = <int, Uint8List>{};
-    for (var from = 1; from <= pin.height; from += _kHeaderBackfillCap) {
+    // Progress for the UI: at most a few small messages a second, never one
+    // per header.
+    final tick = Stopwatch()..start();
+    void report() {
+      if (progress == null || tick.elapsedMilliseconds < 250) return;
+      tick.reset();
+      progress.send(<String, dynamic>{'event': 'walk', 'done': _belowPinDone, 'total': _belowPinTotal});
+    }
+    for (var from = lowest; from <= pin.height; from += _kHeaderBackfillCap) {
       final to = from + _kHeaderBackfillCap - 1 > pin.height
           ? pin.height
           : from + _kHeaderBackfillCap - 1;
@@ -10079,7 +10196,7 @@ class ShearLedger implements ReadProofSink {
     }
     final out = <int, ({Uint8List hash, Uint8List root, int timeMs})>{};
     var link = want;
-    for (var h = pin.height; h >= 1; h--) {
+    for (var h = pin.height; h >= lowest; h--) {
       final header = byHeight[h];
       if (header == null || header.length != shearHeaderLen) return false;
       final digest = await _hashHeader(header);
@@ -10088,6 +10205,9 @@ class ShearLedger implements ReadProofSink {
       if (root == null) return false;
       out[h] = (hash: digest, root: root, timeMs: headerTimestampMs(header) ?? 0);
       link = Uint8List.fromList(header.sublist(4, 36));
+      _belowPinDone++;
+      if (_belowPinDone % 16 == 0) _paintHeaderProgress(_headerHostTip);
+      report();
     }
     _belowPin = out;
     return true;
@@ -10126,10 +10246,13 @@ class ShearLedger implements ReadProofSink {
       final blockHash = below?.hash ?? row?.hash;
       if (root == null || blockHash == null) {
         // The header left the checked window before its body was read.
-        // Walk the headers again from the pin; the cursor stays.
-        _resetChainToPin();
-        stop = 'rechecking headers from the checkpoint';
-        break;
+        // Walk the headers again from the pin. Every body proof above the
+        // pin was made against headers this drops, and the re-walk adopts
+        // whatever branch is served next, so each body is proven again:
+        // the cursor goes back to the pin, and the rows read in this range
+        // are not applied.
+        _rebackfillFromPin();
+        return _bodyScanFail('rechecking headers from the checkpoint');
       }
       Map<String, dynamic>? wire;
       try {
@@ -10974,6 +11097,9 @@ class ShearLedger implements ReadProofSink {
       'reserveHeld': <String, String>{
         for (final e in _reserveHeldNanos.entries) e.key: e.value.toString(),
       },
+      // The trust root this book checks headers from. The worker checks the
+      // same chain from the same pin (the release pin in a release build).
+      if (_pin != null) 'checkpoint': checkpointPinToJson(_pin!),
     };
     // The launch token lives in this isolate. The worker is another isolate,
     // so the spec carries it. armLocalRpcFromSpec removes it before any export.
@@ -11031,6 +11157,13 @@ class ShearLedger implements ReadProofSink {
       if (event == 'coins') {
         final msg = Map<String, dynamic>.from(message);
         adoptChain = adoptChain.then((_) => _adoptCoinMessage(msg, onCoins));
+        return;
+      }
+      if (event == 'walk') {
+        // The worker's walk below the checkpoint, a few times a second.
+        _belowPinDone = (message['done'] as num?)?.toInt() ?? 0;
+        _belowPinTotal = (message['total'] as num?)?.toInt() ?? 0;
+        _paintHeaderProgress(_headerHostTip);
         return;
       }
       if ((event == 'done' || event == 'error') && !doneWait.isCompleted) {
