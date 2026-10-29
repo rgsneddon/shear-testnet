@@ -17,7 +17,7 @@ z=(--permanent --zone="$zone")
 # 22 first, so an apply over SSH never locks the session out. The plain
 # 22/tcp is swapped for the rate-limited SSH rich rules just before the reload.
 run firewall-cmd "${z[@]}" --add-port=22/tcp
-for i in $(ls /sys/class/net | grep -vx lo); do run firewall-cmd "${z[@]}" --change-interface="$i"; done
+for n in /sys/class/net/*; do i="${n##*/}"; if [ "$i" != lo ]; then run firewall-cmd "${z[@]}" --change-interface="$i"; fi; done
 for s in $(firewall-cmd "${z[@]}" --list-services); do run firewall-cmd "${z[@]}" --remove-service="$s"; done
 for p in $(firewall-cmd "${z[@]}" --list-ports); do
   [ "$p" = 22/tcp ] && continue

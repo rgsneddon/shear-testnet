@@ -35,7 +35,7 @@ role="${SHEAR_ROLE:-}"
 
 # agent-box is the explorer node: never torn down, whatever the token says.
 for name in "$host" "$role"; do
-  case "$(printf '%s' "$name" | tr 'A-Z' 'a-z')" in
+  case "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" in
     *agent-box*|*agentbox*|*agent_box*|*explorer*)
       echo "refused: agent-box (the explorer node) is never torn down by this script ($name)"; exit 1 ;;
   esac

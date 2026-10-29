@@ -128,6 +128,7 @@ done
 
 # Nothing from testing (the same paths teardown.sh removes). Before genesis
 # the v12 testnet is the public net and its state belongs here.
+MAINNET_DIRS="mainnet mainnet-p2p mainnet-pool seal-keys"
 V12_DIRS="testnet-v12 testnet-v12-p2p testnet-v12-pool seal-keys-v12"
 for p in "$R"/root/claude-ci "$R"/opt/shear-v* "$R"/root/.shear "$R"/home/*/.shear "$R"/root/*.shewall "$R"/home/*/*.shewall "$R"/tmp/shear* "$R"/var/log/shear*; do
   [ -e "$p" ] || continue
@@ -140,7 +141,7 @@ done
 for d in "$R"/var/lib/shear/*; do
   [ -e "$d" ] || continue
   b="$(basename "$d")"
-  case " mainnet mainnet-p2p mainnet-pool seal-keys " in *" $b "*) ok "mainnet state $d"; continue ;; esac
+  case " $MAINNET_DIRS " in *" $b "*) ok "mainnet state $d"; continue ;; esac
   case " $V12_DIRS " in *" $b "*)
     [ "$phase" = pre-genesis ] && ok "v12 state $d" || note "v12 state $d still here (v12 teardown pending)"; continue ;; esac
   bad "testing left $d"
@@ -192,7 +193,7 @@ done
 for e in "$R/etc/shear/pool.env" "$R/etc/shear/pool-v12.env"; do
   [ "$role" = pool ] || continue
   [ "$e" = "$R/etc/shear/pool-v12.env" ] && [ "$phase" = live ] && [ ! -e "$e" ] && continue
-  [ -f "$e" ] && [ "$(stat -c '%U:%G %a' "$e")" = "root:shear 640" ] && ok "${e#$R} root:shear 640" || bad "${e#$R} must exist as root:shear 640"
+  [ -f "$e" ] && [ "$(stat -c '%U:%G %a' "$e")" = "root:shear 640" ] && ok "${e#"$R"} root:shear 640" || bad "${e#"$R"} must exist as root:shear 640"
 done
 
 # The book a node reports on its loopback RPC, against the release tree.
