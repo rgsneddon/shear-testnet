@@ -744,6 +744,215 @@ pub fn verify_spend_unlinked(
   Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// External signer (Ledger) split. docs/LEDGER-VORTICE.md §5.
+//
+// The host builds the membership proof and the transcript without the admit
+// secret `x`. The signer (a hardware device) holds `x`, returns the spend tag
+// first and then the SA+L for the transcript. The posted bytes, and the
+// verifier, are exactly those of [`prove_spend`]: nothing here is consensus.
+
+/// Bytes of one [`SalRequest`] on the wire: `m(64) index(1)` then
+/// `O~ I~ R tag o i ib` (32 each).
+pub const SAL_REQUEST_BYTES: usize = 64 + 1 + 7 * 32;
+
+/// Signer step 1: the spend tag `x·Hp(admitPub)` (Ristretto), with
+/// `admitPub = x·G` computed by the signer itself, so the signer is never an
+/// oracle for `x·P` at a host-chosen `P`.
+pub fn external_tag(x: &Scalar) -> [u8; 32] {
+  let admit_pub = (RISTRETTO_BASEPOINT_POINT * x).compress().to_bytes();
+  (hash_to_ristretto(&admit_pub, HP_DST) * x).compress().to_bytes()
+}
+
+/// One input of an externally signed spend: leaf index and the signer's tag.
+pub struct ExternalIn {
+  pub index: u64,
+  pub tag: [u8; 32],
+}
+
+/// What the signer signs for one input. `o`, `i`, `ib` are host-chosen
+/// re-randomisation blinds; they are not the owner's secret.
+#[derive(Clone)]
+pub struct SalRequest {
+  pub m: [u8; 64],
+  pub index: u8,
+  pub o_tilde: [u8; 32],
+  pub i_tilde: [u8; 32],
+  pub r: [u8; 32],
+  pub tag: [u8; 32],
+  pub o: Zeroizing<[u8; 32]>,
+  pub i: Zeroizing<[u8; 32]>,
+  pub ib: Zeroizing<[u8; 32]>,
+}
+
+impl SalRequest {
+  pub fn to_bytes(&self) -> Zeroizing<[u8; SAL_REQUEST_BYTES]> {
+    let mut out = Zeroizing::new([0u8; SAL_REQUEST_BYTES]);
+    out[.. 64].copy_from_slice(&self.m);
+    out[64] = self.index;
+    let parts: [&[u8; 32]; 7] = [&self.o_tilde, &self.i_tilde, &self.r, &self.tag, &self.o, &self.i, &self.ib];
+    for (k, p) in parts.iter().enumerate() {
+      out[65 + 32 * k .. 97 + 32 * k].copy_from_slice(&p[..]);
+    }
+    out
+  }
+
+  pub fn from_bytes(b: &[u8]) -> Option<SalRequest> {
+    if b.len() != SAL_REQUEST_BYTES {
+      return None;
+    }
+    let f = |k: usize| -> [u8; 32] { b[65 + 32 * k .. 97 + 32 * k].try_into().expect("32") };
+    Some(SalRequest {
+      m: b[.. 64].try_into().ok()?,
+      index: b[64],
+      o_tilde: f(0),
+      i_tilde: f(1),
+      r: f(2),
+      tag: f(3),
+      o: Zeroizing::new(f(4)),
+      i: Zeroizing::new(f(5)),
+      ib: Zeroizing::new(f(6)),
+    })
+  }
+}
+
+/// The host half: membership proof, record heads and per-input requests.
+pub struct ExternalSpend {
+  fs1: Vec<u8>,
+  heads: Vec<RecordHead>,
+  pub requests: Vec<SalRequest>,
+  /// Secret. `C~ = C + t·H` per input, for the wallet's kernel excess.
+  t: Vec<Zeroizing<[u8; 32]>>,
+}
+
+/// Host step: prove membership for `inputs` without `x`. Each tag comes from
+/// [`external_tag`] on the signer. A wrong tag or key fails at [`assemble_external`].
+pub fn prove_spend_external(
+  tree: &ChainTree,
+  notes: &[ChainNote],
+  inputs: &[ExternalIn],
+  body_digest: &[u8; 32],
+  anchor: u64,
+  threads: usize,
+) -> Result<ExternalSpend, Fs1Error> {
+  let params = spend_params()?;
+  let n = inputs.len();
+  if !consensus_accepts(n) || tree.len() == 0 || notes.len() as u64 != tree.len() {
+    return Err(Fs1Error::InputCount);
+  }
+  let mut seen = Vec::with_capacity(n);
+  let mut opens = Vec::with_capacity(n);
+  for input in inputs {
+    if seen.contains(&input.index) {
+      return Err(Fs1Error::Path);
+    }
+    seen.push(input.index);
+    let at = usize::try_from(input.index).map_err(|_| Fs1Error::Path)?;
+    let note = notes.get(at).ok_or(Fs1Error::Path)?;
+    let leaf = leaf_of(note).ok_or(Fs1Error::Path)?;
+    if tree.leaf_bytes(input.index) != Some(leaf_bytes(&leaf)) {
+      return Err(Fs1Error::Path);
+    }
+    canonical_ristretto(&input.tag).ok_or(Fs1Error::Blind)?;
+    opens.push(OpenNote { leaf_index: input.index, note_age: 0, set_size: tree.len(), note_type: NOTE_PAYMENT, anchor: [0; 32] });
+  }
+  let threads = threads.max(1);
+  let blinds = PreparedBlinds::prepare(params, n, tree.layers(), threads)?;
+  let (proved, scalars) = prove_prepared_scalars(params, tree, &opens, blinds, threads)?;
+  let root = root_bytes(&proved.root);
+  let h = note_h();
+  let mut heads = Vec::with_capacity(n);
+  let mut ts = Vec::with_capacity(n);
+  for (k, input) in inputs.iter().enumerate() {
+    let note = &notes[usize::try_from(input.index).map_err(|_| Fs1Error::Path)?];
+    let c = canonical_ristretto(&note.commit).ok_or(Fs1Error::Blind)?;
+    let c_tilde = (c - h * scalars[k].c).compress().to_bytes();
+    let mut points = [0u8; 96];
+    points.copy_from_slice(&proved.input_bytes[k][.. 96]);
+    if ristretto_to_ed(&c_tilde).map(|p| p.to_bytes()) != Some(proved.input_bytes[k][96 ..].try_into().expect("32 bytes")) {
+      return Err(Fs1Error::Blind);
+    }
+    heads.push(RecordHead { tag: input.tag, c_tilde, points });
+    ts.push(Zeroizing::new((-scalars[k].c).to_bytes()));
+  }
+  let m = transcript(body_digest, anchor, &root, &heads, &proved.bytes, &[]);
+  let mut requests = Vec::with_capacity(n);
+  for (k, head) in heads.iter().enumerate() {
+    let s = &scalars[k];
+    requests.push(SalRequest {
+      m,
+      index: u8::try_from(k).expect("k < 8"),
+      o_tilde: head.points[.. 32].try_into().expect("32"),
+      i_tilde: head.points[32 .. 64].try_into().expect("32"),
+      r: head.points[64 ..].try_into().expect("32"),
+      tag: head.tag,
+      o: Zeroizing::new(s.o.to_bytes()),
+      i: Zeroizing::new(s.i.to_bytes()),
+      ib: Zeroizing::new(s.ib.to_bytes()),
+    });
+  }
+  let mut fs1 = Vec::with_capacity(SPEND_HEAD + proved.bytes.len());
+  fs1.push(SPEND_WIRE);
+  fs1.push(u8::try_from(tree.layers()).map_err(|_| Fs1Error::Path)?);
+  fs1.push(u8::try_from(n).map_err(|_| Fs1Error::InputCount)?);
+  fs1.extend_from_slice(&root);
+  fs1.extend_from_slice(&proved.bytes);
+  if !spend_blob_fits(&fs1, n) {
+    return Err(Fs1Error::Io);
+  }
+  Ok(ExternalSpend { fs1, heads, requests, t: ts })
+}
+
+fn sal_public_of(req: &SalRequest) -> Option<SalPublic> {
+  Some(SalPublic {
+    o_tilde: canonical_ed(&req.o_tilde)?,
+    i_tilde: canonical_ed(&req.i_tilde)?,
+    r: canonical_ed(&req.r)?,
+    l: ed(ristretto_to_ed(&req.tag)?),
+  })
+}
+
+/// Signer step 2, the reference the device app matches: SA+L for one
+/// request. Refuses unless the tag is this signer's tag for `x`.
+pub fn sal_sign_external(req: &SalRequest, x: &Scalar) -> Result<[u8; SAL_BYTES], Fs1Error> {
+  let params = spend_params()?;
+  if external_tag(x) != req.tag {
+    return Err(Fs1Error::Blind);
+  }
+  let public = sal_public_of(req).ok_or(Fs1Error::Blind)?;
+  let sc = |b: &[u8; 32]| -> Option<Scalar> { Scalar::from_canonical_bytes(*b).into() };
+  let o = sc(&req.o).ok_or(Fs1Error::Blind)?;
+  let i = sc(&req.i).ok_or(Fs1Error::Blind)?;
+  let ib = sc(&req.ib).ok_or(Fs1Error::Blind)?;
+  let w = SalWitness { x: *x, o, a: x * i, b: x * ib };
+  Ok(sal_prove(params, &req.m, req.index, &public, &w))
+}
+
+/// Host step 3: check every SA+L against its request, then emit the same
+/// [`SpendOut`] that [`prove_spend`] gives.
+pub fn assemble_external(spend: ExternalSpend, sals: &[[u8; SAL_BYTES]]) -> Result<SpendOut, Fs1Error> {
+  let params = spend_params()?;
+  if sals.len() != spend.requests.len() {
+    return Err(Fs1Error::InputCount);
+  }
+  let mut records = Vec::with_capacity(sals.len());
+  for (k, sal) in sals.iter().enumerate() {
+    let req = &spend.requests[k];
+    let public = sal_public_of(req).ok_or(Fs1Error::Blind)?;
+    if !sal_verify(params, &req.m, req.index, &public, sal) {
+      return Err(Fs1Error::Blind);
+    }
+    let mut record = [0u8; RECORD_BYTES];
+    record[0] = SPEND_WIRE;
+    record[1 .. 33].copy_from_slice(&spend.heads[k].tag);
+    record[33 .. 65].copy_from_slice(&spend.heads[k].c_tilde);
+    record[65 .. 161].copy_from_slice(&spend.heads[k].points);
+    record[161 ..].copy_from_slice(sal);
+    records.push(record);
+  }
+  Ok(SpendOut { fs1: spend.fs1, records, t: spend.t })
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -853,6 +1062,65 @@ mod tests {
     more.push(random_note(5).0);
     let other_root = tree_of_notes(&more).unwrap().root_bytes();
     assert!(verify_spend(&out.fs1, &out.records, &other_root, &digest, 64).is_err(), "other root");
+  }
+
+  #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
+  fn external_signer_split_verifies_unchanged() {
+    let (notes, keys) = chain(40);
+    let tree = tree_of_notes(&notes).expect("tree");
+    let root = tree.root_bytes();
+    let digest = [7u8; 32];
+    let picks = [5usize, 33];
+    // The host only ever sees the tags: x stays with the signer.
+    let inputs: Vec<ExternalIn> =
+      picks.iter().map(|&i| ExternalIn { index: i as u64, tag: external_tag(&keys[i].0) }).collect();
+    let ext = prove_spend_external(&tree, &notes, &inputs, &digest, 64, 2).expect("host half");
+    for req in &ext.requests {
+      let wire = req.to_bytes();
+      assert_eq!(SalRequest::from_bytes(&wire[..]).unwrap().to_bytes()[..], wire[..]);
+      for &i in &picks {
+        let xb = keys[i].0.to_bytes();
+        assert!(!wire.windows(32).any(|w| w == xb), "x is not in the request");
+      }
+    }
+    let sals: Vec<[u8; SAL_BYTES]> =
+      ext.requests.iter().enumerate().map(|(k, r)| sal_sign_external(r, &keys[picks[k]].0).expect("sign")).collect();
+    for (k, sal) in sals.iter().enumerate() {
+      let xb = keys[picks[k]].0.to_bytes();
+      assert!(!sal.windows(32).any(|w| w == xb), "x is not in the SA+L");
+    }
+    let out = assemble_external(ext, &sals).expect("assemble");
+    // The unchanged consensus verifier accepts it.
+    verify_spend(&out.fs1, &out.records, &root, &digest, 64).expect("verify");
+    assert!(verify_spend(&out.fs1, &out.records, &root, &[1u8; 32], 64).is_err(), "other digest");
+    // Same tag as the software path, so the spent set sees one note once.
+    for (k, &i) in picks.iter().enumerate() {
+      let tag = hash_to_ristretto(&notes[i].admit_pub, HP_DST) * keys[i].0;
+      assert_eq!(&out.records[k][1 .. 33], &tag.compress().to_bytes());
+    }
+  }
+
+  #[test]
+  #[cfg_attr(debug_assertions, ignore = "release only")]
+  fn external_signer_refuses_or_fails_without_the_key() {
+    let (notes, keys) = chain(12);
+    let tree = tree_of_notes(&notes).expect("tree");
+    let inputs = [ExternalIn { index: 4, tag: external_tag(&keys[4].0) }];
+    let ext = prove_spend_external(&tree, &notes, &inputs, &[3u8; 32], 16, 1).expect("host half");
+    // Another key's signer refuses: the tag is not its own.
+    assert!(sal_sign_external(&ext.requests[0], &keys[5].0).is_err());
+    // A host with no key cannot pass assembly with a made-up SA+L.
+    assert!(assemble_external(ext, &[[1u8; SAL_BYTES]]).is_err());
+    // A tag for a foreign key proves membership but never assembles.
+    let wrong = [ExternalIn { index: 4, tag: external_tag(&keys[6].0) }];
+    let ext = prove_spend_external(&tree, &notes, &wrong, &[3u8; 32], 16, 1).expect("host half");
+    let sal = sal_sign_external(&ext.requests[0], &keys[6].0).expect("key 6 signs its own tag");
+    let out = assemble_external(ext, &[sal]);
+    // SA+L itself checks; the membership relation then rejects at verify.
+    if let Ok(out) = out {
+      assert!(verify_spend(&out.fs1, &out.records, &tree.root_bytes(), &[3u8; 32], 16).is_err());
+    }
   }
 
   #[test]

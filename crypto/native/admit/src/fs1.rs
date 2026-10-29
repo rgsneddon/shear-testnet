@@ -9,8 +9,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use curve25519_dalek::Scalar;
 use shear_fs1::{
-    prove_spend, prove_spend_unlinked, spend_blob_len, spend_params, tree_of_notes, verify_spend,
-    verify_spend_unlinked, ChainNote, ChainTree, SpendIn, RECORD_BYTES,
+    assemble_external, external_tag, prove_spend, prove_spend_external, prove_spend_unlinked, sal_sign_external,
+    spend_blob_len, spend_params, tree_of_notes, verify_spend, verify_spend_unlinked, ChainNote, ChainTree,
+    ExternalIn, ExternalSpend, SalRequest, SpendIn, RECORD_BYTES, SAL_BYTES, SAL_REQUEST_BYTES,
 };
 use zeroize::Zeroizing;
 
@@ -420,6 +421,150 @@ pub extern "C" fn shear_fs1_verify(
             return BAD;
         };
         if verify_bytes(fs1, records, &root, &digest, anchor) { OK } else { BAD }
+    }))
+    .unwrap_or(BAD)
+}
+
+
+// ---------------------------------------------------------------------------
+// External signer (Ledger) split, docs/LEDGER-VORTICE.md §5. Prover side only:
+// the verifier and the posted bytes are those of shear_fs1_prove.
+
+/// Host half of an externally signed spend, waiting for its SA+L replies.
+pub struct Fs1External {
+    spend: ExternalSpend,
+}
+
+/// Prove membership for `n` inputs without their admit secrets. `tags` holds
+/// `n` 32-byte spend tags from the signer. Writes `n` requests of
+/// [`SAL_REQUEST_BYTES`] to `out_requests` (they hold host blinds, not the
+/// owner's key) and returns a context for [`shear_fs1_external_assemble`].
+/// Null on failure.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn shear_fs1_prove_external(
+    handle: *const Fs1Handle,
+    indices: *const u64,
+    tags: *const u8,
+    n: u32,
+    digest: *const u8,
+    anchor: u64,
+    threads: u32,
+    out_requests: *mut u8,
+) -> *mut Fs1External {
+    if handle.is_null() || indices.is_null() || out_requests.is_null() {
+        return std::ptr::null_mut();
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let n = n as usize;
+        if n == 0 || n > INPUT_MAX {
+            return std::ptr::null_mut();
+        }
+        let idx = unsafe { std::slice::from_raw_parts(indices, n) };
+        let Some(tags) = slice(tags, 32 * n) else { return std::ptr::null_mut() };
+        let Some(digest) = arr32(digest) else { return std::ptr::null_mut() };
+        let threads = if threads == 0 {
+            std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1)
+        } else {
+            threads as usize
+        };
+        let inputs: Vec<ExternalIn> = (0 .. n)
+            .map(|k| ExternalIn { index: idx[k], tag: tags[32 * k .. 32 * (k + 1)].try_into().expect("32") })
+            .collect();
+        let h = unsafe { &*handle };
+        let Ok(spend) = prove_spend_external(&h.tree, &h.notes, &inputs, &digest, anchor, threads) else {
+            return std::ptr::null_mut();
+        };
+        let mut wire = Zeroizing::new(Vec::with_capacity(n * SAL_REQUEST_BYTES));
+        for r in &spend.requests {
+            wire.extend_from_slice(&r.to_bytes()[..]);
+        }
+        if !put(out_requests, wire.len(), &wire) {
+            return std::ptr::null_mut();
+        }
+        Box::into_raw(Box::new(Fs1External { spend }))
+    }))
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Check `n` SA+L replies of [`SAL_BYTES`] and write the posted blob,
+/// records and secret `t`, exactly as [`shear_fs1_prove`] does. Consumes and
+/// frees `ctx` whether or not it succeeds.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn shear_fs1_external_assemble(
+    ctx: *mut Fs1External,
+    sals: *const u8,
+    n: u32,
+    out_fs1: *mut u8,
+    fs1_cap: usize,
+    out_fs1_len: *mut usize,
+    out_records: *mut u8,
+    out_t: *mut u8,
+) -> i32 {
+    if ctx.is_null() {
+        return BAD;
+    }
+    let ext = unsafe { Box::from_raw(ctx) };
+    if out_fs1_len.is_null() {
+        return BAD;
+    }
+    catch_unwind(AssertUnwindSafe(move || {
+        let n = n as usize;
+        if n == 0 || n != ext.spend.requests.len() {
+            return BAD;
+        }
+        let Some(raw) = slice(sals, SAL_BYTES * n) else { return BAD };
+        let list: Vec<[u8; SAL_BYTES]> = raw.chunks_exact(SAL_BYTES).map(|c| c.try_into().expect("sal")).collect();
+        let Ok(out) = assemble_external(ext.spend, &list) else { return BAD };
+        let mut records = Vec::with_capacity(n * RECORD_BYTES);
+        for r in &out.records {
+            records.extend_from_slice(r);
+        }
+        let mut t = Zeroizing::new(Vec::with_capacity(32 * n));
+        for s in &out.t {
+            t.extend_from_slice(&s[..]);
+        }
+        if !put(out_fs1, fs1_cap, &out.fs1) || !put(out_records, records.len(), &records) || !put(out_t, t.len(), &t) {
+            return BAD;
+        }
+        unsafe { *out_fs1_len = out.fs1.len() };
+        OK
+    }))
+    .unwrap_or(BAD)
+}
+
+/// Drop a context that will not be assembled (the user refused on the device).
+#[no_mangle]
+pub extern "C" fn shear_fs1_external_free(ctx: *mut Fs1External) {
+    if !ctx.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { Box::from_raw(ctx) })));
+    }
+}
+
+/// Reference signer for tests and the device app's vectors: tag (32) for a
+/// canonical `x`. A wallet never calls this for a Ledger account.
+#[no_mangle]
+pub extern "C" fn shear_fs1_external_tag(x: *const u8, out_tag: *mut u8) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(xb) = arr32(x).map(Zeroizing::new) else { return BAD };
+        let x: Option<Scalar> = Scalar::from_canonical_bytes(*xb).into();
+        let Some(x) = x else { return BAD };
+        if put(out_tag, 32, &external_tag(&x)) { OK } else { BAD }
+    }))
+    .unwrap_or(BAD)
+}
+
+/// Reference signer: SA+L (160) for one request and a canonical `x`.
+#[no_mangle]
+pub extern "C" fn shear_fs1_external_sign(request: *const u8, x: *const u8, out_sal: *mut u8) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(req) = slice(request, SAL_REQUEST_BYTES).and_then(SalRequest::from_bytes) else { return BAD };
+        let Some(xb) = arr32(x).map(Zeroizing::new) else { return BAD };
+        let x: Option<Scalar> = Scalar::from_canonical_bytes(*xb).into();
+        let Some(x) = x else { return BAD };
+        let Ok(sal) = sal_sign_external(&req, &x) else { return BAD };
+        if put(out_sal, SAL_BYTES, &sal) { OK } else { BAD }
     }))
     .unwrap_or(BAD)
 }

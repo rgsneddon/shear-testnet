@@ -37,6 +37,8 @@ pub use spend::{
   prove_spend, prove_spend_unlinked, spend_blob_fits, spend_blob_len, spend_params, spend_root, tree_of_notes,
   verify_spend, verify_spend_unlinked, SpendIn, SpendOut,
   RECORD_BYTES, SAL_BYTES, SPEND_HEAD, SPEND_WIRE,
+  assemble_external, external_tag, prove_spend_external, sal_sign_external, ExternalIn, ExternalSpend, SalRequest,
+  SAL_REQUEST_BYTES,
 };
 pub use witness::{
   keyed_fetch_rejected, ClientIntent, SyncClient, SyncRange, SyncReject, SyncRequest, SyncServer,
