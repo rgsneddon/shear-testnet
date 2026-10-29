@@ -118,6 +118,15 @@ export async function solSend(transport, net, to, amountStr, onStatus) {
   if (BigInt(bal.value) < lamports + fee) {
     throw new Error('Balance too low: need ' + formatUnits(lamports + fee, 9) + ' SOL including the fee, have ' + formatUnits(BigInt(bal.value), 9));
   }
+  // An account that stays open must keep Solana's rent-exempt reserve; the network
+  // rejects a transfer that leaves it between zero and the reserve.
+  const RENT_RESERVE = 890880n;
+  const left = BigInt(bal.value) - lamports - fee;
+  if (left !== 0n && left < RENT_RESERVE) {
+    throw new Error('Balance too low: Solana keeps ' + formatUnits(RENT_RESERVE, 9) + ' SOL in an open account. Send at most ' +
+      formatUnits(BigInt(bal.value) - fee - RENT_RESERVE > 0n ? BigInt(bal.value) - fee - RENT_RESERVE : 0n, 9) +
+      ' SOL, or send the whole balance less the fee (' + formatUnits(BigInt(bal.value) - fee, 9) + ' SOL).');
+  }
   const tx = new SolTx({ feePayer: from, recentBlockhash: bh.value.blockhash })
     .add(SystemProgram.transfer({ fromPubkey: from, toPubkey: dest, lamports: Number(lamports) }));
   onStatus('Check the Ledger screen: ' + formatUnits(lamports, 9) + ' SOL to ' + dest.toBase58() + '. Approve only if both match.');
