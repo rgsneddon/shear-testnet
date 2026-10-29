@@ -4,6 +4,8 @@
 ifeq ($(BOLOS_SDK),)
 $(error BOLOS_SDK is not set)
 endif
+# NBGL on every device, Nano included (must precede Makefile.defines).
+USE_NBGL = 1
 include $(BOLOS_SDK)/Makefile.defines
 
 APPNAME      = "Shear"
@@ -30,7 +32,6 @@ ICON_STAX   = icons/shear_32px.gif
 ICON_FLEX   = icons/shear_40px.gif
 
 ENABLE_BLUETOOTH = 1
-ENABLE_NBGL_FOR_NANO_DEVICES = 1
 ENABLE_NBGL_QRCODE = 0
 DISABLE_STANDARD_APP_FILES = 0
 APP_SOURCE_PATH += src
