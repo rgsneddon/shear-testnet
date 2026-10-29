@@ -113,6 +113,8 @@ void main() {
     final poolA = ShearPoolClient(baseUrl: base, http: HttpClient());
     final a = ShearLedger(pool: poolA)..bindIdentity(id);
     a.installCheckpoint(pin, storePath: store);
+    // R28: the wallet is paid by its shares' draw; it scans block records.
+    a.setBluMining(true);
     final okA = await a.scanVerifiedBodies(
       restFrame: id.address,
       paymentCode: id.paymentCode,
@@ -121,12 +123,16 @@ void main() {
       fetch: bodies(poolA),
     );
     if (!okA) a.noteSpendableReadFailed();
+    await a.bluScanInFlight;
     expect(okA, isTrue, reason: "${a.bodyScanTo} ${a.bookTip} ${a.spendableReadError}");
     expect(a.bodyScanTo, tip);
     a.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
     var deep = 0;
     for (final p in pays) {
-      if (a.confirmationsOf(p.height) >= ShearLedger.spendableConfirmations) deep += p.nanos;
+      // The tip's record is named by no block yet (ruling 7): never Spendable.
+      if (p.height < tip && a.confirmationsOf(p.height) >= ShearLedger.spendableConfirmations) {
+        deep += p.nanos;
+      }
     }
     expect(deep, greaterThan(0));
     expect(_units(a.spendableOwned(id.address, paymentCode: id.paymentCode)), deep);
@@ -139,6 +145,7 @@ void main() {
     final poolB = ShearPoolClient(baseUrl: base, http: HttpClient());
     final b = ShearLedger(pool: poolB)..bindIdentity(id);
     b.installCheckpoint(pin, storePath: store);
+    b.setBluMining(true);
     b.noteLiveHeight(tip);
     b.settleTo(tip);
     b.restoreBodyScan(required: true, scanTo: early);
@@ -161,6 +168,7 @@ void main() {
       rounds: 1,
       fetch: bodies(poolB),
     );
+    await b.bluScanInFlight;
     expect(okB, isFalse);
     b.noteSpendableReadFailed();
     expect(b.spendableReadError, 'rechecking headers from the checkpoint');
@@ -184,6 +192,7 @@ void main() {
       rounds: 8,
       fetch: bodies(poolB),
     );
+    await b.bluScanInFlight;
     expect(again, isTrue, reason: b.spendableReadError);
     expect(b.bodyScanTo, tip);
     b.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
