@@ -150,6 +150,21 @@ describe('mainnet host files', () => {
     }
   });
 
+  it('inventory masks secrets in crontab lines before they reach the launch log', () => {
+    const input = [
+      '*/5 * * * * SHEAR_ADMIN_TOKEN=s3cr3tvalue /opt/x.sh',
+      '0 * * * * curl -H "Authorization: Bearer abcDEF123" https://user:pa55@example.org/hook',
+      '0 1 * * * /usr/local/bin/push --key 0123456789abcdef0123456789abcdef0123',
+      '0 2 * * * certbot renew --quiet',
+    ].join('\n');
+    const got = spawnSync('bash', [file('scripts/inventory.sh'), '--redact'], { input, encoding: 'utf8', timeout: 60_000 });
+    assert.equal(got.status, 0, got.stderr);
+    for (const secret of ['s3cr3tvalue', 'abcDEF123', 'pa55', '0123456789abcdef0123456789abcdef0123']) assert.ok(!got.stdout.includes(secret), secret);
+    assert.match(got.stdout, /SHEAR_ADMIN_TOKEN=<redacted>/);
+    assert.match(got.stdout, /0 2 \* \* \* certbot renew --quiet/, 'the schedule and command stay readable');
+    assert.match(read('scripts/inventory.sh'), /crontab -l -u "\$u" 2>\/dev\/null \| redact/);
+  });
+
   it('teardown refuses --apply without this host\'s GO token, before it touches anything', () => {
     // Never pass a token that could match the machine running the tests.
     const token = `not-a-host-${process.pid}-${Date.now()}`;
