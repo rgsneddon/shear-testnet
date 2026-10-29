@@ -41,14 +41,24 @@ def expected():
     return pub, view
 
 
-def nano_choice(backend, rights):
-    """NBGL Nano choice: question page, then "Export", then "Reject".
-    Raw button presses: the screen-event stream stalls on this flow."""
+# Root cause of the old Nano failures: the NBGL Nano choice has five pages,
+# not three. Seen in Speculos: "Export Shear view key?", the description
+# (1/2) and (2/2), then "Export", then "Reject". One right press left the
+# both-click on a description page, so no reply came and ragger timed out.
+NANO_PAGES = {"Export": 3, "Reject": 4}
+
+
+def nano_choice(backend, target):
+    """Press right to `target`, check that it is the screen, then confirm."""
     import time
-    time.sleep(1.5)
-    for _ in range(rights):
+    deadline = time.time() + 10
+    while not backend.compare_screen_with_text("Export Shear view"):
+        assert time.time() < deadline, "consent screen never shown"
+        time.sleep(0.2)
+    for _ in range(NANO_PAGES[target]):
         backend.right_click()
-        time.sleep(0.5)
+        time.sleep(0.4)
+    assert backend.compare_screen_with_text(f"^{target}$"), f"not on the {target} page"
     backend.both_click()
 
 
@@ -70,7 +80,7 @@ def test_view_key_export_needs_consent(backend, navigator, device):
     pub, view = expected()
     with backend.exchange_async(0xE0, 0x10, 1, 0, path_bytes(PATH)):
         if device.is_nano:
-            nano_choice(backend, 1)
+            nano_choice(backend, "Export")
         else:
             navigator.navigate([NavInsID.USE_CASE_CHOICE_CONFIRM], screen_change_after_last_instruction=False)
     assert backend.last_async_response.data == pub + view
@@ -81,12 +91,13 @@ def test_view_key_export_rejected(backend, navigator, device):
     try:
         with backend.exchange_async(0xE0, 0x10, 1, 0, path_bytes(PATH)):
             if device.is_nano:
-                nano_choice(backend, 2)
+                nano_choice(backend, "Reject")
             else:
                 navigator.navigate([NavInsID.USE_CASE_CHOICE_REJECT], screen_change_after_last_instruction=False)
         assert False
     except ExceptionRAPDU as e:
         assert e.status == 0x6985
+        assert not e.data, "nothing is exported on a refusal"
 
 
 def test_non_shear_path_is_refused(backend):
