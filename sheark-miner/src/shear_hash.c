@@ -25,7 +25,15 @@ static const char V1_SELFTEST[] =
 const char SHEAR_SELFTEST_HASH[] =
     "98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b";
 
+#ifndef SHEAR_MAX_VM
 #define SHEAR_MAX_VM 256
+#endif
+
+#ifdef SHEAR_ALLOC_FAIL_TEST
+int shear_alloc_fail_max_vm(void) {
+  return SHEAR_MAX_VM;
+}
+#endif
 
 static pthread_rwlock_t g_rx;
 static pthread_once_t g_rx_once = PTHREAD_ONCE_INIT;
