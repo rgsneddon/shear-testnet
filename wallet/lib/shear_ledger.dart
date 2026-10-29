@@ -1841,6 +1841,18 @@ List<dynamic> notesNotYetAccepted(List<dynamic> rows, Set<String> known) {
 /// commits stay at 0.
 int debugNotesOpenedThisScan = 0;
 
+/// Ruling 6 in every shipped build. A release or profile wallet, and a
+/// compiled CLI, proves each block body against a header it verified from
+/// its first read. A node that still answers the notes route cannot hold it
+/// on the legacy path. Only a debug or test build starts on that path.
+const bool kBodyProofShipped =
+    bool.fromEnvironment('dart.vm.product') ||
+    bool.fromEnvironment('dart.vm.profile');
+
+/// Tests set this to run a book as a shipped build. It can only add body
+/// mode; a shipped build is in body mode whatever this says.
+bool debugBodyProofShipped = false;
+
 /// Hexify the scan snapshot inside the worker, then scan. The caller sends
 /// the raw snapshot; the JSON clone does not run on the UI isolate.
 /// [openedProofs] stays on the snapshot so an already opened proof is not
@@ -1884,6 +1896,8 @@ List<Map<String, dynamic>> stampChainScanVouts(List<dynamic> txs) {
       for (final item in list) {
         if (item is! Map) continue;
         final row = Map<String, dynamic>.from(item);
+        // A node cannot say a body was proven. Only the body scan sets it.
+        row.remove('bodyProven');
         final havePortal = (row['portalId'] ?? '').toString();
         if (havePortal.isEmpty && portal != null && portal.toString().isNotEmpty) {
           row['portalId'] = portal;
@@ -2155,7 +2169,6 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
         'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
         'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
         if (o['height'] != null) 'height': o['height'],
-        if (o['bodyProven'] == true) 'bodyProven': true,
         'nanos': cachedEarly,
         if (amtEarly != null) 'amount': amtEarly,
         'proofKey': proofKeyEarly,
@@ -2230,7 +2243,6 @@ Map<String, dynamic> scanSealedVouts(Map<String, dynamic> input) {
       'prev': _noteBytes(o['prev']) ?? prev ?? Uint8List(32),
       'index': (o['index'] as num?)?.toInt() ?? (startIndex + i),
       if (o['height'] != null) 'height': o['height'],
-      if (o['bodyProven'] == true) 'bodyProven': true,
       if (amt != null) 'amount': amt,
       if (proofKey != null) 'proofKey': proofKey,
       if (verifiedNanos != null) 'verifiedNanos': verifiedNanos,
@@ -5116,7 +5128,18 @@ class ShearLedger implements ReadProofSink {
       for (var i = 0; i < _notes.length; i++) {
         final have = _noteBytes(_notes[i]['commit']);
         if (have != null && _bytesEq(have, commit)) {
-          _notes[i] = {..._notes[i], ...incoming};
+          final was = _notes[i];
+          final merged = {...was, ...incoming};
+          // A proven note keeps the height its body was proven at. A row
+          // that says nothing about the proof (every node row: their
+          // bodyProven is dropped) cannot move it. The book's own rows (a
+          // rewind that cleared the proof, a new proof) carry the key.
+          if (was['bodyProven'] == true &&
+              !incoming.containsKey('bodyProven') &&
+              was.containsKey('height')) {
+            merged['height'] = was['height'];
+          }
+          _notes[i] = merged;
           return;
         }
       }
@@ -5172,6 +5195,9 @@ class ShearLedger implements ReadProofSink {
         'verified': true,
         'spent': false,
       };
+      // The page is the node's JSON. A proven body is this wallet's own
+      // mark, set only by the body scan.
+      row.remove('bodyProven');
       if ((row['kind'] ?? '').toString() == 'lock') {
         row['locked'] = lockNoteIsLocked(row, tipTimestampMs);
       }
@@ -10121,7 +10147,7 @@ class ShearLedger implements ReadProofSink {
   /// From then on Spendable counts only a note whose block body was proven
   /// against a header this ledger verified, at its confirmations. Every
   /// other note is Pending.
-  bool _bodyProofRequired = false;
+  bool _bodyProofRequired = kBodyProofShipped || debugBodyProofShipped;
   bool get bodyProofRequired => _bodyProofRequired;
 
   /// The node answered the notes route 404: the route is gone (AL-5), not
@@ -10397,10 +10423,13 @@ class ShearLedger implements ReadProofSink {
       final blockHash = below?.hash ?? row?.hash;
       if (root == null || blockHash == null) {
         // The header left the checked window before its body was read.
-        // Walk the headers again from the pin; the cursor stays.
-        _resetChainToPin();
-        stop = 'rechecking headers from the checkpoint';
-        break;
+        // Walk the headers again from the pin. Every body proof above the
+        // pin was made against headers this drops, and the re-walk adopts
+        // whatever branch is served next, so each body is proven again:
+        // the cursor goes back to the pin, and the rows read in this range
+        // are not applied.
+        _rebackfillFromPin();
+        return _bodyScanFail('rechecking headers from the checkpoint');
       }
       Map<String, dynamic>? wire;
       try {

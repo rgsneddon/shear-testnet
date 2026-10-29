@@ -327,7 +327,9 @@ List<Map<String, dynamic>> wireScanRows(
       row['index'] = i;
       row['height'] = height;
       row['coinbase'] = coinbase;
-      row['bodyProven'] = true;
+      // Node JSON never says a body was proven. _applyBodyRows marks the
+      // notes from these rows once their commits are in [provenAt].
+      row.remove('bodyProven');
       final portal = tx['portalId'];
       if ((row['portalId'] ?? '').toString().isEmpty &&
           portal != null &&

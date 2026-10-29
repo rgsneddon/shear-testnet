@@ -1,6 +1,6 @@
 // A real v12 node for the wallet body-scan tests (Russell ruling 6, 28 Oct).
 //
-//   node test/fixtures/body_scan_node.mjs <walletDest> <walletSeedHex> [pinHeight]
+//   node test/fixtures/body_scan_node.mjs <walletDest> <walletSeedHex> [pinHeight] [abovePin]
 //
 // Builds a chain in a fresh regtest store (the node's 4-bit seed, so every
 // block can be mined in a test) with the node's own template and append,
@@ -29,14 +29,16 @@ import { bluWallet, mineBluShares, ownBluNotes } from '../../../node/tests/suppo
 
 const [walletDest, seedHex] = process.argv.slice(2);
 if (!walletDest || !/^[0-9a-f]{64}$/.test(seedHex || '')) {
-  process.stderr.write('usage: body_scan_node.mjs <walletDest> <walletSeedHex>\n');
+  process.stderr.write('usage: body_scan_node.mjs <walletDest> <walletSeedHex> [pinHeight] [abovePin]\n');
   process.exit(2);
 }
 try { setHashBackend('jit'); } catch { /* interpreter */ }
 const FLOOR_BITS = 4 * 65536;
 // An optional third argument sets a deeper pin (a longer walk below it).
 const PIN_HEIGHT = Number(process.argv[4]) > 12 ? Math.floor(Number(process.argv[4])) : 12;
-const ABOVE_PIN = 12;
+// An optional fourth argument sets more blocks above the pin (more than
+// the wallet's 16-header window).
+const ABOVE_PIN = Number(process.argv[5]) > 12 ? Math.floor(Number(process.argv[5])) : 12;
 // Heights above the pin whose draw pays the wallet: two deep enough to
 // spend at the tip, one still short of 9 confirmations, and the tip, whose
 // record no block names yet.
