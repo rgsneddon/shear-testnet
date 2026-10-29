@@ -382,7 +382,6 @@ export const MINER_MINT_ONLY = 1;
  */
 export const HASH_TX_LIVE = 1;
 export const DEST_HRP = 'ssa';
-export const FEE_TAU_MS = 90_000;
 export const FEE_TARGET_WEIGHT = 8;
 /** Every transaction-fee unit is paid to that block's miners. None is reserved. */
 export const FEE_SPLIT_FINDER_BPS = 10000;
@@ -446,7 +445,6 @@ export function consensusFingerprint(magic = MAGIC_TESTNET) {
     MINER_MINT_ONLY,
     HASH_TX_LIVE,
     DEST_HRP,
-    FEE_TAU_MS,
     FEE_TARGET_WEIGHT,
     FEE_SPLIT_FINDER_BPS,
     LEAF_A_LAYOUT,
@@ -653,7 +651,6 @@ export function consensusLaw() {
     epochDaysMainnet: EPOCH_DAYS_MAINNET,
     magicMainnet: MAGIC_MAINNET,
     destHrp: DEST_HRP,
-    feeTauMs: FEE_TAU_MS,
     feeTargetWeight: FEE_TARGET_WEIGHT,
     feeSplitFinderBps: FEE_SPLIT_FINDER_BPS,
     leafALayout: LEAF_A_LAYOUT,
