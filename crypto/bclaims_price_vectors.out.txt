@@ -1,0 +1,63 @@
+W k=15 d=-1: F=8 o=8192
+W k=15 d=0: F=8 o=8192
+W k=15 d=1: F=9 o=16383
+W k=16 d=-1: F=9 o=8192
+W k=16 d=0: F=9 o=8192
+W k=16 d=1: F=10 o=16383
+W k=40 d=-1: F=33 o=8192
+W k=40 d=0: F=33 o=8192
+W k=40 d=1: F=34 o=16383
+W k=64 d=-1: F=57 o=8192
+W k=64 d=0: F=57 o=8192
+W k=64 d=1: F=58 o=16383
+L work=16384: F=8 o=16383
+L work=1024: F=8 o=16383
+L work=16: F=8 o=16383
+L work=2: F=8 o=16383
+floorDiv(-1,1024)=-1
+P1 work 2^40, base 1e11, carry=C0: {"pi":"781250000","adj":"0","refuse":false}
+P2 work 2^40+1: {"pi":"1562404632","adj":"0","refuse":false}
+P3 carry=C0-1: {"pi":"781249999","adj":"-1","refuse":false}
+P4 carry=0: {"pi":"732421875","adj":"-6250000000","refuse":false}
+P5 tail, carry=0 (min reachable): {"pi":"146484375","adj":"-1250000000","refuse":false}
+P6 B=4 (cap): {"pi":"1562404632","adj":"0","refuse":false}
+P7 mocked base+adj<=0 (unreachable): {"pi":"0","adj":"-6250000000","refuse":true}
+P8 mocked quantisation pi=0 (unreachable): {"pi":"0","adj":"0","refuse":true}
+P9 carry 2^63-1e11-1: {"pi":"140730361649293","adj":"9007192907084741","refuse":false}
+P10 carry >= 2^63: REFUSE carry range
+S1 frame split pi=781250000: {"toProducer":"3906250","toPot":"777343750"}
+X1 single round N=100: {"open":true,"N":"100","a":"777343750","v":"769570313","g":"7773437","potOpen":"77734375000","toCarry":"0"}
+X2 thin N=31: {"open":false,"reason":"thin","N":"31","pot":"24097656250"}
+X3 merged 20+15 across epoch step: {"open":true,"N":"35","a":"769570313","v":"761874610","g":"7695703","potOpen":"26934960955","toCarry":"155468740"}
+X4 merged at floor, equal pi: {"open":true,"N":"35","a":"145751954","v":"144294435","g":"1457519","potOpen":"5101318390","toCarry":"0"}
+X5 merged across a B step (o 8192 vs 16383): {"open":true,"N":"35","a":"777343750","v":"769570313","g":"7773437","potOpen":"27207031250","toCarry":"11658732885"}
+X6 V-2 mocked a=1: {"open":true,"N":"40","a":"1","v":"1","g":"0","potOpen":"40","toCarry":"0"}
+B1 seat budget exact: {"seated":8,"carryOutBeforeCloses":"0"}
+B2 seat budget one short -> last spills: {"seated":7,"carryOutBeforeCloses":"812499999999"}
+B3 empty block with fees + expiry: {"seated":0,"carryOutBeforeCloses":"6505473750000"}
+B4 T+carry >= 2^63: REFUSE T+carry range
+G3a zero-frame round does not set min-pi: {"open":true,"N":"40","a":"777343750","v":"769570313","g":"7773437","potOpen":"31093750000","toCarry":"0"}
+G3b only zero-frame rounds, K=0 -> thin (no a): {"open":false,"reason":"thin","N":"0","pot":"0"}
+G4a seatBudget pi=0 frame -> REFUSE: REFUSE V-2 seat
+G4b seatBudget negative pi -> REFUSE: REFUSE V-2 seat
+G5a negative frames -> REFUSE: REFUSE negative frames
+G5b empty rounds -> REFUSE: REFUSE empty rounds
+G5c negative pi -> REFUSE: REFUSE negative pi
+G6 pot >= 2^63 before open -> REFUSE: REFUSE pot range
+G7a roundPrice oMax override (cap 4095 at B=4): {"pi":"390529632","adj":"0","refuse":false}
+G7b roundPrice fMin default at work 2^20 (F=13, o=8192): {"pi":"781250000","adj":"0","refuse":false}
+G7c roundPrice fMin override 16 at work 2^20 (o capped 16383): {"pi":"1562404632","adj":"0","refuse":false}
+X5prime step1 (F33, 20 frames): opened=[] open=[{"F":"33","ids":["A1"],"N":"20"}]
+X5prime step2 (F34, 15 frames): opened=[] open=[{"F":"33","ids":["A1"],"N":"20"},{"F":"34","ids":["B1"],"N":"15"}]
+X5prime step3 (F33 +12 -> 32, opens alone): opened=[{"F":"33","ids":["A1","A2"],"open":true,"N":"32","a":"777343750","v":"769570313","g":"7773437","potOpen":"24875000000","toCarry":"0"}] open=[{"F":"34","ids":["B1"],"N":"15"}]
+X5prime step4 (F34 +17 -> 32, opens alone): opened=[{"F":"34","ids":["B1","B2"],"open":true,"N":"32","a":"1554592609","v":"1539046683","g":"15545926","potOpen":"49746963488","toCarry":"0"}] open=[]
+X7 step1 straggler F34: opened=[] open=[{"F":"34","ids":["S"],"N":"20"}]
+X7 step2 age 959 (no fallback yet): opened=[] open=[{"F":"34","ids":["S"],"N":"20"},{"F":"33","ids":["C"],"N":"12"}]
+X7 step3 age 960 -> fallback merge, min-pi: opened=[{"F":"33","ids":["S","C","D"],"open":true,"N":"37","a":"777343750","v":"769570313","g":"7773437","potOpen":"28761718750","toCarry":"15544977180"}] open=[]
+X8 round 0 F33 +10: opened=[] open=[{"F":"33","ids":["R0"],"N":"10"}]
+X8 round 1 F34 +9: opened=[] open=[{"F":"33","ids":["R0"],"N":"10"},{"F":"34","ids":["R1"],"N":"9"}]
+X8 round 2 F33 +11: opened=[] open=[{"F":"33","ids":["R0","R2"],"N":"21"},{"F":"34","ids":["R1"],"N":"9"}]
+X8 round 3 F34 +8: opened=[] open=[{"F":"33","ids":["R0","R2"],"N":"21"},{"F":"34","ids":["R1","R3"],"N":"17"}]
+X8 round 4 F33 +12: opened=[{"F":"33","ids":["R0","R2","R4"],"open":true,"N":"33","a":"777343750","v":"769570313","g":"7773437","potOpen":"25652343750","toCarry":"0"}] open=[{"F":"34","ids":["R1","R3"],"N":"17"}]
+X8 round 5 F34 +15: opened=[{"F":"34","ids":["R1","R3","R5"],"open":true,"N":"32","a":"1554592609","v":"1539046683","g":"15545926","potOpen":"49746963488","toCarry":"0"}] open=[]
+X8 round 6 F33 +3: opened=[] open=[{"F":"33","ids":["R6"],"N":"3"}]
