@@ -2143,6 +2143,11 @@ int main(int argc, char **argv) {
       g_max_temp = atof(argv[++i]);
     }
   }
+  if (g_threads > shear_hash_max_threads()) {
+    fprintf(stderr, "ShearK-Miner: --threads %d is above the %d hashing threads this build supports; using %d\n",
+            g_threads, shear_hash_max_threads(), shear_hash_max_threads());
+    g_threads = shear_hash_max_threads();
+  }
   g_threads_user = g_threads;
   rig_detect(&g_rig, "", NULL);
   /* Leave a CPU for the user's own work on a desktop or laptop. */
@@ -2318,6 +2323,10 @@ int main(int argc, char **argv) {
       g_threads = ceiling;
       snprintf(g_threads_why, sizeof(g_threads_why), "%s (%s)", why, g_tune_mode < 0 ? "--no-tune" : "interpreter: not tuned");
     }
+  }
+  if (g_threads > shear_hash_max_threads()) {
+    outl(stdout, "threads capped at %d (one RandomX VM per thread)\n", shear_hash_max_threads());
+    g_threads = shear_hash_max_threads();
   }
   atomic_store(&g_active_threads, g_threads);
   printf("ShearK-Miner %s (ShearHash-v3 light)\n", SHEAR_VERSION);

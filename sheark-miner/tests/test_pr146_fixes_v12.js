@@ -102,3 +102,41 @@ describe('PR146 P1-2: an explicit --backend jit-full does not bypass the memory 
     }
   });
 });
+
+// P1-3: VM slots. The C harness is built with SHEAR_MAX_VM=8 so slot reuse
+// and a full table are exercised with a handful of threads. It links
+// crypto/randomx/build/librandomx.a (built by make -C sheark-miner), or
+// SHEAR_RANDOMX_LIB; CXX (default g++) links the C++ RandomX objects.
+function buildSlots() {
+  const lib = process.env.SHEAR_RANDOMX_LIB || path.join(repo, 'crypto', 'randomx', 'build', 'librandomx.a');
+  assert.equal(fs.existsSync(lib), true, `missing ${lib}: build the miner first`);
+  const out = path.join(fs.realpathSync(process.env.TMPDIR || '/tmp'), `shear-vmslots-${process.pid}`);
+  const cxx = (process.env.CXX || 'g++').split(' ');
+  const src = path.join(root, 'src');
+  const r = spawnSync(cxx[0], [...cxx.slice(1), '-O2', '-pthread', '-DSHEAR_MAX_VM=8', '-I', src, '-I', path.join(repo, 'crypto', 'randomx', 'src'),
+    '-x', 'c', '-std=c11', path.join(root, 'tests', 'vm_slots_main.c'), path.join(src, 'shear_hash.c'), path.join(src, 'sha512.c'),
+    path.join(src, 'sha256.c'), '-x', 'none', lib, '-o', out], { encoding: 'utf8', timeout: 600_000 });
+  assert.equal(r.status, 0, r.stderr || r.stdout);
+  return out;
+}
+
+describe('PR146 P1-3: RandomX VM slots', { skip: !linux }, () => {
+  it('exited threads give their VM slot back; a full table refuses instead of sharing a VM', () => {
+    const exe = buildSlots();
+    for (const backend of ['jit', 'interpreter']) {
+      const r = spawnSync(exe, [], { encoding: 'utf8', timeout: 600_000, env: { ...process.env, SHEAR_BACKEND: backend } });
+      assert.equal(r.status, 0, r.stderr + r.stdout);
+      assert.match(r.stdout, /max_threads=4\n/);
+      assert.match(r.stdout, /reuse ok=30 bad=0 refused=0/, backend);
+      assert.match(r.stdout, /full ok=8 bad=0 refused=2/, backend);
+    }
+    fs.rmSync(exe, { force: true });
+  });
+  it('--threads above the VM table is capped with a log line', () => {
+    const r = spawnSync(bin, ['--backend', 'interpreter', '--threads', '5000', '--print-config'], { encoding: 'utf8', timeout: 600_000 });
+    assert.equal(r.status, 0, r.stderr);
+    const cfg = JSON.parse(r.stdout.match(/\{[\s\S]*\}/)[0]);
+    assert.equal(cfg.threads, 1020);
+    assert.match(r.stderr, /--threads 5000 is above the 1020 hashing threads this build supports; using 1020/);
+  });
+});

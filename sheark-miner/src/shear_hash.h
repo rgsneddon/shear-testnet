@@ -38,6 +38,8 @@ const char *shear_hash_backend(void);
 int shear_hash_huge_pages(void);
 int shear_hash_hard_aes(void);
 int shear_hash_set_backend(const char *name);
+/* Hashing threads this build can give their own RandomX VM (PR146 P1-3). */
+int shear_hash_max_threads(void);
 
 #ifdef __cplusplus
 }

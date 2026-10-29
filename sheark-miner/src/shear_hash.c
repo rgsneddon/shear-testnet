@@ -28,7 +28,15 @@ static const char V1_SELFTEST[] =
 const char SHEAR_SELFTEST_HASH[] =
     "e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4";
 
-#define SHEAR_MAX_VM 256
+/* PR146 P1-3: one RandomX VM per hashing thread, slots reused when a
+ * thread exits. 256 slots with tids never reused meant a host with ~86+
+ * threads (auto-tune threads consumed tids first) put several miner threads
+ * on one VM. Overridable for the slot test (tests/vm_slots_main.c). */
+#ifndef SHEAR_MAX_VM
+#define SHEAR_MAX_VM 1024
+#endif
+/* Slots kept back for main-thread hashing (selftest, bench, verify). */
+#define SHEAR_VM_RESERVE 4
 
 static pthread_rwlock_t g_rx;
 static pthread_once_t g_rx_once = PTHREAD_ONCE_INIT;
@@ -43,7 +51,8 @@ static atomic_int g_in_hash;
 static randomx_flags g_flags = RANDOMX_FLAG_DEFAULT;
 static const char *g_backend = "interpreter";
 static randomx_vm *g_vms[SHEAR_MAX_VM];
-static atomic_int g_tid_n;
+static atomic_int g_tid_n;              /* high-water mark of claimed slots */
+static atomic_int g_slot_busy[SHEAR_MAX_VM];
 
 typedef struct {
   randomx_vm *vm;
@@ -155,7 +164,13 @@ void shear_key(const unsigned char header[SHEAR_HEADER_LEN], unsigned char k[32]
 static void tls_free(void *p) {
   RxTls *t = (RxTls *)p;
   if (!t) return;
+  /* The VM stays in g_vms[] for the next thread that claims the slot. */
+  if (t->tid >= 0 && t->tid < SHEAR_MAX_VM) atomic_store_explicit(&g_slot_busy[t->tid], 0, memory_order_release);
   free(t);
+}
+
+int shear_hash_max_threads(void) {
+  return SHEAR_MAX_VM - SHEAR_VM_RESERVE;
 }
 
 /* R41: once, then lock-free. It took g_key_mu on every hash call, one
@@ -180,9 +195,20 @@ static RxTls *tls_slot(void) {
     pthread_setspecific(g_vm_key, tls);
   }
   if (tls->tid < 0) {
-    int n = atomic_fetch_add_explicit(&g_tid_n, 1, memory_order_relaxed);
-    if (n >= SHEAR_MAX_VM) n = SHEAR_MAX_VM - 1;
-    tls->tid = n;
+    /* The lowest free slot. None free: refuse (the caller skips work);
+     * two threads on one VM would race its scratchpad. */
+    for (int i = 0; i < SHEAR_MAX_VM; i++) {
+      int z = 0;
+      if (atomic_load_explicit(&g_slot_busy[i], memory_order_relaxed) == 0 &&
+          atomic_compare_exchange_strong_explicit(&g_slot_busy[i], &z, 1, memory_order_acq_rel, memory_order_relaxed)) {
+        tls->tid = i;
+        int hw = atomic_load_explicit(&g_tid_n, memory_order_relaxed);
+        while (hw < i + 1 && !atomic_compare_exchange_weak_explicit(&g_tid_n, &hw, i + 1, memory_order_acq_rel, memory_order_relaxed)) {
+        }
+        break;
+      }
+    }
+    if (tls->tid < 0) return NULL;
   }
   return tls;
 }
