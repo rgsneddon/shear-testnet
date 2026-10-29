@@ -3,16 +3,61 @@
 // (ulimit -v) are used to make the 260 MiB dataset unallocatable.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import net from 'node:net';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { encodeMiningAddress } from '../../crypto/address.js';
+import { admitBasePub } from '../../crypto/admit.js';
+import { scanPub } from '../../crypto/blunote.js';
+import { pointBytes } from '../../crypto/note.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repo = path.join(root, '..');
 const bin = process.platform === 'win32' ? path.join(root, 'ShearK-Miner.exe') : path.join(root, 'ShearK-Miner');
 const SELFTEST = 'e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4';
 const linux = process.platform === 'linux';
+const SEED = randomBytes(32);
+const MINING = encodeMiningAddress({ B: pointBytes(admitBasePub(SEED)), Y: scanPub(SEED) });
+
+// bash -c with a kill timer; resolves { status, stdout, stderr }.
+function runBash(cmd, ms = 10_000) {
+  return new Promise((resolve) => {
+    const c = spawn('bash', ['-c', cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    c.stdout.on('data', (d) => { stdout += d; });
+    c.stderr.on('data', (d) => { stderr += d; });
+    const t = setTimeout(() => c.kill('SIGKILL'), ms);
+    c.on('close', (status, signal) => { clearTimeout(t); resolve({ status: status ?? signal, stdout, stderr }); });
+  });
+}
+
+// A loopback stub pool: answers login with `job`, records every line.
+async function stubPool(onLine) {
+  const lines = [];
+  const server = net.createServer((sock) => {
+    sock.on('error', () => {});
+    let buf = '';
+    sock.on('data', (chunk) => {
+      buf += chunk.toString();
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (!line.trim()) continue;
+        lines.push(line);
+        onLine(JSON.parse(line), sock, lines);
+      }
+    });
+  });
+  server.on('error', () => {});
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  server.unref();
+  return { server, lines, port: server.address().port };
+}
 
 function sh(cmd, opts = {}) {
   return spawnSync('bash', ['-c', cmd], { encoding: 'utf8', timeout: 600_000, ...opts });
@@ -128,7 +173,7 @@ describe('PR146 P1-3: RandomX VM slots', { skip: !linux }, () => {
       assert.equal(r.status, 0, r.stderr + r.stdout);
       assert.match(r.stdout, /max_threads=4\n/);
       assert.match(r.stdout, /reuse ok=30 bad=0 refused=0/, backend);
-      assert.match(r.stdout, /full ok=8 bad=0 refused=2/, backend);
+      assert.match(r.stdout, /full ok=8 bad=0 refused=2 checked_refused=2 zero_out=2/, backend);
     }
     fs.rmSync(exe, { force: true });
   });
@@ -138,5 +183,41 @@ describe('PR146 P1-3: RandomX VM slots', { skip: !linux }, () => {
     const cfg = JSON.parse(r.stdout.match(/\{[\s\S]*\}/)[0]);
     assert.equal(cfg.threads, 1020);
     assert.match(r.stderr, /--threads 5000 is above the 1020 hashing threads this build supports; using 1020/);
+  });
+});
+
+
+// P2: a hash backend that cannot be set up never yields all-zero digests
+// (they meet every target) for the miner to submit.
+describe('PR146 P2: no zero-hash submits on setup failure', { skip: !linux }, () => {
+  it('with no memory for any backend the miner exits non-zero and submits nothing', async () => {
+    const header = Buffer.alloc(128);
+    header[0] = 1;
+    const job = { jobId: 'j1', header: header.toString('hex'), shareBits: 8, blockBits: 32, bits: 8 };
+    const pool = await stubPool((msg, sock) => {
+      if (msg.method === 'login') sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' }, job })}\n`);
+    });
+    const r = await runBash(`ulimit -v 120000; exec "${bin}" --backend interpreter --pool 127.0.0.1:${pool.port} --notls --user rig1 --blu ${MINING} --threads 1`);
+    pool.server.close();
+    assert.notEqual(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stderr, /no hash backend/);
+    assert.deepEqual(pool.lines.filter((l) => /submit/.test(l)), []);
+  });
+
+  it('threads whose VM cannot be created skip work instead of submitting all-zero digests', async () => {
+    // Measured at the PR head: 64 interpreter threads under these limits
+    // sent 16-25k submits with hash 00..00 in 6 s.
+    const header = Buffer.alloc(128);
+    header[0] = 1;
+    const job = { jobId: 'j1', header: header.toString('hex'), shareBits: 8, blockBits: 32, bits: 8 };
+    const pool = await stubPool((msg, sock) => {
+      if (msg.method === 'login') sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' }, job })}\n`);
+      else if (msg.method === 'submit') sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' } })}\n`);
+    });
+    const r = await runBash(`ulimit -s 512; ulimit -v 380000; exec "${bin}" --backend interpreter --pool 127.0.0.1:${pool.port} --notls --user rig1 --blu ${MINING} --threads 64`, 6000);
+    pool.server.close();
+    const zero = pool.lines.filter((l) => /"hash":"0{64}"/.test(l));
+    assert.equal(zero.length, 0, `${zero.length} all-zero submits`);
+    assert.match(r.stdout + r.stderr, /hash setup failed on this thread[^\n]*; skipping job j1/);
   });
 });

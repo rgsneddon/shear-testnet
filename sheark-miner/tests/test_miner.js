@@ -139,7 +139,8 @@ describe('ShearK-Miner', () => {
     assert.match(src, /aborted_stale/);
     assert.match(src, /g_dropped\+\+/);
     assert.match(src, /primed = 0;/);
-    assert.match(src, /shear_hash\(primed_hdr, check\)/);
+    // PR146: the hit re-check uses the checked call (a failed call is not a digest).
+    assert.match(src, /shear_hash_checked\(primed_hdr, check\) != 0/);
     assert.match(src, /accepted=" C_GRN "%d"/);
     assert.match(src, /rejected=" C_RED "%d"/);
     assert.match(src, /C_RED "reject %s"/);

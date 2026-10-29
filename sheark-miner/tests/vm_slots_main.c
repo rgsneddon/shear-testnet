@@ -15,7 +15,7 @@ static const char *getenv_backend(void) {
 
 static const char *WANT = "e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4";
 static pthread_barrier_t g_bar;
-static int g_bad = 0, g_ok = 0, g_refused = 0;
+static int g_bad = 0, g_ok = 0, g_refused = 0, g_checked_refused = 0, g_zero_out = 0;
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void *worker(void *arg) {
@@ -36,6 +36,14 @@ static void *worker(void *arg) {
     else g_bad++;
   } else {
     g_refused++;
+    /* PR146: the checked call says so; the legacy void call zero-fills. */
+    unsigned char z[32];
+    memset(z, 0xff, sizeof(z));
+    if (shear_hash_checked(h, out) != 0) g_checked_refused++;
+    shear_hash(h, z);
+    int allz = 1;
+    for (int i = 0; i < 32; i++) if (z[i]) allz = 0;
+    g_zero_out += allz;
   }
   pthread_mutex_unlock(&g_mu);
   if (hold) pthread_barrier_wait(&g_bar);
@@ -61,6 +69,6 @@ int main(void) {
   g_ok = g_bad = g_refused = 0;
   /* 10 threads that all hold their slot at once: 8 hash, 2 are refused. */
   round_of(10, 1);
-  printf("full ok=%d bad=%d refused=%d\n", g_ok, g_bad, g_refused);
+  printf("full ok=%d bad=%d refused=%d checked_refused=%d zero_out=%d\n", g_ok, g_bad, g_refused, g_checked_refused, g_zero_out);
   return 0;
 }

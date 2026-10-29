@@ -23,6 +23,8 @@ void shear_hash_hex(const unsigned char hash[32], char hex[65]);
 void shear_set_nonce(unsigned char header[SHEAR_HEADER_LEN], uint64_t nonce);
 void shear_key(const unsigned char header[SHEAR_HEADER_LEN], unsigned char k[32]);
 void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
+/* PR146: shear_hash that says when it failed (-1) instead of zero-filling. */
+int shear_hash_checked(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]);
 int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_prepare(const unsigned char header[SHEAR_HEADER_LEN]);
 int shear_epoch_ready(const unsigned char header[SHEAR_HEADER_LEN]);

@@ -758,17 +758,14 @@ static randomx_vm *hot_vm(RxTls *tls, unsigned *gen_out) {
   return vm;
 }
 
-void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]) {
+/* PR146: 0 and the digest, or -1 when this thread has no VM (no free slot,
+ * cache/dataset/VM allocation failed). The miner must not treat a failed
+ * call as a digest: all-zero meets every share target. */
+int shear_hash_checked(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]) {
   RxTls *tls = tls_slot();
-  if (!tls) {
-    memset(out, 0, 32);
-    return;
-  }
+  if (!tls) return -1;
   for (;;) {
-    if (shear_bind(header) != 0) {
-      memset(out, 0, 32);
-      return;
-    }
+    if (shear_bind(header) != 0) return -1;
     unsigned gen = 0;
     randomx_vm *vm = hot_vm(tls, &gen);
     if (!vm) continue;
@@ -776,8 +773,13 @@ void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[
     randomx_calculate_hash(vm, header, SHEAR_HEADER_LEN, out);
     hash_leave();
     tls->primed = 0;
-    return;
+    return 0;
   }
+}
+
+/* Legacy void form (node addon, selftest): zeros on failure. */
+void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]) {
+  if (shear_hash_checked(header, out) != 0) memset(out, 0, 32);
 }
 
 int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]) {

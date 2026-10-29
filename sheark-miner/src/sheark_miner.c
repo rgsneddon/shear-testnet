@@ -1034,7 +1034,16 @@ static int copy_main_job(JobSnap *out) {
   return ok;
 }
 
+static void outl(FILE *out, const char *fmt, ...);
+
 static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char hash[32], int gen, const BluKey *key) {
+  /* PR146: an all-zero digest is a failed hash call, never a share. */
+  int allz = 1;
+  for (int i = 0; i < 32; i++) allz &= hash[i] == 0;
+  if (allz) {
+    g_dropped++;
+    return 0;
+  }
   pthread_mutex_lock(&g_q_mu);
   int next = (g_qtail + 1) % QCAP;
   if (next == g_qhead) {
@@ -1123,6 +1132,9 @@ static void *hash_worker(void *arg) {
   int bind_ok = 0;
   memset(&key, 0, sizeof(key));
   memset(&primed_key, 0, sizeof(primed_key));
+  /* PR146: a job this thread could not hash (no VM: allocation failed or no
+   * free slot) is skipped until the next job; never a zero digest. */
+  int skip_gen = -1;
   while (!g_stop) {
     /* --max-temp: a worker above the active count rests (counted as idle). */
     if (tid >= atomic_load_explicit(&g_active_threads, memory_order_relaxed)) {
@@ -1132,6 +1144,11 @@ static void *hash_worker(void *arg) {
     }
     int seq = atomic_load_explicit(&g_job_seq, memory_order_acquire);
     unsigned stamp = atomic_load_explicit(&g_stamp_seq, memory_order_acquire);
+    if (skip_gen >= 0 && seq == skip_gen) {
+      usleep(100000);
+      continue;
+    }
+    skip_gen = -1;
     if (seq != last_gen || !job.have) {
       primed = 0;
       if (!copy_main_job(&job)) {
@@ -1188,7 +1205,13 @@ static void *hash_worker(void *arg) {
       int first_rc = shear_hash_first(header);
       if (first_rc != 0) {
         unsigned char hash[32];
-        shear_hash(header, hash);
+        if (shear_hash_checked(header, hash) != 0) {
+          outl(stderr, "ShearK-Miner: hash setup failed on this thread (thread %d, backend %s); skipping job %s\n",
+               tid, shear_hash_backend(), job.jobId);
+          skip_gen = last_gen;
+          primed = 0;
+          continue;
+        }
         atomic_fetch_add_explicit(&ts->busy_ns, st_now_ns() - t0, memory_order_relaxed);
         atomic_fetch_add_explicit(&ts->hashes, 1, memory_order_relaxed);
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
@@ -1226,7 +1249,14 @@ static void *hash_worker(void *arg) {
     atomic_fetch_add_explicit(live_gen ? &ts->checked : &ts->discarded, 1, memory_order_relaxed);
     if (live_gen && share_or_block_hit(hash, primed_n)) {
       unsigned char check[32];
-      shear_hash(primed_hdr, check);
+      if (shear_hash_checked(primed_hdr, check) != 0) {
+        g_dropped++;
+        outl(stderr, "ShearK-Miner: hash setup failed on this thread (thread %d, backend %s); skipping job %s\n",
+             tid, shear_hash_backend(), job.jobId);
+        skip_gen = last_gen;
+        primed = 0;
+        continue;
+      }
       if (memcmp(hash, check, 32) != 0) {
         memcpy(hash, check, 32);
         if (!share_or_block_hit(hash, primed_n)) {
@@ -2172,8 +2202,9 @@ int main(int argc, char **argv) {
   }
   uint64_t init0 = st_now_ns();
   if (shear_hash_set_backend(backend_arg) != 0) {
-    fprintf(stderr, "unknown or unavailable --backend %s; using %s\n", backend_arg,
-            shear_hash_backend());
+    /* PR146: no backend at all; mining on would hash nothing (or zeros). */
+    fprintf(stderr, "ShearK-Miner: no hash backend could be set up for --backend %s; exiting\n", backend_arg);
+    return 1;
   }
   g_init_s = (double)(st_now_ns() - init0) / 1e9;
   if (do_rig) {
