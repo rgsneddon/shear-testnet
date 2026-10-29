@@ -133,13 +133,28 @@ that lies about the summary is caught because the device recomputes the body dig
 streamed vout rows and the opening of the destination row. The memo envelope signature uses
 Ed25519 with `s` on the device (`cx_eddsa_sign`).
 
-**What this needs, and why it stops here:** the host half needs two new FFI exports in
-`libshear_admit`: `shear_fs1_prove_external` (FCMP plus blinds plus `m`, with no `x`) and
-`shear_fs1_assemble`. That is a prover-side refactor. It changes no verifier, parameter or wire
-byte, but it rebuilds `libshear_admit` and therefore changes the release `SHEAR_ADMIT_SHA256`.
-Under the standing rules that is a pin-adjacent change. It is written up here and not coded until
-Russell rules (decision D1 below). The device app on this branch implements key derivation, the
-view-key export, the display, and SA+L over test vectors produced from `sal_prove`.
+**Host half (ruling D1, 29 Oct: YES).** `shear-fs1/src/spend.rs` gains `external_tag`,
+`prove_spend_external`, `sal_sign_external` (the reference signer that the device app must
+match) and `assemble_external`. None of the existing functions change. `libshear_admit` exports
+`shear_fs1_prove_external`, `shear_fs1_external_assemble` and `shear_fs1_external_free`, plus
+`shear_fs1_external_tag` and `shear_fs1_external_sign`, which are for tests and vectors only.
+The node addon has the same functions (`fs1ProveExternal`, `fs1ExternalAssemble`,
+`fs1ExternalTag`, `fs1ExternalSign`), and the Dart binding is `wallet/lib/ledger_hw/ledger_fs1.dart`.
+The request is 289 bytes: `m(64) index(1) Õ Ĩ R tag o i ib`. It carries host blinds and never
+`x`. To avoid being an oracle for `x·P`, the signer computes the tag itself as `x·Hp(x·G)`.
+
+Tests: Rust (`external_signer_*`), JS (`crypto/fs1_external.test.js`) and Dart
+(`wallet/test/ledger/ledger_fs1_test.dart`) each check three things. First, `x` appears in no
+request and no SA+L. Second, the unchanged `verify_spend` / `shear_fs1_verify` accepts the
+assembled spend. Third, a forged SA+L or a foreign signer fails. JS and Dart also check one
+shared tag vector, `crypto/vectors/fs1_external_v1.json`.
+
+`SHEAR_ADMIT_SHA256` moves at the next wallet release. Linux x86_64 release build on agent-box
+(the same toolchain for both builds):
+- old, at b3efdc26: `dbb7f456fceab3eaa3bacd555a300a6b21ce2d2b5f5c1c7c96befc1277212f54`
+- new, with the split: `7e24aa4a681027a37c771c582e7f1053462bded6289c28b55156b3e7134b54d6`
+
+The release pipeline stamps the shipped hash for each platform as usual.
 
 The device needs Ristretto255 encode and decode and hash-to-point on top of the SDK's Ed25519
 point operations (`cx_ecfp_*`, `cx_bn_*` for the field square root). It does no other heavy
@@ -173,8 +188,9 @@ uid 0) and prints its SHA-256. Minting the vort1 waits for Russell's GO.
 
 ## 9. Decisions for Russell
 
-- **D1:** approve the two new `libshear_admit` FFI exports (prover-side only, `SHEAR_ADMIT_SHA256`
-  moves at the next release build), or keep Ledger accounts receive and watch-only for mainnet.
-- **D2:** the SLIP-44 coin type for SHE. Registering it is a public step.
+- **D1: YES (29 Oct).** The split exports are done, as described in §5.
+- **D2: YES (29 Oct).** A new SLIP-44 type. Russell submits the request himself, from
+  Desktop/SLIP44-SHE-PR.md, proposing 2004. Until then the only placeholder is
+  `SHEAR_COIN_TYPE` in `ledger/app-shear/Makefile`.
 - **D3:** submitting the device app to Ledger review and listing it.
 - **D4:** a signing test on his Nano X (testnet ETH first).
