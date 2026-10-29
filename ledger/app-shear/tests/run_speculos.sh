@@ -11,6 +11,7 @@ docker run --rm --network host -v "$here:/app" -w /app "$img" bash -lc '
   [ -d .git ] || git init -q
   for dev in '"$devices"'; do
     case $dev in nanox) sdk=$NANOX_SDK;; nanosp) sdk=$NANOSP_SDK;; stax) sdk=$STAX_SDK;; flex) sdk=$FLEX_SDK;; esac
+    make clean >/dev/null 2>&1 || true
     make -j4 BOLOS_SDK=$sdk >/tmp/build-$dev.log 2>&1 || { tail -40 /tmp/build-$dev.log; exit 1; }
     echo "built $dev"
   done
