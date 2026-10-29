@@ -183,6 +183,14 @@ static int enqueue_front(const Share *s);
 static char g_pool_last_jobId[80];
 static char g_pool_prev_jobId[80];
 static uint64_t g_pool_prev_at_ns = 0;
+/* PSA r3-3: the share-keep clock. CLOCK_MONOTONIC in the miner; fixed and
+ * stepped by the script in --share-sim, so the keep/drop tests need no
+ * wall-clock waits. */
+static int g_clock_fixed = 0;
+static uint64_t g_clock_ns = 0;
+static uint64_t miner_now_ns(void) {
+  return g_clock_fixed ? g_clock_ns : st_now_ns();
+}
 static _Atomic uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
 static uint64_t g_round0 = 0;
@@ -799,6 +807,15 @@ static void note_gen_parent_locked(int gen, const unsigned char header[SHEAR_HEA
   memcpy(g_gen_ring_parent[gen % GEN_RING], header + 4, 32);
 }
 
+/* PSA r2-3: mirror the pool's issueJob (prevJob = lastJob on a new jobId). */
+static void note_pool_job_locked(const char *jobId) {
+  if (strcmp(jobId, g_pool_last_jobId) != 0) {
+    snprintf(g_pool_prev_jobId, sizeof(g_pool_prev_jobId), "%s", g_pool_last_jobId);
+    snprintf(g_pool_last_jobId, sizeof(g_pool_last_jobId), "%s", jobId);
+    g_pool_prev_at_ns = miner_now_ns();
+  }
+}
+
 static void apply_job(const char *line) {
   char method[32] = "";
   json_token(line, "method", method, sizeof(method));
@@ -829,12 +846,7 @@ static void apply_job(const char *line) {
     g_round0 = (uint64_t)atomic_load_explicit(&g_hashes, memory_order_relaxed);
   }
   pthread_mutex_lock(&g_job_mu);
-  /* PSA r2-3: mirror the pool's issueJob (prevJob = lastJob on a new jobId). */
-  if (strcmp(job.jobId, g_pool_last_jobId) != 0) {
-    snprintf(g_pool_prev_jobId, sizeof(g_pool_prev_jobId), "%s", g_pool_last_jobId);
-    snprintf(g_pool_last_jobId, sizeof(g_pool_last_jobId), "%s", job.jobId);
-    g_pool_prev_at_ns = st_now_ns();
-  }
+  note_pool_job_locked(job.jobId);
   if (g_have_main && g_main_job.have
       && memcmp(g_main_job.header, job.header, SHEAR_HEADER_LEN) == 0) {
     g_main_job.share_bits = job.share_bits;
@@ -883,7 +895,7 @@ static void apply_job(const char *line) {
 }
 
 static void install_live_job_locked(JobSnap job) {
-  g_job_at_ns = st_now_ns();
+  g_job_at_ns = miner_now_ns();
   g_job_gen++;
   job.gen = g_job_gen;
   note_gen_parent_locked(job.gen, job.header);
@@ -1117,7 +1129,7 @@ static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char 
   s->nonce = nonce;
   s->gen = gen;
   s->share_bits = credit_bits_of_nonce(nonce);
-  s->enq_ns = st_now_ns();
+  s->enq_ns = miner_now_ns();
   s->have_key = key != NULL;
   if (key) s->key = *key;
   shear_hash_hex(hash, s->hash);
@@ -1423,7 +1435,7 @@ static int share_still_good(const Share *s) {
     prev_at = g_pool_prev_at_ns;
   }
   pthread_mutex_unlock(&g_job_mu);
-  uint64_t now = st_now_ns();
+  uint64_t now = miner_now_ns();
   double age_ms = (double)(now - s->enq_ns) / 1e6;
   if (share_keep(age_ms, s->gen == live_gen, same_parent, s->share_bits, live)) return 1;
   if (same_parent || !have_main) return 0;
@@ -1465,6 +1477,101 @@ static void flush_shares(Conn *mainc) {
       g_submitted++;
     }
   }
+}
+
+/* PSA r3-3: the queued-share keep/drop path (pool prevJob mirror, gen ring,
+ * install, enqueue, share_still_good and busy re-queue at the front) on an
+ * injected clock, for deterministic tests. SCRIPT is ';'-separated:
+ *   t MS              set the clock to MS
+ *   job ID PP         the pool sends job ID (parent byte PP) and it goes live
+ *   read ID PP        the job is read (prevJob mirror moves) but not live yet
+ *   live ID PP        the job read earlier goes live (its epoch is ready)
+ *   hit ID            a share found on job ID (its gen), at the live target
+ *   flush             every queued share is checked: keep = sent, drop
+ *   flush-busy        as flush, but the pool answers busy: kept shares go
+ *                     back to the front of the queue, in order
+ * Prints one line per flush: "flush@MS ID:keep|drop ...". Nothing is sent. */
+static int share_sim(const char *script) {
+  static char buf[8192];
+  static char ids[64][80];
+  static int gens[64];
+  int nids = 0;
+  uint64_t nonce = 1;
+  g_clock_fixed = 1;
+  g_clock_ns = 1000000000ull;
+  snprintf(buf, sizeof(buf), "%s", script);
+  for (char *op = buf, *next; op; op = next) {
+    next = strchr(op, ';');
+    if (next) *next++ = 0;
+    while (*op == ' ') op++;
+    if (!*op) continue;
+    char cmd[16] = "", id[80] = "";
+    unsigned pp = 0;
+    double ms = 0;
+    if (sscanf(op, "t %lf", &ms) == 1) {
+      if (ms < 0) return 2;
+      g_clock_ns = 1000000000ull + (uint64_t)(ms * 1e6);
+      continue;
+    }
+    int n = sscanf(op, "%15s %79s %x", cmd, id, &pp);
+    if (n >= 3 && (!strcmp(cmd, "job") || !strcmp(cmd, "read") || !strcmp(cmd, "live"))) {
+      pthread_mutex_lock(&g_job_mu);
+      if (strcmp(cmd, "live") != 0) note_pool_job_locked(id);
+      if (strcmp(cmd, "read") != 0) {
+        JobSnap j;
+        memset(&j, 0, sizeof(j));
+        snprintf(j.jobId, sizeof(j.jobId), "%s", id);
+        j.header[0] = 1;
+        memset(j.header + 4, (int)pp, 32);
+        memset(j.header + 36, 0x22, 32);
+        j.share_bits = 8;
+        j.block_bits = 40;
+        install_live_job_locked(j);
+        int k = 0;
+        while (k < nids && strcmp(ids[k], id) != 0) k++;
+        if (k == nids && nids < 64) nids++;
+        if (k < 64) {
+          snprintf(ids[k], sizeof(ids[k]), "%s", id);
+          gens[k] = g_job_gen;
+        }
+      }
+      pthread_mutex_unlock(&g_job_mu);
+      continue;
+    }
+    if (n >= 2 && !strcmp(cmd, "hit")) {
+      int k = 0;
+      while (k < nids && strcmp(ids[k], id) != 0) k++;
+      if (k == nids) {
+        fprintf(stderr, "share-sim: hit on unknown job %s\n", id);
+        return 2;
+      }
+      unsigned char h[32];
+      memset(h, 0x5a, sizeof(h));
+      if (!enqueue_share(id, nonce++, h, gens[k], NULL)) return 2;
+      pthread_mutex_lock(&g_q_mu);
+      g_q[(g_qtail + QCAP - 1) % QCAP].share_bits = 8;
+      pthread_mutex_unlock(&g_q_mu);
+      continue;
+    }
+    if (n >= 1 && (!strcmp(cmd, "flush") || !strcmp(cmd, "flush-busy"))) {
+      static Share keep[1024];
+      int nk = 0, busy = !strcmp(cmd, "flush-busy");
+      Share sh;
+      printf("flush@%.0f", (double)(g_clock_ns - 1000000000ull) / 1e6);
+      while (dequeue_share(&sh)) {
+        int k = share_still_good(&sh);
+        printf(" %s:%s", sh.jobId, k ? "keep" : "drop");
+        if (k && busy && nk < 1024) keep[nk++] = sh;
+      }
+      for (int i = nk - 1; i >= 0; i--) enqueue_front(&keep[i]);
+      printf("\n");
+      continue;
+    }
+    fprintf(stderr, "share-sim: bad op '%s'\n", op);
+    return 2;
+  }
+  fflush(stdout);
+  return 0;
 }
 
 static void fmt_hashrate(double hs, char *buf, size_t n) {
@@ -2126,6 +2233,10 @@ static int mine_once(void) {
         if (g_main_job.height > 0) height = g_main_job.height;
       }
       pthread_mutex_unlock(&g_job_mu);
+      /* PSA r3-3: shares waiting to be sent (tests wait on this, not on time). */
+      pthread_mutex_lock(&g_q_mu);
+      int queued = (g_qtail - g_qhead + QCAP) % QCAP;
+      pthread_mutex_unlock(&g_q_mu);
       uint64_t round = h >= g_round0 ? h - g_round0 : h;
       double elapsed = (double)(now - (g_t0 ? g_t0 : now));
       if (elapsed < 1) elapsed = 1;
@@ -2134,22 +2245,22 @@ static int mine_once(void) {
                " accepted=" C_GRN "%d" C_RST " rejected=" C_RED "%d" C_RST
                " submitted=" C_DIM "%llu" C_RST " blocks=" C_MAG "%d" C_RST " dropped=" C_YEL "%llu" C_RST
                " threads=%d cpuCores=%d cpuThreads=%d "
-               "job=" C_CYN "%s" C_RST " height=" C_CYN "%d" C_RST " shareBits=%d blockBits=%d backend=%s user=%s pool=%s:%d elapsed=%.0fs inflight=%d\n",
+               "job=" C_CYN "%s" C_RST " height=" C_CYN "%d" C_RST " shareBits=%d blockBits=%d backend=%s user=%s pool=%s:%d elapsed=%.0fs inflight=%d queued=%d\n",
                (unsigned long long)h, (unsigned long long)round, rate, g_accepted, g_rejected,
                (unsigned long long)g_submitted, g_blocks, (unsigned long long)g_dropped,
                g_threads, g_cpu_cores, g_cpu_threads, jobId, height, sb, bb,
                shear_hash_backend(), g_login, g_host, g_port, elapsed,
-               atomic_load(&g_inflight));
+               atomic_load(&g_inflight), queued);
         fflush(stdout);
       } else {
         printf("hashes=%llu round=%llu hashrate=%s accepted=%d rejected=%d submitted=%llu blocks=%d dropped=%llu "
                "threads=%d cpuCores=%d cpuThreads=%d job=%s height=%d shareBits=%d blockBits=%d "
-               "backend=%s user=%s pool=%s:%d elapsed=%.0fs inflight=%d\n",
+               "backend=%s user=%s pool=%s:%d elapsed=%.0fs inflight=%d queued=%d\n",
                (unsigned long long)h, (unsigned long long)round, rate, g_accepted, g_rejected,
                (unsigned long long)g_submitted, g_blocks, (unsigned long long)g_dropped,
                g_threads, g_cpu_cores, g_cpu_threads, jobId, height, sb, bb,
                shear_hash_backend(), g_login, g_host, g_port, elapsed,
-               atomic_load(&g_inflight));
+               atomic_load(&g_inflight), queued);
         fflush(stdout);
       }
     }
@@ -2197,6 +2308,10 @@ int main(int argc, char **argv) {
       int k = share_keep(atof(argv[i + 1]), atoi(argv[i + 2]), atoi(argv[i + 3]), atoi(argv[i + 4]), atoi(argv[i + 5]));
       printf("%s\n", k ? "keep" : "drop");
       return 0;
+    }
+    if (strcmp(argv[i], "--share-sim") == 0 && i + 1 < argc) {
+      /* PSA r3-3: the keep/drop path on an injected clock (see share_sim). */
+      return share_sim(argv[i + 1]);
     }
     if (strcmp(argv[i], "--prev-parent-vector") == 0 && i + 3 < argc) {
       /* PSA r2-3 test vector: GEN_BACK IS_POOL_PREV SINCE_CHANGE_MS -> keep|drop. */

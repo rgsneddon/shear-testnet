@@ -289,6 +289,39 @@ describe('PR146 PSA r2-3: previous-parent shares of gen N-1 keep the pool grace'
   });
 });
 
+// PSA r3-3: the miner's own keep/drop path (prevJob mirror, gen ring,
+// install, queue, share_still_good, busy re-queue) on an injected clock
+// (--share-sim): deterministic, no pool, no hashing, no wall-clock waits.
+describe('PSA r3-3: queued-share keep/drop on an injected clock', () => {
+  const sim = (script) => {
+    const r = spawnSync(bin, ['--share-sim', script], { encoding: 'utf8', timeout: 30_000 });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    return r.stdout.trim().split('\n');
+  };
+  it('N-2: A shares are dropped as soon as D (after C, a parent change) is live, at any gap', () => {
+    for (const gap of [0, 1, 20, 500, 2000, 5000, 9999]) {
+      const out = sim(`t 0; job A 11; hit A; hit A; hit A; t 1500; job C 44; hit C; flush-busy; t ${1500 + gap}; job D 44; hit D; flush`);
+      assert.deepEqual(out, ['flush@1500 A:keep A:keep A:keep C:keep', `flush@${1500 + gap} A:drop A:drop A:drop C:keep D:keep`], `gap ${gap}`);
+    }
+  });
+  it('N-1 on the pool prevJob: kept to 9999 ms after the change, dropped at 10000', () => {
+    assert.deepEqual(sim('t 0; job A 11; hit A; t 1000; job C 44; t 10999; flush-busy; t 11000; flush'),
+      ['flush@10999 A:keep', 'flush@11000 A:drop']);
+  });
+  it('the clock starts when the job is read, not when it goes live', () => {
+    assert.deepEqual(sim('t 0; job A 11; hit A; t 1000; read C 44; t 4000; live C 44; t 10999; flush-busy; t 11000; flush'),
+      ['flush@10999 A:keep', 'flush@11000 A:drop']);
+  });
+  it('a new-key job read during the prep moves the mirror: D replaces C, and A is not the pool prevJob', () => {
+    assert.deepEqual(sim('t 0; job A 11; hit A; t 1000; read C 44; t 1100; read D 44; flush-busy; t 1500; live D 44; flush'),
+      ['flush@1100 A:keep', 'flush@1500 A:drop']);
+  });
+  it('a same-parent job change keeps the previous job for 12 s from the hit, then drops it', () => {
+    assert.deepEqual(sim('t 0; job A 11; hit A; t 1000; job B 11; t 11999; flush-busy; t 12000; flush'),
+      ['flush@11999 A:keep', 'flush@12000 A:drop']);
+  });
+});
+
 function hdr(prevByte, merkleByte) {
   const h = Buffer.alloc(128);
   h[0] = 1;
@@ -409,26 +442,79 @@ describe('PR146 P2: queued shares survive busy back-off and a same-parent job ch
     assert.ok(after.some(([j, t]) => j === 'C' && t >= 11_000), `no C share acked after the busy spell: ${JSON.stringify(after)}`);
   });
 
-  it('N-2 shares (two gens back on the old parent) are dropped at once', async () => {
+  // PSA r3-3: event-driven, no wall-clock waits. A (parent 0x11) shares pile
+  // up behind busy replies; the stub then stops answering and sends C (new
+  // parent) and, once C is live, D (C's parent): the miner's at most 4
+  // in-flight submits stay pending, so it can send nothing more. When D is
+  // live the stub acks everything; every submit after that was written after
+  // D's install, and the queue drains front first, so a kept A share would
+  // come before the first D share. No A may follow; a D share must.
+  async function n2Run(threads) {
+    const A = { jobId: 'A', header: hdr(0x11, 0x22), shareBits: 8, blockBits: 40, bits: 8 };
+    const C = { jobId: 'C', header: hdr(0x44, 0x22), shareBits: 8, blockBits: 40, bits: 8 };
     const D = { jobId: 'D', header: hdr(0x44, 0x55), shareBits: 8, blockBits: 40, bits: 8 };
-    let dRel = -1;
-    const { after, out } = await parentChange({
-      busyFor: 60_000, // every submit is answered busy, so A stays queued until D is live
-      watchMs: 0,
-      then: async (sock, m, cAt) => {
-        // C's epoch settles first; D is still well inside C's N-1 window.
-        await new Promise((r) => setTimeout(r, 2000));
-        sock.write(`${JSON.stringify({ method: 'job', params: D, ...D })}\n`);
-        assert.ok(await waitFor(() => /job D /.test(m.out), 15_000), m.out);
-        dRel = Date.now() - cAt;
-        await new Promise((r) => setTimeout(r, 4000)); // two full back-offs
-      },
+    let phase = 'ok';
+    let sockRef = null;
+    const aNonces = new Set();
+    const held = [];
+    const released = [];
+    const pool = await stubPool((msg, sock) => {
+      sockRef = sock;
+      if (msg.method === 'login') return sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' }, job: A })}\n`);
+      if (msg.method !== 'submit') return;
+      if (phase === 'busy') {
+        if (msg.params.jobId === 'A') aNonces.add(msg.params.nonce);
+        return sock.write(`${JSON.stringify({ id: msg.id, error: 'busy' })}\n`);
+      }
+      if (phase === 'silent') return held.push(msg);
+      if (phase === 'released') released.push(msg.params.jobId);
+      sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' } })}\n`);
     });
-    assert.ok(dRel >= 0 && dRel < 10_000, `D went live at ${dRel} ms, outside the N-1 grace\n${out.slice(-1500)}`);
-    assert.ok(after.some(([j, t]) => j === 'D' && t > dRel), `no D submit: ${JSON.stringify(after)}\n${out.slice(-1500)}`);
-    const n2 = after.filter(([j, t]) => j === 'A' && t > dRel);
-    assert.deepEqual(n2, [], `N-2 shares sent after D went live: ${JSON.stringify(after)}`);
-  });
+    const m = startMiner(pool.port, ['--threads', String(threads)]);
+    let exit = null;
+    m.on('exit', (code, sig) => { exit = sig || code; });
+    const alive = (what) => assert.equal(exit, null, `miner exited (${exit}) ${what}\n${m.out.slice(-1500)}`);
+    try {
+      assert.ok(await waitFor(() => exit !== null || pool.lines.some((l) => /"method":"submit"/.test(l)), 30_000), m.out);
+      alive('before the first submit');
+      phase = 'busy';
+      // More A shares than the 4 in-flight slots, so some stay queued: the
+      // miner's own stats line reports the queue (no wall-clock guess).
+      const outAtBusy = m.out.length;
+      const queued = () => {
+        const q = [...m.out.slice(outAtBusy).matchAll(/ queued=(\d+)/g)].map((x) => Number(x[1]));
+        return q.length ? q[q.length - 1] : 0;
+      };
+      assert.ok(await waitFor(() => exit !== null || (aNonces.size >= 1 && queued() >= 2), 120_000), `queued ${queued()}, A seen ${aNonces.size}\n${m.out.slice(-1500)}`);
+      alive('while A shares queued');
+      phase = 'silent';
+      sockRef.write(`${JSON.stringify({ method: 'job', params: C, ...C })}\n`);
+      assert.ok(await waitFor(() => exit !== null || /job C /.test(m.out), 30_000), m.out);
+      alive('after C');
+      sockRef.write(`${JSON.stringify({ method: 'job', params: D, ...D })}\n`);
+      assert.ok(await waitFor(() => exit !== null || /job D /.test(m.out), 30_000), m.out);
+      alive('after D');
+      phase = 'released';
+      for (const h of held) sockRef.write(`${JSON.stringify({ id: h.id, result: { status: 'OK' } })}\n`);
+      assert.ok(await waitFor(() => exit !== null || released.includes('D'), 30_000), `no D submit after release: ${released.join(',')}\n${m.out.slice(-1500)}`);
+      alive('after the release');
+    } finally {
+      m.kill('SIGTERM');
+      await m.done;
+      pool.server.close();
+    }
+    return { held: held.length, released, out: m.out };
+  }
+
+  for (const threads of [1, 4, 8]) {
+    it(`N-2 shares (two gens back on the old parent) are dropped at once (${threads} threads)`, async () => {
+      const { held, released, out } = await n2Run(threads);
+      assert.ok(held <= 4, `more than 4 submits in flight while the stub was silent: ${held}`);
+      const firstD = released.indexOf('D');
+      assert.ok(firstD >= 0, `no D submit: ${released.join(',')}\n${out.slice(-1500)}`);
+      assert.deepEqual(released.filter((j) => j === 'A'), [], `N-2 (A) shares sent after D went live: ${released.join(',')}`);
+    });
+  }
 
   it('up to 4 submits in flight, each ack matched to its submit id', async () => {
     const A = { jobId: 'A', header: hdr(0x11, 0x22), shareBits: 8, blockBits: 40, bits: 8 };
