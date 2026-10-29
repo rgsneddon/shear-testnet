@@ -17,7 +17,6 @@ import { fileURLToPath } from 'node:url';
 const dir = new URL('../deploy/mainnet/', import.meta.url);
 const file = (p) => fileURLToPath(new URL(p, dir));
 const read = (p) => fs.readFileSync(new URL(p, dir), 'utf8').replace(/\r/g, '');
-const PORTS = ['22', '80', '443', '1111', '30303'];
 const MAINNET_UNITS = ['shear-node.service', 'shear-p2p.service', 'shear-pool.service'];
 const V12_UNITS = MAINNET_UNITS.map((u) => u.replace('shear-', 'shear-v12-'));
 const UNITS = [...MAINNET_UNITS, ...V12_UNITS];
@@ -110,19 +109,30 @@ describe('mainnet host files', () => {
     assert.doesNotMatch(read('RUNBOOK.md'), /systemctl enable --now shear-(node|p2p|pool)\.service[^\n]*before genesis/);
   });
 
-  it('each firewall opens exactly the five ports, TCP only, and 8080 is closed', () => {
-    for (const f of ['firewall/ufw-pool.sh', 'firewall/firewalld-p2p-b.sh']) {
-      assert.match(read(f), /^PORTS="22 80 443 1111 30303"$/m, f);
-    }
+  it('each firewall opens only its role\'s ports, TCP only, rate limits SSH, and 8080 is closed', () => {
+    // The pool serves the site and stratum; p2p-a and p2p-b only SSH and :30303.
     const ufw = read('firewall/ufw-pool.sh');
-    assert.ok(ufw.indexOf('ufw --force reset') < ufw.indexOf('ufw allow'), 'reset before the rules');
+    assert.match(ufw, /^PORTS="80 443 1111 30303"$/m);
+    assert.match(ufw, /run ufw limit 22\/tcp/);
+    assert.ok(ufw.indexOf('ufw --force reset') < ufw.indexOf('ufw limit 22/tcp'), 'reset before the rules');
+    assert.ok(ufw.indexOf('ufw limit 22/tcp') < ufw.indexOf('ufw allow'), '22 first');
+    assert.ok(ufw.indexOf('ufw limit 22/tcp') < ufw.indexOf('ufw --force enable'), '22 before enable');
     assert.match(ufw, /IPV6=yes/);
     const fwd = read('firewall/firewalld-p2p-b.sh');
+    assert.match(fwd, /^PORTS="30303"$/m);
     for (const m of ['--remove-service=', '--remove-rich-rule=', '--remove-source-port=', '--remove-protocol=', '--change-interface=', '--set-target=DROP', '--add-protocol=ipv6-icmp']) assert.ok(fwd.includes(m), m);
+    for (const fam of ['ipv4', 'ipv6']) assert.ok(fwd.includes(`rule family="${fam}" service name="ssh" accept limit value="10/m"`), `ssh limit ${fam}`);
+    assert.ok(fwd.indexOf('--add-port=22/tcp') < fwd.indexOf('--remove-port=22/tcp'), 'plain 22 opened first, dropped once the limited rule is in');
+    assert.ok(fwd.indexOf('--remove-port=22/tcp') < fwd.indexOf('firewall-cmd --reload'));
+    // A blank rich-rule line must not end the script under set -e.
+    assert.match(fwd, /while IFS= read -r r; do if \[ -n "\$r" \]; then run firewall-cmd .*--remove-rich-rule="\$r"; fi; done/);
     const nft = read('firewall/nftables-p2p-a.conf');
     assert.match(nft, /policy drop;/);
     const dports = [...nft.matchAll(/dport \{([^}]*)\}/g)].map((m) => m[1].split(',').map((p) => p.trim()));
-    assert.deepEqual(dports, [PORTS]);
+    assert.deepEqual(dports, [['22', '30303']]);
+    assert.match(nft, /tcp dport 22 ct state new add @ssh4 \{ ip saddr limit rate over 10\/minute burst 5 packets \} drop/);
+    assert.match(nft, /tcp dport 22 ct state new add @ssh6 \{ ip6 saddr limit rate over 10\/minute burst 5 packets \} drop/);
+    assert.ok(nft.indexOf('@ssh4') < nft.indexOf('tcp dport { 22, 30303 } accept'), 'the limit comes before the accept');
     assert.equal(/udp dport/.test(nft), false);
     for (const f of ['firewall/ufw-pool.sh', 'firewall/firewalld-p2p-b.sh', 'firewall/nftables-p2p-a.conf', 'scripts/check_host.sh']) {
       assert.equal(/\b8080\b/.test(read(f).replace(/^#.*$/gm, '')), false, `${f} has no 8080`);
