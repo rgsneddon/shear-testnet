@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -208,4 +209,37 @@ void main() {
     expect(_units(ledger.spendableOwned(id.address, paymentCode: id.paymentCode)), 0,
         reason: '3 confirmations is not Spendable');
   });
+
+  test('P1-1: a shipped build is in body-proof mode before any read, whatever /notes answers', () async {
+    debugBodyProofShipped = true;
+    addTearDown(() => debugBodyProofShipped = false);
+    final pool = _NotesPool();
+    addTearDown(pool.close);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    expect(ledger.bodyProofRequired, isTrue, reason: 'not keyed on a /notes 404');
+    await ledger.populateSpendableFromNode(id.address, paymentCode: id.paymentCode);
+    expect(pool.notesCalls, 0, reason: 'the legacy notes path never runs in a shipped build');
+    expect(ledger.bodyProofRequired, isTrue);
+    expect(_units(ledger.spendableOwned(id.address, paymentCode: id.paymentCode)), 0);
+  });
+}
+
+/// A node that still serves the legacy notes route (an old or hostile node).
+class _NotesPool extends ShearPoolClient {
+  _NotesPool()
+      : super(
+          baseUrl: 'http://127.0.0.1:9',
+          http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
+        );
+
+  int notesCalls = 0;
+
+  @override
+  Future<Map<String, dynamic>> stats() async => {'height': 0};
+
+  @override
+  Future<Map<String, dynamic>> notes(String address, {String? open}) async {
+    notesCalls++;
+    return {'notes': const <Object>[]};
+  }
 }

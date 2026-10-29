@@ -1828,6 +1828,18 @@ List<dynamic> notesNotYetAccepted(List<dynamic> rows, Set<String> known) {
 /// commits stay at 0.
 int debugNotesOpenedThisScan = 0;
 
+/// Ruling 6 in every shipped build. A release or profile wallet, and a
+/// compiled CLI, proves each block body against a header it verified from
+/// its first read. A node that still answers the notes route cannot hold it
+/// on the legacy path. Only a debug or test build starts on that path.
+const bool kBodyProofShipped =
+    bool.fromEnvironment('dart.vm.product') ||
+    bool.fromEnvironment('dart.vm.profile');
+
+/// Tests set this to run a book as a shipped build. It can only add body
+/// mode; a shipped build is in body mode whatever this says.
+bool debugBodyProofShipped = false;
+
 /// Hexify the scan snapshot inside the worker, then scan. The caller sends
 /// the raw snapshot; the JSON clone does not run on the UI isolate.
 /// [openedProofs] stays on the snapshot so an already opened proof is not
@@ -9919,7 +9931,7 @@ class ShearLedger implements ReadProofSink {
   /// From then on Spendable counts only a note whose block body was proven
   /// against a header this ledger verified, at its confirmations. Every
   /// other note is Pending.
-  bool _bodyProofRequired = false;
+  bool _bodyProofRequired = kBodyProofShipped || debugBodyProofShipped;
   bool get bodyProofRequired => _bodyProofRequired;
 
   /// The node answered the notes route 404: the route is gone (AL-5), not
