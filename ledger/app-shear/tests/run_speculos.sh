@@ -18,6 +18,8 @@ docker run --rm --network host -v "$here:/app" -v "$pyenv:/pyenv" -w /app "$img"
     echo "built $dev"
   done
   [ -x /pyenv/bin/pytest ] || { python3 -m venv /pyenv && /pyenv/bin/pip install -q "ragger[speculos]" pytest cryptography; }
+  rc=0
   for dev in '"$devices"'; do
-    /pyenv/bin/pytest -q tests --tb=short --device $dev
-  done'
+    /pyenv/bin/pytest -q tests --tb=short --device $dev || rc=1
+  done
+  exit $rc'

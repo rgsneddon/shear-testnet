@@ -59,8 +59,8 @@ def test_view_key_export_needs_consent(backend, navigator, device):
     pub, view = expected()
     with backend.exchange_async(0xE0, 0x10, 1, 0, path_bytes(PATH)):
         if device.is_nano:
-            navigator.navigate_until_text(NavInsID.RIGHT_CLICK, [NavInsID.BOTH_CLICK], "Export",
-                                          screen_change_after_last_instruction=False)
+            # NBGL Nano choice: question, then "Export", then "Reject".
+            navigator.navigate([NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK], screen_change_after_last_instruction=False)
         else:
             navigator.navigate([NavInsID.USE_CASE_CHOICE_CONFIRM], screen_change_after_last_instruction=False)
     assert backend.last_async_response.data == pub + view
@@ -71,8 +71,8 @@ def test_view_key_export_rejected(backend, navigator, device):
     try:
         with backend.exchange_async(0xE0, 0x10, 1, 0, path_bytes(PATH)):
             if device.is_nano:
-                navigator.navigate_until_text(NavInsID.RIGHT_CLICK, [NavInsID.BOTH_CLICK], "Reject",
-                                              screen_change_after_last_instruction=False)
+                navigator.navigate([NavInsID.RIGHT_CLICK, NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK],
+                               screen_change_after_last_instruction=False)
             else:
                 navigator.navigate([NavInsID.USE_CASE_CHOICE_REJECT], screen_change_after_last_instruction=False)
         assert False
