@@ -137,3 +137,10 @@ export async function solSend(transport, net, to, amountStr, onStatus) {
   const hash = await rpc(net.rpc, 'sendTransaction', [tx.serialize().toString('base64'), { encoding: 'base64', preflightCommitment: 'confirmed' }]);
   return { hash, from: from.toBase58() };
 }
+
+// ---- Bitcoin ----
+import * as btc from './btc.js';
+export const BTC = btc;
+export function btcSend(transport, net, to, amountStr, onStatus) {
+  return btc.btcSend(transport, net, to, amountStr, onStatus, parseUnits, formatUnits);
+}
