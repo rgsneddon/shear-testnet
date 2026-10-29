@@ -249,8 +249,43 @@ describe('PR146 P2: queued shares follow the pool grace', () => {
       assert.equal(keep(age, 0, 1, 20, 24), 'drop', `prev job age ${age}`);
     }
   });
-  it('a parent change drops the share at any age', () => {
+  it('a parent change drops the share at any age (share_keep alone; see the previous-parent rule below)', () => {
     for (const age of [0, 1000, 6000, 11500, 12500, 30000]) assert.equal(keep(age, 0, 0, 20, 20), 'drop', `age ${age}`);
+  });
+});
+
+// PSA r2-3 (ME ruling, option A, miner only): the pool credits a share on its
+// one prevJob for PREV_JOB_GRACE_MS (12 s) after the job change, even across a
+// parent change (pool/src/pool.js jobWithinGrace, resolveSubmitJob). The
+// miner keeps the immediately previous gen (N-1), if it is the pool's prevJob,
+// for PREV_PARENT_GRACE_MS (12 s less a 2 s margin) on a monotonic clock from
+// the parent change, and drops N-2 and older at once.
+describe('PR146 PSA r2-3: previous-parent shares of gen N-1 keep the pool grace', () => {
+  const pp = (genBack, isPoolPrev, sinceMs) => {
+    const r = spawnSync(bin, ['--prev-parent-vector', String(genBack), String(isPoolPrev), String(sinceMs)], { encoding: 'utf8', timeout: 60_000 });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    return r.stdout.trim();
+  };
+  it('the margin constant sits 1-2 s inside the pool PREV_JOB_GRACE_MS', () => {
+    const pool = fs.readFileSync(path.join(repo, 'pool/src/pool.js'), 'utf8');
+    const poolMs = Number(pool.match(/export const PREV_JOB_GRACE_MS = ([\d_]+);/)[1].replace(/_/g, ''));
+    assert.equal(poolMs, 12000);
+    const src = fs.readFileSync(path.join(root, 'src/sheark_miner.c'), 'utf8');
+    const m = src.match(/#define PREV_PARENT_GRACE_MS \(SHARE_GRACE_MS - (\d+)\)/);
+    assert.ok(m, 'PREV_PARENT_GRACE_MS (SHARE_GRACE_MS - margin) missing');
+    const margin = Number(m[1]);
+    assert.ok(margin >= 1000 && margin <= 2000, `margin ${margin}`);
+    assert.equal(Number(src.match(/#define SHARE_GRACE_MS (\d+)/)[1]), poolMs);
+  });
+  it('N-1 on the pool prevJob: kept inside the grace, dropped after it', () => {
+    for (const t of [0, 1000, 6000, 9500, 9900]) assert.equal(pp(1, 1, t), 'keep', `since ${t}`);
+    for (const t of [10000, 10500, 11500, 12500, 30000]) assert.equal(pp(1, 1, t), 'drop', `since ${t}`);
+  });
+  it('N-2 and older: dropped at once', () => {
+    for (const back of [2, 3, 10]) for (const t of [0, 500, 6000]) assert.equal(pp(back, 1, t), 'drop', `back ${back} since ${t}`);
+  });
+  it('N-1 that is not the pool prevJob (the pool moved on with no new gen): dropped', () => {
+    for (const t of [0, 500, 6000]) assert.equal(pp(1, 0, t), 'drop', `since ${t}`);
   });
 });
 
@@ -316,19 +351,23 @@ describe('PR146 P2: queued shares survive busy back-off and a same-parent job ch
     assert.ok(after.includes('A'), `no job A share was sent after job B went live: ${after.join(',')}\n${m.out.slice(-1500)}`);
   });
 
-  it('a parent change drops the queued shares of the old parent', async () => {
+  // PSA r2-3: A (parent P1) is gen N-1 and the pool's prevJob once C
+  // (parent P2) is live. busyFor: ms after C is sent during which the stub
+  // keeps answering busy (A's shares stay queued); then it acks. Returns each
+  // submit after C was sent, as [jobId, ms since C was sent].
+  async function parentChange({ busyFor, then = null, watchMs }) {
     const A = { jobId: 'A', header: hdr(0x11, 0x22), shareBits: 8, blockBits: 40, bits: 8 };
     const C = { jobId: 'C', header: hdr(0x44, 0x22), shareBits: 8, blockBits: 40, bits: 8 };
     let phase = 'ok';
     let sockRef = null;
-    let afterAt = 0;
+    let cAt = 0;
     const after = [];
     const pool = await stubPool((msg, sock) => {
       sockRef = sock;
       if (msg.method === 'login') return sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' }, job: A })}\n`);
       if (msg.method !== 'submit') return;
-      if (phase === 'busy') return sock.write(`${JSON.stringify({ id: msg.id, error: 'busy' })}\n`);
-      if (phase === 'after' && Date.now() > afterAt + 300) after.push(msg.params.jobId);
+      if (cAt) after.push([msg.params.jobId, Date.now() - cAt]);
+      if (phase === 'busy' || (cAt && Date.now() - cAt < busyFor)) return sock.write(`${JSON.stringify({ id: msg.id, error: 'busy' })}\n`);
       sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' } })}\n`);
     });
     const m = startMiner(pool.port);
@@ -337,18 +376,58 @@ describe('PR146 P2: queued shares survive busy back-off and a same-parent job ch
       phase = 'busy';
       const seen = pool.lines.length;
       assert.ok(await waitFor(() => pool.lines.slice(seen).filter((l) => /submit/.test(l)).length >= 3, 15_000), m.out);
+      await new Promise((r) => setTimeout(r, 1500)); // more A hits pile up
+      cAt = Date.now();
+      phase = 'timed';
       sockRef.write(`${JSON.stringify({ method: 'job', params: C, ...C })}\n`);
       assert.ok(await waitFor(() => /job C /.test(m.out), 15_000), m.out);
-      afterAt = Date.now();
-      phase = 'after';
-      await waitFor(() => after.length >= 3, 8000);
+      if (then) await then(sockRef, m, cAt);
+      await new Promise((r) => setTimeout(r, watchMs));
     } finally {
       m.kill('SIGTERM');
       await m.done;
       pool.server.close();
     }
-    assert.ok(after.length >= 1, m.out.slice(-1500));
-    assert.deepEqual([...new Set(after)], ['C'], `old-parent shares sent: ${after.join(',')}`);
+    return { after, out: m.out };
+  }
+
+  it('a parent change keeps the N-1 (pool prevJob) shares inside the grace and sends them', async () => {
+    const { after, out } = await parentChange({ busyFor: 0, watchMs: 3000 });
+    const a = after.filter(([j]) => j === 'A');
+    assert.ok(a.length >= 1, `no N-1 share sent after the parent change: ${JSON.stringify(after)}\n${out.slice(-1500)}`);
+    assert.ok(a.every(([, t]) => t < 10_000), JSON.stringify(a));
+    assert.ok(after.some(([j]) => j === 'C'), JSON.stringify(after));
+  });
+
+  it('N-1 shares still queued when the grace ends are dropped, never sent after it', async () => {
+    // Busy for 11 s after C: A's shares wait behind back-off past 10 s.
+    const { after, out } = await parentChange({ busyFor: 11_000, watchMs: 13_000 });
+    const a = after.filter(([j]) => j === 'A');
+    assert.ok(a.length >= 1, `the N-1 shares were not retried inside the grace: ${JSON.stringify(after)}\n${out.slice(-1500)}`);
+    const late = a.filter(([, t]) => t >= 10_300);
+    assert.deepEqual(late, [], `N-1 sent after the grace: ${JSON.stringify(late)}`);
+    assert.ok(after.some(([j, t]) => j === 'C' && t >= 11_000), `no C share acked after the busy spell: ${JSON.stringify(after)}`);
+  });
+
+  it('N-2 shares (two gens back on the old parent) are dropped at once', async () => {
+    const D = { jobId: 'D', header: hdr(0x44, 0x55), shareBits: 8, blockBits: 40, bits: 8 };
+    let dRel = -1;
+    const { after, out } = await parentChange({
+      busyFor: 60_000, // every submit is answered busy, so A stays queued until D is live
+      watchMs: 0,
+      then: async (sock, m, cAt) => {
+        // C's epoch settles first; D is still well inside C's N-1 window.
+        await new Promise((r) => setTimeout(r, 2000));
+        sock.write(`${JSON.stringify({ method: 'job', params: D, ...D })}\n`);
+        assert.ok(await waitFor(() => /job D /.test(m.out), 15_000), m.out);
+        dRel = Date.now() - cAt;
+        await new Promise((r) => setTimeout(r, 4000)); // two full back-offs
+      },
+    });
+    assert.ok(dRel >= 0 && dRel < 10_000, `D went live at ${dRel} ms, outside the N-1 grace\n${out.slice(-1500)}`);
+    assert.ok(after.some(([j, t]) => j === 'D' && t > dRel), `no D submit: ${JSON.stringify(after)}\n${out.slice(-1500)}`);
+    const n2 = after.filter(([j, t]) => j === 'A' && t > dRel);
+    assert.deepEqual(n2, [], `N-2 shares sent after D went live: ${JSON.stringify(after)}`);
   });
 
   it('up to 4 submits in flight, each ack matched to its submit id', async () => {

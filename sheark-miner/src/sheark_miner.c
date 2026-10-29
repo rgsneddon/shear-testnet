@@ -68,6 +68,16 @@
 /* PR146: the pool's PREV_JOB_GRACE_MS (pool/src/pool.js) for a previous
  * job and for the previous share target (noteConnShareBits). */
 #define SHARE_GRACE_MS 12000
+/* PSA r2-3 (ME ruling, option A): the pool also credits a share on its one
+ * prevJob for PREV_JOB_GRACE_MS after the job change, even across a parent
+ * change (pool/src/pool.js: PREV_JOB_GRACE_MS, jobWithinGrace,
+ * resolveSubmitJob; crypto/share_batch.js roundSlot seats it as slot 0/1).
+ * The miner keeps only the immediately previous gen (N-1), and only while it
+ * is the pool's prevJob, for this long on the monotonic clock from the job
+ * change that moved the parent. The 2 s margin covers the pool's clock
+ * starting first (it issues the job before the miner reads it) and the
+ * submit's trip back. N-2 and older are dropped at once. */
+#define PREV_PARENT_GRACE_MS (SHARE_GRACE_MS - 2000)
 #define DEFAULT_WORKER "worker"
 
 static const char *g_user = NULL;
@@ -167,6 +177,12 @@ static int g_submit_id = 1; /* 1 is the login; submits use 2.. */
 static int g_gen_ring_gen[GEN_RING];
 static unsigned char g_gen_ring_parent[GEN_RING][32];
 static int enqueue_front(const Share *s);
+/* PSA r2-3: the pool's prevJob as the miner sees it: the jobId the pool
+ * sent just before its latest one, and when the latest arrived (st_now_ns).
+ * Under g_job_mu. */
+static char g_pool_last_jobId[80];
+static char g_pool_prev_jobId[80];
+static uint64_t g_pool_prev_at_ns = 0;
 static _Atomic uint64_t g_dropped = 0;
 static uint64_t g_submitted = 0;
 static uint64_t g_round0 = 0;
@@ -813,6 +829,12 @@ static void apply_job(const char *line) {
     g_round0 = (uint64_t)atomic_load_explicit(&g_hashes, memory_order_relaxed);
   }
   pthread_mutex_lock(&g_job_mu);
+  /* PSA r2-3: mirror the pool's issueJob (prevJob = lastJob on a new jobId). */
+  if (strcmp(job.jobId, g_pool_last_jobId) != 0) {
+    snprintf(g_pool_prev_jobId, sizeof(g_pool_prev_jobId), "%s", g_pool_last_jobId);
+    snprintf(g_pool_last_jobId, sizeof(g_pool_last_jobId), "%s", job.jobId);
+    g_pool_prev_at_ns = st_now_ns();
+  }
   if (g_have_main && g_main_job.have
       && memcmp(g_main_job.header, job.header, SHEAR_HEADER_LEN) == 0) {
     g_main_job.share_bits = job.share_bits;
@@ -1333,6 +1355,8 @@ static void clear_jobs(void) {
   pthread_mutex_lock(&g_job_mu);
   g_have_main = 0;
   g_have_pending = 0;
+  g_pool_last_jobId[0] = g_pool_prev_jobId[0] = 0;
+  g_pool_prev_at_ns = 0;
   atomic_store_explicit(&g_job_seq, 0, memory_order_release);
   pthread_mutex_unlock(&g_job_mu);
   pthread_mutex_lock(&g_q_mu);
@@ -1354,17 +1378,37 @@ static int share_keep(double age_ms, int same_gen, int same_parent, int share_bi
   return age_ms < (double)SHARE_GRACE_MS;
 }
 
+/* PSA r2-3: a share whose parent is no longer the live one. The pool takes
+ * it only on its prevJob, within PREV_JOB_GRACE_MS of the job change. Keep
+ * gen N-1 (gen_back 1) when it is that prevJob, for PREV_PARENT_GRACE_MS from
+ * the change; drop N-2 and older, and anything the pool has moved past. */
+static int prev_parent_keep(int gen_back, int is_pool_prev, double since_change_ms) {
+  if (gen_back != 1 || !is_pool_prev) return 0;
+  return since_change_ms >= 0.0 && since_change_ms < (double)PREV_PARENT_GRACE_MS;
+}
+
 static int share_still_good(const Share *s) {
   int live_gen = atomic_load_explicit(&g_job_seq, memory_order_acquire);
   int live = atomic_load_explicit(&g_share_bits_live, memory_order_relaxed);
   int same_parent = 0;
+  int is_pool_prev = 0;
+  uint64_t prev_at = 0;
   pthread_mutex_lock(&g_job_mu);
-  if (g_have_main && g_main_job.have && g_gen_ring_gen[s->gen % GEN_RING] == s->gen) {
+  int have_main = g_have_main && g_main_job.have;
+  if (have_main && g_gen_ring_gen[s->gen % GEN_RING] == s->gen) {
     same_parent = memcmp(g_gen_ring_parent[s->gen % GEN_RING], g_main_job.header + 4, 32) == 0;
   }
+  if (g_pool_prev_jobId[0] && strcmp(s->jobId, g_pool_prev_jobId) == 0) {
+    is_pool_prev = 1;
+    prev_at = g_pool_prev_at_ns;
+  }
   pthread_mutex_unlock(&g_job_mu);
-  double age_ms = (double)(st_now_ns() - s->enq_ns) / 1e6;
-  return share_keep(age_ms, s->gen == live_gen, same_parent, s->share_bits, live);
+  uint64_t now = st_now_ns();
+  double age_ms = (double)(now - s->enq_ns) / 1e6;
+  if (share_keep(age_ms, s->gen == live_gen, same_parent, s->share_bits, live)) return 1;
+  if (same_parent || !have_main) return 0;
+  double since_ms = prev_at && now >= prev_at ? (double)(now - prev_at) / 1e6 : -1.0;
+  return prev_parent_keep(live_gen - s->gen, is_pool_prev, since_ms);
 }
 
 static void flush_shares(Conn *mainc) {
@@ -2131,6 +2175,12 @@ int main(int argc, char **argv) {
     if (strcmp(argv[i], "--share-keep-vector") == 0 && i + 5 < argc) {
       /* PR146 test vector: AGE_MS SAME_GEN SAME_PARENT SHARE_BITS LIVE_BITS -> keep|drop. */
       int k = share_keep(atof(argv[i + 1]), atoi(argv[i + 2]), atoi(argv[i + 3]), atoi(argv[i + 4]), atoi(argv[i + 5]));
+      printf("%s\n", k ? "keep" : "drop");
+      return 0;
+    }
+    if (strcmp(argv[i], "--prev-parent-vector") == 0 && i + 3 < argc) {
+      /* PSA r2-3 test vector: GEN_BACK IS_POOL_PREV SINCE_CHANGE_MS -> keep|drop. */
+      int k = prev_parent_keep(atoi(argv[i + 1]), atoi(argv[i + 2]), atof(argv[i + 3]));
       printf("%s\n", k ? "keep" : "drop");
       return 0;
     }
