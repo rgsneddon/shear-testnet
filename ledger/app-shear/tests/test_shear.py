@@ -55,11 +55,29 @@ def test_spend_pub_matches_host(backend):
     assert backend.exchange(0xE0, 0x10, 0, 0, path_bytes(PATH)).data == pub
 
 
-def test_view_key_export_needs_consent(backend, navigator):
+def test_view_key_export_needs_consent(backend, navigator, device):
     pub, view = expected()
     with backend.exchange_async(0xE0, 0x10, 1, 0, path_bytes(PATH)):
-        navigator.navigate([NavInsID.USE_CASE_CHOICE_CONFIRM], screen_change_after_last_instruction=False)
+        if device.is_nano:
+            navigator.navigate_until_text(NavInsID.RIGHT_CLICK, [NavInsID.BOTH_CLICK], "Export",
+                                          screen_change_after_last_instruction=False)
+        else:
+            navigator.navigate([NavInsID.USE_CASE_CHOICE_CONFIRM], screen_change_after_last_instruction=False)
     assert backend.last_async_response.data == pub + view
+
+
+def test_view_key_export_rejected(backend, navigator, device):
+    from ragger.error import ExceptionRAPDU
+    try:
+        with backend.exchange_async(0xE0, 0x10, 1, 0, path_bytes(PATH)):
+            if device.is_nano:
+                navigator.navigate_until_text(NavInsID.RIGHT_CLICK, [NavInsID.BOTH_CLICK], "Reject",
+                                              screen_change_after_last_instruction=False)
+            else:
+                navigator.navigate([NavInsID.USE_CASE_CHOICE_REJECT], screen_change_after_last_instruction=False)
+        assert False
+    except ExceptionRAPDU as e:
+        assert e.status == 0x6985
 
 
 def test_non_shear_path_is_refused(backend):
