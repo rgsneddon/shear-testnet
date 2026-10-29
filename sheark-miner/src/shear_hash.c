@@ -119,11 +119,6 @@ static void rx_wr(void) {
   pthread_rwlock_wrlock(&g_rx);
 }
 
-static void rx_rd(void) {
-  pthread_once(&g_rx_once, rx_lock_init);
-  pthread_rwlock_rdlock(&g_rx);
-}
-
 static void rx_un(void) {
   pthread_rwlock_unlock(&g_rx);
 }
@@ -823,21 +818,8 @@ int shear_bind(const unsigned char header[SHEAR_HEADER_LEN]) {
     tls->primed = 0;
     return 0;
   }
-  /* Every VM already points at the live pair (commit and rekey re-point
-   * them all under rx_wr); record the binding under the read lock. */
-  rx_rd();
-  if (g_vms[tid] && g_have && memcmp(g_k, k, 32) == 0) {
-    tls->vm = g_vms[tid];
-    tls->gen = atomic_load_explicit(&g_gen, memory_order_acquire);
-    tls->epoch = atomic_load_explicit(&g_epoch, memory_order_acquire);
-    memcpy(tls->k, k, 32);
-    tls->has_k = 1;
-    tls->primed = 0;
-    rx_un();
-    return 0;
-  }
-  rx_un();
-
+  /* Rebind (after a commit, rekey or first use) under the write lock, as
+   * before: hashers never take the read side (they bump g_in_hash). */
   rx_wr();
   if (!g_have || memcmp(g_k, k, 32) != 0) {
     if (g_have && atomic_load_explicit(&g_epoch_mode, memory_order_acquire)) {

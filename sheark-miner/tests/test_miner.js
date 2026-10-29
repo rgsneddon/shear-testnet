@@ -140,7 +140,11 @@ describe('ShearK-Miner', () => {
     assert.match(src, /g_dropped\+\+/);
     assert.match(src, /primed = 0;/);
     // PR146: the hit re-check uses the checked call (a failed call is not a digest).
-    assert.match(src, /shear_hash_checked\(primed_hdr, check\) != 0/);
+    // PSA k-change: the return code is kept so a key that is no longer live
+    // (SHEAR_KEY_NOT_LIVE) is dropped too; every non-zero code is a drop.
+    assert.match(src, /int check_rc = shear_hash_checked\(primed_hdr, check\);/);
+    assert.match(src, /if \(check_rc == SHEAR_KEY_NOT_LIVE\) \{[^}]*g_dropped\+\+;[^}]*continue;/);
+    assert.match(src, /if \(check_rc != 0\) \{\s*g_dropped\+\+;/);
     assert.match(src, /accepted=" C_GRN "%d"/);
     assert.match(src, /rejected=" C_RED "%d"/);
     assert.match(src, /C_RED "reject %s"/);
@@ -178,7 +182,8 @@ describe('ShearK-Miner', () => {
     assert.match(hashc, /randomx_calculate_hash_next/);
     assert.match(hashc, /RANDOMX_FLAG_FULL_MEM/);
     assert.match(hashc, /backend_matches_selftest_locked/);
-    assert.match(hashc, /if \(shear_bind\(header\) != 0\)/);
+    // PSA k-change: the bind code is passed on (-2: key not live), never hashed past.
+    assert.match(hashc, /int b = shear_bind\(header\);\s*if \(b != 0\) return b;/);
     assert.match(hashc, /if \(!g_have \|\| memcmp\(g_k, k, 32\) != 0\)/);
     assert.match(hashc, /RANDOMX_FLAG_LARGE_PAGES/);
     assert.match(hashc, /RANDOMX_FLAG_HARD_AES/);
