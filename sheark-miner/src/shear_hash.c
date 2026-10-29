@@ -75,16 +75,21 @@ static unsigned char g_prep_want_k[32];
 static unsigned char g_prep_k[32];
 static randomx_cache *g_prep_cache;
 static randomx_dataset *g_prep_dataset;
-/* PSA k-change review (P1).
+/* PSA k-change review (P1, P2).
  * - No stale pair any more. shear_commit_epoch drains the workers
  *   (exclusive_begin: g_gen++, then wait for every in-flight hash), points
  *   every VM at the new pair under rx_wr, and only then frees the old pair.
  *   No VM points at a freed cache or dataset, and no hash can be running on
  *   one: the old "stale" pair was freed by the next shear_prepare while
  *   workers were still hashing on it (SIGSEGV).
+ * - Latest wins: shear_prepare never joins a running prep on the caller's
+ *   thread (the miner's main loop). It records the wanted key and bumps
+ *   g_prep_want_seq; the prep thread checks that between dataset slices and
+ *   after the cache, and restarts on the newest key.
  * - Once the miner drives epochs (shear_prepare was called), a header whose
  *   key is not the live epoch's is refused (-2) instead of rekeying the live
  *   cache back to an old key; the worker waits for the job switch. */
+static atomic_uint g_prep_want_seq;
 static atomic_int g_epoch_mode;
 
 static void rx_lock_init(void) {
@@ -353,15 +358,37 @@ typedef struct {
   randomx_cache *cache;
   unsigned long start;
   unsigned long count;
+  int cancellable;
+  unsigned seq;
+  int cancelled;
 } DsSlice;
+
+/* A prep's dataset build stops between sub-slices once a newer key is
+ * wanted (PSA k-change P2): a superseded build costs at most one sub-slice. */
+#define DS_SUB_ITEMS 65536UL
+
+static int prep_superseded(int cancellable, unsigned seq) {
+  return cancellable && atomic_load_explicit(&g_prep_want_seq, memory_order_acquire) != seq;
+}
 
 static void *dataset_slice(void *arg) {
   DsSlice *s = (DsSlice *)arg;
-  randomx_init_dataset(s->ds, s->cache, s->start, s->count);
+  unsigned long done = 0;
+  while (done < s->count) {
+    if (prep_superseded(s->cancellable, s->seq)) {
+      s->cancelled = 1;
+      return NULL;
+    }
+    unsigned long n = s->count - done;
+    if (n > DS_SUB_ITEMS) n = DS_SUB_ITEMS;
+    randomx_init_dataset(s->ds, s->cache, s->start + done, n);
+    done += n;
+  }
   return NULL;
 }
 
-static int init_dataset_on(randomx_cache *cache, randomx_dataset **ds_out) {
+/* 0 built, -1 failed, -2 superseded (cancellable prep only). */
+static int init_dataset_on(randomx_cache *cache, randomx_dataset **ds_out, int cancellable, unsigned seq) {
   if (!(g_flags & RANDOMX_FLAG_FULL_MEM)) {
     if (ds_out) *ds_out = NULL;
     return 0;
@@ -388,11 +415,13 @@ static int init_dataset_on(randomx_cache *cache, randomx_dataset **ds_out) {
 #endif
   if (t < 1) t = 1;
   if (t == 1) {
-    randomx_init_dataset(ds, cache, 0, n);
-    return 0;
+    DsSlice one = {ds, cache, 0, n, cancellable, seq, 0};
+    dataset_slice(&one);
+    return one.cancelled ? -2 : 0;
   }
   pthread_t th[8];
   DsSlice sl[8];
+  int ran[8] = {0};
   if (t > 8) t = 8;
   unsigned long chunk = (n + (unsigned long)t - 1) / (unsigned long)t;
   int launched = 0;
@@ -405,15 +434,22 @@ static int init_dataset_on(randomx_cache *cache, randomx_dataset **ds_out) {
     sl[i].cache = cache;
     sl[i].start = start;
     sl[i].count = count;
+    sl[i].cancellable = cancellable;
+    sl[i].seq = seq;
+    sl[i].cancelled = 0;
+    ran[i] = 1;
     if (pthread_create(&th[launched], NULL, dataset_slice, &sl[i]) == 0) launched++;
-    else randomx_init_dataset(ds, cache, start, count);
+    else dataset_slice(&sl[i]);
   }
   for (int i = 0; i < launched; i++) pthread_join(th[i], NULL);
+  for (int i = 0; i < t; i++) {
+    if (ran[i] && sl[i].cancelled) return -2;
+  }
   return 0;
 }
 
 static int init_dataset_locked(void) {
-  return init_dataset_on(g_cache, &g_dataset);
+  return init_dataset_on(g_cache, &g_dataset, 0, 0);
 }
 
 static void release_rx_pair(randomx_cache **c, randomx_dataset **d) {
@@ -621,40 +657,51 @@ static void prep_join_locked(void) {
 static void *prep_thread(void *arg) {
   (void)arg;
   unsigned char k[32];
-  pthread_mutex_lock(&g_prep_mu);
-  memcpy(k, g_prep_want_k, 32);
-  pthread_mutex_unlock(&g_prep_mu);
-  randomx_cache *cache = alloc_cache(g_flags);
-  if (!cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
-    cache = alloc_cache((randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES));
-  }
-  if (!cache) {
-    atomic_store_explicit(&g_prep_state, 0, memory_order_release);
-    return NULL;
-  }
-  randomx_init_cache(cache, k, 32);
+  randomx_cache *cache = NULL;
   randomx_dataset *ds = NULL;
-  if (init_dataset_on(cache, &ds) != 0) {
-    randomx_release_cache(cache);
-    atomic_store_explicit(&g_prep_state, 0, memory_order_release);
-    return NULL;
-  }
-  pthread_mutex_lock(&g_prep_mu);
-  if (memcmp(k, g_prep_want_k, 32) != 0) {
+  for (;;) {
+    pthread_mutex_lock(&g_prep_mu);
+    memcpy(k, g_prep_want_k, 32);
+    unsigned seq = atomic_load_explicit(&g_prep_want_seq, memory_order_acquire);
     pthread_mutex_unlock(&g_prep_mu);
-    release_rx_pair(&cache, &ds);
-    atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+    if (!cache) {
+      cache = alloc_cache(g_flags);
+      if (!cache && (g_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+        cache = alloc_cache((randomx_flags)(g_flags & ~RANDOMX_FLAG_LARGE_PAGES));
+      }
+      if (!cache) {
+        atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+        return NULL;
+      }
+    }
+    randomx_init_cache(cache, k, 32);
+    if (prep_superseded(1, seq)) continue; /* a newer key: rebuild for it */
+    int rc = init_dataset_on(cache, &ds, 1, seq);
+    if (rc == -2) continue;
+    if (rc != 0) {
+      release_rx_pair(&cache, &ds);
+      atomic_store_explicit(&g_prep_state, 0, memory_order_release);
+      return NULL;
+    }
+    pthread_mutex_lock(&g_prep_mu);
+    if (atomic_load_explicit(&g_prep_want_seq, memory_order_acquire) != seq) {
+      pthread_mutex_unlock(&g_prep_mu);
+      continue;
+    }
+    release_rx_pair(&g_prep_cache, &g_prep_dataset);
+    g_prep_cache = cache;
+    g_prep_dataset = ds;
+    memcpy(g_prep_k, k, 32);
+    atomic_store_explicit(&g_prep_state, 2, memory_order_release);
+    pthread_mutex_unlock(&g_prep_mu);
     return NULL;
   }
-  release_rx_pair(&g_prep_cache, &g_prep_dataset);
-  g_prep_cache = cache;
-  g_prep_dataset = ds;
-  memcpy(g_prep_k, k, 32);
-  atomic_store_explicit(&g_prep_state, 2, memory_order_release);
-  pthread_mutex_unlock(&g_prep_mu);
-  return NULL;
 }
 
+/* Called from the miner's main loop on each new-key job. It never waits on
+ * a running prep (PSA k-change P2): a newer key is recorded and the prep
+ * thread restarts on it. A pair that is ready for an older key was never
+ * bound to a VM, so it is freed here at once. */
 int shear_prepare(const unsigned char header[SHEAR_HEADER_LEN]) {
   unsigned char k[32];
   shear_key(header, k);
@@ -666,12 +713,19 @@ int shear_prepare(const unsigned char header[SHEAR_HEADER_LEN]) {
     pthread_mutex_unlock(&g_prep_mu);
     return 0;
   }
-  if (st == 1 && memcmp(g_prep_want_k, k, 32) == 0) {
+  if (st == 1) {
+    if (memcmp(g_prep_want_k, k, 32) != 0) {
+      memcpy(g_prep_want_k, k, 32);
+      atomic_fetch_add_explicit(&g_prep_want_seq, 1, memory_order_acq_rel);
+    }
     pthread_mutex_unlock(&g_prep_mu);
     return 1;
   }
   memcpy(g_prep_want_k, k, 32);
-  if (st == 1 || g_prep_join) prep_join_locked();
+  atomic_fetch_add_explicit(&g_prep_want_seq, 1, memory_order_acq_rel);
+  /* State is not 1, so the last prep thread has finished: no wait here. */
+  prep_join_locked();
+  release_rx_pair(&g_prep_cache, &g_prep_dataset);
   atomic_store_explicit(&g_prep_state, 1, memory_order_release);
   if (pthread_create(&g_prep_th, NULL, prep_thread, NULL) != 0) {
     atomic_store_explicit(&g_prep_state, 0, memory_order_release);

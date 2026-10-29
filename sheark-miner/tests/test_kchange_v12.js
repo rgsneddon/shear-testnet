@@ -84,17 +84,25 @@ async function run({ backend = 'jit', threads = 4, delay = 'live', after = 'live
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const child = spawn(bin, ['--backend', backend, '--pool', `127.0.0.1:${server.address().port}`, '--notls', '--user', 'rig1',
     '--blu', MINING, '--threads', String(threads), '--no-tune'], { stdio: ['ignore', 'pipe', 'pipe'] });
-  const onData = (d) => {
-    const s = String(d);
-    ev.out += s;
-    for (const l of s.split('\n')) {
-      if (/^hashes=/.test(l)) ev.stats.push(T());
-      const m = /^job (\S+) /.exec(l);
-      if (m && ev.jobs[m[1]] === undefined) ev.jobs[m[1]] = T();
-    }
+  // Whole lines only, per stream: a chunk can end mid-line.
+  const lineReader = () => {
+    let part = '';
+    return (d) => {
+      const s = String(d);
+      ev.out += s;
+      part += s;
+      const lines = part.split('\n');
+      part = lines.pop();
+      for (const l of lines) onLine(l);
+    };
   };
-  child.stdout.on('data', onData);
-  child.stderr.on('data', onData);
+  const onLine = (l) => {
+    if (/^hashes=/.test(l)) ev.stats.push(T());
+    const m = /^job (\S+) /.exec(l);
+    if (m && ev.jobs[m[1]] === undefined) ev.jobs[m[1]] = T();
+  };
+  child.stdout.on('data', lineReader());
+  child.stderr.on('data', lineReader());
   const exited = new Promise((r) => child.on('exit', (code, signal) => { ev.exit = { code, signal, at: T() }; r(); }));
   const send = (j) => { ev.sent[j.jobId] = T(); sockRef.write(`${JSON.stringify({ method: 'job', params: j, ...j })}\n`); };
   try {
@@ -162,6 +170,39 @@ describe('PSA k-change P1: no use-after-free when a new key follows a key change
   }
 });
 
+describe('PSA k-change P2: the main loop keeps servicing the pool while a prep runs', { skip: !linux }, () => {
+  for (const backend of ['jit-full', 'jit']) {
+    for (const threads of [4, NPROC]) {
+      for (const delay of [20, 50, 100, 500]) {
+        it(`${backend} x${threads}: D ${delay} ms after C is sent`, async () => {
+const ev = await run({ backend, threads, delay, after: 'send', bits: 4 });
+          alive(ev, `${backend} x${threads} ${delay}`);
+          assert.ok(ev.jobs.D0 !== undefined, `job D never went live\n${ev.out.slice(-800)}`);
+          const from = ev.sent.C;
+          const to = ev.jobs.D0 + 1000;
+          const gap = maxGap(ev.stats, from, to);
+          assert.ok(gap <= 1200, `main-loop stats gap ${gap} ms between C and D going live`);
+          // Submits continue through the prep. Share bits are clamped to the
+          // stamp floor, so light-mode (jit) hashing finds only a few shares a
+          // second and their gaps are random: the bound is 1.2 s or 8 mean
+          // gaps measured on job A before C, whichever is larger. A main-loop
+          // stall is the stats gap above.
+          const base = ev.submits.map(([t]) => t).filter((t) => t > ev.jobs.A + 300 && t < from);
+          const mean = (from - ev.jobs.A - 300) / Math.max(1, base.length);
+          const bound = Math.max(1200, 8 * mean);
+          if (mean <= 250) assert.ok(ev.submits.some(([t]) => t > from && t <= ev.jobs.D0 + 1000), 'no submit during the prep');
+          const sub = maxGap(ev.submits.map(([t]) => t), from, ev.jobs.D0);
+          assert.ok(sub <= bound, `submit gap ${sub} ms during the prep (bound ${bound.toFixed(0)} ms, mean ${mean.toFixed(0)} ms on A)`);
+          const prepC = (ev.jobs.C ?? ev.jobs.D0) - ev.sent.C;
+          const dLive = ev.jobs.D0 - ev.sent.D0;
+          // One prep of D (plus at most the slice of C's prep it cancels), never C's whole prep and then D's.
+          assert.ok(ev.jobs.C === undefined || dLive < 2 * prepC, `job D live ${dLive} ms after D; C's prep ${prepC} ms`);
+        });
+      }
+    }
+  }
+});
+
 // The C harness: workers check every digest against the golden corpus while
 // the main thread changes key at 0/1/5/20/100 ms and one and two hash
 // durations after each commit, with and without a second key mid-prep.
@@ -178,7 +219,7 @@ function buildHarness(extra = []) {
   return out;
 }
 
-describe('PSA k-change: key-change harness (golden digests, no crash, RSS bounded)', { skip: !linux }, () => {
+describe('PSA k-change: key-change harness (golden digests, prepare never blocks, RSS bounded)', { skip: !linux }, () => {
   const golden = path.join(root, 'bench', 'golden_v12.txt');
   let exe;
   const runH = (backend, threads, changes, env = {}) => {
@@ -196,6 +237,7 @@ describe('PSA k-change: key-change harness (golden digests, no crash, RSS bounde
         const h = runH(backend, threads, changes, { KC_MID: String(mid) });
         assert.equal(h.bad, 0, h.line);
         assert.ok(h.ok > 0, h.line);
+        assert.ok(h.max_prepare_ms < 100, `shear_prepare blocked the caller ${h.max_prepare_ms} ms: ${h.line}`);
         // At most the live pair and one prep pair (plus VMs): no growth past the 10th change.
         assert.ok(h.rss_base < 0 || h.rss_max <= h.rss_base + 160, h.line);
       });
