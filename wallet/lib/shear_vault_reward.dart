@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -227,6 +229,98 @@ Uint8List _lockNote(int amount, Uint8List owner, Uint8List blind, int unlock) {
   return _concat([pub, mixed]);
 }
 
+/// The 64-byte lock note the node appends. Same bytes as [_lockNote].
+Uint8List vaultLockNoteBytes(int amount, Uint8List owner, Uint8List blind, int unlock) =>
+    _lockNote(amount, owner, blind, unlock);
+
+int vaultLockNoteIndex(List<Uint8List> notes, Uint8List mine) {
+  if (mine.length != 64) return -1;
+  for (var i = 0; i < notes.length; i++) {
+    final note = notes[i];
+    if (note.length != mine.length) continue;
+    if (_bytesEq(note, mine)) return i;
+  }
+  return -1;
+}
+
+/// One FS-1 tree of ordered 64-byte lock notes. Same append as the node builder.
+({int handle, Uint8List root})? vaultLockTree(Fs1Native fs1, List<Uint8List> notes) {
+  final handle = fs1.treeNew();
+  if (handle == 0) return null;
+  for (final note in notes) {
+    if (note.length != 64) {
+      fs1.treeFree(handle);
+      return null;
+    }
+  }
+  if (notes.isNotEmpty && !fs1.treeAppend(handle, _concat(notes))) {
+    fs1.treeFree(handle);
+    return null;
+  }
+  if (notes.isEmpty) return (handle: handle, root: Uint8List(0));
+  final root = fs1.treeRoot(handle);
+  if (root == null || root.length != 32) {
+    fs1.treeFree(handle);
+    return null;
+  }
+  return (handle: handle, root: root);
+}
+
+class _RewardLeaf {
+  const _RewardLeaf(this.note, this.blind, this.owner, this.amount, this.unlock);
+  final Uint8List note;
+  final Uint8List blind;
+  final Uint8List owner;
+  final int amount;
+  final int unlock;
+}
+
+_RewardLeaf _rewardLeaf(Map<String, dynamic> lock) {
+  final amount = (lock['amount'] as num).toInt();
+  if (amount != kPiSheNanos) throw StateError('stake_reward');
+  final index = (lock['index'] as num?)?.toInt() ?? 0;
+  final seed = _asBytes(lock['seed']);
+  var owner = _asBytes(lock['scalar']);
+  var blind = _asBytes(lock['blind']);
+  var unlock = kVaultUnlockOpen;
+  if (lock['unlockEpoch'] != null) unlock = (lock['unlockEpoch'] as num).toInt();
+  final ownerSeed = seed.length == 32 ? (reservePortalSpendSeed(seed, index) ?? seed) : null;
+  if (owner.length != 32) {
+    if (ownerSeed == null) owner = scalarBytes(randomScalar());
+    else owner = vaultLockOwnerBytes(ownerSeed, index);
+  }
+  if (blind.length != 32) {
+    if (ownerSeed == null) blind = scalarBytes(randomScalar());
+    else blind = vaultLockBlindBytes(ownerSeed, index, amount, 0);
+  }
+  if (lock['unlockEpoch'] == null && ownerSeed != null) {
+    final epoch = (lock['lockEpoch'] as num?)?.toInt() ?? 0;
+    unlock = consensusUnlockPeriod(epoch);
+  }
+  return _RewardLeaf(_lockNote(amount, owner, blind, unlock), blind, owner, amount, unlock);
+}
+
+/// Note bytes a claim opening derives. Used to find that leaf in the live list.
+Uint8List vaultLockOpeningNote(Map<String, dynamic> lock) => _rewardLeaf(lock).note;
+
+bool _sameRoot(Uint8List root, Uint8List chain) {
+  if (root.length != 32 || chain.length != 32) return false;
+  for (var i = 0; i < 32; i++) {
+    if (root[i] != chain[i]) return false;
+  }
+  return true;
+}
+
+Map<String, dynamic>? _openingLock(List<Map<String, dynamic>> locks, int index) {
+  if (locks.isEmpty) return null;
+  if (index >= 0 && index < locks.length) {
+    final at = locks[index];
+    if (at['scalar'] != null || at['seed'] != null || at['blind'] != null) return at;
+  }
+  if (locks.length == 1) return locks[0];
+  return null;
+}
+
 /// gap = unlock − period − 1, hidden in a commitment. gap·G and gap·U stay off the blob.
 Map<String, dynamic> _proveGapCommit(int unlock, int epoch, AdmitNative admit) {
   final gap = unlock - epoch - 1;
@@ -284,6 +378,8 @@ Map<String, Uint8List> _proveGapEq({
 Map<String, dynamic> proveVaultLockReward({
   required List<Map<String, dynamic>> locks,
   int which = 0,
+  List<Uint8List>? notes,
+  Uint8List? chainRoot,
   required int rootEpoch,
   required int earnEpoch,
   required int bps,
@@ -292,52 +388,54 @@ Map<String, dynamic> proveVaultLockReward({
   required Uint8List dest20,
   String magic = kBookMagic,
 }) {
+  requireRangeOffUi();
   final fs1 = Fs1Native.tryLoad();
   if (fs1 == null) throw StateError('fs1_prover_unavailable');
   if (rootEpoch != earnEpoch) throw StateError('stake_reward');
-  if (locks.isEmpty || which < 0 || which >= locks.length) throw StateError('unsigned');
+  if (locks.isEmpty) throw StateError('unsigned');
   if (dest20.length != 20) throw StateError('unsigned');
-  final notes = <Uint8List>[];
-  final blinds = <Uint8List>[];
-  final owners = <Uint8List>[];
-  final amounts = <int>[];
-  final unlocks = <int>[];
-  for (final lock in locks) {
-    final amount = (lock['amount'] as num).toInt();
-    if (amount != kPiSheNanos) throw StateError('stake_reward');
-    final index = (lock['index'] as num?)?.toInt() ?? 0;
-    final lockMs = (lock['lockMs'] as num?)?.toInt() ?? 0;
-    final seed = _asBytes(lock['seed']);
-    var owner = _asBytes(lock['scalar']);
-    var blind = _asBytes(lock['blind']);
-    var unlock = kVaultUnlockOpen;
-    if (lock['unlockEpoch'] != null) unlock = (lock['unlockEpoch'] as num).toInt();
-    final ownerSeed = seed.length == 32 ? (reservePortalSpendSeed(seed, index) ?? seed) : null;
-    if (owner.length != 32) {
-      if (ownerSeed == null) owner = scalarBytes(randomScalar());
-      else owner = vaultLockOwnerBytes(ownerSeed, index);
+  final listed = notes != null;
+  late final List<Uint8List> treeNotes;
+  late final Uint8List leafOwner;
+  late final Uint8List leafBlind;
+  late final int leafAmount;
+  late final int leafUnlock;
+  late final int proveAt;
+  if (listed) {
+    if (chainRoot == null || chainRoot.length != 32) throw StateError('vault_root');
+    proveAt = which;
+    if (proveAt < 0 || proveAt >= notes.length) throw StateError('unsigned');
+    final lock = _openingLock(locks, proveAt);
+    if (lock == null) throw StateError('unsigned');
+    final row = _rewardLeaf(lock);
+    if (!_bytesEq(row.note, notes[proveAt])) throw StateError('vault_root');
+    treeNotes = notes;
+    leafOwner = row.owner;
+    leafBlind = row.blind;
+    leafAmount = row.amount;
+    leafUnlock = row.unlock;
+  } else {
+    if (which < 0 || which >= locks.length) throw StateError('unsigned');
+    final rows = <_RewardLeaf>[];
+    for (final lock in locks) {
+      rows.add(_rewardLeaf(lock));
     }
-    if (blind.length != 32) {
-      if (ownerSeed == null) blind = scalarBytes(randomScalar());
-      else blind = vaultLockBlindBytes(ownerSeed, index, amount, 0);
-    }
-    if (lock['unlockEpoch'] == null && ownerSeed != null) {
-      final epoch = (lock['lockEpoch'] as num?)?.toInt() ?? 0;
-      unlock = consensusUnlockPeriod(epoch);
-    }
-    notes.add(_lockNote(amount, owner, blind, unlock));
-    blinds.add(blind);
-    owners.add(owner);
-    amounts.add(amount);
-    unlocks.add(unlock);
+    treeNotes = [for (final row in rows) row.note];
+    final row = rows[which];
+    leafOwner = row.owner;
+    leafBlind = row.blind;
+    leafAmount = row.amount;
+    leafUnlock = row.unlock;
+    proveAt = which;
   }
-  final handle = fs1.treeNew();
-  if (handle == 0) throw StateError('fs1_prover_unavailable');
+  final built = vaultLockTree(fs1, treeNotes);
+  if (built == null || built.root.length != 32) throw StateError('fs1_prover_unavailable');
+  final handle = built.handle;
   try {
-    final packed = _concat(notes);
-    if (!fs1.treeAppend(handle, packed)) throw StateError('fs1_prover_unavailable');
-    final root = fs1.treeRoot(handle);
-    if (root == null || root.length != 32) throw StateError('fs1_prover_unavailable');
+    final root = built.root;
+    if (listed || chainRoot != null) {
+      if (chainRoot == null || !_sameRoot(root, chainRoot)) throw StateError('vault_root');
+    }
     // Callers that pass the epoch length twice ask for one period.
     // An explicit hold that is not that length is one interval, in blocks.
     // rate_e is the whole-epoch total. The packed span is epoch blocks.
@@ -349,10 +447,10 @@ Map<String, dynamic> proveVaultLockReward({
       if (remainMs > blocks) throw StateError('stake_reward');
       covered = remainMs;
     }
-    final unlock = unlocks[which];
+    final unlock = leafUnlock;
     final epoch = earnEpoch;
     if (epoch >= unlock) throw StateError('stake_reward');
-    final amount = BigInt.from(amounts[which]);
+    final amount = BigInt.from(leafAmount);
     final rate = BigInt.from(bps);
     final bound = BigInt.one << 110;
     final product = amount * rate * BigInt.from(covered);
@@ -366,7 +464,7 @@ Map<String, dynamic> proveVaultLockReward({
     final admit = AdmitNative.tryLoad();
     if (admit == null) throw StateError('admit_native_required');
     final epochEl = hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst));
-    final nullP = pointBytes(mulEl(epochEl, scalarFromBytes(owners[which])));
+    final nullP = pointBytes(mulEl(epochEl, scalarFromBytes(leafOwner)));
     final nullifierPre = _sha256(_concat([utf8Bytes(kVaultNullPrf), nullP]));
     final noteR = randomScalar();
     final noteCommit = noteCommitOfDest20(dest20);
@@ -408,13 +506,13 @@ Map<String, dynamic> proveVaultLockReward({
       preimage,
     ]));
     final epochBase = pointBytes(hashToRistretto(_u64(epoch), utf8Bytes(kVaultNullEpochDst)));
-    final proved = fs1.proveUnlinked(handle, [which], [owners[which]], digest, epoch, epochBase);
+    final proved = fs1.proveUnlinked(handle, [proveAt], [leafOwner], digest, epoch, epochBase);
     if (proved == null || proved.records.isEmpty || proved.link.length < 96) throw StateError('fs1_prover_unavailable');
     final record = proved.records.first;
     if (record.length != kFs1RecordBytes || record[0] != kFs1Wire) throw StateError('fs1_prover_unavailable');
     final cTilde = Uint8List.sublistView(record, 33, 65);
     final t = proved.t.first;
-    final openS = scalarAdd(scalarFromBytes(blinds[which]), scalarFromBytes(t));
+    final openS = scalarAdd(scalarFromBytes(leafBlind), scalarFromBytes(t));
     final openP = subEl(
       subEl(pointFrom(cTilde), mulG(scalarFromBigInt(BigInt.from(kPiSheNanos)))),
       mulEl(vaultUnlockBase(), scalarFromU64(BigInt.from(epoch + 1))),
@@ -444,8 +542,8 @@ Map<String, dynamic> proveVaultLockReward({
     final linkSr = Uint8List.sublistView(proved.link, 32, 64);
     final linkN = Uint8List.sublistView(proved.link, 64, 96);
     final stable = pointBytes(mulEl(
-      hashToRistretto(pointBytes(admitPub(scalarFromBytes(owners[which]))), utf8Bytes('shear-admit-Hp')),
-      scalarFromBytes(owners[which]),
+      hashToRistretto(pointBytes(admitPub(scalarFromBytes(leafOwner))), utf8Bytes('shear-admit-Hp')),
+      scalarFromBytes(leafOwner),
     ));
     final tag = Uint8List.sublistView(record, 1, 33);
     if (_bytesEq(stable, tag)) throw StateError('stake_reward');
@@ -504,7 +602,7 @@ Map<String, dynamic> proveVaultLockReward({
   }
 }
 
-/// Isolate entry. The UI button sends this through `compute`.
+/// Isolate entry. Notes and the chain root are the one live-list read.
 Map<String, dynamic> proveVaultLockRewardWire(Map<String, dynamic> input) {
   final raw = input['locks'];
   if (raw is! List) throw StateError('unsigned');
@@ -512,9 +610,18 @@ Map<String, dynamic> proveVaultLockRewardWire(Map<String, dynamic> input) {
     for (final row in raw) Map<String, dynamic>.from(row as Map),
   ];
   final dest20 = _asBytes(input['dest20']);
+  final notes = input.containsKey('notes') ? _noteList(input['notes']) : null;
+  if (input.containsKey('notes') && notes == null) throw StateError('vault_root');
+  Uint8List? chainRoot;
+  if (input.containsKey('chainRoot')) {
+    chainRoot = _b32(input['chainRoot']);
+    if (chainRoot == null) throw StateError('vault_root');
+  }
   return proveVaultLockReward(
     locks: locks,
     which: (input['which'] as num?)?.toInt() ?? 0,
+    notes: notes,
+    chainRoot: chainRoot,
     rootEpoch: (input['rootEpoch'] as num).toInt(),
     earnEpoch: (input['earnEpoch'] as num).toInt(),
     bps: (input['bps'] as num).toInt(),
@@ -523,6 +630,58 @@ Map<String, dynamic> proveVaultLockRewardWire(Map<String, dynamic> input) {
     dest20: dest20,
     magic: (input['magic'] as String?) ?? kBookMagic,
   );
+}
+
+/// How many vault proves [Isolate.run] has returned to this isolate.
+int debugVaultProveIsolateRuns = 0;
+
+/// How many vault proves the flutter_tester shortcut ran on the caller.
+int debugVaultProveOnCaller = 0;
+
+/// Isolate stamp of the last vault prove.
+String debugVaultProveStamp = '';
+
+/// flutter_tester does not finish [Isolate.run] inside one pumped frame, so
+/// tests prove on the caller. Production leaves FLUTTER_TEST unset and proves
+/// off the UI isolate. [SHEAR_VAULT_PROVE_OFF_UI] forces that path.
+bool vaultProveOnCaller() =>
+    Platform.environment['SHEAR_VAULT_PROVE_OFF_UI'] != '1' &&
+    Platform.environment['FLUTTER_TEST'] == 'true';
+
+Map<String, dynamic> proveVaultLockRewardStamped(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  try {
+    final out = proveVaultLockRewardWire(input);
+    out['isolateStamp'] = stamp;
+    return out;
+  } on StateError catch (e) {
+    return {'ok': false, 'error': e.message, 'isolateStamp': stamp};
+  }
+}
+
+Map<String, dynamic> _vaultProveTaken(Map<String, dynamic> out) {
+  debugVaultProveStamp = out['isolateStamp']?.toString() ?? '';
+  final err = out['error'];
+  if (out['ok'] != true && err != null) throw StateError(err.toString());
+  return out;
+}
+
+/// Claim or roll prove. Production runs in [Isolate.run].
+Future<Map<String, dynamic>> proveVaultLockOffUi(Map<String, dynamic> input) {
+  if (vaultProveOnCaller()) {
+    debugVaultProveOnCaller += 1;
+    try {
+      return Future<Map<String, dynamic>>.value(
+        _vaultProveTaken(proveVaultLockRewardStamped(input)),
+      );
+    } on StateError catch (e) {
+      return Future<Map<String, dynamic>>.error(e);
+    }
+  }
+  return Isolate.run(() => proveVaultLockRewardStamped(input)).then((out) {
+    debugVaultProveIsolateRuns += 1;
+    return _vaultProveTaken(out);
+  });
 }
 
 const String kVoteNullDst = 'shear-vote-null-v1';
@@ -547,6 +706,41 @@ Uint8List? _b32(Object? v) {
     return out;
   }
   return null;
+}
+
+/// 64-byte notes, or 128 hex chars. Null when any leaf is not a note.
+List<Uint8List>? _noteList(Object? raw) {
+  if (raw is! List) return null;
+  final out = <Uint8List>[];
+  for (final row in raw) {
+    if (row is Uint8List && row.length == 64) {
+      out.add(row);
+      continue;
+    }
+    if (row is List<int> && row.length == 64) {
+      out.add(Uint8List.fromList(row));
+      continue;
+    }
+    if (row is String) {
+      final hex = row.startsWith('0x') || row.startsWith('0X') ? row.substring(2) : row;
+      if (hex.length != 128) return null;
+      final note = Uint8List(64);
+      var ok = true;
+      for (var i = 0; i < 64; i++) {
+        final byte = int.tryParse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+        if (byte == null) {
+          ok = false;
+          break;
+        }
+        note[i] = byte;
+      }
+      if (!ok) return null;
+      out.add(note);
+      continue;
+    }
+    return null;
+  }
+  return out;
 }
 
 Uint8List _maskVoteFs1(Uint8List fs1, Uint8List linkN) {
@@ -581,12 +775,86 @@ bool _contains(Uint8List hay, Uint8List needle) {
   return false;
 }
 
+class _VoteLeaf {
+  const _VoteLeaf(this.note, this.owner);
+  final Uint8List note;
+  final Uint8List owner;
+}
+
+/// Same note the vote prover derives. Seed locks are a claim opening, not this.
+_VoteLeaf? _voteLeaf(Map<String, dynamic> lock) {
+  final amount = (lock['amount'] as num?)?.toInt() ?? 0;
+  if (amount != kPiSheNanos) return null;
+  final owner = _b32(lock['scalar']);
+  final blind = _b32(lock['blind']);
+  if (owner == null || blind == null) return null;
+  var unlock = kVaultUnlockOpen;
+  if (lock['unlockEpoch'] != null) {
+    unlock = (lock['unlockEpoch'] as num).toInt();
+  } else if (lock['unlock'] != null) {
+    unlock = (lock['unlock'] as num).toInt();
+  }
+  if (unlock < 0) return null;
+  try {
+    return _VoteLeaf(_lockNote(amount, owner, blind, unlock), owner);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Note bytes a vote opening derives. Used to find that leaf in the live list.
+Uint8List? vaultVoteLeafNote(Map<String, dynamic> lock) => _voteLeaf(lock)?.note;
+
+/// One private read of the live lock notes and the chain root.
+class VaultLockCensus {
+  VaultLockCensus(this.notes, this.root);
+  final List<Uint8List> notes;
+  final Uint8List root;
+}
+
+/// Calls [read] once. Extra fields, including spendable, are ignored.
+Future<VaultLockCensus> readVaultLockCensus(
+  Future<Map<String, dynamic>> Function() read,
+) async {
+  final body = await read();
+  if (body['ok'] == false) throw StateError('vault_root');
+  final notes = _noteList(body['notes']);
+  final root = _b32(body['root']);
+  if (notes == null || root == null) throw StateError('vault_root');
+  return VaultLockCensus(notes, root);
+}
+
+/// Point a one-lock claim at that lock's index in [census]. The opening stays one lock.
+Map<String, dynamic> attachVaultLockCensus(
+  Map<String, dynamic> input,
+  VaultLockCensus census,
+) {
+  final raw = input['locks'];
+  if (raw is! List || raw.length != 1 || raw.single is! Map) {
+    throw StateError('vault_root');
+  }
+  final lock = Map<String, dynamic>.from(raw.single as Map);
+  final index = vaultLockNoteIndex(census.notes, vaultLockOpeningNote(lock));
+  if (index < 0) throw StateError('vault_root');
+  return {
+    ...input,
+    'locks': [lock],
+    'which': index,
+    'notes': census.notes,
+    'chainRoot': census.root,
+  };
+}
+
 /// Vote-only proof. Same layout as `proveLeafVote` in crypto/vault_reward_fs1.js:
 /// 0x56 || u64 epoch || N || linkAnn || linkSr || u32 fs1Len || masked fs1 || record || dest20.
 /// A missing native library returns null. The raw leaf commit is not in the blob.
+/// [notes] is the node's full ordered live list. A chain root that is not that
+/// tree's root returns null and does not emit a proof.
 Map<String, Object?>? proveLeafVote({
   required List<Map<String, dynamic>> locks,
   int which = 0,
+  List<Uint8List>? notes,
+  Uint8List? chainRoot,
   required int epoch,
   required int choice,
   required int seq,
@@ -594,37 +862,56 @@ Map<String, Object?>? proveLeafVote({
   Uint8List? dest20,
   String magic = kBookMagic,
 }) {
+  requireRangeOffUi();
   final fs1 = Fs1Native.tryLoad();
   if (fs1 == null) return null;
   if (epoch < 0 || proposalId.length != 32) return null;
   if (choice != -1 && choice != 0 && choice != 1) return null;
   if (seq < 1 || seq > 8) return null;
-  if (locks.isEmpty || which < 0 || which >= locks.length) return null;
-  final notes = <Uint8List>[];
-  final owners = <Uint8List>[];
-  for (final lock in locks) {
-    final amount = (lock['amount'] as num?)?.toInt() ?? 0;
-    if (amount != kPiSheNanos) return null;
-    final owner = _b32(lock['scalar']);
-    final blind = _b32(lock['blind']);
-    if (owner == null || blind == null) return null;
-    var unlock = kVaultUnlockOpen;
-    if (lock['unlockEpoch'] != null) unlock = (lock['unlockEpoch'] as num).toInt();
-    else if (lock['unlock'] != null) unlock = (lock['unlock'] as num).toInt();
-    if (unlock < 0) return null;
-    try {
-      notes.add(_lockNote(amount, owner, blind, unlock));
-    } catch (_) {
-      return null;
+  final listed = notes != null;
+  late final List<Uint8List> treeNotes;
+  late final Uint8List leafOwner;
+  late final Uint8List leafNote;
+  late final int proveAt;
+  if (listed) {
+    if (chainRoot == null || chainRoot.length != 32) return null;
+    proveAt = which;
+    if (proveAt < 0 || proveAt >= notes.length) return null;
+    final lock = _openingLock(locks, proveAt);
+    if (lock == null) return null;
+    final row = _voteLeaf(lock);
+    if (row == null || !_bytesEq(row.note, notes[proveAt])) return null;
+    treeNotes = notes;
+    leafOwner = row.owner;
+    leafNote = row.note;
+  } else {
+    if (locks.isEmpty || which < 0 || which >= locks.length) return null;
+    final builtNotes = <Uint8List>[];
+    Uint8List? owner;
+    Uint8List? note;
+    for (var i = 0; i < locks.length; i++) {
+      final row = _voteLeaf(locks[i]);
+      if (row == null) return null;
+      builtNotes.add(row.note);
+      if (i == which) {
+        owner = row.owner;
+        note = row.note;
+      }
     }
-    owners.add(owner);
+    if (owner == null || note == null) return null;
+    treeNotes = builtNotes;
+    leafOwner = owner;
+    leafNote = note;
+    proveAt = which;
   }
-  final handle = fs1.treeNew();
-  if (handle == 0) return null;
+  final built = vaultLockTree(fs1, treeNotes);
+  if (built == null || built.root.length != 32) return null;
+  final handle = built.handle;
   try {
-    if (!fs1.treeAppend(handle, _concat(notes))) return null;
-    final root = fs1.treeRoot(handle);
-    if (root == null || root.length != 32) return null;
+    final root = built.root;
+    if (listed || chainRoot != null) {
+      if (chainRoot == null || !_sameRoot(root, chainRoot)) return null;
+    }
     final dest = dest20 != null && dest20.length == 20 ? Uint8List.fromList(dest20) : randomBytes(20);
     final choiceByte = choice < 0 ? 0xff : choice;
     final digest = _sha256(_concat([
@@ -638,16 +925,16 @@ Map<String, Object?>? proveLeafVote({
       dest,
     ]));
     final epochBase = pointBytes(hashToRistretto(_concat([_u64(epoch), proposalId]), utf8Bytes(kVoteNullDst)));
-    final proved = fs1.proveUnlinked(handle, [which], [owners[which]], digest, epoch, epochBase);
+    final proved = fs1.proveUnlinked(handle, [proveAt], [leafOwner], digest, epoch, epochBase);
     if (proved == null || proved.records.isEmpty || proved.link.length < 96) return null;
     final record = proved.records.first;
     if (record.length != kFs1RecordBytes || record[0] != kFs1Wire) return null;
     final linkAnn = Uint8List.sublistView(proved.link, 0, 32);
     final linkSr = Uint8List.sublistView(proved.link, 32, 64);
     final linkN = Uint8List.sublistView(proved.link, 64, 96);
-    final expectN = pointBytes(mulEl(pointFrom(epochBase), scalarFromBytes(owners[which])));
+    final expectN = pointBytes(mulEl(pointFrom(epochBase), scalarFromBytes(leafOwner)));
     if (!_bytesEq(expectN, linkN)) return null;
-    final stable = pointBytes(mulEl(hp(admitPub(scalarFromBytes(owners[which]))), scalarFromBytes(owners[which])));
+    final stable = pointBytes(mulEl(hp(admitPub(scalarFromBytes(leafOwner))), scalarFromBytes(leafOwner)));
     if (_bytesEq(stable, Uint8List.sublistView(record, 1, 33))) return null;
     final masked = _maskVoteFs1(proved.fs1, linkN);
     final blob = _concat([
@@ -661,7 +948,7 @@ Map<String, Object?>? proveLeafVote({
       record,
       dest,
     ]);
-    final leaf = notes[which];
+    final leaf = leafNote;
     final commit = Uint8List.sublistView(leaf, 32, 64);
     if (_contains(blob, leaf) || _contains(blob, commit)) return null;
     final admit = AdmitNative.tryLoad();
@@ -692,6 +979,63 @@ Map<String, Object?>? proveLeafVote({
   } finally {
     fs1.treeFree(handle);
   }
+}
+
+Map<String, dynamic> proveLeafVoteWire(Map<String, dynamic> input) {
+  final stamp = identityHashCode(Isolate.current).toString();
+  try {
+    final raw = input['locks'];
+    if (raw is! List) throw StateError('unsigned');
+    final locks = <Map<String, dynamic>>[
+      for (final row in raw) Map<String, dynamic>.from(row as Map),
+    ];
+    final notes = input.containsKey('notes') ? _noteList(input['notes']) : null;
+    if (input.containsKey('notes') && notes == null) throw StateError('vault_root');
+    Uint8List? chainRoot;
+    if (input.containsKey('chainRoot')) {
+      chainRoot = _b32(input['chainRoot']);
+      if (chainRoot == null) throw StateError('vault_root');
+    }
+    final proposal = _b32(input['proposalId']);
+    if (proposal == null) throw StateError('unsigned');
+    final dest = input['dest20'];
+    final proved = proveLeafVote(
+      locks: locks,
+      which: (input['which'] as num?)?.toInt() ?? 0,
+      notes: notes,
+      chainRoot: chainRoot,
+      epoch: (input['epoch'] as num).toInt(),
+      choice: (input['choice'] as num).toInt(),
+      seq: (input['seq'] as num).toInt(),
+      proposalId: proposal,
+      dest20: dest is Uint8List
+          ? dest
+          : (dest is List<int> ? Uint8List.fromList(dest) : null),
+      magic: (input['magic'] as String?) ?? kBookMagic,
+    );
+    if (proved == null) return {'ok': false, 'isolateStamp': stamp};
+    return {...proved, 'isolateStamp': stamp};
+  } on StateError catch (e) {
+    return {'ok': false, 'error': e.message, 'isolateStamp': stamp};
+  }
+}
+
+Map<String, dynamic> proveLeafVoteStamped(Map<String, dynamic> input) =>
+    proveLeafVoteWire(input);
+
+/// Vote prove. Production runs in [Isolate.run]. Null when the proof is refused.
+Future<Map<String, Object?>?> proveLeafVoteOffUi(Map<String, dynamic> input) async {
+  final Map<String, dynamic> out;
+  if (vaultProveOnCaller()) {
+    debugVaultProveOnCaller += 1;
+    out = proveLeafVoteStamped(input);
+  } else {
+    out = await Isolate.run(() => proveLeafVoteStamped(input));
+    debugVaultProveIsolateRuns += 1;
+  }
+  debugVaultProveStamp = out['isolateStamp']?.toString() ?? '';
+  if (out['ok'] != true) return null;
+  return out;
 }
 
 /// sha256('shear-vote-proposal-v1' || epoch || param). `hb` or `rr` only.

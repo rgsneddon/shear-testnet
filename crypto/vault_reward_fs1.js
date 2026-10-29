@@ -22,11 +22,9 @@ import { admitPub } from './admit.js';
 import {
   fs1NativeLoaded,
   fs1ProveUnlinked,
-  fs1TreeAppend,
-  fs1TreeNew,
-  fs1TreeRoot,
   fs1VerifyUnlinked,
 } from './native_admit.js';
+import { vaultLockTreeFromNotes } from './vault_lock_tree.js';
 import {
   G,
   H,
@@ -1128,15 +1126,111 @@ export function vaultProofCap(blob) {
   };
 }
 
+function chainRootMatches(root, chainRoot) {
+  if (!root || root.length !== 32 || chainRoot == null || chainRoot === '') return false;
+  let want = null;
+  if (typeof chainRoot === 'string') {
+    const hex = chainRoot.replace(/^0x/i, '');
+    if (!/^[0-9a-fA-F]{64}$/.test(hex)) return false;
+    want = Buffer.from(hex, 'hex');
+  } else {
+    want = bytes32(chainRoot);
+  }
+  return !!want && root.equals(want);
+}
+
+/** The caller's opening. Other leaves stay opaque notes on the full list. */
+function openingLock(locks, index) {
+  if (!Array.isArray(locks) || !locks.length) return null;
+  if (Number.isInteger(index) && index >= 0 && index < locks.length) {
+    const at = locks[index];
+    if (at && (at.scalar != null || at.seed != null || at.blind != null)) return at;
+  }
+  if (locks.length === 1) return locks[0];
+  return null;
+}
+
+function rewardLockRow(lock) {
+  const amount = BigInt(lock?.amount ?? 0);
+  if (amount <= 0n) return null;
+  const index = Math.floor(Number(lock?.index) || 0);
+  const lockMs = Math.floor(Number(lock?.lockMs) || 0);
+  let scalar = lock?.scalar == null
+    ? null
+    : (typeof lock.scalar === 'bigint' ? lock.scalar : scalarFrom(lock.scalar));
+  if (scalar == null && lock?.seed != null) scalar = vaultNullScalar(lock.seed, index);
+  if (scalar == null) scalar = randomScalar();
+  let blind = lock?.blind == null
+    ? null
+    : (typeof lock.blind === 'bigint' ? lock.blind : scalarFrom(lock.blind));
+  if (blind == null && lock?.seed != null) blind = vaultLockBlind(lock.seed, index, amount, lockMs);
+  if (blind == null) blind = randomScalar();
+  const unlock = lock?.unlockEpoch == null ? VAULT_UNLOCK_OPEN : lock.unlockEpoch;
+  return vaultLockNote(amount, scalar, blind, unlock);
+}
+
+function voteLockRow(lock) {
+  const amount = BigInt(lock?.amount ?? 0);
+  if (amount <= 0n) return null;
+  let scalar = lock?.scalar == null
+    ? null
+    : (typeof lock.scalar === 'bigint' ? lock.scalar : scalarFrom(lock.scalar));
+  if (scalar == null) scalar = randomScalar();
+  let blind = lock?.blind == null
+    ? null
+    : (typeof lock.blind === 'bigint' ? lock.blind : scalarFrom(lock.blind));
+  if (blind == null) blind = randomScalar();
+  const unlock = lock?.unlockEpoch == null ? VAULT_UNLOCK_OPEN : lock.unlockEpoch;
+  return vaultLockNote(amount, scalar, blind, unlock);
+}
+
+/**
+ * Tree from the full ordered live notes when the caller passes them.
+ * Otherwise the caller's own locks, still through vaultLockTreeFromNotes.
+ * A passed chain root that is not that builder's root refuses the proof.
+ */
+function lockTree({ locks, which, notes, chainRoot, rowOf }) {
+  const listed = notes != null;
+  if (listed) {
+    const built = vaultLockTreeFromNotes(notes);
+    if (!built?.root) return null;
+    if (!chainRootMatches(built.root, chainRoot)) return null;
+    const index = Math.floor(Number(which));
+    if (!Number.isInteger(index) || index < 0 || index >= built.notes.length) return null;
+    const lock = openingLock(locks, index);
+    if (!lock) return null;
+    const row = rowOf(lock);
+    if (!row || !row.note.equals(built.notes[index])) return null;
+    return { handle: built.handle, root: built.root, row, index, rows: [row] };
+  }
+  const index = Math.floor(Number(which) || 0);
+  if (!Array.isArray(locks) || !locks.length || !Number.isInteger(index) || index < 0 || index >= locks.length) {
+    return null;
+  }
+  const rows = [];
+  for (const lock of locks) {
+    const row = rowOf(lock);
+    if (!row) return null;
+    rows.push(row);
+  }
+  const built = vaultLockTreeFromNotes(rows.map((row) => row.note));
+  if (!built?.root) return null;
+  if (chainRoot != null && chainRoot !== '' && !chainRootMatches(built.root, chainRoot)) return null;
+  return { handle: built.handle, root: built.root, row: rows[index], index, rows };
+}
+
 /**
  * Prove lock `which` inside `locks`. Each lock is { amount, scalar?, blind? }.
  * Missing secrets are drawn here and returned so a second leaf can reuse the tree.
- * The tree handle is not the chain admit tree. The published reward is
- * floor(amount * bps / 10000) for the public span. The leaf is not named.
+ * `notes` is the node's full ordered live-note list. Other leaves stay opaque.
+ * The published reward is floor(amount * bps / 10000) for the public span.
+ * The leaf is not named. A chain root that is not the lock-tree root returns null.
  */
 export function proveVaultReward({
   locks,
   which = 0,
+  notes = null,
+  chainRoot = null,
   rootEpoch,
   earnEpoch,
   bps,
@@ -1149,32 +1243,9 @@ export function proveVaultReward({
   if (vote) return null;
   if (!fs1NativeLoaded()) return null;
   if (Math.floor(Number(rootEpoch)) !== Math.floor(Number(earnEpoch))) return null;
-  if (!Array.isArray(locks) || !locks.length || which < 0 || which >= locks.length) return null;
-  const rows = [];
-  for (const lock of locks) {
-    const amount = BigInt(lock?.amount ?? 0);
-    if (amount <= 0n) return null;
-    const index = Math.floor(Number(lock?.index) || 0);
-    const lockMs = Math.floor(Number(lock?.lockMs) || 0);
-    let scalar = lock?.scalar == null
-      ? null
-      : (typeof lock.scalar === 'bigint' ? lock.scalar : scalarFrom(lock.scalar));
-    if (scalar == null && lock?.seed != null) scalar = vaultNullScalar(lock.seed, index);
-    if (scalar == null) scalar = randomScalar();
-    let blind = lock?.blind == null
-      ? null
-      : (typeof lock.blind === 'bigint' ? lock.blind : scalarFrom(lock.blind));
-    if (blind == null && lock?.seed != null) blind = vaultLockBlind(lock.seed, index, amount, lockMs);
-    if (blind == null) blind = randomScalar();
-    const unlock = lock?.unlockEpoch == null ? VAULT_UNLOCK_OPEN : lock.unlockEpoch;
-    const row = vaultLockNote(amount, scalar, blind, unlock);
-    if (!row) return null;
-    rows.push(row);
-  }
-  const handle = fs1TreeNew();
-  if (!handle || !fs1TreeAppend(handle, Buffer.concat(rows.map((row) => row.note)))) return null;
-  const root = fs1TreeRoot(handle);
-  if (!root) return null;
+  const opened = lockTree({ locks, which, notes, chainRoot, rowOf: rewardLockRow });
+  if (!opened) return null;
+  const { handle, root, row, index, rows } = opened;
   const blocks = BigInt(vaultEpochBlocks(magic));
   const period = BigInt(vaultPeriodBlocks(magic));
   // Callers that pass the epoch length twice are asking for one period claim.
@@ -1185,17 +1256,17 @@ export function proveVaultReward({
     if (left <= 0n || left > blocks) return null;
     covered = left;
   }
-  const reward = vaultRewardNanos(rows[which].amount, bps, covered, blocks);
+  const reward = vaultRewardNanos(row.amount, bps, covered, blocks);
   if (!reward) return null;
   let dest = null;
   try { dest = Buffer.from(asU8(dest20)); } catch { dest = null; }
   if (!dest || dest.length !== 20) dest = randomBytes(20);
   const epoch = Math.floor(Number(earnEpoch));
-  const unlock = rows[which].unlock;
+  const unlock = row.unlock;
   if (BigInt(epoch) >= unlock) return null;
   const gapCommit = proveGapCommit(unlock, epoch);
   if (!gapCommit) return null;
-  const nullifier = vaultRewardNullifier(rows[which].scalar, epoch);
+  const nullifier = vaultRewardNullifier(row.scalar, epoch);
   if (!nullifier) return null;
   let note = null;
   try {
@@ -1237,8 +1308,8 @@ export function proveVaultReward({
   if (!digest) return null;
   const epochBase = pointBytes(nullBase(epoch));
   const proved = fs1ProveUnlinked(handle, {
-    indices: [which],
-    xs: [scalarBytes(rows[which].scalar)],
+    indices: [index],
+    xs: [scalarBytes(row.scalar)],
     digest,
     anchor: Number(rootEpoch),
     nullBases: epochBase,
@@ -1248,11 +1319,11 @@ export function proveVaultReward({
   const linkAnn = Buffer.from(proved.link.subarray(0, 32));
   const linkSr = Buffer.from(proved.link.subarray(32, 64));
   const linkN = Buffer.from(proved.link.subarray(64, 96));
-  const stableTag = pointBytes(hpOf(admitPub(rows[which].scalar)).multiply(rows[which].scalar));
+  const stableTag = pointBytes(hpOf(admitPub(row.scalar)).multiply(row.scalar));
   if (stableTag.equals(record.subarray(1, 33))) return null;
   const t = scalarFrom(proved.t.subarray(0, 32));
   const cTilde = record.subarray(33, 65);
-  const openS = Fn.add(rows[which].blind, t);
+  const openS = Fn.add(row.blind, t);
   const openP = pointFrom(cTilde)
     .subtract(G.multiply(Fn.create(VAULT_PI_LEAF)))
     .subtract(unlockBase().multiply(Fn.create(BigInt(epoch) + 1n)));
@@ -1267,7 +1338,7 @@ export function proveVaultReward({
   const noteOpen = schnorrProve(noteP, noteS, balanceExtra(preimage, bound.dest20));
   const linked = createHash('sha256').update(VAULT_NULL_PRF).update(linkN).digest();
   if (!linked.equals(nullifier)) return null;
-  const lockCommit = rows[which].commit;
+  const lockCommit = row.commit;
   const blob = packProof({
     fs1: Buffer.from(proved.fs1),
     record,
@@ -1476,7 +1547,7 @@ function maskVoteFs1(fs1, linkN) {
  * Layout: 0x56 || u64 epoch || N || linkAnn || linkSr || u32 fs1Len || fs1 || record || dest20.
  */
 export function proveLeafVote({
-  locks, which = 0, epoch, choice, seq, proposalId: pid, magic = MAGIC_TESTNET, dest20 = null,
+  locks, which = 0, notes = null, chainRoot = null, epoch, choice, seq, proposalId: pid, magic = MAGIC_TESTNET, dest20 = null,
 } = {}) {
   if (!fs1NativeLoaded()) return null;
   const at = Math.floor(Number(epoch));
@@ -1485,28 +1556,9 @@ export function proveLeafVote({
   if (!proposal) return null;
   const basePoint = voteNullBase(at, proposal);
   if (!basePoint) return null;
-  if (!Array.isArray(locks) || !locks.length || which < 0 || which >= locks.length) return null;
-  const rows = [];
-  for (const lock of locks) {
-    const amount = BigInt(lock?.amount ?? 0);
-    if (amount <= 0n) return null;
-    let scalar = lock?.scalar == null
-      ? null
-      : (typeof lock.scalar === 'bigint' ? lock.scalar : scalarFrom(lock.scalar));
-    if (scalar == null) scalar = randomScalar();
-    let blind = lock?.blind == null
-      ? null
-      : (typeof lock.blind === 'bigint' ? lock.blind : scalarFrom(lock.blind));
-    if (blind == null) blind = randomScalar();
-    const unlock = lock?.unlockEpoch == null ? VAULT_UNLOCK_OPEN : lock.unlockEpoch;
-    const row = vaultLockNote(amount, scalar, blind, unlock);
-    if (!row) return null;
-    rows.push(row);
-  }
-  const handle = fs1TreeNew();
-  if (!handle || !fs1TreeAppend(handle, Buffer.concat(rows.map((row) => row.note)))) return null;
-  const root = fs1TreeRoot(handle);
-  if (!root) return null;
+  const opened = lockTree({ locks, which, notes, chainRoot, rowOf: voteLockRow });
+  if (!opened) return null;
+  const { handle, root, row, index, rows } = opened;
   let dest = null;
   try { dest = Buffer.from(asU8(dest20)); } catch { dest = null; }
   if (!dest || dest.length !== 20) dest = randomBytes(20);
@@ -1514,8 +1566,8 @@ export function proveLeafVote({
   if (!digest) return null;
   const epochBase = pointBytes(basePoint);
   const proved = fs1ProveUnlinked(handle, {
-    indices: [which],
-    xs: [scalarBytes(rows[which].scalar)],
+    indices: [index],
+    xs: [scalarBytes(row.scalar)],
     digest,
     anchor: at,
     nullBases: epochBase,
@@ -1525,9 +1577,9 @@ export function proveLeafVote({
   const linkAnn = Buffer.from(proved.link.subarray(0, 32));
   const linkSr = Buffer.from(proved.link.subarray(32, 64));
   const linkN = Buffer.from(proved.link.subarray(64, 96));
-  const expectN = pointBytes(basePoint.multiply(rows[which].scalar));
+  const expectN = pointBytes(basePoint.multiply(row.scalar));
   if (!expectN.equals(linkN)) return null;
-  const stableTag = pointBytes(hpOf(admitPub(rows[which].scalar)).multiply(rows[which].scalar));
+  const stableTag = pointBytes(hpOf(admitPub(row.scalar)).multiply(row.scalar));
   if (stableTag.equals(record.subarray(1, 33))) return null;
   let note = null;
   try {
@@ -1547,8 +1599,8 @@ export function proveLeafVote({
     record,
     dest,
   ]);
-  const leaf = rows[which].note;
-  if (blob.includes(leaf) || blob.includes(rows[which].commit)) return null;
+  const leaf = row.note;
+  if (blob.includes(leaf) || blob.includes(row.commit)) return null;
   const tag = voteTag(linkN, at, proposal);
   if (!tag) return null;
   return {

@@ -81,7 +81,7 @@ void main() {
     ledger.rememberNote(fee);
     ledger.noteLiveHeight(height);
     ledger.settleTo(height);
-    ledger.rememberNote({
+    final lock = <String, dynamic>{
       'kind': 'lock',
       'scalar': scalarBytes(randomScalar()),
       'blind': scalarBytes(randomScalar()),
@@ -89,7 +89,9 @@ void main() {
       'amount': kPiSheNanos,
       'epochs': [1],
       'unlock': 0,
-    });
+    };
+    ledger.rememberNote(lock);
+    _armLockCensus(pool, lock);
 
     final dir = Directory.systemTemp.createTempSync('shear-leaf-vote-');
     addTearDown(() {
@@ -118,6 +120,7 @@ void main() {
       publicIpConsent: true,
     );
     expect(result.enacted, isTrue, reason: result.remark);
+    expect(pool.censusReads, 1);
     expect(posts, hasLength(1));
     final body = posts.single;
     expect(body['kind'], 'leaf-vote');
@@ -209,7 +212,7 @@ void main() {
     ledger.rememberNote(fee);
     ledger.noteLiveHeight(height);
     ledger.settleTo(height);
-    ledger.rememberNote({
+    final lock = <String, dynamic>{
       'kind': 'lock',
       'scalar': scalarBytes(randomScalar()),
       'blind': scalarBytes(randomScalar()),
@@ -217,7 +220,9 @@ void main() {
       'amount': kPiSheNanos,
       'epochs': [1],
       'unlock': 0,
-    });
+    };
+    ledger.rememberNote(lock);
+    _armLockCensus(pool, lock);
     final dir = Directory.systemTemp.createTempSync('shear-vote-change-');
     addTearDown(() {
       if (dir.existsSync()) dir.deleteSync(recursive: true);
@@ -242,6 +247,7 @@ void main() {
       publicIpConsent: true,
     );
     expect(result.enacted, isTrue, reason: result.remark);
+    expect(pool.censusReads, 1);
     expect(posts, hasLength(1));
     final vout = posts.single['vout'];
     expect(vout, isA<List>());
@@ -300,13 +306,45 @@ class _LeafPool extends ShearPoolClient {
 
   final List<Map<String, dynamic>> posts;
   final Map<String, dynamic> flux;
+  Map<String, dynamic>? lockCensus;
+  int censusReads = 0;
 
   @override
   Future<Map<String, dynamic>> fluxset() async => flux;
+
+  @override
+  Future<Map<String, dynamic>> vaultLockCensus() async {
+    censusReads += 1;
+    final held = lockCensus;
+    if (held == null) throw StateError('vault_root');
+    return held;
+  }
 
   @override
   Future<Map<String, dynamic>> postRaw(Map<String, dynamic> body) async {
     posts.add(body);
     return {'ok': true, 'id': 'leaf-vote-wire'};
   }
+}
+
+/// One live note, the bytes the vote opening derives, and that note's tree root.
+void _armLockCensus(_LeafPool pool, Map<String, dynamic> lock) {
+  final note = vaultVoteLeafNote(lock);
+  if (note == null) throw StateError('vault_root');
+  final fs1 = Fs1Native.tryLoad();
+  if (fs1 == null) throw StateError('fs1_prover_unavailable');
+  final handle = fs1.treeNew();
+  if (handle == 0 || !fs1.treeAppend(handle, note)) {
+    if (handle != 0) fs1.treeFree(handle);
+    throw StateError('fs1_prover_unavailable');
+  }
+  final root = fs1.treeRoot(handle);
+  fs1.treeFree(handle);
+  if (root == null) throw StateError('fs1_prover_unavailable');
+  pool.lockCensus = {
+    'ok': true,
+    'public': false,
+    'notes': [_hex(note)],
+    'root': _hex(root),
+  };
 }
