@@ -51,7 +51,7 @@ void main() {
     }
     test('hid first packet header', () {
       final p = const LedgerFrame.hid().encode(bytesOf('b001000000'))[0];
-      expect(hexOf(p.sublist(0, 12)), '0101050000000005b0010000');
+      expect(hexOf(p.sublist(0, 12)), '01010500000005b001000000');
     });
     test('wrong sequence and channel are rejected', () {
       final f = const LedgerFrame.hid();
@@ -119,7 +119,7 @@ void main() {
       final ascii = hexOf(want.substring(2).toLowerCase().codeUnits);
       final pub = '04${'11' * 64}';
       final t = MockLedgerTransport.parse('''
-        => e00201001505${'8000002c8000003c800000000000000000000000'.substring(2)}
+        => e002010015058000002c8000003c800000000000000000000000
         <= 41${pub}28$ascii 9000
       '''.replaceAll(' 9000', '9000'));
       expect(await ethAddress(t, verify: true), want);
@@ -148,7 +148,7 @@ void main() {
 
     test('refusal maps to a status error', () async {
       final t = MockLedgerTransport.parse('''
-        => e00201001505${'8000002c8000003c800000000000000000000000'.substring(2)}
+        => e002010015058000002c8000003c800000000000000000000000
         <= 6985
       ''');
       expect(() => ethAddress(t, verify: true),
