@@ -2,6 +2,7 @@
 // Nothing here runs or calls the network until the visitor clicks Connect.
 import TransportWebHID from '@ledgerhq/hw-transport-webhid';
 import TransportWebBLE from '@ledgerhq/hw-transport-web-ble';
+import TransportWebUSB from '@ledgerhq/hw-transport-webusb';
 import Eth from '@ledgerhq/hw-app-eth';
 import { Transaction, Signature, parseEther, formatEther, getAddress } from 'ethers';
 import Solana from '@ledgerhq/hw-app-solana';
@@ -9,12 +10,15 @@ import { PublicKey, SystemProgram, Transaction as SolTx } from '@solana/web3.js'
 import { Buffer } from 'buffer';
 
 export const support = {
-  usb: typeof navigator !== 'undefined' && !!navigator.hid,
+  hid: typeof navigator !== 'undefined' && !!navigator.hid,
+  webusb: typeof navigator !== 'undefined' && !!navigator.usb,
+  usb: typeof navigator !== 'undefined' && (!!navigator.hid || !!navigator.usb),
   ble: typeof navigator !== 'undefined' && !!navigator.bluetooth,
 };
 
 export async function connect(kind) {
-  if (kind === 'usb') return TransportWebHID.create();
+  // Desktop: WebHID. Android Chrome has no WebHID, so fall back to WebUSB.
+  if (kind === 'usb') return navigator.hid ? TransportWebHID.create() : TransportWebUSB.create();
   if (kind === 'ble') return TransportWebBLE.create();
   throw new Error('Unknown connector');
 }

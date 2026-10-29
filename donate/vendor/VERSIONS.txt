@@ -7,10 +7,11 @@ qrcode-generator 1.4.4 (MIT, Kazuhiko Arase)
 ledger-bundle.js (built from ledger-src/ with esbuild 0.28.2, npm run build; lockfile ledger-src/package-lock.json)
   @ledgerhq/hw-transport-webhid 6.36.0 (Apache-2.0)
   @ledgerhq/hw-transport-web-ble 6.35.0 (Apache-2.0)
+  @ledgerhq/hw-transport-webusb 6.35.0 (Apache-2.0)
   @ledgerhq/hw-app-eth 7.11.1 (Apache-2.0)
   @ledgerhq/hw-app-solana 7.12.0 (Apache-2.0)
   @solana/web3.js 1.99.0 (MIT)
   ethers 6.17.0 (MIT)
   buffer 6.0.3 (MIT)
   plus their transitive deps; licence texts are in the bundle's trailing legal comments
-  sha256: edf30e72d49bae0ff3292d227d91cac51f6b89351ebab1f4b594b322f75b0b11
+  sha256: eae6b44ea61d66df24749f32e4ca92e33d912b6072601da63e94a92c08ce9602

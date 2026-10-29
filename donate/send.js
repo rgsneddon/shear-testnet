@@ -21,15 +21,20 @@
   }
   function chainSel() { var v = document.getElementById('s-chain').value; return CHAINS.filter(function (x) { return x.id === v; })[0]; }
 
-  var hasHid = !!navigator.hid, hasBle = !!navigator.bluetooth;
+  var hasUsb = !!(navigator.hid || navigator.usb), hasBle = !!navigator.bluetooth;
+  var usbKind = navigator.hid ? 'WebHID' : 'WebUSB';
   var opts = CHAINS.map(function (c) { return '<option value="' + c.id + '">' + c.label + ' (' + c.symbol + ')</option>'; }).join('');
+  var intro = '<p>Send from your own Ledger to our address. You confirm the amount and our address on your Ledger screen before anything is signed. Open the matching app on the device (Ethereum for ETH and POL, Solana for SOL). Bitcoin, Litecoin, Dogecoin and Kaspa sends are coming next. Monero stays copy and QR only: a Monero send needs a full wallet (scanning outputs, building ring signatures, talking to a daemon), which a web page cannot do safely.</p>';
   app.textContent = '';
-  app.appendChild(h(
-    '<p>Send from your own Ledger to our address. You confirm the amount and our address on your Ledger screen before anything is signed. Open the matching app on the device (Ethereum for ETH and POL, Solana for SOL). Needs Chrome, Edge, Brave or Opera on desktop, or Chrome on Android for Bluetooth. Bitcoin, Litecoin, Dogecoin and Kaspa sends are coming next. Monero stays copy and QR only: a Monero send needs a full wallet (scanning outputs, building ring signatures, talking to a daemon), which a web page cannot do safely.</p>' +
-    (hasHid || hasBle ? '' : '<p class="send-warn">This browser supports neither WebHID nor Web Bluetooth, so it cannot talk to a Ledger. Use a Chromium-based desktop browser, or copy an address above instead.</p>') +
+  if (!hasUsb && !hasBle) {
+    app.appendChild(h(intro + '<p class="send-warn"><strong>Your browser can&#39;t connect to a Ledger.</strong> Use Chrome or Edge (Android: Chrome), or copy the address / scan the QR above.</p>'));
+    return;
+  }
+  app.appendChild(h(intro +
     '<div class="send-grid">' +
-    '<div class="send-row"><button type="button" class="btn" id="c-usb"' + (hasHid ? '' : ' disabled title="WebHID not supported in this browser"') + '>Connect Ledger by USB</button>' +
-    '<button type="button" class="btn" id="c-ble"' + (hasBle ? '' : ' disabled title="Web Bluetooth not supported in this browser"') + '>Connect Nano X by Bluetooth</button></div>' +
+    '<div class="send-row">' + (hasUsb ? '<button type="button" class="btn" id="c-usb">Connect Ledger by USB</button>' : '') +
+    (hasBle ? '<button type="button" class="btn" id="c-ble">Connect Nano X by Bluetooth</button>' : '') + '</div>' +
+    (hasUsb && hasBle ? '' : '<p class="send-warn">' + (hasUsb ? 'Bluetooth is not available in this browser; USB works.' : 'USB is not available in this browser; Bluetooth (Nano X) works.') + '</p>') +
     '<label>Network<select id="s-chain">' + opts + '</select></label>' +
     '<label>Amount<input id="s-amt" inputmode="decimal" placeholder="0.01" autocomplete="off" /></label>' +
     '<div class="send-row"><button type="button" class="btn" id="s-send" disabled>Review and sign on Ledger</button></div>' +
@@ -51,24 +56,30 @@
   }
 
   function doConnect(kind) {
-    status('Connecting ...');
+    status(kind === 'usb' ? 'Connecting by USB (' + usbKind + '). Pick your Ledger in the browser prompt ...' : 'Connecting by Bluetooth. Pick your Nano X in the browser prompt ...');
     loadBundle().then(function (L) {
       if (transport) { try { transport.close(); } catch (e) {} transport = null; }
       return L.connect(kind).then(function (t) { transport = t; });
     }).then(function () {
       document.getElementById('s-send').disabled = false;
       status('Connected. Pick a network, open its app on your Ledger, enter an amount, then review and sign.');
-    }).catch(function (e) { status(friendly(e), true); });
+    }).catch(function (e) { status(friendly(e, true), true); });
   }
-  function friendly(e) {
-    var m = (e && (e.message || e.name)) || String(e);
-    if (/0x6511|0x6d00|0x6e00|0x6e01|CLA_NOT_SUPPORTED|INS_NOT_SUPPORTED/i.test(m)) return 'Open the ' + chainSel().app + ' app on your Ledger, then try again.';
-    if (/0x6985|denied|rejected/i.test(m)) return 'Cancelled on the Ledger. Nothing was sent.';
-    if (/locked|0x5515/i.test(m)) return 'Unlock your Ledger, open the ' + chainSel().app + ' app, then try again.';
-    if (/disconnected|closed|NotFound/i.test(m)) { transport = null; document.getElementById('s-send').disabled = true; return 'The Ledger disconnected. Connect again.'; }
-    return 'Error: ' + m;
+  function friendly(e, connecting) {
+    var m = (e && (e.message || e.statusText)) || String(e);
+    var name = (e && (e.name || e.id)) || 'Error';
+    var msg;
+    if (/0x6511|0x6d00|0x6e00|0x6e01|CLA_NOT_SUPPORTED|INS_NOT_SUPPORTED/i.test(m)) msg = 'Open the ' + chainSel().app + ' app on your Ledger, then try again.';
+    else if (/0x6985|denied by the user|rejected/i.test(m)) msg = 'Cancelled on the Ledger. Nothing was sent.';
+    else if (/locked|0x5515/i.test(m)) msg = 'Unlock your Ledger, open the ' + chainSel().app + ' app, then try again.';
+    else if (connecting && /NotFound|No device selected|cancel/i.test(name + ' ' + m)) msg = 'No Ledger was chosen in the browser prompt. Plug in or switch on the Ledger, unlock it, and try Connect again.';
+    else if (connecting && /NotAllowed|Security|permission/i.test(name + ' ' + m)) msg = 'The browser blocked access to the device. Allow it when prompted (on Android, also allow Bluetooth and Nearby devices for Chrome), then try again.';
+    else if (connecting && /Access denied|claimInterface|in use/i.test(m)) msg = 'Another app (such as Ledger Live) is using the Ledger. Close it, then try again.';
+    else if (/disconnected|DisconnectedDevice/i.test(name + ' ' + m)) { transport = null; document.getElementById('s-send').disabled = true; msg = 'The Ledger disconnected. Connect again.'; }
+    else msg = connecting ? 'Could not connect to the Ledger.' : 'The send did not complete. Nothing was sent unless a transaction link appears.';
+    return msg + ' [' + name + ': ' + m + ']';
   }
-  if (hasHid) document.getElementById('c-usb').addEventListener('click', function () { doConnect('usb'); });
+  if (hasUsb) document.getElementById('c-usb').addEventListener('click', function () { doConnect('usb'); });
   if (hasBle) document.getElementById('c-ble').addEventListener('click', function () { doConnect('ble'); });
   document.getElementById('s-send').addEventListener('click', function () {
     var btn = this, c = chainSel(), to = addrFor(c.addr);
