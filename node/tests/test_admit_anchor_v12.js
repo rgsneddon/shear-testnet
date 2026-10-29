@@ -121,7 +121,7 @@ describe('ADMITv3 anchor on queue and verify', () => {
           txs: [tx],
         });
         const got = await Promise.resolve(verifyBlock(mine(tpl), null, {
-          trustedPowHash: Buffer.alloc(32),
+          trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'),
         }));
         assert.equal(got.ok, false, String(A));
         assert.equal(got.reason, anchorRejectReason(A, 1), `${A} ${got.reason}`);

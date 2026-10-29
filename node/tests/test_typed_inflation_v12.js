@@ -206,7 +206,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
           txs: [tx],
         });
         const got = await Promise.resolve(verifyBlock(mine(tpl), null, {
-          trustedPowHash: Buffer.alloc(32),
+          trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'),
           reserveState: { portals: { [portalIdFromDest(dest)]: { staked: nanos, idle: 0 } }, epochBps: 0 },
         }));
         assert.equal(got.ok, false, `${kind} ${nanos}`);
@@ -259,7 +259,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
             txs: [tx],
           });
           const got = await Promise.resolve(verifyBlock(mine(tpl), null, {
-            trustedPowHash: Buffer.alloc(32),
+            trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'),
           }));
           assert.equal(got.reason, 'kind', `${label} block ${got.reason}`);
           const bare = {
@@ -274,7 +274,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
             bits: GENESIS_BITS_PACKED,
             now: 1_700_000_000_000,
             txs: [bare],
-          })), null, { trustedPowHash: Buffer.alloc(32) }));
+          })), null, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex') }));
           assert.equal(bareBlock.reason, 'range_proof', `${label} bare ${bareBlock.reason}`);
           assert.notEqual(store.queueTx(bare).reason, 'admit_membership', `${label} bare queue`);
           assert.equal(admitMempool(emptyMempool(), bare, { baseFee: 1 }).reason, 'kind', `${label} bare mempool`);
@@ -306,7 +306,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
         bits: GENESIS_BITS_PACKED,
         now: 1_700_000_000_000,
         txs: [tx],
-      })), null, { trustedPowHash: Buffer.alloc(32) }));
+      })), null, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex') }));
       assert.equal(got.reason, 'custodial_pull', `pool-withdraw ${nanos} ${got.reason}`);
     }
   });
@@ -353,7 +353,7 @@ describe('typed kinds cannot mint from an unproven commit or a foreign portal', 
           txs: [tx],
         });
         const got = await Promise.resolve(verifyBlock(mine(tpl), null, {
-          trustedPowHash: Buffer.alloc(32),
+          trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'),
         }));
         assert.equal(got.reason, 'kind', `${kind} ${nanos} ${got.reason}`);
       }

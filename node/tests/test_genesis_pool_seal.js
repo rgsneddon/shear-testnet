@@ -46,7 +46,7 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
       jobId: job.jobId,
       nonce: 0n,
       miner: finder,
-      powHash: '00'.repeat(32),
+      powHash: `${'00'.repeat(31)}01`,
     }, { trusted: true });
     assert.equal(got.ok, true, got.reason || JSON.stringify(got));
     const tip = store.tip();
@@ -78,7 +78,7 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
       jobId: g.job.jobId,
       nonce: 0n,
       miner: hasher,
-      powHash: '00'.repeat(32),
+      powHash: `${'00'.repeat(31)}02`,
     }, { trusted: true });
     assert.equal(gGot.ok, true, gGot.reason || JSON.stringify(gGot));
     const parent = store.tip();
@@ -106,7 +106,7 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
       jobId: job.jobId,
       nonce: 0n,
       miner: hasher,
-      powHash: '00'.repeat(32),
+      powHash: `${'00'.repeat(31)}03`,
     }, { trusted: true });
     assert.equal(got.ok, false);
     assert.equal(got.reason, 'pot_prop');
@@ -121,7 +121,7 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
       jobId: honest.job.jobId,
       nonce: 0n,
       miner: hasher,
-      powHash: '00'.repeat(32),
+      powHash: `${'00'.repeat(31)}04`,
     }, { trusted: true });
     assert.equal(paid.ok, true, String(paid?.reason || 'append'));
     const tip = store.tip();

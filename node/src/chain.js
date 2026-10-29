@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { potSubsidyAt, chainGenesisMs as genesisMsOf, epochDays, vortexEpochIndex } from '../../crypto/pot_sched.js';
-import { shearHash, meetsTarget, hashHex } from '../../crypto/shear_hash.js';
+import { shearHash, meetsTarget, hashHex, isZeroDigest } from '../../crypto/shear_hash.js';
 import { hashHeaderOffLoop } from '../../crypto/hash_offloop.js';
 import { encodeHeader, decodeHeader, setNonce, VERSION } from '../../crypto/header.js';
 import { merkleRoot, EMPTY_ROOT } from '../../crypto/merkle.js';
@@ -2174,12 +2174,12 @@ export function assessHeader(block, prev, opts = {}) {
     hash = Buffer.alloc(32);
   } else if (opts.preparedHash) {
     hash = Buffer.from(opts.preparedHash);
-    if (hash.length !== 32 || !meetsTarget(hash, decoded.bits)) {
+    if (hash.length !== 32 || isZeroDigest(hash) || !meetsTarget(hash, decoded.bits)) {
       return finish({ ok: false, reason: 'pow' });
     }
   } else if (trustedPowHash) {
     hash = Buffer.from(trustedPowHash);
-    if (hash.length !== 32 || !meetsTarget(hash, decoded.bits)) {
+    if (hash.length !== 32 || isZeroDigest(hash) || !meetsTarget(hash, decoded.bits)) {
       return finish({ ok: false, reason: 'pow' });
     }
   } else {
@@ -2189,7 +2189,7 @@ export function assessHeader(block, prev, opts = {}) {
       hash = shearHash(h);
       stashPreparedHeader(h, hash);
     }
-    if (!meetsTarget(hash, decoded.bits)) return finish({ ok: false, reason: 'pow' });
+    if (isZeroDigest(hash) || !meetsTarget(hash, decoded.bits)) return finish({ ok: false, reason: 'pow' });
   }
   // P2P tip-extend stops here. Merkle, ASERT, and the book walk stay on the
   // full check. A claimed hash that merely matches a stored id is not proof.

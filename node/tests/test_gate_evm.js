@@ -167,7 +167,7 @@ describe('Phase B GATE — EVM in verifyBlock', () => {
       now: Date.now(),
       txs: [thief],
     }));
-    const denied = verifyBlock(stolen, null, { trustedPowHash: Buffer.alloc(32) });
+    const denied = verifyBlock(stolen, null, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex') });
     assert.equal(denied.ok, false);
     assert.equal(denied.reason, 'range_proof');
   });

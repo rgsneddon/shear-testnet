@@ -8,7 +8,7 @@ import { payeeFs1Ok } from '../../crypto/n1.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { SHARE_FLOOR_BITS } from '../../crypto/asert.js';
 import { isInitialBlockDownload } from './status.js';
-import { shearHash, meetsTarget, hashBackendKind } from '../../crypto/shear_hash.js';
+import { shearHash, meetsTarget, hashBackendKind, isZeroDigest } from '../../crypto/shear_hash.js';
 import { setNonce, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { destBoundShareHash, noteCommitOfShare } from '../../crypto/share_batch.js';
 import { STRATUM_LINE_MAX, parseBoundedJson } from '../../crypto/json_bounds.js';
@@ -90,6 +90,7 @@ export function evaluateSoloSubmit({ store, jobId, nonce, claimed, dest, hashKin
     }
     return { ok: false, reason: 'hash_failed' };
   }
+  if (hash.length !== 32 || isZeroDigest(hash)) return { ok: false, reason: 'hash_failed' };
   const hex = hash.toString('hex');
   const want = claimedDigest(claimed);
   if (claimed != null && String(claimed).trim() !== '' && !want) {

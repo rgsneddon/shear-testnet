@@ -667,17 +667,11 @@ static randomx_vm *hot_vm(RxTls *tls, unsigned *gen_out) {
   return vm;
 }
 
-void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]) {
+int shear_hash_checked(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]) {
   RxTls *tls = tls_slot();
-  if (!tls) {
-    memset(out, 0, 32);
-    return;
-  }
+  if (!tls) return -1;
   for (;;) {
-    if (shear_bind(header) != 0) {
-      memset(out, 0, 32);
-      return;
-    }
+    if (shear_bind(header) != 0) return -1;
     unsigned gen = 0;
     randomx_vm *vm = hot_vm(tls, &gen);
     if (!vm) continue;
@@ -685,8 +679,13 @@ void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[
     randomx_calculate_hash(vm, header, SHEAR_HEADER_LEN, out);
     hash_leave();
     tls->primed = 0;
-    return;
+    return 0;
   }
+}
+
+/* Failure fills zeros so the selftest vector misses. Do not submit that fill. */
+void shear_hash(const unsigned char header[SHEAR_HEADER_LEN], unsigned char out[32]) {
+  if (shear_hash_checked(header, out) != 0) memset(out, 0, 32);
 }
 
 int shear_hash_first(const unsigned char header[SHEAR_HEADER_LEN]) {
@@ -787,10 +786,14 @@ int shear_verify_header_hex(const char *header_hex, char digest_hex[65], char k_
   unsigned char k[32];
   if (parse_header_hex(header_hex, header) != 0) return -1;
   shear_key(header, k);
-  shear_hash(header, hash);
-  if (digest_hex) shear_hash_hex(hash, digest_hex);
-  if (k_hex) shear_hash_hex(k, k_hex);
-  return 0;
+  if (shear_hash_checked(header, hash) != 0) return -2;
+  for (int i = 0; i < 32; i++) {
+    if (!hash[i]) continue;
+    if (digest_hex) shear_hash_hex(hash, digest_hex);
+    if (k_hex) shear_hash_hex(k, k_hex);
+    return 0;
+  }
+  return -2;
 }
 
 int shear_selftest(char got_hex[65]) {

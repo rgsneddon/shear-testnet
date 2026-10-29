@@ -328,14 +328,14 @@ describe('FS-1 stage 0 vault gate', () => {
           hash: Buffer.alloc(32),
         };
         const verdict = await Promise.resolve(quick(`${kind} block`, () => verifyBlock(block, null, {
-          trustedPowHash: Buffer.alloc(32),
+          trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'),
           skipSharePow: true,
           noteAtAnchor: () => { throw new Error(`${kind} read the anchor book`); },
         })));
         assert.equal(verdict.ok, false);
         assert.equal(verdict.reason, 'vault_unavailable', kind);
         const appended = await Promise.resolve(store.append(block, {
-          trustedPowHash: Buffer.alloc(32),
+          trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'),
           skipSharePow: true,
         }));
         assert.equal(appended.ok, false);
@@ -424,7 +424,7 @@ describe('FS-1 stage 0 vault gate', () => {
       const block = { txs: [{ coinbase: true, kind: 'coinbase', vout: [] }, tx], header: Buffer.alloc(80), hash: Buffer.alloc(32) };
       assert.equal(quick(kind, () => chainStage0Rejected([block])).reason, 'send_unavailable', kind);
       assert.equal(verifyLoadedChain([block]).reason, 'send_unavailable', kind);
-      assert.equal(verifyBlock(block, null, { trustedPowHash: Buffer.alloc(32), skipSharePow: true }).reason, 'send_unavailable', kind);
+      assert.equal(verifyBlock(block, null, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'), skipSharePow: true }).reason, 'send_unavailable', kind);
     }
   });
 

@@ -528,7 +528,7 @@ describe('v12 PROP pays share work', () => {
       weight: parentTpl.weight,
       height: 1,
     };
-    const sealed = verifyBlock(parent, null, { trustedPowHash: Buffer.alloc(32), nowMs: now + 1_000 });
+    const sealed = verifyBlock(parent, null, { trustedPowHash: Buffer.from(`${'00'.repeat(31)}01`, 'hex'), nowMs: now + 1_000 });
     assert.equal(sealed.ok, true, sealed.reason);
     const carry = subsidy - fee;
     const lowBits = SHARE_FLOOR_BITS;
