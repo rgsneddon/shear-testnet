@@ -1,0 +1,14 @@
+name: sheark-macos-openssl
+on:
+  pull_request:
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: The macOS job installs openssl@3
+        run: node --test tests/test_sheark_macos_openssl.js
