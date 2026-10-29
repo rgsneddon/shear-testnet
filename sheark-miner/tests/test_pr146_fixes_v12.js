@@ -443,3 +443,42 @@ describe('PR146 P2: AFK launcher defaults', { skip: process.platform === 'win32'
     }
   });
 });
+
+// P2: --bench timing and the mode labels.
+describe('PR146 P2: bench clock and RandomX mode labels', () => {
+  it('--bench 2 divides by the measured elapsed time (monotonic, sub-second)', () => {
+    const r = spawnSync(bin, ['--backend', 'jit', '--bench', '2'], { encoding: 'utf8', timeout: 120_000 });
+    assert.equal(r.status, 0, r.stderr);
+    const m = r.stdout.match(/bench hashes=(\d+) rate=([\d.]+) R\/s backend=jit elapsed=([\d.]+)s/);
+    assert.ok(m, r.stdout);
+    const [h, rate, el] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    assert.ok(el >= 2 && el < 2.5, `elapsed ${el}`);
+    assert.ok(Math.abs(rate - h / el) <= Math.max(1, rate * 0.01), `rate ${rate} vs ${h / el}`);
+  });
+  it('print-config says rxMode full for jit-full and light otherwise', () => {
+    for (const [b, mode] of [['jit-full', 'full'], ['jit', 'light'], ['interpreter', 'light']]) {
+      const r = spawnSync(bin, ['--backend', b, '--print-config'], { encoding: 'utf8', timeout: 120_000 });
+      assert.equal(r.status, 0, r.stderr);
+      const cfg = JSON.parse(r.stdout.match(/\{[\s\S]*\}/)[0]);
+      assert.equal(cfg.backend, b);
+      assert.equal(cfg.rxMode, mode, b);
+    }
+  });
+  it('the run banner names the RandomX mode in use', { skip: !linux }, async () => {
+    const A = { jobId: 'A', header: hdr(0x11, 0x22), shareBits: 40, blockBits: 40, bits: 40 };
+    const pool = await stubPool((msg, sock) => {
+      if (msg.method === 'login') sock.write(`${JSON.stringify({ id: msg.id, result: { status: 'OK' }, job: A })}\n`);
+    });
+    const child = spawn(bin, ['--backend', 'jit-full', '--pool', `127.0.0.1:${pool.port}`, '--notls', '--user', 'rig1', '--blu', MINING,
+      '--threads', '1', '--no-tune'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    const done = new Promise((r) => child.on('close', r));
+    await waitFor(() => /ShearK-Miner 2\.9 \(/.test(out), 20_000);
+    child.kill('SIGTERM');
+    await done;
+    pool.server.close();
+    assert.match(out, /ShearK-Miner 2\.9 \(ShearHash-v3, RandomX full\)/, out.slice(0, 600));
+  });
+});

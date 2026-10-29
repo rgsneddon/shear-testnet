@@ -4,7 +4,7 @@ Official CPU miner for **ShearHash-v3** (RandomX light, 128 MiB cache). TLS-awar
 
 - Display repo: **[Testnet] ShearK** (`rgsneddon/ShearK`)
 - Wire algo: `ShearHash` · personalisation `ShearHash-v3` · magic `shear-testnet-v12`
-- Banner: `ShearK-Miner 2.9 (ShearHash-v3 light)`
+- Banner: `ShearK-Miner 2.9 (ShearHash-v3, RandomX full)` with jit-full, `RandomX light` otherwise
 - The v12 pool refuses a ShearK older than 2.9 and names the required version.
 - Difficulty comes from the pool job. A job with no share width or no block width is not mined.
 - `run-afk.sh`, `sheark-v4-afk.default`, and `deploy/sheark-v4-afk.service` are the v12 defaults. The unit reads `SHEARK_USER` from the host file. Keep each host's worker name and payout address. The pool host keeps the unit disabled.
@@ -51,7 +51,7 @@ Rig details and stats (R41) are **local only**. At start ShearK prints the devic
 
 On a new job or restamp (prev, merkle/continuity, bits, time, job id) the miner bumps its job generation and **aborts** in-flight hashes. Results for the old generation are dropped (`dropped`, debug `aborted_stale`) and are **not** counted as Rejected. Pool `stale` / `stale_job` is labelled `stale` on the console, not reject. Hashrate is counted hashes over the last 10 s of wall time (no smoothing); `round` / `proven_round` is accepted work this block and **may reset at block found**.
 
-`--print-config` includes `rxMode=light`, `rxCacheMiB=128`, `feePct=0`. `--selftest` must print digest `e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4` and must not match the v1 vector `5d00a242…`.
+`--print-config` includes `rxMode` (`full` for jit-full, else `light`), `rxCacheMiB=128`, `feePct=0`. `--selftest` must print digest `e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4` and must not match the v1 vector `5d00a242…`.
 
 Windows zip root: `ShearK-Miner.exe`, `example.bat`, `example.sh`, and the OpenSSL DLLs the exe imports (`libssl-3-x64.dll`, `libcrypto-3-x64.dll`, plus any further non-system DLL). The exe alone does not start. Unix zip root (`linux`, `archlinux`, `fedora`, `opensuse`, `macos`): `ShearK-Miner`, `example.bat`, `example.sh`, and that OS's OpenSSL libraries beside the binary. Each zip is built on that OS. How-to: the `[Testnet] ShearK` README.
 

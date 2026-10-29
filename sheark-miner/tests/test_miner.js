@@ -283,7 +283,8 @@ describe('ShearK-Miner', () => {
     assert.equal(loginLine.includes(MINING), false, loginLine);
     assert.equal(/bluAddr|ssa1|she1|shm1/.test(loginLine), false, loginLine);
     assert.equal(/"version":"1\.[019]"/.test(loginLine), false, loginLine);
-    assert.match(out, /ShearK-Miner 2\.9 \(ShearHash-v3 light\)/);
+    // PR146: the run banner names the RandomX mode in use (interpreter: light).
+    assert.match(out, /ShearK-Miner 2\.9 \(ShearHash-v3, RandomX light\)/);
     assert.match(stripAnsi(out), /hashes=\d+/);
     assert.match(stripAnsi(out), /accepted=0/);
     assert.match(stripAnsi(out), /rejected=0/);

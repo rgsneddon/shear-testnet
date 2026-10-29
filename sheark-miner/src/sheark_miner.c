@@ -1424,10 +1424,11 @@ static void print_config(void) {
   printf("{\"name\":\"%s\",\"client\":\"%s\",\"algorithm\":\"%s\",\"personalisation\":\"%s\","
          "\"version\":\"%s\",\"clientLogin\":\"direct\",\"feePct\":0,"
          "\"pool\":\"%s:%d\",\"headerBytes\":%d,\"magic\":\"%s\","
-         "\"rxMode\":\"light\",\"rxCacheMiB\":%d,\"hugePages\":%s,"
+         "\"rxMode\":\"%s\",\"rxCacheMiB\":%d,\"hugePages\":%s,"
          "\"threads\":%d,\"backend\":\"%s\",\"destBound\":%s,\"dest20\":\"%s\",\"tls\":%s}\n",
          SHEAR_MINER_NAME, SHEAR_CLIENT, SHEAR_ALGO, SHEAR_PERSONAL,
          SHEAR_VERSION, g_host, g_port, SHEAR_HEADER_LEN, SHEAR_MAGIC,
+         strcmp(shear_hash_backend(), "jit-full") == 0 ? "full" : "light",
          SHEAR_RX_CACHE_MIB, shear_hash_huge_pages() ? "true" : "false",
          g_threads, shear_hash_backend(),
          g_have_note ? "true" : "false",
@@ -2333,18 +2334,24 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (bench_secs > 0) {
+    /* PR146: monotonic ns clock and the measured elapsed time. time() started
+     * mid-second and divided by whole seconds (--bench 2: 328 vs 449 R/s). */
     unsigned char header[SHEAR_HEADER_LEN];
     unsigned char hash[32];
     memset(header, 0, SHEAR_HEADER_LEN);
     header[0] = 1;
-    time_t t0 = time(NULL);
+    uint64_t t0 = st_now_ns();
+    uint64_t end = t0 + (uint64_t)bench_secs * 1000000000ull;
     uint64_t n = 0, h = 0;
     int primed = 0;
-    while (time(NULL) - t0 < bench_secs) {
+    while (st_now_ns() < end) {
       shear_set_nonce(header, n);
       if (!primed) {
         if (shear_hash_first(header) != 0) {
-          shear_hash(header, hash);
+          if (shear_hash_checked(header, hash) != 0) {
+            fprintf(stderr, "bench: hash setup failed\n");
+            return 1;
+          }
           h += 1;
           n += 1;
           continue;
@@ -2360,8 +2367,8 @@ int main(int argc, char **argv) {
       h += 1;
       n += 1;
     }
-    double secs = (double)bench_secs;
-    printf("bench hashes=%llu rate=%.0f R/s backend=%s (%.0fs)\n",
+    double secs = (double)(st_now_ns() - t0) / 1e9;
+    printf("bench hashes=%llu rate=%.1f R/s backend=%s elapsed=%.3fs\n",
            (unsigned long long)h, (double)h / secs, shear_hash_backend(), secs);
     return 0;
   }
@@ -2436,7 +2443,9 @@ int main(int argc, char **argv) {
     g_threads = shear_hash_max_threads();
   }
   atomic_store(&g_active_threads, g_threads);
-  printf("ShearK-Miner %s (ShearHash-v3 light)\n", SHEAR_VERSION);
+  /* PR146: the mode in use, not a fixed "light". */
+  printf("ShearK-Miner %s (ShearHash-v3, RandomX %s)\n", SHEAR_VERSION,
+         strcmp(shear_hash_backend(), "jit-full") == 0 ? "full" : "light");
   print_banner(stdout);
   outl(stdout, "%s://%s:%d user=%s dest=%s threads=%d coin=SHE algo=%s backend=%s hugePages=%s\n",
          g_tls ? "stratum+ssl" : "stratum+tcp",
