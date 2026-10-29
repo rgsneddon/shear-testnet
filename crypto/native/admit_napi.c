@@ -721,6 +721,164 @@ static napi_value fs1_verify_fn(napi_env env, napi_callback_info info) {
   return bool_v(env, shear_fs1_verify(fs1, fs1_len, records, (uint32_t)(rec_len / rec), root, digest, anchor) == 1);
 }
 
+/* External signer (Ledger) split, docs/LEDGER-VORTICE.md §5. */
+typedef struct Fs1External Fs1External;
+Fs1External *shear_fs1_prove_external(
+    const Fs1Handle *h, const uint64_t *indices, const uint8_t *tags, uint32_t n,
+    const uint8_t *digest, uint64_t anchor, uint32_t threads, uint8_t *out_requests);
+int32_t shear_fs1_external_assemble(
+    Fs1External *ctx, const uint8_t *sals, uint32_t n,
+    uint8_t *out_fs1, size_t fs1_cap, size_t *out_fs1_len, uint8_t *out_records, uint8_t *out_t);
+void shear_fs1_external_free(Fs1External *ctx);
+int32_t shear_fs1_external_tag(const uint8_t *x, uint8_t *out_tag);
+int32_t shear_fs1_external_sign(const uint8_t *request, const uint8_t *x, uint8_t *out_sal);
+
+#define FS1_REQ_BYTES (64 + 1 + 7 * 32)
+#define FS1_SAL_BYTES 160
+
+typedef struct {
+  Fs1External *ctx;
+  uint32_t n;
+} ExtBox;
+
+static void ext_finalize(napi_env env, void *data, void *hint) {
+  (void)env;
+  (void)hint;
+  ExtBox *b = (ExtBox *)data;
+  if (b->ctx) shear_fs1_external_free(b->ctx);
+  free(b);
+}
+
+/* fs1ProveExternal(handle, indices[], tags (32n), digest32, anchor, threads) -> { ctx, requests } | false */
+static napi_value fs1_prove_external_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 6;
+  napi_value argv[6];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  Fs1Handle *h = argc < 6 ? NULL : fs1_handle(env, argv[0]);
+  bool is_arr = 0;
+  uint32_t n = 0;
+  if (h) napi_is_array(env, argv[1], &is_arr);
+  if (is_arr) napi_get_array_length(env, argv[1], &n);
+  uint8_t *tags = NULL;
+  size_t tags_len = 0;
+  uint8_t digest[32];
+  uint64_t anchor = 0;
+  uint32_t threads = 0;
+  if (!h || !is_arr || n < 1 || n > 8 || buf_any(env, argv[2], &tags, &tags_len) != 0 || tags_len != (size_t)n * 32
+      || buf32(env, argv[3], digest) != 0 || u64_arg(env, argv[4], &anchor) != 0
+      || napi_get_value_uint32(env, argv[5], &threads) != napi_ok) {
+    napi_throw_error(env, NULL, "fs1ProveExternal args");
+    return NULL;
+  }
+  uint64_t indices[8];
+  for (uint32_t i = 0; i < n; i++) {
+    napi_value el;
+    napi_get_element(env, argv[1], i, &el);
+    if (u64_arg(env, el, &indices[i]) != 0) {
+      napi_throw_error(env, NULL, "fs1ProveExternal index");
+      return NULL;
+    }
+  }
+  uint8_t req[8 * FS1_REQ_BYTES];
+  Fs1External *ctx = shear_fs1_prove_external(h, indices, tags, n, digest, anchor, threads, req);
+  if (!ctx) return false_v(env);
+  ExtBox *b = (ExtBox *)malloc(sizeof(ExtBox));
+  if (!b) {
+    shear_fs1_external_free(ctx);
+    memset(req, 0, sizeof(req));
+    napi_throw_error(env, NULL, "fs1ProveExternal alloc");
+    return NULL;
+  }
+  b->ctx = ctx;
+  b->n = n;
+  napi_value ext, obj;
+  napi_create_external(env, b, ext_finalize, NULL, &ext);
+  napi_create_object(env, &obj);
+  napi_set_named_property(env, obj, "ctx", ext);
+  napi_set_named_property(env, obj, "requests", buf_from(env, req, (size_t)FS1_REQ_BYTES * n));
+  memset(req, 0, sizeof(req));
+  return obj;
+}
+
+/* fs1ExternalAssemble(ctx, sals (160n)) -> { fs1, records, t } | false. Consumes ctx. */
+static napi_value fs1_external_assemble_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  ExtBox *b = NULL;
+  uint8_t *sals = NULL;
+  size_t sals_len = 0;
+  if (argc < 2 || napi_get_value_external(env, argv[0], (void **)&b) != napi_ok || !b || !b->ctx
+      || buf_any(env, argv[1], &sals, &sals_len) != 0 || sals_len != (size_t)b->n * FS1_SAL_BYTES) {
+    napi_throw_error(env, NULL, "fs1ExternalAssemble args");
+    return NULL;
+  }
+  uint32_t n = b->n;
+  uint32_t cap = shear_fs1_blob_cap(n);
+  uint32_t rec = shear_fs1_record_bytes();
+  uint8_t *fs1 = (uint8_t *)malloc(cap);
+  uint8_t *records = (uint8_t *)malloc((size_t)rec * n);
+  uint8_t t[8 * 32];
+  size_t fs1_len = 0;
+  Fs1External *ctx = b->ctx;
+  b->ctx = NULL; /* assemble consumes it, even on failure */
+  if (!fs1 || !records) {
+    shear_fs1_external_free(ctx);
+    free(fs1);
+    free(records);
+    napi_throw_error(env, NULL, "fs1ExternalAssemble alloc");
+    return NULL;
+  }
+  int32_t ok = shear_fs1_external_assemble(ctx, sals, n, fs1, cap, &fs1_len, records, t);
+  if (ok != 1) {
+    free(fs1);
+    free(records);
+    memset(t, 0, sizeof(t));
+    return false_v(env);
+  }
+  napi_value obj;
+  napi_create_object(env, &obj);
+  napi_set_named_property(env, obj, "fs1", buf_from(env, fs1, fs1_len));
+  napi_set_named_property(env, obj, "records", buf_from(env, records, (size_t)rec * n));
+  napi_set_named_property(env, obj, "t", buf_from(env, t, (size_t)32 * n));
+  memset(t, 0, sizeof(t));
+  free(fs1);
+  free(records);
+  return obj;
+}
+
+/* fs1ExternalTag(x32) -> tag32 | false. Reference signer for tests. */
+static napi_value fs1_external_tag_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  uint8_t x[32], tag[32];
+  if (argc < 1 || buf32(env, argv[0], x) != 0) {
+    napi_throw_error(env, NULL, "fs1ExternalTag args");
+    return NULL;
+  }
+  int32_t ok = shear_fs1_external_tag(x, tag);
+  memset(x, 0, sizeof(x));
+  return ok == 1 ? buf_from(env, tag, 32) : false_v(env);
+}
+
+/* fs1ExternalSign(request, x32) -> sal160 | false. Reference signer for tests. */
+static napi_value fs1_external_sign_fn(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  uint8_t *req = NULL;
+  size_t req_len = 0;
+  uint8_t x[32], sal[FS1_SAL_BYTES];
+  if (argc < 2 || buf_any(env, argv[0], &req, &req_len) != 0 || req_len != FS1_REQ_BYTES || buf32(env, argv[1], x) != 0) {
+    napi_throw_error(env, NULL, "fs1ExternalSign args");
+    return NULL;
+  }
+  int32_t ok = shear_fs1_external_sign(req, x, sal);
+  memset(x, 0, sizeof(x));
+  return ok == 1 ? buf_from(env, sal, FS1_SAL_BYTES) : false_v(env);
+}
+
 static napi_value init(napi_env env, napi_value exports) {
   napi_value fn;
 #define EX(name, fnp) \
@@ -749,6 +907,10 @@ static napi_value init(napi_env env, napi_value exports) {
   EX("fs1Verify", fs1_verify_fn);
   EX("fs1ProveUnlinked", fs1_prove_unlinked_fn);
   EX("fs1VerifyUnlinked", fs1_verify_unlinked_fn);
+  EX("fs1ProveExternal", fs1_prove_external_fn);
+  EX("fs1ExternalAssemble", fs1_external_assemble_fn);
+  EX("fs1ExternalTag", fs1_external_tag_fn);
+  EX("fs1ExternalSign", fs1_external_sign_fn);
 #undef EX
   return exports;
 }

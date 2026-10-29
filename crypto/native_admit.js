@@ -273,6 +273,58 @@ export function fs1Prove(h, { indices, xs, digest, anchor, threads = 0 }) {
   }
 }
 
+/** Bytes of one external-signer request: m(64) index(1) O~ I~ R tag o i ib (32 each). */
+export const FS1_SAL_REQUEST_BYTES = 64 + 1 + 7 * 32;
+export const FS1_SAL_BYTES = 160;
+
+/**
+ * External signer (Ledger) host half, docs/LEDGER-VORTICE.md §5: membership
+ * proof without the admit secrets. `tags` are the signer's spend tags.
+ * Returns { ctx, requests } (requests hold host blinds, not the owner key).
+ */
+export function fs1ProveExternal(h, { indices, tags, digest, anchor, threads = 0 }) {
+  if (!fs1NativeLoaded() || !h || typeof native.fs1ProveExternal !== 'function') return null;
+  try {
+    const o = native.fs1ProveExternal(h, indices.map(Number), Buffer.concat(tags.map((t) => as32(t))), as32(digest), Number(anchor), threads >>> 0);
+    if (!o || o === false) return null;
+    return { ctx: o.ctx, requests: Buffer.from(o.requests) };
+  } catch {
+    return null;
+  }
+}
+
+/** Check the signer's SA+L replies and emit { fs1, records, t } as fs1Prove does. Consumes ctx. */
+export function fs1ExternalAssemble(ctx, sals) {
+  if (!fs1NativeLoaded() || !ctx) return null;
+  try {
+    const o = native.fs1ExternalAssemble(ctx, Buffer.concat(sals.map((s) => Buffer.from(s))));
+    if (!o || o === false) return null;
+    return { fs1: Buffer.from(o.fs1), records: Buffer.from(o.records), t: Buffer.from(o.t) };
+  } catch {
+    return null;
+  }
+}
+
+/** Reference signer (tests and device vectors only): the spend tag for x. */
+export function fs1ExternalTag(x) {
+  try {
+    const o = native.fs1ExternalTag(as32(x));
+    return o && o.length === 32 ? Buffer.from(o) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Reference signer (tests and device vectors only): SA+L for one request. */
+export function fs1ExternalSign(request, x) {
+  try {
+    const o = native.fs1ExternalSign(Buffer.from(request), as32(x));
+    return o && o.length === FS1_SAL_BYTES ? Buffer.from(o) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Consensus verify of one FS-1 spend. False when the addon is missing. */
 export function fs1Verify({ fs1, records, root, digest, anchor }) {
   if (!fs1NativeLoaded()) return false;
