@@ -480,5 +480,16 @@ if [ -f "$f.seq" ]; then n=$(( $(cat "$f.n" 2>/dev/null || echo 0) + 1 )); echo 
     assert.match(rb, /\*\*Stratum on 1111:\*\* TLS only/);
     assert.doesNotMatch(rb, /Open point/);
     for (const step of ['Reinstall', 'Firewall', 'Install', 'Verify, don\'t paint']) assert.ok(rb.includes(step), step);
+    // Mainnet state survives every teardown, and the spend seed is backed up offline first.
+    assert.doesNotMatch(rb, /Nothing is kept or copied/);
+    assert.match(rb, /\*\*Offline backup of `pool-spend\.seed`\*\*/);
+    assert.match(rb, /SHEAR_SEED_BACKUP_SHA256/);
+    assert.match(rb, /never touches mainnet state/);
+    assert.match(rb, /SHEAR_ROLE=<pool\|p2p-a\|p2p-b>/);
+    assert.match(rb, /agent-box/);
+    assert.match(rb, /check_host\.sh <role> --phase pre-genesis/);
+    assert.match(rb, /check_host\.sh <role> --phase live/);
+    assert.doesNotMatch(rb, /All three are inbound TCP 22,\s+80, 443, 1111 and 30303/);
+    assert.match(rb, /StateDirectoryMode=0700/);
   });
 });
