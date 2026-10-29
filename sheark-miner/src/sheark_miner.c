@@ -14,6 +14,7 @@
 #include "shear_hash.h"
 #include "job_bits.h"
 #include "stratum_tls.h"
+#include "blunote.h"
 #include "../../crypto/share_stamp.h"
 
 #include <ctype.h>
@@ -58,6 +59,9 @@
 static const char *g_user = NULL;
 static char g_login[320];
 static char g_dest[256];
+/* R28 solo (b): the mining address B||Y, sent at login only with --solo. */
+static char g_blu_addr[129];
+static int g_solo = 0;
 static char g_host_buf[256];
 static const char *g_host = DEFAULT_HOST;
 static int g_port = DEFAULT_PORT;
@@ -108,6 +112,9 @@ typedef struct {
   int share_bits;
   int gen;
   char hash[65];
+  /* R28: the one-time key this nonce binds (BluNotes). */
+  int have_key;
+  BluKey key;
 } Share;
 
 static pthread_mutex_t g_q_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -169,8 +176,12 @@ static void usage(FILE *out) {
   fprintf(out,
           "ShearK-Miner %s (ShearHash-v3 light)\n"
           "Hashes the 128-byte Shear header. One proven share-hash mints units.\n\n"
-          "  --user she1…|ssa1….worker   required (not shear1)\n"
-          "  --dest ssa1…                owned payout dest (she1 login)\n"
+          "  --user WORKER               required: a worker name (e.g. rig1), never an address\n"
+          "  --blu shm1…                 required: your wallet's mining address (This wallet mines).\n"
+          "                              It stays on this rig; each share carries a fresh one-time key.\n"
+          "  --solo                      your own node's solo stratum: login sends the --blu\n"
+          "                              address so the node pays its pot to a one-time key.\n"
+          "                              Never use it with a public pool.\n"
           "  --pool host:port            default stratum+ssl://%s:%d\n"
           "  --threads N                 no 256 farm cap\n"
           "  --backend jit-full            default: 2 GiB dataset JIT (same digest as light)\n"
@@ -218,26 +229,40 @@ static int valid_worker(const char *w) {
   return 1;
 }
 
-static int is_shear_login(const char *a, size_t n) {
-  if (n < 8) return 0;
-  if (n >= 6 && strncmp(a, "shear1", 6) == 0) return 0;
-  if (!(strncmp(a, "she1", 4) == 0 || strncmp(a, "ssa1", 4) == 0)) return 0;
+/* Portable case-insensitive prefix test (no strncasecmp on every toolchain). */
+static int prefix_ci(const char *s, size_t n, const char *pre) {
+  size_t k = strlen(pre);
+  if (n < k) return 0;
+  for (size_t i = 0; i < k; i++) if (tolower((unsigned char)s[i]) != pre[i]) return 0;
   return 1;
 }
 
-static int build_login(const char *user) {
-  if (!user) return 0;
-  const char *dot = strchr(user, '.');
-  size_t alen = dot ? (size_t)(dot - user) : strlen(user);
-  if (!is_shear_login(user, alen)) return 0;
-  const char *worker = DEFAULT_WORKER;
-  char wbuf[40];
-  if (dot) {
-    snprintf(wbuf, sizeof(wbuf), "%s", dot + 1);
-    if (!valid_worker(wbuf)) return 0;
-    worker = wbuf;
+static int all_hex(const char *s, size_t n) {
+  for (size_t i = 0; i < n; i++) if (hex_nibble(s[i]) < 0) return 0;
+  return 1;
+}
+
+/* R28 option 2 (Russell 28 Oct): true when any dot-separated part of `s`
+ * names a wallet (ssa1, she1, shear1, shm1, or a raw 32/64-byte hex key).
+ * Such a login would hand the pool something linkable, so it is refused. */
+static int names_address(const char *s) {
+  const char *p = s;
+  while (p && *p) {
+    const char *dot = strchr(p, '.');
+    size_t n = dot ? (size_t)(dot - p) : strlen(p);
+    if (prefix_ci(p, n, "ssa1") || prefix_ci(p, n, "she1") || prefix_ci(p, n, "shm1") || prefix_ci(p, n, "shear1")) return 1;
+    if ((n == 64 || n == 128) && all_hex(p, n)) return 1;
+    p = dot ? dot + 1 : NULL;
   }
-  snprintf(g_login, sizeof(g_login), "%.*s.%s", (int)alen, user, worker);
+  return 0;
+}
+
+/* The pool login is a worker name only. 1 ok, 0 not a worker name, -1 an address. */
+static int build_login(const char *user) {
+  if (!user || !*user) return 0;
+  if (names_address(user)) return -1;
+  if (!valid_worker(user)) return 0;
+  snprintf(g_login, sizeof(g_login), "%s", user);
   g_user = g_login;
   return 1;
 }
@@ -291,6 +316,51 @@ static int dest20_from_ssa1(const char *addr, unsigned char out[20]) {
   return 0;
 }
 
+/* R28 mining address: shm1… is bech32 (the ssa checksum) of B‖Y. Writes the
+ * 128-hex form for blu_set_address. 0 ok; -1 bad prefix, character, checksum
+ * or length. Lowercase only, as the wallet prints it. */
+static int shm1_to_hex(const char *addr, char hex[129]) {
+  if (!addr || strncmp(addr, "shm1", 4) != 0) return -1;
+  const char *body = addr + 4;
+  size_t blen = strlen(body);
+  if (blen != 1 + 103 + 6) return -1;
+  unsigned char vals[110];
+  for (size_t i = 0; i < blen; i++) {
+    const char *p = body[i] ? strchr(BECH32_CS, body[i]) : NULL;
+    if (!p) return -1;
+    vals[i] = (unsigned char)(p - BECH32_CS);
+  }
+  unsigned char chkbuf[8 + 110];
+  size_t n = 0;
+  const char *hrp = "shm";
+  for (size_t i = 0; hrp[i]; i++) chkbuf[n++] = (unsigned char)(hrp[i] >> 5);
+  chkbuf[n++] = 0;
+  for (size_t i = 0; hrp[i]; i++) chkbuf[n++] = (unsigned char)(hrp[i] & 31);
+  memcpy(chkbuf + n, vals, blen);
+  n += blen;
+  if (bech32_polymod(chkbuf, n) != 1) return -1;
+  if (vals[0] != 0) return -1;
+  unsigned char out[64];
+  unsigned acc = 0, bits = 0, got = 0;
+  for (size_t i = 1; i < blen - 6; i++) {
+    acc = (acc << 5) | vals[i];
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      if (got >= 64) return -1;
+      out[got++] = (unsigned char)((acc >> bits) & 0xff);
+    }
+  }
+  if (got != 64 || (acc & ((1u << bits) - 1)) != 0) return -1;
+  static const char *hx = "0123456789abcdef";
+  for (int i = 0; i < 64; i++) {
+    hex[i * 2] = hx[out[i] >> 4];
+    hex[i * 2 + 1] = hx[out[i] & 0xf];
+  }
+  hex[128] = 0;
+  return 0;
+}
+
 static void init_note_commit(void) {
   char addr[320];
   const char *src = g_dest[0] ? g_dest : g_login;
@@ -331,6 +401,7 @@ static int share_or_block_hit(const unsigned char hash[32], uint64_t nonce) {
   /* Share credit is the byte in this nonce, not a later vardiff dial.
    * dest-bound submit only when the job says shareBind=dest. */
   if (sb < 0) return 0;
+  if (blu_enabled()) return shear_meets_target(hash, sb);
   if (atomic_load_explicit(&g_share_bind_dest, memory_order_relaxed) && g_have_note) {
     unsigned char bound[32];
     shear_share_bind(hash, g_note_commit, bound);
@@ -579,10 +650,12 @@ static void identity_json(char *out, size_t cap, const char *login, int threads)
 }
 
 static int send_login(Conn *c, const char *login, int threads) {
-  char ident[1400], line[3200];
+  char ident[1400], line[3200], blu[160] = "";
   identity_json(ident, sizeof(ident), login, threads);
+  /* Only a solo node gets the address; a pool learns nothing it could link. */
+  if (g_solo && g_blu_addr[0]) snprintf(blu, sizeof(blu), ",\"bluAddr\":\"%s\"", g_blu_addr);
   int n = snprintf(line, sizeof(line),
-                   "{\"id\":1,\"method\":\"login\",\"params\":{%s},%s}\n", ident, ident);
+                   "{\"id\":1,\"method\":\"login\",\"params\":{%s%s},%s%s}\n", ident, blu, ident, blu);
   return conn_write(c, line, n) == 0 ? 0 : -1;
 }
 
@@ -594,14 +667,20 @@ static int send_stats(Conn *c, const char *login, int threads) {
   return conn_write(c, line, n);
 }
 
-static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce, const char *hash) {
-  char ident[1400], line[3600];
+static int send_submit(Conn *c, const char *login, int threads, const char *jobId, uint64_t nonce, const char *hash, const BluKey *key) {
+  char ident[1400], line[3900], keys[200] = "";
   identity_json(ident, sizeof(ident), login, threads);
+  if (key) {
+    char R[65], P[65];
+    blu_hex32(key->R, R);
+    blu_hex32(key->P, P);
+    snprintf(keys, sizeof(keys), ",\"shareR\":\"%s\",\"shareP\":\"%s\",\"viewTag\":%u", R, P, (unsigned)key->tag);
+  }
   int n = snprintf(line, sizeof(line),
-                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"},"
-                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"}\n",
-                   ident, jobId, (unsigned long long)nonce, hash,
-                   ident, jobId, (unsigned long long)nonce, hash);
+                   "{\"id\":2,\"method\":\"submit\",\"params\":{%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"%s},"
+                   "%s,\"jobId\":\"%s\",\"nonce\":\"%llu\",\"hash\":\"%s\"%s}\n",
+                   ident, jobId, (unsigned long long)nonce, hash, keys,
+                   ident, jobId, (unsigned long long)nonce, hash, keys);
   return conn_write(c, line, n);
 }
 
@@ -862,7 +941,7 @@ static int copy_main_job(JobSnap *out) {
   return ok;
 }
 
-static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char hash[32], int gen) {
+static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char hash[32], int gen, const BluKey *key) {
   pthread_mutex_lock(&g_q_mu);
   int next = (g_qtail + 1) % QCAP;
   if (next == g_qhead) {
@@ -876,6 +955,8 @@ static int enqueue_share(const char *jobId, uint64_t nonce, const unsigned char 
   s->nonce = nonce;
   s->gen = gen;
   s->share_bits = credit_bits_of_nonce(nonce);
+  s->have_key = key != NULL;
+  if (key) s->key = *key;
   shear_hash_hex(hash, s->hash);
   snprintf(g_last_job, sizeof(g_last_job), "%s", jobId);
   g_last_nonce = nonce;
@@ -936,6 +1017,15 @@ static void *hash_worker(void *arg) {
   unsigned char primed_hdr[SHEAR_HEADER_LEN];
   int primed = 0;
   uint64_t primed_n = 0;
+  /* R28 BluNotes: each key binds at most 256 nonces on one header; a hit
+   * or a header change moves on, so no two shares share a key. */
+  BluKey key, primed_key;
+  int have_key = 0;
+  unsigned ctr = 0;
+  uint64_t bind = 0;
+  int bind_ok = 0;
+  memset(&key, 0, sizeof(key));
+  memset(&primed_key, 0, sizeof(primed_key));
   while (!g_stop) {
     int seq = atomic_load_explicit(&g_job_seq, memory_order_acquire);
     unsigned stamp = atomic_load_explicit(&g_stamp_seq, memory_order_acquire);
@@ -950,6 +1040,8 @@ static void *hash_worker(void *arg) {
       memcpy(header, job.header, SHEAR_HEADER_LEN);
       shear_bind(header);
       n = g_origin + (uint64_t)tid;
+      bind_ok = 0;
+      have_key = 0;
     } else if (stamp != last_stamp) {
       unsigned char live[SHEAR_HEADER_LEN];
       pthread_mutex_lock(&g_job_mu);
@@ -966,8 +1058,27 @@ static void *hash_worker(void *arg) {
        * that digest against the live header is pool bad_hash. */
       primed = 0;
       memcpy(header, live, SHEAR_HEADER_LEN);
+      bind_ok = 0;
+      have_key = 0;
     }
     uint64_t stamped = stamp_share_nonce(n);
+    if (blu_enabled()) {
+      if (!have_key || ctr >= 256) {
+        if (blu_new_key(&key) != 0) {
+          usleep(1000);
+          continue;
+        }
+        have_key = 1;
+        ctr = 0;
+        bind_ok = 0;
+      }
+      if (!bind_ok) {
+        bind = blu_bind(header, &key);
+        bind_ok = 1;
+      }
+      stamped = blu_nonce(stamped, bind, ctr);
+      ctr++;
+    }
     shear_set_nonce(header, stamped);
     if (!primed) {
       if (shear_hash_first(header) != 0) {
@@ -976,13 +1087,15 @@ static void *hash_worker(void *arg) {
         atomic_fetch_add_explicit(&g_hashes, 1, memory_order_relaxed);
         if (atomic_load_explicit(&g_job_seq, memory_order_acquire) == last_gen
             && share_or_block_hit(hash, stamped)) {
-          enqueue_share(job.jobId, stamped, hash, job.gen);
+          enqueue_share(job.jobId, stamped, hash, job.gen, blu_enabled() ? &key : NULL);
+          have_key = 0;
         }
         n += (uint64_t)g_threads;
         continue;
       }
       primed = 1;
       primed_n = stamped;
+      primed_key = key;
       memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
       n += (uint64_t)g_threads;
       continue;
@@ -1002,14 +1115,17 @@ static void *hash_worker(void *arg) {
         if (!share_or_block_hit(hash, primed_n)) {
           g_dropped++;
           primed_n = stamped;
+          primed_key = key;
           memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
           n += (uint64_t)g_threads;
           continue;
         }
       }
-      enqueue_share(job.jobId, primed_n, hash, job.gen);
+      enqueue_share(job.jobId, primed_n, hash, job.gen, blu_enabled() ? &primed_key : NULL);
+      if (blu_enabled() && memcmp(primed_key.P, key.P, 32) == 0) have_key = 0;
     }
     primed_n = stamped;
+    primed_key = key;
     memcpy(primed_hdr, header, SHEAR_HEADER_LEN);
     n += (uint64_t)g_threads;
   }
@@ -1056,7 +1172,7 @@ static void flush_shares(Conn *mainc) {
       enqueue_front(&s);
       return;
     }
-    int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce, s.hash);
+    int wr = send_submit(mainc, g_login, g_threads, s.jobId, s.nonce, s.hash, s.have_key ? &s.key : NULL);
     if (wr == 1) {
       enqueue_front(&s);
       return;
@@ -1236,6 +1352,19 @@ int main(int argc, char **argv) {
   device_inventory();
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) backend_arg = argv[++i];
+    if (strcmp(argv[i], "--blu-vector") == 0 && i + 3 < argc) {
+      /* R28 known-answer check against crypto/blunote.js: one key from a given r, and its binding. */
+      BluKey k;
+      unsigned char r[32], hdr[SHEAR_HEADER_LEN];
+      if (blu_init() != 0 || blu_set_address(argv[i + 1]) != 0) return 2;
+      if (blu_hex_bytes(argv[i + 2], r, 32) != 0 || blu_hex_bytes(argv[i + 3], hdr, SHEAR_HEADER_LEN) != 0) return 2;
+      if (blu_key_from_r(r, &k) != 0) return 3;
+      char R[65], P[65];
+      blu_hex32(k.R, R);
+      blu_hex32(k.P, P);
+      printf("R %s\nP %s\ntag %u\nbind %llu\n", R, P, (unsigned)k.tag, (unsigned long long)blu_bind(hdr, &k));
+      return 0;
+    }
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) want_help = 1;
   }
   if (want_help) {
@@ -1284,8 +1413,32 @@ int main(int argc, char **argv) {
       return 2;
     } else if (strcmp(argv[i], "--user") == 0 && i + 1 < argc) {
       g_user = argv[++i];
-    } else if (strcmp(argv[i], "--dest") == 0 && i + 1 < argc) {
-      snprintf(g_dest, sizeof(g_dest), "%s", argv[++i]);
+    } else if (strcmp(argv[i], "--dest") == 0) {
+      /* R28 option 2: nothing names a payee to a pool. */
+      fprintf(stderr, "--dest is retired: R28 pays one-time keys of your --blu mining address, never a dest.\n");
+      return 2;
+    } else if (strcmp(argv[i], "--blu") == 0 && i + 1 < argc) {
+      const char *addr = argv[++i];
+      char hex[129];
+      if (strncmp(addr, "shm1", 4) == 0) {
+        if (shm1_to_hex(addr, hex) != 0) {
+          fprintf(stderr, "--blu: the shm1 mining address has a bad checksum or length. Copy it again from the wallet.\n");
+          return 2;
+        }
+      } else if (strcmp(SHEAR_MAGIC, "shear-v1") != 0 && strlen(addr) == 128 && all_hex(addr, 128)) {
+        /* Raw hex has no checksum; accepted off mainnet only. */
+        snprintf(hex, sizeof(hex), "%s", addr);
+      } else {
+        fprintf(stderr, "--blu: need the shm1… mining address from the wallet (\"This wallet mines\").\n");
+        return 2;
+      }
+      if (blu_init() != 0 || blu_set_address(hex) != 0) {
+        fprintf(stderr, "--blu: the mining address is not two valid ristretto255 points. Copy it again from the wallet.\n");
+        return 2;
+      }
+      snprintf(g_blu_addr, sizeof(g_blu_addr), "%s", addr);
+    } else if (strcmp(argv[i], "--solo") == 0) {
+      g_solo = 1;
     } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
       g_threads = atoi(argv[++i]);
       if (g_threads < 1) g_threads = 1;
@@ -1298,6 +1451,10 @@ int main(int argc, char **argv) {
   }
   /* Flag order must not matter. Refuse before the dataset alloc so a bad URL
      does not spend seconds on jit-full. print-config exits before mining. */
+  if (g_solo && !g_blu_addr[0]) {
+    fprintf(stderr, "--solo needs --blu: a solo node pays its pot to a one-time key of that address\n");
+    return 2;
+  }
   if (!do_selftest && !verify_hex && g_require_tls && (g_cleartext_url || !g_tls)) {
     fprintf(stderr, "requireTls: refusing cleartext\n");
     return 2;
@@ -1335,12 +1492,8 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (g_threads < 1) g_threads = g_cpu_cores > 0 ? g_cpu_cores : 1;
-  if (g_dest[0] && strncmp(g_dest, "ssa1", 4) != 0) {
-    fprintf(stderr, "dest must be ssa1... (owned payout dest)\n");
-    return 2;
-  }
   if (do_cfg) {
-    if (g_user && build_login(g_user)) init_note_commit();
+    if (g_user && build_login(g_user) > 0) init_note_commit();
     print_config();
     return 0;
   }
@@ -1385,36 +1538,23 @@ int main(int argc, char **argv) {
     usage(stderr);
     return 2;
   }
-  if (!build_login(g_user)) {
-    fprintf(stderr, "user must be she1... or ssa1....worker (not shear1)\n");
-    fprintf(stderr, "Copy dest from the wallet. An incomplete ssa1 (truncated, missing checksum) is not a login.\n");
-    return 2;
-  }
   {
-    char id[320];
-    snprintf(id, sizeof(id), "%s", g_login);
-    char *dot = strchr(id, '.');
-    if (dot) *dot = 0;
-    if (strncmp(id, "ssa1", 4) == 0) {
-      unsigned char d20[20];
-      if (dest20_from_ssa1(id, d20) != 0) {
-        fprintf(stderr, "ssa1 dest is incomplete or checksum-failed (%zu chars).\n", strlen(id));
-        fprintf(stderr, "Copy dest from the Shear wallet (Copy dest). Do not paste she1. Do not truncate ssa1.\n");
-        fprintf(stderr, "Typical dest20 ssa1 is about 42 characters. Dest20||B is longer and still valid.\n");
-        return 2;
-      }
-    } else if (strncmp(id, "she1", 4) == 0 && !g_dest[0]) {
-      fprintf(stderr, "warning: she1 login has no --dest ssa1. Mining continues; auto-payout cannot send until an owned Copy dest is set.\n");
-      fprintf(stderr, "Pool still books your work under the miner tag. Add --dest ssa1… from the wallet.\n");
+    /* R28 option 2: the login is a worker name; the mining address stays here. */
+    int lr = build_login(g_user);
+    if (lr < 0) {
+      fprintf(stderr, "--user is a worker name (e.g. rig1). An address there would be sent to the pool;\n");
+      fprintf(stderr, "your wallet's mining address goes in --blu, and the pool never sees it.\n");
+      return 2;
     }
-    if (g_dest[0]) {
-      unsigned char d20[20];
-      if (dest20_from_ssa1(g_dest, d20) != 0) {
-        fprintf(stderr, "ssa1 --dest is incomplete or checksum-failed (%zu chars).\n", strlen(g_dest));
-        fprintf(stderr, "Copy dest from the Shear wallet. Do not truncate.\n");
-        return 2;
-      }
+    if (lr == 0) {
+      fprintf(stderr, "--user: a worker name of 1-32 letters, digits, _ or - (e.g. rig1)\n");
+      return 2;
     }
+  }
+  if (!blu_enabled()) {
+    fprintf(stderr, "--blu YOUR_MINING_ADDRESS is required: without it a pool refuses every share (need_key).\n");
+    fprintf(stderr, "Wallet: turn on \"This wallet mines\" and copy the Mining address (shm1...).\n");
+    return 2;
   }
   init_note_commit();
 #if defined(_WIN32)

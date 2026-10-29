@@ -1159,39 +1159,8 @@ export function mempoolLattice(store, limitOrOpts = 24) {
     if (row.key) seenPending.add(row.key);
   }
   pending.sort((a, b) => b.priority - a.priority);
-  const gossipRounds = Array.isArray(opts.networkRounds);
-  const byTag = new Map();
-  if (!gossipRounds) {
-    for (const r of openRoundHashRows(opts.miners, opts.hashBonusNanos ?? HASH_BONUS_NANOS)) {
-      byTag.set(r.tag, r);
-    }
-  }
-  const netRows = gossipRounds
-    ? opts.networkRounds
-    : (typeof store.openRoundRows === 'function' ? store.openRoundRows() : []);
-  for (const r of netRows) {
-    const tag = String(r.tag || '').toLowerCase();
-    if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
-    const count = Math.floor(Number(r.count) || 0);
-    if (count < 1) continue;
-    const prev = byTag.get(tag);
-    if (!prev || count > prev.count) {
-      byTag.set(tag, {
-        id: `hash-${tag}`,
-        kind: 'hash',
-        count,
-        weight: count,
-        fee: 0,
-        included: false,
-        priority: 800 + count,
-        prime: false,
-        tag,
-        source: r.source || 'peer',
-      });
-    }
-  }
-  const hashRows = [...byTag.values()].sort((a, b) => b.count - a.count);
-  const hashes = hashRows.reduce((a, r) => a + (Number(r.count) || 0), 0);
+  const hashRows = [];
+  const hashes = 0;
   const pendingBlock = {
     height: Number(lastJob?.height || (tip.height + 1)),
     jobId: String(lastJob?.jobId || ''),

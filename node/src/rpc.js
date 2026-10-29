@@ -54,11 +54,15 @@ function headerJson(b, height) {
 }
 
 function compactBlockJson(b) {
+  const rec = b.blunoteRecord;
   return toHex({
     ...compactChainBlock(b),
     header: Buffer.from(b.header).toString('hex'),
     hash: Buffer.from(b.hash).toString('hex'),
     height: b.height,
+    // R28: the notes this block paid by draw. A wallet scans the winners'
+    // (R, P, tag) with its scan key; the record names no address.
+    ...(rec != null && rec !== '' ? { blunoteRecord: Buffer.isBuffer(rec) ? rec.toString('hex') : String(rec) } : {}),
   });
 }
 
@@ -469,7 +473,6 @@ export function createRpc({
       return store.submitHeader({
         jobId: params.jobId || params[0],
         nonce: nonce.toString(),
-        miner: params.miner,
         powHash: params.powHash,
         skipSharePow: params.skipSharePow,
         trustedPowHash: params.trustedPowHash,

@@ -10,7 +10,6 @@ import {
   nonceWithShareTarget,
   rememberLiveSharePow,
   clearLiveSharePow,
-  unitsForShare,
 } from './share_batch.js';
 
 describe('ENC_SHARE v5', () => {
@@ -41,13 +40,16 @@ describe('ENC_SHARE v5', () => {
     const got = noteCommitOfShare(wire);
     assert.equal(got.length, 32);
     assert.equal(got.equals(nc), true);
+    // R28: a share names a one-time key, never an address commitment, so
+    // a v5 or v12 payee-commit frame is no longer creditable in a block:
+    // unstamped, stamped with a remembered proof, or historic.
     const unstamped = verifyShareBatch({
       parentHeader: Buffer.alloc(128),
       shares: [wire],
       skipPow: true,
     });
     assert.equal(unstamped.ok, false);
-    assert.equal(unstamped.reason, 'share_target');
+    assert.equal(unstamped.reason, 'share_frame');
     const stampedNonce = nonceWithShareTarget(7n, 8);
     clearLiveSharePow();
     assert.equal(rememberLiveSharePow(Buffer.alloc(128), stampedNonce, {
@@ -60,8 +62,8 @@ describe('ENC_SHARE v5', () => {
       shares: [{ ...wire, nonce: stampedNonce.toString(), shareBits: 8, proofSlot: 0 }],
       skipPow: true,
     });
-    assert.equal(v.ok, true, v.reason);
-    assert.equal(v.units, unitsForShare(8));
+    assert.equal(v.ok, false);
+    assert.equal(v.reason, 'share_frame');
     const historic = JSON.parse(JSON.stringify({ noteCommit: '', nonce: '7', lz: 8 }));
     const old = verifyShareBatch({
       parentHeader: Buffer.alloc(128),
@@ -69,6 +71,6 @@ describe('ENC_SHARE v5', () => {
       skipPow: true,
     });
     assert.equal(old.ok, false);
-    assert.equal(old.reason, 'share_target');
+    assert.equal(old.reason, 'share_frame');
   });
 });

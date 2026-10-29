@@ -36,7 +36,7 @@ import {
 } from '../src/chain.js';
 import { createStore } from '../src/store.js';
 import { emptySupplyState, supplyStep } from '../src/supply.js';
-import { encodeDest, hash20FromAddress, newIdentity, poolFeeDest } from '../../crypto/address.js';
+import { encodeDest, hash20FromAddress, newIdentity, poolFeeDest, encodeMiningAddress } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { payeeFs1Ok } from '../../crypto/n1.js';
 import {
@@ -49,6 +49,7 @@ import {
 import { admitClient, bindAcceptedShare, SHEARK_MINER_VERSION } from '../../pool/src/pool.js';
 import { createPullBook } from '../../pool/src/pull_book.js';
 import { evaluateSoloSubmit, parseSoloLogin } from '../src/solo_stratum.js';
+import { bluWallet } from './support/blunote_mine.js';
 
 const T0 = 1_700_000_000_000;
 
@@ -313,10 +314,15 @@ describe('N-1 gate order', () => {
     assert.equal(payeeFs1Ok(poolFeeDest()), true);
     assert.equal(payeeFs1Ok(encodeDest(Buffer.alloc(20, 5))), true);
     assert.equal(payeeFs1Ok(bad), false);
-    const refusedLogin = admitClient({ ...login, login: bad });
-    assert.equal(refusedLogin.ok, false);
-    assert.equal(refusedLogin.reason, 'admit_note_point');
-    assert.equal(admitClient({ ...login, login: who }).ok, true);
+    // R28 option 2 (Russell 28 Oct): a login is a worker name only, so no
+    // payee, good or bad, ever reaches a pool or a solo node: an address is
+    // refused before any payee check could matter.
+    for (const name of [bad, who]) {
+      const refused = admitClient({ ...login, login: name });
+      assert.equal(refused.ok, false);
+      assert.equal(refused.reason, 'login_address');
+    }
+    assert.equal(admitClient({ ...login, login: 'rig1' }).ok, true);
     const id = newIdentity();
     const refusedPayout = admitClient({
       ...login,
@@ -324,11 +330,12 @@ describe('N-1 gate order', () => {
       dest: bad,
     });
     assert.equal(refusedPayout.ok, false);
-    assert.equal(refusedPayout.reason, 'admit_note_point');
-    const solo = parseSoloLogin(bad);
-    assert.equal(solo.ok, false);
-    assert.equal(solo.reason, 'admit_note_point');
-    assert.equal(parseSoloLogin(who).ok, true);
+    assert.equal(refusedPayout.reason, 'login_address');
+    assert.equal(admitClient({ ...login, login: 'rig1', dest: who }).reason, 'login_address');
+    const miner = bluWallet();
+    const mining = encodeMiningAddress({ B: miner.B, Y: miner.Y });
+    assert.equal(parseSoloLogin(bad, mining).reason, 'login_address');
+    assert.equal(parseSoloLogin('rig1', mining).ok, true);
     const soloShare = evaluateSoloSubmit({
       store: { jobs: new Map() },
       jobId: 'missing',

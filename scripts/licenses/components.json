@@ -266,7 +266,7 @@
   {
    "kind": "runtime",
    "name": "libsodium",
-   "version": "Android: 1.0.22, pinned in wallet/android/libsodium.lock.json; Linux: the packing host's libsodium.so.23/.so.26, exact version recorded in each pack's RUNTIME-VERSIONS.txt",
+   "version": "Android: 1.0.22, pinned in wallet/android/libsodium.lock.json; Linux: the packing host's libsodium.so.23/.so.26, exact version recorded in each pack's RUNTIME-VERSIONS.txt; ShearK-Miner: the packing host's libsodium (Homebrew on macOS, MSYS2 on Windows), recorded in RUNTIME-VERSIONS.txt",
    "license": "ISC",
    "holders": [
     "Copyright (c) 2013-2026 Frank Denis <j at pureftpd dot org>"
@@ -274,7 +274,7 @@
    "texts": [
     "LICENSES/third-party/libsodium/LICENSE"
    ],
-   "shipped": "Android APK lib/arm64-v8a/libsodium.so (built by crypto/native/build-android-libsodium.sh); Linux wallet zips and distro desktop packs (lib/)",
+   "shipped": "Android APK lib/arm64-v8a/libsodium.so (built by crypto/native/build-android-libsodium.sh); Linux wallet zips and distro desktop packs (lib/); ShearK-Miner packs (R28 BluNotes share keys): Linux and macOS beside the binary, Windows libsodium-26.dll from MSYS2 mingw64",
    "obligation": "keep the copyright and licence text in source and binary copies",
    "status": "DECIDED (decision 5): Android libsodium.so is built from the pinned 1.0.22 tarball (sha256 and minisign verified) with NDK r27d, reproducibly (output sha256 pinned); check_android_release.py refuses an APK without that exact library. Linux: host copyright file copied to lib/licenses/"
   },

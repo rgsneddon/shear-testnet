@@ -40,6 +40,9 @@ function leafRead(l) {
   };
 }
 
+/** Trailer tag of a block's BluNotes record (R28). */
+const BLUNOTE_REC_TAG = Buffer.from('blunoterec1');
+
 export function packEpochBlock(block) {
   const header = Buffer.from(block.header);
   const rootA = Buffer.from(block.rootA || Buffer.alloc(32));
@@ -89,6 +92,14 @@ export function packEpochBlock(block) {
     n.writeUInt32LE(body.length, 0);
     chunks.push(n, body);
   }
+  // R28: the block's compact record, kept after its share frames are pruned.
+  if (block.blunoteRecord != null && block.blunoteRecord !== '') {
+    const rec = Buffer.isBuffer(block.blunoteRecord) ? block.blunoteRecord : Buffer.from(String(block.blunoteRecord), 'hex');
+    const body = Buffer.concat([BLUNOTE_REC_TAG, rec]);
+    const n = Buffer.alloc(4);
+    n.writeUInt32LE(body.length, 0);
+    chunks.push(n, body);
+  }
   return Buffer.concat(chunks);
 }
 
@@ -120,6 +131,7 @@ export function unpackEpochBlock(buf) {
   let sawSpill = false;
   let hashSpillCredits;
   let sawSpillCredits = false;
+  let blunoteRecord = null;
   if (o + 4 <= b.length) {
     const sLen = b.readUInt32LE(o);
     o += 4;
@@ -132,6 +144,11 @@ export function unpackEpochBlock(buf) {
         const nLen = b.readUInt32LE(o);
         if (nLen > b.length - (o + 4)) break;
         const body = b.subarray(o + 4, o + 4 + nLen);
+        if (body.length > BLUNOTE_REC_TAG.length && body.subarray(0, BLUNOTE_REC_TAG.length).equals(BLUNOTE_REC_TAG)) {
+          blunoteRecord = body.subarray(BLUNOTE_REC_TAG.length).toString('hex');
+          o += 4 + nLen;
+          continue;
+        }
         const credits = unpackHashCreditBytes(body);
         if (credits) {
           hashCredits = credits;
@@ -185,6 +202,7 @@ export function unpackEpochBlock(buf) {
   if (sawCredits) block.hashCredits = hashCredits;
   if (sawSpill) block.hashSpill = hashSpill;
   if (sawSpillCredits) block.hashSpillCredits = hashSpillCredits;
+  if (blunoteRecord) block.blunoteRecord = blunoteRecord;
   return block;
 }
 

@@ -381,15 +381,7 @@
       if (String(row.kind || 'block') !== 'block') return false;
       var h = Math.floor(Number(row.height) || 0);
       if (!(h >= 1)) return false;
-      if (row.poolFound === false) return false;
-      if (row.poolFound === true) return true;
-      var tag = String(row.finder || row.finderTag || '').trim().toLowerCase();
-      if (!/^m[0-9a-f]{8}$/.test(tag)) return false;
-      var known = poolTagSet(stats);
-      var n = 0;
-      for (var k in known) if (Object.prototype.hasOwnProperty.call(known, k)) n += 1;
-      if (!n) return true;
-      return !!known[tag];
+      return row.poolFound === true;
     }
     function stampOwner(book, at) {
       var want = Math.floor(Number(at) || 0);

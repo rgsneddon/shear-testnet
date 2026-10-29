@@ -10,11 +10,13 @@ import { Worker } from 'node:worker_threads';
 import { spawn, spawnSync } from 'node:child_process';
 import { requiredJobFields, decodeHeader, encodeHeader, headerFromHex, setNonce } from '../../crypto/header.js';
 import { shearHash, meetsTarget, leadingZeroBits, ALGO, CLIENT, PERSONAL } from '../../crypto/shear_hash.js';
-import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
+import { isMineLogin, isPaymentCode, payoutDest, isDestAddress, isShearAddress, hash20FromAddress, admitBaseFromAddress, namesAnAddress, ED25519_SPKI_PREFIX } from '../../crypto/address.js';
 import { payeeDecodeOk, payeeFs1Ok, payeeWillProbe } from '../../crypto/n1.js';
 import { heldBodyKey } from '../../crypto/mempool.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import { destBoundShareHash, noteCommitOfShare, shareTargetByte } from '../../crypto/share_batch.js';
+import { bindingOk, oneTimeKey } from '../../crypto/blunote.js';
+import { pointFrom } from '../../crypto/note.js';
 import {
   BLOCK_SUBSIDY_NANOS,
   POOL_FEE_BPS,
@@ -96,7 +98,7 @@ import {
   shareCountCapBinds,
 } from '../../crypto/share_batch.js';
 import { pullBookHashLeg } from '../../crypto/share_dag.js';
-import { poolRecentBlockTxs, networkSupply, openRoundHashRows, supplyStatusWord } from './wallet_api.js';
+import { poolRecentBlockTxs, networkSupply, supplyStatusWord } from './wallet_api.js';
 import { hasherHasValidRoundShare, roundActualHashes } from './hash_credit.js';
 import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import {
@@ -486,12 +488,37 @@ export function parseLogin(login) {
   return raw.split('.')[0];
 }
 
-/** Pool page / stats: opaque tag. Never she1, dest, IP, or worker personal data. */
+/**
+ * R28 option 2: the per-pool random salt behind every public miner tag, so a
+ * tag is stable on this pool and unlinkable across pools. createPool loads
+ * it from the datadir (MINER_TAG_SALT_FILE).
+ */
+let minerTagSalt = Buffer.alloc(0);
+export const MINER_TAG_SALT_FILE = 'miner-tag.salt';
+export function setMinerTagSalt(salt) {
+  minerTagSalt = Buffer.from(salt || []);
+}
+
+/** The datadir's tag salt, made once (32 random bytes, 0600). */
+export function loadMinerTagSalt(dataDir) {
+  if (!dataDir) return randomBytes(32);
+  const file = path.join(dataDir, MINER_TAG_SALT_FILE);
+  try {
+    const got = fs.readFileSync(file);
+    if (got.length === 32) return got;
+  } catch { /* first start */ }
+  const fresh = randomBytes(32);
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(file, fresh, { mode: 0o600 });
+  return fresh;
+}
+
+/** Pool page / stats: opaque tag of the worker name, salted per pool. Never an address or IP. */
 export function publicMinerTag(login) {
-  const dest = parseLogin(login);
   const hex = createHash('sha256')
-    .update('shear-miner-tag-v1')
-    .update(dest)
+    .update('shear-miner-tag-v2')
+    .update(minerTagSalt)
+    .update(String(login || '').trim())
     .digest('hex')
     .slice(0, 8);
   return `m${hex}`;
@@ -634,29 +661,16 @@ export function admitClient(params, { leaf = true } = {}) {
       message: `ShearK ${SHEARK_MINER_VERSION} or newer is required on ${MAGIC_TESTNET}. This client is ${got}.`,
     };
   }
+  void payeeOk;
   const raw = String(params?.login || params?.user || '').trim();
-  const dest = parseLogin(raw);
   if (!raw) return { ok: false, reason: 'bad_login' };
-  if (isShearAddress(dest)) return { ok: false, reason: 'bad_login' };
-  if (!isMineLogin(dest)) {
-    return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
-  }
-  const payout = hasherPayoutDest(dest, { dest: params?.dest || params?.payout });
-  const worker = raw.split('.').slice(1).filter(Boolean).join('.') || 'worker';
-  if (isPaymentCode(dest)) {
-    if (!payout) return { ok: true, login: dest, workerKey: raw || dest, payoutDest: '', ramAlias: true };
-    if (!payeeOk(payout)) return { ok: false, reason: 'admit_note_point' };
-    return {
-      ok: true,
-      login: payout,
-      workerKey: `${payout}.${worker}`,
-      payoutDest: payout,
-      ramAlias: true,
-    };
-  }
-  const payee = payout || (isDestAddress(dest) ? dest : '');
-  if (payee && !payeeOk(payee)) return { ok: false, reason: 'admit_note_point' };
-  return { ok: true, login: dest, workerKey: raw || dest, payoutDest: payee };
+  // R28 option 2 (Russell 28 Oct): the login is a worker name only. Shares
+  // carry one-time keys, so nothing that names a wallet ever reaches the pool;
+  // an address in the login or a payout field is refused, not dropped.
+  const dest = String(params?.dest ?? params?.payout ?? '').trim();
+  if (namesAnAddress(raw) || dest !== '') return { ok: false, reason: 'login_address' };
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(raw)) return { ok: false, reason: 'bad_login' };
+  return { ok: true, login: raw, workerKey: raw, payoutDest: '' };
 }
 
 /** Wrong-algo login or a submit that is not a ShearHash-v3 digest. */
@@ -1885,11 +1899,24 @@ export function readCappedBody(req, cap = HTTP_BODY_MAX) {
   });
 }
 
+/** The rig's one-time key from a submit, or null. R and P are 32-byte hex; P must be a point. */
+export function bluSubmitKey(params) {
+  const R = typeof params?.shareR === 'string' && /^[0-9a-fA-F]{64}$/.test(params.shareR) ? Buffer.from(params.shareR, 'hex') : null;
+  const P = typeof params?.shareP === 'string' && /^[0-9a-fA-F]{64}$/.test(params.shareP) ? Buffer.from(params.shareP, 'hex') : null;
+  const tag = Number(params?.viewTag ?? 0);
+  if (!R || !P || !Number.isInteger(tag) || tag < 0 || tag > 255) return null;
+  try { pointFrom(P); } catch { return null; }
+  return { R, P, tag };
+}
+
 export function createPool({
   dataDir,
   stratumPort = 1111,
   httpPort = 8088,
   stratumBind = process.env.SHEAR_STRATUM_BIND || '127.0.0.1',
+  // R28: the fee wallet's scan key Y (hex). With the fee dest's admit base B
+  // it makes a fresh one-time fee key per template. Absent: no pool fee.
+  feeScanPub = process.env.SHEAR_POOL_FEE_SCAN_PUB || '',
   requireLoginAuth = String(process.env.SHEAR_STRATUM_AUTH || '') === '1',
   tlsCert = process.env.SHEAR_STRATUM_TLS_CERT || '',
   tlsKey = process.env.SHEAR_STRATUM_TLS_KEY || '',
@@ -1913,6 +1940,8 @@ export function createPool({
   const store = createStore(dataDir);
   const pullBook = createPullBook(dataDir);
   const miners = new Map();
+  // R28 option 2: public miner tags are salted per pool.
+  setMinerTagSalt(loadMinerTagSalt(dataDir));
   const destShareBits = loadDestShareBitsMap(dataDir);
   const destVarWindows = new Map();
   console.log(JSON.stringify({
@@ -2611,7 +2640,8 @@ export function createPool({
       const split = ctx.parentHeader
         ? splitDeferWindow(kept, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued)
         : { seal: kept, carry: [], owe: [], stale: [] };
-      if (split.owe.length) admitWindowSpill(split.owe);
+      // R28 (D2): spill is retired; expiring overflow is not owed.
+    if (split.owe.length) disposeUnpayable(split.owe, 'over_cap');
       if (split.carry.length) deferredShares = sortShares(split.carry);
       if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
       const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
@@ -2963,7 +2993,8 @@ export function createPool({
       unpayable.push(s);
     }
     const split = splitDeferWindow(trusted, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued);
-    if (split.owe.length) admitWindowSpill(split.owe);
+    // R28 (D2): spill is retired; expiring overflow is not owed.
+    if (split.owe.length) disposeUnpayable(split.owe, 'over_cap');
     if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
     const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
     lag1Shares = split.seal;
@@ -3089,9 +3120,7 @@ export function createPool({
     return {
       header: tpl.header,
       txs: tpl.txs,
-      samples: tpl.samples,
       shareBatch: tpl.shareBatch || [],
-      miner: tpl.miner,
       poolDest: tpl.poolDest || '',
       aLeaves: tpl.aLeaves,
       bLeaves: tpl.bLeaves,
@@ -3648,6 +3677,18 @@ export function createPool({
     return missing;
   }
 
+  function poolFeeKey(feeDest) {
+    const Y = /^[0-9a-fA-F]{64}$/.test(String(feeScanPub || '')) ? Buffer.from(feeScanPub, 'hex') : null;
+    const B = feeDest && isDestAddress(feeDest) ? admitBaseFromAddress(feeDest) : null;
+    if (!Y || !B) return null;
+    try {
+      const k = oneTimeKey({ B: Buffer.from(B), Y });
+      return { R: k.R, P: k.P, viewTag: k.tag };
+    } catch {
+      return null;
+    }
+  }
+
   function creditAcceptedShare(rec) {
     const opened = bindAcceptedShare(openShares, rec);
     if (opened.ok) {
@@ -3669,7 +3710,8 @@ export function createPool({
     const split = ctx.parentHeader
       ? splitDeferWindow(openShares, ctx.parentHeader, ctx.priorHeader, seatCap, lag1Issued)
       : { seal: [], carry: openShares.slice(), owe: [], stale: [] };
-    if (split.owe.length) admitWindowSpill(split.owe);
+    // R28 (D2): spill is retired; expiring overflow is not owed.
+    if (split.owe.length) disposeUnpayable(split.owe, 'over_cap');
     if (split.stale.length) disposeUnpayable(split.stale, 'stale_window');
     if (split.carry.length) deferredShares = sortShares(deferredShares.concat(split.carry));
     const unslotted = stampSealSlots(split.seal, ctx.parentHeader, ctx.priorHeader);
@@ -3912,7 +3954,9 @@ export function createPool({
         potShares,
         shareBits: sb,
         shareBatch: lag1Shares,
-        hashSpill: pendingSpill.slice(),
+        hashSpill: [],
+        feeKey: poolFeeKey(feeTo),
+        feeBps: POOL_FEE_BPS,
         poolDest: poolPay,
         feeDest: feeTo,
         finderDest: '',
@@ -4390,13 +4434,17 @@ export function createPool({
       return;
     }
     const closedRound = !!resolved.closedRound;
-    const destPay = hasherPayoutDest(session?.login, {
-      dest: session?.payoutDest,
-      height: Number(store.tip()?.height || 0) + 1,
-    });
+    // R28 BluNotes: the rig sends its one-time key (R, P, tag) with the share.
+    // The nonce binds it, the target is on the RandomX digest itself, and the
+    // pool never learns a payout address.
+    const blu = bluSubmitKey(params);
+    if (!blu) {
+      rejectSubmit(sock, session, msg, 'need_key');
+      return;
+    }
     let scored;
     try {
-      scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn, dest: destPay });
+      scored = await scoreShareLive({ job, nonce: params.nonce, claimed, conn, dest: '' });
     } catch (e) {
       const reason = hashWorkerRejectReason(e);
       // A share already accepted can still have a sibling hash in flight.
@@ -4408,7 +4456,7 @@ export function createPool({
           event: 'share_hash_backend',
           reason,
           error: String(e?.message || e).slice(0, 180),
-          worker: String(session?.workerKey || session?.login || ''),
+
         }));
       } catch { /* ignore */ }
       replyLine(sock, { id: msg.id, error: reason });
@@ -4425,7 +4473,7 @@ export function createPool({
             jobId: job?.jobId || '',
             hist: Array.isArray(job?.headerHistory) ? job.headerHistory.length : 0,
             header: String(scored.hashedHeader || job?.header || ''),
-            worker: String(session?.workerKey || session?.login || ''),
+  
           }));
         } catch { /* ignore */ }
       }
@@ -4442,7 +4490,7 @@ export function createPool({
           jobId: job?.jobId || '',
           hist: Array.isArray(job?.headerHistory) ? job.headerHistory.length : 0,
           header: String(job?.header || ''),
-          worker: String(session?.workerKey || session?.login || ''),
+
         }));
       } catch { /* ignore */ }
       rejectSubmit(sock, session, msg, 'bad_hash');
@@ -4459,10 +4507,15 @@ export function createPool({
     }
     const hashBuf = Buffer.from(String(scored.hash || ''), 'hex');
     const creditedBits = Number(scored.creditedShareBits) || 0;
-    if (session && isDestAddress(destPay) && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
+    if (creditedBits >= SHARE_FLOOR_BITS && !bindingOk(scored.header, params.nonce, blu.R, blu.P)) {
+      rejectSubmit(sock, session, msg, 'share_bind');
+      return;
+    }
+    if (session && hashBuf.length === 32 && creditedBits >= SHARE_FLOOR_BITS) {
       const rec = {
-        dest: destPay,
-        dest20: hash20FromAddress(destPay),
+        shareR: blu.R,
+        shareP: blu.P,
+        viewTag: blu.tag,
         nonce: BigInt(params.nonce),
         hash: String(scored.hash || ''),
         jobId: String(job?.jobId || ''),
@@ -4559,14 +4612,11 @@ export function createPool({
               nanos: 0,
               hashByDest: pullBookHashLeg(hashPays),
               hashUnit: unit,
-              finderTag: publicMinerTag(session?.login || session?.workerKey),
-              finderWorker: publicWorkerName(session?.workerKey || session?.login),
             },
           );
         } catch {
           rememberPoolFind(Number(store.tip()?.height || 0));
         }
-        if (session) session.blocks = (Number(session.blocks) || 0) + 1;
         pendingPayout = snapshotRound();
         for (const m of miners.values()) resetMinerRoundDisplay(m);
         if (typeof store.clearOpenRound === 'function') store.clearOpenRound();
@@ -4761,7 +4811,7 @@ export function createPool({
             refuse({ id: msg.id, error: 'banned' });
             return;
           }
-          const key = adm.workerKey;
+          const key = `${adm.login}.${randomBytes(4).toString('hex')}`;
           const pay = String(adm.payoutDest || '');
           const prior = miners.get(key);
           // Same name, new params.dest: the worker row already exists, and the
@@ -4815,6 +4865,7 @@ export function createPool({
             seen: Date.now(),
             firstSeen: Date.now(),
             payoutDest: adm.payoutDest || '',
+            ownerToken: randomBytes(16).toString('hex'),
           };
           if (adm.payoutDest) {
             session.payoutDest = adm.payoutDest;
@@ -4863,7 +4914,7 @@ export function createPool({
           // Idle starts when the job is on the wire. Template build is server
           // time: the hasher cannot submit a header it has not been sent.
           conn.authedAt = Date.now();
-          sock.write(line({ id: msg.id, result: { status: 'OK' }, job: wireJob(conn.job, conn.shareBits) }));
+          sock.write(line({ id: msg.id, result: { status: 'OK', ownerToken: session.ownerToken }, job: wireJob(conn.job, conn.shareBits) }));
           continue;
         }
         if (method === 'stats') {
@@ -4980,10 +5031,8 @@ export function createPool({
     }
     noteTipWork('stats');
     try {
-      const rows = openRoundHashRows(miners, hashBonusUnitNanos(store.reserveVault?.liveHashBonusNanos))
-        .map((r) => ({ tag: r.tag, count: r.count }));
-      if (typeof store.noteOpenRound === 'function') store.noteOpenRound(rows, { source: 'local' });
-      if (typeof p2pNet?.publishWork === 'function') p2pNet.publishWork(rows);
+      if (typeof store.noteOpenRound === 'function') store.noteOpenRound([], { source: 'local' });
+      if (typeof p2pNet?.publishWork === 'function') p2pNet.publishWork([]);
       statsSnap = { at: Date.now(), json: JSON.stringify(publicStats()) };
     } catch {
       if (!statsSnap.json) statsSnap = { at: Date.now(), json: '{"ok":true}' };
@@ -4998,9 +5047,10 @@ export function createPool({
   function publicStats() {
     const now = Date.now();
     const active = [...miners.values()].filter((m) => isPublicMinerRow(m, now));
-    const workers = foldPublicMinerViews(
+    const poolRows = foldPublicMinerViews(
       active.map((m) => publicMinerView(m, now, active)),
     ).sort((a, b) => (Number(b.hashrate) || 0) - (Number(a.hashrate) || 0));
+    const workers = [];
     const tip = store.tip();
     const findDts = intervalDeltasMs(stats.findAt);
     const avgMs = ewmaBlockIntervalMs(findDts);
@@ -5052,13 +5102,13 @@ export function createPool({
       windowOwedNotes: Number(stats.windowOwedNotes) || 0,
       hashBusy: Number(stats.hashBusy) || 0,
       hashQueue: hashWait.size,
-      topDestSharePct: topDestSharePct(workers),
+      topDestSharePct: topDestSharePct(poolRows),
       shareBlockRatio: (Number(stats.blocks) || 0) > 0
         ? (Number(stats.accepted) || 0) / Number(stats.blocks)
         : 0,
       alerts: {
         ...statsAlerts({
-          topDestSharePct: topDestSharePct(workers),
+          topDestSharePct: topDestSharePct(poolRows),
           shareBlockRatio: (Number(stats.blocks) || 0) > 0
             ? (Number(stats.accepted) || 0) / Number(stats.blocks)
             : 0,
@@ -5089,7 +5139,6 @@ export function createPool({
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
       autoPayoutMinShe: AUTO_PAYOUT_MIN_NANOS / NANOS_PER_SHE,
       autoPayoutDest: 'ssa1',
-      autoPayoutLastError,
       poolFeeOnPotOnly: true,
       hashBonusPoolFeeBps: 0,
       loginAuth: requireLoginAuth ? 'ed25519' : 'dest-only',
@@ -5097,9 +5146,9 @@ export function createPool({
       gitHead: gitHeadOf(),
       productVersion: PRODUCT_VERSION,
       proof: 'PoW',
-      miners: workers.length,
-      threads: workers.reduce((a, m) => a + (m.threads || 0), 0),
-      hashrate: workers.reduce((a, m) => a + (Number(m.hashrate) || 0), 0),
+      miners: poolRows.length,
+      threads: poolRows.reduce((a, m) => a + (m.threads || 0), 0),
+      hashrate: poolRows.reduce((a, m) => a + (Number(m.hashrate) || 0), 0),
       networkRoundHashes: networkRoundHashesOf(
         miners,
         [
@@ -5108,8 +5157,6 @@ export function createPool({
         ],
       ),
       blocks: stats.blocks,
-      blocksSession: stats.blocks,
-      blocksLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
       sealsLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
       rewardIdentity: 'shareBatch-prop-after-fee',
       rewardCopy: 'Rewards share the block pot by round work after the 1% pool fee — not one SHE per block you found.',
@@ -5154,39 +5201,15 @@ export function createPool({
       nodesOnline: nodesOnline(),
       uptimeMs: Date.now() - stats.started,
       workers,
-      gossipWorkers: (networkView?.rounds || []).map((r) => ({
-        miner: r.tag,
-        worker: r.tag,
-        connected: true,
-        roundHashes: r.count,
-      })),
+      gossipWorkers: [],
       recentTxs: poolRecentBlockTxs(store, 10).map((t) => {
         const h = Number(t?.height) || 0;
-        const stored = (typeof pullBook.finderOf === 'function') ? pullBook.finderOf(h) : null;
-        let tag = stored?.tag || '';
-        let worker = stored?.worker || '';
-        if (!tag && h >= 1) {
-          const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
-          const b = blocks.find((x) => Number(x?.height) === h);
-          if (b?.miner) tag = publicMinerTag(b.miner);
-        }
-        if (tag && !worker) {
-          const live = minerByTag(tag);
-          const names = new Set();
-          for (const m of live) names.add(publicWorkerName(m.workerKey || m.login));
-          if (names.size === 1) worker = [...names][0];
-        }
         const wall = Math.floor(Number(stats.foundAtByHeight?.[String(h)] || 0));
-        const attributed = !!((stored && stored.tag) || wall > 0);
-        const row = {
+        return {
           ...t,
-          finder: tag || '',
-          finderWorker: worker || '',
           foundAt: wall > 0 ? wall : 0,
+          poolFound: wall > 0,
         };
-        if (attributed) row.poolFound = true;
-        else if (!tag) row.poolFound = false;
-        return row;
       }),
     });
   }
@@ -5238,8 +5261,8 @@ export function createPool({
     return { pending, confirmed, block, fee, earned };
   }
 
-  function minerPublicJson(tag, now = Date.now()) {
-    const rows = minerByTag(tag, now);
+  function minerPublicJson(tag, now = Date.now(), onlyRows = null) {
+    const rows = Array.isArray(onlyRows) ? onlyRows : minerByTag(tag, now);
     const tipH = Number(store.tip?.()?.height || 0);
     const policy = typeof store.getpolicy === 'function' ? store.getpolicy() : {};
     const need = (policy?.operational?.pool_merchant || 30);
@@ -5375,10 +5398,9 @@ export function createPool({
     return operatorSpendKey;
   }
 
-  function recordAutoPayoutError({ tag, reason, have, need, from } = {}) {
+  function recordAutoPayoutError({ reason, have, need, from } = {}) {
     autoPayoutLastError = {
       at: Date.now(),
-      tag: String(tag || ''),
       reason: String(reason || ''),
       have: Math.max(0, Math.floor(Number(have) || 0)),
       need: Math.max(0, Math.floor(Number(need) || 0)),
@@ -5529,9 +5551,24 @@ export function createPool({
     });
   }
 
+  function detachSock(sock) {
+    if (!sock) return;
+    for (const m of miners.values()) {
+      const list = m.connections || [];
+      if (!list.some((c) => c && c.sock === sock)) continue;
+      m.connections = list.filter((c) => c && c.sock !== sock);
+      Object.assign(m, foldConnectionInventory(m.connections));
+      if (m.sock === sock) m.sock = m.connections[0]?.sock || null;
+      if (!minerConnected(m)) m.disconnectedAt = Date.now();
+      refreshMinerRow(m);
+    }
+    sockets.delete(sock);
+  }
+
   function dropSockets(list) {
     let n = 0;
     for (const s of list) {
+      detachSock(s);
       try { s.destroy(); n += 1; } catch { /* ignore */ }
     }
     return n;
@@ -5767,18 +5804,15 @@ export function createPool({
         }));
         return;
       }
-      const rows = minerByTag(tag);
-      const tipH = Number(store.tip?.()?.height || 0);
-      const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
-      const pull = pullBook.view(tag, { tipHeight: tipH, need });
-      const held = typeof pullBook.ledger === 'function' ? pullBook.ledger(tag) : [];
-      const known = typeof pullBook.hasTag === 'function' ? pullBook.hasTag(tag) : false;
-      if (!rows.length && !(pull.pendingNanos > 0) && !pull.lastPullMs && !held.length && !known) {
+      const hdr = String(req.headers.authorization || '');
+      const token = hdr.slice(0, 7).toLowerCase() === 'bearer ' ? hdr.slice(7).trim() : '';
+      const rows = minerByTag(tag).filter((m) => token && m.ownerToken === token);
+      if (!rows.length) {
         res.statusCode = 404;
-        res.end(JSON.stringify({ ok: false, reason: 'unknown_miner', tag }));
+        res.end(JSON.stringify({ ok: false, reason: 'unknown_miner' }));
         return;
       }
-      res.end(JSON.stringify(minerPublicJson(tag)));
+      res.end(JSON.stringify(minerPublicJson(tag, Date.now(), rows)));
       return;
     }
     if (url.pathname === '/api/mempool' || url.pathname === '/api/mempoolPressure' || url.pathname === '/api/mempoolpressure' || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/explorer/') || url.pathname.startsWith('/api/vortex/') || url.pathname.startsWith('/api/pool/') || url.pathname.startsWith('/api/vault/') || url.pathname.startsWith('/api/join/')) {
@@ -5880,6 +5914,11 @@ export function createPool({
       res.setHeader('Cache-Control', 'no-store');
       if (file === '/miner.html') {
         const minerTag = decodeURIComponent(url.pathname.split('/')[2] || '');
+        if (minerTag) {
+          res.statusCode = 404;
+          res.end('missing');
+          return;
+        }
         const boot = minerPublicJson(minerTag);
         const html = data.toString('utf8').replace('/*MINER_BOOT*/null', JSON.stringify(boot));
         res.end(html);

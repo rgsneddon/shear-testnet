@@ -65,7 +65,7 @@ Check the binaries before enabling units:
 /opt/shear-v12/bin/node /opt/shear-v12/node/src/node.js --print-config
 ```
 
-`ShearK-Miner --selftest` must print `98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b`. `shear version` must print pin `0.72` and magic `shear-testnet-v12`. `--print-config` must show `Shear Sentinel v19`.
+`ShearK-Miner --selftest` must print `e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4` (R40, 28 Oct: FIPS 180-4 SHA-512 key; builds before R40 printed `98818c31…`). `shear version` must print pin `0.72` and magic `shear-testnet-v12`. `--print-config` must show `Shear Sentinel v19`.
 
 Desktop runtime packages, only if the GUI tarball is extracted:
 

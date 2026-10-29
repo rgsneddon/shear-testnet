@@ -3,7 +3,7 @@
 
 Each zip is one flavor: linux, archlinux, fedora, opensuse, or macos.
 The binary must already be ./ShearK-Miner from `make` on that OS.
-This script does not cross-compile. It copies libssl and libcrypto beside
+This script does not cross-compile. It copies libssl, libcrypto and libsodium beside
 the binary and points the loader at that directory, then adds example.bat
 and example.sh.
 """
@@ -88,7 +88,8 @@ def bundle_elf(binary: str, stage: str) -> list[str]:
         sys.exit("patchelf and ldd are required to pack a linux-family zip")
     found: dict[str, str] = {}
     for line in run(["ldd", binary]).splitlines():
-        match = re.match(r"\s*(lib(?:ssl|crypto)\.so\S*)\s+=>\s+(\S+)", line)
+        # R28: libsodium (ristretto255 one-time share keys) ships beside OpenSSL.
+        match = re.match(r"\s*(lib(?:ssl|crypto|sodium)\.so\S*)\s+=>\s+(\S+)", line)
         if not match:
             continue
         name, path = match.group(1), match.group(2)
@@ -100,6 +101,8 @@ def bundle_elf(binary: str, stage: str) -> list[str]:
     SOURCES.extend(os.path.realpath(p) for _n, p in sorted(found.items()))
     if not any(name.startswith("libcrypto") for name in found):
         sys.exit("binary does not link libcrypto; refusing a cleartext pack")
+    if not any(name.startswith("libsodium") for name in found):
+        sys.exit("binary does not link libsodium; it cannot make BluNotes share keys")
     staged = os.path.join(stage, "ShearK-Miner")
     shutil.copy2(binary, staged)
     os.chmod(staged, 0o755)
@@ -130,7 +133,7 @@ def bundle_macho(binary: str, stage: str) -> list[str]:
     want = []
     for src in macho_deps(binary):
         base = os.path.basename(src)
-        if base.startswith("libssl") or base.startswith("libcrypto"):
+        if base.startswith("libssl") or base.startswith("libcrypto") or base.startswith("libsodium"):
             if not os.path.isfile(src):
                 sys.exit(f"missing {src}")
             want.append((src, base))
@@ -139,6 +142,8 @@ def bundle_macho(binary: str, stage: str) -> list[str]:
         sys.exit("macOS binary does not link libssl; refusing a cleartext pack")
     if not any(base.startswith("libcrypto") for _, base in want):
         sys.exit("macOS binary does not link libcrypto; refusing a cleartext pack")
+    if not any(base.startswith("libsodium") for _, base in want):
+        sys.exit("macOS binary does not link libsodium; it cannot make BluNotes share keys")
     staged = os.path.join(stage, "ShearK-Miner")
     shutil.copy2(binary, staged)
     os.chmod(staged, 0o755)
@@ -157,7 +162,7 @@ def bundle_macho(binary: str, stage: str) -> list[str]:
             dep_base = os.path.basename(dep)
             if dep.startswith("@executable_path/"):
                 continue
-            if dep_base.startswith("libssl") or dep_base.startswith("libcrypto"):
+            if dep_base.startswith("libssl") or dep_base.startswith("libcrypto") or dep_base.startswith("libsodium"):
                 run(["install_name_tool", "-change", dep, f"@executable_path/{dep_base}", dest])
     for src, base in want:
         run(["install_name_tool", "-change", src, f"@executable_path/{base}", staged])

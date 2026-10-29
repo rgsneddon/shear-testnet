@@ -49,6 +49,12 @@ function workerTimeoutMs(env = process.env) {
   return Math.max(HASH_WORKER_TIMEOUT_MIN_MS, n);
 }
 
+/** R39: the backend the newest verify lane reported ('' before one started). */
+let laneBackend = '';
+export function p2pHashLaneBackend() {
+  return laneBackend;
+}
+
 export function p2pHashCap() {
   return P2P_VERIFY_CAP;
 }
@@ -120,6 +126,10 @@ function bootChild() {
   const rl = createInterface({ input: proc.stdout });
   rl.on('line', (line) => {
     const parts = line.split('\t');
+    if (parts[0] === 'BACKEND') {
+      laneBackend = String(parts[1] || '');
+      return;
+    }
     const id = Number(parts[0]);
     const job = pending.get(id);
     if (!job || job.done) return;

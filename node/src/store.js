@@ -85,6 +85,14 @@ import { ensureDatadir } from './datadir_acl.js';
 import { acquireDatadirLock } from './datadir_lock.js';
 import { chainStateError } from './process_guard.js';
 
+/** R28: carry the records a load derived onto the loaded blocks (both load paths). */
+function attachLoadedRecords(list, records) {
+  if (!Array.isArray(records)) return;
+  for (let i = 0; i < list.length && i < records.length; i += 1) {
+    if (records[i]) list[i].blunoteRecord = records[i];
+  }
+}
+
 function throwBookFault(message) {
   const msg = String(message || '');
   let code = '';
@@ -108,7 +116,6 @@ import {
 import { advanceHashOwed, freshCreditsFromShares, replayHashOwed, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
 import { unpackShareBatchBytes } from '../../crypto/pack.js';
 import { decodeHeader } from '../../crypto/header.js';
-import { destForLogin } from '../../crypto/flow_sheet.js';
 import { isDestAddress } from '../../crypto/address.js';
 import { compactChainBlock, compactTx } from '../../crypto/chronoflux.js';
 import { publicExplorerRow } from '../../crypto/dummy.js';
@@ -654,6 +661,7 @@ export function createStore(dir, {
         },
       });
       if (!checked.ok) throwBookFault(checked.reason || 'pow');
+      attachLoadedRecords(blocks, checked.records);
       if (!checked.supply) throwBookFault('supply_state');
       supplyTip = checked.supply;
       supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
@@ -683,6 +691,9 @@ export function createStore(dir, {
         oracleActivationHeight,
       }).then((checked) => {
         if (!checked.ok) throwBookFault(checked.reason || 'pow');
+        // The reopen reads chain.bin again, so the records this verify
+        // derived travel in the resume token (a book whose chain.bin lacks
+        // them would otherwise reopen without them and fail hash_owed).
         return createStore(dir, {
           pruneAfter,
           reorgHaltDepth,
@@ -703,6 +714,7 @@ export function createStore(dir, {
           verified: true,
           height,
           tipHash,
+          records: Array.isArray(checked.records) ? checked.records : null,
         });
       });
     } else {
@@ -717,6 +729,7 @@ export function createStore(dir, {
         oracleActivationHeight,
       });
       if (!checked.ok) throwBookFault(checked.reason || 'pow');
+      attachLoadedRecords(blocks, checked.records);
       if (!checked.supply) throwBookFault('supply_state');
       supplyTip = checked.supply;
       supplyAt = Array.isArray(checked.supplyAt) ? checked.supplyAt : [];
@@ -724,6 +737,8 @@ export function createStore(dir, {
       if (!trustStoredHash) writeLoadSeal(blocks);
     }
   } else if (resumed) {
+    // The same blocks the async verify checked (height and tip matched above).
+    attachLoadedRecords(blocks, resume.records);
     writeLoadSeal(blocks);
     const folded = foldSupply(blocks, { burialOf: provenTipOf, magic: bookMagic });
     if (!folded.ok) throw new Error(folded.reason || 'supply');
@@ -2941,6 +2956,7 @@ export function createStore(dir, {
       bLeaves: prev.bLeaves,
       weight: prev.weight,
       shareBatch: prev.shareBatch,
+      blunoteRecord: prev.blunoteRecord,
     } : null, {
       spentB,
       tipHeight,
@@ -2978,9 +2994,7 @@ export function createStore(dir, {
       ...(blocks.length && supplyTip ? { parentSupply: supplyTip } : {}),
       noteAtAnchor: (anchor) => noteFromAnchor(liveFlux, anchorAt, anchor),
       ...(Number.isInteger(extra.burialTip) ? { burialTip: extra.burialTip } : {}),
-      poolDest: extra.poolDest
-        || block?.poolDest
-        || (block?.miner && isDestAddress(block.miner) ? block.miner : null),
+      poolDest: extra.poolDest || block?.poolDest || null,
       owedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       arrivedRows: extra.arrivedRows,
@@ -3650,6 +3664,7 @@ export function createStore(dir, {
       bLeaves: prev.bLeaves,
       weight: prev.weight,
       shareBatch: prev.shareBatch,
+      blunoteRecord: prev.blunoteRecord,
     } : null, {
       mtpTimestamps: blocks.slice(-11).map((b) => {
         try { return Number(decodeHeader(Buffer.from(b.header)).timestamp); } catch { return 0; }
@@ -4022,6 +4037,8 @@ export function createStore(dir, {
       ...block,
       magic: bookMagic,
       hash: check.hash,
+      // R28: the block's compact record, from its own verify.
+      ...(check.blunoteRecord ? { blunoteRecord: check.blunoteRecord } : {}),
       height: prev ? prev.height + 1 : 1,
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
     };
@@ -4560,6 +4577,8 @@ export function createStore(dir, {
       bLeaves: accepted[i - 1].bLeaves,
       weight: accepted[i - 1].weight,
       shareBatch: accepted[i - 1].shareBatch,
+      // R28: the parent's compact record, from its own verify in this walk.
+      blunoteRecord: accepted[i - 1].blunoteRecord,
     };
     const parentH = i === 0 ? 0 : Number(accepted[i - 1].height || i);
     const rows = Array.isArray(verifyOpts.explorerRows) ? verifyOpts.explorerRows : [];
@@ -4704,6 +4723,7 @@ export function createStore(dir, {
         ...fork[i],
         magic: bookMagic,
         hash: c.hash,
+        ...(c.blunoteRecord ? { blunoteRecord: c.blunoteRecord } : {}),
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
         bSpendIds: Array.isArray(c.bSpendIds) ? c.bSpendIds : [],
@@ -4786,6 +4806,7 @@ export function createStore(dir, {
         ...fork[i],
         magic: bookMagic,
         hash: check.hash,
+        ...(check.blunoteRecord ? { blunoteRecord: check.blunoteRecord } : {}),
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
         bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
@@ -4849,6 +4870,7 @@ export function createStore(dir, {
         ...fork[i],
         magic: bookMagic,
         hash: check.hash,
+        ...(check.blunoteRecord ? { blunoteRecord: check.blunoteRecord } : {}),
         height: i + 1,
         weight: fork[i].weight ?? blockWeight(fork[i].txs || [], fork[i].bLeaves || []),
         bSpendIds: Array.isArray(check.bSpendIds) ? check.bSpendIds : [],
@@ -4923,6 +4945,7 @@ export function createStore(dir, {
       bLeaves: block.bLeaves,
       weight: block.weight,
       shareBatch: block.shareBatch,
+      blunoteRecord: block.blunoteRecord,
     };
   }
 
@@ -4931,6 +4954,7 @@ export function createStore(dir, {
       ...block,
       magic: bookMagic,
       hash: check.hash,
+      ...(check.blunoteRecord ? { blunoteRecord: check.blunoteRecord } : {}),
       height: prev ? Number(prev.height || 0) + 1 : 1,
       weight: block.weight ?? blockWeight(block.txs || [], block.bLeaves || []),
     });
@@ -6408,7 +6432,7 @@ export function createStore(dir, {
     };
   }
 
-  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null } = {}) {
+  function template({ miner, samples = [], shareBits = 16, bits: bitsIn, potShares = null, now: nowIn, wallIntervalMs = null, shareBatch = null, hashSpill = null, poolDest = null, feeDest = null, finderDest, hashBonusCustodyDest = null, issuedHeaders = null, feeKey = null, feeBps = 0, potToFee = false } = {}) {
     void hashBonusCustodyDest;
     const t = tip();
     const height = t ? t.height + 1 : 1;
@@ -6648,6 +6672,10 @@ export function createStore(dir, {
       hashOwedIn: owedRows,
       hashAcceptedSeries: acceptedSeries.slice(),
       issuedHeaders,
+      // R28: the pool's own one-time fee key and fee rate (no address).
+      feeKey,
+      feeBps,
+      potToFee,
       prepareCoinbase: (cb) => {
         const root = coinbaseRewardRoot(reserveVault, now);
         if (root) cb.rewardRoot = root;
@@ -6696,11 +6724,10 @@ export function createStore(dir, {
     const block = {
       header,
       txs: rec.tpl.txs,
-      samples: rec.tpl.samples,
       shareBatch: rec.tpl.shareBatch || [],
       hashSpill: Array.isArray(rec.tpl.hashSpill) ? rec.tpl.hashSpill : [],
-      miner: destForLogin(miner) || miner || rec.tpl.miner,
-      poolDest: rec.tpl.poolDest || rec.tpl.miner || '',
+      // R28: the login never reaches the block (option 2; blunote_miner).
+      poolDest: rec.tpl.poolDest || '',
       aLeaves: rec.tpl.aLeaves,
       bLeaves: rec.tpl.bLeaves,
       rootA: rec.tpl.rootA,

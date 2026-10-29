@@ -36,6 +36,7 @@
  * Pot splits and the pool fee do not read this ledger. Amounts stay BigInt
  * so a value above 2^53 is not rounded.
  */
+import { decodeRecord } from './blunote.js';
 import { createHash } from 'node:crypto';
 import {
   HASH_BONUS_NANOS,
@@ -1119,6 +1120,24 @@ export function advanceHashOwed({
   height = null,
   tipHeight = null,
 } = {}) {
+  // R28: a BluNotes block has no owed ledger (D2). Its record's W is the
+  // accepted units the next budget's median reads.
+  if (block?.blunoteRecord != null && block.blunoteRecord !== '') {
+    const raw = block.blunoteRecord;
+    const rec = decodeRecord(Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw), 'hex'));
+    if (!rec) return { ok: false, reason: 'blunote_record' };
+    const acceptedUnits = rec.n > 0 ? rec.W : 0n;
+    const series = Array.isArray(acceptedSeries) ? acceptedSeries : [];
+    series.push(acceptedUnits);
+    return {
+      ok: true,
+      reason: '',
+      rows: [],
+      acceptedUnits,
+      acceptedSeries: series,
+      settled: { ok: true, pay: [], owed: [], owedRest: [], dust: 0n, overflow: 0n, minted: 0n, acceptedUnits },
+    };
+  }
   const h = height == null ? Number(block?.height || 0) : Number(height);
   const gotFresh = freshForBlock(block, unit, tipHeight);
   if (!gotFresh.ok) return { ok: false, reason: 'hash_owed' };

@@ -708,8 +708,8 @@ export function encodeWireBlock(b) {
     hash: Buffer.from(b.hash).toString('hex'),
     height: b.height,
     txs: (b.txs || []).map(compactTx),
-    samples: b.samples,
-    miner: b.miner,
+    // R28: samples and miner are never on the wire (blunote_samples,
+    // blunote_miner), so a relay cannot add one to a valid block.
     sharePacked: packShareBatchBytes(b.shareBatch || []).toString('hex'),
     hashCreditPacked: Array.isArray(b.hashCredits) ? packHashCreditBytes(b.hashCredits).toString('hex') : '',
     ...(Array.isArray(b.hashSpill) && b.hashSpill.length
@@ -724,6 +724,12 @@ export function encodeWireBlock(b) {
     rootB: b.rootB,
     samplesPruned: !!b.samplesPruned,
     bLeavesPruned: !!b.bLeavesPruned,
+    // R28: a pruned block keeps only its compact record. A peer re-derives
+    // the record of any block that still has its frames, and the next
+    // block's coinbase binds every record's root under PoW.
+    ...(b.blunoteRecord != null && b.blunoteRecord !== ''
+      ? { blunoteRecord: Buffer.isBuffer(b.blunoteRecord) ? b.blunoteRecord.toString('hex') : String(b.blunoteRecord) }
+      : {}),
   };
 }
 
@@ -733,8 +739,6 @@ export function decodeWireBlock(w) {
     hash: w.hash != null ? wireBytes(w.hash) : undefined,
     height: w.height,
     txs: (w.txs || []).map((tx) => reviveTx(reviveDeep(tx))),
-    samples: reviveDeep(w.samples),
-    miner: w.miner,
     shareBatch: w.sharePacked
       ? unpackShareBatchBytes(Buffer.from(String(w.sharePacked), 'hex'))
       : (Array.isArray(w.shareBatch) ? w.shareBatch : []),
@@ -748,6 +752,9 @@ export function decodeWireBlock(w) {
     samplesPruned: !!w.samplesPruned,
     bLeavesPruned: !!w.bLeavesPruned,
   };
+  if (typeof w.blunoteRecord === 'string' && /^([0-9a-f]{2})+$/i.test(w.blunoteRecord)) {
+    block.blunoteRecord = w.blunoteRecord.toLowerCase();
+  }
   // A missing credit column is not a record. An own-property set to undefined
   // makes freshForBlock / spillForBlock reject the block as hash_owed.
   if (w.hashCreditPacked) {

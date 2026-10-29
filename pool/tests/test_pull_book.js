@@ -111,8 +111,8 @@ describe('pool pull book', () => {
     const b = book.view(held, { tipHeight: 5, need: 30 });
     assert.equal(a.pendingNanos, 0);
     assert.equal(b.pendingNanos, 0);
-    assert.equal(a.foundBlocks, 0);
-    assert.equal(b.foundBlocks, 0);
+    assert.equal(Object.hasOwn(a, 'foundBlocks'), false);
+    assert.equal(Object.hasOwn(b, 'foundBlocks'), false);
     assert.equal(book.dueAuto({ tipHeight: 40, need: 30 }).length, 0);
     const rec = book.reconcile({ potAfterFeeNanos: pot });
     assert.equal(rec.sealsLifetime, 0);

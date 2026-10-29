@@ -255,8 +255,8 @@
       }
       body.innerHTML = list.map(function (w) {
         const client = [w.name, w.version].filter(Boolean).join(' ') || '—';
-        const finds = Number(w.blocksSession != null ? w.blocksSession : w.blocks) || 0;
-        const hashes = w.hashes != null ? Number(w.hashes) : (Number(w.roundHashes) || Number(w.provenHashes) || 0);
+        const finds = Number(w.blocks) || 0;
+        const hashes = w.hashes != null ? Number(w.hashes) : 0;
         return '<tr><td>' + esc(w.worker || 'worker') + '</td><td>' + esc(client) + '</td><td>' +
           esc(fmtRate(w.hashrate)) + '</td><td>' + finds + '</td><td>Shear Privacy</td><td>' +
           (Number(w.accepted) || 0) + '</td><td>' + hashes + '</td><td>' +
@@ -277,13 +277,13 @@
       set('m-algo', d.personalisation || 'ShearHash-v3');
       set('m-connected', d.connected ? 'yes' : 'no');
       set('m-hashrate', fmtRate(d.hashrate));
-      set('m-blocks-session', String(d.blocksSession != null ? d.blocksSession : 0));
-      set('m-blocks', String(d.blocksLifetime != null ? d.blocksLifetime : (d.blocks || 0)));
+      set('m-blocks-session', '0');
+      set('m-blocks', String(d.blocks || 0));
       set('m-accepted', String(d.accepted || 0));
       set('m-stale', String(d.stale || 0));
       set('m-orphans', String(d.orphans || 0));
       set('m-threads', String(d.threads || 0));
-      set('m-round', String(d.hashes || d.roundHashes || 0));
+      set('m-round', String(d.hashes || 0));
       set('m-hashbonus', 'Shear Privacy');
       set('m-pending', 'Shear Privacy');
       set('m-confirmed', 'Shear Privacy');

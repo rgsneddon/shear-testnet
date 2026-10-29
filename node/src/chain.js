@@ -75,6 +75,7 @@ import {
   receiptAdmitRejected,
   jroot as jrootOf,
   extendZeroRoot,
+  admitPubIndex,
 } from '../../crypto/admit.js';
 import { ANCHOR_WINDOW, checkAdmitAnchor, flowPresentsProof, typedKindNeedsAdmitV3, verifyFlowAdmitV3, verifyTypedAdmitFunding, v12FlowVersionRejected } from '../../crypto/admit_v3.js';
 import { chainStage0Rejected } from '../../crypto/fs1_send_gate.js';
@@ -98,6 +99,9 @@ import {
   windowBlocksFor,
 } from '../../crypto/reserve_oracle.js';
 import { emptySupplyState, foldSupply, supplyLinks, supplyStep } from './supply.js';
+import { blunoteHashNanos, blunotePlan, blunoteSettle } from './blunote_payout.js';
+import { BLUNOTE_WINNERS, SHARE_BYTES_MAX, batchSumRoot, decodeRecord, encodeRecord, recordRoot } from '../../crypto/blunote.js';
+import { compareBluShares, bluFrameBytes } from '../../crypto/share_batch.js';
 import { hasherPayoutDest } from '../../crypto/flow_sheet.js';
 import {
   sealCoinbaseNote,
@@ -125,6 +129,7 @@ import {
   unpackShareBatch,
   u64le,
   shareSlotRoot,
+  bluSlotRoot,
   shareSlotDigestSuffix,
   shareSlotCommitment,
 } from '../../crypto/pack.js';
@@ -333,6 +338,7 @@ function coreDigest(tx) {
   const owedSuffix = tx?.coinbase ? hashOwedDigestSuffix(tx) : Buffer.alloc(0);
   const slotSuffix = tx?.coinbase ? shareSlotDigestSuffix(tx) : Buffer.alloc(0);
   const issuedSuffix = tx?.coinbase ? issuedJobDigestSuffix(tx) : Buffer.alloc(0);
+  const bluSuffix = tx?.coinbase ? blunoteDigestSuffix(tx) : Buffer.alloc(0);
   const observeSuffix = tx?.coinbase ? observeDigestSuffix(tx) : null;
   const reportSuffix = Array.isArray(tx?.reports) && tx.reports.length
     ? Buffer.from(`reports1${JSON.stringify(canonicalReports(tx.reports))}`)
@@ -344,15 +350,16 @@ function coreDigest(tx) {
   const rewardSuffix = rootHex && rootHex !== 'bad'
     ? Buffer.from(`rewardroot1${rootHex}`)
     : (rootHex === 'bad' ? Buffer.from('rewardroot-bad') : null);
-  if (tx?.coinbase && (owedSuffix == null || slotSuffix == null || issuedSuffix == null)) {
+  if (tx?.coinbase && (owedSuffix == null || slotSuffix == null || issuedSuffix == null || bluSuffix == null)) {
     return packDigest(Buffer.concat([packed, Buffer.from('hashowed-bad')]));
   }
-  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (observeSuffix && observeSuffix.length) || (reportSuffix && reportSuffix.length) || (rateSuffix && rateSuffix.length) || (rewardSuffix && rewardSuffix.length))) {
+  if (tx?.coinbase && (carry || (owedSuffix && owedSuffix.length) || (slotSuffix && slotSuffix.length) || (issuedSuffix && issuedSuffix.length) || (bluSuffix && bluSuffix.length) || (observeSuffix && observeSuffix.length) || (reportSuffix && reportSuffix.length) || (rateSuffix && rateSuffix.length) || (rewardSuffix && rewardSuffix.length))) {
     const parts = [packed];
     if (carry) parts.push(Buffer.from('potcarry1'), u64le(carry));
     if (owedSuffix && owedSuffix.length) parts.push(owedSuffix);
     if (slotSuffix && slotSuffix.length) parts.push(slotSuffix);
     if (issuedSuffix && issuedSuffix.length) parts.push(issuedSuffix);
+    if (bluSuffix && bluSuffix.length) parts.push(bluSuffix);
     if (observeSuffix && observeSuffix.length) parts.push(observeSuffix);
     if (reportSuffix && reportSuffix.length) parts.push(reportSuffix);
     if (rateSuffix && rateSuffix.length) parts.push(rateSuffix);
@@ -931,6 +938,123 @@ function sealHashPay(pay, address) {
   }), { admitBase: base || null });
 }
 
+
+// ---- R28 BluNotes coinbase ---------------------------------------------------
+
+function hex32(v) {
+  if (v == null || v === '') return null;
+  let b = null;
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) b = Buffer.from(v);
+  else if (typeof v === 'string' && /^[0-9a-fA-F]{64}$/.test(v)) b = Buffer.from(v, 'hex');
+  return b && b.length === 32 ? b : null;
+}
+
+/**
+ * The coinbase's BluNotes fields, or null when malformed. Absent is
+ * { feeBps: 0 }. A fee key names the pool's own one-time key (R, P, tag);
+ * prev is the parent block's record root.
+ */
+const BLUNOTE_FIELD_KEYS = new Set(['feeBps', 'feeR', 'feeP', 'feeTag', 'prev', 'potToFee']);
+
+export function blunoteFields(tx) {
+  const b = tx?.blunote;
+  if (b == null) return { feeBps: 0, feeKey: null, prev: null };
+  if (typeof b !== 'object' || Buffer.isBuffer(b) || Array.isArray(b)) return null;
+  // Only the fields the digest binds; anything else would be unbound bytes.
+  for (const key of Object.keys(b)) {
+    if (!BLUNOTE_FIELD_KEYS.has(key)) return null;
+  }
+  const feeBps = Number(b.feeBps ?? 0);
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > POOL_FEE_MAX_BPS) return null;
+  const R = hex32(b.feeR);
+  const P = hex32(b.feeP);
+  if ((b.feeR != null || b.feeP != null) && (!R || !P)) return null;
+  const tag = Number(b.feeTag ?? 0);
+  if (!Number.isInteger(tag) || tag < 0 || tag > 255) return null;
+  if (feeBps > 0 && !P) return null;
+  if (P) {
+    try { pointFrom(P); } catch { return null; }
+  }
+  const prev = b.prev == null || b.prev === '' ? null : hex32(b.prev);
+  if (b.prev != null && b.prev !== '' && !prev) return null;
+  // Option (b): 1 pays an empty round's pot to the coinbase key; it needs one.
+  const potToFee = b.potToFee == null ? 0 : Number(b.potToFee);
+  if (potToFee !== 0 && potToFee !== 1) return null;
+  if (potToFee === 1 && !P) return null;
+  return { feeBps, feeKey: P ? { R, P, viewTag: tag } : null, prev, potToFee: potToFee === 1 };
+}
+
+function blunoteDigestSuffix(tx) {
+  if (tx?.blunote == null) return Buffer.alloc(0);
+  const f = blunoteFields(tx);
+  if (!f) return null;
+  const bps = Buffer.alloc(2);
+  bps.writeUInt16LE(f.feeBps, 0);
+  return Buffer.concat([
+    Buffer.from('blunote1'),
+    bps,
+    f.feeKey ? f.feeKey.R : Buffer.alloc(32),
+    f.feeKey ? f.feeKey.P : Buffer.alloc(32),
+    Buffer.from([f.feeKey ? f.feeKey.viewTag : 0]),
+    f.prev || Buffer.alloc(32),
+    // Only a coinbase that takes the pot adds the byte, so others keep their digest.
+    ...(f.potToFee ? [Buffer.from('pot1')] : []),
+  ]);
+}
+
+/** Pool fee nanos for this subsidy at feeBps, or 0 with no fee key. */
+export function blunoteFeeNanos(subsidy, fields) {
+  if (!fields?.feeKey || !(fields.feeBps > 0)) return 0n;
+  return BigInt(Math.floor(Number(subsidy) * fields.feeBps / 10000));
+}
+
+
+/** The parent's record root, which this coinbase must name; null at height 1. */
+export function parentRecordRoot(prevBlock) {
+  const rec = prevBlock?.blunoteRecord;
+  if (rec == null || rec === '') return null;
+  return recordRoot(Buffer.isBuffer(rec) ? rec : Buffer.from(String(rec), 'hex'));
+}
+
+/**
+ * Canonical template batch: BluNotes rows only, a decodable P, no repeated
+ * work key or P, canonical order, and the share byte cap.
+ */
+export function bluTemplateBatch(rows, knownPubs = null) {
+  const out = [];
+  const seenWork = new Set();
+  const seenP = new Set();
+  const sorted = (Array.isArray(rows) ? rows : [])
+    .filter((r) => r && r.shareR != null && r.shareP != null && (r.proofSlot === 0 || r.proofSlot === 1))
+    .slice()
+    .sort(compareBluShares);
+  let bytes = 0;
+  for (const r of sorted) {
+    const P = Buffer.from(r.shareP);
+    try { pointFrom(P); } catch { continue; }
+    const pk = P.toString('hex');
+    if (knownPubs && knownPubs.has(pk)) continue;
+    const wk = `${r.kinHeader && r.verifiedHeader ? Buffer.from(r.verifiedHeader).toString('hex') : r.proofSlot}:${BigInt(r.nonce || 0)}`;
+    if (seenP.has(pk) || seenWork.has(wk)) continue;
+    const size = bluFrameBytes(r);
+    if (bytes + size > SHARE_BYTES_MAX) break;
+    bytes += size;
+    seenP.add(pk);
+    seenWork.add(wk);
+    out.push(r);
+  }
+  return out;
+}
+
+/**
+ * The part of a BluNotes block's payout fixed before its PoW (carry, fee
+ * note value, reserve extra), from the template's batch.
+ */
+export function bluPlanFor({ payable, finderLevy = 0, feeNanos = 0n, feeKey = null, shares = [], unitNanos, budgetNanos = null, potToFee = false }) {
+  const hash = shares.length ? blunoteHashNanos(shares, unitNanos, budgetNanos) : 0n;
+  return blunotePlan({ shareCount: shares.length, potPayable: payable, feeNanos, feeKey, finderLevy, hashNanos: hash, potToFee });
+}
+
 export function coinbaseTx({
   height, miner, samples = [], potShares = null, destOf = (a) => a, hashBonusNanos = HASH_BONUS_NANOS,
   shareBatch = null, poolDest = null, potNanos = BLOCK_SUBSIDY_NANOS,
@@ -1494,30 +1618,24 @@ export function buildTemplate({
   issuedHeaders = null,
   hashSpill = null,
   prepareCoinbase = null,
+  feeKey = null,
+  feeBps = 0,
+  potToFee = false,
 }) {
   txs = (Array.isArray(txs) ? txs : []).filter((tx) => !tx?.coinbase && !txNoteRuleRejected(tx, 1) && !feeFieldRejected(tx) && !bSpendFeeRejected(tx));
-  const selected = Array.isArray(shareBatch) ? selectBlockShares(shareBatch) : [];
+  // R28: spill is retired (D2); a slot-1 share is simply a share.
+  void hashSpill;
+  const selected = Array.isArray(shareBatch) ? shareBatch : [];
   const priorBlock = Array.isArray(parentBlocks) && parentBlocks.length >= 2
     ? parentBlocks[parentBlocks.length - 2]
     : null;
-  const batch = bindShareProofSlots(selected, prevHeader, priorBlock?.header || null, {
+  const knownPubs = parentFluxset && !Array.isArray(parentFluxset) ? admitPubIndex(parentFluxset) : null;
+  const batch = bluTemplateBatch(bindShareProofSlots(selected, prevHeader, priorBlock?.header || null, {
     keepClaim: true,
-  }).slotted;
-  const spillIn = Array.isArray(hashSpill) ? hashSpill.slice(0, MAX_SHARES_PER_BLOCK) : [];
-  const spillBatch = bindShareProofSlots(spillIn, prevHeader, priorBlock?.header || null, {
-    keepClaim: false,
-  }).slotted.filter((s) => s?.proofSlot === 1 || s?.proofSlot === '1');
-  const fromBatch = batch.length
-    ? [...collateShareUnits(batch)].map(([minerAddr, count]) => ({
-      miner: minerAddr,
-      address: minerAddr,
-      count,
-      nonce: '0',
-      tag: 'share',
-    }))
-    : [];
-  // Tree A is shareBatch units only. Typed sample counts are not money.
-  const collated = fromBatch;
+  }).slotted, knownPubs);
+  const spillBatch = [];
+  // R28: shares pay by draw, not per payee, so tree A has no payee leaves.
+  const collated = [];
   const pay = destOf || ((login) => hasherPayoutDest(login) || '');
   let genesisMs = chainGenesisMsFrom(parentBlocks, null);
   if (!(genesisMs > 0) && prevHeader) {
@@ -1549,95 +1667,61 @@ export function buildTemplate({
     throw new Error('hash_owed');
   }
   const payable = subsidy + carryIn;
-  const explicit = Array.isArray(potShares);
-  let minted = 0;
-  if (explicit) {
-    for (const s of potShares) minted += Math.max(0, Math.floor(Number(s.nanos) || 0));
-  }
-  const carryOut = explicit ? payable - minted : 0;
-  const cb = coinbaseTx({
-    height,
-    miner,
-    samples: collated,
-    potShares: explicit ? potShares : null,
-    destOf: pay,
-    hashBonusNanos,
-    shareBatch: batch,
-    poolDest,
-    potNanos: explicit ? Math.max(subsidy, minted) : payable,
-    carryNanos: carryOut > 0 ? carryOut : 0,
-    hashBonusCustodyDest,
-    hashOwedIn,
-    hashDustIn,
-    hashOverflowIn,
-    hashAcceptedSeries: series,
-    hashSpill: spillBatch,
-  });
+  void potShares;
+  void hashOwedIn;
+  void hashDustIn;
+  void hashOverflowIn;
   // A leaf-vote fee is the note it spends. A declared number with no spend
-  // is not minted into the finder or reserve fee notes.
+  // is not minted into the reserve fee note.
   const fees = (txs || []).reduce((a, t) => {
     if (String(t?.kind || '') === 'leaf-vote' && leafVoteFundingRejected(t)) return a;
     const n = postedFeeNanos(t);
     return a + (n == null || n < 0 ? 0 : n);
   }, 0);
   const split = splitLevy(fees);
-  const finderWork = aLeavesFromShares(batch).reduce((a, l) => a + (Number(l.count) || 0), 0);
-  if (finderWork > 0) {
-    for (const row of finderFeePays(batch, split.finder, pay(miner))) {
-      const dest = row.address;
-      if (dest && isDestAddress(dest)) cb.vout.push(sealLevyNote(row.nanos, dest, 'finder-fee'));
-      else cb.vout.push({ address: dest, nanos: row.nanos, kind: 'finder-fee', noteCommit: row.noteCommit });
-    }
-  } else {
-    const finderPay = resolveFinderPay(finderDest, miner, poolDest, feeDest, pay);
-    if (split.finder && finderPay) cb.vout.push(sealLevyNote(split.finder, finderPay, 'finder-fee'));
-  }
-  if (split.reserve) cb.vout.push(sealLevyNote(split.reserve, reserveFeeDest(), 'reserve-fee'));
+  // R28 BluNotes: no share payout notes. The finder levy joins the draw.
+  const fields = blunoteFields({ blunote: feeKey ? {
+    feeBps,
+    feeR: Buffer.from(feeKey.R),
+    feeP: Buffer.from(feeKey.P),
+    feeTag: Number(feeKey.viewTag ?? feeKey.tag ?? 0) & 0xff,
+  } : { feeBps: 0 } });
+  // Option (b): only an empty batch can take the pot.
+  const takePot = !!(potToFee && fields?.feeKey && !batch.length);
+  if (!fields) throw new Error('blunote_fee');
+  const feeNanos = blunoteFeeNanos(subsidy, fields);
+  const budget = series == null ? null : hashBudgetNanos(series, hashBonusNanos);
+  const plan = bluPlanFor({
+    payable,
+    finderLevy: split.finder,
+    feeNanos,
+    feeKey: fields.feeKey,
+    shares: batch,
+    unitNanos: hashBonusUnitNanos(hashBonusNanos),
+    budgetNanos: budget,
+    potToFee: takePot,
+  });
+  const carryOut = plan.carryOut;
+  const prevRoot = parentRecordRoot(prevBlock);
+  const cb = {
+    coinbase: true,
+    height,
+    vin: [{ coinbase: true, height }],
+    vout: [],
+    carryNanos: Number(carryOut),
+    blunote: {
+      feeBps: fields.feeBps,
+      ...(fields.feeKey ? { feeR: fields.feeKey.R, feeP: fields.feeKey.P, feeTag: fields.feeKey.viewTag } : {}),
+      ...(prevRoot ? { prev: prevRoot } : {}),
+      ...(takePot ? { potToFee: 1 } : {}),
+    },
+  };
+  if (!Number.isSafeInteger(cb.carryNanos)) throw new Error('pot_carry');
+  // An empty batch with no fee key pays its finder levy with the reserve note.
+  const reserveNanos = split.reserve + Number(plan.reserveExtra);
+  if (reserveNanos) cb.vout.push(sealLevyNote(reserveNanos, reserveFeeDest(), 'reserve-fee'));
   if (typeof prepareCoinbase === 'function') prepareCoinbase(cb);
-  try {
-    dropBrokenCoinbaseNotes(cb, { shares: batch.length > 0 });
-  } catch (err) {
-    if (!batch.length || err?.message !== 'admit_note_point') throw err;
-    const bad = brokenPayeeHexes(cb);
-    const source = Array.isArray(shareBatch) ? shareBatch : [];
-    const nextShares = source.filter((s) => !shareHitsBrokenPayee(s, bad));
-    if (!bad.size || nextShares.length === source.length) throw err;
-    console.error(JSON.stringify({
-      event: 'coinbase_share_evict',
-      reason: 'admit_note_point',
-      payees: bad.size,
-      shares: source.length - nextShares.length,
-    }));
-    return buildTemplate({
-      prev,
-      prevHeader,
-      prevBlock,
-      parentWeight: parentWeightIn,
-      height,
-      miner,
-      samples,
-      txs,
-      bLeaves: bLeavesIn,
-      now,
-      bits,
-      destOf,
-      potShares: null,
-      hashBonusNanos,
-      shareBatch: nextShares,
-      poolDest,
-      feeDest,
-      finderDest,
-      hashBonusCustodyDest,
-      parentFluxset,
-      parentBlocks,
-      hashAcceptedSeries,
-      hashOwedIn: hashOwedInOpt,
-      issuedHeaders,
-      hashSpill: Array.isArray(hashSpill)
-        ? hashSpill.filter((s) => !shareHitsBrokenPayee(s, bad))
-        : hashSpill,
-    });
-  }
+  dropBrokenCoinbaseNotes(cb, { shares: false });
   cb.excess = excessOf(cb.vout);
   cb.shareSlotRoot = shareSlotRoot(batch);
   const issuedJobKeys = issuedKeysForParents(issuedHeaders, prevHeader, priorBlock?.header || null);
@@ -1716,15 +1800,17 @@ export function buildTemplate({
     baseFee,
     weight: blockWeight(bodyTxs, bLeaves),
     txs: bodyTxs,
-    samples: Array.isArray(samples) && samples.length ? collateSamples(samples) : collated,
+    // R28: no samples and no miner on a block (blunote_samples, blunote_miner).
+    samples: [],
     shareBatch: batch,
     hashSpill: spillBatch,
-    miner,
     poolDest: poolDest || allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
     hashBonusCustodyDest: allowedHashBonusCustodyDest(hashBonusCustodyDest) || '',
-    hashCredits: freshCreditsFromShares(batch, hashBonusNanos),
+    hashCredits: [],
     levyBind: {
-      finderNanos: split.finder,
+      // R28: the finder levy is in the draw (or the coinbase key / reserve
+      // note), so no finder-fee note exists to aim at a login dest.
+      finderNanos: 0,
       reserveNanos: split.reserve,
       poolDest: poolDest && isDestAddress(poolDest) ? poolDest : '',
       feeDest: feeDest && isDestAddress(feeDest) ? feeDest : '',
@@ -1994,6 +2080,36 @@ export function shareCreditBound(block, tipHeight = null) {
   if (Buffer.isBuffer(block?.hash) && block.hash.length === 32) id = block.hash;
   else if (block?.hash instanceof Uint8Array && block.hash.length === 32) id = block.hash;
   if (!id) return { ok: false, reason: 'share_credit_bind' };
+  // R28: a BluNotes block binds its shares to its record's batch root (count
+  // and total weight) and to the coinbase share root, not to payee leaves.
+  if (block?.blunoteRecord != null && block.blunoteRecord !== '') {
+    const raw = block.blunoteRecord;
+    const rec = decodeRecord(Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw), 'hex'));
+    if (!rec) return { ok: false, reason: 'share_credit_bind' };
+    if (positive) return { ok: false, reason: 'share_credit_bind' };
+    if (shares.length) {
+      let root;
+      try { root = bluSlotRoot(shares); } catch { return { ok: false, reason: 'share_credit_bind' }; }
+      if (rec.n !== shares.length || rec.W !== root.total || !Buffer.from(rec.batchRoot).equals(Buffer.from(root.root))) {
+        return { ok: false, reason: 'share_credit_bind' };
+      }
+      const slot = block?.txs?.[0]?.shareSlotRoot;
+      if (slot == null || !Buffer.from(asU8(slot)).equals(Buffer.from(root.root))) return { ok: false, reason: 'share_credit_bind' };
+    } else if (rec.n !== 0) {
+      return { ok: false, reason: 'share_credit_bind' };
+    }
+    if (block?.samplesPruned !== true) {
+      let decoded;
+      try { decoded = decodeHeader(Buffer.from(block.header)); } catch {
+        return { ok: false, reason: 'share_credit_bind' };
+      }
+      const dual = buildDualTree({ aLeaves: [], bLeaves: block.bLeaves || [] });
+      if (!Buffer.from(dual.continuityRoot).equals(Buffer.from(decoded.continuityRoot))) {
+        return { ok: false, reason: 'share_credit_bind' };
+      }
+    }
+    return { ok: true, reason: '' };
+  }
   if (shares.length === 0 && !positive) return { ok: true, reason: '' };
   const account = accountShareUnits(shares);
   if (!account.ok) return { ok: false, reason: 'share_credit_bind' };
@@ -2604,9 +2720,14 @@ function verifyBlockBody(block, prev, opts = {}) {
   if (!Number.isSafeInteger(payablePot) || !Number.isSafeInteger(mintedPot) || mintedPot < 0) {
     return { ok: false, reason: 'pot_sched' };
   }
-  const samples = collateSamples(
-    Array.isArray(block.samples) ? block.samples : (txs[0].samples || []),
-  );
+  // R28 privacy (Russell 28 Oct, option 2): no public-chain field names a
+  // miner. A block names no miner and carries no samples (they listed each
+  // hasher's address and work); work is the share batch, paid by the draw.
+  if (block.miner != null && block.miner !== '') return { ok: false, reason: 'blunote_miner' };
+  if ((Array.isArray(block.samples) && block.samples.length) || (Array.isArray(txs[0].samples) && txs[0].samples.length)) {
+    return { ok: false, reason: 'blunote_samples' };
+  }
+  const samples = [];
   const shareBatchEarly = Array.isArray(block.shareBatch) ? block.shareBatch : [];
   if (!block.samplesPruned && !shareBatchEarly.length && sampleCapExceeded(samples, decoded.bits)) {
     return { ok: false, reason: 'sample_cap' };
@@ -2688,9 +2809,8 @@ function verifyBlockBody(block, prev, opts = {}) {
   const skipFlow = flowSkipAllowed({ height, samplesPruned: block.samplesPruned }, burialTip);
   const shareBatch = Array.isArray(block.shareBatch) ? block.shareBatch : [];
   const liveUnit = hashBonusUnitNanos(hashBonusNanos);
-  let provenUnits = 0;
-  let provenByDest = new Map();
-  let shareLeaves = null;
+  // R28: the proven BluNotes rows the draw pays.
+  let bluRows = [];
   // Amounts the coinbase rule already opened. A published valueProof.v
   // that is missing or wrong does not replace these.
   const provenOpen = new Map();
@@ -2715,202 +2835,34 @@ function verifyBlockBody(block, prev, opts = {}) {
       issuedJobKeys: txs[0]?.issuedJobKeys,
     });
     if (!proved.ok) return proved;
-    if (!skipFlow) {
-      provenUnits = proved.units;
-      provenByDest = proved.byDest;
-      shareLeaves = proved.aLeaves;
-    }
+    bluRows = proved.shares;
   }
-  const spillReason = spillSharesRejected(block, prev, {
-    grandparentHeader: opts.grandparentHeader || null,
-    skipSharePow: trustWork ? false : !!skipSharePow,
-    trustWork,
-    burialTip,
-  });
-  if (spillReason) return { ok: false, reason: spillReason };
-  if (!skipFlow) {
-    const settlement = settlementFor(prev, height, block, liveUnit, {
-      owedIn: opts.owedIn,
-      hashAcceptedSeries: opts.hashAcceptedSeries,
-      tipHeight: burialTip,
-    });
-    if (!settlement.ok) return { ok: false, reason: settlement.reason || 'hash_owed' };
-    if (!sameHashLedger(txs[0], settlement)) return { ok: false, reason: 'hash_owed' };
-    if (confidential) {
-      // Proven leaves win. Disk aLeaves keep dest20 and drop noteCommit, so a
-      // batch that did not produce leaves falls back to the share batch.
-      const leaves = Array.isArray(shareLeaves)
-        ? shareLeaves
-        : aLeavesFromShares(shareBatch);
-      const hasherNcs = new Set(leaves.map((l) => ncHex(l.noteCommit)));
-      // poolDest and block.miner are not a fee witness. The openings are.
-      // A proven batch pays hasher leaves and one pro-rata pot. Custodial
-      // shapes are not an accept, and a node-local env var cannot make them one.
-      if (settlement.idle && !shareBatch.length) {
-        const floor = unitsForShare() * liveUnit;
-        const minerDest = block.miner && isDestAddress(block.miner) ? block.miner : '';
-        const minerNc = minerDest ? ncHex(noteCommitOfDest20(hash20FromAddress(minerDest))) : '';
-        if (hashVouts.length === 0) {
-          bonusNanos = 0;
-        } else if (hashVouts.length === 1 && verifySealedNote(hashVouts[0], floor)) {
-          const hashNc = ncHex(hashVouts[0].noteCommit);
-          let voutNc = '';
-          try {
-            const d20 = hashVouts[0].dest20 ? Buffer.from(hashVouts[0].dest20) : null;
-            if (d20 && d20.length === 20) voutNc = ncHex(noteCommitOfDest20(d20));
-          } catch { /* ignore */ }
-          // Finder-floor hash, if present, is the miner dest — never the pool fee dest.
-          if (!((voutNc && hashNc === voutNc) || (minerNc && hashNc === minerNc))) {
-            return { ok: false, reason: 'hash_bonus' };
-          }
-          bonusNanos = floor;
-        } else {
-          return { ok: false, reason: 'hash_bonus' };
-        }
-        potNanos = mintedPot;
-        const T = mintedPot + bonusNanos;
-        if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
-      } else {
-      if (!hashPaysMatch(hashVouts, settlement.pay, provenOpen, true)) {
-        return { ok: false, reason: 'hash_owed' };
-      }
-      bonusNanos = Number(settlement.minted);
-      if (!Number.isSafeInteger(bonusNanos) || bonusNanos < 0) {
-        return { ok: false, reason: 'hash_owed' };
-      }
-      if (hasherNcs.size) {
-        for (const o of potVouts) {
-          if (!hasherNcs.has(ncHex(o.noteCommit)) && verifySealedNote(o, mintedPot)) {
-            return { ok: false, reason: 'pot_prop' };
-          }
-        }
-        // Fee is a bps of this subsidy only. Carry is miner money and is not
-        // a fee base. The work notes are the split of the minted pot minus
-        // that fee. One extra note opens to the fee. A fee added into a work
-        // note does not match, on live append, ingest, IPC, or load.
-        const matchedRows = matchUnfoldedPot(potVouts, leaves, wantPot, mintedPot);
-        if (!matchedRows) return { ok: false, reason: 'pot_prop' };
-        for (const row of matchedRows) provenOpen.set(row.o, row.v);
-      }
-      const T = mintedPot + bonusNanos;
-      if (!mintWithLevy(cbVouts, T, txs[0].excess)) return { ok: false, reason: 'pot' };
-      potNanos = mintedPot;
-      }
-    } else {
-      potNanos = potVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
-      if (potNanos + carryOut !== payablePot) return { ok: false, reason: 'pot_sched' };
-      if (settlement.idle && !shareBatch.length) {
-        const floorFinder = unitsForShare() * liveUnit;
-        bonusNanos = hashVouts.reduce((a, o) => a + Number(o.nanos || 0), 0);
-        if (bonusNanos !== 0 && bonusNanos !== floorFinder) return { ok: false, reason: 'hash_bonus' };
-      } else if (!hashPaysMatch(hashVouts, settlement.pay, null, false)) {
-        return { ok: false, reason: 'hash_owed' };
-      } else {
-        bonusNanos = Number(settlement.minted);
-        if (!Number.isSafeInteger(bonusNanos) || bonusNanos < 0) {
-          return { ok: false, reason: 'hash_owed' };
-        }
-      }
-      const maxFee = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
-      const hasherSet = new Set(provenByDest.keys());
-      if (hasherSet.size) {
-        const extra = potVouts.filter((o) => !hasherSet.has(o.address));
-        const extraNanos = extra.reduce((a, o) => a + Number(o.nanos || 0), 0);
-        if (extraNanos > maxFee) return { ok: false, reason: 'pot_prop' };
-        if (mintedPot > 0 && extraNanos === mintedPot) return { ok: false, reason: 'pot_prop' };
-      }
-    }
+  // R28 (D2): spill is retired. Every share is paid by the draw of the block
+  // that seats it, so there is no second place to credit work (H2, H3).
+  if (Array.isArray(block.hashSpill) && block.hashSpill.length) return { ok: false, reason: 'hash_spill' };
+  if (Array.isArray(block.hashSpillCredits) && block.hashSpillCredits.length) return { ok: false, reason: 'hash_spill' };
+  // R28: share payouts are implicit (node/src/blunote_payout.js). A
+  // coinbase carries no pot, hash, pool-fee or finder-fee note and no T21
+  // split; only the reserve levy note stays explicit.
+  const bluFields = blunoteFields(txs[0]);
+  if (!bluFields) return { ok: false, reason: 'blunote_fields' };
+  if (txs[0] && txs[0].t21Split != null) return { ok: false, reason: 'blunote_vout' };
+  for (const o of cbVouts) {
+    if (String(o?.kind || '') !== 'reserve-fee') return { ok: false, reason: 'blunote_vout' };
   }
-  if (skipFlow) {
-    const buriedSettle = settlementFor(prev, height, block, liveUnit, {
-      owedIn: opts.owedIn,
-      hashAcceptedSeries: opts.hashAcceptedSeries,
-      tipHeight: burialTip,
-    });
-    if (!buriedSettle.ok) return { ok: false, reason: buriedSettle.reason || 'hash_owed' };
-    if (!sameHashLedger(txs[0], buriedSettle)) return { ok: false, reason: 'hash_owed' };
-    if (!buriedSettle.idle) {
-      const minted = Number(buriedSettle.minted);
-      if (!Number.isSafeInteger(minted) || minted < 0) return { ok: false, reason: 'hash_owed' };
-      if (!hashPaysMatch(hashVouts, buriedSettle.pay, provenOpen, confidential)) {
-        return { ok: false, reason: 'hash_owed' };
-      }
-      bonusNanos = minted;
-    }
-    const coinbase = txs[0];
-    if (!coinbase || !Array.isArray(coinbase.vout) || (coinbase.vout.length === 0 && carryOut <= 0 && buriedSettle.owed.length === 0)) {
-      return { ok: false, reason: 'pot' };
-    }
-  }
-  let t21Paid = null;
-  if (txs[0] && txs[0].t21Split != null) {
-    const gate = t21CoinbaseGate(txs[0], payablePot, cbVouts, carryOut);
-    if (!gate.ok) return { ok: false, reason: gate.reason };
-    t21Paid = gate.paid;
-  }
-  const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess, (o) => (
-    provenOpen.has(o) ? provenOpen.get(o) : null
-  ), t21Paid);
+  void potVouts;
+  void hashVouts;
+  void potNanos;
+  void bonusNanos;
+  void confidential;
+  void provenOpen;
+  void mintedPot;
+  const boundCb = coinbaseVoutsBound(cbVouts, txs[0].excess, () => null, null);
   if (!boundCb.ok) return boundCb;
-  let potOpenedSum = 0;
-  if (t21Paid != null) {
-    potOpenedSum = payablePot - carryOut;
-  } else {
-    for (const o of cbVouts) {
-      if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
-      if (provenOpen.has(o)) potOpenedSum += Number(provenOpen.get(o));
-      else if (o?.valueProof?.v != null && o.valueProof.v !== '') potOpenedSum += Number(o.valueProof.v);
-      else potOpenedSum += Number(o.nanos || 0);
-    }
-  }
-  if (!Number.isSafeInteger(potOpenedSum) || potOpenedSum < 0) return { ok: false, reason: 'pot_sched' };
-  // A proven share batch must pay this round, including anything carried in.
-  // An empty batch may carry the miner pot. The only note that may sit beside
-  // that carry is a pool-fee at or under POOL_FEE_MAX_BPS of this subsidy.
-  // A pot note, or a fee above that cap, is a skim.
-  if (shareBatch.length > 0 && carryOut !== 0) return { ok: false, reason: 'pot_carry' };
-  if (t21Paid == null && !shareBatch.length && carryOut !== 0 && potOpenedSum !== 0) {
-    const feeCap = Math.floor(wantPot * POOL_FEE_MAX_BPS / 10000);
-    let feeOpened = 0;
-    let feeOnly = true;
-    for (const o of cbVouts) {
-      if (o.kind === 'hash' || o.kind === 'finder-fee' || o.kind === 'reserve-fee') continue;
-      const v = Math.floor(Number(o.valueProof?.v) || 0);
-      if (o.kind !== 'pool-fee' || !(v > 0)) {
-        feeOnly = false;
-        break;
-      }
-      feeOpened += v;
-    }
-    if (!feeOnly || feeOpened !== potOpenedSum || feeOpened > feeCap) {
-      return { ok: false, reason: 'pot_carry' };
-    }
-  }
-  if (potOpenedSum + carryOut !== payablePot) return { ok: false, reason: 'pot_sched' };
-  if (!skipFlow && Array.isArray(shareLeaves) && Array.isArray(block.aLeaves) && block.aLeaves.length) {
-    if (!sameLeafCounts(shareLeaves, block.aLeaves)) return { ok: false, reason: 'hash_bonus' };
-  }
-  const aLeaves = Array.isArray(shareLeaves)
-    ? shareLeaves
-    : (shareBatch.length && Array.isArray(block.aLeaves) && block.aLeaves.length
-      ? block.aLeaves.map((l) => {
-        const d20 = Buffer.from(l.dest20);
-        const nc = l.noteCommit && Buffer.from(l.noteCommit).length === 32
-          ? Buffer.from(l.noteCommit)
-          : noteCommitOfDest20(d20);
-        return { dest20: d20, count: Number(l.count) || 1, noteCommit: nc };
-      })
-      : (shareLeaves || []));
-  if (!skipFlow && Array.isArray(shareLeaves)) {
-    const have = new Map(aLeaves.map((l) => [
-      Buffer.from(l.noteCommit || l.dest20).toString('hex'),
-      Number(l.count),
-    ]));
-    for (const leaf of shareLeaves) {
-      const key = Buffer.from(leaf.noteCommit || leaf.dest20).toString('hex');
-      if (have.get(key) !== leaf.count) return { ok: false, reason: 'hash_bonus' };
-    }
-  }
+  // R28: shares pay by draw, so a block carries no payee leaves; a block
+  // that names some is not storing them unbound.
+  if (Array.isArray(block.aLeaves) && block.aLeaves.length) return { ok: false, reason: 'blunote_leaves' };
+  const aLeaves = [];
   const boundLeaves = boundBLeaves(block, txs);
   if (!boundLeaves.ok) return boundLeaves;
   const bLeaves = boundLeaves.leaves;
@@ -2964,6 +2916,16 @@ function verifyBlockBody(block, prev, opts = {}) {
           jroot: rebuilt.jroot,
         }
       : rebuilt;
+  }
+  // R28 (attack 8): a share whose one-time key is already a note would make
+  // two notes share a key image, so it is refused; so is a fee key that is.
+  {
+    const known = admitPubIndex(live);
+    for (const r of bluRows) {
+      if (known.has(Buffer.from(r.shareP).toString('hex'))) return { ok: false, reason: 'share_key' };
+    }
+    const fk = blunoteFields(txs[0])?.feeKey;
+    if (fk && known.has(Buffer.from(fk.P).toString('hex'))) return { ok: false, reason: 'share_key' };
   }
   const pubs = (live.pubs || []).slice();
   const commits = (live.commits || []).slice();
@@ -3230,11 +3192,75 @@ function verifyBlockBody(block, prev, opts = {}) {
     });
     if (!funded.ok) return funded;
   }
-  const levyBound = coinbaseLevyPays(txs[0], fees, {
-    shareBatch,
-    miner: block.miner,
-  });
-  if (!levyBound.ok) return { ok: false, reason: levyBound.reason || 'levy_split' };
+  // R28: the draw. Its carry is fixed before the PoW; its winners come from
+  // this block's PoW hash. The record is what a pruned node keeps. The
+  // finder levy joins the draw (or, in an empty block, the fee or reserve
+  // note); the reserve levy is its own explicit note.
+  const levySplit = splitLevy(fees);
+  let blunoteRecord = null;
+  let reserveExtra = 0n;
+  if (skipFlow && !shareBatch.length && block.blunoteRecord != null && block.blunoteRecord !== '') {
+    // A buried pruned block: its record rests on burial (D5) and on the next
+    // block's commitment to its root.
+    blunoteRecord = Buffer.isBuffer(block.blunoteRecord) ? block.blunoteRecord : Buffer.from(String(block.blunoteRecord), 'hex');
+    const rec = decodeRecord(blunoteRecord);
+    if (!rec) return { ok: false, reason: 'blunote_record' };
+    if (!bluFields.feeKey && rec.n === 0) reserveExtra = BigInt(levySplit.finder);
+  } else {
+    const budgetB = opts.hashAcceptedSeries == null ? null : hashBudgetNanos(opts.hashAcceptedSeries, hashBonusNanos);
+    let settle;
+    try {
+      settle = blunoteSettle({
+        shares: bluRows,
+        powHash: hash,
+        potPayable: BigInt(payablePot),
+        feeNanos: blunoteFeeNanos(wantPot, bluFields),
+        feeKey: bluFields.feeKey,
+        finderLevy: BigInt(levySplit.finder),
+        unitNanos: liveUnit,
+        budgetNanos: budgetB,
+        potToFee: bluFields.potToFee,
+      });
+    } catch {
+      return { ok: false, reason: 'blunote_payout' };
+    }
+    if (settle.carryOut !== BigInt(carryOut)) return { ok: false, reason: 'pot_carry' };
+    reserveExtra = settle.reserveExtra;
+    const root = bluRows.length ? bluSlotRoot(shareBatch) : { root: Buffer.alloc(32), total: 0n };
+    blunoteRecord = encodeRecord({
+      batchRoot: root.root,
+      n: bluRows.length,
+      W: root.total,
+      T: settle.T,
+      feeV: settle.feeV,
+      feeR: bluFields.feeKey ? bluFields.feeKey.R : null,
+      feeP: bluFields.feeKey ? bluFields.feeKey.P : null,
+      winners: settle.winners.map((w) => ({ R: w.R, P: w.admitPub, m: w.m })),
+    });
+  }
+  {
+    const reserveRows = cbVouts.filter((o) => o?.kind === 'reserve-fee');
+    const wantReserve = BigInt(levySplit.reserve) + reserveExtra;
+    let reserveSum = 0n;
+    for (const o of reserveRows) {
+      const v = openedCoinbaseNanos(o);
+      if (v == null) return { ok: false, reason: 'levy_split' };
+      reserveSum += BigInt(v);
+      const d20 = noteDest20(o);
+      if (!d20 || !d20.equals(Buffer.from(hash20FromAddress(reserveFeeDest())))) return { ok: false, reason: 'levy_split' };
+    }
+    if (wantReserve === 0n ? reserveRows.length !== 0 : reserveSum !== wantReserve) {
+      return { ok: false, reason: 'levy_split' };
+    }
+  }
+  // The parent's record is bound under this block's PoW.
+  {
+    const wantPrev = parentRecordRoot(prev);
+    if (prev && height > 1 && !wantPrev) return { ok: false, reason: 'blunote_prev' };
+    if (wantPrev ? !(bluFields.prev && bluFields.prev.equals(wantPrev)) : bluFields.prev != null) {
+      return { ok: false, reason: 'blunote_prev' };
+    }
+  }
   const addedPubs = [];
   for (const tx of txs) {
     for (const o of tx.vout || []) {
@@ -3276,7 +3302,7 @@ function verifyBlockBody(block, prev, opts = {}) {
   if (!vaultTry.ok) return { ok: false, reason: vaultTry.reason || 'epoch_open' };
   const parentSupply = parentSupplyState(prev, block, opts, height, burialTip);
   if (!parentSupply.ok) return parentSupply;
-  const stepped = supplyStep(parentSupply.state, block, {
+  const stepped = supplyStep(parentSupply.state, { ...block, blunoteRecord: blunoteRecord.toString('hex') }, {
     magic,
     unit: hashBonusNanos,
     tipHeight: burialTip,
@@ -3294,7 +3320,17 @@ function verifyBlockBody(block, prev, opts = {}) {
     },
   });
   if (!stepped.ok) return { ok: false, reason: stepped.reason || 'supply' };
-  return { ok: true, hash, decoded, height, aLeaves, bLeaves, jroot: wantRoot, supplyState: stepped.state };
+  return {
+    ok: true,
+    hash,
+    decoded,
+    height,
+    aLeaves,
+    bLeaves,
+    jroot: wantRoot,
+    supplyState: stepped.state,
+    blunoteRecord: blunoteRecord.toString('hex'),
+  };
 }
 
 /**
@@ -3843,6 +3879,10 @@ function stepLoaded(state, list, i) {
   if (!body || typeof body.then === 'function' || body.ok !== true) {
     return { ok: false, reason: body?.reason || 'pow' };
   }
+  // R28: the record this verify derived is the block's record from here on
+  // (the owed step, the admit set, the next block's parent check). A stored
+  // record that disagrees is replaced, so a tampered trailer cannot survive.
+  if (body.blunoteRecord) block.blunoteRecord = body.blunoteRecord;
   if (!body.supplyState || !supplyLinks(body.supplyState, { height, hash: link })) {
     return { ok: false, reason: 'supply_state' };
   }
@@ -3898,6 +3938,9 @@ function finishLoaded(begun) {
     supply: state.supply,
     supplyAt: state.supplyAt,
     anchors: state.anchors,
+    // R28: each block's record as this load derived it, by height - 1. A
+    // worker-thread load returns them so the parent's blocks carry them too.
+    records: begun.list.map((b) => (b && b.blunoteRecord != null && b.blunoteRecord !== '' ? String(b.blunoteRecord) : null)),
   };
 }
 

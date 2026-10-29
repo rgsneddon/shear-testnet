@@ -18,9 +18,9 @@ export const V2_SELFTEST =
 export const V2_SELFTEST_K =
   'e46e00191cde74015961b7a68274933c680b69f05bdbbad1ef51e75fbc19f389';
 export const V3_SELFTEST =
-  '98818c31d739ef821db0242f76bd244b96f1fb5049d27ea9a192e95c67b39a8b';
+  'e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4';
 export const V3_SELFTEST_K =
-  '55111f0216ab10a6ba15fc0146990b10d26edcf58c86fa1418c41d96fa40b8e4';
+  '5a09106fcfdc1a4fdcd4ccefed812aae516b2dfa13c4b0606983dd558cb8911b';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -139,6 +139,27 @@ export function shearKey(header) {
   const m = /k ([0-9a-f]{64})/.exec(got.stdout || '');
   if (!m) throw new Error('k parse');
   return Buffer.from(m[1], 'hex');
+}
+
+/** The backend this process hashes with now (native call with no argument does not change it). */
+export function currentHashBackend() {
+  if (native?.backend) return String(native.backend() || 'interpreter');
+  return 'interpreter';
+}
+
+/**
+ * R39 (Russell 28 Oct): never a silent interpreter fallback. One line,
+ * `slow_verify`, names where verify runs on the RandomX interpreter.
+ */
+export function slowVerifyLine(where, backend, requested = '') {
+  return JSON.stringify({
+    event: 'slow_verify',
+    where,
+    backend,
+    requested,
+    message: 'SLOW VERIFY: ShearHash is on the RandomX interpreter (JIT unavailable here). '
+      + 'Share and block verify run several times slower (R39: 299 ms vs 37 ms per share on a 2-core EPYC-Rome).',
+  });
 }
 
 export function setHashBackend(name) {

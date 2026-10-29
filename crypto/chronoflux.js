@@ -84,16 +84,21 @@ export function rollHashBundle(samples = []) {
   return collateSamples(samples);
 }
 
-/** Drop Flow samples and B leaves. Never drop txs or coinbase vout — they stay sealed. */
+/**
+ * Drop Flow samples and B leaves. Never drop txs or coinbase vout — they stay
+ * sealed. R28: a BluNotes coinbase often has no vout (its payouts are the
+ * notes its record names), so it prunes only when the block keeps its record.
+ */
 export function pruneSamples(block) {
   const txs = Array.isArray(block.txs) ? block.txs : [];
   if (!txs.length) {
     throw new Error('prune_refuses_empty_txs');
   }
+  const hasRecord = block?.blunoteRecord != null && block.blunoteRecord !== '';
   const nextTxs = txs.map((tx) => {
     if (!tx?.coinbase) return tx;
     const { samples, ...rest } = tx;
-    if (!Array.isArray(rest.vout) || !rest.vout.length) {
+    if ((!Array.isArray(rest.vout) || !rest.vout.length) && !hasRecord) {
       throw new Error('prune_refuses_empty_coinbase');
     }
     return rest;
@@ -794,6 +799,32 @@ function compactEpochCensus(list) {
 }
 
 /** Strip a tx down to the sealed fields. No openings, view material, IP, or memo plaintext. */
+function bluHex(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'string' && /^[0-9a-fA-F]{64}$/.test(v)) return v.toLowerCase();
+  try {
+    const b = Buffer.from(v);
+    return b.length === 32 ? b.toString('hex') : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The coinbase blunote fields as plain values: bps, tag, and 32-byte hex keys. */
+function compactBlunote(b) {
+  if (!b || typeof b !== 'object' || Buffer.isBuffer(b)) return null;
+  const out = { feeBps: Math.floor(Number(b.feeBps) || 0) };
+  const R = bluHex(b.feeR);
+  const P = bluHex(b.feeP);
+  if (R) out.feeR = R;
+  if (P) out.feeP = P;
+  if (b.feeTag != null) out.feeTag = Math.floor(Number(b.feeTag) || 0) & 0xff;
+  const prev = bluHex(b.prev);
+  if (prev) out.prev = prev;
+  if (Number(b.potToFee) === 1) out.potToFee = 1;
+  return out;
+}
+
 export function compactTx(tx) {
   if (!tx) return tx;
   if (tx.coinbase) {
@@ -833,6 +864,9 @@ export function compactTx(tx) {
     if (Array.isArray(tx.issuedJobKeys) && tx.issuedJobKeys.length) {
       row.issuedJobKeys = tx.issuedJobKeys.map((id) => String(id).toLowerCase());
     }
+    // R28: the digest binds these fields, so disk and wire keep them.
+    const blu = compactBlunote(tx.blunote);
+    if (blu) row.blunote = blu;
     compactHashLedger(tx, row);
     return viewsAsBuffers(row);
   }
@@ -1027,10 +1061,10 @@ export function compactChainBlock(block) {
   const row = {
     magic: block.magic,
     height: block.height,
-    miner: block.miner,
     samplesPruned,
     bLeavesPruned,
-    samples: samplesPruned ? [] : collateSamples(block.samples || []),
+    // R28: a block carries no samples (blunote_samples).
+    samples: [],
     aLeaves: (Array.isArray(block.aLeaves) ? block.aLeaves : []).map((l) => ({
       noteCommit: l.noteCommit,
       count: Number(l.count) || 0,

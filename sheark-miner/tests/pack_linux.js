@@ -42,17 +42,19 @@ assert.ok(sh, `missing example.sh: ${list}`);
 assert.equal(sh.mode, 0o755, `example.sh mode ${sh.mode.toString(8)}`);
 assert.ok(entries.has('example.bat'), `missing example.bat: ${list}`);
 
-// The bundled OpenSSL, and nothing from the GCC runtime (it is linked static).
-const libs = names.filter((n) => /^lib(ssl|crypto)\.so(\.\d+)*$/.test(n));
+// The bundled OpenSSL and libsodium (R28 share keys), and nothing from the
+// GCC runtime (it is linked static).
+const libs = names.filter((n) => /^lib(ssl|crypto|sodium)\.so(\.\d+)*$/.test(n));
 assert.ok(libs.some((n) => n.startsWith('libssl.so')), `missing libssl.so*: ${list}`);
 assert.ok(libs.some((n) => n.startsWith('libcrypto.so')), `missing libcrypto.so*: ${list}`);
+assert.ok(libs.some((n) => n.startsWith('libsodium.so')), `missing libsodium.so*: ${list}`);
 for (const lib of libs) {
   assert.equal(entries.get(lib).head, '7f454c46', `${lib} is not ELF`);
   assert.equal(entries.get(lib).mode, 0o644, `${lib} mode ${entries.get(lib).mode.toString(8)}`);
 }
 assert.equal(names.some((n) => /^lib(stdc\+\+|gcc_s)\.so/.test(n)), false, `GCC runtime shipped: ${list}`);
 const elfs = names.filter((n) => entries.get(n).head === '7f454c46').sort();
-assert.deepEqual(elfs, ['ShearK-Miner', ...libs].sort(), 'only the miner and its OpenSSL are binaries');
+assert.deepEqual(elfs, ['ShearK-Miner', ...libs].sort(), 'only the miner, its OpenSSL and libsodium are binaries');
 
 assertNotices(names);
 assert.ok(names.some((n) => n.startsWith('openssl-licenses/')), `missing openssl-licenses/: ${list}`);
@@ -78,7 +80,7 @@ try {
   delete env.LD_PRELOAD;
   const ldd = spawnSync('ldd', [out], { timeout: 600_000, encoding: 'utf8', env });
   assert.equal(ldd.status, 0, ldd.stderr);
-  for (const want of ['libssl', 'libcrypto']) {
+  for (const want of ['libssl', 'libcrypto', 'libsodium']) {
     const line = ldd.stdout.split('\n').find((l) => l.includes(want));
     assert.ok(line && line.includes(`=> ${dir}/`), `${want} does not resolve inside the zip:\n${ldd.stdout}`);
   }

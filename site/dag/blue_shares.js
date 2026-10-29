@@ -11,27 +11,8 @@ export function shareUnit(bits) {
 }
 
 export function blueShareModel(workers, shareBits) {
-  const unit = shareUnit(shareBits);
-  const rows = (Array.isArray(workers) ? workers : []).filter((w) => w && Number(w.roundHashes) > 0);
-  rows.sort((a, b) => {
-    const ia = String(a.miner || a.worker || '');
-    const ib = String(b.miner || b.worker || '');
-    if (ia < ib) return -1;
-    if (ia > ib) return 1;
-    return 0;
-  });
-  const glyphs = [];
-  let total = 0;
-  for (const row of rows) {
-    const hashes = Number(row.roundHashes) || 0;
-    const n = unit > 0 ? Math.max(1, Math.round(hashes / unit)) : 1;
-    total += n;
-    const room = 64 - glyphs.length;
-    const paint = Math.min(n, Math.max(0, room));
-    const identity = String(row.miner || row.worker || '');
-    for (let k = 0; k < paint; k += 1) glyphs.push({ identity, ord: k });
-  }
-  return { total, identities: rows.length, glyphs, unit };
+  void workers;
+  return { total: 0, identities: 0, glyphs: [], unit: shareUnit(shareBits) };
 }
 
 /** Connected workers on the mouth orbit, identity order. Blue marks the open-round set. */
@@ -44,8 +25,8 @@ export function orbitWorkers(workers) {
     if (ia > ib) return 1;
     return 0;
   });
-  return rows.slice(0, 64).map((w) => ({
-    identity: String(w.miner || w.worker || ''),
-    blue: Number(w.roundHashes) > 0,
+  return rows.slice(0, 64).map(() => ({
+    identity: 'pool',
+    blue: false,
   }));
 }

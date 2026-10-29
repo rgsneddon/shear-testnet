@@ -63,24 +63,10 @@ export function createPullBook(dir) {
   if (fs.existsSync(file)) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // Finder maps are not pool state. A file that still has them is rewritten
+      // without those keys by the save() below.
       const found = {};
-      if (raw?.found && typeof raw.found === 'object') {
-        for (const [k, v] of Object.entries(raw.found)) {
-          const n = Math.floor(Number(v) || 0);
-          if (k && n > 0) found[String(k).toLowerCase()] = n;
-        }
-      }
       const finders = {};
-      if (raw?.finders && typeof raw.finders === 'object') {
-        for (const [k, v] of Object.entries(raw.finders)) {
-          const h = Math.floor(Number(k) || 0);
-          if (!(h >= 1) || !v) continue;
-          const tag = String(v.tag || '').trim().toLowerCase();
-          const worker = String(v.worker || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
-          if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
-          finders[String(h)] = { tag, worker: worker || 'worker' };
-        }
-      }
       state = {
         credits: Array.isArray(raw?.credits) ? raw.credits.map((c) => ({
           tag: c.tag,
@@ -152,8 +138,6 @@ export function createPullBook(dir) {
         dest20: p.dest20 || '',
       })),
       lastPullMs: state.lastPullMs,
-      found: state.found,
-      finders: state.finders || {},
       dests: Object.fromEntries([...destByTag].map(([k, v]) => [k, dest20Hex(v)])),
       sealsLifetime: sealsLifetime(),
     };
@@ -190,13 +174,8 @@ export function createPullBook(dir) {
     const pot = Math.max(0, Math.floor(Number(nanos) || 0));
     if (!(height >= 1)) return { ok: false, reason: 'empty' };
     if (!total && !(hashByDest && hashByDest.size)) return { ok: false, reason: 'empty' };
-    const finder = String(finderTag || '').trim().toLowerCase();
-    if (finder) state.found[finder] = (Math.floor(Number(state.found[finder]) || 0) + 1);
-    if (finder && /^m[0-9a-f]{8}$/.test(finder)) {
-      if (!state.finders || typeof state.finders !== 'object') state.finders = {};
-      const w = String(finderWorker || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'worker';
-      state.finders[String(height)] = { tag: finder, worker: w };
-    }
+    void finderTag;
+    void finderWorker;
     let left = pot;
     if (total && pot) {
       for (let i = 0; i < list.length; i += 1) {
@@ -271,7 +250,6 @@ export function createPullBook(dir) {
         dest,
         destRedacted: redactSsa1(dest),
         autoPayoutMinNanos: 0,
-        foundBlocks: 0,
         oldestUnconfirmedHeight: 0,
         confirmRemain: 0,
         confirmNeed: Math.max(1, Number(need) || 1),
@@ -327,7 +305,6 @@ export function createPullBook(dir) {
       dest,
       destRedacted: redactSsa1(dest),
       autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
-      foundBlocks: Math.floor(Number(state.found[key]) || 0),
       oldestUnconfirmedHeight,
       confirmRemain,
       confirmNeed: Math.max(1, Number(need) || 1),
@@ -385,7 +362,6 @@ export function createPullBook(dir) {
     const s = new Set();
     for (const c of state.credits) if (c.tag) s.add(c.tag);
     for (const p of state.pulled) if (p.tag) s.add(p.tag);
-    for (const k of Object.keys(state.found || {})) if (k) s.add(k);
     return [...s];
   }
 
@@ -433,7 +409,6 @@ export function createPullBook(dir) {
   function hasTag(tag) {
     const key = String(tag || '').trim().toLowerCase();
     if (!key) return false;
-    if (Number(state.found[key]) > 0) return true;
     if (state.lastPullMs[key]) return true;
     for (const c of state.credits) if (c.tag === key) return true;
     for (const p of state.pulled) if (p.tag === key) return true;
@@ -536,12 +511,8 @@ export function createPullBook(dir) {
   }
 
   if (loaded) save();
-  function finderOf(height) {
-    const h = Math.floor(Number(height) || 0);
-    if (!(h >= 1) || !state.finders) return null;
-    const row = state.finders[String(h)];
-    if (!row || !row.tag) return null;
-    return { tag: String(row.tag), worker: String(row.worker || 'worker') };
+  function finderOf() {
+    return null;
   }
 
   return {

@@ -1,3 +1,4 @@
+import { SHARE_BYTES_MAX } from './blunote.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -491,12 +492,18 @@ describe('hash-tx consensus law', () => {
     assert.ok(MAX_HASH_UNITS_PER_BLOCK >= 2 ** 26);
     assert.notEqual(MAX_HASH_UNITS_PER_BLOCK, 65536 * (2 ** SHARE_FLOOR_BITS));
     assert.match(fp, /MAX_HASH_UNITS=268435456/);
-    const over = Array.from({ length: MAX_SHARES_PER_BLOCK + 1 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
-    assert.equal(verifyShareBatch({ shares: over, skipPow: true }).reason, 'share_cap');
-    const aboveV10 = Array.from({ length: 8193 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
-    assert.notEqual(verifyShareBatch({ shares: aboveV10, skipPow: true }).reason, 'share_cap');
-    const cancelledRung = Array.from({ length: 32769 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
-    assert.notEqual(verifyShareBatch({ shares: cancelledRung, skipPow: true }).reason, 'share_cap');
+    // R28 (D6): a batch is bounded by SHARE_BYTES_MAX, checked before any
+    // hash; at 89 B a work frame, that binds below MAX_SHARES_PER_BLOCK. A row
+    // with no one-time key is not a share at all.
+    const legacy = Array.from({ length: 3 }, (_, i) => ({ nonce: BigInt(i), lz: SHARE_FLOOR_BITS }));
+    assert.equal(verifyShareBatch({ shares: legacy, skipPow: true }).reason, 'share_frame');
+    const frame = (i) => ({ shareR: Buffer.alloc(32, 1), shareP: Buffer.alloc(32, 2), viewTag: 0, nonce: BigInt(i), lz: 0, shareBits: SHARE_FLOOR_BITS, proofSlot: 0 });
+    const bluCap = Math.floor(SHARE_BYTES_MAX / 89);
+    assert.ok(bluCap < MAX_SHARES_PER_BLOCK, 'the byte cap binds before the count cap');
+    const over = Array.from({ length: bluCap + 1 }, (_, i) => frame(i));
+    assert.equal(verifyShareBatch({ shares: over, skipPow: true }).reason, 'share_bytes');
+    const atCap = Array.from({ length: bluCap }, (_, i) => frame(i));
+    assert.notEqual(verifyShareBatch({ shares: atCap, skipPow: true }).reason, 'share_bytes');
     assert.match(fp, /SPEND_SIG=ed25519-shear-spend-v1/);
     assert.match(fp, /DEST_HRP_SSA_ONLY=1/);
     assert.match(fp, /SPEND_SIG_ONLY=1/);

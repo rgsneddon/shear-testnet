@@ -30,7 +30,8 @@ assert.ok(fs.existsSync(zip), `zip_windows.py did not write ${zip}`);
 const entries = zipEntries(zip);
 const names = [...entries.keys()];
 const list = names.join(',');
-for (const need of ['ShearK-Miner.exe', 'example.bat', 'example.sh', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll']) {
+// R28: libsodium (the BluNotes one-time share keys) ships beside OpenSSL.
+for (const need of ['ShearK-Miner.exe', 'example.bat', 'example.sh', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll', 'libsodium-26.dll']) {
   assert.ok(entries.has(need), `missing ${need}: ${list}`);
 }
 assert.equal(entries.get('ShearK-Miner.exe').head.slice(0, 4), '4d5a', 'ShearK-Miner.exe in the zip is not PE');

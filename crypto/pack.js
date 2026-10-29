@@ -7,6 +7,8 @@ import { sha256 } from './shear_hash.js';
 import { hash20FromAddress } from './address.js';
 import { noteCommitOfDest20 } from './note.js';
 
+import { batchSumRoot } from './blunote.js';
+
 export const ENC_MAGIC = Buffer.from('shear-enc-v1');
 export const ENC_A = 1;
 export const ENC_B = 2;
@@ -19,6 +21,11 @@ export const ENC_SHARE_WORK = 7;
 /** Work frame plus the 128-byte header the share was hashed on. */
 export const ENC_SHARE_WORK_KIN = 8;
 export const SHARE_KIN_HEADER_LEN = 128;
+/** BluNotes (R28) work frame: R32 | P32 | nonce u64 | lz | bits | slot | view tag. No payee address. */
+export const ENC_SHARE_BLU = 9;
+/** BluNotes work frame plus the 128-byte kin header the share was hashed on. */
+export const ENC_SHARE_BLU_KIN = 10;
+export const SHARE_BLU_BODY_LEN = 76;
 export const LEAF_A_LAYOUT = 'dest20+u64count';
 export const LEAF_A_LAYOUT_V5 = 'note_commit+u64count';
 export const LEAF_B_LAYOUT = 'dest20+u64unit+u64nonce+h32memo+tag8';
@@ -235,6 +242,68 @@ export function unpackShareWorkKin(packed) {
   };
 }
 
+function key32(v, what) {
+  let b = null;
+  if (Buffer.isBuffer(v)) b = v;
+  else if (v instanceof Uint8Array) b = Buffer.from(v);
+  else if (typeof v === 'string' && /^[0-9a-fA-F]{64}$/.test(v)) b = Buffer.from(v, 'hex');
+  else if (v && typeof v === 'object' && v.type === 'Buffer' && Array.isArray(v.data)) b = Buffer.from(v.data);
+  if (!b || b.length !== 32) throw new Error(`${what} must be 32 bytes`);
+  return b;
+}
+
+/** BluNotes share: the one-time key (R, P) replaces the payee commitment. */
+export function packShareBlu({ shareR, shareP, nonce, lz = 0, shareBits = 0, proofSlot, viewTag = 0, verifiedHeader, kinHeader } = {}) {
+  const bits = Math.max(0, Math.min(255, Math.floor(Number(shareBits) || 0)));
+  const slot = Number(proofSlot);
+  if (proofSlot == null || proofSlot === '' || (slot !== 0 && slot !== 1)) throw new Error('bad_share_blu');
+  const kin = kinHeader && verifiedHeader != null && verifiedHeader !== '' ? kinHeaderBytes(verifiedHeader) : null;
+  if (kinHeader && !kin) throw new Error('bad_share_blu');
+  const tag = Buffer.isBuffer(viewTag) ? viewTag[0] : Number(viewTag) & 0xff;
+  const parts = [
+    key32(shareR, 'shareR'),
+    key32(shareP, 'shareP'),
+    u64le(nonce || 0),
+    Buffer.from([Number(lz) & 0xff, bits & 0xff, slot, tag & 0xff]),
+  ];
+  if (kin) parts.push(kin);
+  return Buffer.concat([ENC_MAGIC, Buffer.from([kin ? ENC_SHARE_BLU_KIN : ENC_SHARE_BLU]), Buffer.concat(parts)]);
+}
+
+export function unpackShareBlu(packed) {
+  const { type, body } = unpackType(packed);
+  const kin = type === ENC_SHARE_BLU_KIN;
+  if (type !== ENC_SHARE_BLU && !kin) throw new Error('bad_share_blu');
+  if (body.length !== SHARE_BLU_BODY_LEN + (kin ? SHARE_KIN_HEADER_LEN : 0)) throw new Error('bad_share_blu');
+  const slot = body[74];
+  if (slot !== 0 && slot !== 1) throw new Error('bad_share_blu');
+  const row = {
+    shareR: Buffer.from(body.subarray(0, 32)),
+    shareP: Buffer.from(body.subarray(32, 64)),
+    nonce: body.readBigUInt64LE(64),
+    lz: body[72],
+    shareBits: body[73],
+    proofSlot: slot,
+    viewTag: body[75],
+  };
+  if (kin) {
+    row.verifiedHeader = Buffer.from(body.subarray(SHARE_BLU_BODY_LEN));
+    row.kinHeader = true;
+  }
+  return row;
+}
+
+/** Merkle-sum root over BluNotes frames and their weights 2^bits. */
+export function bluSlotRoot(shares = []) {
+  const frames = packShareBatch(shares);
+  const weights = frames.map((f) => 1n << BigInt(unpackShareBlu(f).shareBits));
+  return batchSumRoot(frames, weights);
+}
+
+function isBluShare(s) {
+  return !!(s && typeof s === 'object' && !Buffer.isBuffer(s) && s.shareR != null && s.shareP != null);
+}
+
 function slotRootBytes(v) {
   if (v == null || v === '') return null;
   if (Buffer.isBuffer(v) && v.length === 32) return Buffer.from(v);
@@ -253,6 +322,11 @@ function slotRootBytes(v) {
  * Frames are the disk form: a dest with no noteCommit still packs as work when it has bits. */
 export function shareSlotRoot(shares = []) {
   const list = (Array.isArray(shares) ? shares : []).map(shareForPack);
+  // R28: a BluNotes batch commits frames and weights in a Merkle-sum root,
+  // the batchRoot its compact record keeps after pruning.
+  if (list.length && list.every((r) => isBluShare(r) || (Buffer.isBuffer(r) && [ENC_SHARE_BLU, ENC_SHARE_BLU_KIN].includes(r[ENC_MAGIC.length])))) {
+    return bluSlotRoot(list).root;
+  }
   const frames = packShareBatch(list);
   const h = createHash('sha256');
   h.update(Buffer.from('shareslot1'));
@@ -261,6 +335,7 @@ export function shareSlotRoot(shares = []) {
   h.update(n);
   for (const frame of frames) {
     const frameType = frame[ENC_MAGIC.length];
+    if (frameType === ENC_SHARE_BLU || frameType === ENC_SHARE_BLU_KIN) unpackShareBlu(frame);
     if (frameType === ENC_SHARE_WORK || frameType === ENC_SHARE_WORK_KIN) {
       const bodyLen = frame.length - ENC_MAGIC.length - 1;
       const kin = frameType === ENC_SHARE_WORK_KIN;
@@ -311,6 +386,7 @@ export function packShareBatch(shares = []) {
   const list = Array.isArray(shares) ? shares : [];
   return list.map((s) => {
     if (Buffer.isBuffer(s)) return s;
+    if (isBluShare(s)) return packShareBlu(s);
     if (s?.noteCommit && Buffer.from(s.noteCommit).length === 32) {
       const bits = s.shareBits != null && s.shareBits !== ''
         ? s.shareBits
@@ -345,6 +421,19 @@ function asNoteCommit(v) {
 
 function shareForPack(s) {
   if (Buffer.isBuffer(s) || typeof s === 'string') return s;
+  if (isBluShare(s)) {
+    const bits = s.shareBits != null && s.shareBits !== '' ? s.shareBits : s.creditedShareBits;
+    return {
+      shareR: s.shareR,
+      shareP: s.shareP,
+      nonce: s.nonce,
+      lz: s.lz,
+      shareBits: bits,
+      proofSlot: s.proofSlot == null || s.proofSlot === '' ? s.proofSlot : Number(s.proofSlot),
+      viewTag: s.viewTag ?? 0,
+      ...(s.kinHeader && s.verifiedHeader ? { verifiedHeader: s.verifiedHeader, kinHeader: true } : {}),
+    };
+  }
   const dest = String(s?.dest || s?.address || s?.miner || '');
   const dest20 = coerceDest20(s?.dest20, dest);
   const nc = asNoteCommit(s?.noteCommit)
@@ -453,6 +542,7 @@ export function shareRowJson(s) {
 
 function unpackShareFrame(buf) {
   const type = buf[ENC_MAGIC.length];
+  if (type === ENC_SHARE_BLU || type === ENC_SHARE_BLU_KIN) return unpackShareBlu(buf);
   if (type === ENC_SHARE_V5) return unpackShareV5(buf);
   if (type === ENC_SHARE_WORK) return unpackShareWork(buf);
   if (type === ENC_SHARE_WORK_KIN) return unpackShareWorkKin(buf);
@@ -463,6 +553,23 @@ export function unpackShareBatch(rows = []) {
   return (Array.isArray(rows) ? rows : []).map((s) => {
     if (Buffer.isBuffer(s) || typeof s === 'string') {
       return unpackShareFrame(Buffer.from(s));
+    }
+    if (isBluShare(s)) {
+      const row = {
+        shareR: key32(s.shareR, 'shareR'),
+        shareP: key32(s.shareP, 'shareP'),
+        nonce: typeof s.nonce === 'bigint' ? s.nonce : BigInt(s.nonce || 0),
+        lz: Number(s.lz || 0) & 0xff,
+        viewTag: Number(s.viewTag || 0) & 0xff,
+      };
+      if (s.verifiedHeader) row.verifiedHeader = s.verifiedHeader;
+      if (s.kinHeader) row.kinHeader = true;
+      const bits = s.shareBits != null && s.shareBits !== '' ? s.shareBits : s.creditedShareBits;
+      if (bits != null && bits !== '') row.shareBits = Number(bits);
+      if (s.jobId) row.jobId = String(s.jobId);
+      if (s.hash) row.hash = s.hash;
+      if (s.proofSlot === 0 || s.proofSlot === 1 || s.proofSlot === '0' || s.proofSlot === '1') row.proofSlot = Number(s.proofSlot);
+      return row;
     }
     const dest = String(s.dest || s.address || s.miner || '');
     let nc;
