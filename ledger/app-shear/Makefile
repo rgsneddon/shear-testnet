@@ -12,7 +12,9 @@ APPVERSION_N = 1
 APPVERSION_P = 0
 APPVERSION   = "$(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)"
 
-# SLIP-44 coin type for SHE is decision D2. 0x80000000|COIN until registered.
+# PLACEHOLDER: SLIP-44 coin type for SHE (D2). The single place to change it.
+# 1 (the shared testnet type) until SatoshiLabs assigns a number. The request
+# for 2004 is in Desktop/SLIP44-SHE-PR.md. Every host and test reads it from here.
 SHEAR_COIN_TYPE ?= 1
 DEFINES += SHEAR_COIN_TYPE=$(SHEAR_COIN_TYPE)
 
