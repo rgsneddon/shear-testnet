@@ -2,6 +2,14 @@
   "note": "Donation addresses read by Russell Sneddon from his own Ledger Nano X and confirmed on the device. Never derive or alter them. No Shear (SHE) address until mainnet.",
   "addresses": [
     {
+      "id": "she",
+      "name": "Shear",
+      "ticker": "SHE",
+      "address": "",
+      "enabled": false,
+      "comment": "Hidden until mainnet. To publish: put the mainnet she1 silent ID in address and set enabled to true."
+    },
+    {
       "id": "btc",
       "name": "Bitcoin",
       "ticker": "BTC",

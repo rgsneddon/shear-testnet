@@ -38,8 +38,9 @@
     head.appendChild(el('strong', null, a.name));
     head.appendChild(el('span', 'donate-ticker', a.ticker));
     info.appendChild(head);
-    var code = el('code', 'donate-addr', a.address);
+    var code = el('code', 'donate-addr', a.address || 'Address published at mainnet');
     info.appendChild(code);
+    if (!a.address) { info.appendChild(el('p', 'donate-send-note', 'Copy and QR code at mainnet.')); r.appendChild(info); return r; } // no dead copy/QR buttons without an address
     var tools = el('div', 'donate-tools');
     var btn = el('button', 'btn donate-copy', 'Copy');
     btn.type = 'button';
@@ -69,8 +70,10 @@
     .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
     .then(function (data) {
       list.textContent = '';
-      (data.addresses || []).forEach(function (a) { list.appendChild(row(a)); });
-      window.SHEAR_DONATE_ADDRESSES = data.addresses || [];
+      // enabled: false hides a box entirely (the SHE box until mainnet).
+      var shown = (data.addresses || []).filter(function (a) { return a.enabled !== false; });
+      shown.forEach(function (a) { list.appendChild(row(a)); });
+      window.SHEAR_DONATE_ADDRESSES = shown;
       document.dispatchEvent(new CustomEvent('donate:addresses'));
     })
     .catch(function (e) {

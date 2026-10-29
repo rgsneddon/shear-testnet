@@ -14,6 +14,7 @@
   Object.keys(NETS).forEach(function (k) { NETS[k].id = k; NETS[k].rpcHost = new URL(NETS[k].rpc).host; });
   // Per address box (addresses.json id): the networks it can send on, or a note.
   var BOXES = {
+    she: { note: 'Ledger send at mainnet.' },
     evm: { nets: ['eth', 'base', 'arb', 'pol'], app: 'Ethereum' },
     sol: { nets: ['sol'], app: 'Solana' },
     btc: { soon: true }, ltc: { soon: true }, doge: { soon: true }, kas: { soon: true },
