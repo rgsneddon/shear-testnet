@@ -74,11 +74,15 @@ export function assertLaunchers(zipPath, ver) {
     assert.match(text, /shear-testnet-v12/);
     assert.match(text, /stratum\+ssl:\/\/pool\.shear\.digital:443/);
     // R28 option 2: a worker name and the mining address; never an ssa1 or --dest.
-    assert.match(text, /--user (rig1|pc1) --blu YOUR_MINING_ADDRESS --backend jit-full/);
+    // PR146 (2cae391a): no --backend on either line. The miner picks jit-full
+    // and drops to light jit, then the interpreter, by itself; the packed exe's
+    // mode is checked with assertAutoBackend. The lines are anchored so a flag
+    // appended after the address is refused, not ignored.
+    assert.match(text, /--pool stratum\+ssl:\/\/pool\.shear\.digital:443 --user (rig1|pc1) --blu YOUR_MINING_ADDRESS\r?$/m);
     // Solo names the mining address with --solo, to the user's own node only.
-    assert.match(text, /--pool 127\.0\.0\.1:1111 --user (rig1|pc1) --blu YOUR_MINING_ADDRESS --solo/);
+    assert.match(text, /--pool 127\.0\.0\.1:1111 --user (rig1|pc1) --blu YOUR_MINING_ADDRESS --solo\r?$/m);
     assert.doesNotMatch(text, /YOUR_SSA1|YOUR_SHE1|--dest/);
-    assert.match(text, /--backend jit-full/);
+    assert.doesNotMatch(text, /--backend/, 'launchers leave the backend to auto-select');
     assert.doesNotMatch(text, /--tls-insecure|--tls-pin/);
   }
   assert.match(bat, new RegExp(`ShearK-Miner-${esc(ver)}-windows\\.zip`));
@@ -92,6 +96,31 @@ export function assertNotices(names) {
     assert.ok(names.includes(need), `missing ${need}: ${names.join(',')}`);
   }
   assert.ok(names.some((n) => n.startsWith('LICENSES/')), `missing LICENSES/: ${names.join(',')}`);
+}
+
+// The fallback ladder (shear_hash.c): jit-full, then light jit, then the
+// interpreter. rxMode is "full" only for jit-full.
+export const LADDER = ['jit-full', 'jit', 'interpreter'];
+
+// --print-config from `exe` with no --backend, so it reports what auto-select
+// chose. print-config exits before any connection. ulimitKb (Linux) caps the
+// address space to force the light-jit step.
+export function printConfig(exe, { cwd, env = process.env, ulimitKb = 0 } = {}) {
+  const r = ulimitKb
+    ? spawnSync('bash', ['-c', `ulimit -v ${Number(ulimitKb)} && exec "$0" --print-config`, exe], { timeout: 600_000, encoding: 'utf8', cwd, env })
+    : spawnSync(exe, ['--print-config'], { timeout: 600_000, encoding: 'utf8', cwd, env });
+  assert.equal(r.status, 0, `${exe} --print-config: ${r.error || ''}${r.stdout}${r.stderr}`);
+  const m = r.stdout.replace(/\x1b\[[0-9;]*m/g, '').match(/\{[\s\S]*\}/);
+  assert.ok(m, `no config JSON:\n${r.stdout}`);
+  return JSON.parse(m[0]);
+}
+
+// The auto-selected backend is one of `allowed` (each a ladder step), and the
+// mode label agrees with it.
+export function assertAutoBackend(cfg, allowed = LADDER) {
+  assert.ok(LADDER.includes(cfg.backend), `backend ${cfg.backend} is not a ladder step`);
+  assert.ok(allowed.includes(cfg.backend), `backend ${cfg.backend}, expected one of ${allowed.join(', ')}`);
+  assert.equal(cfg.rxMode, cfg.backend === 'jit-full' ? 'full' : 'light', `rxMode ${cfg.rxMode} for backend ${cfg.backend}`);
 }
 
 export const SELFTEST = 'selftest ok e9e9dee13e2240383e0bdfb65ae962f52d9962a2e3bebd7623d418464ceb8cd4';

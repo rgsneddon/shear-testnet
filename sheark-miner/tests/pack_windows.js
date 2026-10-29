@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   root, dist, version, runPacker, zipEntries, zipText, unzipTo,
-  assertLaunchers, assertNotices, SELFTEST,
+  assertLaunchers, assertNotices, SELFTEST, printConfig, assertAutoBackend,
 } from './pack_common.js';
 
 assert.equal(process.platform, 'win32',
@@ -73,6 +73,9 @@ try {
   assert.equal(j.version, ver);
   assert.equal(j.magic, 'shear-testnet-v12');
   assert.equal(j.tls, true);
+  // The launchers pass no --backend: on the runner the packed exe auto-selects
+  // jit-full, and labels it rxMode "full".
+  assertAutoBackend(printConfig(out, { cwd: dir, env }), ['jit-full']);
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }

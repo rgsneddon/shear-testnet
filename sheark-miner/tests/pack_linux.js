@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   root, dist, version, runPacker, zipEntries, zipText, unzipTo,
-  assertLaunchers, assertNotices, SELFTEST,
+  assertLaunchers, assertNotices, SELFTEST, printConfig, assertAutoBackend,
 } from './pack_common.js';
 
 assert.equal(process.platform, 'linux',
@@ -95,6 +95,10 @@ try {
   assert.equal(j.version, ver);
   assert.equal(j.magic, 'shear-testnet-v12');
   assert.equal(j.tls, true);
+  // The launchers pass no --backend: with the runner's memory the packed exe
+  // auto-selects jit-full, and under ulimit -v 700000 it steps to light jit.
+  assertAutoBackend(printConfig(out, { cwd: dir, env }), ['jit-full']);
+  assertAutoBackend(printConfig(out, { cwd: dir, env, ulimitKb: 700000 }), ['jit']);
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }
