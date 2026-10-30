@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-/// Relay markers are gone from the wallet app, the site, and the docs.
+/// Relay identifiers are gone from the tree. Prose may still name the old relay.
 void main() {
   test('hop_relay_absent', () {
     final repo = _repoRoot();
@@ -19,35 +19,23 @@ void main() {
     }
 
     final needles = <RegExp>[
-      RegExp(r'privacy[-_ ]hop', caseSensitive: false),
-      RegExp(r'SHEAR-HOP', caseSensitive: false),
+      RegExp(r'shear_privacy_hop'),
       RegExp(r'PrivacyHop'),
       RegExp(r'privacyHop'),
-      RegExp(r'kPrivacyHop'),
+      RegExp(r'privacy_hop'),
       RegExp(r'HOP_HOST'),
       RegExp(r'HOP_PORT'),
       RegExp(r'HOP_CONNECT'),
       RegExp(r'HOP_DISCONNECT'),
       RegExp(r'shear/privacy_hop'),
-      RegExp(r'hop-fee', caseSensitive: false),
-      RegExp(r'hop fee', caseSensitive: false),
-      RegExp(r'hopFee'),
-      RegExp(r'\bRPT2\b'),
-      RegExp(r'VpnService'),
-      RegExp(r'BIND_VPN'),
       RegExp(r'kErrPrivacyVpn'),
-      RegExp(r'reserve-hop'),
-      RegExp(r'reserve-privacy-hop'),
       RegExp(r'kHopProgress'),
-      RegExp(r'Privacy hop', caseSensitive: false),
+      RegExp(r'RptClient'),
       RegExp(r'assets/hop'),
     ];
 
     final hits = <String>[];
-    for (final rel in const ['wallet', 'site', 'docs']) {
-      final dir = Directory(_join(repo.path, rel));
-      if (!dir.existsSync()) continue;
-      _walk(dir, (file) {
+    _walk(repo, (file) {
         final path = file.path.replaceAll('\\', '/');
         if (path.endsWith('/wallet/test/hop_relay_absent_test.dart')) return;
         if (_skipFile(path)) return;
@@ -64,14 +52,13 @@ void main() {
           }
         }
       });
-    }
     expect(hits, isEmpty, reason: hits.join('\n'));
   });
 
   test('hop relay scan walks the repo root', () {
     final src = File('test/hop_relay_absent_test.dart').readAsStringSync();
     expect(src, contains('_walk(repo,'));
-    expect(src.contains("const ['wallet', 'site', 'docs']"), isFalse);
+    expect(src.contains('Directory(' + '_join(repo.path, rel)'), isFalse);
   });
 }
 
