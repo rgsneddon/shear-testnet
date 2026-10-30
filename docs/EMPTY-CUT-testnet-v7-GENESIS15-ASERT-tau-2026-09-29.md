@@ -1,7 +1,7 @@
 # EMPTY-CUT — shear-testnet-v6 → shear-testnet-v7
 
 **As-of:** 2026-09-29 · Europe/London (BST / UTC+1)  
-**Local tip (must redeploy this tip):** `C:\Users\rgsne\shear-pool-node` on DESKTOP-ODTSQ56  
+**Local tip (must redeploy this tip):** `<laptop-repo>` on `<windows-host>`  
 **Do not bounce the live pool until Russell authorizes the cut.**
 
 ## Why a new book

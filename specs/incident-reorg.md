@@ -26,4 +26,4 @@ Planned 8-block private branch. Honest nodes reorg iff it is heavier and valid; 
 
 ## Second seed
 
-Stand a second validating node **off** `178.105.187.178`. Stratum may stay on DE. `SHEAR_SEEDS` / RPC `addnode`.
+Stand a second validating node **off** a former host (decommissioned). Stratum may stay on DE. `SHEAR_SEEDS` / RPC `addnode`.

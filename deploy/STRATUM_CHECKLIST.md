@@ -23,10 +23,10 @@ Must show `stratumBind` = `127.0.0.1` (not `0.0.0.0`) and `loginAuth` = `ed25519
 
 ## Reload
 
-On the pool box (`77.42.91.84` per `HANDOFF_OPS.md`):
+On the pool box (`<pool-host>` per `HANDOFF_OPS.md`):
 
 ```
-sudo bash /opt/shear-v4/deploy/reload-stratum-units.sh
+sudo bash <server-dir>/deploy/reload-stratum-units.sh
 ```
 
 Success prints `ok: live stats match tip BIND+AUTH units`. Fail prints `FAIL:` and a non-zero exit.
@@ -37,7 +37,7 @@ Optional: terminate TLS on nginx/Caddy in front of `127.0.0.1:1111` (`pool/deplo
 
 ## Live fleet drop-in (testnet soak)
 
-Helsinki pool (`77.42.91.84`) may have `/etc/systemd/system/shear-pool.service.d/testnet-stratum.conf` setting `SHEAR_STRATUM_BIND=0.0.0.0` and empty `SHEAR_STRATUM_AUTH` so dest-only ShearK can hit public `:1111`. That drop-in wins over the landed unit. Do **not** delete it or restart onto loopback+AUTH until a TLS terminator is in front of `127.0.0.1:1111`. This tree does not ship certificates.
+Helsinki pool (`<pool-host>`) may have `/etc/systemd/system/shear-pool.service.d/testnet-stratum.conf` setting `SHEAR_STRATUM_BIND=0.0.0.0` and empty `SHEAR_STRATUM_AUTH` so dest-only ShearK can hit public `:1111`. That drop-in wins over the landed unit. Do **not** delete it or restart onto loopback+AUTH until a TLS terminator is in front of `127.0.0.1:1111`. This tree does not ship certificates.
 
 ## Do not
 
