@@ -4064,18 +4064,8 @@ class ShearWalletAppState extends State<ShearWalletApp>
     return _mempoolDepth;
   }
 
-  /// One Lock π at a time: a second tap while the first is still signing or
-  /// posting is ignored, so it can never reuse the lock index or inputs.
-  bool _reserveLockBusy = false;
-
   Future<void> _reserveSend(BuildContext context, ShearIdentity ident) async {
-    if (!claimSingleSubmit(held: _reserveLockBusy)) return;
-    _reserveLockBusy = true;
-    try {
-      await _reserveSendBody(context, ident);
-    } finally {
-      _reserveLockBusy = false;
-    }
+    await _reserveSendBody(context, ident);
   }
 
   Future<void> _reserveSendBody(BuildContext context, ShearIdentity ident) async {
