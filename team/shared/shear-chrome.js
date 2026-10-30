@@ -14,12 +14,13 @@
         { id: 'POOL', label: 'POOL', href: '/pool/' },
         { id: 'EXPLORER', label: 'EXPLORER', href: '/explorer/' },
         { id: 'MEMPOOL', label: 'MEMPOOL', href: '/mempool/' },
-        { id: 'DAG', label: 'DAG', href: 'https://dag.shear.digital/' },
+        { id: 'DAG', label: 'BLU', href: 'https://blunote.shear.digital/' },
         { id: 'MINER', label: 'MINER', href: '/miner/' },
         { id: 'NODE', label: 'NODE', href: '/node/' },
         { id: 'WALLET', label: 'WALLET', href: '/wallet/' },
         { id: 'VORTICES', label: 'VORTICES', href: '/vortices/' },
         { id: 'TEAM', label: 'TEAM', href: 'https://team.shear.digital/' },
+        { id: 'DONATE', label: 'DONATE', href: 'https://donate.shear.digital/' },
         { id: 'DOCS', label: 'DOCS', href: '/docs/' }
       ];
     }
@@ -28,12 +29,13 @@
       { id: 'POOL', label: 'POOL', href: 'https://pool.shear.digital/' },
       { id: 'EXPLORER', label: 'EXPLORER', href: 'https://explorer.shear.digital/' },
       { id: 'MEMPOOL', label: 'MEMPOOL', href: 'https://mempool.shear.digital/' },
-      { id: 'DAG', label: 'DAG', href: 'https://dag.shear.digital/' },
+      { id: 'DAG', label: 'BLU', href: 'https://blunote.shear.digital/' },
       { id: 'MINER', label: 'MINER', href: 'https://shear.digital/miner/' },
       { id: 'NODE', label: 'NODE', href: 'https://shear.digital/node/' },
       { id: 'WALLET', label: 'WALLET', href: 'https://shear.digital/wallet/' },
       { id: 'VORTICES', label: 'VORTICES', href: 'https://vortices.shear.digital/' },
       { id: 'TEAM', label: 'TEAM', href: 'https://team.shear.digital/' },
+      { id: 'DONATE', label: 'DONATE', href: 'https://donate.shear.digital/' },
       { id: 'DOCS', label: 'DOCS', href: 'https://shear.digital/docs/' }
     ];
   })();
@@ -306,7 +308,7 @@
   function autoMount() {
     var root = document.getElementById('shear-chrome-root');
     if (!root) return;
-    if (root.querySelector('.top-banner')) return;
+    if (root.querySelector('.top-banner')) { wireChrome(); return; } /* static prerendered nav: wire only, no re-render */
     mount({
       active: root.getAttribute('data-active') || '',
       brandBase: root.getAttribute('data-brand-base') || 'brand/',

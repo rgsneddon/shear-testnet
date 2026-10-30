@@ -271,7 +271,7 @@
     .wordmark { font-weight:800; letter-spacing:.12em; color:var(--blue); font-size:.85rem; }
 
     a.nav-btn {
-      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 10px; color:var(--cyan); text-decoration:none;
+      display:inline-flex; align-items:center; justify-content:center; text-align:center; height:36px; padding:0 4px; color:var(--cyan); text-decoration:none;
       font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; letter-spacing:.05em; font-size:.78rem; text-transform:uppercase;
       border:1px solid transparent;
       background: linear-gradient(165deg, #ffffff 0%, #eef5fb 58%) padding-box,
@@ -400,12 +400,13 @@
       <a class="nav-btn is-on active" href="https://pool.shear.digital/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
-      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://blunote.shear.digital/">BLU</a>
       <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
       <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
       <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
       <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
       <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://donate.shear.digital/">DONATE</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
   </nav>
   <div class="banner-tools">
@@ -424,7 +425,7 @@
       <section class="panel-card">
         <h1>Shear</h1>
         <p class="she-private"><span class="she-private-lockup">She is Private</span></p>
-        <p>Shear is a private cryptocurrency. Continuity-settled proof of work. DINS-DAG settles each round as the blue set: the spine pot plus the hash nanos, once. PoW elects the tip. <strong>Testnet.</strong></p>
+        <p>Shear is a private cryptocurrency. Continuity-settled proof of work. DINS settles each round as the blue set: the spine pot plus the hash nanos, once. PoW elects the tip. <strong>Testnet.</strong></p>
         <p>Mine with Copy dest: <code>ssa1.worker</code>. Hash bonus (no pool fee) and your share of the block pot after the 1% fee seal to that <code>ssa1</code> in the found block. Continuum lists that seal as blockfound. This pool is not custodial - we merely process what the node tells us.</p>
         <p>Privacy is ADMITv2 membership over the notes on this blockchain, with confidential amounts. Offer a silent ID (<code>she1</code>) when someone pays you. Coin lands on a revolving dest (<code>ssa1</code>). Rest-frame <code>shear1</code> stays in Closure.</p>
         <p class="pulse" id="live-pulse">live · testnet</p>
@@ -1371,5 +1372,17 @@
     tick();
     renderCmd();
   </script>
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="https://shear.digital/">Home</a>
+        <a href="https://shear.digital/network.html">Network</a>
+        <a href="https://shear.digital/docs/index.html">Docs</a>
+        <a href="https://shear.digital/privacy.html">Privacy</a>
+        <a href="https://shear.digital/legal.html">Legal &amp; licences</a>
+      </nav>
+    </div>
+  </footer>
 </body>
 </html>

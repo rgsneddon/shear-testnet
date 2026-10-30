@@ -70,12 +70,13 @@
       <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
       <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
       <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
-      <a class="nav-btn" href="https://dag.shear.digital/">DAG</a>
+      <a class="nav-btn" href="https://blunote.shear.digital/">BLU</a>
       <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
       <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
       <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
       <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
       <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://donate.shear.digital/">DONATE</a>
       <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
   </nav>
   <div class="banner-tools">
@@ -90,7 +91,7 @@
   <script src="shared/shear-chrome.js?v=20261014nav"></script>
 
 <div class="banner" role="status">
-    <strong>Testnet only.</strong> Mainnet is not live · <span id="mainnet-countdown" data-until="2026-11-16T14:00:00+00:00">countdown to 16th November 2026 at 1400hrs UK time</span>
+    <strong>Testnet only.</strong> Mainnet is not live · <span id="mainnet-countdown" data-until="2026-12-21T14:00:00+00:00">countdown to 21st December 2026 at 1400hrs UK time</span>
     <span class="banner-extra"><span class="sep">·</span> Windows miner may trigger SmartScreen (unsigned build)</span>
   </div>
 
@@ -235,7 +236,7 @@
       <div class="faq" role="list">
         <div class="faq-item open" role="listitem">
           <button class="faq-q" type="button" aria-expanded="true">Testnet vs mainnet?<span class="chev">▾</span></button>
-          <div class="faq-a">You are on <strong data-shear-network>shear-testnet-v11</strong>. Mainnet is not live and the public countdown is 16th November 2026 at 1400hrs UK time. Treat balances as disposable.</div>
+          <div class="faq-a">You are on <strong data-shear-network>shear-testnet-v11</strong>. Mainnet is not live and the public countdown is 21st December 2026 at 1400hrs UK time. Treat balances as disposable.</div>
         </div>
         <div class="faq-item" role="listitem">
           <button class="faq-q" type="button" aria-expanded="false">Is Continuum instant?<span class="chev">▾</span></button>
@@ -276,23 +277,12 @@
   <footer class="footer">
     <div class="wrap footer-inner">
       <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
-      <div class="shear-legal">Shear is experimental open-source software on testnet. Nothing here is financial advice or an offer of investment. Use it lawfully.</div>
       <nav>
-        <a href="/privacy.html">Privacy</a>
-        <a href="network.html">Network</a>
-        <a href="governance.html">Governance</a>
-        <a href="mine.html">Mine</a>
-        <a href="docs/index.html">Docs</a>
-        <a href="/wallet/">Wallet 0.71</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/tag/0.71">Continuum 0.71 release</a>
-        <span>Git tag v16 stays on the same commit as tag 0.66.</span>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.71/shear-wallet-0.71-windows.zip">shear-wallet-0.71-windows.zip</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.71/shear-wallet-0.71-android.apk">shear-wallet-0.71-android.apk</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.71/shear-wallet-0.71-linux.zip">shear-wallet-0.71-linux.zip</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.71/shear-wallet-0.71-archlinux.zip">shear-wallet-0.71-archlinux.zip</a>
-        <a href="https://github.com/rgsneddon/shear-testnet/releases/download/0.71/shear-wallet-0.71-fedora.zip">shear-wallet-0.71-fedora.zip</a>
-        <a href="/miner/">Miner 2.8</a>
-        <a href="https://github.com/rgsneddon/shear-testnet" rel="noopener">GitHub</a>
+        <a href="https://shear.digital/">Home</a>
+        <a href="https://shear.digital/network.html">Network</a>
+        <a href="https://shear.digital/docs/index.html">Docs</a>
+        <a href="https://shear.digital/privacy.html">Privacy</a>
+        <a href="https://shear.digital/legal.html">Legal &amp; licences</a>
       </nav>
     </div>
   </footer>
@@ -308,14 +298,14 @@
       function tick() {
         var left = until - Date.now();
         if (!(left > 0)) {
-          el.textContent = '16th November 2026 at 1400hrs UK time';
+          el.textContent = '21st December 2026 at 1400hrs UK time';
           return;
         }
         var sec = Math.floor(left / 1000);
         var days = Math.floor(sec / 86400);
         var hours = Math.floor((sec % 86400) / 3600);
         var mins = Math.floor((sec % 3600) / 60);
-        el.textContent = 'countdown to 16th November 2026 at 1400hrs UK time · ' + days + 'd ' + pad(hours) + 'h ' + pad(mins) + 'm ' + pad(sec % 60) + 's';
+        el.textContent = 'countdown to 21st December 2026 at 1400hrs UK time · ' + days + 'd ' + pad(hours) + 'h ' + pad(mins) + 'm ' + pad(sec % 60) + 's';
       }
       tick();
       setInterval(tick, 1000);

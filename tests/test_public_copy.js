@@ -240,8 +240,8 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /same shell.*npm run solo|npm run solo/);
     assert.match(nodePage, /Darwin/);
     assert.doesNotMatch(pool, /shear-testnet-v3/);
-    assert.match(main, /countdown to 16th November 2026 at 1400hrs UK time/);
-    assert.match(main, /2026-11-16T14:00:00\+00:00/);
+    assert.match(main, /countdown to 21st December 2026 at 1400hrs UK time/);
+    assert.match(main, /2026-12-21T14:00:00\+00:00/);
     assert.doesNotMatch(main, /launch date not decided/);
     assert.doesNotMatch(main, /2026-09-18T21:00:00/);
     assert.doesNotMatch(docs, /2026-09-18T21:00:00/);

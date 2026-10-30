@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    (function () {
+      var KEY = 'shear-theme';
+      function readCookie() {
+        var found = '';
+        var parts = String(document.cookie || '').split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].trim();
+          if (p.indexOf(KEY + '=') !== 0) continue;
+          try {
+            var v = decodeURIComponent(p.slice(KEY.length + 1));
+            if (v === 'dark' || v === 'light') found = v;
+          } catch (e1) {}
+        }
+        return found;
+      }
+      function writeCookie(t) {
+        var clear = KEY + '=; Path=/; Max-Age=0; SameSite=Lax';
+        document.cookie = clear;
+        if (location.protocol === 'https:') document.cookie = clear + '; Secure';
+        var bits = KEY + '=' + encodeURIComponent(t) + '; Path=/; Max-Age=31536000; SameSite=Lax';
+        if (/(^|\.)shear\.digital$/.test(location.hostname || '')) bits += '; Domain=.shear.digital';
+        if (location.protocol === 'https:') bits += '; Secure';
+        document.cookie = bits;
+      }
+      try {
+        var t = readCookie();
+        if (t !== 'dark' && t !== 'light') {
+          try { t = localStorage.getItem(KEY); } catch (e2) { t = ''; }
+        }
+        if (t === 'dark' || t === 'light') {
+          try { localStorage.setItem(KEY, t); } catch (e3) {}
+          if (readCookie() !== t) writeCookie(t);
+        } else {
+          t = 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <title>Legal and licences · Shear</title>
+  <meta name="description" content="What Shear's wallet, node, pool and website collect: no accounts, no tracking, keys stay on your device." />
+  <link rel="icon" href="brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="css/site.css" />
+  <link rel="stylesheet" href="shared/shear-chrome.css?v=20261014nav" />
+  <link rel="stylesheet" href="css/saas-dark.css" />
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="https://shear.digital/brand/" data-testnet-pill="1"><header class="top-banner" id="shear-topbar">
+  <div class="banner-brand">
+    <a href="https://shear.digital/" aria-label="Shear home">
+      <img id="shear-wordmark" class="banner-wordmark theme-img-light" alt="Shear"
+        src="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-light="https://shear.digital/brand/05c-wordmark-nevia-light-transparent.png"
+        data-dark="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+      <img class="banner-wordmark theme-img-dark" alt=""
+        src="https://shear.digital/brand/05d-wordmark-nevia-dark-transparent.png"/>
+    </a>
+  </div>
+  <nav class="nav" id="shear-nav" aria-label="Product">
+      <a class="nav-btn is-on active" href="https://shear.digital/">MAIN</a>
+      <a class="nav-btn" href="https://pool.shear.digital/">POOL</a>
+      <a class="nav-btn" href="https://explorer.shear.digital/">EXPLORER</a>
+      <a class="nav-btn" href="https://mempool.shear.digital/">MEMPOOL</a>
+      <a class="nav-btn" href="https://blunote.shear.digital/">BLU</a>
+      <a class="nav-btn" href="https://shear.digital/miner/">MINER</a>
+      <a class="nav-btn" href="https://shear.digital/node/">NODE</a>
+      <a class="nav-btn" href="https://shear.digital/wallet/">WALLET</a>
+      <a class="nav-btn" href="https://vortices.shear.digital/">VORTICES</a>
+      <a class="nav-btn" href="https://team.shear.digital/">TEAM</a>
+      <a class="nav-btn" href="https://donate.shear.digital/">DONATE</a>
+      <a class="nav-btn" href="https://shear.digital/docs/">DOCS</a>
+  </nav>
+  <div class="banner-tools">
+      <span class="shear-chrome-pill">Testnet</span>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Dark" title="Dark">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></g></svg>
+      </button>
+      <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="shear-nav" aria-label="Open menu" title="Menu"><span class="nav-toggle-bars" aria-hidden="true"></span></button>
+  </div>
+</header></div>
+  <script src="shared/shear-chrome.js?v=20261014nav"></script>
+
+<div class="banner" role="status">
+    <strong>Testnet only.</strong> Mainnet is not live · countdown to 21st December 2026 at 1400hrs UK time
+  </div>
+
+  <main>
+    <div class="wrap page-hero">
+      <p class="section-label">Legal</p>
+      <h1>Terms of use and licences</h1>
+      <p class="lede">Shear is experimental, open-source software. You must be 18 or over to use it. You alone hold your keys, and nobody can recover them for you. Testnet coin has no value and may disappear.</p>
+      <p class="card-kicker">Last updated: 2026-10-29 · Applies to shear.digital and its subdomains, the Continuum wallet, the ShearK miner and the Shear node. See also the <a href="privacy.html">privacy policy</a>.</p>
+    </div>
+    <section class="wrap section">
+      <div class="panel">
+        <h2>Terms of use</h2>
+        <h3>Who we are</h3>
+        <p>Shear is run by Russell Gray Sneddon. Contact: <a href="mailto:russell.gray.sneddon@gmail.com">russell.gray.sneddon@gmail.com</a>.</p>
+
+        <h3>Age</h3>
+        <p>You must be at least 18 years old, and old enough to enter a binding agreement where you live, to use the Shear wallet, miner or node, or to mine on the public pool. If you are under 18, please do not use Shear.</p>
+
+        <h3>Experimental software and testnet</h3>
+        <p>Shear is currently a testnet. Testnet balances have no value and may be reset or disappear at any time. Mainnet is not live. Nothing on this site is financial, investment, legal or tax advice, or an offer to sell anything. Shear has no sale of coin, no accounts and no subscriptions.</p>
+
+        <h3>Your keys and your wallet</h3>
+        <p>Your wallet is restored from the <code>shewall.bin</code> file together with its password. There is no seed phrase, and no one, including us, can recover a lost file or password or reverse a transaction. Back up your file, and keep it and your password safe and separate.</p>
+
+        <h3>Using Shear lawfully</h3>
+        <ul>
+          <li>Use Shear only in ways that are lawful where you are. You are responsible for any taxes and reporting that apply to you.</li>
+          <li>Do not attack, overload or try to disrupt the network, the pool or our servers, and do not try to get into systems you are not allowed to use.</li>
+          <li>Mine only on hardware and power you are entitled to use. ShearK does not run on phones, because sustained mining can overheat a phone and damage its battery.</li>
+        </ul>
+
+        <h3>Open-source licence and no warranty</h3>
+        <p>The software is provided under the MIT License, "as is", without warranty of any kind. To the extent the law allows, we are not liable for any loss arising from your use of Shear, including lost coin, lost keys, network faults or downtime. Nothing in these terms limits liability that cannot be limited by law.</p>
+
+        <h3>Third parties</h3>
+        <p>Downloads and release details come from GitHub, which has its own terms. Other services you connect to, such as third-party pools or nodes, are not run by us.</p>
+
+        <h3>Copyright</h3>
+        <p>If you believe material on a Shear site infringes your copyright, email <a href="mailto:russell.gray.sneddon@gmail.com">russell.gray.sneddon@gmail.com</a>. Name the work, say where the material appears (for example, its URL), and give your contact details. We will review it and remove material that infringes. Where appropriate, we will remove access for anyone who repeatedly infringes.</p>
+
+        <h3>Changes</h3>
+        <p>We will post changes on this page and update the date above. If you keep using Shear after a change, you accept the updated terms.</p>
+      
+        <h2 id="licences">Open-source licences</h2>
+        <p>Shear is released under the MIT License. The Continuum wallet bundles the third-party components listed below. Each one is shown with its licence text and copyright lines exactly as it ships them. This is the same notice file the wallet shows under its licences screen.</p>
+        <pre style="white-space:pre-wrap;word-break:break-word;font-size:12px;max-height:none">Shear third-party notices
+
+Generated by scripts/licenses/notices.py. Do not edit by hand.
+Shear is MIT licensed (see the Shear section). Each section below names the
+components it covers and carries the licence text and copyright lines exactly
+as each component ships them.</pre>
+        <nav class="licence-tree" aria-label="Open-source licences by component">
+        <ul style="list-style:none;padding-left:0">
+        <li><details open><summary>Shear (1)</summary><ul>
+        <li><a href="legal/shear.html">Shear</a> <small>(Attribution (not a licence grant); MIT)</small></li>
+        </ul></details></li>
+        <li><details><summary>Vendored source (7)</summary><ul>
+        <li><a href="legal/argon2-reference-code-in-randomx.html">Argon2 reference code (in RandomX)</a> <small>(CC0-1.0)</small></li>
+        <li><a href="legal/argon2-reference-code-in-randomx-and-1-more.html">Argon2 reference code (in RandomX), constant_time_eq</a> <small>(CC0-1.0; CC0-1.0 OR MIT-0 OR Apache-2.0)</small></li>
+        <li><a href="legal/ec-divisors-and-1-more.html">ec-divisors, std-shims</a> <small>(MIT)</small></li>
+        <li><a href="legal/generalized-bulletproofs.html">generalized-bulletproofs</a> <small>(MIT)</small></li>
+        <li><a href="legal/generalized-bulletproofs-circuit-abstraction-and-2-more.html">generalized-bulletproofs-circuit-abstraction, generalized-bulletproofs-ec-gadgets, full-chain-membership-proofs</a> <small>(MIT)</small></li>
+        <li><a href="legal/helioselene-and-1-more.html">helioselene, dalek-ff-group</a> <small>(MIT)</small></li>
+        <li><a href="legal/randomx.html">RandomX</a> <small>(BSD-3-Clause)</small></li>
+        </ul></details></li>
+        <li><details><summary>Bundled runtimes (6)</summary><ul>
+        <li><a href="legal/gcc-runtime-libgcc-libstdc-and-1-more.html">GCC runtime (libgcc, libstdc++, MinGW-w64)</a> <small>(GPL-3.0-or-later WITH GCC-exception-3.1)</small></li>
+        <li><a href="legal/libsodium.html">libsodium</a> <small>(ISC)</small></li>
+        <li><a href="legal/mingw-w64-winpthreads.html">mingw-w64 winpthreads</a> <small>(MIT AND BSD-3-Clause)</small></li>
+        <li><a href="legal/node-js.html">Node.js</a> <small>(MIT AND others (see LICENSE))</small></li>
+        <li><a href="legal/openssl.html">OpenSSL</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/rust-standard-library.html">Rust standard library</a> <small>(MIT OR Apache-2.0)</small></li>
+        </ul></details></li>
+        <li><details><summary>Rust crates (63)</summary><ul>
+        <li><a href="legal/arrayvec.html">arrayvec</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/arrayvec-and-11-more.html">arrayvec, cfg-if, curve25519-dalek-derive and 9 more</a> <small>(MIT OR Apache-2.0; MIT/Apache-2.0; Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/base16ct.html">base16ct</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/base16ct-and-20-more.html">base16ct, base64ct, blake2 and 18 more</a> <small>(Apache-2.0 OR MIT; MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/base64ct.html">base64ct</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/bitvec-and-1-more.html">bitvec, wyz</a> <small>(MIT)</small></li>
+        <li><a href="legal/blake2.html">blake2</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/blake2b-simd.html">blake2b_simd</a> <small>(MIT)</small></li>
+        <li><a href="legal/block-buffer.html">block-buffer</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/byteorder.html">byteorder</a> <small>(Unlicense OR MIT)</small></li>
+        <li><a href="legal/cfg-if.html">cfg-if</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/ciphersuite.html">ciphersuite</a> <small>(MIT)</small></li>
+        <li><a href="legal/const-oid.html">const-oid</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/constant-time-eq.html">constant_time_eq</a> <small>(CC0-1.0 OR MIT-0 OR Apache-2.0)</small></li>
+        <li><a href="legal/constant-time-eq-and-7-more.html">constant_time_eq, libc, proc-macro2 and 5 more</a> <small>(CC0-1.0 OR MIT-0 OR Apache-2.0; MIT OR Apache-2.0; (MIT OR Apache-2.0) AND Unicode-3.0)</small></li>
+        <li><a href="legal/cpufeatures.html">cpufeatures</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/crypto-bigint.html">crypto-bigint</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/crypto-common.html">crypto-common</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/curve25519-dalek.html">curve25519-dalek</a> <small>(BSD-3-Clause)</small></li>
+        <li><a href="legal/curve25519-dalek-derive-and-9-more.html">curve25519-dalek-derive, group, once_cell and 7 more</a> <small>(MIT/Apache-2.0; MIT OR Apache-2.0; (MIT OR Apache-2.0) AND Unicode-3.0; Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/dalek-ff-group-and-3-more.html">dalek-ff-group, ff-group-tests, flexible-transcript and 1 more</a> <small>(MIT)</small></li>
+        <li><a href="legal/der-and-1-more.html">der, pkcs8</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/digest.html">digest</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/ecdsa.html">ecdsa</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/ecdsa-and-1-more.html">ecdsa, keccak</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/elliptic-curve.html">elliptic-curve</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/ff.html">ff</a> <small>(MIT/Apache-2.0)</small></li>
+        <li><a href="legal/fiat-crypto.html">fiat-crypto</a> <small>(MIT OR Apache-2.0 OR BSD-1-Clause)</small></li>
+        <li><a href="legal/foldhash.html">foldhash</a> <small>(Zlib)</small></li>
+        <li><a href="legal/funty.html">funty</a> <small>(MIT)</small></li>
+        <li><a href="legal/generic-array.html">generic-array</a> <small>(MIT)</small></li>
+        <li><a href="legal/getrandom.html">getrandom</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/group.html">group</a> <small>(MIT/Apache-2.0)</small></li>
+        <li><a href="legal/hashbrown.html">hashbrown</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/hex.html">hex</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/k256.html">k256</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/lazy-static.html">lazy_static</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/libc.html">libc</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/merlin.html">merlin</a> <small>(MIT)</small></li>
+        <li><a href="legal/multiexp.html">multiexp</a> <small>(MIT)</small></li>
+        <li><a href="legal/p256-and-1-more.html">p256, primeorder</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/pasta-curves.html">pasta_curves</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/radium.html">radium</a> <small>(MIT)</small></li>
+        <li><a href="legal/rand.html">rand</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/rand-and-1-more.html">rand, rand_core</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/rand-core.html">rand_core</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/rustc-version.html">rustc_version</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/sec1.html">sec1</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/sha2.html">sha2</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/sha3.html">sha3</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/signature.html">signature</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/spin.html">spin</a> <small>(MIT)</small></li>
+        <li><a href="legal/spki.html">spki</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/static-assertions.html">static_assertions</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/static-assertions-and-2-more.html">static_assertions, zeroize, zeroize_derive</a> <small>(MIT OR Apache-2.0; Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/subtle.html">subtle</a> <small>(BSD-3-Clause)</small></li>
+        <li><a href="legal/tap.html">tap</a> <small>(MIT)</small></li>
+        <li><a href="legal/typenum.html">typenum</a> <small>(MIT OR Apache-2.0)</small></li>
+        <li><a href="legal/unicode-ident.html">unicode-ident</a> <small>((MIT OR Apache-2.0) AND Unicode-3.0)</small></li>
+        <li><a href="legal/version-check.html">version_check</a> <small>(MIT/Apache-2.0)</small></li>
+        <li><a href="legal/wasi.html">wasi</a> <small>(Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/zeroize.html">zeroize</a> <small>(Apache-2.0 OR MIT)</small></li>
+        <li><a href="legal/zeroize-derive.html">zeroize_derive</a> <small>(Apache-2.0 OR MIT)</small></li>
+        </ul></details></li>
+        <li><details><summary>npm packages (11)</summary><ul>
+        <li><a href="legal/ethereumjs-binarytree.html">@ethereumjs/binarytree</a> <small>(MIT)</small></li>
+        <li><a href="legal/ethereumjs-common.html">@ethereumjs/common</a> <small>(MIT)</small></li>
+        <li><a href="legal/ethereumjs-evm-and-3-more.html">@ethereumjs/evm, @ethereumjs/rlp, @ethereumjs/statemanager and 1 more</a> <small>(MPL-2.0)</small></li>
+        <li><a href="legal/ethereumjs-mpt.html">@ethereumjs/mpt</a> <small>(MPL-2.0)</small></li>
+        <li><a href="legal/js-sdsl-ordered-map.html">@js-sdsl/ordered-map</a> <small>(MIT)</small></li>
+        <li><a href="legal/noble-curves-and-1-more.html">@noble/curves, @noble/hashes</a> <small>(MIT)</small></li>
+        <li><a href="legal/debug.html">debug</a> <small>(MIT)</small></li>
+        <li><a href="legal/eventemitter3.html">eventemitter3</a> <small>(MIT)</small></li>
+        <li><a href="legal/koffi.html">koffi</a> <small>(MIT)</small></li>
+        <li><a href="legal/lru-cache.html">lru-cache</a> <small>(ISC)</small></li>
+        <li><a href="legal/ms.html">ms</a> <small>(MIT)</small></li>
+        </ul></details></li>
+        <li><details><summary>Dart packages (Continuum wallet) (4)</summary><ul>
+        <li><a href="legal/archive.html">archive</a> <small>(BSD-2-Clause AND MIT AND Zlib)</small></li>
+        <li><a href="legal/image.html">image</a> <small>(Apache-2.0 AND BSD-3-Clause AND MIT)</small></li>
+        <li><a href="legal/pointycastle.html">pointycastle</a> <small>(Apache-2.0 AND MIT)</small></li>
+        <li><a href="legal/zxing2.html">zxing2</a> <small>(Apache-2.0 AND BSD-3-Clause)</small></li>
+        </ul></details></li>
+        <li><details><summary>Android libraries (5)</summary><ul>
+        <li><a href="legal/androidx-activity-activity-and-81-more.html">androidx.activity:activity, androidx.annotation:annotation, androidx.annotation:annotation-experimental and 79 more</a> <small>(Apache-2.0; Apache-2.0 AND BSD-3-Clause)</small></li>
+        <li><a href="legal/androidx-camera-camera-core.html">androidx.camera:camera-core</a> <small>(Apache-2.0 AND BSD-3-Clause)</small></li>
+        <li><a href="legal/com-google-android-gms-play-services-base-and-3-more.html">com.google.android.gms:play-services-base, com.google.android.gms:play-services-basement, com.google.android.gms:play-services-tasks and 1 more</a> <small>(LicenseRef-Android-SDK-License)</small></li>
+        <li><a href="legal/com-google-android-gms-play-services-mlkit-barcode-scanning-and-5-more.html">com.google.android.gms:play-services-mlkit-barcode-scanning, com.google.mlkit:barcode-scanning, com.google.mlkit:barcode-scanning-common and 3 more</a> <small>(LicenseRef-MLKit-Terms)</small></li>
+        <li><a href="legal/org-bouncycastle-bcprov-jdk18on.html">org.bouncycastle:bcprov-jdk18on</a> <small>(MIT)</small></li>
+        </ul></details></li>
+        <li><details><summary>iOS pods (3)</summary><ul>
+        <li><a href="legal/dkimagepickercontroller-and-1-more.html">DKImagePickerController, DKPhotoGallery</a> <small>(MIT)</small></li>
+        <li><a href="legal/sdwebimage.html">SDWebImage</a> <small>(MIT)</small></li>
+        <li><a href="legal/swiftygif.html">SwiftyGif</a> <small>(MIT)</small></li>
+        </ul></details></li>
+        <li><details><summary>Donate page, browser (62)</summary><ul>
+        <li><a href="legal/donate-adraffy-ens-normalize.html">@adraffy/ens-normalize</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-abi.html">@ethersproject/abi</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-address.html">@ethersproject/address</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-base64.html">@ethersproject/base64</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-bignumber.html">@ethersproject/bignumber</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-bytes.html">@ethersproject/bytes</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-constants.html">@ethersproject/constants</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-hash.html">@ethersproject/hash</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-keccak256.html">@ethersproject/keccak256</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-logger.html">@ethersproject/logger</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-properties.html">@ethersproject/properties</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-rlp.html">@ethersproject/rlp</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-signing-key.html">@ethersproject/signing-key</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-strings.html">@ethersproject/strings</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethersproject-transactions.html">@ethersproject/transactions</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ledgerhq-devices.html">@ledgerhq/devices</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-domain-service.html">@ledgerhq/domain-service</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-errors.html">@ledgerhq/errors</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-evm-tools.html">@ledgerhq/evm-tools</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-hw-app-eth.html">@ledgerhq/hw-app-eth</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-hw-app-solana.html">@ledgerhq/hw-app-solana</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-hw-transport.html">@ledgerhq/hw-transport</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-hw-transport-web-ble.html">@ledgerhq/hw-transport-web-ble</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-hw-transport-webhid.html">@ledgerhq/hw-transport-webhid</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-hw-transport-webusb.html">@ledgerhq/hw-transport-webusb</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-live-env.html">@ledgerhq/live-env</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-ledgerhq-logs.html">@ledgerhq/logs</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-noble-curves.html">@noble/curves</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-noble-hashes.html">@noble/hashes</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-solana-buffer-layout.html">@solana/buffer-layout</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-solana-codecs-core.html">@solana/codecs-core</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-solana-codecs-numbers.html">@solana/codecs-numbers</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-solana-errors.html">@solana/errors</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-solana-web3-js.html">@solana/web3.js</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-aes-js.html">aes-js</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-axios.html">axios</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-base-x.html">base-x</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-base64-js.html">base64-js</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-bignumber-js.html">bignumber.js</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-bip32-path.html">bip32-path</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-bn-js.html">bn.js</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-borsh.html">borsh</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-bs58.html">bs58</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-buffer.html">buffer</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ethers.html">ethers</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-eventemitter3.html">eventemitter3</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-events.html">events</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-hash-js.html">hash.js</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-ieee754.html">ieee754</a> <small>(BSD-3-Clause)</small></li>
+        <li><a href="legal/donate-inherits.html">inherits</a> <small>(ISC)</small></li>
+        <li><a href="legal/donate-jayson.html">jayson</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-js-sha3.html">js-sha3</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-minimalistic-assert.html">minimalistic-assert</a> <small>(ISC)</small></li>
+        <li><a href="legal/donate-qrcode-generator.html">qrcode-generator</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-rpc-websockets.html">rpc-websockets</a> <small>(LGPL-3.0-only)</small></li>
+        <li><a href="legal/donate-rxjs.html">rxjs</a> <small>(Apache-2.0)</small></li>
+        <li><a href="legal/donate-safe-buffer.html">safe-buffer</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-semver.html">semver</a> <small>(ISC)</small></li>
+        <li><a href="legal/donate-superstruct.html">superstruct</a> <small>(MIT)</small></li>
+        <li><a href="legal/donate-text-encoding-utf-8.html">text-encoding-utf-8</a> <small>(Unlicense (public domain); Encoding Standard parts per its LICENSE.md)</small></li>
+        <li><a href="legal/donate-tslib.html">tslib</a> <small>(0BSD)</small></li>
+        <li><a href="legal/donate-uuid.html">uuid</a> <small>(MIT)</small></li>
+        </ul></details></li>
+        <li><details><summary>Fonts and assets (1)</summary><ul>
+        <li><a href="legal/great-vibes.html">Great Vibes</a> <small>(OFL-1.1)</small></li>
+        </ul></details></li>
+        </ul></nav>
+      </div>
+    </section>
+  </main>
+
+
+
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="https://shear.digital/">Home</a>
+        <a href="https://shear.digital/network.html">Network</a>
+        <a href="https://shear.digital/docs/index.html">Docs</a>
+        <a href="https://shear.digital/privacy.html">Privacy</a>
+        <a href="https://shear.digital/legal.html">Legal &amp; licences</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="js/site.js"></script>
+  <script src="shared/site-identity.js"></script>
+</body>
+</html>

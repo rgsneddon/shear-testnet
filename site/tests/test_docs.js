@@ -98,7 +98,7 @@ describe('shear.digital/docs', () => {
     const labels = navLabels(docs);
     assert.deepEqual(labels, chromeProductLabels());
     assert.equal(labels.includes('WHITEPAPER'), false);
-    assert.equal(labels.includes('DAG'), true);
+    assert.equal(labels.includes('BLU'), true);
     assert.equal(labels.includes('VORTICES'), true);
     assert.match(docs, /id="shear-chrome-root" data-active="DOCS"/);
     assert.match(docs, /shared\/shear-chrome\.js/);
@@ -251,7 +251,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
     assert.ok(pdf.length > 50_000);
     const labels = navLabels(paper);
-    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
+    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'BLU', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DONATE', 'DOCS']);
     assert.equal(labels.includes('WHITEPAPER'), false);
     assert.match(paper, /href="https:\/\/shear\.digital\/docs\/">DOCS</);
     assert.match(paper, /overflow-x:hidden/);
@@ -264,10 +264,11 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /shear-testnet-v10/);
     assert.doesNotMatch(paper, /#eef3f8/);
     assert.doesNotMatch(paper, /linear-gradient\(165deg, #ffffff 0%, #eef5fb 58%\)/);
-    assert.match(paper, /href="https:\/\/dag\.shear\.digital\/">DAG</);
+    assert.match(paper, /href="https:\/\/blunote\.shear\.digital\/">BLU</);
     assert.doesNotMatch(paper, /width:min\(210mm/);
     assert.equal(labels[labels.length - 1], 'DOCS');
-    assert.equal(labels[labels.length - 2], 'VORTICES');
+    assert.equal(labels[labels.length - 2], 'DONATE');
+    assert.equal(labels[labels.length - 3], 'VORTICES');
     const src = fs.readFileSync(path.join(here, '../whitepaper/build_pdf.py'), 'utf8');
     assert.doesNotMatch(src, /The Join/);
     assert.doesNotMatch(src, /join1\./);
@@ -295,7 +296,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(pdf.includes(Buffer.from('ShearK-2.8')), true);
     assert.equal(pdf.includes(Buffer.from('ShearK-2.6')), false);
     assert.equal(pdf.includes(Buffer.from('pool.shear.digital:1111')), false);
-    assert.match(paper, /16th November 2026 at 1400hrs UK time/);
+    assert.match(paper, /21st December 2026 at 1400hrs UK time/);
     assert.doesNotMatch(paper, /1st October 2026/);
     assert.doesNotMatch(paper, /ShearK 2\.6/);
     assert.doesNotMatch(paper, /pool\.shear\.digital:1111/);

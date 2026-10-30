@@ -147,7 +147,7 @@ html[data-theme="light"] a.nav-btn {
   justify-content: center;
   text-align: center;
   height: 34px;
-  padding: 0 10px;
+  padding: 0 4px;
   color: var(--shear-chrome-text-dim);
   text-decoration: none;
   font-family: var(--shear-chrome-font);
@@ -410,3 +410,11 @@ html[data-theme="dark"] img.theme-img-dark { display: block; }
   button.nav-toggle,
   .top-banner button.nav-toggle { display: none; }
 }
+
+/* 2026-10-14 nav pin: px sizes match pool.shear.digital (root 15px) on every page, whatever the page's root font-size. */
+a.nav-btn,
+.top-banner a.nav-btn,
+html[data-theme="dark"] a.nav-btn,
+html[data-theme="light"] a.nav-btn { font-size: 10.8px; }
+.shear-chrome-pill { font-size: 10.5px; padding: 2.7px 8.25px; gap: 5.25px; }
+.shear-chrome-pill { line-height: 16.6px; }
