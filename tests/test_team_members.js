@@ -50,6 +50,10 @@ function jpegSize(buf) {
 describe('team page: one card per lane', () => {
   const all = cards();
 
+  it("drops the 'A first for Shear' Coding Team line (Russell, 30 Oct)", () => {
+    assert.doesNotMatch(page, /A first for Shear/);
+  });
+
   it('Chief of Staff (Corin Sable) leads as CTO', () => {
     const cos = all.find((c) => c.name === 'Corin Sable');
     assert.ok(cos, 'no Corin Sable card');
