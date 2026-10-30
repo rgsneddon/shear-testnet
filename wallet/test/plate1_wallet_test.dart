@@ -1396,7 +1396,9 @@ Future<void> _lockUi(WidgetTester tester) async {
   await tester.ensureVisible(find.byKey(const Key('reserve-send')));
   await tester.tap(find.byKey(const Key('reserve-send')));
   await tester.pump();
-  await tester.pump(const Duration(milliseconds: 50));
+  // The lock reads pool depth before the sheet. That read is a real client
+  // timeout, so one fake-time pump is not enough. The one-sheet bar stays.
+  await _waitFor(tester, find.byKey(const Key('reserve-sign')));
   expect(find.byKey(const Key('reserve-sign')), findsOneWidget, reason: _snacks(tester));
   await tester.tap(find.byKey(const Key('reserve-sign-accept')));
   await tester.pump();
