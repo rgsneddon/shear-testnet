@@ -4758,7 +4758,8 @@ class ShearLedger implements ReadProofSink {
   int get nextLockIndex => _nextLockIndex();
 
   /// Rebuild lock leaves from the master secret and the public tranche book.
-  /// A portal the wallet already stored is left as it is.
+  /// A stored leaf stays when the tranche has no commit, or when that commit
+  /// is already this leaf. A commit for a different leaf replaces it.
   void rememberDerivedLockLeaves(Iterable<dynamic> tranches) {
     final seed = spendSeed;
     if (seed == null || seed.length != 32) return;
@@ -4784,35 +4785,47 @@ class ShearLedger implements ReadProofSink {
       if (id == null) continue;
       final key = id.toLowerCase();
       if (!epochsOf.containsKey(key)) continue;
-      var known = false;
-      for (final note in _notes) {
-        if ((note['kind'] ?? '').toString() != 'lock') continue;
-        if (note['scalar'] == null || note['blind'] == null || note['note'] == null) continue;
-        if ((note['portalId'] ?? '').toString().toLowerCase() == key) known = true;
-      }
-      if (known) continue;
       final ownerSeed = reservePortalSpendSeed(seed, i);
       if (ownerSeed == null) continue;
       final scalar = vaultLockOwnerBytes(ownerSeed, i);
       final blind = vaultLockBlindBytes(ownerSeed, i, kPiSheNanos, 0);
       final want = commitOf[key] ?? const <Uint8List>[];
+      Map<String, dynamic>? stored;
+      for (final note in _notes) {
+        if ((note['kind'] ?? '').toString() != 'lock') continue;
+        if (note['scalar'] == null || note['blind'] == null || note['note'] == null) continue;
+        if ((note['portalId'] ?? '').toString().toLowerCase() != key) continue;
+        stored = note;
+        break;
+      }
+      if (stored != null && (want.isEmpty || _lockLeafCommitMatches(stored['note'], want))) continue;
       Uint8List? leaf;
       var unlock = 0;
       var lockEpoch = epochsOf[key]!.first;
-      for (var epoch = 0; epoch < 8; epoch++) {
-        final period = consensusUnlockPeriod(epoch);
+      // No commit: the tranche epoch is the only unlock. An empty want must
+      // not match epoch 0.
+      if (want.isEmpty) {
+        final period = consensusUnlockPeriod(lockEpoch);
         final note = vaultLeafNote(amount: kPiSheNanos, scalar: scalar, blind: blind, unlock: period);
-        if (note.length != 64) continue;
-        final commit = Uint8List.sublistView(note, 32, 64);
-        final hit = want.isEmpty || want.any((row) => _bytesEq(row, commit));
-        if (!hit) continue;
-        leaf = note;
-        unlock = period;
-        lockEpoch = epoch;
-        break;
+        if (note.length == 64) {
+          leaf = note;
+          unlock = period;
+        }
+      } else {
+        for (var epoch = 0; epoch < 8; epoch++) {
+          final period = consensusUnlockPeriod(epoch);
+          final note = vaultLeafNote(amount: kPiSheNanos, scalar: scalar, blind: blind, unlock: period);
+          if (note.length != 64) continue;
+          final commit = Uint8List.sublistView(note, 32, 64);
+          if (!want.any((row) => _bytesEq(row, commit))) continue;
+          leaf = note;
+          unlock = period;
+          lockEpoch = epoch;
+          break;
+        }
       }
       if (leaf == null) continue;
-      rememberNote({
+      final row = <String, dynamic>{
         'kind': 'lock',
         'scalar': scalar,
         'blind': blind,
@@ -4827,8 +4840,21 @@ class ShearLedger implements ReadProofSink {
         'dest20': reservePortalDest20FromSeed(seed, i),
         'vaultLock': true,
         'verified': true,
-      });
+      };
+      if (stored != null) {
+        stored.addAll(row);
+      } else {
+        rememberNote(row);
+      }
     }
+  }
+
+  /// True when [rawNote] is a 64-byte leaf whose commit is one of [want].
+  bool _lockLeafCommitMatches(Object? rawNote, List<Uint8List> want) {
+    if (rawNote is! List<int> || rawNote.length != 64) return false;
+    final bytes = rawNote is Uint8List ? rawNote : Uint8List.fromList(rawNote);
+    final have = Uint8List.sublistView(bytes, 32, 64);
+    return want.any((row) => _bytesEq(row, have));
   }
 
   /// Keep the lock note's blind. The chain drops it, and the spend needs it
