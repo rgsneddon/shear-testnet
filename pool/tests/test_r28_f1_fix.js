@@ -113,6 +113,13 @@ function login(port, name) {
   });
 }
 
+function loginOutcome(port, name) {
+  return login(port, name).then(
+    (got) => got,
+    (err) => ({ sock: null, error: String(err.message || err) }),
+  );
+}
+
 function listen(pool) {
   return new Promise((resolve, reject) => {
     pool.stratum.listen(0, '127.0.0.1', () => {
@@ -214,6 +221,44 @@ describe('F1-FIX public pool surfaces', () => {
       const left = pool.adminOps.miners().filter((m) => m.connected && m.workerKey.startsWith(CANARY));
       assert.equal(left.length, 1);
       assert.equal(left[0].workerKey, rows[1].workerKey);
+    } finally {
+      for (const sock of socks) {
+        try { sock.destroy(); } catch { /* closed */ }
+      }
+      try { pool.close(); } catch { /* closed */ }
+    }
+  });
+
+  it('a banned rig is refused on reconnect, and another name on that address is not', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-f1-ban-'));
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: freshStealthDest(newIdentity()).dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    const socks = [];
+    try {
+      const { stratumPort } = await listen(pool);
+      const banned = await login(stratumPort, CANARY);
+      const sibling = await login(stratumPort, CANARY);
+      socks.push(banned.sock, sibling.sock);
+      const rows = pool.adminOps.miners().filter((m) => m.workerKey.startsWith(`${CANARY}.`));
+      assert.equal(rows.length, 2);
+      pool.adminOps.ban(rows[0].workerKey);
+      const left = pool.adminOps.miners().filter((m) => m.connected && m.workerKey.startsWith(`${CANARY}.`));
+      assert.equal(left.length, 1);
+      const again = await loginOutcome(stratumPort, CANARY);
+      if (again.sock) socks.push(again.sock);
+      assert.equal(again.error, 'banned');
+      const other = await login(stratumPort, OTHER);
+      socks.push(other.sock);
+      assert.equal(other.result.status, 'OK');
+      const disk = fs.readFileSync(path.join(dir, 'pool-bans.json'), 'utf8');
+      assert.equal(disk.includes('127.0.0.1'), false);
+      assert.equal(disk.includes('::ffff'), false);
     } finally {
       for (const sock of socks) {
         try { sock.destroy(); } catch { /* closed */ }
