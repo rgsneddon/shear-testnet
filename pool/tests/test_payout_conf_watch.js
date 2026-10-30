@@ -13,16 +13,14 @@ import {
   REORG_WINDOW_MS,
   SIDE_LEAD_FREEZE_MS,
 } from '../../crypto/confirm_policy.js';
-import { PAYOUT_SWEEP_MS } from '../src/pool.js';
 import { seedWatchState, stepPayoutWatch, readingFromPublished } from '../src/payout_conf_watch.js';
 
 describe('pool payout confirmations', () => {
-  it('waits 12 on a calm chain and keeps the hourly sweep', () => {
+  it('waits 12 on a calm chain', () => {
     const p = getpolicy(emptyPolicyState());
     assert.equal(p.operational.pool_merchant, 12);
     assert.equal(poolMerchantNeed(p), 12);
     assert.equal(p.freeze_banner, '');
-    assert.ok(PAYOUT_SWEEP_MS >= 60 * 60 * 1000);
   });
 
   it('h_ratio below one half does not elevate payout or name a credit hold', () => {

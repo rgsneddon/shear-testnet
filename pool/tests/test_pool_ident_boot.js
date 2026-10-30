@@ -81,15 +81,6 @@ describe('bootPoolOperator matching spend seed', () => {
     assert.equal(mismatched.operatorSpendKey, null);
     assert.equal(mismatched.miner, boot.miner);
     const dest = ssa1();
-    const skipped = buildAutoPayoutTx({
-      from: boot.miner,
-      to: dest,
-      nanos: PI_SHE_NANOS,
-      fee: 100,
-      spendKey: mismatched.operatorSpendKey,
-    });
-    assert.equal(skipped.ok, false);
-    assert.equal(skipped.reason, 'custodial_pull');
     const pool = createPool({
       dataDir: dir,
       miner: boot.miner,
@@ -109,7 +100,7 @@ describe('bootPoolOperator matching spend seed', () => {
       bound.push(verifyPoolWithdrawBound(tx).ok === true);
       return { ok: true, tx };
     };
-    assert.equal((await pool.runAutoPayoutSweep()).length, 0);
+    assert.equal(pool.runAutoPayoutSweep, undefined);
     assert.deepEqual(bound, []);
     assert.equal(pool.publicStats().autoPayoutLastError, null);
     assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, 0);

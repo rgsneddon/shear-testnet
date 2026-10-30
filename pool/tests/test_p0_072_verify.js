@@ -863,7 +863,10 @@ describe('P0 072 v12 custodial pull', () => {
       calls += before;
       assertFileUnreachable(path.relative(ROOT, file), src);
     }
-    assert.ok(calls >= 1, 'production still names the refused builder');
+    // The pool side no longer names the builder at all; the scan stays so a
+    // call can never come back (crypto/levy.js keeps only the declaration
+    // until the node-side removal is signed off).
+    assert.equal(calls, 0, 'no production path calls the refused builder');
   });
 
   it('pull-balance scan is exact paths, types, and zero custodial display', () => {
@@ -1059,6 +1062,7 @@ describe('P0 072 v12 custodial pull', () => {
           assert.equal(dests.some((dest) => publicMinerTag(dest) === ghostTag), false, where);
           const ghost = await httpCall(`${base}/api/miners/${ghostTag}`);
           assertUnknownMiner(ghost, ghostTag, `${where} unknown miner`);
+          const beforeSweep = queued.length;
           const withdraw = await httpCall(`${base}/api/pool/withdraw`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
