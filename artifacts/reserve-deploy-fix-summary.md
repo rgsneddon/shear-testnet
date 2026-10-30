@@ -34,4 +34,4 @@ Local result after the patch: 5 tests, 0 failed, including `CREATE with shear-te
 
 ## Live deploy
 
-Live deploy and pool bounce are not included. No `/opt/shear-v4` touch. No soft-merge.
+Live deploy and pool bounce are not included. No `<server-dir>` touch. No soft-merge.

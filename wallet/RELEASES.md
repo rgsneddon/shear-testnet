@@ -89,7 +89,7 @@ Reserve hop fee failures show the node reason instead of **not sent - try again*
 
 ## 0.43
 
-Optional Reserve Privacy hop: one tap pays **0.05 SHE** to the pool fee dest `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6` (ssa1, never she1), then connects residual SHEAR-HOP / EU at `77.42.35.12:44044`. With hop up, Reserve Send does not need a local Shear node. Hop is optional — **Send without privacy hop** confirms **I already use a VPN / I accept exposing my IP**. Android VpnService is the residual dataplane. Light-sync tip display stays. Do not recut 0.42. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (MacBook cut).
+Optional Reserve Privacy hop: one tap pays **0.05 SHE** to the pool fee dest `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6` (ssa1, never she1), then connects residual SHEAR-HOP / EU at `<hop-host>:44044`. With hop up, Reserve Send does not need a local Shear node. Hop is optional — **Send without privacy hop** confirms **I already use a VPN / I accept exposing my IP**. Android VpnService is the residual dataplane. Light-sync tip display stays. Do not recut 0.42. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (MacBook cut).
 
 ## 0.42
 

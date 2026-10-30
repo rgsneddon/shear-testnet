@@ -32,8 +32,8 @@ Public site example in this repo is **https://mypool.site**. Operator admin is *
 ## Install
 
 ```bash
-git clone https://github.com/rgsneddon/shear-pool.git /opt/shear-pool
-cd /opt/shear-pool
+git clone https://github.com/rgsneddon/shear-pool.git <pool-dir>
+cd <pool-dir>
 npm install
 make -C crypto/native
 ```

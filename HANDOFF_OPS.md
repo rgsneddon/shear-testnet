@@ -1,6 +1,6 @@
 # HANDOFF_OPS.md — Windows continue
 
-**Written:** 2026-09-17T19:20Z from the Mac (`/Users/russellsneddon/shear`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
+**Written:** 2026-09-17T19:20Z from the Mac (`<laptop-repo>`). HEAD **`f63c1e1`+** (dest-P bind `03fe7fe` is in this history).  
 **Canonical GitHub tree:** https://github.com/rgsneddon/shear-testnet  
 **Working branch:** `main`  
 **This file is the Windows start for Shear.** Current pins: Continuum **0.71**, ShearK **2.8** (TLS-aware), Shear Sentinel **v18** (product 18.0). Pins are **0.71** (wallet) and ShearK **2.8**. Pin **0.71**. Do not recut older tags, and do not label a ShearK 2.6 rebuild as TLS-done. The MacBook cuts only the Continuum 0.70 disk image (`MACBOOK-HANDOFF.md`). Do not ask the Mac to cut a node or a miner. This Windows box packs APK, Windows zip, Linux/Arch, and site pins. This tree serves `shear-testnet-v11` from `/var/lib/shear/testnet-v11`. Do not wipe `/var/lib/shear/testnet-v10` or `/var/lib/shear/testnet-v10-p2p`. The 2026-09-17 v4 record below is not a wipe order. Tag **0.68** stays.
@@ -51,16 +51,16 @@ SSH as **root** with key `~/.ssh/id_ed25519_restore_privacy_eu` (on the Mac; cop
 
 | Box | IP | Role | Units |
 |-----|-----|------|--------|
-| **shear-pool** | `77.42.91.84` | pool **is** the node; Linux/Arch pack host; Helsinki | `shear-pool.service` (stratum `:1111`, HTTP `:8088`, P2P `:30303`), `sheark-v4-afk` |
-| **p2p-a** | `157.180.70.110` | seed `p2p.shear.digital:30303`; Helsinki | `shear-node.service` / `shear-ibd-v4` |
-| **p2p-b** | `2.28.8.89` | satellite `r2r.shear.digital:30303`; Falkenstein | `shear-node.service` / `shear-ibd-v4` |
-| **p2p-c** | `178.156.222.223` | satellite `b2b.shear.digital:30303`; Ashburn | `shear-node.service` / `shear-ibd-v4` |
+| **shear-pool** | `<pool-host>` | pool **is** the node; Linux/Arch pack host; Helsinki | `shear-pool.service` (stratum `:1111`, HTTP `:8088`, P2P `:30303`), `sheark-v4-afk` |
+| **p2p-a** | `<p2p-a-host>` | seed `p2p.shear.digital:30303`; Helsinki | `shear-node.service` / `shear-ibd-v4` |
+| **p2p-b** | `<p2p-b-host>` | satellite `r2r.shear.digital:30303`; Falkenstein | `shear-node.service` / `shear-ibd-v4` |
+| **p2p-c** | a former host (decommissioned) | satellite `b2b.shear.digital:30303`; Ashburn | `shear-node.service` / `shear-ibd-v4` |
 
-2026-09-17 record: tree on every box was `/opt/shear-v4` and data was `/var/lib/shear/testnet-v4`. Magic in that record was **`shear-testnet-v4`** (not v3, not v5). Do not wipe `/var/lib/shear/testnet-v10` from this paragraph. Dedicated-de `178.105.187.178` and old seed `46.224.132.83` are dead — do not recut them.
+2026-09-17 record: tree on every box was `<server-dir>` and data was `/var/lib/shear/testnet-v4`. Magic in that record was **`shear-testnet-v4`** (not v3, not v5). Do not wipe `/var/lib/shear/testnet-v10` from this paragraph. Dedicated-de, a former host (decommissioned), and old seed `<old-host-1>` are dead — do not recut them.
 
 Windows SSH key is `~\.ssh\id_ed25519` (this box). Mac key name remains `id_ed25519_restore_privacy_eu`.
 
-Linux/Arch wallet zips are packed **on 77.42.91.84** (`wallet/pack/pack_linux_de.sh` with `SHEAR_WALLET=/opt/shear-v4/wallet`). Windows zip + Android APK are packed on this Windows box. macOS `.dmg` is MacBook-only (`MACBOOK-HANDOFF.md`).
+Linux/Arch wallet zips are packed **on `<pool-host>`** (`wallet/pack/pack_linux_de.sh` with `SHEAR_WALLET=<server-dir>/wallet`). Windows zip + Android APK are packed on this Windows box. macOS `.dmg` is MacBook-only (`MACBOOK-HANDOFF.md`).
 
 `/stats` on pool `:8088` prints `missing`; use **`/api/stats`**.
 
@@ -90,7 +90,7 @@ Prior isolated soak on the **old** (pre-wipe) datadir: `reorg_exit=0`, `reserve_
 
 ---
 
-## 4) Dest-P bind (in-tree **and** on `/opt/shear-v4`)
+## 4) Dest-P bind (in-tree **and** on `<server-dir>`)
 
 `p_com = P_j + wU` is 1-of-D at the same hidden slot as `C̃`. `dest_parent` = Vesta commit of `H_to_field` over the arity-32 dest P bucket. d0 / dest_leaf of the spent note stay off the wire. Blob ~2 KB larger; empty jroot unchanged.
 
@@ -119,10 +119,10 @@ Do **not** copy a Darwin `.node` onto Linux. p2pnode2 has no gcc — copy `shear
 
 ### 6a) Android APK on this Windows box
 
-SDK is at `%LOCALAPPDATA%\Android\Sdk` (platform android-36, build-tools 36.0.0). JDK is Eclipse Temurin **17** at `C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot`. `JAVA_HOME` is often unset — set it for the pack, do not install another JDK.
+SDK is at `%LOCALAPPDATA%\Android\Sdk` (platform android-36, build-tools 36.0.0). JDK is Eclipse Temurin **17** at `<jdk-home>`. `JAVA_HOME` is often unset — set it for the pack, do not install another JDK.
 
 ```
-set JAVA_HOME=C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot
+set JAVA_HOME=<jdk-home>
 set ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk
 set ANDROID_SDK_ROOT=%ANDROID_HOME%
 cd /d %USERPROFILE%\shear-testnet\wallet
@@ -167,7 +167,7 @@ Live drift (`0.0.0.0` / dest-only / cleartext) is ops, not an in-repo default bu
 
 Auto-payout signs from **`SHEAR_DATA/pool-spend.seed`** (mode **0600**) matching **`SHEAR_DATA/pool-miner.json` dest20**. Typical `SHEAR_DATA` is `/var/lib/shear/testnet-v4` (`shear-pool.service`). Never put the hex in a systemd `Environment=` line, EnvironmentFile, unit drop-in, or this repo. Prefer the 0600 file on disk.
 
-Off-host vault (Windows, outside git): `C:\Users\rgsne\Desktop\SHEAR-SECRETS\` contains `pool-spend.seed`, `pool-miner.json`, and `SHA256SUMS`. Paths only — **do not paste seed hex here**. Desktop map: `C:\Users\rgsne\Desktop\NOTE-pool-spend-SEED-BACKUP.md`.
+Off-host vault (Windows, outside git): `<windows-secrets>` contains `pool-spend.seed`, `pool-miner.json`, and `SHA256SUMS`. Paths only — **do not paste seed hex here**. Desktop map: `<windows-secrets-note>`.
 
 `GET /api/stats` must show `bootPoolOperator.signed=true` after a matching restore. Journal must not show `need_spend_key` / `auto_payout_unsigned` / `pool_operator_unsigned`.
 
@@ -188,14 +188,14 @@ Wipe deletes the on-host seed. Restore **both** files together, then start P2P n
 From the Windows box that holds the vault (`~\.ssh\id_ed25519`):
 
 ```
-scp -i %USERPROFILE%\.ssh\id_ed25519 %USERPROFILE%\Desktop\SHEAR-SECRETS\pool-spend.seed %USERPROFILE%\Desktop\SHEAR-SECRETS\pool-miner.json root@77.42.91.84:/var/lib/shear/testnet-v4/
-ssh -i %USERPROFILE%\.ssh\id_ed25519 root@77.42.91.84 "chmod 600 /var/lib/shear/testnet-v4/pool-spend.seed /var/lib/shear/testnet-v4/pool-miner.json; systemctl restart shear-pool.service"
+scp -i %USERPROFILE%\.ssh\id_ed25519 <windows-secrets>\pool-spend.seed <windows-secrets>\pool-miner.json root@<pool-host>:/var/lib/shear/testnet-v4/
+ssh -i %USERPROFILE%\.ssh\id_ed25519 root@<pool-host> "chmod 600 /var/lib/shear/testnet-v4/pool-spend.seed /var/lib/shear/testnet-v4/pool-miner.json; systemctl restart shear-pool.service"
 ```
 
 Signed check (prints `{signed:true}` only — never dumps hex):
 
 ```
-ssh -i %USERPROFILE%\.ssh\id_ed25519 root@77.42.91.84 "cd /opt/shear-v4 && node --input-type=module -e \"import { bootPoolOperator } from './pool/src/pool_ident.js'; const b = bootPoolOperator({ dataDir: '/var/lib/shear/testnet-v4' }); if (!b.signed) process.exit(2); console.log(JSON.stringify({ signed: true }));\""
+ssh -i %USERPROFILE%\.ssh\id_ed25519 root@<pool-host> "cd <server-dir> && node --input-type=module -e \"import { bootPoolOperator } from './pool/src/pool_ident.js'; const b = bootPoolOperator({ dataDir: '/var/lib/shear/testnet-v4' }); if (!b.signed) process.exit(2); console.log(JSON.stringify({ signed: true }));\""
 ```
 
 Then: `curl -sS http://127.0.0.1:8088/api/stats` → `bootPoolOperator.signed` is true. `journalctl -u shear-pool.service -n 80 --no-pager` has no `need_spend_key` / `auto_payout_unsigned`.
@@ -208,10 +208,10 @@ Historical 2026-09-17 record only. Do not run this wipe. Leave `/var/lib/shear/t
 
 | Order | Box | IP | Stop | Data |
 |------|-----|----|------|------|
-| 1 | shear-pool | `77.42.91.84` | `systemctl stop shear-pool.service` | `/var/lib/shear/testnet-v4` |
-| 2 | p2p-a | `157.180.70.110` | `systemctl stop shear-node.service` | `/var/lib/shear/testnet-v4` |
-| 3 | p2p-b | `2.28.8.89` | `systemctl stop shear-node.service` | `/var/lib/shear/testnet-v4` |
-| 4 | p2p-c | `178.156.222.223` | `systemctl stop shear-node.service` | `/var/lib/shear/testnet-v4` |
+| 1 | shear-pool | `<pool-host>` | `systemctl stop shear-pool.service` | `/var/lib/shear/testnet-v4` |
+| 2 | p2p-a | `<p2p-a-host>` | `systemctl stop shear-node.service` | `/var/lib/shear/testnet-v4` |
+| 3 | p2p-b | `<p2p-b-host>` | `systemctl stop shear-node.service` | `/var/lib/shear/testnet-v4` |
+| 4 | p2p-c | a former host (decommissioned) | `systemctl stop shear-node.service` | `/var/lib/shear/testnet-v4` |
 
 ```
 # on each box (pool first, then a/b/c):
@@ -221,7 +221,7 @@ mkdir -p -m 700 /var/lib/shear/testnet-v4
 # pool only: restore pool-spend.seed + pool-miner.json from SHEAR-SECRETS (chmod 600)
 # start p2p-a, p2p-b, p2p-c, THEN pool:
 systemctl start shear-node.service   # on a/b/c
-systemctl start shear-pool.service   # on 77.42.91.84 last
+systemctl start shear-pool.service   # on <pool-host> last
 ```
 
-Do not recut dead hosts `178.105.187.178` / `46.224.132.83`. Do not set `SHEAR_MAINNET_EMIT`.
+Do not recut a former host (decommissioned) or `<old-host-1>`. Do not set `SHEAR_MAINNET_EMIT`.

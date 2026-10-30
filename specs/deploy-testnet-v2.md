@@ -4,7 +4,7 @@ Stay on **shear-testnet-v2**. Do not cut **shear-v1**. Do not invent a genesis t
 
 ## Do not touch live Germany withdraw
 
-Never edit withdraw on `178.105.187.178` / `/opt/shear-pool`. Snapshot the working pool tag before any pool-process update. Never combine withdraw edits with the live DE datadir.
+Never edit withdraw on a former host (decommissioned) (`<pool-dir>`). Snapshot the working pool tag before any pool-process update. Never combine withdraw edits with the live DE datadir.
 
 ## Push
 
