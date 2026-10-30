@@ -225,6 +225,8 @@ class ShearSession {
   /// Committed Closure send path. Not written as continuumSendPath.
   /// A new session opens on Connect bare. A stored Shear VPN tunnel string opens Connect bare.
   String closureSendMode = kClosureModeBare;
+  /// Saved once, before the first public send on Connect bare.
+  bool publicNodeAck = false;
   bool darkMode = false;
   List<String> rememberedDests = const [];
   List<Map<String, dynamic>> rememberedTxs = const [];
@@ -373,6 +375,7 @@ class ShearSession {
         'biometricsEnabled': biometricsEnabled,
         'darkMode': darkMode,
         'closureSendMode': closureSendMode,
+        'publicNodeAck': publicNodeAck,
         'dests': rememberedDests.where((d) => d.startsWith('ssa1')).toList(),
         'destCount': rememberedDestCount,
         'destIndex': rememberedDestIndex,
@@ -402,6 +405,7 @@ class ShearSession {
     rememberedChainGenesis = null;
     rememberedReserve = null;
     deployedVortices = const [];
+    publicNodeAck = false;
     final pw = password ?? _password;
     if (pw != null && pw.isNotEmpty) {
       _password = pw;
@@ -419,6 +423,7 @@ class ShearSession {
     biometricsEnabled = j['biometricsEnabled'] == true;
     darkMode = j['darkMode'] == true;
     closureSendMode = _closureFromPlain(j);
+    publicNodeAck = j['publicNodeAck'] == true;
     rememberedDests = ((use['dests'] as List?) ?? const [])
         .map((e) => e.toString())
         .where((d) => d.startsWith('ssa1'))

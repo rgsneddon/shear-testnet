@@ -78,7 +78,6 @@ flutter:
     - assets/brand/logo.png
     - assets/brand/wordmark-text-light.png
     - assets/brand/wordmark-text-dark.png
-    - assets/hop/node_elgamal.pub
 
   # To add assets to your application, add an assets section, like this:
   # assets:

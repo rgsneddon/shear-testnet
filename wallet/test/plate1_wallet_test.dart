@@ -9,7 +9,6 @@ import 'package:shear_wallet/shear_closure.dart';
 import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
-import 'package:shear_wallet/shear_privacy_hop.dart';
 import 'package:shear_wallet/shear_qr.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_vortex.dart';
@@ -58,7 +57,6 @@ void main() {
     );
     expect(voteFailCopy(StateError('unsigned')), contains('could not be signed'));
     expect(voteFailCopy(StateError('bad_vote')), contains('could not be signed'));
-    expect(voteFailCopy(StateError('not_voter')).toLowerCase(), isNot(contains('privacy hop')));
     final ledger = ShearLedger()..bindIdentity(id);
     final from = ledger.allocateReceiveDest(id.address, paymentCode: id.paymentCode);
     ledger.confirmRound(address: from, pot: 1, height: 1);
@@ -220,18 +218,7 @@ void main() {
     expect(kConnectBareCopy.toLowerCase(), isNot(contains('looking for the vpn')));
   });
 
-  test('privacy hop pins the EU relay and unprivate amounts stay open', () {
-    expect(kPrivacyHopHost, '77.42.91.84');
-    expect(kPrivacyHopPort, 44044);
-    expect(kPrivacyHopFeeShe, 0);
-    expect(
-      reserveSendReady(
-        hopUp: false,
-        poolUrl: 'https://pool.shear.digital',
-        unprivateConfirmed: true,
-      ),
-      isTrue,
-    );
+  test('a positive finite amount is permitted', () {
     for (final she in [1e-11, 0.2, 22.58, 10000.0, 1e9]) {
       expect(unprivateAmountPermitted(she), isTrue, reason: '$she');
     }
@@ -278,7 +265,8 @@ void main() {
     expect(started, isEmpty);
     expect(side.running, isFalse);
     expect(side.listenPort, isNull);
-    expect(side.progress.toLowerCase(), isNot(contains('vpn')));
+    expect(side.progress.toLowerCase(), isNot(contains('looking for the vpn')));
+    expect(side.progress.toLowerCase(), contains('use a vpn'));
     expect(closureSpawnEnv(ClosureSendMode.localNode, android: false, dataDir: '/tmp/shear-node')['SHEAR_STRATUM'], isNull);
     expect(closureSpawnEnv(ClosureSendMode.localNode, android: false, dataDir: '/tmp/shear-node')['SHEAR_GETBLOCK_BATCH'], '1');
     expect(closureSpawnEnv(ClosureSendMode.localNodeFull, android: false, dataDir: '/tmp/shear-node')['SHEAR_STRATUM'], isNull);
@@ -535,7 +523,6 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('wallet-mode-connect-bare')), findsOneWidget);
     expect(find.text('CONNECT BARE'), findsOneWidget);
-    expect(find.text('VPN HOP MODE'), findsNothing);
     await tester.tap(find.text('Closure'));
     await tester.pump();
     await tester.pump();
@@ -578,7 +565,6 @@ void main() {
     });
     final session = ShearSession(store: File('${dir.path}/session.json'));
     final ledger = ShearLedger();
-    final hop = PrivacyHopController();
     late ShearIdentity id;
     late String home;
     late String other;
@@ -597,18 +583,15 @@ void main() {
       final bobLedger = ShearLedger()..bindIdentity(bobId);
       bob = bobLedger.homeDest(bobId.address, paymentCode: bobId.paymentCode);
     });
-    hop.noteProbeOnly();
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
       startUnlocked: true,
       skipPoolSync: true,
-      privacyHop: hop,
     ));
     await tester.pump();
     await tester.pump();
     expect(find.byKey(const Key('wallet-mode-connect-bare')), findsOneWidget);
-    expect(find.byKey(const Key('wallet-mode-vpn-hop')), findsNothing);
     expect(find.byKey(const Key('settings-vpn-tunnel')), findsNothing);
     await tester.tap(find.text('Flow'));
     await tester.pump();
@@ -618,10 +601,7 @@ void main() {
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
-    expect(find.text(kErrPrivacyVpn), findsNothing);
     expect(find.text('sent'), findsOneWidget);
-    expect(hop.isUp, isFalse);
-    expect(hop.tunVerified, isFalse);
     final sent = ledger.transactions.lastWhere((t) => t.kind == 'send');
     expect(sent.from, other);
     expect(sent.from, isNot(home));
@@ -697,34 +677,16 @@ void main() {
     }).toList();
     expect(submitted, findsOneWidget, reason: 'snacks=$snacks');
     expect(find.text('lock signature rejected'), findsNothing);
-    expect(snacks.where((s) => s.toLowerCase().contains('privacy hop')), isEmpty);
-    expect(find.text('Privacy hop'), findsNothing);
     expect(funded.ledger.spendSeed, hexToBytes(funded.id.seedHex));
     final vote = funded.ledger.transactions.lastWhere((t) => t.kind == 'vote');
     expect(vote.from, isNot(funded.home));
   });
 
-  test('privacy hop service routes the device and extended scale stays opt-in', () {
+  test('lean vortices do not include a restore-privacy client', () {
     expect(leanContinuumVortices().any((v) => v.id == 'restore-privacy-v1'), isFalse);
-    final vpn = File('android/app/src/main/kotlin/com/shear/shear_wallet/PrivacyHopVpnService.kt').readAsStringSync();
-    final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
-    expect(vpn, contains('addRoute("0.0.0.0", 0)'));
-    expect(vpn, contains('addRoute("::", 0)'));
-    expect(vpn.contains('addDisallowedApplication'), isFalse);
-    expect(vpn, contains('applyPrivacyScale(trafficShape)'));
-    expect(activity, contains('VpnService.prepare'));
-    expect(activity, contains('startActivityForResult(prep, REQ_VPN)'));
-    expect(activity, contains('override fun onDestroy'));
-    for (final path in [
-      'windows/runner/flutter_window.cpp',
-      'linux/runner/my_application.cc',
-      'macos/Runner/MainFlutterWindow.swift',
-    ]) {
-      expect(File(path).readAsStringSync(), contains('deviceApproval'), reason: path);
-    }
   });
 
-  testWidgets('the VPN tunnel switch is gone and Run node does not raise a hop', (tester) async {
+  testWidgets('the VPN tunnel switch is gone and Run node shows the local node chip', (tester) async {
     tester.view.physicalSize = const Size(800, 2800);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -739,19 +701,16 @@ void main() {
       await session.setPassword('test-pass-1');
       session.closureSendMode = kClosureModeLocal;
     });
-    final hop = PrivacyHopController(connectImpl: () async => true);
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ShearLedger(),
       startUnlocked: true,
       skipPoolSync: true,
-      privacyHop: hop,
     ));
     await tester.pump();
     await tester.pump();
     expect(find.byKey(const Key('wallet-mode-local-node')), findsOneWidget);
     expect(find.text('P2P NODE'), findsOneWidget);
-    expect(hop.isUp, isFalse);
     await tester.tap(find.text('Closure'));
     await tester.pump();
     expect(find.byKey(const Key('settings-vpn-tunnel')), findsNothing);
@@ -763,9 +722,7 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('resistance-vpn-console')), findsNothing);
     expect(find.text('VPN tunnel'), findsNothing);
-    expect(find.text('Privacy hop'), findsNothing);
     expect(find.byKey(const Key('resistance-sync-height')), findsOneWidget);
-    expect(hop.isUp, isFalse);
   });
 
   testWidgets('Resistance Start and Stop stay on the heading', (tester) async {
@@ -782,13 +739,11 @@ void main() {
       await session.loadOrCreate();
       await session.setPassword('test-pass-1');
     });
-    final hop = PrivacyHopController(connectImpl: () async => true);
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ShearLedger(),
       startUnlocked: true,
       skipPoolSync: true,
-      privacyHop: hop,
     ));
     await tester.pump();
     await tester.pump();
@@ -801,7 +756,6 @@ void main() {
     expect(find.byKey(const Key('resistance-start')), findsOneWidget);
     expect(find.byKey(const Key('resistance-stop')), findsOneWidget);
     expect(find.byKey(const Key('resistance-node-console')), findsNothing);
-    expect(find.text('Privacy hop'), findsNothing);
     await tester.tap(find.byKey(const Key('resistance-start')));
     await tester.pump();
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
@@ -810,7 +764,6 @@ void main() {
     expect(find.text('P2P NODE'), findsOneWidget);
     expect(find.byKey(const Key('resistance-node-console')), findsOneWidget);
     expect(find.byKey(const Key('resistance-sync-height')), findsOneWidget);
-    expect(hop.isUp, isFalse);
     await tester.tap(find.byKey(const Key('resistance-stop')));
     await tester.pump();
     await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
@@ -821,9 +774,6 @@ void main() {
     expect(find.byKey(const Key('resistance-start')), findsOneWidget);
     expect(find.byKey(const Key('resistance-stop')), findsOneWidget);
     expect(find.byKey(const Key('settings-vpn-tunnel')), findsNothing);
-    expect(find.text('Privacy hop'), findsNothing);
-    expect(find.text('VPN HOP MODE'), findsNothing);
-    expect(hop.isUp, isFalse);
   });
 
   testWidgets('a restore-privacy vortice has no tunnel client', (tester) async {
@@ -868,7 +818,6 @@ void main() {
       find.text('Third-party vortice cannot mint SHE; it must fund its own rewards.'),
       findsOneWidget,
     );
-    expect(find.text('Privacy hop'), findsNothing);
   });
 }
 

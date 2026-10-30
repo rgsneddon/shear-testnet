@@ -192,10 +192,10 @@ const kLocalNodeFullModeCopy =
     'so this device can solo mine. Start resumes from the saved height. '
     'Stop saves that height and leaves the book.';
 
-/// Connect bare pushes a signed send. Nodes verify it. No tunnel on this device.
+/// Connect bare pushes a signed send. Nodes verify it. A public node sees the IP.
 const kConnectBareCopy =
     'Connect bare. You push a signed send. Each node verifies it on the book it holds. '
-    'DINS-DAG and the ADMITv2 fluxset keep that spend private. No tunnel and no node on this device.';
+    'Private on chain. A public node still sees your IP and this send; use a VPN or a local node.';
 
 /// Published snapshot. Used only when the wallet node datadir is empty.
 const kPublicBootstrapUrl = 'https://boot.shear.digital';

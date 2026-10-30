@@ -29,7 +29,7 @@ Continuum 0.71 and Shear Sentinel v18 are for shear-testnet-v11 only. Mac Contin
 - Full dest (operator note, not a public page): `ssa1q5495s7qwnljwkt2q8896vect0qaj3argt68hvet8t3vkhf9f7tcn0qhsd2q45e4lnay7u98sp22sddc639hqt0d8jj`
 - Public tail only: `d8jj`. `/api/stats` keeps `feeDestTail` and does not return the full dest.
 - The closed v10 pin ending `kkuk` is `V10_POOL_FEE_DEST`. This tree refuses it (`v10_fee_dest`), including when `SHEAR_FEE_DEST`, `SHEAR_ADMIN_SPEND_DEST`, or `SHEAR_POOL_FEE_PAYOUT_DEST` still names it. A v11 unit must not copy that v10 env.
-- `poolFeeDest()` / Continuum `kPoolFeeDest` stays `ssa1q4ke8…` (sha256 of `shear-pool-fee-v1`). That is the levy/hop display dest, not this seal pin. Login does not use it.
+- `poolFeeDest()` / Continuum `kPoolFeeDest` stays `ssa1q4ke8…` (sha256 of `shear-pool-fee-v1`). That is the levy dest, not this seal pin. Login does not use it.
 - The live v10 pool was not bounced and its datadir was not changed.
 
 ## Tip

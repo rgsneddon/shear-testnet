@@ -29,7 +29,6 @@ import 'package:shear_wallet/shear_social.dart';
 import 'package:shear_wallet/shear_eip712.dart';
 import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_closure.dart';
-import 'package:shear_wallet/shear_privacy_hop.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_tip_tick.dart';
 import 'package:shear_wallet/shear_admit.dart';
@@ -848,37 +847,7 @@ void main() {
     }
   });
 
-  test('Privacy hop pins SHEAR-HOP / EU on 77.42.91.84:44044', () {
-    expect(kPrivacyHopHost, '77.42.91.84');
-    expect(kPrivacyHopPort, 44044);
-    expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
-    expect(kPrivacyHopButtonLabel, 'Privacy hop');
-  });
-
-  test('Reserve send gate: hop optional; public HTTP refused unless hop up or informed', () {
-    expect(
-      reserveVaultSendReady(skipPoolSync: true, poolUrl: kPublicPoolHttp, hop: PrivacyHopState.off),
-      isTrue,
-    );
-    expect(
-      reserveVaultSendReady(skipPoolSync: false, poolUrl: kPublicPoolHttp, hop: PrivacyHopState.off),
-      isFalse,
-    );
-    expect(
-      reserveVaultSendReady(skipPoolSync: false, poolUrl: kPublicPoolHttp, hop: PrivacyHopState.connecting),
-      isFalse,
-    );
-    expect(
-      reserveVaultSendReady(skipPoolSync: false, poolUrl: kPublicPoolHttp, hop: PrivacyHopState.up),
-      isTrue,
-    );
-    expect(
-      reserveVaultSendReady(skipPoolSync: false, poolUrl: kLocalNodeRpc, hop: PrivacyHopState.off),
-      isTrue,
-    );
-  });
-
-  test('send still refuses public pool HTTP without hop or informed allow', () async {
+  test('send refuses public pool HTTP without an informed allow', () async {
     final id = createIdentity();
     final pool = ShearPoolClient(
       baseUrl: kPublicPoolHttp,
@@ -897,7 +866,6 @@ void main() {
         local: false,
         restFrame: id.address,
         paymentCode: id.paymentCode,
-        privacyHopUp: false,
       );
       fail('public HTTP must not send');
     } catch (e) {
@@ -905,86 +873,34 @@ void main() {
     }
   });
 
-  test('hop-up skips the public-IP gate; public pool without hop still refuses', () async {
-    final id = createIdentity();
-    final pool = ShearPoolClient(
-      baseUrl: kPublicPoolHttp,
-      http: HttpClient()..connectionTimeout = const Duration(milliseconds: 50),
-    );
-    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
-    final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-    final to = destForLogin(createIdentity().address, height: 1, viewKey: 'ab' * 32)!;
-    try {
-      await ledger.send(
-        from: from,
-        to: to,
-        amount: 0.05,
-        local: false,
-        restFrame: id.address,
-        paymentCode: id.paymentCode,
-        privacyHopUp: true,
-      );
-      fail('empty wallet must not send');
-    } catch (e) {
-      expect(e.toString(), contains('insufficient'));
-      expect(flowSendAdvisoryOf(e), isNot(kErrPublicHttp));
-    }
-  });
-
   test('allowPublicHttp keeps a pool.shear.digital failure reason', () {
     const url = 'https://pool.shear.digital';
-    final masked = sendHumanError('fee_rejected', url, hopUp: false);
+    final masked = sendHumanError('fee_rejected', url);
     expect(masked.message, kErrPublicHttp);
     expect(flowSendAdvisoryOf(masked), kErrPublicHttp);
     final kept = sendHumanError(
       'fee_rejected',
       url,
-      hopUp: false,
       allowPublicHttp: true,
     );
     expect(kept.message, 'fee_rejected');
     expect(kept.message, isNot(kErrPublicHttp));
-    expect(hopFeeAdvisoryOf(kept), 'fee_rejected');
-    expect(hopFeeAdvisoryOf(kept), isNot(kErrSendGeneric));
+    expect(sendReasonOf(kept), 'fee_rejected');
+    expect(sendReasonOf(kept), isNot(kErrSendGeneric));
     expect(flowSendAdvisoryOf(kept), kErrSendGeneric);
-    final hopUp = sendHumanError('note_busy', url, hopUp: true);
-    expect(hopUp.message, 'note_busy');
-    expect(hopFeeAdvisoryOf(StateError('insufficient')), 'insufficient');
-    expect(hopFeeAdvisoryOf(StateError('insufficient')), isNot(kErrSendGeneric));
-    expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
-    expect(hopFeeAdvisoryOf(StateError('no_note')), isNot(contains('no_note')));
+    expect(sendReasonOf(StateError('insufficient')), 'insufficient');
+    expect(sendReasonOf(StateError('insufficient')), isNot(kErrSendGeneric));
+    expect(sendReasonOf(StateError('no_note')), kErrNoSealedNote);
+    expect(sendReasonOf(StateError('no_note')), isNot(contains('no_note')));
     expect(
-      hopFeeAdvisoryOf(const FormatException('Unexpected character (at character 1)\n<html>')),
+      sendReasonOf(const FormatException('Unexpected character (at character 1)\n<html>')),
       kErrPoolHtml,
     );
-    expect(hopFeeAdvisoryOf(StateError(kErrPoolHtml)), kErrPoolHtml);
-    expect(hopFeeAdvisoryOf(StateError(kErrPoolHtml)).toLowerCase(), isNot(contains('<html')));
+    expect(sendReasonOf(StateError(kErrPoolHtml)), kErrPoolHtml);
+    expect(sendReasonOf(StateError(kErrPoolHtml)).toLowerCase(), isNot(contains('<html')));
     expect(kReserveLockSent, 'Deposit accepted. Spendable is reduced and staking has started.');
     expect(kReserveLockSent, isNot(contains('wait 9 confirmations')));
     expect(kReserveLockSent, isNot(contains('plesse')));
-    expect(
-      reserveVaultSendReady(
-        skipPoolSync: false,
-        poolUrl: kPublicPoolHttp,
-        hop: PrivacyHopState.off,
-        unprivateConfirmed: true,
-      ),
-      isTrue,
-    );
-    expect(
-      reserveVaultSendReady(
-        skipPoolSync: false,
-        poolUrl: kPublicPoolHttp,
-        hop: PrivacyHopState.off,
-        unprivateConfirmed: false,
-      ),
-      isFalse,
-    );
-    expect(reservePublicWaitCopy(unprivateConfirmed: false), kReserveHopWaitCopy);
-    expect(reservePublicWaitCopy(unprivateConfirmed: true), kUnprivateUnlockedBanner);
-    expect(kUnprivateUnlockedBanner, contains('Unprivate send unlocked'));
-    expect(kPrivacyHopFeeShe, 0);
-    expect(kPrivacyHopFeeDest, kPoolFeeDest);
     expect(kPoolFeeDest, startsWith('ssa1q4ke8'));
   });
 
@@ -1008,20 +924,19 @@ void main() {
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
-        privacyHopUp: false,
         allowPublicHttp: true,
         choice: 'hold',
       );
       fail('pool rejection must surface');
     } catch (e) {
-      expect(hopFeeAdvisoryOf(e), 'fee_rejected');
-      expect(hopFeeAdvisoryOf(e), isNot(kErrPublicHttp));
-      expect(hopFeeAdvisoryOf(e), isNot(kErrSendGeneric));
+      expect(sendReasonOf(e), 'fee_rejected');
+      expect(sendReasonOf(e), isNot(kErrPublicHttp));
+      expect(sendReasonOf(e), isNot(kErrSendGeneric));
       expect(e.toString(), isNot(contains(kErrPublicHttp)));
     }
   });
 
-  test('hop off and no unprivate still blocks public pool HTTP', () async {
+  test('public pool HTTP stays blocked without an informed allow', () async {
     final id = createIdentity();
     final pool = _ReasonPool('fee_rejected');
     addTearDown(pool.close);
@@ -1040,14 +955,13 @@ void main() {
         restFrame: id.address,
         paymentCode: id.paymentCode,
         spendSeed: hexToBytes(id.seedHex),
-        privacyHopUp: false,
         allowPublicHttp: false,
         choice: 'hold',
       );
       fail('public HTTP must not send');
     } catch (e) {
       expect(flowSendAdvisoryOf(e), kErrPublicHttp);
-      expect(hopFeeAdvisoryOf(e), kErrPublicHttp);
+      expect(sendReasonOf(e), kErrPublicHttp);
     }
   });
 
@@ -1150,10 +1064,10 @@ void main() {
       throwsA(isA<StateError>().having((e) => e.message, 'msg', contains('no_note'))),
     );
     expect(ledger.spendable(dest) + 1e-18, lessThan(0.25));
-    expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
+    expect(sendReasonOf(StateError('no_note')), kErrNoSealedNote);
   });
 
-  test('hop fee collates a sealed note when spendable covers but the book was empty', () async {
+  test('a send collates a sealed note when spendable covers but the book was empty', () async {
     debugNativeSpendProver = ({required spendSeed, required spentNote, required pubs, List<Uint8List>? commits}) => {
       'admit_proof': true,
       'v': 2,
@@ -1196,12 +1110,12 @@ void main() {
     );
     expect(pool.notesHits, greaterThan(0));
     expect(posts, isNotEmpty);
-    expect(posts.single['to'], kPrivacyHopFeeDest == bob ? bob : bob);
+    expect(posts.single['to'], bob);
     expect(posts.single['amount'], 0.001);
     expect(ledger.notes, isNotEmpty);
   });
 
-  test('empty note inventory stops spendable from claiming a hop-fee cover', () async {
+  test('empty note inventory stops spendable from claiming a cover', () async {
     final id = createIdentity();
     final seed = hexToBytes(id.seedHex);
     final posts = <Map<String, dynamic>>[];
@@ -1230,8 +1144,8 @@ void main() {
     );
     expect(posts, isEmpty);
     expect(ledger.spendable(dest) + 1e-18, lessThan(0.001));
-    expect(hopFeeAdvisoryOf(StateError('no_note')), kErrNoSealedNote);
-    expect(hopFeeAdvisoryOf(StateError('no_note')), isNot('no_note'));
+    expect(sendReasonOf(StateError('no_note')), kErrNoSealedNote);
+    expect(sendReasonOf(StateError('no_note')), isNot('no_note'));
   });
 
   test('send spends the rest-frame sum when no single note covers', () async {
@@ -1511,7 +1425,7 @@ void main() {
       ),
       throwsA(
         isA<StateError>().having(
-          (e) => hopFeeAdvisoryOf(e),
+          (e) => sendReasonOf(e),
           'advisory',
           'pool returned an error page (http_502)',
         ),
@@ -5731,72 +5645,7 @@ void main() {
     expect(ledger.spendableOwned(ident.address, paymentCode: ident.paymentCode), closeTo(1, 1e-12));
   });
 
-  test('Privacy hop pins SHEAR-HOP / EU on 77.42.91.84:44044', () {
-    expect(kPrivacyHopHost, '77.42.91.84');
-    expect(kPrivacyHopPort, 44044);
-    expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
-    expect(kPrivacyHopButtonLabel, 'Privacy hop');
-  });
-
-  test('Reserve send gate: hop up unlocks public-pool Send; hop down refuses', () {
-    expect(
-      reserveVaultSendReady(
-        skipPoolSync: false,
-        poolUrl: kPublicPoolHttp,
-        hop: PrivacyHopState.off,
-      ),
-      isFalse,
-    );
-    expect(
-      reserveVaultSendReady(
-        skipPoolSync: false,
-        poolUrl: kPublicPoolHttp,
-        hop: PrivacyHopState.up,
-      ),
-      isTrue,
-    );
-    expect(
-      reserveVaultSendReady(
-        skipPoolSync: true,
-        enforceHopGate: true,
-        poolUrl: kPublicPoolHttp,
-        hop: PrivacyHopState.off,
-      ),
-      isFalse,
-    );
-    expect(
-      reserveVaultSendReady(
-        skipPoolSync: true,
-        poolUrl: kPublicPoolHttp,
-        hop: PrivacyHopState.off,
-      ),
-      isTrue,
-    );
-    expect(kPrivacyHopHost, '77.42.91.84');
-    expect(kPrivacyHopPort, 44044);
-    expect(kPrivacyHopLabel, 'SHEAR-HOP / EU');
-    expect(kPrivacyHopFeeShe, 0);
-    expect(kPoolFeeDest, 'ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6');
-    expect(poolFeeDest(), kPoolFeeDest);
-    expect(privacyHopFeeDestOk(kPrivacyHopFeeDest), isTrue);
-    expect(privacyHopFeeDestOk('she1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'), isFalse);
-    expect(
-      reserveVaultSendReady(
-        skipPoolSync: false,
-        poolUrl: kPublicPoolHttp,
-        hop: PrivacyHopState.off,
-        unprivateConfirmed: true,
-      ),
-      isTrue,
-    );
-    expect(kUnprivateConfirmLabel, 'I already use a VPN / I accept exposing my IP');
-    expect(
-      kUnprivateConfirmHelper,
-      contains('If you are not already on a VPN, the public node may see your device IP'),
-    );
-  });
-
-  test('send refuses public pool HTTP without hop', () async {
+  test('send refuses public pool HTTP', () async {
     final id = createIdentity();
     final pool = ShearPoolClient(
       baseUrl: kPublicPoolHttp,
@@ -5821,10 +5670,9 @@ void main() {
     }
   });
 
-  testWidgets('Reserve has no Privacy hop and a positive amount unlocks Deposit',
-      (tester) async {
+  testWidgets('a positive Reserve amount unlocks Deposit', (tester) async {
     _tallContinuum(tester);
-    final dir = Directory.systemTemp.createTempSync('shear-reserve-nohop-');
+    final dir = Directory.systemTemp.createTempSync('shear-reserve-deposit-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
     final ident = session.identity!;
@@ -5836,62 +5684,104 @@ void main() {
       height: 20,
     );
     ledger.settleTo(30);
-    final hop = PrivacyHopController(mock: true);
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
       reserve: ShearReserve(),
       startUnlocked: true,
       skipPoolSync: true,
-      privacyHop: hop,
     ));
     await tester.pump();
     await tester.pump();
     await tester.tap(find.text('Vortex'));
     await tester.pump();
-    expect(find.byKey(const Key('reserve-privacy-hop')), findsNothing);
     expect(find.byKey(const Key('reserve-ip-disclaimer')), findsOneWidget);
     expect(find.text(kReserveIpDisclaimer), findsOneWidget);
-    expect(find.text('Privacy hop'), findsNothing);
+    expect(
+      find.text(
+        'Private on chain. A public node still sees your IP and this deposit; use a VPN or a local node.',
+      ),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
     await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
     await tester.pump();
-    expect(hop.isUp, isFalse);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
   });
 
-  test('Privacy hop handshake budget is at most 15s and 3 attempts', () {
-    expect(kPrivacyHopHandshakeTimeoutMs, lessThanOrEqualTo(15000));
-    expect(kPrivacyHopHandshakeAttempts, inInclusiveRange(1, 3));
-    expect(kPrivacyHopSessionWaitMs, greaterThanOrEqualTo(kPrivacyHopHandshakeTimeoutMs));
-    expect(kPrivacyHopSessionWaitMs, lessThanOrEqualTo(20000));
-    final vpn = File('android/app/src/main/kotlin/com/shear/shear_wallet/PrivacyHopVpnService.kt').readAsStringSync();
-    final engine = File('android/app/src/main/kotlin/com/shear/shear_wallet/RptClientEngine.kt').readAsStringSync();
-    final activity = File('android/app/src/main/kotlin/com/shear/shear_wallet/MainActivity.kt').readAsStringSync();
-    expect(vpn, contains('HOP_HANDSHAKE_TIMEOUT_MS = 15_000'));
-    expect(vpn, contains('HOP_HANDSHAKE_ATTEMPTS = 3'));
-    expect(vpn, contains('HOP_SESSION_WAIT_MS = 20_000'));
-    expect(vpn.contains('timeoutMs = 60000'), isFalse);
-    expect(vpn.contains('attempts = 5'), isFalse);
-    expect(engine.contains('coerceAtLeast(8000)'), isFalse);
-    expect(engine, contains('Privacy hop unreachable'));
-    expect(activity, contains('Thread {'));
-    expect(activity, contains('Thread.sleep(200)'));
-    expect(activity.contains('70_000'), isFalse);
-    expect(activity, contains('HOP_SESSION_WAIT_MS'));
-    expect(activity, contains('startActivityForResult(prep, REQ_VPN)'));
+  test('source check is named as a source check', () {
+    final src = File('test/shear_wallet_test.dart').readAsStringSync();
+    expect(src, contains("test('source: reserve seal stays off the UI isolate'"));
+  });
+
+  testWidgets('public lock makes no request before consent and posts after it', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-public-ack-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    expect(session.publicNodeAck, isFalse);
+    final ident = session.identity!;
+    final posts = <Map<String, dynamic>>[];
+    final pool = _RecordingPool(posts, baseUrl: kPublicPoolHttp);
+    final ledger = ShearLedger(pool: pool);
+    ledger.viewSecret = ident.viewKey;
+    ledger.confirmRound(
+      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
+      pot: 10,
+      height: 20,
+    );
+    ledger.settleTo(30);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      reserve: ShearReserve(),
+      startUnlocked: true,
+      skipPoolSync: true,
+      postReserveLock: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    expect(find.byKey(const Key('public-node-ack')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('public-node-ack-cancel')));
+    await tester.pump();
+    expect(posts, isEmpty);
+    expect(find.byKey(const Key('reserve-sign')), findsNothing);
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('public-node-ack-accept')));
+    await tester.pump();
+    expect(session.publicNodeAck, isTrue);
+    expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-sign-accept')));
+    await _waitKey(tester, const Key('reserve-locked-in'));
+    expect(posts, isNotEmpty);
+    expect(posts.last['kind'], 'lock');
+  });
+
+  test('source: reserve seal stays off the UI isolate', () {
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
     expect(ledgerSrc, contains('Isolate.run(() => sealFlowSpendVouts(input))'));
     expect(ledgerSrc, contains('Isolate.run(() => reproveFlowSpendWire(input))'));
     final ui = File('lib/main.dart').readAsStringSync();
-    expect(ui, contains('allowPublicHttp: true'));
-    expect(ui.contains('reserve-privacy-hop'), isFalse);
     expect(ui, contains('kReserveIpDisclaimer'));
-    expect(ui.contains('kPrivacyHopButtonLabel'), isFalse);
-    expect(kPrivacyHopFeeShe, 0);
-    expect(privacyHopFeeDestOk(kPrivacyHopFeeDest), isTrue);
-    expect(kPrivacyHopFeeDest, 'ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6');
+    expect(
+      ui,
+      contains(
+        'Private on chain. A public node still sees your IP; use a VPN or a local node.',
+      ),
+    );
+    expect(ui, contains('_ensurePublicNodeAck'));
+    expect(ui.contains('allowPublicHttp: true'), isFalse);
+    expect(poolFeeDest(), kPoolFeeDest);
+    expect(kPoolFeeDest, startsWith('ssa1'));
   });
 
   test('Reserve lock spend digest matches a sealed commit vout, not a plain address', () {
@@ -5922,7 +5812,7 @@ void main() {
       kErrLockUnsigned,
     );
     expect(
-      hopFeeAdvisoryOf(StateError(kErrLockUnsigned)),
+      sendReasonOf(StateError(kErrLockUnsigned)),
       kErrLockUnsigned,
     );
   });
@@ -6002,6 +5892,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-reserve-lock-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
+    session.publicNodeAck = true;
     final ident = session.identity!;
     final posts = <Map<String, dynamic>>[];
     final pool = _RecordingPool(posts, baseUrl: kPublicPoolHttp);
@@ -6020,7 +5911,6 @@ void main() {
       startUnlocked: true,
       skipPoolSync: true,
       postReserveLock: true,
-      privacyHop: PrivacyHopController(mock: true),
     ));
     await tester.pump();
     await tester.pump();
@@ -6063,14 +5953,12 @@ void main() {
       height: 20,
     );
     ledger.settleTo(30);
-    final hop = PrivacyHopController(mock: true);
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
       reserve: ShearReserve(),
       startUnlocked: true,
       skipPoolSync: true,
-      privacyHop: hop,
     ));
     await tester.pump();
     await tester.pump();
@@ -6079,14 +5967,19 @@ void main() {
     expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
     expect(find.byKey(const Key('reserve-unprivate-confirm')), findsNothing);
     expect(find.text(kReserveIpDisclaimer), findsOneWidget);
+    expect(
+      find.text(
+        'Private on chain. A public node still sees your IP and this deposit; use a VPN or a local node.',
+      ),
+      findsOneWidget,
+    );
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
     await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
     await tester.pump();
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
-    expect(hop.isUp, isFalse);
   });
 
-  testWidgets('Reserve on Connect bare has no hop-wait line', (tester) async {
+  testWidgets('Reserve on Connect bare unlocks Deposit for a positive amount', (tester) async {
     _tallContinuum(tester);
     final dir = Directory.systemTemp.createTempSync('shear-reserve-unprivate-banner-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
@@ -6105,14 +5998,12 @@ void main() {
       height: 20,
     );
     ledger.settleTo(30);
-    final hop = PrivacyHopController(mock: true);
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
       reserve: ShearReserve(),
       startUnlocked: true,
       skipPoolSync: true,
-      privacyHop: hop,
     ));
     await tester.pump();
     await tester.pump();
@@ -6120,13 +6011,10 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('reserve-local-wait')), findsNothing);
     expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
-    expect(find.text(kReserveHopWaitCopy), findsNothing);
-    expect(find.text(kUnprivateUnlockedBanner), findsNothing);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
     await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
     await tester.pump();
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
-    expect(hop.isUp, isFalse);
   });
 
   testWidgets('Connect bare posts a large send without the VPN string', (tester) async {
@@ -6134,6 +6022,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-bare-large-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
+    session.publicNodeAck = true;
     expect(session.closureSendMode, kClosureModeBare);
     final ident = session.identity!;
     final posts = <Map<String, dynamic>>[];
@@ -6151,13 +6040,11 @@ void main() {
     final bob = createIdentity();
     final bobBook = ShearLedger()..bindIdentity(bob);
     final to = bobBook.homeDest(bob.address, paymentCode: bob.paymentCode);
-    final hop = PrivacyHopController()..noteProbeOnly();
     await tester.pumpWidget(ShearWalletApp(
       session: session,
       ledger: ledger,
       startUnlocked: true,
       skipPoolSync: true,
-      privacyHop: hop,
     ));
     await tester.pump();
     await tester.pump();
@@ -6170,10 +6057,8 @@ void main() {
     await tester.tap(find.byKey(const Key('flow-send')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
-    expect(find.text(kErrPrivacyVpn), findsNothing);
     expect(find.text(kErrSendGeneric), findsOneWidget);
     expect(posts, isEmpty);
-    expect(hop.isUp, isFalse);
   });
 
   testWidgets('Vortex deploys a third-party dapp only after a valid vort1. key download', (tester) async {

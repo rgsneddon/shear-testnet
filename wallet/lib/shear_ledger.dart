@@ -555,7 +555,7 @@ int debugReserveIsolateRuns = 0;
 /// when the seal ran in [Isolate.run].
 String debugReserveOffIsolateStamp = '';
 
-/// Seal Flow vouts (range proof + admit pub). Production hop-fee pay calls this
+/// Seal Flow vouts (range proof + admit pub). Production sends call this
 /// via [Isolate.run] so the UI isolate can keep pumping frames.
 Map<String, dynamic> sealFlowSpendVouts(Map<String, dynamic> input) {
   final spendSeed = input['spendSeed'] as Uint8List;
@@ -1366,7 +1366,6 @@ Future<ContinuumSendResult> submitContinuumSend({
   String? memo,
   Uint8List? spendSeed,
   bool local = false,
-  bool privacyHopUp = false,
   bool allowPublicHttp = false,
   int depth = 0,
 }) async {
@@ -1410,7 +1409,6 @@ Future<ContinuumSendResult> submitContinuumSend({
       restFrame: restFrame,
       paymentCode: paymentCode,
       spendSeed: spendSeed,
-      privacyHopUp: privacyHopUp,
       allowPublicHttp: allowPublicHttp,
       paintedCover: gap > 1e-12,
     );
@@ -1478,10 +1476,10 @@ String voteFailCopy(Object error) {
   }
   return error.toString();
 }
-/// Hop-fee picker had no sealed note, and the rest-frame sum could not cover the fee.
+/// Picker had no sealed note, and the rest-frame sum could not cover the send.
 /// One Flow input spends one note. A user send of the sum posts one transaction per note.
 const kErrNoSealedNote =
-    'No sealed Continuum note ready for the hop fee — wait for sync/confirms';
+    'No sealed Continuum note ready — wait for sync/confirms';
 /// Pool answered with an HTML error page (or other non-JSON). Never surface FormatException.
 const kErrPoolHtml = 'pool returned HTML';
 
@@ -1557,10 +1555,10 @@ String flowSendAdvisoryOf(Object error) {
   return kErrSendGeneric;
 }
 
-/// Submit snack that keeps the reason body. Hop-fee pay uses this so a pool
-/// rejection is not collapsed to [kErrSendGeneric]. Raw `no_note` and HTML
-/// parse failures are rewritten; a real pool reason is kept.
-String hopFeeAdvisoryOf(Object error) {
+/// Submit snack that keeps the reason body. A pool rejection is not collapsed
+/// to [kErrSendGeneric]. Raw `no_note` and HTML parse failures are rewritten;
+/// a real pool reason is kept.
+String sendReasonOf(Object error) {
   if (error is FormatException) return kErrPoolHtml;
   var msg = '';
   if (error is StateError) {
@@ -1602,14 +1600,12 @@ String hopFeeAdvisoryOf(Object error) {
 StateError sendHumanError(
   String? reason,
   String? baseUrl, {
-  bool hopUp = false,
   bool allowPublicHttp = false,
   String? kind,
 }) =>
     _sendHumanError(
       reason,
       baseUrl,
-      hopUp: hopUp,
       allowPublicHttp: allowPublicHttp,
       kind: kind,
     );
@@ -1617,7 +1613,6 @@ StateError sendHumanError(
 StateError _sendHumanError(
   String? reason,
   String? baseUrl, {
-  bool hopUp = false,
   bool allowPublicHttp = false,
   String? kind,
 }) {
@@ -1640,9 +1635,8 @@ StateError _sendHumanError(
     return StateError(kErrLockUnsigned);
   }
   final url = baseUrl ?? '';
-  // Hop up, or an explicit public-HTTP allow (hop fee, confirmed unprivate),
-  // keeps the server reason. Do not rewrite those to the IP-leak advisory.
-  if (url.contains('pool.shear.digital') && !hopUp && !allowPublicHttp) {
+  // An explicit public-HTTP allow keeps the server reason.
+  if (url.contains('pool.shear.digital') && !allowPublicHttp) {
     return StateError(kErrPublicHttp);
   }
   return StateError(why);
@@ -6048,7 +6042,6 @@ class ShearLedger implements ReadProofSink {
     int? epochStartMs,
     String? change,
     Uint8List? spendSeed,
-    bool privacyHopUp = false,
     bool allowPublicHttp = false,
     bool paintedCover = false,
   }) async {
@@ -6069,7 +6062,6 @@ class ShearLedger implements ReadProofSink {
         epochStartMs: epochStartMs,
         change: change,
         spendSeed: spendSeed,
-        privacyHopUp: privacyHopUp,
         allowPublicHttp: allowPublicHttp,
         paintedCover: paintedCover,
       );
@@ -6156,7 +6148,6 @@ class ShearLedger implements ReadProofSink {
     int? epochStartMs,
     String? change,
     Uint8List? spendSeed,
-    bool privacyHopUp = false,
     bool allowPublicHttp = false,
     bool paintedCover = false,
   }) async {
@@ -6189,7 +6180,6 @@ class ShearLedger implements ReadProofSink {
     if (!local &&
         pool != null &&
         !localSendReady(pool!.baseUrl) &&
-        !privacyHopUp &&
         !allowPublicHttp) {
       throw StateError(kErrPublicHttp);
     }
@@ -6367,7 +6357,7 @@ class ShearLedger implements ReadProofSink {
       // 9 confirmations stay in force. A balance snapshot does not make a
       // young note spendable.
       // After the picker misses, the book is the notes we can actually spend
-      // so Continuum does not keep claiming a cover the hop fee cannot use.
+      // so Continuum does not keep claiming a cover it cannot spend.
       if (spent == null) {
         final keys = <String>{payKey(src), payKey(from)};
         if (restFrame != null) {
@@ -6659,7 +6649,6 @@ class ShearLedger implements ReadProofSink {
         lastErr = _sendHumanError(
           json['reason']?.toString(),
           pool?.baseUrl,
-          hopUp: privacyHopUp,
           allowPublicHttp: allowPublicHttp,
           kind: sendKind,
         );

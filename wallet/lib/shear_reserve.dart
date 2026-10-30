@@ -34,6 +34,13 @@ const kVoteConfirmWait = 'Vote is waiting on 9 confirmations of the reserve lock
 /// Vote attempt while this portal's own deposits are still under π.
 const kVoteBelowPi = 'ineligible, please deposit at least Pi and wait for it to confirm';
 
+/// Standing Reserve note. The chain hides the amount. The public node still sees the IP.
+const kReserveIpDisclaimer =
+    'Private on chain. A public node still sees your IP and this deposit; use a VPN or a local node.';
+
+/// Any finite positive SHE amount. No magnitude ceiling.
+bool unprivateAmountPermitted(double she) => she.isFinite && she > 0;
+
 /// 1-based epoch day. The first 24h is day 1. Never returns 0.
 int reserveDayOfEpoch({
   required int epochStartMs,
@@ -597,6 +604,7 @@ Future<ReserveDepositResult> postReserveDeposit({
   required int depth,
   Uint8List? spendSeed,
   bool local = true,
+  bool allowPublicHttp = false,
 }) async {
   if (she <= 0 || !isDestAddress(dest)) {
     return const ReserveDepositResult(posted: false, remark: 'bad_amount');
@@ -644,7 +652,7 @@ Future<ReserveDepositResult> postReserveDeposit({
       restFrame: restFrame,
       paymentCode: paymentCode,
       spendSeed: spendSeed,
-      allowPublicHttp: true,
+      allowPublicHttp: allowPublicHttp,
       paintedCover: gap > 1e-12,
     );
     final err = reserve.deposit(
@@ -714,7 +722,7 @@ Future<ReserveVoteResult> commandReserveVote({
   required int depth,
   Uint8List? spendSeed,
   bool local = true,
-  bool privacyHopUp = false,
+  bool allowPublicHttp = false,
   int? nowMs,
 }) async {
   final gate = reserveVoteGate(ledger, reserve, dest);
@@ -749,8 +757,7 @@ Future<ReserveVoteResult> commandReserveVote({
       local: local,
       kind: 'vote',
       programId: kReserveProgram,
-      privacyHopUp: privacyHopUp,
-      allowPublicHttp: true,
+      allowPublicHttp: allowPublicHttp,
       restFrame: restFrame,
       paymentCode: paymentCode,
       choice: choice,

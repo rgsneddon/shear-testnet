@@ -21,6 +21,10 @@ GUI Closure Export and CLI `shear backup` write the same encrypted `shewall.bin`
 
 Historical pins below were cut on `rgsneddon/shear-testnet`. New pins (0.34+) attach here. Missing Windows on some old tags is leftover — **0.34 and later must not ship without every platform executable.**
 
+## privacy hop removed
+
+The wallet no longer dials a privacy hop. A public node sees your IP with a send, deposit, portal, and vote. Use a VPN or a local node. There is no relay.
+
 ## 0.71 (current)
 
 Book `shear-testnet-v11`. Public tag **0.71** (store `0.71.0+96`). Spendable is the opened coins a send can use. Android has no P2P option and no full-node option. Node pin **Shear Sentinel v18** (product 18.0) is tag `v18`. This cut has no macOS disk image and no macOS node zip. Do not invent either from Windows. Git tag `v17` stays. Git tag `v16` stays on the same commit as tag `0.66`. Tags **0.70**, **0.69**, and **0.68** stay. Do not `--clobber`. ShearK stays **2.8**.
@@ -69,27 +73,27 @@ A transfer stays in the Continuum pending section until it has 6 confirmations. 
 
 ## 0.48
 
-Tip sync asks local RPC, local pool, and the public pool together, with a 5s budget on each seed. A refused loopback no longer hides the live height. `shear_wallet --print-tip <file>` writes that height and exits. Reserve stays the unprivate VPN / IP confirm. There is no privacy hop. Public tag **0.48** (store `0.48.0+70`). ShearK pin stays **2.5**. Tag 0.47 packs were not replaced. macOS `.dmg` stays the MacBook handoff (`MACBOOK-HANDOFF.md`).
+Tip sync asks local RPC, local pool, and the public pool together, with a 5s budget on each seed. A refused loopback no longer hides the live height. `shear_wallet --print-tip <file>` writes that height and exits. Reserve stays the unprivate VPN / IP confirm. Public tag **0.48** (store `0.48.0+70`). ShearK pin stays **2.5**. Tag 0.47 packs were not replaced. macOS `.dmg` stays the MacBook handoff (`MACBOOK-HANDOFF.md`).
 
 ## 0.47
 
-Reserve send is the unprivate path. Vortex says a send shows your IP to the node and to use a VPN. Confirm **I already use a VPN / I accept exposing my IP**, then Send. There is no Shear privacy hop. A lock the chain accepts shows **Sent — please wait 6 confirmations**. Public tag **0.47** (store `0.47.0+68` on the release; tree display may read `0.47.1`). ShearK pin stays **2.5**. Tag 0.46 packs were not replaced. macOS `.dmg` stays the MacBook handoff (`MACBOOK-HANDOFF.md`).
+Reserve send is the unprivate path. Vortex says a send shows your IP to the node and to use a VPN. Confirm **I already use a VPN / I accept exposing my IP**, then Send. A lock the chain accepts shows **Sent — please wait 6 confirmations**. Public tag **0.47** (store `0.47.0+68` on the release; tree display may read `0.47.1`). ShearK pin stays **2.5**. Tag 0.46 packs were not replaced. macOS `.dmg` stays the MacBook handoff (`MACBOOK-HANDOFF.md`).
 
 ## 0.46
 
-Reserve hop fee collates a sealed note when Continuum spendable already covers 0.05 SHE plus the levy. An empty or incomplete note book no longer claims that cover. Pool HTML and other non-JSON bodies surface as `pool returned an error page (http_N)`, not a FormatException. A successful Reserve lock shows **Sent — please wait 6 confirmations**. Lock, vote, and withdraw still post the sealed public-nanos vout. Fee stays **0.05 SHE**. ShearK pin stays **2.5**. Do not recut 0.45. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`MACBOOK-HANDOFF.md`).
+The privacy hop shipped in this pin. A send collates a sealed note when Continuum spendable already covers the amount plus the levy. An empty or incomplete note book no longer claims that cover. Pool HTML and other non-JSON bodies surface as `pool returned an error page (http_N)`, not a FormatException. A successful Reserve lock shows **Sent — please wait 6 confirmations**. Lock, vote, and withdraw still post the sealed public-nanos vout. ShearK pin stays **2.5**. Do not recut 0.45. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (`MACBOOK-HANDOFF.md`).
 
 ## 0.45
 
-Privacy hop fee crypto (range proof + BP+/ADMIT) runs off the UI isolate. Android shows **Paying hop fee…** then **Connecting Privacy hop…**. Handshake budget is 15s and 3 tries. A VPN permission grant resumes connect without paying the 0.05 SHE fee again in the same session. Fee and connect failures snack the real reason and leave the hop off or in error. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. Reserve lock, vote, and withdraw post the sealed public-nanos vout the pool verifies. ShearK pin stays **2.5**. Do not recut 0.44. Android `.apk` and the Windows zip packed on Windows. Linux and Arch zips packed on the Helsinki pack host. macOS `.dmg` is a MacBook handoff (MacBook cut).
+The privacy hop shipped in this pin. Its fee proof runs off the UI isolate. The handshake budget was 15 seconds and 3 tries. Reserve lock, vote, and withdraw post the sealed public-nanos vout the pool verifies. ShearK pin stays **2.5**. Do not recut 0.44. Android `.apk` and the Windows zip packed on Windows. Linux and Arch zips packed on the Helsinki pack host. macOS `.dmg` is a MacBook handoff (MacBook cut).
 
 ## 0.44
 
-Reserve hop fee failures show the node reason instead of **not sent - try again**. Confirmed **Send without privacy hop** is not rewritten to the public-node IP warning (`allowPublicHttp` is honoured on submit). Vote uses the same allow. Fee stays **0.05 SHE** to `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6`. ShearK pin stays **2.5**. Do not recut 0.43. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (MacBook cut).
+The privacy hop shipped in this pin. A hop fee failure showed the node reason instead of **not sent - try again**. A confirmed send without the hop was not rewritten to the public-node warning. Vote used the same allow. ShearK pin stays **2.5**. Do not recut 0.43. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (MacBook cut).
 
 ## 0.43
 
-Optional Reserve Privacy hop: one tap pays **0.05 SHE** to the pool fee dest `ssa1q4ke8sdxgma3sstuf6h0lsqh08w0e8qqkf7mfv6` (ssa1, never she1), then connects residual SHEAR-HOP / EU at `<hop-host>:44044`. With hop up, Reserve Send does not need a local Shear node. Hop is optional — **Send without privacy hop** confirms **I already use a VPN / I accept exposing my IP**. Android VpnService is the residual dataplane. Light-sync tip display stays. Do not recut 0.42. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (MacBook cut).
+The optional privacy hop shipped in this pin. One tap could pay the pool fee and then connect the relay. With the hop up, Reserve Send did not need a local node. The hop was optional. Light-sync tip display stays. Do not recut 0.42. Android `.apk` packed on Windows. macOS `.dmg` is a MacBook handoff (MacBook cut).
 
 ## 0.42
 
