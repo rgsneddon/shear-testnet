@@ -18,6 +18,9 @@ const PAGES = [
   { name: 'pool', dir: 'pool/public', file: 'index.html' },
   { name: 'mempool', dir: 'mempool', file: 'index.html' },
   { name: 'team', dir: 'team', file: 'index.html' },
+  { name: 'explorer', dir: 'explorer', file: 'explorer.html' },
+  { name: 'docs', dir: 'site', file: 'docs/index.html' },
+  { name: 'pool-miner', dir: 'pool/public', file: 'miner.html' },
 ];
 
 function findChrome() {

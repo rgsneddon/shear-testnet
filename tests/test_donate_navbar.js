@@ -109,3 +109,37 @@ describe('navbar: Donate link on every Shear page', () => {
     for (const rel of CHROME.slice(1)) assert.equal(read(rel), first, rel);
   });
 });
+
+// Pages finished on live in the second DONATE round. Each must carry DONATE itself
+// (static navbar) or mount the shared chrome of its own webroot, which lists it.
+const ROUND2 = [
+  ['site/docs/index.html', 'site/shared/shear-chrome.js'],
+  ['pool/public/miner.html', 'pool/public/shared/shear-chrome.js'],
+  ['explorer/explorer.html', 'explorer/shared/shear-chrome.js'],
+  ['mempool/index.html', 'mempool/shared/shear-chrome.js'],
+  ['team/index.html', 'team/shared/shear-chrome.js'],
+];
+
+describe('navbar: DONATE on the round-2 pages', () => {
+  for (const [rel, chrome] of ROUND2) {
+    it(`${rel} shows DONATE just before DOCS`, () => {
+      assert.ok(fs.existsSync(path.join(root, rel)), `${rel}: missing`);
+      const html = read(rel);
+      const nav = staticNav(html);
+      if (nav) {
+        const labels = navLinks(nav).map((l) => l.label);
+        const i = labels.indexOf('DONATE');
+        assert.ok(i >= 0, `${rel}: static navbar has no DONATE`);
+        assert.equal(labels[i + 1], 'DOCS', `${rel}: DONATE sits just before DOCS`);
+        return;
+      }
+      assert.match(html, /id="shear-chrome-root"/, `${rel}: no static navbar and no chrome mount`);
+      assert.match(html, /shared\/shear-chrome\.js/, `${rel}: chrome mount without shear-chrome.js`);
+      for (const list of chromeLists(read(chrome))) {
+        const i = list.findIndex((l) => l.id === 'DONATE');
+        assert.ok(i >= 0, `${chrome}: no DONATE`);
+        assert.equal(list[i + 1] && list[i + 1].id, 'DOCS', `${chrome}: DONATE sits just before DOCS`);
+      }
+    });
+  }
+});
