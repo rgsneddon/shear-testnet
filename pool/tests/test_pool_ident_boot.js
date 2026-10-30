@@ -18,7 +18,7 @@ import {
   writeOperatorSpendSeed,
   POOL_SPEND_SEED_FILE,
 } from '../src/pool_ident.js';
-import { poolWithdrawTx } from '../../crypto/levy.js';
+import { handPoolWithdrawTx } from '../../tests/hand_pool_withdraw.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -138,7 +138,7 @@ describe('bootPoolOperator matching spend seed', () => {
   it('verifyPoolWithdrawBound still refuses unsigned and stolen withdraws', () => {
     const dest = ssa1();
     const poolBox = spendBox(newIdentity());
-    const unsigned = poolWithdrawTx({
+    const unsigned = handPoolWithdrawTx({
       from: poolBox.dest,
       to: dest.split('.')[0],
       nanos: PI_SHE_NANOS,
@@ -148,7 +148,7 @@ describe('bootPoolOperator matching spend seed', () => {
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ident-bound-'));
     const boot = bootPoolOperator({ dataDir: dir });
-    const hand = poolWithdrawTx({
+    const hand = handPoolWithdrawTx({
       from: boot.miner,
       to: dest,
       nanos: PI_SHE_NANOS,

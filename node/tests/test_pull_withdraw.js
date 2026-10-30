@@ -8,11 +8,11 @@ import {
   levyNanos,
   poolFeeDest,
   poolPayoutDest,
-  poolWithdrawTx,
   verifyPoolWithdrawOffchain,
   containsShe1,
 } from '../../crypto/levy.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
+import { handPoolWithdrawTx } from '../../tests/hand_pool_withdraw.js';
 import { sealCoinbaseNote } from '../../crypto/note.js';
 import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
 import { splitPot } from '../../pool/src/pool.js';
@@ -84,7 +84,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const poolBox = spendBox(newIdentity());
     const from = poolBox.dest;
     const L = levyNanos(off.nanos);
-    const tx = poolWithdrawTx({ from, to: dest, nanos: off.nanos, fee: L });
+    const tx = handPoolWithdrawTx({ from, to: dest, nanos: off.nanos, fee: L });
     signSpendTx(tx, poolBox.key);
     assert.equal(containsShe1(tx), false);
     assert.equal(JSON.stringify(tx).includes('she1'), false);
@@ -248,13 +248,13 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const dest = minerBox.dest;
     const poolBox = spendBox(newIdentity());
     const pool = poolBox.dest;
-    const unsigned = poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100 });
+    const unsigned = handPoolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100 });
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
     assert.equal(admitMempool(emptyMempool(), unsigned).reason, 'custodial_pull');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-bound-'));
     const store = createStore(dir);
     assert.equal(store.queueTx(unsigned).reason, 'custodial_pull');
-    const signed = poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100, id: 'signed-plain' });
+    const signed = handPoolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100, id: 'signed-plain' });
     signSpendTx(signed, poolBox.key);
     assert.equal(verifyPoolWithdrawBound(signed).ok, true);
     const queued = store.queueTx(signed);
