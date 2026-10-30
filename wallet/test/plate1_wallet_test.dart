@@ -843,7 +843,9 @@ void main() {
   testWidgets('a leaf locked after the wallet voted reopens the ballot and votes', (tester) async {
     final pool = SealedNotePool();
     final reserve = ShearReserve()..currentEpoch = 1;
-    final funded = await fundedSplit(tester, 0, 10, extraOther: const [10, 1, 1], pool: pool, reserve: reserve);
+    // The vote fee is a uniform draw over spendable notes. After the first
+    // lock, two 10 SHE notes remain, so one is still spendable for this lock.
+    final funded = await fundedSplit(tester, 0, 10, extraOther: const [10, 10, 1, 1], pool: pool, reserve: reserve);
     await _lockUi(tester);
     _mineAll(funded, pool);
     _censusAt(funded.ledger);
