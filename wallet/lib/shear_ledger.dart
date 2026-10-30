@@ -755,8 +755,15 @@ bool spendableNote(
   String? spendTag,
   bool ignoreConfs = false,
   bool allowBare = false,
+  bool requireBodyProof = false,
 }) {
   if (note['spent'] == true || note['reorged'] == true) return false;
+  // Ruling 6 (Russell, 28 Oct): a body this wallet has not proven against a
+  // verified header is not a coin a send can use, whatever a node says. A
+  // note opened from a read page is Pending until the body scan proves it;
+  // in body-proof mode ([requireBodyProof]) every note is.
+  if (note['readOpen'] == true && note['bodyProven'] != true) return false;
+  if (requireBodyProof && note['bodyProven'] != true) return false;
   final tag =
       (spendTag ?? note['spendTag'] ?? note['spendTagHex'])
           ?.toString()
@@ -815,6 +822,8 @@ SpendablePool poolSpendableNotes(Map<String, dynamic> input) {
     for (final d in (input['dests'] as List? ?? const [])) d.toString(),
   };
   final allowBare = input['allowBare'] == true;
+  // Ruling 6: in body-proof mode a note counts only from a proven body.
+  final bodyProof = input['bodyProof'] == true;
   final rows = <Map<String, dynamic>>[];
   final openedLocks = <Map<String, dynamic>>[];
   for (var i = 0; i < notes.length; i++) {
@@ -827,6 +836,7 @@ SpendablePool poolSpendableNotes(Map<String, dynamic> input) {
       tipMs: tipMs,
       spentTags: spentTags,
       allowBare: allowBare,
+      requireBodyProof: bodyProof,
     )) {
       continue;
     }
@@ -5936,10 +5946,7 @@ class ShearLedger implements ReadProofSink {
         if (isDestAddress(d)) keys.add(payKey(d));
       }
     }
-    for (final key in keys) {
-      if (!isDestAddress(key)) continue;
-      _spendable[key] = inventoriedNoteShe(key, sum: true);
-    }
+    _bindSpendableToNotes(keys);
   }
 
   /// Header depth is still short of the host, so a confirmation count would
@@ -9431,11 +9438,8 @@ class ShearLedger implements ReadProofSink {
   }
 
   bool _noteIsSpendable(Map<String, dynamic> n, {bool ignoreConfs = false}) {
-    if (_bodyProofRequired && n['bodyProven'] != true) return false;
-    // Ruling 6: a note opened from a read page (its value proof checked, its
-    // body not proven against a verified header) is Pending until the body
-    // scan proves it.
-    if (n['readOpen'] == true && n['bodyProven'] != true) return false;
+    // Ruling 6 is the note law's (spendableNote): a read-page note counts
+    // only once the body scan proves it, and in body-proof mode every note.
     return spendableNote(
       n,
       tip: bookTip,
@@ -9444,6 +9448,7 @@ class ShearLedger implements ReadProofSink {
       spentTags: _spentTagHex,
       spendTag: _spendTagFor(n),
       ignoreConfs: ignoreConfs,
+      requireBodyProof: _bodyProofRequired,
     );
   }
 
@@ -9601,11 +9606,15 @@ class ShearLedger implements ReadProofSink {
     return false;
   }
 
+  /// The painted figure for each dest becomes the notes a send can use there
+  /// now: the note law at the book tip, no vault lock. Never the inventory,
+  /// which also holds the unmined change a send built and every young note;
+  /// those are Pending.
   void _bindSpendableToNotes(Iterable<String> dests) {
     for (final d in dests) {
       if (!isDestAddress(d)) continue;
       final key = payKey(d);
-      _spendable[key] = inventoriedNoteShe(key, sum: true);
+      _spendable[key] = _sheOfNanos(_spendableNanosOn(key));
     }
   }
 
@@ -12548,12 +12557,10 @@ class ShearLedger implements ReadProofSink {
           'spent': n['spent'] == true,
           'reorged': n['reorged'] == true,
           'locked': n['locked'] == true,
-          // Ruling 6: once bodies are scanned, a note counts only from a body
-          // proven against a verified header; a note a read page brought in
-          // counts only once its body is proven.
-          'verified': n['verified'] == true &&
-              (!_bodyProofRequired || n['bodyProven'] == true) &&
-              (n['readOpen'] != true || n['bodyProven'] == true),
+          'verified': n['verified'] == true,
+          // Ruling 6 is applied by the note law (spendableNote) on these.
+          if (n['bodyProven'] == true) 'bodyProven': true,
+          if (n['readOpen'] == true) 'readOpen': true,
           'sealed': noteHasSealedSpendBytes(n),
           'address': (n['address'] ?? n['dest'])?.toString() ?? '',
           'height': n['height'],
@@ -12575,6 +12582,7 @@ class ShearLedger implements ReadProofSink {
       'notes': snap,
       'needShe': amount,
       'allowBare': false,
+      'bodyProof': _bodyProofRequired,
       if (needNanos != null && needNanos.isNotEmpty) 'needNanos': needNanos,
       'cap': kMaxInputsPerSend,
       'tip': bookTip,
@@ -13790,15 +13798,12 @@ class ShearLedger implements ReadProofSink {
       }
     }
     if (sendKind != 'withdraw' && spendable(src) < needShe) {
-      var fromNotes = 0.0;
-      for (final n in _notes) {
-        if (n['spent'] == true) continue;
-        if (n['address'] != src && n['dest'] != src) continue;
-        final amt = n['amount'];
-        if (amt is num) fromNotes += amt.toDouble();
-      }
+      // A stale low figure is refreshed from the notes a send can use on src
+      // now, never from every note amount on it: an unmined change note or a
+      // young note is Pending.
+      final fromNotes = _sheOfNanos(_spendableNanosOn(payKey(src)));
       if (fromNotes >= needShe) {
-        _spendable[src] = fromNotes;
+        _spendable[payKey(src)] = fromNotes;
       }
     }
     if (sendKind != 'withdraw' && spendable(src) < amount) {
@@ -13907,10 +13912,7 @@ class ShearLedger implements ReadProofSink {
               if (isDestAddress(d)) keys.add(payKey(d));
             }
           }
-          for (final key in keys) {
-            if (!isDestAddress(key)) continue;
-            _spendable[key] = inventoriedNoteShe(key, sum: true);
-          }
+          _bindSpendableToNotes(keys);
           throw StateError(hadLocal ? 'no_note' : kErrNoSealedNote);
         }
         chosen = spent;
