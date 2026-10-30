@@ -105,7 +105,9 @@ String? openingForDest({
   if (spendH == null || viewKey.isEmpty) return null;
   final vault = vaultDest(restFrame, viewKey: viewKey);
   if (vault != null && vault == from) {
-    return indexedDestOpening(spendH, closureCommit(viewKey), 0);
+    // Form B (spendHash20 ‖ closure ‖ index) links every indexed dest.
+    // It is never handed to a remote read.
+    return null;
   }
   final n = destCount < 0 ? 0 : destCount;
   for (var i = 0; i <= n; i++) {
@@ -117,7 +119,7 @@ String? openingForDest({
   for (var i = 0; i <= n; i++) {
     final d = destAtIndex(restFrame, index: i, viewKey: viewKey);
     if (d == from) {
-      return indexedDestOpening(spendH, closureCommit(viewKey), i);
+      return null;
     }
   }
   return destOpeningFromView(viewKey, spendH, 0);
