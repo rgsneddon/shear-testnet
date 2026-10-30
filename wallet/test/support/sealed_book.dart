@@ -80,6 +80,19 @@ class SealedNotePool extends ShearPoolClient {
     posts.add(body);
     return {'ok': true, 'id': body['id'] ?? 'tx-${posts.length}'};
   }
+
+  /// The lock and the vote read depth and the portal before Sign. This double
+  /// does not dial. A refused portal is not a balance and is not painted.
+  @override
+  Future<Map<String, dynamic>> mempoolPressure() async => {'depth': 0};
+
+  @override
+  Future<Map<String, dynamic>> reservePortal(String dest) async =>
+      {'ok': false, 'reason': 'refused'};
+
+  @override
+  Future<Map<String, dynamic>> nodeReserve(String dest) async =>
+      {'ok': false, 'reason': 'refused'};
 }
 
 /// A wallet at [tip] holding one real note of [nanos] on a receive dest

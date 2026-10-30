@@ -172,6 +172,70 @@ Map<String, Object?>? castWalletVotePlan({
   };
 }
 
+/// How many distinct fee notes [pickVoteFeeNotes] can pick from [notes]
+/// (one per parent tx, every parent-less note on its own).
+int countVoteFeeNotes(List<dynamic> notes) {
+  final rows = _feeNotes(notes);
+  final parents = <String>{};
+  var n = 0;
+  for (final row in rows) {
+    if (row.parent.isEmpty) {
+      n++;
+    } else if (parents.add(row.parent)) {
+      n++;
+    }
+  }
+  return n;
+}
+
+/// Heights for up to [count] more votes in [lo, hi]: each at least
+/// [voteMinSeparation] from every height in [taken] and from each other, so
+/// a wallet never has two votes in one slot. Returns as many as fit, fewer
+/// than [count] when the window is full; never null. Within each free gap
+/// the heights are a uniform spaced draw, as [castWalletVotePlan] makes.
+List<int> fitVoteHeights(int count, int lo, int hi, List<int> taken, Random random) {
+  if (count <= 0 || hi < lo) return const [];
+  final sep = voteMinSeparation;
+  final busy = [...taken]..sort();
+  // Free gaps [a, b] where a height is >= sep from every taken height.
+  final gaps = <(int, int)>[];
+  var start = lo;
+  for (final t in busy) {
+    final end = t - sep;
+    if (end >= start && start <= hi) gaps.add((start, end < hi ? end : hi));
+    if (t + sep > start) start = t + sep;
+  }
+  if (start <= hi) gaps.add((start, hi));
+  final cap = [for (final g in gaps) (g.$2 - g.$1) ~/ sep + 1];
+  final total = cap.fold<int>(0, (a, b) => a + b);
+  final want = count < total ? count : total;
+  // Spread the votes over the gaps at random, within each gap's room.
+  final per = List<int>.filled(gaps.length, 0);
+  for (var k = 0; k < want; k++) {
+    var room = 0;
+    for (var g = 0; g < gaps.length; g++) {
+      room += cap[g] - per[g];
+    }
+    var pick = random.nextInt(room);
+    for (var g = 0; g < gaps.length; g++) {
+      final left = cap[g] - per[g];
+      if (pick < left) {
+        per[g]++;
+        break;
+      }
+      pick -= left;
+    }
+  }
+  final out = <int>[];
+  for (var g = 0; g < gaps.length; g++) {
+    if (per[g] == 0) continue;
+    final hs = _planHeights(per[g], gaps[g].$1, gaps[g].$2, random);
+    if (hs != null) out.addAll(hs);
+  }
+  out.shuffle(random);
+  return out;
+}
+
 /// A missing epoch is not epoch 0. The caller fails closed.
 int? _planEpoch(Map plan) {
   if (!plan.containsKey('epoch')) return null;

@@ -12,6 +12,7 @@ import 'package:shear_wallet/shear_note.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 import 'package:shear_wallet/shear_vault_reward.dart' hide kPiSheNanos;
+import 'package:shear_wallet/shear_vote_plan.dart';
 
 /// The vote screen posts one leaf vote per plan row. The proof, the fee
 /// spend, and the window are the ones the wallet already holds. There is
@@ -95,21 +96,24 @@ void main() {
     addTearDown(() {
       if (dir.existsSync()) dir.deleteSync(recursive: true);
     });
-    File('${dir.path}${Platform.pathSeparator}vote-plan.json').writeAsStringSync(jsonEncode({
+    // The plan lives in the wallet's private plan folder (0700, the file
+    // 0600), as the app keeps it; saveWalletVotePlan is how it is written.
+    final planDir = votePlanFolder(dir.path);
+    saveWalletVotePlan(planDir, {
       'epoch': 1,
       'openHeight': open,
       'closeHeight': close,
       'txs': [
         {'leaf': 0, 'height': height, 'feeInput': feeHex},
       ],
-    }));
+    });
 
     // The recorder is the post under test. Consent is set so the public-dial
     // gate does not refuse this wire.
     final result = await castPlannedLeafVotes(
       ledger: ledger,
       reserve: reserve,
-      planDir: dir.path,
+      planDir: planDir,
       restFrame: dest,
       dest: dest,
       choice: kVoteIncrease,
@@ -146,7 +150,7 @@ void main() {
     final admit = admits.single as Map;
     expect(admit.keys.toSet(), {'blob', 'cTilde', 'spendTag'});
     final saved = jsonDecode(
-      File('${dir.path}${Platform.pathSeparator}vote-plan.json').readAsStringSync(),
+      File(votePlanPath(planDir)).readAsStringSync(),
     ) as Map;
     expect(saved['openHeight'], open);
     expect(saved['closeHeight'], close);
@@ -222,18 +226,21 @@ void main() {
     addTearDown(() {
       if (dir.existsSync()) dir.deleteSync(recursive: true);
     });
-    File('${dir.path}${Platform.pathSeparator}vote-plan.json').writeAsStringSync(jsonEncode({
+    // The plan lives in the wallet's private plan folder (0700, the file
+    // 0600), as the app keeps it; saveWalletVotePlan is how it is written.
+    final planDir = votePlanFolder(dir.path);
+    saveWalletVotePlan(planDir, {
       'epoch': 1,
       'openHeight': open,
       'closeHeight': close,
       'txs': [
         {'leaf': 0, 'height': height, 'feeInput': feeHex},
       ],
-    }));
+    });
     final result = await castPlannedLeafVotes(
       ledger: ledger,
       reserve: reserve,
-      planDir: dir.path,
+      planDir: planDir,
       restFrame: dest,
       dest: dest,
       choice: kVoteIncrease,

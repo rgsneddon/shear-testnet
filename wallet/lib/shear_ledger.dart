@@ -4758,7 +4758,8 @@ class ShearLedger implements ReadProofSink {
   int get nextLockIndex => _nextLockIndex();
 
   /// Rebuild lock leaves from the master secret and the public tranche book.
-  /// A portal the wallet already stored is left as it is.
+  /// A stored leaf stays when the tranche has no commit, or when that commit
+  /// is already this leaf. A commit for a different leaf replaces it.
   void rememberDerivedLockLeaves(Iterable<dynamic> tranches) {
     final seed = spendSeed;
     if (seed == null || seed.length != 32) return;
@@ -4770,7 +4771,8 @@ class ShearLedger implements ReadProofSink {
       if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(id)) continue;
       final epoch = raw['epoch'];
       if (epoch is int && epoch >= 0) (epochsOf[id] ??= <int>[]).add(epoch);
-      final commit = _hexToBytes(raw['commit']);
+      final rawCommit = raw['commit'];
+      final commit = rawCommit is String ? _hexToBytes(rawCommit) : null;
       if (commit != null && commit.length == 32) (commitOf[id] ??= <Uint8List>[]).add(commit);
     }
     noteChainPortals(epochsOf.keys);
@@ -4783,35 +4785,47 @@ class ShearLedger implements ReadProofSink {
       if (id == null) continue;
       final key = id.toLowerCase();
       if (!epochsOf.containsKey(key)) continue;
-      var known = false;
-      for (final note in _notes) {
-        if ((note['kind'] ?? '').toString() != 'lock') continue;
-        if (note['scalar'] == null || note['blind'] == null || note['note'] == null) continue;
-        if ((note['portalId'] ?? '').toString().toLowerCase() == key) known = true;
-      }
-      if (known) continue;
       final ownerSeed = reservePortalSpendSeed(seed, i);
       if (ownerSeed == null) continue;
       final scalar = vaultLockOwnerBytes(ownerSeed, i);
       final blind = vaultLockBlindBytes(ownerSeed, i, kPiSheNanos, 0);
       final want = commitOf[key] ?? const <Uint8List>[];
+      Map<String, dynamic>? stored;
+      for (final note in _notes) {
+        if ((note['kind'] ?? '').toString() != 'lock') continue;
+        if (note['scalar'] == null || note['blind'] == null || note['note'] == null) continue;
+        if ((note['portalId'] ?? '').toString().toLowerCase() != key) continue;
+        stored = note;
+        break;
+      }
+      if (stored != null && (want.isEmpty || _lockLeafCommitMatches(stored['note'], want))) continue;
       Uint8List? leaf;
       var unlock = 0;
       var lockEpoch = epochsOf[key]!.first;
-      for (var epoch = 0; epoch < 8; epoch++) {
-        final period = consensusUnlockPeriod(epoch);
+      // No commit: the tranche epoch is the only unlock. An empty want must
+      // not match epoch 0.
+      if (want.isEmpty) {
+        final period = consensusUnlockPeriod(lockEpoch);
         final note = vaultLeafNote(amount: kPiSheNanos, scalar: scalar, blind: blind, unlock: period);
-        if (note.length != 64) continue;
-        final commit = Uint8List.sublistView(note, 32, 64);
-        final hit = want.isEmpty || want.any((row) => _bytesEq(row, commit));
-        if (!hit) continue;
-        leaf = note;
-        unlock = period;
-        lockEpoch = epoch;
-        break;
+        if (note.length == 64) {
+          leaf = note;
+          unlock = period;
+        }
+      } else {
+        for (var epoch = 0; epoch < 8; epoch++) {
+          final period = consensusUnlockPeriod(epoch);
+          final note = vaultLeafNote(amount: kPiSheNanos, scalar: scalar, blind: blind, unlock: period);
+          if (note.length != 64) continue;
+          final commit = Uint8List.sublistView(note, 32, 64);
+          if (!want.any((row) => _bytesEq(row, commit))) continue;
+          leaf = note;
+          unlock = period;
+          lockEpoch = epoch;
+          break;
+        }
       }
       if (leaf == null) continue;
-      rememberNote({
+      final row = <String, dynamic>{
         'kind': 'lock',
         'scalar': scalar,
         'blind': blind,
@@ -4826,8 +4840,21 @@ class ShearLedger implements ReadProofSink {
         'dest20': reservePortalDest20FromSeed(seed, i),
         'vaultLock': true,
         'verified': true,
-      });
+      };
+      if (stored != null) {
+        stored.addAll(row);
+      } else {
+        rememberNote(row);
+      }
     }
+  }
+
+  /// True when [rawNote] is a 64-byte leaf whose commit is one of [want].
+  bool _lockLeafCommitMatches(Object? rawNote, List<Uint8List> want) {
+    if (rawNote is! List<int> || rawNote.length != 64) return false;
+    final bytes = rawNote is Uint8List ? rawNote : Uint8List.fromList(rawNote);
+    final have = Uint8List.sublistView(bytes, 32, 64);
+    return want.any((row) => _bytesEq(row, have));
   }
 
   /// Keep the lock note's blind. The chain drops it, and the spend needs it
@@ -9357,6 +9384,11 @@ class ShearLedger implements ReadProofSink {
     return total;
   }
 
+  /// True when [n] is a note Spendable counts now (mined, confirmed, its
+  /// body proven where that is required). A fee note for a vote is one.
+  bool isSpendableNote(Map<String, dynamic> n) =>
+      n['verified'] == true && n['spent'] != true && _noteIsSpendable(n);
+
   bool _noteIsSpendable(Map<String, dynamic> n, {bool ignoreConfs = false}) {
     if (_bodyProofRequired && n['bodyProven'] != true) return false;
     // Ruling 6: a note opened from a read page (its value proof checked, its
@@ -13314,7 +13346,49 @@ class ShearLedger implements ReadProofSink {
 
   /// Production lock. [sealSignReserveWire] funds the π leaf, the wallet FS-1
   /// prover spends the inputs, and the fund proof is bound to that body.
+  /// The lock in flight. A second lock waits for it, so it reads the next
+  /// lock index and the inputs the first one left (never the same ones).
+  Future<void>? _lockFlight;
+
   Future<ShearTx> _sendSealedLock({
+    required String from,
+    String? to,
+    required Uint8List spendSeed,
+    required int lockEpoch,
+  }) async {
+    final prior = _lockFlight;
+    final done = Completer<void>();
+    _lockFlight = done.future;
+    if (prior != null) {
+      try {
+        await prior;
+      } catch (_) {}
+    }
+    try {
+      return await _sendSealedLockNow(from: from, to: to, spendSeed: spendSeed, lockEpoch: lockEpoch);
+    } finally {
+      done.complete();
+      if (identical(_lockFlight, done.future)) _lockFlight = null;
+    }
+  }
+
+  /// This wallet's own change notes that are not Spendable yet because they
+  /// are still confirming (no height, or under 9 confirmations). Never part
+  /// of Spendable.
+  BigInt confirmingOwnChangeNanos() {
+    var n = BigInt.zero;
+    for (final note in _notes) {
+      if (note['spent'] == true || note['verified'] != true) continue;
+      if (note['changeSeed'] == null) continue;
+      if ((note['kind'] ?? '').toString() == 'lock') continue;
+      if (_noteIsSpendable(note)) continue;
+      final units = noteNanosExact(note);
+      if (units != null && units > BigInt.zero) n += units;
+    }
+    return n;
+  }
+
+  Future<ShearTx> _sendSealedLockNow({
     required String from,
     String? to,
     required Uint8List spendSeed,
@@ -13427,6 +13501,8 @@ class ShearLedger implements ReadProofSink {
         'commit': built['commit'],
         'vaultLock': true,
         'verified': true,
+        // Its confirmations until the chain read gives the leaf a height.
+        'lockTxId': id,
       });
       if (portalId.isNotEmpty) noteChainPortals([portalId]);
     }
