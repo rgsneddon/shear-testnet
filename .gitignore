@@ -42,3 +42,5 @@ deploy/nginx-*-secrets.conf
 # Operator spend seed is 0600 on the pool datadir / Desktop vault — never git.
 pool-spend.seed
 **/pool-spend.seed
+# Local agent notes: test hosts, handoff path. Never committed.
+CLAUDE.local.md

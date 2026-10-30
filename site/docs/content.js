@@ -104,6 +104,7 @@ window.SHEAR_DOCS = {
       '<tr><th>DINS-DAG</th><td><a href="https://shear.digital/docs/#/dins-dag">DINS-DAG</a> — blue set for the open round, sorted by identity. The mint is the spine pot plus the hash nanos, once. The live round is the DAG host linked from the navbar.</td></tr>' +
       '<tr><th>Miner</th><td><a href="https://shear.digital/miner/">shear.digital/miner</a> — ShearK 2.8. Separate from Continuum. Run <code>--selftest</code> once, then point it at the pool or at <code>127.0.0.1:1111</code> after your node reports <code>ibd=false</code>.</td></tr>' +
       '<tr><th>Bootstrap</th><td><a href="https://boot.shear.digital/">boot.shear.digital</a> — optional <code>latest.json</code> and <code>latest.bin</code>. A node does not pull this by itself.</td></tr>' +
+      '<tr><th>Roadmap</th><td><a href="https://shear.digital/roadmap/">shear.digital/roadmap</a> — every open row of the plan, in priority order.</td></tr>' +
       '<tr><th>Docs</th><td><a href="https://shear.digital/docs/">shear.digital/docs</a></td></tr></table>' +
       '<p>Restore uses <code>shear restore</code> on a password-sealed <code>shewall.bin</code>. It does not import a raw spend seed. Export that file from Closure before you replace an Android install. If Android says App not installed, uninstall the older debug-signed app after the export, then sideload the 0.71 APK.</p>'
   };

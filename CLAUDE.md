@@ -4,7 +4,8 @@
 - Red test first, then the fix, at the root cause. No retry, no looser test, no skip, no bypass flag.
 - Draft PRs only. No merge, deploy, cut, tag or `push --force` without Russell's GO.
 - No host IPs, pids, machine paths or secrets in commits, PR bodies or logs.
-- No tests on the laptop, p2p-a or p2p-b. Tests run on agent-box through its runner; long jobs detached, logs polled.
+- No tests on the laptop. Tests run on a test host through its runner; long jobs detached, logs polled.
+  Test hosts and their limits are listed in CLAUDE.local.md.
 - Every PR must be mergeable into its base the moment it is done. Branch every task off the CURRENT
   tip of main (`git fetch` first), unless the task says it depends on another open PR; then base the
   PR on that branch and say so at the top of the PR body. Before writing a DONE line run
@@ -14,7 +15,7 @@
   affected suite, then write the DONE line. Put "Mergeable into <base> at <base sha>: yes" in the PR
   body and in the DONE summary.
 - When a task is truly finished (pushed, suites done, PR body updated), append ONE line to
-  `agent-box:/root/claude-ci/handoff/DONE.jsonl` (`mkdir -p` the folder; append only, never rewrite):
+  the handoff file named in CLAUDE.local.md (`mkdir -p` the folder; append only, never rewrite):
 
   ```json
   {"ts":"<UTC ISO>","task":"<roadmap # / row>","pr":<n>,"branch":"<b>","tip":"<full sha>","base":"<sha>","summary":"<one line>","suite":"<before -> after>","files":["<main paths>"]}

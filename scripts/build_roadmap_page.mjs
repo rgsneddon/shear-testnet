@@ -2,11 +2,13 @@
 /**
  * Build the public roadmap page (site/roadmap/index.html) from docs/ROADMAP.md.
  *
- * Public-safe by construction: an allow-list of output columns, each cell
- * reduced to a plain token or the lead clause of the row's title, and a
- * refusal (no output at all) if anything that reaches the page looks like a
- * host, an IP, an owner note or a lane name. Rows whose status is done,
- * closed or merged drop off. Same input, same bytes.
+ * Public-safe by construction: an allow-list of output columns, each cell a
+ * plain token or the row's Public title, and a refusal (no output at all) if
+ * anything that reaches the page looks like a host, an IP, an owner note, a
+ * lane, a PR or Goal label, an email or a file path. A listed row with no
+ * Public title fails the build, and so does a status outside the vocabulary.
+ * Rows whose status is done, closed, merged, shipped or deployed drop off.
+ * Same input, same bytes.
  *
  *   node scripts/build_roadmap_page.mjs          # write the page
  *   node scripts/build_roadmap_page.mjs --check  # exit 1 if the page is stale
@@ -23,11 +25,12 @@ export const PUBLIC_COLUMNS = Object.freeze(['Priority', 'Row', 'Title', 'Status
 const SOURCE_OF = Object.freeze({
   Priority: 'Priority',
   Row: 'ID',
-  Title: 'Item',
+  Title: 'Public title',
   Status: 'Status',
   Type: 'Consensus?',
 });
 
+/** The status vocabulary. The lead word of the cell, after markdown, picks the token; anything else fails the build. */
 const STATUS_WORDS = Object.freeze({
   planned: 'planned',
   active: 'active',
@@ -38,19 +41,28 @@ const STATUS_WORDS = Object.freeze({
   merged: 'merged',
   done: 'done',
   closed: 'closed',
+  shipped: 'done',
+  deployed: 'done',
 });
 const DROPPED_STATUS = new Set(['merged', 'done', 'closed']);
 
-/** Anything matching these must never reach the page: the build refuses. */
+/** Anything matching these must never reach the page: the build refuses. Every pattern is case-insensitive. */
 const UNSAFE = [
-  /\b\d{1,3}(?:\.\d{1,3}){3}\b/, // IPv4
+  /\b\d{1,3}(?:\.\d{1,3}){3}\b/i, // IPv4
   /\b[0-9a-f]{0,4}(?::[0-9a-f]{1,4}){3,}\b/i, // IPv6-ish
   /\b(?:pid|port)\s*[=:]?\s*\d{2,}\b/i,
-  /\/root\/|\/home\/|[A-Z]:\\/,
-  /\b(?:Russell|Grok|Claude|GPT|CoS)\b/, // owner notes name agents
+  /\/root\/|\/home\/|[A-Z]:\\/i, // machine paths
+  /\b[\w.-]+(?:\/[\w.-]+)+\.(?:js|mjs|cjs|ts|dart|rs|c|h|md|json|html|css|sh|py|toml|yml|yaml)\b(?::\d+)?/i, // repo file paths
+  /\b[\w-]+\.(?:js|mjs|cjs|ts|dart|rs|c|h)\b:\d+/i, // file:line
+  /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/i, // emails
+  /\b(?:Russell|Grok|Claude|GPT|CoS)\b/i, // owner notes name agents
   /\bDesktop\b|\bhandoff\b/i, // design files and handoff notes
-  /\b(?:ssh|hetzner|vps)\b/i,
-  /github\.com|pull\/\d+|#\d{2,}/, // PR internals
+  /\b(?:ssh|hetzner|vps|contabo)\b/i,
+  /\b(?:agent-box|p2p-[a-z]|p2pnode\d*|shear-pool|dedicated-de|ubuntu-soak|fedora-soak|windows-contabo)\b/i, // host names
+  /\blanes?\b/i, // lane names
+  /\bPRs?\s*#?\d+[a-z]?\b/i, // PR labels
+  /\bGoals?\s*\d+/i, // Goal labels
+  /github\.com|pull\/\d+|#\d{2,}/i, // PR internals
 ];
 
 function stripMarkdown(s) {
@@ -61,22 +73,19 @@ function stripMarkdown(s) {
     .trim();
 }
 
-/** The lead clause of an Item cell: before the first sentence, bracket, bold note or semicolon. */
-export function titleOf(item) {
-  const text = stripMarkdown(item);
-  let lead = text.split(/\. |\s\(|;| — | – /)[0];
-  const colon = lead.indexOf(': ');
-  if (colon > 0) lead = lead.slice(0, colon);
-  lead = lead.replace(/[:.]+$/, '').trim();
-  return lead.length > 100 ? `${lead.slice(0, 99).trim()}…` : lead;
+/** The Public title cell, as written. Empty is not a title. */
+export function publicTitleOf(cell) {
+  return stripMarkdown(cell);
 }
 
+/** The status token, or null when the cell is outside the vocabulary. */
 export function statusOf(cell) {
-  const text = stripMarkdown(cell).toLowerCase();
+  const text = stripMarkdown(cell).toLowerCase().replace(/^[*_\s]+/, '');
   for (const [word, token] of Object.entries(STATUS_WORDS)) {
-    if (text === word || text.startsWith(`${word} `) || text.startsWith(`${word}(`) || text.startsWith(`${word},`)) return token;
+    if (text === word || text.startsWith(`${word} `) || text.startsWith(`${word}(`) || text.startsWith(`${word},`)
+      || text.startsWith(`${word}.`) || text.startsWith(`${word}:`) || text.startsWith(`${word};`)) return token;
   }
-  return 'other';
+  return null;
 }
 
 export function typeOf(cell) {
@@ -88,9 +97,10 @@ function priorityOf(cell) {
   return /^\d+$/.test(n) ? Number(n) : null;
 }
 
+/** Cells of one table line. A `\|` is a pipe inside a cell, not a cell border. */
 function splitRow(line) {
   const inner = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-  return inner.split('|').map((c) => c.trim());
+  return inner.split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, '|').trim());
 }
 
 /** The Rows table of docs/ROADMAP.md: header names and one object per row (every doc column, raw). */
@@ -122,12 +132,16 @@ export function publicRows({ header, rows }) {
   }
   const out = [];
   rows.forEach((row, index) => {
+    const id = stripMarkdown(row[SOURCE_OF.Row]);
     const status = statusOf(row[SOURCE_OF.Status]);
+    if (status == null) throw new Error(`roadmap: ${id} has a status outside the vocabulary: "${stripMarkdown(row[SOURCE_OF.Status])}"`);
     if (DROPPED_STATUS.has(status)) return;
+    const title = publicTitleOf(row[SOURCE_OF.Title]);
+    if (!title) throw new Error(`roadmap: ${id} is listed but has no public title`);
     const pub = {
       Priority: priorityOf(row[SOURCE_OF.Priority]),
-      Row: stripMarkdown(row[SOURCE_OF.Row]),
-      Title: titleOf(row[SOURCE_OF.Title]),
+      Row: id,
+      Title: title,
       Status: status,
       Type: typeOf(row[SOURCE_OF.Type]),
     };
@@ -146,7 +160,7 @@ function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-/** The page: the site's sub-path skeleton (as site/docs uses it), one scrollable table, the source footer. */
+/** The page: the site's sub-path skeleton, one table, the source line, the standard footer. */
 export function renderRoadmapPage(rows, { commit }) {
   const short = String(commit).slice(0, 12);
   if (!/^[0-9a-f]{12}$/.test(short)) throw new Error('roadmap: commit must be a hex sha');
@@ -166,16 +180,27 @@ export function renderRoadmapPage(rows, { commit }) {
   <link rel="stylesheet" href="../css/saas-dark.css" />
   <style>
     .roadmap-wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
-    .roadmap-scroll { overflow: auto; max-height: 70vh; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; }
-    table.roadmap { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
-    table.roadmap th, table.roadmap td { padding: 8px 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }
-    table.roadmap th { position: sticky; top: 0; background: #07090c; }
-    table.roadmap td:nth-child(1), table.roadmap td:nth-child(5) { white-space: nowrap; }
-    .roadmap-foot { margin-top: 12px; opacity: 0.75; font-size: 0.85rem; }
+    .roadmap-scroll { overflow-x: hidden; overflow-y: auto; max-height: 70vh; border: 1px solid var(--hairline-strong); border-radius: 8px; }
+    table.roadmap { table-layout: fixed; border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+    table.roadmap th, table.roadmap td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--hairline); vertical-align: top; overflow-wrap: anywhere; }
+    table.roadmap th { position: sticky; top: 0; background: var(--bg-elev); color: var(--text); }
+    table.roadmap th:nth-child(1), table.roadmap td:nth-child(1) { width: 4.5em; white-space: nowrap; }
+    table.roadmap th:nth-child(2), table.roadmap td:nth-child(2) { width: 4.5em; }
+    table.roadmap th:nth-child(4), table.roadmap td:nth-child(4) { width: 7em; }
+    table.roadmap th:nth-child(5), table.roadmap td:nth-child(5) { width: 3.5em; }
+    .roadmap-foot { margin-top: 12px; color: var(--text-dim); font-size: 0.85rem; }
+    @media (max-width: 390px) {
+      table.roadmap { font-size: 0.8rem; }
+      table.roadmap th, table.roadmap td { padding: 6px 5px; }
+      table.roadmap th:nth-child(1), table.roadmap td:nth-child(1) { width: 2.6em; }
+      table.roadmap th:nth-child(2), table.roadmap td:nth-child(2) { width: 3.2em; }
+      table.roadmap th:nth-child(4), table.roadmap td:nth-child(4) { width: 4.6em; }
+      table.roadmap th:nth-child(5), table.roadmap td:nth-child(5) { width: 2.2em; }
+    }
   </style>
 </head>
 <body>
-  <div id="shear-chrome-root" data-active="DOCS" data-brand-base="../brand/"></div>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="../brand/"></div>
   <script src="../shared/shear-chrome.js"></script>
   <main class="roadmap-wrap">
     <h1>Roadmap</h1>
@@ -190,6 +215,19 @@ ${body}
     </div>
     <p class="roadmap-foot">generated from docs/ROADMAP.md at ${short}</p>
   </main>
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
+      <nav>
+        <a href="../index.html">Home</a>
+        <a href="../network.html">Network</a>
+        <a href="../docs/index.html">Docs</a>
+        <a href="../privacy.html">Privacy</a>
+        <a href="../legal.html">Legal &amp; licences</a>
+      </nav>
+    </div>
+  </footer>
+  <script src="../shared/site-identity.js"></script>
 </body>
 </html>
 `;

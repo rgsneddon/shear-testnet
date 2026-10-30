@@ -244,7 +244,7 @@ describe('the committed roadmap page and its links', () => {
     assert.match(claude, /Test hosts and their limits are listed in CLAUDE\.local\.md\./);
     assert.match(claude, /CLAUDE\.local\.md/);
     const ignored = read('.gitignore');
-    assert.match(ignored, /^CLAUDE\.local\.md$/m);
+    assert.match(ignored, /^CLAUDE\.local\.md\r?$/m);
     const tracked = execFileSync('git', ['ls-files', '--', 'CLAUDE.local.md'], { cwd: repoRoot, encoding: 'utf8' }).trim();
     assert.equal(tracked, '', 'CLAUDE.local.md is not tracked');
   });
