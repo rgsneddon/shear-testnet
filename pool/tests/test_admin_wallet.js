@@ -84,7 +84,7 @@ describe('operator admin fee wallet', () => {
     const nav = html.match(/id="shear-nav"[\s\S]*?<\/nav>/);
     assert.ok(nav, 'admin must ship the site navbar');
     const labels = [...nav[0].matchAll(/class="nav-btn[^"]*"[^>]*>([^<]+)</g)].map((m) => m[1].trim());
-    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DONATE', 'DOCS']);
+    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'BLU', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DONATE', 'DOCS']);
     assert.equal(labels.includes('OSAdmin'), false);
     assert.match(html, /theme\.js\?v=15/);
     assert.match(html, /flagShearOsadmin\(true\)/);

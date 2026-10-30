@@ -51,7 +51,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /Owed toward/);
     assert.match(html, /id="shear-topbar"/);
     assert.match(html, /class="shear-chrome-pill">Testnet</);
-    assert.match(html, /href="https:\/\/dag\.shear\.digital\/">DAG</);
+    assert.match(html, /href="https:\/\/blunote\.shear\.digital\/">BLU</);
     assert.match(html, /SmartScreen/);
     assert.match(html, /Authenticode/);
     assert.match(html, /Run anyway/);

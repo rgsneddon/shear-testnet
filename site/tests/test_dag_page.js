@@ -13,7 +13,7 @@ function navLabels(html) {
 }
 
 describe('dag.shear.digital page', () => {
-  it('is SaaS dark, states the blue-set mint, and lists DAG in the navbar', () => {
+  it('is SaaS dark, states the blue-set mint, and lists BLU in the navbar', () => {
     assert.match(page, /data-theme="dark"/);
     assert.match(page, /Domain=\.shear\.digital/);
     assert.match(page, /saas-dark\.css/);
@@ -32,7 +32,7 @@ describe('dag.shear.digital page', () => {
     assert.match(page, /shear-testnet-v11/);
     assert.doesNotMatch(page, /shear-testnet-v6/);
     assert.match(page, /DAG is a link in the client navbar/);
-    assert.match(page, /href="https:\/\/dag\.shear\.digital\/"/);
+    assert.match(page, /href="https:\/\/blunote\.shear\.digital\/">BLU</);
     assert.match(page, /href="https:\/\/vortices\.shear\.digital\/"/);
     assert.doesNotMatch(page, /not a button in the client navbar/);
     assert.match(page, /docs\/#\/dins-dag/);
@@ -59,7 +59,7 @@ describe('dag.shear.digital page', () => {
     assert.doesNotMatch(page, /GHOSTDAG/);
     assert.doesNotMatch(page, /GH\/s|sol\/s|hashes per second/i);
     const labels = navLabels(page);
-    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DONATE', 'DOCS']);
+    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'BLU', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DONATE', 'DOCS']);
   });
 });
 
