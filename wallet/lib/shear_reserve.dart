@@ -34,6 +34,13 @@ const kVoteConfirmWait = 'Vote is waiting on 9 confirmations of the reserve lock
 /// Vote attempt while this portal's own deposits are still under π.
 const kVoteBelowPi = 'ineligible, please deposit at least Pi and wait for it to confirm';
 
+/// Standing Reserve note. Connect bare is already covered by the fluxset.
+const kReserveIpDisclaimer =
+    'Connect bare is private. DINS-DAG and the ADMITv2 fluxset cover this deposit. A tunnel is not required.';
+
+/// Any finite positive SHE amount. No magnitude ceiling.
+bool unprivateAmountPermitted(double she) => she.isFinite && she > 0;
+
 /// 1-based epoch day. The first 24h is day 1. Never returns 0.
 int reserveDayOfEpoch({
   required int epochStartMs,
@@ -714,7 +721,6 @@ Future<ReserveVoteResult> commandReserveVote({
   required int depth,
   Uint8List? spendSeed,
   bool local = true,
-  bool privacyHopUp = false,
   int? nowMs,
 }) async {
   final gate = reserveVoteGate(ledger, reserve, dest);
@@ -749,7 +755,6 @@ Future<ReserveVoteResult> commandReserveVote({
       local: local,
       kind: 'vote',
       programId: kReserveProgram,
-      privacyHopUp: privacyHopUp,
       allowPublicHttp: true,
       restFrame: restFrame,
       paymentCode: paymentCode,
