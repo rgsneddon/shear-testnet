@@ -115,26 +115,9 @@
     window.paintShearOsadmin();
   };
   window.paintShearOsadmin = function () {
-    var nav = document.getElementById('shear-nav');
-    if (!nav) return;
-    var href = cookieRead(OSADMIN_KEY).replace(/\/$/, '');
+    /* The admin link is no longer shown in the product navbar; drop any left over from an older script. */
     var el = document.getElementById('nav-osadmin');
-    if (!href) {
-      if (el && el.parentNode) el.parentNode.removeChild(el);
-      return;
-    }
-    if (!el) {
-      el = document.createElement('a');
-      el.id = 'nav-osadmin';
-      el.className = 'nav-btn';
-      el.textContent = 'OSAdmin';
-      nav.appendChild(el);
-      el.addEventListener('click', function () { setNav(false); });
-    }
-    el.href = href;
-    var here = String(location.origin + location.pathname).replace(/\/$/, '');
-    if (here === href || here.indexOf(href + '/') === 0) el.classList.add('is-on');
-    else el.classList.remove('is-on');
+    if (el && el.parentNode) el.parentNode.removeChild(el);
   };
   function bindNav() {
     var nav = document.getElementById('shear-nav');

@@ -176,7 +176,7 @@ describe('brand pages', () => {
     assert.match(theme, /onShearHost/);
     assert.match(theme, /flagShearOsadmin/);
     assert.match(theme, /paintShearOsadmin/);
-    assert.match(theme, /textContent = 'OSAdmin'/);
+    assert.doesNotMatch(theme, /textContent = 'OSAdmin'/); // admin link removed from the navbar (Russell)
     assert.match(theme, /nav-osadmin/);
     assert.doesNotMatch(theme, /textContent = 'OSadmin'/);
     const siteTheme = read('site/brand/theme.js');
