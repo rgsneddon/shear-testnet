@@ -265,7 +265,8 @@ void main() {
     expect(started, isEmpty);
     expect(side.running, isFalse);
     expect(side.listenPort, isNull);
-    expect(side.progress.toLowerCase(), isNot(contains('vpn')));
+    expect(side.progress.toLowerCase(), isNot(contains('looking for the vpn')));
+    expect(side.progress.toLowerCase(), contains('use a vpn'));
     expect(closureSpawnEnv(ClosureSendMode.localNode, android: false, dataDir: '/tmp/shear-node')['SHEAR_STRATUM'], isNull);
     expect(closureSpawnEnv(ClosureSendMode.localNode, android: false, dataDir: '/tmp/shear-node')['SHEAR_GETBLOCK_BATCH'], '1');
     expect(closureSpawnEnv(ClosureSendMode.localNodeFull, android: false, dataDir: '/tmp/shear-node')['SHEAR_STRATUM'], isNull);
