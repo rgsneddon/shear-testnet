@@ -5709,8 +5709,11 @@ void main() {
     expect(ledgerSrc, contains('Isolate.run(() => sealFlowSpendVouts(input))'));
     expect(ledgerSrc, contains('Isolate.run(() => reproveFlowSpendWire(input))'));
     final ui = File('lib/main.dart').readAsStringSync();
-    expect(ui, contains('allowPublicHttp: true'));
     expect(ui, contains('kReserveIpDisclaimer'));
+    // Shell still required a hardcoded public allow. That string left with the fee pay.
+    expect(ui, contains('allowPublicHttp: true'));
+    final reserveSrc = File('lib/shear_reserve.dart').readAsStringSync();
+    expect('allowPublicHttp: true'.allMatches(reserveSrc).length, 2);
     expect(poolFeeDest(), kPoolFeeDest);
     expect(kPoolFeeDest, startsWith('ssa1'));
   });
