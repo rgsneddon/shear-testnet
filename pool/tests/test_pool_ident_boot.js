@@ -9,7 +9,6 @@ import { randomBytes } from 'node:crypto';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { PI_SHE_NANOS } from '../../crypto/asert.js';
-import { buildAutoPayoutTx } from '../src/auto_payout.js';
 import { publicMinerTag, createPool } from '../src/pool.js';
 import { spendBox } from '../../tests/spend_box.js';
 import { verifyPoolWithdrawBound, signSpendTx } from '../../crypto/spend.js';
@@ -158,15 +157,6 @@ describe('bootPoolOperator matching spend seed', () => {
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ident-bound-'));
     const boot = bootPoolOperator({ dataDir: dir });
-    const built = buildAutoPayoutTx({
-      from: boot.miner,
-      to: dest,
-      nanos: PI_SHE_NANOS,
-      fee: 100,
-      spendKey: boot.operatorSpendKey,
-    });
-    assert.equal(built.ok, false);
-    assert.equal(built.reason, 'custodial_pull');
     const hand = poolWithdrawTx({
       from: boot.miner,
       to: dest,

@@ -78,7 +78,7 @@ describe('pool web admin is absent', () => {
     assert.doesNotMatch(mainSrc, /createAdmin\(/);
     assert.doesNotMatch(mainSrc, /SHEAR_ADMIN_HOST/);
     assert.doesNotMatch(mainSrc, /SHEAR_ADMIN_SETUP/);
-    assert.match(poolSrc, /runAutoPayoutSweep/);
+    assert.doesNotMatch(poolSrc, /runAutoPayoutSweep|sweepAutoPayouts/);
     assert.match(mainSrc, /operatorSpendKey/);
     const themes = [
       'brand/theme.js',
@@ -107,7 +107,7 @@ describe('pool web admin is absent', () => {
     const pool = createPool({ dataDir: dir, stratumPort: 0, httpPort: 0 });
     try {
       assert.equal(pool.admin, undefined);
-      assert.equal(typeof pool.runAutoPayoutSweep, 'function');
+      assert.equal(pool.runAutoPayoutSweep, undefined);
       assert.equal(typeof pool.adminOps.health, 'function');
       const heard = await pool.listen();
       assert.ok(heard.httpPort > 0);

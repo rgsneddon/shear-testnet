@@ -19,7 +19,7 @@ import { custodyPotShares } from '../src/chain.js';
 import { reconstructOwner } from '../../pool/src/wallet_api.js';
 import { createPullBook } from '../../pool/src/pull_book.js';
 import { publicMinerTag } from '../../pool/src/pool.js';
-import { potCreditAfterFeeNanos, custodialPullAllowed } from '../../pool/src/auto_payout.js';
+import { potCreditAfterFeeNanos } from '../../pool/src/auto_payout.js';
 
 function destMiner() {
   return freshStealthDest(newIdentity()).dest;
@@ -157,7 +157,6 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
     // v12 pays miners in their own coinbase notes, as reconstructOwner shows
     // above. The custodial pull book is closed on this magic (75eaca70): it
     // credits nothing and owes no auto payout, however much is offered.
-    assert.equal(custodialPullAllowed(), false);
     const book = createPullBook(path.join(dir, 'pull'));
     const tag = publicMinerTag(hasher);
     const potShare = potCreditAfterFeeNanos(BLOCK_SUBSIDY_NANOS);
@@ -173,7 +172,7 @@ describe('pool genesis seal: empty shareBatch, poolDest ≠ hasher', () => {
     );
     assert.equal(second.ok, false);
     assert.equal(second.reason, 'custodial_pull');
-    assert.deepEqual(book.dueAuto({ tipHeight: 40, need: 6 }), []);
+    assert.equal(book.dueAuto, undefined);
     assert.equal(book.view(tag, { tipHeight: 40, need: 6 }).confirmedNanos, 0);
 
     const src = fs.readFileSync(new URL('../../pool/src/pool.js', import.meta.url), 'utf8');

@@ -18,7 +18,6 @@ import {
 } from '../../crypto/asert.js';
 import { hash20FromAddress, newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { custodialPullAllowed } from '../../crypto/levy.js';
 import { noteCommitOfDest20, openedCoinbaseNanos } from '../../crypto/note.js';
 import { MAGIC_TESTNET, MAGIC_TESTNET_V12 } from '../../crypto/reserve_books.js';
 import { nonceWithShareTarget } from '../../crypto/share_batch.js';
@@ -108,7 +107,7 @@ function bookFile(dir) {
 }
 
 function assertBookEmpty(pool, dir, dests, where) {
-  assert.equal(pool.pullBook.dueAuto({ tipHeight: 80, need: 1 }).length, 0, where);
+  assert.equal(pool.pullBook.dueAuto, undefined, where);
   assert.equal(pool.pullBook.unpaidPotNanos({ tipHeight: 80, need: 1 }), 0, where);
   for (const dest of dests) {
     const tag = publicMinerTag(dest);
@@ -805,10 +804,6 @@ function productionSources(root) {
 describe('P0 072 v12 custodial pull', () => {
   it('no v12 source path reaches poolWithdrawTx', () => {
     assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
-    assert.equal(custodialPullAllowed(), false);
-    assert.equal(custodialPullAllowed(MAGIC_TESTNET), false);
-    assert.equal(custodialPullAllowed(MAGIC_TESTNET_V12), false);
-    assert.equal(custodialPullAllowed('shear-v1'), true);
 
     const ungated = 'export function leak() {\n  return poolWithdrawTx({ from: 1 });\n}\n';
     assert.throws(() => assertFileUnreachable('leak.js', ungated), /reaches poolWithdrawTx/);
@@ -1021,13 +1016,9 @@ describe('P0 072 v12 custodial pull', () => {
           assert.equal(openedPotSum, BLOCK_SUBSIDY_NANOS - fee + carry, where);
           pool.rollOpenRound();
 
-          const beforeSweep = queued.length;
-          const sent = await pool.sweepAutoPayouts();
-          assert.equal(sent.length, 0, where);
-          assert.equal(queued.length, beforeSweep, `${where} sweep reached queueTx`);
-          const again = await pool.runAutoPayoutSweep();
-          assert.equal(again.length, 0, where);
-          assert.equal(queued.length, beforeSweep, `${where} timer sweep reached queueTx`);
+          // No sweep exists to reach queueTx: miners are paid from the coinbase.
+          assert.equal(pool.sweepAutoPayouts, undefined, where);
+          assert.equal(pool.runAutoPayoutSweep, undefined, where);
           assert.equal(queued.filter(isPullTx).length, 0, where);
           assert.equal((pool.store.mempool || []).filter(isPullTx).length, 0, where);
           assertBookEmpty(pool, dir, dests, where);

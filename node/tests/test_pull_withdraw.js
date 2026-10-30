@@ -15,7 +15,6 @@ import {
 import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { sealCoinbaseNote } from '../../crypto/note.js';
 import { BLOCK_SUBSIDY_NANOS, PI_SHE_NANOS, GENESIS_BITS_PACKED, bitsForBlock } from '../../crypto/asert.js';
-import { buildAutoPayoutTx } from '../../pool/src/auto_payout.js';
 import { splitPot } from '../../pool/src/pool.js';
 import { handleWalletApi } from '../../pool/src/wallet_api.js';
 import { spendBox } from '../../tests/spend_box.js';
@@ -238,17 +237,6 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       assert.equal(got.json.ok, false);
       assert.equal(got.json.reason, 'auto_payout');
       assert.equal(got.status, 410);
-      const poolBox = spendBox(newIdentity());
-      const built = buildAutoPayoutTx({
-        from: poolBox.dest,
-        to: dest,
-        nanos: PI_SHE_NANOS,
-        fee,
-        spendKey: poolBox.key,
-      });
-      assert.equal(built.ok, false);
-      assert.equal(built.reason, 'custodial_pull');
-      assert.equal(built.tx, undefined);
     } finally {
       if (prev === undefined) delete process.env.SHEAR_POOL_WALLET_LOCK;
       else process.env.SHEAR_POOL_WALLET_LOCK = prev;
@@ -266,15 +254,6 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-bound-'));
     const store = createStore(dir);
     assert.equal(store.queueTx(unsigned).reason, 'custodial_pull');
-    const built = buildAutoPayoutTx({
-      from: pool,
-      to: dest,
-      nanos: PI_SHE_NANOS,
-      fee: 100,
-      spendKey: poolBox.key,
-    });
-    assert.equal(built.ok, false);
-    assert.equal(built.reason, 'custodial_pull');
     const signed = poolWithdrawTx({ from: pool, to: dest, nanos: PI_SHE_NANOS, fee: 100, id: 'signed-plain' });
     signSpendTx(signed, poolBox.key);
     assert.equal(verifyPoolWithdrawBound(signed).ok, true);

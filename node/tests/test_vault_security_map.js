@@ -61,7 +61,6 @@ import {
 } from '../../crypto/spend.js';
 import { GENESIS_PREV, buildTemplate, verifyBlock, digestTx } from '../src/chain.js';
 import { createStore } from '../src/store.js';
-import { adminWalletBalance } from '../../pool/src/operator_wallet.js';
 import {
   bootReserveEvm,
   callReserve,
@@ -825,12 +824,9 @@ describe('Vault Security test map', () => {
       const missing = withdrawTx({ from: who.dest, to: reserveFeeDest(), nanos: principal, id: `miss-${principal}` });
       assert.equal(verifyReservePortalOpen(missing), false);
     }
-    const src = fs.readFileSync(path.join(ROOT, 'pool/src/operator_wallet.js'), 'utf8');
-    const slice = src.slice(src.indexOf('function adminWalletBalance'), src.indexOf('function adminSpendFrom'));
-    assert.equal(/totalLocked|mintBank|reserveVault/.test(slice), false);
-    const store = { historyFor: () => [], tip: () => null };
-    const bal = adminWalletBalance(store, spendDestOf(newIdentity().spendPub), null);
-    assert.equal(bal.spendableNanos, 0);
+    // The operator balance view is gone with the custodial path: nothing
+    // pool-side reads the reserve as spendable.
+    assert.equal(fs.existsSync(path.join(ROOT, 'pool/src/operator_wallet.js')), false);
   });
 
   it('P5-d no env or pause flag halts a withdraw', () => {

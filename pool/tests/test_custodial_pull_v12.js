@@ -12,13 +12,13 @@ import {
 import { encodeDest, hash20FromAddress, newIdentity, spendDestOf } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { attachDummyOuts } from '../../crypto/dummy.js';
-import { levyNanos, poolWithdrawTx } from '../../crypto/levy.js';
+import { levyNanos } from '../../crypto/levy.js';
 import { noteCommitOfDest20, openedCoinbaseNanos } from '../../crypto/note.js';
 import { nonceWithShareTarget } from '../../crypto/share_batch.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { admitMempool, emptyMempool } from '../../crypto/mempool.js';
 import { potSharesFromBatch } from '../../node/src/chain.js';
-import { AUTO_PAYOUT_MIN_NANOS, buildAutoPayoutTx, buildPoolFeeSweepTx } from '../src/auto_payout.js';
+import { AUTO_PAYOUT_MIN_NANOS } from '../src/auto_payout.js';
 import { configuredFeeIdentity, createPool, publicMinerTag } from '../src/pool.js';
 import { spendBox } from '../../tests/spend_box.js';
 
@@ -88,24 +88,10 @@ function bitsFor(i, n) {
   return SHARE_FLOOR_BITS + (i % 3);
 }
 
-describe('v12 custodial pull stays off while coinbase still pays', () => {
-  it('builders and the sweep return before poolWithdrawTx, and queueTx refuses a sealed send', () => {
-    const auto = fs.readFileSync(new URL('../src/auto_payout.js', import.meta.url), 'utf8');
-    for (const name of ['buildAutoPayoutTx', 'buildPoolFeeSweepTx']) {
-      const at = auto.indexOf(`export function ${name}`);
-      const next = auto.indexOf('\nexport function ', at + 10);
-      const body = auto.slice(at, next > at ? next : auto.length);
-      const gate = body.indexOf("if (!custodialPullAllowed()) return { ok: false, reason: 'custodial_pull' };");
-      const call = body.indexOf('poolWithdrawTx(');
-      assert.ok(gate >= 0 && call > gate, name);
-    }
+describe('no custodial pull on any book while the coinbase pays', () => {
+  it('queueTx refuses a pool-withdraw and a bare sealed send; the queue gate comes before the store', () => {
     const poolSrc = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
-    const sweepAt = poolSrc.indexOf('async function sweepAutoPayouts');
-    const sweepEnd = poolSrc.indexOf('function queueSend', sweepAt);
-    const sweep = poolSrc.slice(sweepAt, sweepEnd);
-    const sweepGate = sweep.indexOf('if (!custodialPullAllowed()) return [];');
-    const sweepBuild = sweep.indexOf('buildAutoPayoutTx');
-    assert.ok(sweepGate >= 0 && sweepGate < sweepBuild);
+    assert.doesNotMatch(poolSrc, /sweepAutoPayouts|buildAutoPayoutTx|custodialPullAllowed/);
     const sendAt = poolSrc.indexOf('function queueSend');
     const send = poolSrc.slice(sendAt, sendAt + 900);
     const sendGate = send.indexOf('custodialPullRejected');
@@ -122,26 +108,26 @@ describe('v12 custodial pull stays off while coinbase still pays', () => {
     assert.ok(qGate >= 0 && qKind > qGate && qVerify > qGate);
     const api = fs.readFileSync(new URL('../src/wallet_api.js', import.meta.url), 'utf8');
     const live = api.indexOf("if (path === '/api/pool/withdraw' && verb === 'POST')");
-    const dead = api.indexOf("if (false && path === '/api/pool/withdraw'");
-    assert.ok(live >= 0 && dead > live);
-    const liveBody = api.slice(live, dead);
-    assert.match(liveBody, /status: 410/);
-    assert.doesNotMatch(liveBody, /poolWithdrawTx/);
+    assert.ok(live >= 0);
+    assert.match(api.slice(live, live + 400), /status: 410/);
+    assert.doesNotMatch(api, /poolWithdrawTx|if \(false && path === '\/api\/pool\/withdraw'/);
 
     const box = spendBox(newIdentity());
     const to = minerDest();
-    assert.equal(buildAutoPayoutTx({
-      from: box.dest, to, nanos: AUTO_PAYOUT_MIN_NANOS, fee: 1, spendKey: box.key,
-    }).reason, 'custodial_pull');
-    assert.equal(buildPoolFeeSweepTx({
-      from: box.dest, to, nanos: AUTO_PAYOUT_MIN_NANOS, fee: 1, spendKey: box.key,
-    }).reason, 'custodial_pull');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-pull-qtx-'));
     const pool = createPool({ dataDir: dir, stratumPort: 0, httpPort: 0, miner: FEE });
     try {
-      const signed = poolWithdrawTx({
-        from: box.dest, to, nanos: 1, fee: 0, id: 'plain-any',
-      });
+      const signed = {
+        id: 'plain-any',
+        kind: 'pool-withdraw',
+        from: box.dest,
+        to,
+        nanos: 1,
+        fee: 0,
+        sponsor: box.dest,
+        vin: [{ address: box.dest }],
+        vout: [{ address: to, nanos: 1, kind: 'pool-withdraw' }],
+      };
       signSpendTx(signed, box.key);
       const queued = pool.store.queueTx(signed);
       assert.equal(queued.ok, false);
@@ -198,14 +184,9 @@ describe('v12 custodial pull stays off while coinbase still pays', () => {
           assert.equal(view.sentNanos, 0);
           assert.equal(pool.pullBook.ledger(publicMinerTag(dest)).length, 0);
         }
-        assert.equal(pool.pullBook.dueAuto({ tipHeight: 80, need: 1 }).length, 0);
+        assert.equal(pool.pullBook.dueAuto, undefined);
+        assert.equal(pool.sweepAutoPayouts, undefined);
 
-        let calls = 0;
-        const orig = pool.store.queueTx.bind(pool.store);
-        pool.store.queueTx = (tx, opts) => {
-          calls += 1;
-          return orig(tx, opts);
-        };
         let low = 10;
         for (let round = 0; round < 2; round += 1) {
           const openJob = pool.issueJob(undefined, { force: true });
@@ -253,11 +234,6 @@ describe('v12 custodial pull stays off while coinbase still pays', () => {
           const openedPot = [...opened.entries()].filter(([k]) => k.startsWith('pot:'));
           assert.equal(openedPot.length, potPays.length);
           pool.rollOpenRound();
-          calls = 0;
-          const sent = await pool.sweepAutoPayouts();
-          assert.equal(sent.length, 0);
-          assert.equal(calls, 0);
-          assert.equal(pool.pullBook.dueAuto({ tipHeight: pool.store.tip().height, need: 1 }).length, 0);
         }
         const file = path.join(dir, 'pull-book.json');
         if (fs.existsSync(file)) {

@@ -91,7 +91,7 @@ describe('pool pull book', () => {
     assert.equal(v.pendingNanos, 0);
     assert.equal(v.dest, '');
     assert.equal(book.ledger(tag).length, 0);
-    assert.equal(book.dueAuto({ tipHeight: 40, need: 30 }).length, 0);
+    assert.equal(book.dueAuto, undefined);
   });
 
   it('a split across several miners does not land in the pull book', () => {
@@ -113,7 +113,7 @@ describe('pool pull book', () => {
     assert.equal(b.pendingNanos, 0);
     assert.equal(a.foundBlocks, 0);
     assert.equal(b.foundBlocks, 0);
-    assert.equal(book.dueAuto({ tipHeight: 40, need: 30 }).length, 0);
+    assert.equal(book.dueAuto, undefined);
     const rec = book.reconcile({ potAfterFeeNanos: pot });
     assert.equal(rec.sealsLifetime, 0);
     assert.equal(rec.potCreditsNanos, 0);
