@@ -27,11 +27,9 @@ describe('mempool lattice pending rings', () => {
     const out = mempoolLattice(store, { miners, lastJob: { height: 11, jobId: 'j1', bits: 21 } });
     assert.equal(out.ok, true);
     assert.equal(out.pendingBlock.height, 11);
-    assert.equal(out.pendingBlock.hashes, 40);
-    assert.equal(out.pendingBlock.txs[0].kind, 'hash');
-    assert.equal(out.pendingBlock.txs[0].count, 40);
-    assert.match(out.pendingBlock.txs[0].tag, /^m[0-9a-f]{8}$/);
-    assert.doesNotMatch(out.pendingBlock.txs[0].tag, /^she1/);
+    assert.equal(out.pendingBlock.hashes, 0);
+    assert.equal(out.pendingBlock.txs.some((t) => t.kind === 'hash' || t.tag), false);
+    assert.equal(JSON.stringify(out.pendingBlock).includes(dest), false);
     assert.ok(out.pending.length >= 2);
     assert.equal(out.pending[0].id, 'tx-hi');
     assert.ok(out.pending[0].priority > out.pending[1].priority);
@@ -87,15 +85,11 @@ describe('mempool lattice pending rings', () => {
     assert.equal(out.scope, 'network');
     assert.equal(out.nodesOnline, 3);
     assert.equal(out.pending.some((t) => t.id === 'peer-send'), true);
-    const row = out.pendingBlock.txs.find((t) => t.tag === 'mcafef00d');
-    assert.ok(row, 'peer miner row missing from forming hoop');
-    assert.equal(row.kind, 'hash');
-    assert.equal(row.count, 77);
-    assert.equal(row.source, 'peer');
-    assert.equal(out.pendingBlock.hashes, 77);
+    assert.equal(out.pendingBlock.txs.some((t) => t.tag === 'mcafef00d'), false);
+    assert.equal(out.pendingBlock.hashes, 0);
+    assert.equal(JSON.stringify(out).includes('mcafef00d'), false);
     assert.equal(out.pending.find((t) => t.id === 'peer-send').to, undefined);
     assert.equal(out.pending.find((t) => t.id === 'peer-send').amount, undefined);
-    assert.equal(row.amount, undefined);
     assert.doesNotMatch(JSON.stringify(out), /ssa1/);
   });
 
@@ -119,7 +113,8 @@ describe('mempool lattice pending rings', () => {
     assert.equal(out.pending.find((t) => t.id === 'net-send').weight, 3);
     assert.equal(out.pending.find((t) => t.id === 'net-send').to, undefined);
     assert.equal(out.pendingBlock.txs.some((t) => t.tag === 'm00112233'), false);
-    assert.equal(out.pendingBlock.txs.find((t) => t.tag === 'mabcdef01').count, 12);
+    assert.equal(out.pendingBlock.txs.some((t) => t.tag === 'mabcdef01'), false);
+    assert.equal(JSON.stringify(out).includes('mabcdef01'), false);
     assert.equal(out.nodesOnline, 4);
     assert.doesNotMatch(JSON.stringify(out), /ssa1/);
   });
@@ -146,8 +141,8 @@ describe('mempool lattice pending rings', () => {
     assert.equal(out.pendingBlock.hashes, 0);
     const direct = mempoolLattice(store, { miners });
     assert.equal(direct.pending.some((t) => t.id === 'pool-private'), true);
-    assert.equal(direct.pendingBlock.txs.some((t) => t.count === 40), true);
-    assert.equal(direct.pendingBlock.txs.some((t) => t.tag === 'm00112233'), true);
+    assert.equal(direct.pendingBlock.txs.some((t) => t.count === 40), false);
+    assert.equal(direct.pendingBlock.txs.some((t) => t.tag === 'm00112233'), false);
   });
 
   it('the sidecar wire carries id, kind, fee, and weight only', () => {
@@ -165,7 +160,8 @@ describe('mempool lattice pending rings', () => {
     assert.ok(wire.txs[0].weight >= 1);
     assert.equal(wire.synced, 3);
     assert.equal(wire.peers, 4);
-    assert.equal(wire.rounds[0].tag, 'mabcdef01');
+    assert.deepEqual(wire.rounds, []);
+    assert.equal(JSON.stringify(wire).includes('mabcdef01'), false);
     assert.equal(JSON.stringify(wire).includes(dest), false);
     assert.doesNotMatch(JSON.stringify(wire), /ssa1|nanos|address/);
   });
@@ -200,15 +196,15 @@ describe('mempool lattice pending rings', () => {
       assert.equal(shown.pending.some((t) => t.id === 'pool-private'), false);
       assert.equal(shown.pending.find((t) => t.id === 'net-send').fee, 4);
       assert.equal(shown.nodesOnline, 4);
-      assert.equal(shown.pendingBlock.txs.find((t) => t.tag === 'mabcdef01').count, 9);
+      assert.equal(shown.pendingBlock.txs.some((t) => t.tag === 'mabcdef01'), false);
+      assert.equal(JSON.stringify(shown).includes('mabcdef01'), false);
       assert.equal(JSON.stringify(shown).includes(dest), false);
       const stats = await fetch(`http://127.0.0.1:${heard.httpPort}/api/stats`).then((r) => r.json());
-      assert.equal(stats.gossipWorkers.length, 1);
-      assert.equal(stats.gossipWorkers[0].miner, 'mabcdef01');
-      assert.equal(stats.gossipWorkers[0].roundHashes, 9);
+      assert.deepEqual(stats.gossipWorkers, []);
+      assert.equal(JSON.stringify(stats).includes('mabcdef01'), false);
       assert.equal(stats.nodesOnline, 4);
       assert.equal(stats.hashrate, 0);
-      assert.equal(stats.networkRoundHashes, 9);
+      assert.equal(stats.networkRoundHashes, 0);
     } finally {
       pool.close();
     }

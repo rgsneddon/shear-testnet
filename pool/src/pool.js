@@ -3,7 +3,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, randomBytes, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual, createPublicKey, verify as verifyEd25519 } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { STRATUM_LINE_MAX, parseBoundedJson, HTTP_TX_BODY_MAX } from '../../crypto/json_bounds.js';
 import { Worker } from 'node:worker_threads';
@@ -524,6 +524,51 @@ export function publicMinerTag(login) {
   return `m${hex}`;
 }
 
+/**
+ * Public tag of one stratum session (FROZEN-v2 dc1e64a1 §11.4 item 12).
+ * The input is the session id (`login.` + random), never the login. Two
+ * sessions of one login therefore do not share a tag, and the tag is not
+ * publicMinerTag(login).
+ */
+export function sessionMinerTag(sessionId) {
+  const hex = createHash('sha256')
+    .update('shear-session-tag-v1')
+    .update(minerTagSalt)
+    .update(String(sessionId || '').trim())
+    .digest('hex')
+    .slice(0, 8);
+  return `m${hex}`;
+}
+
+/**
+ * Owner-token compare. Equal-length buffers, so a matching prefix is not
+ * a faster answer than a mismatch. A different length still walks a buffer.
+ */
+export function ownerTokenEquals(stored, presented) {
+  const left = Buffer.from(String(stored || ''));
+  const right = Buffer.from(String(presented || ''));
+  if (left.length !== right.length) {
+    timingSafeEqual(left, left);
+    return false;
+  }
+  return timingSafeEqual(left, right);
+}
+
+/**
+ * Ban key for a reconnect (FROZEN-v2 dc1e64a1 §11.4 item 10). Salted hash of
+ * the socket address and the login. The raw address is not stored. A second
+ * login of the same name from another address is a different key.
+ */
+export function ipSaltBanKey(ip, login, salt = minerTagSalt) {
+  return createHash('sha256')
+    .update('shear-ban-ipsalt-v1')
+    .update(Buffer.from(salt || []))
+    .update(String(ip || ''))
+    .update('\0')
+    .update(parseLogin(login))
+    .digest('hex');
+}
+
 /** Proven hashes from every miner this open round. One hash is one nano. */
 export function networkRoundHashesOf(miners, openRows = []) {
   const seen = new Set();
@@ -537,7 +582,7 @@ export function networkRoundHashesOf(miners, openRows = []) {
     const count = Math.floor(Number(roundActualHashes(m)) || 0);
     if (count < 1) continue;
     n += count;
-    seen.add(publicMinerTag(m.login || m.workerKey));
+    seen.add(sessionMinerTag(m.workerKey || m.login));
   }
   for (const r of openRows || []) {
     const tag = String(r?.tag || '').trim().toLowerCase();
@@ -555,7 +600,7 @@ export function serializeMinerRow(m) {
   const login = String(m?.login || m?.workerKey || '');
   const dest = pay || (login.startsWith('ssa1') ? login.split('.')[0] : '');
   return {
-    tag: publicMinerTag(dest || login),
+    tag: sessionMinerTag(m?.workerKey || dest || login),
     hashrate: Number(m?.hashrate || 0),
   };
 }
@@ -808,8 +853,14 @@ export function normalizeBanBook(raw, now = Date.now()) {
   const bans = [];
   for (const b of list) {
     const rec = typeof b === 'string'
-      ? { key: b, kind: 'dest', until: now + BAN_TTL_MS, strikes: 1 }
-      : { key: String(b?.key || ''), kind: String(b?.kind || 'dest'), until: Number(b?.until) || 0, strikes: Number(b?.strikes) || 1 };
+      ? { key: b, kind: 'dest', until: now + BAN_TTL_MS, strikes: 1, session: '' }
+      : {
+          key: String(b?.key || ''),
+          kind: String(b?.kind || 'dest'),
+          until: Number(b?.until) || 0,
+          strikes: Number(b?.strikes) || 1,
+          session: String(b?.session || ''),
+        };
     if (!rec.key) continue;
     if (rec.until && rec.until < now) continue;
     bans.push(rec);
@@ -1823,7 +1874,7 @@ export function adminMinerView(m, now = Date.now()) {
     if (Number.isFinite(n) && n > 0) bits.push(n);
   }
   return {
-    tag: publicMinerTag(m?.login || m?.workerKey),
+    tag: sessionMinerTag(m?.workerKey || m?.login),
     worker: publicWorkerName(m?.workerKey || m?.login),
     dest: parseLogin(m?.login || m?.workerKey),
     workerKey: String(m?.workerKey || m?.login || ''),
@@ -2171,20 +2222,35 @@ export function createPool({
   let restarting = false;
   const banPath = path.join(dataDir, 'pool-bans.json');
   function loadBans() {
+    const owners = new Map();
     try {
       const j = JSON.parse(fs.readFileSync(banPath, 'utf8'));
       const book = normalizeBanBook(j);
-      return new Set(book.bans.filter((b) => b.kind !== 'ip').map((b) => b.key));
+      const set = new Set();
+      for (const b of book.bans) {
+        if (b.kind === 'ip' || !b.key) continue;
+        set.add(b.key);
+        if (b.kind === 'ipsalt' && b.session) owners.set(b.key, b.session);
+      }
+      return { set, owners };
     } catch {
-      return new Set();
+      return { set: new Set(), owners };
     }
   }
-  let bans = loadBans();
+  const loadedBans = loadBans();
+  let bans = loadedBans.set;
+  const ipBanOwner = loadedBans.owners;
   const ipStrikes = new Map();
   const ipDeniedUntil = new Map();
   function saveBans() {
     const now = Date.now();
-    const recs = [...bans].map((key) => ({ key, kind: 'dest', until: now + BAN_TTL_MS, strikes: DEST_BAN_MIN_ACCEPTS }));
+    const recs = [...bans].map((key) => ({
+      key,
+      kind: ipBanOwner.has(key) ? 'ipsalt' : 'dest',
+      session: ipBanOwner.get(key) || '',
+      until: now + BAN_TTL_MS,
+      strikes: DEST_BAN_MIN_ACCEPTS,
+    }));
     fs.writeFileSync(banPath, JSON.stringify({ version: 2, bans: recs }), { mode: 0o600 });
   }
   function isBanned(key) {
@@ -2406,7 +2472,7 @@ export function createPool({
         return {
           miner: dest,
           nonce: String(m.hashes || 0),
-          tag: publicMinerTag(m.login || dest),
+          tag: sessionMinerTag(m.workerKey || m.login || dest),
           count: roundActualHashes(m),
           proven: Number(m.roundHashes) || 0,
         };
@@ -4600,7 +4666,7 @@ export function createPool({
             [...miners.values()]
               .filter((m) => (Number(m.roundHashes) || 0) > 0 && !isCminerFeeLogin(m.login || m.workerKey))
               .map((m) => ({
-                tag: publicMinerTag(m.login || m.workerKey),
+                tag: sessionMinerTag(m.workerKey || m.login),
                 dest: hasherPayoutDest(m.login, {
                   dest: m.payoutDest,
                   height: sealedH,
@@ -4807,7 +4873,11 @@ export function createPool({
             refuse({ id: msg.id, error: adm.reason, ...extra });
             return;
           }
-          if (isBanned(adm.workerKey) || isBanned(adm.login)) {
+          if (
+            isBanned(ipSaltBanKey(sockIp(sock), adm.login))
+            || isBanned(adm.workerKey)
+            || isBanned(adm.login)
+          ) {
             refuse({ id: msg.id, error: 'banned' });
             return;
           }
@@ -4914,7 +4984,15 @@ export function createPool({
           // Idle starts when the job is on the wire. Template build is server
           // time: the hasher cannot submit a header it has not been sent.
           conn.authedAt = Date.now();
-          sock.write(line({ id: msg.id, result: { status: 'OK', ownerToken: session.ownerToken }, job: wireJob(conn.job, conn.shareBits) }));
+          sock.write(line({
+            id: msg.id,
+            result: {
+              status: 'OK',
+              ownerToken: session.ownerToken,
+              tag: sessionMinerTag(session.workerKey),
+            },
+            job: wireJob(conn.job, conn.shareBits),
+          }));
           continue;
         }
         if (method === 'stats') {
@@ -4975,7 +5053,7 @@ export function createPool({
   function publicMinerView(m, now = Date.now(), peers = []) {
     const connected = (m.connections || []).some((c) => c.sock);
     return {
-      miner: publicMinerTag(m.login || m.workerKey),
+      miner: sessionMinerTag(m.workerKey || m.login),
       worker: publicWorkerName(m.workerKey || m.login),
       version: String(m.version || ''),
       name: bloomExpletive(String(m.name || '')),
@@ -4990,7 +5068,7 @@ export function createPool({
       stale: m.stale || 0,
       blocks: Number(m.blocks) || 0,
       blocksSession: Number(m.blocks) || 0,
-      blocksLifetime: Number(pullBook.view(publicMinerTag(m.login || m.workerKey)).foundBlocks) || 0,
+      blocksLifetime: Number(pullBook.view(sessionMinerTag(m.workerKey || m.login)).foundBlocks) || 0,
       threads: m.threads || 0,
       sessions: m.sessions || (m.connections || []).length,
       connected,
@@ -5149,13 +5227,7 @@ export function createPool({
       miners: poolRows.length,
       threads: poolRows.reduce((a, m) => a + (m.threads || 0), 0),
       hashrate: poolRows.reduce((a, m) => a + (Number(m.hashrate) || 0), 0),
-      networkRoundHashes: networkRoundHashesOf(
-        miners,
-        [
-          ...(typeof store.openRoundRows === 'function' ? store.openRoundRows() : []),
-          ...(Array.isArray(networkView?.rounds) ? networkView.rounds : []),
-        ],
-      ),
+      networkRoundHashes: networkRoundHashesOf(miners, []),
       blocks: stats.blocks,
       sealsLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
       rewardIdentity: 'shareBatch-prop-after-fee',
@@ -5219,7 +5291,7 @@ export function createPool({
     const want = String(tag || '').trim().toLowerCase();
     if (!/^m[0-9a-f]{8}$/.test(want)) return [];
     return [...miners.values()].filter((m) => (
-      publicMinerTag(m.login || m.workerKey) === want
+      sessionMinerTag(m.workerKey || m.login) === want
       && isPublicMinerRow(m, now)
     ));
   }
@@ -5609,7 +5681,7 @@ export function createPool({
   function minerMatches(m, want) {
     const w = String(want || '').trim();
     if (!w) return false;
-    const tag = publicMinerTag(m.login || m.workerKey);
+    const tag = sessionMinerTag(m.workerKey || m.login);
     return tag === w
       || String(m.workerKey || '') === w
       || String(m.login || '') === w
@@ -5686,6 +5758,19 @@ export function createPool({
       const w = String(want || '').trim();
       if (!w) return { banned: false };
       bans.add(w);
+      // §11.4 item 10. The reconnect key is a salt of (address, login).
+      // The address itself is not written. Other live sessions stay up;
+      // kick matches this session only.
+      for (const m of miners.values()) {
+        if (!minerMatches(m, w)) continue;
+        for (const c of m.connections || []) {
+          const ip = sockIp(c?.sock);
+          if (!ip) continue;
+          const key = ipSaltBanKey(ip, m.login || m.workerKey);
+          bans.add(key);
+          ipBanOwner.set(key, w);
+        }
+      }
       saveBans();
       const kicked = kickMiner(w);
       return { banned: true, ...kicked };
@@ -5693,6 +5778,11 @@ export function createPool({
     unban(want) {
       const w = String(want || '').trim();
       bans.delete(w);
+      for (const [key, owner] of [...ipBanOwner]) {
+        if (owner !== w) continue;
+        bans.delete(key);
+        ipBanOwner.delete(key);
+      }
       saveBans();
       return { banned: false };
     },
@@ -5806,7 +5896,7 @@ export function createPool({
       }
       const hdr = String(req.headers.authorization || '');
       const token = hdr.slice(0, 7).toLowerCase() === 'bearer ' ? hdr.slice(7).trim() : '';
-      const rows = minerByTag(tag).filter((m) => token && m.ownerToken === token);
+      const rows = minerByTag(tag).filter((m) => ownerTokenEquals(m.ownerToken, token));
       if (!rows.length) {
         res.statusCode = 404;
         res.end(JSON.stringify({ ok: false, reason: 'unknown_miner' }));

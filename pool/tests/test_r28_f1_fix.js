@@ -113,6 +113,13 @@ function login(port, name) {
   });
 }
 
+function loginOutcome(port, name) {
+  return login(port, name).then(
+    (got) => got,
+    (err) => ({ sock: null, error: String(err.message || err) }),
+  );
+}
+
 function listen(pool) {
   return new Promise((resolve, reject) => {
     pool.stratum.listen(0, '127.0.0.1', () => {
@@ -200,10 +207,58 @@ describe('F1-FIX public pool surfaces', () => {
       const rows = pool.adminOps.miners().filter((m) => m.workerKey.startsWith(CANARY));
       assert.equal(rows.length, 2);
       assert.notEqual(rows[0].workerKey, rows[1].workerKey);
+      // N4 (§11.4 item 12). The tag is the session id, observed on the login
+      // reply. adminOps is not the source: a login-derived tag would equal
+      // publicMinerTag(CANARY) for both sockets.
+      assert.equal(typeof a.result.tag, 'string');
+      assert.equal(typeof b.result.tag, 'string');
+      assert.match(a.result.tag, /^m[0-9a-f]{8}$/);
+      assert.match(b.result.tag, /^m[0-9a-f]{8}$/);
+      assert.notEqual(a.result.tag, b.result.tag);
+      assert.notEqual(a.result.tag, publicMinerTag(CANARY));
+      assert.notEqual(b.result.tag, publicMinerTag(CANARY));
       pool.adminOps.ban(rows[0].workerKey);
       const left = pool.adminOps.miners().filter((m) => m.connected && m.workerKey.startsWith(CANARY));
       assert.equal(left.length, 1);
       assert.equal(left[0].workerKey, rows[1].workerKey);
+    } finally {
+      for (const sock of socks) {
+        try { sock.destroy(); } catch { /* closed */ }
+      }
+      try { pool.close(); } catch { /* closed */ }
+    }
+  });
+
+  it('a banned rig is refused on reconnect, and another name on that address is not', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-f1-ban-'));
+    const pool = createPool({
+      dataDir: dir,
+      stratumPort: 0,
+      httpPort: 0,
+      miner: freshStealthDest(newIdentity()).dest,
+      shareBits: 8,
+      bits: 16,
+    });
+    const socks = [];
+    try {
+      const { stratumPort } = await listen(pool);
+      const banned = await login(stratumPort, CANARY);
+      const sibling = await login(stratumPort, CANARY);
+      socks.push(banned.sock, sibling.sock);
+      const rows = pool.adminOps.miners().filter((m) => m.workerKey.startsWith(`${CANARY}.`));
+      assert.equal(rows.length, 2);
+      pool.adminOps.ban(rows[0].workerKey);
+      const left = pool.adminOps.miners().filter((m) => m.connected && m.workerKey.startsWith(`${CANARY}.`));
+      assert.equal(left.length, 1);
+      const again = await loginOutcome(stratumPort, CANARY);
+      if (again.sock) socks.push(again.sock);
+      assert.equal(again.error, 'banned');
+      const other = await login(stratumPort, OTHER);
+      socks.push(other.sock);
+      assert.equal(other.result.status, 'OK');
+      const disk = fs.readFileSync(path.join(dir, 'pool-bans.json'), 'utf8');
+      assert.equal(disk.includes('127.0.0.1'), false);
+      assert.equal(disk.includes('::ffff'), false);
     } finally {
       for (const sock of socks) {
         try { sock.destroy(); } catch { /* closed */ }
@@ -272,9 +327,11 @@ describe('F1-FIX public pool surfaces', () => {
       for (const m of pool.miners.values()) {
         if (m.login === CANARY) m.roundHashes = 9;
       }
-      const mine = pool.adminOps.miners().find((m) => String(m.workerKey).startsWith(CANARY));
-      assert.ok(mine && mine.tag, 'session tag comes from adminOps.miners()');
-      const tag = mine.tag;
+      // N4. The session tag comes from the login reply, not adminOps.
+      const tag = a.result.tag;
+      assert.equal(typeof tag, 'string');
+      assert.match(tag, /^m[0-9a-f]{8}$/);
+      assert.notEqual(tag, publicMinerTag(CANARY));
       const salted = publicMinerTag(CANARY);
       const v1 = unsaltedTag(CANARY);
       pool.setNetworkView({
@@ -364,9 +421,9 @@ describe('F1-FIX public pool surfaces', () => {
       const a = await login(stratumPort, CANARY);
       const b = await login(stratumPort, OTHER);
       socks.push(a.sock, b.sock);
-      const mine = pool.adminOps.miners().find((m) => String(m.workerKey).startsWith(CANARY));
-      assert.ok(mine && mine.tag);
-      const tag = mine.tag;
+      const tag = a.result.tag;
+      assert.equal(typeof tag, 'string');
+      assert.notEqual(tag, publicMinerTag(CANARY));
       const open = await text(httpPort, `/api/miners/${tag}`);
       const foreignTok = typeof b.result.ownerToken === 'string' && b.result.ownerToken
         ? b.result.ownerToken

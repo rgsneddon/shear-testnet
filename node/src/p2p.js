@@ -2,7 +2,6 @@ import net from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
 import { chainIndexOf, emptyChainIndex } from './chain_index.js';
 import { MAGIC_TESTNET, PRODUCT_VERSION, SAMPLE_PRUNE_CONFIRMATIONS, consensusFingerprint } from '../../crypto/asert.js';
-import { safeMinerRounds } from './network_report.js';
 import { packShareBatchBytes, unpackShareBatchBytes } from '../../crypto/pack.js';
 import {
   packHashCreditBytes,
@@ -1655,9 +1654,9 @@ export function createP2p({
   }
 
   function publishWork(rows = []) {
-    const list = safeMinerRounds(rows);
-    if (typeof store.noteOpenRound === 'function') store.noteOpenRound(list, { source: 'local' });
-    if (list.length) broadcast({ type: 'work', magic, rows: list });
+    // R28 S1. Per-miner rows are not gossiped. Calling this with a row used
+    // to broadcast {tag, count} onto the lattice.
+    void rows;
   }
 
   function locators() {
@@ -2310,15 +2309,12 @@ export function createP2p({
         type: 'mempool',
         magic,
         txs: Array.isArray(store.mempool) ? store.mempool.slice(0, 4096).map(compactTx) : [],
-        work: typeof store.openRoundRows === 'function' ? store.openRoundRows() : [],
+        work: [],
       });
       return;
     }
     if (msg.type === 'mempool') {
       for (const tx of msg.txs || []) ingestRemoteTx(tx, sock);
-      if (typeof store.noteOpenRound === 'function' && Array.isArray(msg.work)) {
-        store.noteOpenRound(msg.work, { source: 'peer', peer: peerRemoteKey(sock) });
-      }
       return;
     }
     if (msg.type === 'tx') {
@@ -2326,15 +2322,8 @@ export function createP2p({
       return;
     }
     if (msg.type === 'work') {
-      // Unproven peer rows never extend cap idle. A local publishWork still
-      // reaches direct peers; this hop is how a two-hop lattice sees that
-      // round. Only rows the store kept are relayed, and that keep is
-      // rate-limited per peer.
-      const kept = typeof store.noteOpenRound === 'function'
-        ? store.noteOpenRound(msg.rows || [], { source: 'peer', peer: peerRemoteKey(sock) })
-        : [];
-      const fresh = Array.isArray(kept) ? kept : [];
-      if (fresh.length) broadcast({ type: 'work', magic, rows: fresh }, sock);
+      // R28 S1. A non-empty per-miner row is refused: not stored, not relayed.
+      // An empty frame is the same no-op. Cap idle is not extended.
       return;
     }
     if (msg.type === 'addr') {

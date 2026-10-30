@@ -32,8 +32,6 @@ import { createRpc } from '../src/rpc.js';
 import { applySoloSubmit } from '../src/solo_stratum.js';
 import { STORE_CORRUPT_EXIT, installNodeGuards } from '../src/process_guard.js';
 import {
-  OPEN_ROUND_CAP,
-  OPEN_ROUND_PEER_RATE,
   OPEN_ROUND_PEER_TAGS,
   OPEN_ROUND_PEER_WINDOW_MS,
   createStore,
@@ -438,42 +436,21 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       }
     });
 
-    it('peer work rows are rate-limited and the open-round map is capped', () => {
+    it('peer work rows are not stored', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-open-round-'));
       const store = createStore(dir, { pruneAfter: 1_000_000 });
       const tag = (n) => `m${n.toString(16).padStart(8, '0')}`;
       const flood = [];
       for (let i = 0; i < 400; i += 1) flood.push({ tag: tag(i), count: 1 });
       const kept = store.noteOpenRound(flood, { source: 'peer', peer: '203.0.113.8' });
-      assert.equal(kept.length, OPEN_ROUND_PEER_RATE);
-      assert.equal(store.openRoundRows().length, OPEN_ROUND_PEER_RATE);
-      const again = store.noteOpenRound(flood, { source: 'peer', peer: '203.0.113.8' });
-      assert.equal(again.length, 0);
-      assert.equal(store.openRoundRows().length, OPEN_ROUND_PEER_RATE);
-      let next = OPEN_ROUND_PEER_RATE;
-      let peerN = 1;
-      while (store.openRoundRows().length < OPEN_ROUND_CAP) {
-        const batch = [];
-        for (let i = 0; i < OPEN_ROUND_PEER_RATE; i += 1) batch.push({ tag: tag(next + i), count: 1 });
-        next += OPEN_ROUND_PEER_RATE;
-        peerN += 1;
-        store.noteOpenRound(batch, { source: 'peer', peer: `198.51.100.${peerN}` });
-      }
-      assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
-      const overflow = store.noteOpenRound(
-        [{ tag: tag(900000), count: 3 }],
-        { source: 'peer', peer: '203.0.113.9' },
-      );
-      assert.equal(overflow.length, 0);
-      assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
-      assert.ok(OPEN_ROUND_PEER_TAGS < OPEN_ROUND_CAP);
+      assert.deepEqual(kept, []);
+      assert.deepEqual(store.openRoundRows(), []);
       const local = store.noteOpenRound([{ tag: tag(900001), count: 9 }], { source: 'local' });
-      assert.equal(local.length, 1);
-      assert.equal(store.openRoundRows().length, OPEN_ROUND_CAP);
-      assert.equal(store.openRoundRows().some((row) => row.tag === tag(900001) && row.count === 9), true);
+      assert.deepEqual(local, []);
+      assert.deepEqual(store.openRoundRows(), []);
     });
 
-    it('an address can take new miner tags after its work window', () => {
+    it('a later window still does not keep miner tags', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-open-round-window-'));
       const store = createStore(dir, { pruneAfter: 1_000_000 });
       const tag = (n) => `m${n.toString(16).padStart(8, '0')}`;
@@ -484,22 +461,20 @@ if (!process.argv.includes('--feed') && !process.argv.includes('--book')) {
       for (let i = 0; i < OPEN_ROUND_PEER_TAGS; i += 1) first.push({ tag: tag(i), count: 1 });
       for (let i = 0; i < OPEN_ROUND_PEER_TAGS; i += 1) second.push({ tag: tag(1000 + i), count: 2 });
       const opened = store.noteOpenRound(first, { source: 'peer', peer, now: t0 });
-      assert.equal(opened.length, OPEN_ROUND_PEER_TAGS);
-      const blocked = store.noteOpenRound(second, { source: 'peer', peer, now: t0 + 1_000 });
-      assert.equal(blocked.length, 0);
+      assert.deepEqual(opened, []);
       const rotated = store.noteOpenRound(second, {
         source: 'peer',
         peer,
         now: t0 + OPEN_ROUND_PEER_WINDOW_MS,
       });
-      assert.equal(rotated.length, OPEN_ROUND_PEER_TAGS);
-      assert.equal(rotated[0].tag, tag(1000));
-      assert.equal(store.openRoundRows().some((row) => row.tag === tag(1000) && row.count === 2), true);
+      assert.deepEqual(rotated, []);
+      assert.equal(store.openRoundRows().some((row) => row.tag === tag(1000) && row.count === 2), false);
       const bumped = store.noteOpenRound(
         [{ tag: tag(1000), count: 3 }],
         { source: 'peer', peer, now: t0 + OPEN_ROUND_PEER_WINDOW_MS + OPEN_ROUND_PEER_WINDOW_MS },
       );
-      assert.deepEqual(bumped, [{ tag: tag(1000), count: 3 }]);
+      assert.deepEqual(bumped, []);
+      assert.deepEqual(store.openRoundRows(), []);
     });
 
     it('a partial mempool insert rolls back', () => {

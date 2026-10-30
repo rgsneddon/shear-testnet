@@ -54,14 +54,6 @@ export function networkMempoolWire(store, p2p) {
     if (txs.length >= 4096) break;
   }
   const rounds = [];
-  const work = typeof store?.openRoundRows === 'function' ? store.openRoundRows() : [];
-  for (const r of work) {
-    const tag = String(r?.tag || '').toLowerCase();
-    if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
-    const count = Math.floor(Number(r.count) || 0);
-    if (count < 1) continue;
-    rounds.push({ tag, count, source: r.source === 'local' ? 'local' : 'peer' });
-  }
   const synced = typeof p2p?.syncedOnline === 'function' ? Number(p2p.syncedOnline()) || 0 : 0;
   const peers = typeof p2p?.liveOnline === 'function' ? Number(p2p.liveOnline()) || 0 : 0;
   return { txs, rounds, synced, peers };

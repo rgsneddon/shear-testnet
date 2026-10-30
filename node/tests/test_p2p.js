@@ -727,7 +727,7 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
     }
   });
 
-  it('forwards a newer miner round across a two-hop line and does not loop an equal count', async () => {
+  it('does not forward a miner round across a two-hop line', async () => {
     const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-hop-a-'));
     const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-hop-b-'));
     const dirC = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-p2p-hop-c-'));
@@ -741,20 +741,11 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       assert.equal(linked, true, 'line A-B-C did not finish the handshakes');
       const tag = 'mdeadbeef';
       a.p2p.publishWork([{ tag, count: 42, dest: 'ssa1qshouldnottravel', hashrate: 99999 }]);
-      const heard = await waitFor(() => (
-        c.store.openRoundRows().some((r) => r.tag === tag && Number(r.count) === 42)
-      ), 8000);
-      assert.equal(heard, true, 'two-hop node never stored the proven round');
-      assert.doesNotMatch(JSON.stringify(c.store.openRoundRows()), /ssa1|hashrate|shouldnottravel/);
-      a.p2p.publishWork([{ tag, count: 42 }]);
-      await new Promise((r) => setTimeout(r, 500));
-      assert.equal(c.store.openRoundRows().filter((r) => r.tag === tag).length, 1);
-      assert.equal(c.store.openRoundRows().find((r) => r.tag === tag).count, 42);
       a.p2p.publishWork([{ tag, count: 50 }]);
-      const higher = await waitFor(() => (
-        c.store.openRoundRows().some((r) => r.tag === tag && Number(r.count) === 50)
-      ), 8000);
-      assert.equal(higher, true, 'a higher proven count did not cross the hop');
+      await new Promise((r) => setTimeout(r, 400));
+      assert.deepEqual(c.store.openRoundRows(), []);
+      assert.deepEqual(b.store.openRoundRows(), []);
+      assert.equal(JSON.stringify(c.store.openRoundRows()).includes(tag), false);
     } finally {
       a.p2p.close();
       b.p2p.close();
@@ -793,11 +784,10 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
           lastPub = Date.now();
         }
         const tx = (b.store.mempool || []).some((t) => String(t.id) === 'net-send-1');
-        const work = typeof b.store.openRoundRows === 'function'
-          && b.store.openRoundRows().some((r) => r.tag === tag && Number(r.count) === 42);
-        return tx && work;
+        return tx;
       }, 15000);
-      assert.equal(saw, true, 'peer book never received send or miner row');
+      assert.equal(saw, true, 'peer book never received the send');
+      assert.deepEqual(b.store.openRoundRows(), []);
       const { mempoolLattice } = await import('../../pool/src/wallet_api.js');
       const out = mempoolLattice(b.store, {
         miners: new Map(),
@@ -806,10 +796,8 @@ describe('p2p gossip', { timeout: fileCapMs(import.meta.url) }, () => {
       });
       assert.equal(out.scope, 'network');
       assert.equal(out.pending.some((t) => t.id === 'net-send-1'), true);
-      const row = out.pendingBlock.txs.find((t) => t.tag === tag);
-      assert.ok(row, 'lattice payload missing peer miner row');
-      assert.equal(row.count, 42);
-      assert.equal(row.kind, 'hash');
+      assert.equal(out.pendingBlock.txs.some((t) => t.tag === tag), false);
+      assert.equal(JSON.stringify(out).includes(tag), false);
     } finally {
       a.p2p.close();
       b.p2p.close();
