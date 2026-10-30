@@ -853,8 +853,14 @@ export function normalizeBanBook(raw, now = Date.now()) {
   const bans = [];
   for (const b of list) {
     const rec = typeof b === 'string'
-      ? { key: b, kind: 'dest', until: now + BAN_TTL_MS, strikes: 1 }
-      : { key: String(b?.key || ''), kind: String(b?.kind || 'dest'), until: Number(b?.until) || 0, strikes: Number(b?.strikes) || 1 };
+      ? { key: b, kind: 'dest', until: now + BAN_TTL_MS, strikes: 1, session: '' }
+      : {
+          key: String(b?.key || ''),
+          kind: String(b?.kind || 'dest'),
+          until: Number(b?.until) || 0,
+          strikes: Number(b?.strikes) || 1,
+          session: String(b?.session || ''),
+        };
     if (!rec.key) continue;
     if (rec.until && rec.until < now) continue;
     bans.push(rec);
@@ -2216,20 +2222,35 @@ export function createPool({
   let restarting = false;
   const banPath = path.join(dataDir, 'pool-bans.json');
   function loadBans() {
+    const owners = new Map();
     try {
       const j = JSON.parse(fs.readFileSync(banPath, 'utf8'));
       const book = normalizeBanBook(j);
-      return new Set(book.bans.filter((b) => b.kind !== 'ip').map((b) => b.key));
+      const set = new Set();
+      for (const b of book.bans) {
+        if (b.kind === 'ip' || !b.key) continue;
+        set.add(b.key);
+        if (b.kind === 'ipsalt' && b.session) owners.set(b.key, b.session);
+      }
+      return { set, owners };
     } catch {
-      return new Set();
+      return { set: new Set(), owners };
     }
   }
-  let bans = loadBans();
+  const loadedBans = loadBans();
+  let bans = loadedBans.set;
+  const ipBanOwner = loadedBans.owners;
   const ipStrikes = new Map();
   const ipDeniedUntil = new Map();
   function saveBans() {
     const now = Date.now();
-    const recs = [...bans].map((key) => ({ key, kind: 'dest', until: now + BAN_TTL_MS, strikes: DEST_BAN_MIN_ACCEPTS }));
+    const recs = [...bans].map((key) => ({
+      key,
+      kind: ipBanOwner.has(key) ? 'ipsalt' : 'dest',
+      session: ipBanOwner.get(key) || '',
+      until: now + BAN_TTL_MS,
+      strikes: DEST_BAN_MIN_ACCEPTS,
+    }));
     fs.writeFileSync(banPath, JSON.stringify({ version: 2, bans: recs }), { mode: 0o600 });
   }
   function isBanned(key) {
@@ -4852,7 +4873,11 @@ export function createPool({
             refuse({ id: msg.id, error: adm.reason, ...extra });
             return;
           }
-          if (isBanned(adm.workerKey) || isBanned(adm.login)) {
+          if (
+            isBanned(ipSaltBanKey(sockIp(sock), adm.login))
+            || isBanned(adm.workerKey)
+            || isBanned(adm.login)
+          ) {
             refuse({ id: msg.id, error: 'banned' });
             return;
           }
@@ -5739,6 +5764,19 @@ export function createPool({
       const w = String(want || '').trim();
       if (!w) return { banned: false };
       bans.add(w);
+      // §11.4 item 10. The reconnect key is a salt of (address, login).
+      // The address itself is not written. Other live sessions stay up;
+      // kick matches this session only.
+      for (const m of miners.values()) {
+        if (!minerMatches(m, w)) continue;
+        for (const c of m.connections || []) {
+          const ip = sockIp(c?.sock);
+          if (!ip) continue;
+          const key = ipSaltBanKey(ip, m.login || m.workerKey);
+          bans.add(key);
+          ipBanOwner.set(key, w);
+        }
+      }
       saveBans();
       const kicked = kickMiner(w);
       return { banned: true, ...kicked };
@@ -5746,6 +5784,11 @@ export function createPool({
     unban(want) {
       const w = String(want || '').trim();
       bans.delete(w);
+      for (const [key, owner] of [...ipBanOwner]) {
+        if (owner !== w) continue;
+        bans.delete(key);
+        ipBanOwner.delete(key);
+      }
       saveBans();
       return { banned: false };
     },
