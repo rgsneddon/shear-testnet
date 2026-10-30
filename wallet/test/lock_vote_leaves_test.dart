@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_ctf.dart' show vaultDest;
 import 'package:shear_wallet/shear_ledger.dart';
+import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_vote_plan.dart';
 
@@ -257,4 +258,62 @@ void main() {
     final status = reserveLeafVoteStatus(ledger: v.ledger, reserve: v.reserve, planDir: v.planDir);
     expect((status.total, status.voted), (97, 96));
   }, timeout: const Timeout(Duration(minutes: 40)));
+
+  test('a vote fee\'s change still confirming says when the next lock is possible', () async {
+    final v = _voter(locks: 1, fees: 0);
+    await _lockN(v, 1);
+    _mineLocks(v);
+    _census(v);
+    expect(v.book.spendableUnits, greaterThan(kPiSheNanos));
+    expect((await _vote(v, kVoteHold)).enacted, isTrue);
+    expect(v.book.spendableUnits, 0, reason: 'the vote change is not Spendable until it confirms');
+    expect(v.ledger.confirmingOwnChangeNanos(), greaterThan(BigInt.from(kPiSheNanos)));
+    final next = await _lockPi(v);
+    expect(next.posted, isFalse);
+    expect(next.remark, kNextLockWhenChangeConfirms);
+    expect(next.remark.toLowerCase(), isNot(contains('insufficient')));
+    expect(next.remark, isNot(contains('Not enough')));
+    expect(v.book.spendableUnits, 0, reason: 'Spendable is never painted from the confirming vote change');
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
+  test('a chain leaf is not held back by a new lock that is still unmined', () async {
+    final v = _voter(locks: 1, fees: 1);
+    final portal = reservePortalIdFromSeed('', v.book.seed, 0);
+    expect(portal, isNotNull);
+    v.ledger.rememberDerivedLockLeaves([
+      {'portalId': portal, 'epoch': 1},
+    ]);
+    expect(
+      v.ledger.notes.where((n) => (n['kind'] ?? '').toString() == 'lock' && n['lockTxId'] == null),
+      isNotEmpty,
+      reason: 'the chain leaf is on the book with no lock tx',
+    );
+    final err = v.reserve.deposit(
+      dest: v.dest,
+      she: kPiSheNanos / kUnitsPerShe,
+      nowMs: DateTime.now().millisecondsSinceEpoch,
+      payout: v.book.from,
+      lockIndex: 0,
+    );
+    expect(err, isNull, reason: 'the chain leaf is already staked');
+    await _lockN(v, 1);
+    expect(reserveVoteGate(v.ledger, v.reserve, v.dest), isNull, reason: 'the chain leaf is not held for the new lock');
+    v.ledger.rememberNodeChain(bodies: [
+      {
+        'height': 2,
+        'txs': [
+          {
+            'coinbase': true,
+            'epochCensusCommit': [
+              {'epoch': 1, 'leafCount': 2, 'openHeight': 2},
+            ],
+          },
+        ],
+      },
+    ]);
+    final r = await _vote(v, kVoteHold);
+    expect(r.enacted, isTrue, reason: r.remark);
+    expect(v.votes, hasLength(1), reason: 'the chain leaf voted');
+    expect(r.remark, contains('1 of 2 leaves wait on 9 confirmations'));
+  }, timeout: const Timeout(Duration(minutes: 10)));
 }
