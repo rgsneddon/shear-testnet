@@ -281,7 +281,7 @@ void main() {
     final portal = reservePortalIdFromSeed('', v.book.seed, 0);
     expect(portal, isNotNull);
     v.ledger.rememberDerivedLockLeaves([
-      {'portalId': portal, 'epoch': 1},
+      {'portalId': portal, 'epoch': 1, 'commit': ''},
     ]);
     expect(
       v.ledger.notes.where((n) => (n['kind'] ?? '').toString() == 'lock' && n['lockTxId'] == null),
