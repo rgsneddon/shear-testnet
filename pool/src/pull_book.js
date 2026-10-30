@@ -1,8 +1,10 @@
 /**
  * The miner pull book. It credits nothing on any book: miners are paid from
  * the coinbase (R14a), so no pot share or hash bonus is held here and no
- * payout is ever due. What remains is the empty ledger the miner pages read
- * (tags, dests, found counts) and the finder record. she1 never stored.
+ * payout is ever due. What remains is the tag record the miner pages read:
+ * the payout dest a miner bound at login and the found counts an older book
+ * wrote. Credits, pulled rows and the pull clock of the custodial book are
+ * not loaded from disk and not written back. she1 never stored.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -56,11 +58,13 @@ export function createPullBook(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'pull-book.json');
   const destByTag = new Map();
-  let state = { credits: [], pulled: [], lastPullMs: {}, found: {}, finders: {} };
+  let state = { found: {} };
   let loaded = false;
   if (fs.existsSync(file)) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // Only the tag record is read. Credits, pulled rows, the pull clock and
+      // the finder rows of the custodial book are left on the floor.
       const found = {};
       if (raw?.found && typeof raw.found === 'object') {
         for (const [k, v] of Object.entries(raw.found)) {
@@ -68,37 +72,7 @@ export function createPullBook(dir) {
           if (k && n > 0) found[String(k).toLowerCase()] = n;
         }
       }
-      const finders = {};
-      if (raw?.finders && typeof raw.finders === 'object') {
-        for (const [k, v] of Object.entries(raw.finders)) {
-          const h = Math.floor(Number(k) || 0);
-          if (!(h >= 1) || !v) continue;
-          const tag = String(v.tag || '').trim().toLowerCase();
-          const worker = String(v.worker || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
-          if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
-          finders[String(h)] = { tag, worker: worker || 'worker' };
-        }
-      }
-      state = {
-        credits: Array.isArray(raw?.credits) ? raw.credits.map((c) => ({
-          tag: c.tag,
-          nanos: c.nanos,
-          height: c.height,
-          ms: c.ms,
-          kind: c.kind === 'hash' ? 'hash' : 'pot',
-          dest20: c.dest20 || '',
-        })) : [],
-        pulled: Array.isArray(raw?.pulled) ? raw.pulled.map((p) => ({
-          tag: p.tag,
-          nanos: p.nanos,
-          height: p.height,
-          ms: p.ms,
-          dest20: p.dest20 || '',
-        })) : [],
-        lastPullMs: raw?.lastPullMs && typeof raw.lastPullMs === 'object' ? raw.lastPullMs : {},
-        found,
-        finders,
-      };
+      state = { found };
       loaded = true;
       if (raw?.dests && typeof raw.dests === 'object') {
         for (const [k, v] of Object.entries(raw.dests)) {
@@ -110,50 +84,15 @@ export function createPullBook(dir) {
           }
         }
       }
-      for (const c of state.credits) {
-        if (c.tag && c.dest20 && !destByTag.get(c.tag)) destByTag.set(c.tag, destFrom20(c.dest20));
-      }
     } catch {
-      state = { credits: [], pulled: [], lastPullMs: {}, found: {}, finders: {} };
+      state = { found: {} };
     }
-  }
-
-  function uniquePotHeights() {
-    const s = new Set();
-    for (const c of state.credits) {
-      if (c.kind === 'hash') continue;
-      const h = Number(c.height) || 0;
-      if (h >= 1) s.add(h);
-    }
-    return s;
-  }
-
-  function sealsLifetime() {
-    return uniquePotHeights().size;
   }
 
   function save() {
     const disk = {
-      credits: state.credits.map((c) => ({
-        tag: c.tag,
-        nanos: c.nanos,
-        height: c.height,
-        ms: c.ms,
-        kind: c.kind === 'hash' ? 'hash' : 'pot',
-        dest20: c.dest20 || '',
-      })),
-      pulled: state.pulled.map((p) => ({
-        tag: p.tag,
-        nanos: p.nanos,
-        height: p.height,
-        ms: p.ms,
-        dest20: p.dest20 || '',
-      })),
-      lastPullMs: state.lastPullMs,
       found: state.found,
-      finders: state.finders || {},
       dests: Object.fromEntries([...destByTag].map(([k, v]) => [k, dest20Hex(v)])),
-      sealsLifetime: sealsLifetime(),
     };
     fs.writeFileSync(file, `${JSON.stringify(disk)}\n`, { mode: 0o600 });
   }
@@ -195,64 +134,20 @@ export function createPullBook(dir) {
       dest,
       destRedacted: redactSsa1(dest),
       autoPayoutMinNanos: 0,
-      foundBlocks: 0,
       oldestUnconfirmedHeight: 0,
       confirmRemain: 0,
       confirmNeed: Math.max(1, Number(need) || 1),
     };
   }
 
-  function takeConfirmed(tag, {
-    tipHeight = 0,
-    need = SPENDABLE_CONFIRMATIONS,
-    now = Date.now(),
-    amountNanos = null,
-    skipCooldown = false,
-  } = {}) {
-    const key = String(tag || '').trim().toLowerCase();
-    const v = view(key, { tipHeight, need });
-    if (!skipCooldown && v.lastPullMs && now < v.nextPullMs) {
-      return { ok: false, reason: 'cooldown', nextPullMs: v.nextPullMs };
-    }
-    if (!(v.confirmedNanos > 0)) return { ok: false, reason: 'none_confirmed' };
-    const want = amountNanos == null
-      ? v.confirmedNanos
-      : Math.floor(Number(amountNanos) || 0);
-    if (!(want > 0)) return { ok: false, reason: 'none_confirmed' };
-    if (want > v.confirmedNanos) return { ok: false, reason: 'over_unpaid' };
-    const dest = destOf(key);
-    state.pulled.push({
-      tag: key,
-      nanos: want,
-      height: tipHeight,
-      ms: now,
-      dest20: dest ? dest20Hex(dest) : '',
-    });
-    state.lastPullMs[key] = now;
-    save();
-    return { ok: true, nanos: want, dest };
-  }
-
   function destOf(tag) {
     const key = String(tag || '').trim().toLowerCase();
     if (destByTag.has(key) && destByTag.get(key)) return destByTag.get(key);
-    for (let i = state.credits.length - 1; i >= 0; i -= 1) {
-      const c = state.credits[i];
-      if (c.tag === key && c.dest20) {
-        const d = destFrom20(c.dest20);
-        if (d) {
-          destByTag.set(key, d);
-          return d;
-        }
-      }
-    }
     return '';
   }
 
   function tags() {
     const s = new Set();
-    for (const c of state.credits) if (c.tag) s.add(c.tag);
-    for (const p of state.pulled) if (p.tag) s.add(p.tag);
     for (const k of Object.keys(state.found || {})) if (k) s.add(k);
     return [...s];
   }
@@ -298,45 +193,11 @@ export function createPullBook(dir) {
     return acc;
   }
 
+  /** A tag with a found count: the one record an older book may still carry. */
   function hasTag(tag) {
     const key = String(tag || '').trim().toLowerCase();
     if (!key) return false;
-    if (Number(state.found[key]) > 0) return true;
-    if (state.lastPullMs[key]) return true;
-    for (const c of state.credits) if (c.tag === key) return true;
-    for (const p of state.pulled) if (p.tag === key) return true;
-    return false;
-  }
-
-  function reconcile({ potAfterFeeNanos = potCreditNanos() } = {}) {
-    const net = Math.max(0, Math.floor(Number(potAfterFeeNanos) || 0));
-    let potCredits = 0;
-    let hashCredits = 0;
-    const byH = new Map();
-    for (const c of state.credits) {
-      const n = Math.floor(Number(c.nanos) || 0);
-      if (c.kind === 'hash') {
-        hashCredits += n;
-        continue;
-      }
-      potCredits += n;
-      const h = Number(c.height) || 0;
-      if (h >= 1) byH.set(h, (byH.get(h) || 0) + n);
-    }
-    let attributedFee = 0;
-    for (const n of byH.values()) attributedFee += attributedPoolFeeNanos(n);
-    const seals = byH.size;
-    const expectedNet = seals * net;
-    const drift = potCredits - expectedNet;
-    return {
-      sealsLifetime: seals,
-      potCreditsNanos: potCredits,
-      hashCreditsNanos: hashCredits,
-      attributedFeeNanos: attributedFee,
-      expectedNetPotNanos: expectedNet,
-      driftNanos: drift,
-      ok: Math.abs(drift) <= seals,
-    };
+    return Number(state.found[key]) > 0;
   }
 
   /** No credit rows on any book. */
@@ -353,16 +214,8 @@ export function createPullBook(dir) {
   }
 
   if (loaded) save();
-  function finderOf(height) {
-    const h = Math.floor(Number(height) || 0);
-    if (!(h >= 1) || !state.finders) return null;
-    const row = state.finders[String(h)];
-    if (!row || !row.tag) return null;
-    return { tag: String(row.tag), worker: String(row.worker || 'worker') };
-  }
 
   return {
-    creditRound, view, viewByDest, takeConfirmed, destOf, bindDest, tags, hasTag, unpaidPotNanos,
-    ledger, sealsLifetime, reconcile, finderOf,
+    creditRound, view, viewByDest, destOf, bindDest, tags, hasTag, unpaidPotNanos, ledger,
   };
 }

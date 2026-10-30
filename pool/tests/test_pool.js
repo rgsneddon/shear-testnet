@@ -867,7 +867,7 @@ describe('public miner listing', () => {
     assert.doesNotMatch(miner, /id="m-withdraw"/);
     assert.doesNotMatch(miner, /Pull from pool/);
     assert.match(miner, /MINER_BOOT/);
-    assert.match(miner, /fmtPullShe/);
+    assert.doesNotMatch(miner, /fmtPullShe|\.withdraw-btn|\.pull-form/);
     assert.match(miner, /confirmedSentLabel/);
     assert.doesNotMatch(miner, /id="pull-login"/);
     assert.doesNotMatch(miner, /id="pull-dest"/);
@@ -1357,14 +1357,14 @@ describe('public miner listing', () => {
     });
     const json = await r.json();
     assert.equal(r.status, 410);
-    assert.equal(json.reason, 'auto_payout');
+    assert.equal(json.reason, 'custodial_pull');
     const unknown = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent('mdeadbeef')}/withdraw`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
     });
     assert.equal(unknown.status, 410);
-    assert.equal((await unknown.json()).reason, 'auto_payout');
+    assert.equal((await unknown.json()).reason, 'custodial_pull');
     const view = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`);
     const miner = await view.json();
     assert.equal(view.status, 404);

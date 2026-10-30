@@ -2266,7 +2266,6 @@ export function createPool({
       for (let i = 0; i < keys.length - 256; i += 1) delete stats.foundAtByHeight[keys[i]];
     }
   }
-  const pendingPulls = new Map();
   const idleMs = Number.isFinite(Number(noValidShareMs)) && Number(noValidShareMs) > 0
     ? Number(noValidShareMs)
     : NO_VALID_SHARE_MS;
@@ -4924,7 +4923,8 @@ export function createPool({
       stale: m.stale || 0,
       blocks: Number(m.blocks) || 0,
       blocksSession: Number(m.blocks) || 0,
-      blocksLifetime: Number(pullBook.view(publicMinerTag(m.login || m.workerKey)).foundBlocks) || 0,
+      // No lifetime record in the pull book: the session count.
+      blocksLifetime: Number(m.blocks) || 0,
       threads: m.threads || 0,
       sessions: m.sessions || (m.connections || []).length,
       connected,
@@ -5092,11 +5092,12 @@ export function createPool({
       ),
       blocks: stats.blocks,
       blocksSession: stats.blocks,
-      blocksLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
-      sealsLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
+      // The pull book keeps no seal count: miners are paid from the coinbase.
+      // The session count is the one this process has.
+      blocksLifetime: stats.blocks,
+      sealsLifetime: stats.blocks,
       rewardIdentity: 'shareBatch-prop-after-fee',
       rewardCopy: 'Rewards share the block pot by round work after the 1% pool fee — not one SHE per block you found.',
-      reconcile: typeof pullBook.reconcile === 'function' ? pullBook.reconcile() : undefined,
       accepted: stats.accepted,
       stale: stats.stale,
       circulatingNanos: supply.circulatingNanos,
@@ -5145,10 +5146,9 @@ export function createPool({
       })),
       recentTxs: poolRecentBlockTxs(store, 10).map((t) => {
         const h = Number(t?.height) || 0;
-        const stored = (typeof pullBook.finderOf === 'function') ? pullBook.finderOf(h) : null;
-        let tag = stored?.tag || '';
-        let worker = stored?.worker || '';
-        if (!tag && h >= 1) {
+        let tag = '';
+        let worker = '';
+        if (h >= 1) {
           const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
           const b = blocks.find((x) => Number(x?.height) === h);
           if (b?.miner) tag = publicMinerTag(b.miner);
@@ -5260,8 +5260,8 @@ export function createPool({
       firstSeen: views.length ? Math.min(...views.map((v) => v.firstSeen || now)) : 0,
       ...roll,
       blocksSession: Number(roll.blocks) || 0,
-      blocksLifetime: Number(pull.foundBlocks) || 0,
-      blocks: Math.max(Number(roll.blocks) || 0, Number(pull.foundBlocks) || 0),
+      blocksLifetime: Number(roll.blocks) || 0,
+      blocks: Number(roll.blocks) || 0,
       confirmRemain: Number(pull.confirmRemain) || 0,
       oldestUnconfirmedHeight: Number(pull.oldestUnconfirmedHeight) || 0,
       workers: views,
@@ -5586,7 +5586,7 @@ export function createPool({
         res.statusCode = 410;
         res.end(JSON.stringify({
           ok: false,
-          reason: 'auto_payout',
+          reason: 'custodial_pull',
           deprecated: true,
           autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
           dest: 'ssa1',
@@ -5656,7 +5656,6 @@ export function createPool({
           poolDest: miner,
           pullBook,
           queueSend,
-          pendingPulls,
         });
       } catch (err) {
         res.statusCode = 500;

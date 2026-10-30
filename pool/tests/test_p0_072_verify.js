@@ -270,15 +270,8 @@ function assertNoPullKeys(value, where) {
 }
 
 function assertStatsShowNoPull(stats, where) {
-  const rec = stats.reconcile;
-  assert.ok(rec, where);
-  assert.equal(rec.potCreditsNanos, 0, where);
-  assert.equal(rec.hashCreditsNanos, 0, where);
-  assert.equal(rec.attributedFeeNanos, 0, where);
-  assert.equal(rec.expectedNetPotNanos, 0, where);
-  assert.equal(rec.driftNanos, 0, where);
-  assert.equal(rec.sealsLifetime, 0, where);
-  assert.equal(rec.ok, true, where);
+  // Nothing to reconcile: the pull book holds no credits on any book.
+  assert.equal(stats.reconcile, undefined, where);
   assert.equal(stats.autoPayoutLastError, null, where);
   assert.equal(stats.blocksLifetime, 0, where);
   assert.equal(stats.sealsLifetime, 0, where);

@@ -1522,7 +1522,7 @@ export function parseSendNanos(body) {
   return { ok: true, nanos: null };
 }
 
-export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
+export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
   if ((path === '/api/mempoolPressure' || path === '/api/mempoolpressure') && verb === 'GET') {
@@ -2014,33 +2014,12 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
   if (path === '/api/join/claim' && verb === 'POST') {
     return { status: 404, json: { ok: false, reason: 'not_found', public: false } };
   }
-  if ((path === '/api/pool/pullPending' || path === '/api/pool/pullpending') && verb === 'GET') {
-    const login = String(url.searchParams.get('login') || url.searchParams.get('she1') || '').trim().split('.')[0];
-    const tag = String(url.searchParams.get('tag') || '').trim().toLowerCase();
-    let rec = null;
-    if (pendingPulls && typeof pendingPulls.get === 'function') {
-      if (/^m[0-9a-f]{8}$/.test(tag)) rec = pendingPulls.get(`tag:${tag}`) || null;
-      else if (login.startsWith('she1')) rec = pendingPulls.get(login.toLowerCase()) || null;
-    }
-    if (!rec && !login.startsWith('she1') && !/^m[0-9a-f]{8}$/.test(tag)) {
-      return { status: 400, json: { ok: false, reason: 'need_she1', public: false } };
-    }
-    return {
-      status: 200,
-      json: {
-        ok: true,
-        public: false,
-        pending: rec || null,
-        chainId: 2701,
-      },
-    };
-  }
   if (path === '/api/pool/withdraw' && verb === 'POST') {
     return {
       status: 410,
       json: {
         ok: false,
-        reason: 'auto_payout',
+        reason: 'custodial_pull',
         deprecated: true,
         public: false,
         dest: 'ssa1',

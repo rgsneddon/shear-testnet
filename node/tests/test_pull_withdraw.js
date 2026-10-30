@@ -133,7 +133,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
       sig: 'x',
     }, { store: { historyFor: () => [], tip: () => ({ height: 20 }), mempool: [] }, queueSend: () => ({}) });
     assert.equal(api.json.ok, false);
-    assert.equal(api.json.reason, 'auto_payout');
+    assert.equal(api.json.reason, 'custodial_pull');
     assert.equal(api.status, 410);
   });
 
@@ -235,7 +235,7 @@ describe('pool-found 0.01/0.99 and pull-withdraw', () => {
         queueSend: () => ({ ok: true }),
       });
       assert.equal(got.json.ok, false);
-      assert.equal(got.json.reason, 'auto_payout');
+      assert.equal(got.json.reason, 'custodial_pull');
       assert.equal(got.status, 410);
     } finally {
       if (prev === undefined) delete process.env.SHEAR_POOL_WALLET_LOCK;

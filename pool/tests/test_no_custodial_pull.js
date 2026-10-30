@@ -76,10 +76,10 @@ describe('no custodial pull on any book', () => {
     assert.equal(v.pendingNanos, 0);
     assert.equal(v.confirmedNanos, 0);
     assert.equal(v.sentNanos, 0);
-    assert.equal(v.foundBlocks, 0);
+    assert.equal(v.foundBlocks, undefined, 'no lifetime count from the book');
     assert.equal(book.ledger(tag).length, 0);
     assert.equal(book.unpaidPotNanos({ tipHeight: 80, need: 1 }), 0);
-    assert.equal(book.takeConfirmed(tag, { tipHeight: 80, need: 1 }).ok, false);
+    assert.equal(book.takeConfirmed, undefined, 'nothing to take');
     assert.equal(book.dueAuto, undefined, 'no payout due list');
     assert.equal(book.sweepAuto, undefined, 'no payout sweep');
     const file = path.join(dir, 'pull-book.json');
