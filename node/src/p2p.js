@@ -727,6 +727,17 @@ export function encodeWireBlock(b) {
     ...(b.blunoteRecord != null && b.blunoteRecord !== ''
       ? { blunoteRecord: Buffer.isBuffer(b.blunoteRecord) ? b.blunoteRecord.toString('hex') : String(b.blunoteRecord) }
       : {}),
+    ...(b.childProof?.coinbase ? {
+      childProof: {
+        coinbase: compactTx(b.childProof.coinbase),
+        path: (Array.isArray(b.childProof.path) ? b.childProof.path : []).map((step) => ({
+          side: step?.side,
+          hash: typeof step?.hash === 'string'
+            ? step.hash.toLowerCase()
+            : Buffer.from(step.hash).toString('hex'),
+        })),
+      },
+    } : {}),
   };
 }
 
@@ -751,6 +762,17 @@ export function decodeWireBlock(w) {
   };
   if (typeof w.blunoteRecord === 'string' && /^([0-9a-f]{2})+$/i.test(w.blunoteRecord)) {
     block.blunoteRecord = w.blunoteRecord.toLowerCase();
+  }
+  if (w.childProof && typeof w.childProof === 'object' && w.childProof.coinbase) {
+    const path = Array.isArray(w.childProof.path) ? w.childProof.path.map((step) => {
+      let hash = step?.hash;
+      if (hash && typeof hash === 'object' && typeof hash.$hex === 'string') hash = hash.$hex;
+      return { side: step?.side, hash: typeof hash === 'string' ? hash.toLowerCase() : '' };
+    }) : [];
+    block.childProof = {
+      coinbase: reviveTx(reviveDeep(w.childProof.coinbase)),
+      path,
+    };
   }
   // R28 (D2): no block carries a hash-credit column, and this encoder never
   // sends one. A peer that sends one has its copy refused as blunote_owed
