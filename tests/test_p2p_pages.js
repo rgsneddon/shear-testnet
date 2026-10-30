@@ -45,3 +45,30 @@ describe('p2p / r2r seed pages stay honest', () => {
     });
   }
 });
+
+// b2b.shear.digital does not exist, so the repo carries no b2b page or reference.
+describe('no b2b.shear.digital site', () => {
+  it('site/b2b/ is gone', () => {
+    assert.equal(fs.existsSync(path.join(root, 'site/b2b')), false);
+  });
+
+  it('template-lock.json has no b2b entry', () => {
+    const lock = JSON.parse(fs.readFileSync(path.join(root, 'site/template-lock.json'), 'utf8'));
+    for (const group of Object.values(lock)) {
+      for (const key of Object.keys(group)) assert.ok(!/b2b/i.test(key), `lock entry ${key}`);
+    }
+  });
+
+  it('no file under site/ references b2b.shear.digital', () => {
+    const hits = [];
+    (function walk(rel) {
+      for (const name of fs.readdirSync(path.join(root, rel))) {
+        const child = path.posix.join(rel, name);
+        if (name === 'node_modules') continue;
+        if (fs.statSync(path.join(root, child)).isDirectory()) walk(child);
+        else if (fs.readFileSync(path.join(root, child)).includes('b2b.shear.digital')) hits.push(child);
+      }
+    })('site');
+    assert.deepEqual(hits, []);
+  });
+});

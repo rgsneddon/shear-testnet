@@ -1,11 +1,7 @@
 {
   "pages": {
-    "site/b2b/index.html": {
-      "skeleton": "afcd825c1a4729af92c0de0a0499bd42fb8606b483e87b04902260a81914854e",
-      "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
     "site/boot/index.html": {
-      "skeleton": "86a5ac6f1ce34dbfa38f58f041912b8b40b0a43f9a47b74ee0f5614ba95c4332",
+      "skeleton": "2e97f1f3b4a2ebad95153017d41ce1c5102530245264545d7a0b4b336da5d42e",
       "style": "ae08a8afe42d313f18fcc4633a3f45f3cfc62e665bb6731060fcb610587025cc"
     },
     "dag/index.html": {

@@ -22,7 +22,7 @@ Each found block mints **1 SHE**, split among hasher dests that produced proven 
 - Node pin: **Shear Sentinel v18** (product 18.0). Windows, Linux, and Fedora zips are one release: [v18](https://github.com/rgsneddon/shear-testnet/releases/tag/v18) ([windows](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-windows.zip), [linux](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-linux.zip), [fedora](https://github.com/rgsneddon/shear-testnet/releases/download/v18/shear-node-v18-fedora.zip)). This cut has no macOS node zip, no Arch node zip, and no openSUSE node zip. Git tag `v16` stays on the same commit as tag `0.66`.
 - Previous note: [`docs/RELEASE-0.66-v16.md`](docs/RELEASE-0.66-v16.md) (PR #44 is `3dc91baf881fd570cfcfb94539cc956389655e0f`. `6054186` is quarantine.)
 - Stratum: public `stratum+ssl://pool.shear.digital:443`; cleartext migrate `pool.shear.digital:1111`; localhost solo `127.0.0.1:1111`. Port 1113 is only the pool process TLS listener. Public packets to 1113 do not arrive, so miners use 443. nginx ssl_preread sends a ShearK ClientHello (no ALPN) to that listener and keeps browser ALPN on the site.
-- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303`, `b2b.shear.digital:30303` (`shear-testnet-v11`)
+- P2P: `p2p.shear.digital:30303` (seed), `r2r.shear.digital:30303` (`shear-testnet-v11`)
 - Site: https://shear.digital
 - Docs: https://shear.digital/docs/#/surfaces
 - Pool: https://pool.shear.digital
@@ -102,7 +102,7 @@ export SHEAR_P2P_PORT=30303
 export SHEAR_P2P_BIND=0.0.0.0
 export SHEAR_RPC_PORT=18332
 export SHEAR_RPC_BIND=127.0.0.1
-export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
+export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303
 
 node node/src/node.js
 # validator only (no stratum). Pool hosts and fleet peers run the P2P sidecar:
@@ -149,4 +149,4 @@ Backup: encrypted `shewall.bin` (same file in GUI and CLI; v1 files still open a
 
 ## Secrets
 
-Never commit `SHEAR_DATA`, `admin.enc`, PEMs, or a live admin hostname. Pool admin host is `SHEAR_ADMIN_HOST` on the box only. Default seed is the hostname `p2p.shear.digital:30303` (also `r2r.shear.digital:30303`, `b2b.shear.digital:30303`) — never a raw IP in public copy.
+Never commit `SHEAR_DATA`, `admin.enc`, PEMs, or a live admin hostname. Pool admin host is `SHEAR_ADMIN_HOST` on the box only. Default seed is the hostname `p2p.shear.digital:30303` (also `r2r.shear.digital:30303`) — never a raw IP in public copy.

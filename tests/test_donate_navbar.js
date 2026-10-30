@@ -21,7 +21,6 @@ const CHROME = [
 // Pages with neither a static navbar nor a shared-chrome mount. Listed so a new page cannot skip the check silently.
 const NO_NAVBAR = new Set([
   'site/admin/index.html',
-  'site/b2b/index.html',
   'site/how-to/index.html',
   'site/p2p/index.html',
   'site/r2r/index.html',

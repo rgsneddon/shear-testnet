@@ -2,38 +2,6 @@
   "generatedFrom": "live crawl of shear.digital and public subdomains",
   "pages": [
     {
-      "url": "https://b2b.shear.digital/",
-      "file": "site/b2b/index.html"
-    },
-    {
-      "url": "https://b2b.shear.digital/brand/favicon-32.png",
-      "file": "site/b2b/index.html"
-    },
-    {
-      "url": "https://b2b.shear.digital/brand/favicon.ico",
-      "file": "site/b2b/index.html"
-    },
-    {
-      "url": "https://b2b.shear.digital/brand/nevia.css",
-      "file": "site/b2b/index.html"
-    },
-    {
-      "url": "https://b2b.shear.digital/brand/theme.css",
-      "file": "site/b2b/index.html"
-    },
-    {
-      "url": "https://b2b.shear.digital/brand/theme.js",
-      "file": "site/b2b/index.html"
-    },
-    {
-      "url": "https://b2b.shear.digital/brand/urema.css",
-      "file": "site/b2b/index.html"
-    },
-    {
-      "url": "https://b2b.shear.digital/index.html",
-      "file": "site/b2b/index.html"
-    },
-    {
       "url": "https://boot.shear.digital/",
       "file": "site/boot/index.html"
     },

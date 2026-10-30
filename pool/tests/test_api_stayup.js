@@ -51,7 +51,7 @@ describe('pool UI/API cannot vanish on restart', () => {
       assert.match(unit, /SHEAR_P2P_PORT=30303/);
       assert.match(unit, /p2p\.shear\.digital:30303/);
       assert.match(unit, /r2r\.shear\.digital:30303/);
-      assert.match(unit, /b2b\.shear\.digital:30303/);
+      assert.doesNotMatch(unit, /b2b\.shear\.digital/);
       assert.doesNotMatch(unit, /pool\/src\/main/);
       assert.doesNotMatch(unit, /SHEAR_HTTP=8088/);
       assert.doesNotMatch(unit, /SHEAR_STRATUM=1111/);
@@ -64,11 +64,10 @@ describe('pool UI/API cannot vanish on restart', () => {
     assert.match(sideUnit, /SHEAR_DATA=\/var\/lib\/shear\/testnet-v4-p2p/);
     const p2pNgx = fs.readFileSync(path.join(root, 'deploy/nginx-p2p.shear.digital.conf'), 'utf8');
     const r2rNgx = fs.readFileSync(path.join(root, 'deploy/nginx-r2r.shear.digital.conf'), 'utf8');
-    const b2bNgx = fs.readFileSync(path.join(root, 'deploy/nginx-b2b.shear.digital.conf'), 'utf8');
     assert.match(p2pNgx, /server_name p2p\.shear\.digital;/);
     assert.match(r2rNgx, /server_name r2r\.shear\.digital;/);
-    assert.match(b2bNgx, /server_name b2b\.shear\.digital;/);
-    for (const ngx of [p2pNgx, r2rNgx, b2bNgx]) {
+    assert.equal(fs.existsSync(path.join(root, 'deploy/nginx-b2b.shear.digital.conf')), false);
+    for (const ngx of [p2pNgx, r2rNgx]) {
       assert.match(ngx, /continuum-rpc-18332/);
       assert.match(ngx, /location = \/stats \{ proxy_pass http:\/\/127\.0\.0\.1:18332; \}/);
       assert.match(ngx, /location = \/api\/stats \{ proxy_pass http:\/\/127\.0\.0\.1:18332; \}/);
@@ -81,6 +80,5 @@ describe('pool UI/API cannot vanish on restart', () => {
     }
     assert.doesNotMatch(p2pNgx, /77\.42\.91\.84/);
     assert.doesNotMatch(r2rNgx, /2\.28\.8\.89/);
-    assert.doesNotMatch(b2bNgx, /178\.156\.222\.223/);
   });
 });

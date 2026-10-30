@@ -40,7 +40,6 @@ const PUBLIC = [
   'sheark-miner/README.md',
   'site/p2p/index.html',
   'site/r2r/index.html',
-  'site/b2b/index.html',
 ];
 
 describe('public copy: dest privacy and per-hasher hash bonus', () => {
@@ -154,10 +153,10 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.doesNotMatch(readme, /Chain: `shear-testnet-v2`/);
     assert.match(readme, /p2p\.shear\.digital:30303/);
     assert.match(readme, /r2r\.shear\.digital:30303/);
-    assert.match(readme, /b2b\.shear\.digital:30303/);
+    assert.doesNotMatch(readme, /b2b\.shear\.digital/);
     assert.match(joined, /p2p\.shear\.digital/);
     assert.match(joined, /r2r\.shear\.digital/);
-    assert.match(joined, /b2b\.shear\.digital/);
+    assert.doesNotMatch(joined, /b2b\.shear\.digital/);
     assert.doesNotMatch(joined, /46\.224\.132\.83/);
     assert.doesNotMatch(joined, /77\.42\.91\.84/);
     assert.doesNotMatch(joined, /157\.180\.70\.110/);
@@ -225,7 +224,7 @@ describe('public copy: dest privacy and per-hasher hash bonus', () => {
     assert.match(readme, /Headers check/);
     assert.match(readme, /node_prefix/);
     assert.match(readme, /NODE_INC=\./);
-    assert.match(docs, /p2p\.shear\.digital:30303,r2r\.shear\.digital:30303,b2b\.shear\.digital:30303/);
+    assert.match(docs, /p2p\.shear\.digital:30303,r2r\.shear\.digital:30303(?!,)/);
     assert.match(nodePage, /same shell/);
     assert.match(readme, /height=0 want=0 ibd=false/);
     assert.match(readme, /nc -vz p2p\.shear\.digital 30303/);
