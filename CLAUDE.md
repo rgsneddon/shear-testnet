@@ -13,3 +13,7 @@
   ```
 
   No line for WIP or partial pushes. No host IPs or secrets. CoS routes each line to the review lanes.
+  "Truly finished" means the agent's own work is done (pushed, suites done, body updated). It does not
+  wait for Russell's sign-off, a merge or a deploy; those come after lane review. A PR whose consensus
+  or pin change still needs sign-off gets its line when the work is done, with the open item named in
+  `summary` (e.g. "levy.js node-side diff needs Russell sign-off").
