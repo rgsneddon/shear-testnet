@@ -12,6 +12,7 @@ void main() {
       'wallet/android/app/src/main/kotlin/com/shear/shear_wallet/RptClientEngine.kt',
       'wallet/android/app/src/main/kotlin/com/shear/shear_wallet/RptObfuscation.kt',
       'wallet/android/app/src/main/kotlin/com/shear/shear_wallet/RptTrafficShape.kt',
+      'wallet/assets/hop/node_elgamal.pub',
     ];
     for (final rel in gone) {
       expect(File(_join(repo.path, rel)).existsSync(), isFalse, reason: rel);
@@ -44,6 +45,7 @@ void main() {
       RegExp(r'FOREGROUND_SERVICE'),
       RegExp(r'kHopProgress'),
       RegExp(r'Privacy hop', caseSensitive: false),
+      RegExp(r'assets/hop'),
     ];
 
     final hits = <String>[];
