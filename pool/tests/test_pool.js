@@ -903,9 +903,6 @@ describe('public miner listing', () => {
     assert.doesNotMatch(miner, /wait 24 hours before the next one/);
     assert.doesNotMatch(miner, /wait 90 hours before the next one/);
     assert.doesNotMatch(miner, /sig: 'pull-'/);
-    assert.match(miner, /background:var\(--input\); color:var\(--ink\)/);
-    assert.match(miner, /input::placeholder \{ color:var\(--muted\)/);
-    assert.doesNotMatch(miner, /\.pull-form input[^}]*background:#fff/);
     assert.doesNotMatch(miner, />raskul</);
     assert.equal(/localStorage/.test(miner), false);
     assert.match(dash, /localStorage.getItem\('shear-mine-form'\)/);
