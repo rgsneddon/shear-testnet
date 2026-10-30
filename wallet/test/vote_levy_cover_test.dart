@@ -1,9 +1,13 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shear_wallet/shear_ctf.dart' show vaultDest;
+import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_levy.dart';
 import 'package:shear_wallet/shear_reserve.dart';
+
+import 'support/sealed_book.dart';
 
 void main() {
   final levies = <int>{
@@ -57,23 +61,36 @@ void main() {
   test('the vote screen and the vote command share the levy cover', () async {
     final voteL = estimateSendLevyUnits(inputs: 1, outputs: 1);
     final need = voteL / kUnitsPerShe;
+    // Spendable is real sealed notes mined deep enough, never a backup or
+    // remembered figure (Gate 3, 25 Oct). A note is whole protocol units, so
+    // the boundary is one unit: a note one unit short of the vote levy is
+    // refused by the command, a note of exactly the levy covers it. The
+    // sub-unit dust case is spendableCoversLevy itself, in the first test.
+    final id = createIdentity();
+    final seed = seedOf(id);
+    final dest = vaultDest(id.address, viewKey: id.viewKey)!;
     final reserve = ShearReserve();
-    final dest = kPoolFeeDest;
     reserve.portal(dest).staked = kPiSheNanos;
+    ShearLedger bookOf(int units) {
+      final ledger = ShearLedger()..bindIdentity(id);
+      final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+      ledger.rememberNote(sealedNoteOn(home, seed, units, height: 1));
+      ledger.noteLiveHeight(1 + ShearLedger.spendableConfirmations);
+      ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+      ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
+      expect(
+        (ledger.spendableOwned(id.address, paymentCode: id.paymentCode) * kUnitsPerShe).round(),
+        units,
+      );
+      return ledger;
+    }
 
-    final shortBook = ShearLedger();
-    shortBook.replaceFromBackup(
-      address: dest,
-      spendable: (voteL - 1) / kUnitsPerShe,
-      pending: 0,
-      txs: const [],
-    );
-    expect(shortBook.spendableOwned(dest), closeTo((voteL - 1) / kUnitsPerShe, 1e-18));
     final short = await castPlannedLeafVotes(
-      ledger: shortBook,
+      ledger: bookOf(voteL - 1),
       reserve: reserve,
       planDir: '',
-      restFrame: dest,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
       dest: dest,
       choice: kVoteHold,
       local: true,
@@ -81,27 +98,21 @@ void main() {
     expect(short.enacted, isFalse);
     expect(short.remark, contains('Not enough Continuum spendable for vote tx fee'));
 
-    final dustBook = ShearLedger();
-    dustBook.replaceFromBackup(
-      address: dest,
-      spendable: need - 1e-13,
-      pending: 0,
-      txs: const [],
-    );
-    expect(dustBook.spendableOwned(dest), closeTo(need - 1e-13, 1e-18));
     // Current law: a book that covers the levy and has no census fails closed
     // as not_voter. It does not fall through to a portal vote.
-    final dust = await castPlannedLeafVotes(
-      ledger: dustBook,
+    final exact = await castPlannedLeafVotes(
+      ledger: bookOf(voteL),
       reserve: reserve,
       planDir: '',
-      restFrame: dest,
+      restFrame: id.address,
+      paymentCode: id.paymentCode,
       dest: dest,
       choice: kVoteHold,
       local: true,
     );
-    expect(dust.remark, isNot(contains('Not enough Continuum spendable for vote tx fee')));
-    expect(dust.remark, 'You’re not eligible to vote from this portal this epoch');
+    expect(exact.remark, isNot(contains('Not enough Continuum spendable for vote tx fee')));
+    expect(exact.remark, 'You’re not eligible to vote from this portal this epoch');
+    expect(need, voteL / kUnitsPerShe);
 
     final reserveSrc = File('lib/shear_reserve.dart').readAsStringSync();
     final commandStart = reserveSrc.indexOf('Future<ReserveVoteResult> castPlannedLeafVotes');

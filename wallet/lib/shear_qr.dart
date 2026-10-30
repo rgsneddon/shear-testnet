@@ -78,9 +78,32 @@ String? decodeReceiveQrImage(Uint8List bytes) {
       argb[i++] = (p.a.toInt() << 24) | (p.r.toInt() << 16) | (p.g.toInt() << 8) | p.b.toInt();
     }
     final source = RGBLuminanceSource(decoded.width, decoded.height, argb);
-    final bitmap = BinaryBitmap(HybridBinarizer(source));
-    final result = QRCodeReader().decode(bitmap);
-    return parseReceiveQr(result.text);
+    final reader = QRCodeReader();
+    // A PNG the wallet made, or a crisp screenshot of one, is a pure symbol:
+    // read its module grid directly. zxing's finder-pattern detector picks
+    // the wrong finder centres on some pixel-perfect symbols (the data region
+    // holds 1:1:3:1:1 runs with the same module estimate as the real
+    // finders), so for some identities the detector path throws
+    // NotFoundException (receive_qr_roundtrip_test.dart). The pure read has
+    // no detector, so it reads every symbol the wallet encodes.
+    final pure = DecodeHints()..put(DecodeHintType.pureBarcode);
+    try {
+      return parseReceiveQr(reader.decode(BinaryBitmap(HybridBinarizer(source)), hints: pure).text);
+    } catch (_) {
+      // Not a pure symbol (a photo, a padded screenshot): the detector path.
+    }
+    final hard = DecodeHints()..put(DecodeHintType.tryHarder);
+    for (final bitmap in [
+      BinaryBitmap(HybridBinarizer(source)),
+      BinaryBitmap(GlobalHistogramBinarizer(source)),
+    ]) {
+      try {
+        return parseReceiveQr(reader.decode(bitmap, hints: hard).text);
+      } catch (_) {
+        // the next binarizer
+      }
+    }
+    return null;
   } catch (_) {
     return null;
   }

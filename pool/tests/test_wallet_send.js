@@ -1056,7 +1056,10 @@ describe('pool send reconstruct and Join vault', () => {
     assert.equal(chain.mempool.filter((m) => m.kind === 'lock').length, 0);
   });
 
-  it('Reserve vote accepts a signed hold and refuses unsigned', () => {
+  // Russell ruling 28 Oct: portal vote retired ("Reserve vote accepts a signed
+  // hold and refuses unsigned" is replaced): a kind=vote post is refused as
+  // vote_retired, signed or unsigned, and nothing is queued.
+  it('Reserve portal vote is refused as vote_retired, signed or unsigned', () => {
     const alice = newIdentity();
     const silent = spendDestOf(alice.spendPub);
     const vault = vaultDest(alice.address, { viewKey: alice.viewKey });
@@ -1070,6 +1073,7 @@ describe('pool send reconstruct and Join vault', () => {
     }];
     const store = storeWith({ rows });
     const posted = [];
+    const ctx = { store, miners: new Map(), queueSend: (t) => posted.push(t) && t };
     const unsigned = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
       to: vault,
@@ -1077,13 +1081,11 @@ describe('pool send reconstruct and Join vault', () => {
       kind: 'vote',
       programId: RESERVE_PROGRAM,
       choice: 'hold',
-    }, { store, miners: new Map(), queueSend: (t) => posted.push(t) && t });
-    assert.equal(unsigned.status, 403);
-    assert.equal(unsigned.json.reason, 'unsigned');
-    assert.equal(posted.length, 0);
-
+    }, ctx);
+    assert.equal(unsigned.status, 400);
+    assert.equal(unsigned.json.reason, 'vote_retired');
     const signedVote = spendSig({ from: silent, to: vault, amount: 0, identity: alice, kind: 'vote', choice: 'hold' });
-    const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
+    const signed = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from: silent,
       to: vault,
       amount: 0,
@@ -1093,18 +1095,11 @@ describe('pool send reconstruct and Join vault', () => {
       sig: signedVote.sig,
       spendPub: signedVote.spendPub,
       vout: signedVote.vout,
-    }, { store, miners: new Map(), queueSend: (t) => {
-      const tx = { id: 'vote-1', ...t };
-      posted.push(tx);
-      return tx;
-    } });
-    assert.equal(ok.status, 200, ok.json.reason);
-    assert.equal(ok.json.ok, true);
-    assert.equal(ok.json.tx.kind, 'vote');
-    assert.equal(posted[0].kind, 'vote');
-    assert.equal(posted[0].choice, 'hold');
-    assert.ok(posted[0].sig);
-    assert.ok(posted[0].vout?.[0]?.address);
+    }, ctx);
+    assert.equal(signed.status, 400);
+    assert.equal(signed.json.ok, false);
+    assert.equal(signed.json.reason, 'vote_retired');
+    assert.equal(posted.length, 0);
   });
 
   it('Join HTTP is gone; extra-mint of join-genesis is refused', () => {

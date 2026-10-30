@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -52,67 +51,37 @@ void main() {
     }
   });
 
-  test('a posted vote fee is the pool draft levy for any choice', () async {
-    final choices = <String>[
-      'hold',
-      kVoteHold,
-      kVoteIncrease,
-      kVoteDecrease,
-      'x',
-      'y' * 200,
-    ];
-    final repo = Directory.current.path.replaceAll('\\', '/').endsWith('/wallet')
-        ? Directory.current.parent.path
-        : Directory.current.path;
-    for (var n = 0; n < choices.length; n++) {
-      final id = createIdentity();
-      final posts = <Map<String, dynamic>>[];
-      final pool = _VotePool(posts);
-      addTearDown(pool.close);
-      final ledger = ShearLedger(pool: pool)..bindIdentity(id);
-      final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-      final vault = vaultDest(id.address, viewKey: id.viewKey)!;
-      ledger.confirmRound(address: from, pot: 2, height: 2);
-      ledger.settleTo(2 + ShearLedger.spendableConfirmations);
-      await ledger.send(
-        from: from,
-        to: vault,
-        amount: 0,
-        kind: 'vote',
-        programId: kReserveProgram,
-        choice: choices[n],
-        restFrame: id.address,
-        paymentCode: id.paymentCode,
-        spendSeed: hexToBytes(id.seedHex),
+  // Russell ruling 28 Oct: portal vote retired. "a posted vote fee is the
+  // pool draft levy for any choice" checked the portal vote's fee; it is
+  // replaced by the refusal below. The leaf vote's fee is leaf_vote_wire_test.
+  test('a portal vote (kind=vote) is refused as retired for any choice and nothing is posted', () async {
+    final choices = <String>['hold', kVoteHold, kVoteIncrease, kVoteDecrease, 'x', 'y' * 200];
+    final id = createIdentity();
+    final posts = <Map<String, dynamic>>[];
+    final pool = _VotePool(posts);
+    addTearDown(pool.close);
+    final ledger = ShearLedger(pool: pool)..bindIdentity(id);
+    final from = ledger.homeDest(id.address, paymentCode: id.paymentCode);
+    final vault = vaultDest(id.address, viewKey: id.viewKey)!;
+    for (final choice in choices) {
+      await expectLater(
+        ledger.send(
+          from: from,
+          to: vault,
+          amount: 0,
+          kind: 'vote',
+          programId: kReserveProgram,
+          choice: choice,
+          restFrame: id.address,
+          paymentCode: id.paymentCode,
+          spendSeed: hexToBytes(id.seedHex),
+        ),
+        throwsA(isA<StateError>().having((e) => e.message, 'message', kErrVoteRetired)),
+        reason: choice,
       );
-      expect(posts, hasLength(1), reason: choices[n]);
-      final body = posts.single;
-      expect(body['kind'], 'vote');
-      expect(body['fee'], isA<int>());
-      expect(body['fee'] as int, greaterThanOrEqualTo(kLevyFloorUnits));
-      final file = File(
-        '${Directory.systemTemp.path}${Platform.pathSeparator}shear-vote-bind-$n.json',
-      );
-      file.writeAsStringSync(jsonEncode(body));
-      addTearDown(() {
-        if (file.existsSync()) file.deleteSync();
-      });
-      final checked = Process.runSync(
-        'node',
-        ['tests/verify_posted_reserve.mjs', file.path],
-        workingDirectory: repo,
-      );
-      expect(
-        checked.exitCode,
-        0,
-        reason: '${choices[n]} ${checked.stdout} ${checked.stderr}',
-      );
-      final verified = jsonDecode(checked.stdout.toString()) as Map;
-      expect(verified['equal'], true, reason: choices[n]);
-      expect(verified['status'], 200);
-      expect(verified['kind'], 'vote');
-      expect(verified['fee'], body['fee']);
     }
+    expect(posts, isEmpty);
+    expect(kErrVoteRetired, startsWith('vote_retired'), reason: 'the same reason the node gives');
   });
 }
 

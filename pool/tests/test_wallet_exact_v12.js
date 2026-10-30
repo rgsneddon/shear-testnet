@@ -467,7 +467,11 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     assert.equal(Buffer.from(posted[0].vout[0].commit).toString('hex'), Buffer.from(built.vout[0].commit).toString('hex'));
   });
 
-  it('binds a vote fee to the sealed weight and does not rename other errors', () => {
+  // Russell ruling 28 Oct: portal vote retired. This test bound a portal
+  // vote's fee to its sealed weight; a kind=vote post is now refused as
+  // vote_retired, signed or not, before anything is drafted or queued (the
+  // node refuses it the same way). The other-error check stays.
+  it('refuses a portal vote as vote_retired and does not rename other errors', () => {
     const alice = newIdentity();
     const from = spendDestOf(alice.spendPub);
     const to = vaultDest(alice.address, { viewKey: alice.viewKey });
@@ -486,41 +490,19 @@ describe('continuum 0.72 wallet amounts, withdraw, levy, vortex', () => {
     const vote = voteTx({ from, dest: to, choice: 'hold', id: 'vote-exact' });
     vote.payer = from;
     bindWeightFee(vote);
-    const bound = vote.fee;
     signSpendTx(vote, alice.privateKey);
-    const { posted, queueSend } = queue();
-    const ok = handleWalletApi(url('/api/wallet/send'), 'POST', {
-      from,
-      to,
-      amount: 0,
-      kind: 'vote',
-      programId: RESERVE_PROGRAM,
-      choice: 'hold',
-      fee: bound,
-      sig: vote.sig,
-      spendPub: vote.spendPub,
-      vout: vote.vout,
-    }, { store: funded, miners: new Map(), queueSend });
-    assert.equal(ok.status, 200, ok.json && ok.json.reason);
-    assert.equal(posted[0].kind, 'vote');
-    assert.equal(posted[0].fee, levyNeed(posted[0]));
-    assert.ok(posted[0].fee >= levyNanos(0));
-
-    const under = handleWalletApi(url('/api/wallet/send'), 'POST', {
-      from,
-      to,
-      amount: 0,
-      kind: 'vote',
-      programId: RESERVE_PROGRAM,
-      choice: 'hold',
-      fee: 1,
-      sig: vote.sig,
-      spendPub: vote.spendPub,
-      vout: vote.vout,
-    }, { store: funded, miners: new Map(), queueSend: () => ({ id: 'no' }) });
-    assert.equal(under.status, 403);
-    assert.equal(under.json.reason, 'unsigned');
-    assert.equal(JSON.stringify(under.json).includes('spendable'), false);
+    for (const body of [
+      { from, to, amount: 0, kind: 'vote', programId: RESERVE_PROGRAM, choice: 'hold', fee: vote.fee, sig: vote.sig, spendPub: vote.spendPub, vout: vote.vout },
+      { from, to, amount: 0, kind: 'vote', programId: RESERVE_PROGRAM, choice: 'hold' },
+      { kind: 'vote' },
+    ]) {
+      const { posted, queueSend } = queue();
+      const got = handleWalletApi(url('/api/wallet/send'), 'POST', body, { store: funded, miners: new Map(), queueSend });
+      assert.equal(got.status, 400, JSON.stringify(got.json));
+      assert.equal(got.json.ok, false);
+      assert.equal(got.json.reason, 'vote_retired');
+      assert.equal(posted.length, 0, 'nothing queued');
+    }
 
     const other = handleWalletApi(url('/api/wallet/send'), 'POST', {
       from,
