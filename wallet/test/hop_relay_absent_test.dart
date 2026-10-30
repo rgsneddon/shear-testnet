@@ -67,6 +67,12 @@ void main() {
     }
     expect(hits, isEmpty, reason: hits.join('\n'));
   });
+
+  test('hop relay scan walks the repo root', () {
+    final src = File('test/hop_relay_absent_test.dart').readAsStringSync();
+    expect(src, contains('_walk(repo,'));
+    expect(src.contains("const ['wallet', 'site', 'docs']"), isFalse);
+  });
 }
 
 Directory _repoRoot() {
