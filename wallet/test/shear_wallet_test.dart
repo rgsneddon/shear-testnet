@@ -5766,7 +5766,7 @@ void main() {
     expect(posts.last['kind'], 'lock');
   });
 
-  test('reserve seal stays off the UI isolate', () {
+  test('source: reserve seal stays off the UI isolate', () {
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
     expect(ledgerSrc, contains('Isolate.run(() => sealFlowSpendVouts(input))'));
     expect(ledgerSrc, contains('Isolate.run(() => reproveFlowSpendWire(input))'));
@@ -5778,10 +5778,8 @@ void main() {
         'Private on chain. A public node still sees your IP; use a VPN or a local node.',
       ),
     );
-    expect(ui, contains('allowPublicHttp: bare'));
+    expect(ui, contains('_ensurePublicNodeAck'));
     expect(ui.contains('allowPublicHttp: true'), isFalse);
-    final reserveSrc = File('lib/shear_reserve.dart').readAsStringSync();
-    expect('allowPublicHttp: true'.allMatches(reserveSrc).length, 2);
     expect(poolFeeDest(), kPoolFeeDest);
     expect(kPoolFeeDest, startsWith('ssa1'));
   });
@@ -5894,6 +5892,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-reserve-lock-ui-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
+    session.publicNodeAck = true;
     final ident = session.identity!;
     final posts = <Map<String, dynamic>>[];
     final pool = _RecordingPool(posts, baseUrl: kPublicPoolHttp);
@@ -6023,6 +6022,7 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('shear-bare-large-');
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await _sealSession(tester, session);
+    session.publicNodeAck = true;
     expect(session.closureSendMode, kClosureModeBare);
     final ident = session.identity!;
     final posts = <Map<String, dynamic>>[];

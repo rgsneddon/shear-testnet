@@ -2804,7 +2804,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             return;
           }
           final amount = double.tryParse(flowAmt.text) ?? 0;
-          final bare = sidecar.committed == ClosureSendMode.connectBare;
+          final public = _postsPublic(local: false);
+          if (!await _ensurePublicNodeAck(context, public: public)) return;
           final result = await submitContinuumSend(
             ledger: ledger,
             restFrame: ident.address,
@@ -2815,7 +2816,7 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
             memo: flowMemo.text.trim().isEmpty ? null : flowMemo.text.trim(),
             spendSeed: hexToBytes(ident.seedHex),
             local: false,
-            allowPublicHttp: bare,
+            allowPublicHttp: public && session.publicNodeAck,
             depth: _mempoolDepth,
           );
           if (!mounted) return;
@@ -3077,6 +3078,12 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     if (dest == null) return;
     final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
     if (!unprivateAmountPermitted(she)) return;
+    final localLock = reserveLockPostsLocal(
+      hasPool: ledger.pool != null,
+      skipPoolSync: widget.skipPoolSync,
+      postReserveLock: widget.postReserveLock,
+    );
+    if (!await _ensurePublicNodeAck(context, public: _postsPublic(local: localLock))) return;
     final depth = await _mempoolDepthNow();
     final lockNanos = (she * kUnitsPerShe).round();
     final lockL = levyNanos(lockNanos, depth: depth);
@@ -3200,6 +3207,47 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
     );
   }
 
+  bool _postsPublic({required bool local}) {
+    if (local) return false;
+    if (sidecar.committed != ClosureSendMode.connectBare) return false;
+    final url = ledger.pool?.baseUrl;
+    if (url == null) return false;
+    return !localSendReady(url);
+  }
+
+  /// One saved acknowledgement before the first public send on Connect bare.
+  Future<bool> _ensurePublicNodeAck(BuildContext context, {required bool public}) async {
+    if (!public || session.publicNodeAck) return true;
+    final go = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        key: const Key('public-node-ack'),
+        title: const Text('Public node sees your IP'),
+        content: const Text(
+          'A public node sees your IP with this send. Use a VPN or a local node.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('public-node-ack-cancel'),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('public-node-ack-accept'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('I understand'),
+          ),
+        ],
+      ),
+    );
+  if (go != true) return false;
+  session.publicNodeAck = true;
+  unawaited(session.persist());
+  if (mounted) setState(() {});
+  return true;
+  }
+
   bool get _reserveSendReady {
     final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
     if (!unprivateAmountPermitted(she)) return false;
@@ -3237,6 +3285,14 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
         skipPoolSync: widget.skipPoolSync,
         postReserveLock: widget.postReserveLock,
       ),
+      allowPublicHttp: _postsPublic(
+            local: reserveLockPostsLocal(
+              hasPool: ledger.pool != null,
+              skipPoolSync: widget.skipPoolSync,
+              postReserveLock: widget.postReserveLock,
+            ),
+          ) &&
+          session.publicNodeAck,
     );
     if (!result.posted || result.tx == null) {
       if (mounted) setState(() => _reserveDepositProgress = null);
@@ -3332,6 +3388,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
   Future<void> _reserveVote(BuildContext context, ShearIdentity ident, String choice) async {
     final dest = _reserveDestOf(ident);
     if (dest == null || dest.isEmpty) return;
+    final voteLocal = ledger.pool == null || widget.skipPoolSync;
+    if (!await _ensurePublicNodeAck(context, public: _postsPublic(local: voteLocal))) return;
     final gate = reserveVoteGate(ledger, reserve, dest);
     if (gate != null) {
       if (context.mounted) {
@@ -3424,6 +3482,8 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
       depth: depth,
       spendSeed: hexToBytes(ident.seedHex),
       local: ledger.pool == null || widget.skipPoolSync,
+      allowPublicHttp: _postsPublic(local: ledger.pool == null || widget.skipPoolSync) &&
+          session.publicNodeAck,
     );
     if (context.mounted) {
       final messenger = ScaffoldMessenger.of(context);

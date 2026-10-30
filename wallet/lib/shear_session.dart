@@ -375,6 +375,7 @@ class ShearSession {
         'biometricsEnabled': biometricsEnabled,
         'darkMode': darkMode,
         'closureSendMode': closureSendMode,
+        'publicNodeAck': publicNodeAck,
         'dests': rememberedDests.where((d) => d.startsWith('ssa1')).toList(),
         'destCount': rememberedDestCount,
         'destIndex': rememberedDestIndex,
@@ -404,6 +405,7 @@ class ShearSession {
     rememberedChainGenesis = null;
     rememberedReserve = null;
     deployedVortices = const [];
+    publicNodeAck = false;
     final pw = password ?? _password;
     if (pw != null && pw.isNotEmpty) {
       _password = pw;
@@ -421,6 +423,7 @@ class ShearSession {
     biometricsEnabled = j['biometricsEnabled'] == true;
     darkMode = j['darkMode'] == true;
     closureSendMode = _closureFromPlain(j);
+    publicNodeAck = j['publicNodeAck'] == true;
     rememberedDests = ((use['dests'] as List?) ?? const [])
         .map((e) => e.toString())
         .where((d) => d.startsWith('ssa1'))

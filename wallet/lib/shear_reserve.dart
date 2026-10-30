@@ -604,6 +604,7 @@ Future<ReserveDepositResult> postReserveDeposit({
   required int depth,
   Uint8List? spendSeed,
   bool local = true,
+  bool allowPublicHttp = false,
 }) async {
   if (she <= 0 || !isDestAddress(dest)) {
     return const ReserveDepositResult(posted: false, remark: 'bad_amount');
@@ -651,7 +652,7 @@ Future<ReserveDepositResult> postReserveDeposit({
       restFrame: restFrame,
       paymentCode: paymentCode,
       spendSeed: spendSeed,
-      allowPublicHttp: true,
+      allowPublicHttp: allowPublicHttp,
       paintedCover: gap > 1e-12,
     );
     final err = reserve.deposit(
@@ -721,6 +722,7 @@ Future<ReserveVoteResult> commandReserveVote({
   required int depth,
   Uint8List? spendSeed,
   bool local = true,
+  bool allowPublicHttp = false,
   int? nowMs,
 }) async {
   final gate = reserveVoteGate(ledger, reserve, dest);
@@ -755,7 +757,7 @@ Future<ReserveVoteResult> commandReserveVote({
       local: local,
       kind: 'vote',
       programId: kReserveProgram,
-      allowPublicHttp: true,
+      allowPublicHttp: allowPublicHttp,
       restFrame: restFrame,
       paymentCode: paymentCode,
       choice: choice,
