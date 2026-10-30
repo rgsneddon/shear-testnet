@@ -5710,6 +5710,62 @@ void main() {
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNotNull);
   });
 
+  test('source check is named as a source check', () {
+    final src = File('test/shear_wallet_test.dart').readAsStringSync();
+    expect(src, contains("test('source: reserve seal stays off the UI isolate'"));
+  });
+
+  testWidgets('public lock makes no request before consent and posts after it', (tester) async {
+    _tallContinuum(tester);
+    final dir = Directory.systemTemp.createTempSync('shear-public-ack-');
+    final session = ShearSession(store: File('${dir.path}/session.json'));
+    await _sealSession(tester, session);
+    expect(session.publicNodeAck, isFalse);
+    final ident = session.identity!;
+    final posts = <Map<String, dynamic>>[];
+    final pool = _RecordingPool(posts, baseUrl: kPublicPoolHttp);
+    final ledger = ShearLedger(pool: pool);
+    ledger.viewSecret = ident.viewKey;
+    ledger.confirmRound(
+      address: ledger.homeDest(ident.address, paymentCode: ident.paymentCode),
+      pot: 10,
+      height: 20,
+    );
+    ledger.settleTo(30);
+    await tester.pumpWidget(ShearWalletApp(
+      session: session,
+      ledger: ledger,
+      reserve: ShearReserve(),
+      startUnlocked: true,
+      skipPoolSync: true,
+      postReserveLock: true,
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Vortex'));
+    await tester.pump();
+    await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('reserve-send')));
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    expect(find.byKey(const Key('public-node-ack')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('public-node-ack-cancel')));
+    await tester.pump();
+    expect(posts, isEmpty);
+    expect(find.byKey(const Key('reserve-sign')), findsNothing);
+    await tester.tap(find.byKey(const Key('reserve-send')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('public-node-ack-accept')));
+    await tester.pump();
+    expect(session.publicNodeAck, isTrue);
+    expect(find.byKey(const Key('reserve-sign')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reserve-sign-accept')));
+    await _waitKey(tester, const Key('reserve-locked-in'));
+    expect(posts, isNotEmpty);
+    expect(posts.last['kind'], 'lock');
+  });
+
   test('reserve seal stays off the UI isolate', () {
     final ledgerSrc = File('lib/shear_ledger.dart').readAsStringSync();
     expect(ledgerSrc, contains('Isolate.run(() => sealFlowSpendVouts(input))'));

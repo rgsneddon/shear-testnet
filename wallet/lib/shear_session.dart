@@ -225,6 +225,8 @@ class ShearSession {
   /// Committed Closure send path. Not written as continuumSendPath.
   /// A new session opens on Connect bare. A stored Shear VPN tunnel string opens Connect bare.
   String closureSendMode = kClosureModeBare;
+  /// Saved once, before the first public send on Connect bare.
+  bool publicNodeAck = false;
   bool darkMode = false;
   List<String> rememberedDests = const [];
   List<Map<String, dynamic>> rememberedTxs = const [];
