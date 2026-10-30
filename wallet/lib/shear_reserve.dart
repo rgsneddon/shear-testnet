@@ -1801,6 +1801,15 @@ int reserveLockConfirmations(ShearLedger ledger, ShearTx tx) {
 /// confirmed lock votes while a younger one waits (castPlannedLeafVotes
 /// names the young leaves). A sum under π is not this wait.
 String? reserveVoteConfirmationWait(ShearLedger ledger, String dest) {
+  // A leaf already on the book (a mined lock, or one restored from the
+  // chain) votes now. Only a book where every leaf is still young waits.
+  final leaves = _lockLeafRows(ledger.notes);
+  if (leaves.isNotEmpty) {
+    for (final leaf in leaves) {
+      if (!_leafYoung(ledger, leaf)) return null;
+    }
+    return kVoteConfirmWait;
+  }
   var best = -1;
   var found = false;
   for (final t in ledger.transactions) {
@@ -2426,6 +2435,7 @@ Future<String?> _postOneLeafVote({
       'nanos': noteNanos - voteL,
       'spendSeed': changeSeedBytes,
       'changeSeed': changeSeedBytes,
+      'verified': true,
     });
   }
   return null;

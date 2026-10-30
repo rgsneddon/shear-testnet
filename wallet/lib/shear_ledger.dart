@@ -4770,7 +4770,8 @@ class ShearLedger implements ReadProofSink {
       if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(id)) continue;
       final epoch = raw['epoch'];
       if (epoch is int && epoch >= 0) (epochsOf[id] ??= <int>[]).add(epoch);
-      final commit = _hexToBytes(raw['commit']);
+      final rawCommit = raw['commit'];
+      final commit = rawCommit is String ? _hexToBytes(rawCommit) : null;
       if (commit != null && commit.length == 32) (commitOf[id] ??= <Uint8List>[]).add(commit);
     }
     noteChainPortals(epochsOf.keys);
