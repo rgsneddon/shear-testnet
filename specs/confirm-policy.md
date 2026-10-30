@@ -55,7 +55,7 @@ Dashboard / explorer “confirmed” uses operational `pool_merchant` (default 3
 
 ## Second seed
 
-Stratum may stay on Germany (`178.105.187.178`). A second **validating** node belongs off that box. `SHEAR_SEEDS` / RPC `addnode` (alias of `p2p.connect`). `shear-watch` is not that node and is not a consensus peer.
+Stratum may stay on Germany. A second **validating** node belongs off that box. `SHEAR_SEEDS` / RPC `addnode` (alias of `p2p.connect`). `shear-watch` is not that node and is not a consensus peer.
 
 ## Halt (optional)
 

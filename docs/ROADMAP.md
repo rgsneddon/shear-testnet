@@ -293,9 +293,9 @@ Each wipe or reinstall needs Russell's GO, one host at a time.
 
 | Host | IP | OS |
 |------|----|----|
-| pool | 77.42.91.84 | Ubuntu Server LTS (current release) |
-| p2p-a | 157.180.70.110 | Fedora 44 (rebuilt 30 Oct) |
-| p2p-b | 2.28.8.89 | Debian 13 (rebuilt 30 Oct) |
+| pool | `<pool-host>` | Ubuntu Server LTS (current release) |
+| p2p-a | `<p2p-a-host>` | Fedora 44 (rebuilt 30 Oct) |
+| p2p-b | `<p2p-b-host>` | Debian 13 (rebuilt 30 Oct) |
 | agent-box (explorer node, Russell 29 Oct, 10:46) | TBD (CoS) | TBD (CoS); whether R18a and R18b cover it is TBD (CoS) |
 
 Why: OS diversity. One distro's bad update, kernel bug or package compromise
@@ -337,7 +337,7 @@ Rebuild:
 
 ### R18b: final wipe and mainnet deploy, 18–21 Dec
 
-1. Remove everything testing left behind: `/root/claude-ci`, lane scripts
+1. Remove everything testing left behind: `<server-ci-dir>`, lane scripts
    and tars, testnet and stressnet datadirs, test services, timers, cron
    jobs, wallets, keys, logs, and VM or container images.
 2. Deploy only the mainnet release build from a tagged commit. No silent
