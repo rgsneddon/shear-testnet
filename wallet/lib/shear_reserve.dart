@@ -34,9 +34,9 @@ const kVoteConfirmWait = 'Vote is waiting on 9 confirmations of the reserve lock
 /// Vote attempt while this portal's own deposits are still under π.
 const kVoteBelowPi = 'ineligible, please deposit at least Pi and wait for it to confirm';
 
-/// Standing Reserve note. Connect bare is already covered by the fluxset.
+/// Standing Reserve note. The chain hides the amount. The public node still sees the IP.
 const kReserveIpDisclaimer =
-    'Connect bare is private. DINS-DAG and the ADMITv2 fluxset cover this deposit. A tunnel is not required.';
+    'Private on chain. A public node still sees your IP and this deposit; use a VPN or a local node.';
 
 /// Any finite positive SHE amount. No magnitude ceiling.
 bool unprivateAmountPermitted(double she) => she.isFinite && she > 0;

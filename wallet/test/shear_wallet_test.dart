@@ -5697,6 +5697,12 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('reserve-ip-disclaimer')), findsOneWidget);
     expect(find.text(kReserveIpDisclaimer), findsOneWidget);
+    expect(
+      find.text(
+        'Private on chain. A public node still sees your IP and this deposit; use a VPN or a local node.',
+      ),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
     await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
@@ -5710,6 +5716,12 @@ void main() {
     expect(ledgerSrc, contains('Isolate.run(() => reproveFlowSpendWire(input))'));
     final ui = File('lib/main.dart').readAsStringSync();
     expect(ui, contains('kReserveIpDisclaimer'));
+    expect(
+      ui,
+      contains(
+        'Private on chain. A public node still sees your IP; use a VPN or a local node.',
+      ),
+    );
     expect(ui, contains('allowPublicHttp: bare'));
     expect(ui.contains('allowPublicHttp: true'), isFalse);
     final reserveSrc = File('lib/shear_reserve.dart').readAsStringSync();
@@ -5900,6 +5912,12 @@ void main() {
     expect(find.byKey(const Key('reserve-send-unprivate')), findsNothing);
     expect(find.byKey(const Key('reserve-unprivate-confirm')), findsNothing);
     expect(find.text(kReserveIpDisclaimer), findsOneWidget);
+    expect(
+      find.text(
+        'Private on chain. A public node still sees your IP and this deposit; use a VPN or a local node.',
+      ),
+      findsOneWidget,
+    );
     expect(tester.widget<FilledButton>(find.byKey(const Key('reserve-send'))).onPressed, isNull);
     await tester.enterText(find.byKey(const Key('reserve-amount')), '1');
     await tester.pump();

@@ -1553,8 +1553,9 @@ class ShearWalletAppState extends State<ShearWalletApp> with WidgetsBindingObser
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'she is private',
+                    'Private on chain. A public node still sees your IP; use a VPN or a local node.',
                     style: TextStyle(color: theme.colorScheme.onSurface),
+                    textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 8),
                   Text(
