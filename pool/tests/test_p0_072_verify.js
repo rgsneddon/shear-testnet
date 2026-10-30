@@ -323,7 +323,7 @@ function assertMinerPageShowsNoPull(html, where, scan) {
   assert.match(html, /id="m-pending">Shear Privacy</, where);
   assert.match(html, /id="m-confirmed">Shear Privacy</, where);
   assert.match(html, /id="m-hashbonus">Shear Privacy</, where);
-  assert.equal(html.split('fmtPullShe(').length, 2, where);
+  assert.equal(html.includes('fmtPullShe('), false, where);
   const paintAt = html.indexOf('function paint(d)');
   const paintEnd = html.indexOf('function tick()', paintAt);
   assert.ok(paintAt >= 0 && paintEnd > paintAt, where);

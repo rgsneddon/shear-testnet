@@ -5160,7 +5160,8 @@ export function createPool({
           if (names.size === 1) worker = [...names][0];
         }
         const wall = Math.floor(Number(stats.foundAtByHeight?.[String(h)] || 0));
-        const attributed = !!((stored && stored.tag) || wall > 0);
+        // No finder record in the pull book: attribution is the found-at clock.
+        const attributed = wall > 0;
         const row = {
           ...t,
           finder: tag || '',
