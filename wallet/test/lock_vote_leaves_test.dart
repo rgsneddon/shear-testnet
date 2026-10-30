@@ -7,7 +7,9 @@ import 'package:shear_wallet/shear_ctf.dart' show vaultDest;
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_reserve.dart';
+import 'package:shear_wallet/shear_vault_reward.dart' show consensusUnlockPeriod, vaultLockBlindBytes, vaultLockOwnerBytes;
 import 'package:shear_wallet/shear_vote_plan.dart';
+import 'package:shear_wallet/shear_withdraw.dart' show vaultLeafNote;
 
 import 'support/sealed_book.dart';
 
@@ -118,6 +120,26 @@ Future<ReserveVoteResult> _vote(_Voter v, String choice) => castPlannedLeafVotes
       publicIpConsent: true,
       random: Random(7),
     );
+
+Uint8List _epochLeaf(Uint8List seed, int index, int epoch) {
+  final ownerSeed = reservePortalSpendSeed(seed, index)!;
+  final scalar = vaultLockOwnerBytes(ownerSeed, index);
+  final blind = vaultLockBlindBytes(ownerSeed, index, kPiSheNanos, 0);
+  return vaultLeafNote(
+    amount: kPiSheNanos,
+    scalar: scalar,
+    blind: blind,
+    unlock: consensusUnlockPeriod(epoch),
+  );
+}
+
+String _hex32(List<int> bytes) {
+  final out = StringBuffer();
+  for (final b in bytes) {
+    out.write(b.toRadixString(16).padLeft(2, '0'));
+  }
+  return out.toString();
+}
 
 Future<void> _lockN(_Voter v, int n) async {
   for (var i = 0; i < n; i++) {
@@ -328,4 +350,56 @@ void main() {
     expect(v.votes, hasLength(1), reason: 'the chain leaf voted');
     expect(r.remark, contains('1 of 2 leaves wait on 9 confirmations'));
   }, timeout: const Timeout(Duration(minutes: 10)));
+
+  test('a tranche with no commit restores that epoch\'s leaf, not epoch 0', () {
+    for (final commit in <Object?>['', null]) {
+      final v = _voter(locks: 0, fees: 0);
+      final portal = reservePortalIdFromSeed('', v.book.seed, 0);
+      expect(portal, isNotNull);
+      final row = <String, dynamic>{'portalId': portal, 'epoch': 1};
+      if (commit != null) row['commit'] = commit;
+      v.ledger.rememberDerivedLockLeaves([row]);
+      final locks = [
+        for (final n in v.ledger.notes)
+          if ((n['kind'] ?? '').toString() == 'lock') n,
+      ];
+      expect(locks, hasLength(1), reason: 'commit $commit still restores the leaf');
+      expect(locks.single['lockEpoch'], 1, reason: 'commit $commit keeps the tranche epoch');
+      expect(locks.single['unlock'], consensusUnlockPeriod(1));
+      expect(locks.single['note'], _epochLeaf(v.book.seed, 0, 1));
+    }
+  });
+
+  test('a later tranche commit replaces a leaf that is not that commit', () {
+    final v = _voter(locks: 0, fees: 0);
+    final portal = reservePortalIdFromSeed('', v.book.seed, 0)!;
+    final ownerSeed = reservePortalSpendSeed(v.book.seed, 0)!;
+    final wrong = _epochLeaf(v.book.seed, 0, 0);
+    v.ledger.rememberNote({
+      'kind': 'lock',
+      'scalar': vaultLockOwnerBytes(ownerSeed, 0),
+      'blind': vaultLockBlindBytes(ownerSeed, 0, kPiSheNanos, 0),
+      'note': wrong,
+      'unlock': consensusUnlockPeriod(0),
+      'amount': kPiSheNanos,
+      'nanos': kPiSheNanos,
+      'epochs': <int>[0],
+      'lockEpoch': 0,
+      'lockIndex': 0,
+      'portalId': portal,
+      'vaultLock': true,
+      'verified': true,
+    });
+    final right = _epochLeaf(v.book.seed, 0, 1);
+    v.ledger.rememberDerivedLockLeaves([
+      {'portalId': portal, 'epoch': 1, 'commit': _hex32(right.sublist(32))},
+    ]);
+    final locks = [
+      for (final n in v.ledger.notes)
+        if ((n['kind'] ?? '').toString() == 'lock') n,
+    ];
+    expect(locks, hasLength(1), reason: 'the wrong leaf is replaced, not kept beside the right one');
+    expect(locks.single['lockEpoch'], 1);
+    expect(locks.single['note'], right);
+  });
 }
