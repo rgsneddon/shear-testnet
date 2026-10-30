@@ -35,6 +35,7 @@ import { createRpc, RPC_PORT } from './rpc.js';
 import { createSoloStratum, SOLO_STRATUM_PORT, SOLO_STRATUM_BIND } from './solo_stratum.js';
 import { mintVorticeDeployKey, parseVorticeKey, VORTICE_KEY_PREFIX } from '../../crypto/vortex.js';
 import { NODE_DISPLAY, NODE_NAME } from './product.js';
+import { installRamFs } from './ram_fs.js';
 import { loadOracleSnapshot } from './oracle_feed.js';
 import {
   applyLatestBootstrap,
@@ -277,6 +278,9 @@ export async function resolveGuiBootstrap({
     env: envOn,
     url: flagged || url.length > 0,
   };
+  if (String((env && env.SHEAR_RAM) || '').trim() === '1') {
+    return { pull: false, apply: false, missing: false, resume: false, seen, reason: 'shear_ram' };
+  }
   const forced = envOn || flagged || url.length > 0;
   if (emptyDatadir !== true) {
     return { pull: false, apply: false, missing: false, resume: true, seen };
@@ -340,6 +344,7 @@ function parseHelpTopic(argv) {
 }
 
 async function main() {
+  if (String(process.env.SHEAR_RAM || '').trim() === '1') installRamFs();
   const argv = process.argv;
   const args = argv.slice(2);
   const unknown = [];

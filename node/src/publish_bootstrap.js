@@ -27,6 +27,9 @@ export function publishOnce({
   dataDir = process.env.SHEAR_DATA || '/var/lib/shear/testnet-v11',
   publishDir = process.env.SHEAR_BOOT_PUBLISH || path.join(dataDir, 'bootstrap'),
 } = {}) {
+  if (String(process.env.SHEAR_RAM || '').trim() === '1') {
+    return { ok: false, reason: 'shear_ram' };
+  }
   const chain = path.join(dataDir, 'chain.bin');
   const segBlocks = readChainSegments(path.join(dataDir, 'segments'));
   if (!segBlocks && !fs.existsSync(chain)) {
