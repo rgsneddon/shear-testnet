@@ -33,6 +33,37 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$EXCLUDE"
 [ "$bad" = 0 ] || exit 1
 
+# The wallet's native libraries. Tests that seal, prove or hash with them
+# fail without them (admit_lib_load, fs1_prove, the sealed-book suites), so
+# the suite builds what is missing before the first file and stops, loudly,
+# when it cannot. There is no skip: a missing library is never a pass.
+ADMIT_SO=../crypto/native/admit/target/release/libshear_admit.so
+V3_SO=native/libshear_v3.so
+if [ "$(uname -s)" = Linux ]; then
+  if [ ! -f "$ADMIT_SO" ]; then
+    echo "wallet suite: building $ADMIT_SO (crypto/native/build-linux-admit-so.sh)"
+    if ! bash ../crypto/native/build-linux-admit-so.sh > "$OUT/build-admit.log" 2>&1; then
+      echo "::error::libshear_admit.so did not build; see $OUT/build-admit.log" >&2
+      tail -20 "$OUT/build-admit.log" >&2
+      exit 1
+    fi
+  fi
+  if [ ! -f "$V3_SO" ]; then
+    echo "wallet suite: building $V3_SO (wallet/native/build-shear-v3.sh)"
+    if ! bash native/build-shear-v3.sh > "$OUT/build-v3.log" 2>&1; then
+      echo "::error::libshear_v3.so did not build; see $OUT/build-v3.log" >&2
+      tail -20 "$OUT/build-v3.log" >&2
+      exit 1
+    fi
+  fi
+fi
+for so in "$ADMIT_SO" "$V3_SO"; do
+  if [ ! -f "$so" ]; then
+    echo "::error::$so is missing; build it first (crypto/native/build-linux-admit-so.sh, wallet/native/build-shear-v3.sh)" >&2
+    exit 1
+  fi
+done
+
 mapfile -t all < <(ls test/*_test.dart | LC_ALL=C sort)
 run=()
 i=0
