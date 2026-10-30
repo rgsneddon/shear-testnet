@@ -94,3 +94,41 @@ test('staged ram explorer reuses the live chrome and does not replace the live p
   assert.equal(live.includes('staged beside the live explorer'), false);
   assert.equal(live.includes('explorer/ram/public_view.js'), false);
 });
+
+test('nested amount, payee, address, ip, and worker stay hidden on chain', () => {
+  const secret = {
+    amount: 5,
+    payee: 'ssa1secret',
+    address: 'ssa1secret',
+    ip: '157.180.70.110',
+    worker: 'rig-a',
+  };
+  const row = publicRecord({
+    height: 1,
+    mempool: { ...secret },
+    output: { ...secret },
+    vault: { state: 'public', ...secret },
+    pins: [{ ...secret }],
+  });
+  const text = JSON.stringify(row);
+  assert.equal(text.includes('ssa1secret'), false);
+  assert.equal(text.includes('157.180.70.110'), false);
+  assert.equal(text.includes('rig-a'), false);
+  assert.equal(row.mempool.amount, HIDDEN);
+  assert.equal(row.mempool.payee, HIDDEN);
+  assert.equal(row.output.address, HIDDEN);
+  assert.equal(row.output.ip, HIDDEN);
+  assert.equal(row.output.worker, HIDDEN);
+  assert.equal(row.vault.state, 'public');
+  assert.equal(row.vault.amount, HIDDEN);
+  assert.equal(row.pins[0].payee, HIDDEN);
+  assert.equal(row.pins[0].worker, HIDDEN);
+});
+
+test('the search field is not submitted when the page script does not load', () => {
+  const html = fs.readFileSync(path.join(root, 'explorer/ram/index.html'), 'utf8');
+  assert.match(html, /<form[^>]*id="tx-search"[^>]*onsubmit="return false"/);
+  const input = html.match(/<input\b[^>]*\bid="q"[^>]*>/);
+  assert.ok(input, html);
+  assert.equal(/\bname\s*=/.test(input[0]), false);
+});
