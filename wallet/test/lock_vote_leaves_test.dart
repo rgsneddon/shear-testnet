@@ -263,6 +263,18 @@ void main() {
     final v = _voter(locks: 1, fees: 0);
     await _lockN(v, 1);
     _mineLocks(v);
+    // The mine puts the lock change in the live note set and moves the tip
+    // nine deep. Spendable still requires a height on the note itself.
+    final minedAt = v.ledger.bookTip - ShearLedger.spendableConfirmations + 1;
+    var stamped = 0;
+    for (final n in v.ledger.notes) {
+      if (n['spent'] == true || n['changeSeed'] == null) continue;
+      if ((n['kind'] ?? '').toString() == 'lock') continue;
+      if (n['height'] != null) continue;
+      n['height'] = minedAt;
+      stamped++;
+    }
+    expect(stamped, 1, reason: 'the lock change is the only fee note');
     _census(v);
     expect(v.book.spendableUnits, greaterThan(kPiSheNanos));
     expect((await _vote(v, kVoteHold)).enacted, isTrue);

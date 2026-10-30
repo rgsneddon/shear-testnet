@@ -2435,7 +2435,6 @@ Future<String?> _postOneLeafVote({
       'nanos': noteNanos - voteL,
       'spendSeed': changeSeedBytes,
       'changeSeed': changeSeedBytes,
-      'verified': true,
     });
   }
   return null;
