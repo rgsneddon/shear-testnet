@@ -562,7 +562,7 @@ describe('p2p gossip', () => {
 
     assert.ok(DEFAULT_SEEDS.includes('p2p.shear.digital:30303'));
     assert.ok(DEFAULT_SEEDS.includes('r2r.shear.digital:30303'));
-    assert.ok(DEFAULT_SEEDS.includes('b2b.shear.digital:30303'));
+    assert.ok(!DEFAULT_SEEDS.some((s) => String(s).includes('b2b.shear.digital')));
     assert.equal(DEFAULT_SEEDS.length >= 2, true);
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('46.224.132.83')), false);
     assert.equal(DEFAULT_SEEDS.some((s) => String(s).includes('77.42.91.84')), false);

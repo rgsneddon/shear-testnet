@@ -159,7 +159,7 @@
 
     <h2>What this is</h2>
     <p>A pruned prefix of the live book: headers, coinbase, sealed transfers. Not a history of snapshots. Empty datadir only. A fake file is a different book. After the node is at the tip, Continuum 0.71 reads notes for your dest from 127.0.0.1:18332. Wallet download: https://shear.digital/wallet/. Node download: https://shear.digital/node/ (Shear Sentinel v18). How-to: https://shear.digital/docs/#/surfaces.</p>
-    <p class="warn">Use only this host. After apply, the node must still reach the live tip hash on the public seeds (<code>p2p.shear.digital:30303</code>, <code>r2r.shear.digital:30303</code>, <code>b2b.shear.digital:30303</code>).</p>
+    <p class="warn">Use only this host. After apply, the node must still reach the live tip hash on the public seeds (<code>p2p.shear.digital:30303</code> and <code>r2r.shear.digital:30303</code>).</p>
 
     <h2>How to apply (manual)</h2>
     <p>Default <code>node node/src/node.js</code> never hooks a bootstrap. To import this pair onto an empty datadir:</p>
@@ -183,7 +183,7 @@ node node/src/node.js --bootstrap="$PWD"</pre>
     <h2>Full IBD (default)</h2>
     <pre>export SHEAR_DATA="$HOME/.shear/testnet-v11"
 export SHEAR_NETWORK=shear-testnet-v11
-export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303
+export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303
 node node/src/node.js</pre>
     <p class="muted">No <code>--bootstrap</code>. No automatic pull. Sequential sync from genesis, then stay at the tip.</p>
   </div>

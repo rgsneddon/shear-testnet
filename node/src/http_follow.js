@@ -5,7 +5,6 @@ import { decodeWireBlock } from './p2p.js';
 export const HTTP_FOLLOW_SEEDS = [
   'https://p2p.shear.digital',
   'https://r2r.shear.digital',
-  'https://b2b.shear.digital',
 ];
 
 function bookMatches(stats, magic) {

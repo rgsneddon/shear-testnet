@@ -24,7 +24,6 @@ const kPublicPoolHttp = 'https://pool.shear.digital';
 const kPublicNodeSeeds = <String>[
   'https://p2p.shear.digital',
   'https://r2r.shear.digital',
-  'https://b2b.shear.digital',
 ];
 
 /// Pool stratum / HUD host. Not a chain source. A loopback test port is not this.
@@ -105,7 +104,7 @@ bool localSendReady(String? url) => isLocalRpcUrl(url) && !isPublicPoolHttp(url)
 /// Public node HTTP. Not the pool.
 bool isNodeHttpHost(String host) {
   final h = host.toLowerCase();
-  return h == 'p2p.shear.digital' || h == 'r2r.shear.digital' || h == 'b2b.shear.digital';
+  return h == 'p2p.shear.digital' || h == 'r2r.shear.digital';
 }
 
 String _trimBase(String raw) {

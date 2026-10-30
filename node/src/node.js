@@ -110,7 +110,6 @@ export function defaultDataDir({
 export const DEFAULT_SEEDS = [
   'p2p.shear.digital:30303',
   'r2r.shear.digital:30303',
-  'b2b.shear.digital:30303',
 ];
 
 /** Unset SHEAR_SEEDS keeps the hostname defaults. An empty value dials nobody. */

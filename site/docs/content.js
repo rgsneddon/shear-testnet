@@ -278,7 +278,7 @@ window.SHEAR_DOCS = {
       'cmake -S crypto/randomx -B crypto/randomx/build -DARCH=native\n' +
       'cmake --build crypto/randomx/build -j"$(nproc)"\n' +
       'make -C crypto/native\n' +
-      'export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303\n' +
+      'export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303\n' +
       'npm run solo</pre>' +
       '<p>Then point ShearK 2.8 at localhost. Login is Copy dest as a bare <code>ssa1</code>. Do not <code>npm run pool</code> for solo. A solo seal while any peer is ahead is refused. Public stratum is an optional alternate (cleartext TCP unless TLS is in front).</p>' +
       '<pre>./ShearK-Miner --selftest\n' +
@@ -408,7 +408,7 @@ window.SHEAR_DOCS = {
       'export SHEAR_P2P_BIND=0.0.0.0\n' +
       'export SHEAR_RPC_PORT=18332\n' +
       'export SHEAR_RPC_BIND=127.0.0.1\n' +
-      'export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303,b2b.shear.digital:30303\n' +
+      'export SHEAR_SEEDS=p2p.shear.digital:30303,r2r.shear.digital:30303\n' +
       'node node/src/node.js</pre>' +
       '<p>Magic <code>shear-testnet-v11</code>. RPC loopback <code>127.0.0.1:18332</code>. P2P <code>0.0.0.0:30303</code>. It does not mine until you add <code>--solo</code> after the height has caught the public tip. Build RandomX and <code>crypto/native</code> on that machine. Never copy a macOS <code>shearhash.node</code> onto Linux, or an Ubuntu one onto Fedora.</p>' +
       '<p>Windows, same release, in PowerShell from the repo root: <code>git checkout 0.71</code>, <code>npm ci</code>, then set <code>$env:SHEAR_DATA</code>, <code>$env:SHEAR_NETWORK</code>, <code>$env:SHEAR_BOOTSTRAP="1"</code>, <code>$env:SHEAR_SEEDS</code> to the same list, and run <code>node node/src/node.js</code>. Arch uses the same shell as Linux.</p>' +
