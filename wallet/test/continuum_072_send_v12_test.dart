@@ -13,6 +13,8 @@ import 'package:shear_wallet/shear_pack.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_ristretto.dart';
 
+import 'support/sealed_book.dart';
+
 void main() {
   test('exact SHE text stays a decimal nanos string above 2^53', () {
     expect(parseSheDecimalToNanos('1'), '100000000000');
@@ -192,7 +194,10 @@ void main() {
     final main = File('lib/main.dart').readAsStringSync();
     expect(main, contains("key: const Key('flow-send-progress')"));
     expect(main, contains("key: const Key('flow-send-cancel')"));
-    expect(main, contains('postReserveWithdraw('));
+    // The Vortex withdraw posts one withdraw per matured portal
+    // (postMaturedWithdraws, cb733226, 23 Oct), or the vault claim.
+    expect(main, contains('await postMaturedWithdraws('));
+    expect(main, contains('await postReserveVaultClaim('));
     expect(main, contains("key: const Key('vortex-your-portal')"));
     expect(main, contains("key: const Key('vortex-overall-program')"));
     final ledger = File('lib/shear_ledger.dart').readAsStringSync();
@@ -299,6 +304,16 @@ void main() {
     );
     const amounts = <num>[0.00000000001, 1, 4, 1000000];
     final counts = <int>[1, 3, kMaxInputsPerSend - 1, kMaxInputsPerSend, kMaxInputsPerSend + 1, 2000];
+    // The one sealed row is a book row: a real sealed 0.5 SHE note (commit,
+    // note commit, blind, range proof, admit key), verified. A row marked
+    // sealed with no spend bytes and no verification is not a coin.
+    final owner = createIdentity();
+    final sealedRow = {
+      ...sealedNoteOn(kPoolFeeDest, seedOf(owner), 50000000000, height: 1),
+      'nanos': '50000000000',
+      'spent': false,
+      'sealed': true,
+    };
     for (final she in amounts) {
       for (final n in counts) {
         final plan = selectSpendNotesWire({
@@ -311,14 +326,7 @@ void main() {
                 'spent': false,
                 'sealed': false,
               },
-            {
-              'address': kPoolFeeDest,
-              'amount': 0.5,
-              'nanos': '50000000000',
-              'height': 1,
-              'spent': false,
-              'sealed': true,
-            },
+            sealedRow,
           ],
           'needShe': 0.1,
           'tip': 40,
@@ -711,12 +719,11 @@ void main() {
 
   test('a surplus under the old percent fee still sends', () async {
     for (final amount in <double>[0.01, 1, 4, 50, 100]) {
-      final alice = createIdentity();
-      final ledger = ShearLedger()..bindIdentity(alice);
-      final from = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
-      final surplus = 1000 / kUnitsPerShe;
-      ledger.confirmRound(address: from, pot: amount + surplus, height: 1);
-      ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+      // One real sealed note of amount + 1000 nanos, mined 9 deep.
+      final book = SealedBook.fund([(amount * kUnitsPerShe).round() + 1000]);
+      final alice = book.id;
+      final ledger = book.ledger;
+      final from = book.from;
       final tx = await ledger.send(
         from: from,
         to: kPoolFeeDest,
@@ -724,6 +731,7 @@ void main() {
         local: true,
         restFrame: alice.address,
         paymentCode: alice.paymentCode,
+        spendSeed: book.seed,
       );
       expect(tx.kind, 'send', reason: 'amount=$amount');
     }
@@ -753,7 +761,13 @@ void main() {
     final pool = _RecordChange();
     for (final c in cases) {
       final input = c.pay + fee + c.change;
-      expect(input.bitLength, lessThanOrEqualTo(64), reason: 'pay=${c.pay} change=${c.change}');
+      // The proof binds the fee before the pool weighs the body, so a note
+      // that covers pay plus the levy ceiling pays the ceiling and the change
+      // is sealed to it (#116, 23 Oct; the levy as built). Otherwise the
+      // weight floor is the fee. Either way the change is exact to the nano.
+      final cap = BigInt.from(kLevyCapNanos);
+      final want = input - c.pay >= cap ? input - c.pay - cap : c.change;
+      expect(input.bitLength, lessThanOrEqualTo(64), reason: 'pay=${c.pay} change=${want}');
       final sw = Stopwatch()..start();
       final sent = await _sendChange(
         pool,
@@ -761,37 +775,46 @@ void main() {
         pay: c.pay,
         memo: c.memo,
       );
-      expect(sw.elapsedMilliseconds, lessThan(180000), reason: 'pay=${c.pay} change=${c.change}');
+      expect(sw.elapsedMilliseconds, lessThan(180000), reason: 'pay=${c.pay} change=${want}');
       final kinds = (pool.posts.last['kinds'] as List).where((k) => k == 'send').length;
-      if (c.change == BigInt.zero) {
+      if (want == BigInt.zero) {
         expect(sent.tx.change, isNull, reason: 'pay=${c.pay}');
-        expect(sent.ledger.notes, isEmpty, reason: 'pay=${c.pay}');
+        // The spent input is the only row: no change note was stored.
+        expect(
+          sent.ledger.notes.where((n) => !_sameBytes(n['commit'], sent.input)),
+          isEmpty,
+          reason: 'pay=${c.pay}',
+        );
         expect(kinds, 1, reason: 'pay=${c.pay}');
         continue;
       }
-      expect(sent.tx.change, isNotNull, reason: 'change=${c.change}');
+      expect(sent.tx.change, isNotNull, reason: 'change=${want}');
       final rows = sent.ledger.notes.where((n) => n['address'] == sent.tx.change).toList();
-      expect(rows, hasLength(1), reason: 'change=${c.change}');
+      expect(rows, hasLength(1), reason: 'change=${want}');
       final note = rows.single;
-      expect(noteNanosExact(note), c.change, reason: 'change=${c.change}');
-      expect(openedSpendDigits(note), c.change.toString(), reason: 'change=${c.change}');
-      if (c.change.bitLength > 63) {
-        expect(note['nanos'], c.change.toString(), reason: 'change=${c.change}');
+      expect(noteNanosExact(note), want, reason: 'change=${want}');
+      expect(openedSpendDigits(note), want.toString(), reason: 'change=${want}');
+      if (want.bitLength > 63) {
+        expect(note['nanos'], want.toString(), reason: 'change=${want}');
         expect(note['nanos'], isA<String>());
       }
       final proof = note['rangeProof'];
       final commit = note['commit'];
-      expect(proof, isA<Uint8List>(), reason: 'change=${c.change}');
-      expect(commit, isA<Uint8List>(), reason: 'change=${c.change}');
-      expect((proof as Uint8List)[0], 2, reason: 'change=${c.change}');
-      expect(_nodeRangeOk(commit as Uint8List, proof), isTrue, reason: 'change=${c.change}');
-      expect(kinds, 2, reason: 'change=${c.change} memo=${c.memo}');
+      expect(proof, isA<Uint8List>(), reason: 'change=${want}');
+      expect(commit, isA<Uint8List>(), reason: 'change=${want}');
+      expect((proof as Uint8List)[0], 2, reason: 'change=${want}');
+      expect(_nodeRangeOk(commit as Uint8List, proof), isTrue, reason: 'change=${want}');
+      expect(kinds, 2, reason: 'change=${want} memo=${c.memo}');
     }
     final tooWide = (BigInt.one << 64) + fee + BigInt.one;
+    // No note above u64 exists: a commit with a range proof is u64, so the
+    // sealer refuses it before any send can be built or posted.
+    final posts = pool.posts.length;
     await expectLater(
       _sendChange(pool, input: tooWide, pay: BigInt.one),
-      throwsA(isA<StateError>().having((e) => e.message, 'msg', 'fee_short')),
+      throwsA(isA<ArgumentError>().having((e) => e.message, 'msg', 'u64')),
     );
+    expect(pool.posts.length, posts, reason: 'nothing posted');
   }, timeout: const Timeout(Duration(minutes: 8)));
 
   test('a pool withdraw posts kind withdraw and the exact nanos', () async {
@@ -832,7 +855,15 @@ void main() {
 }
 
 /// One shipped [ShearLedger.send]. The change note is whatever send stored.
-Future<({ShearLedger ledger, ShearTx tx})> _sendChange(
+bool _sameBytes(Object? a, Uint8List b) {
+  if (a is! List<int> || a.length != b.length) return false;
+  for (var i = 0; i < b.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+Future<({ShearLedger ledger, ShearTx tx, Uint8List input})> _sendChange(
   _RecordChange pool, {
   required BigInt input,
   required BigInt pay,
@@ -842,27 +873,37 @@ Future<({ShearLedger ledger, ShearTx tx})> _sendChange(
   final alice = createIdentity(seed);
   final ledger = ShearLedger(pool: pool)..bindIdentity(alice);
   final from = ledger.homeDest(alice.address, paymentCode: alice.paymentCode);
-  ledger.confirmRound(address: from, pot: 2, height: 1);
-  ledger.settleTo(1 + ShearLedger.spendableConfirmations);
-  final commit = scalarBytes(randomScalar());
-  final noteCommit = scalarBytes(randomScalar());
+  // A real sealed note of exactly [input] nanos (any u64): its commit opens
+  // to input and carries a node range proof. Mined 9 deep and in the live set.
+  final sealed = nativeSealUnits(input, dest20: hash20FromAddress(from), kind: 'pot');
+  final commit = sealed['commit'] as Uint8List;
   final note = <String, dynamic>{
-    'kind': 'pot',
+    ...sealed,
     'address': from,
     'dest': from,
-    'commit': commit,
-    'noteCommit': noteCommit,
-    'r': scalarBytes(randomScalar()),
     'nanos': input.toString(),
+    'height': 1,
+    'verified': true,
     'spent': false,
   };
-  pool.pub = pointBytes(admitPub(admitScalarFromSeed(seed, note)));
+  note['admitPub'] = pointBytes(admitPub(admitScalarFromSeed(seed, note)));
+  ledger.spendSeed = seed;
+  ledger.rememberNote(note);
+  ledger.noteLiveHeight(1 + ShearLedger.spendableConfirmations);
+  ledger.settleTo(1 + ShearLedger.spendableConfirmations);
+  pool.pub = note['admitPub'] as Uint8List;
   pool.commit = commit;
   final bob = createIdentity(scalarBytes(randomScalar()));
   final tx = await ledger.send(
     from: from,
-    to: memo == null ? kPoolFeeDest : bob.paymentCodeFull,
-    amount: 1,
+    // A current full dest (an old short-form ssa1 such as kPoolFeeDest
+    // cannot receive spendable coins).
+    to: memo == null
+        ? (ShearLedger()..bindIdentity(bob)).homeDest(bob.address, paymentCode: bob.paymentCode)
+        : bob.paymentCodeFull,
+    // The figure the send screen passes with the exact wire: the same pay.
+    // The funded note is input nanos, never a painted 2 SHE credit.
+    amount: pay.toDouble() / kUnitsPerShe,
     nanosWire: pay.toString(),
     memo: memo,
     local: false,
@@ -871,7 +912,7 @@ Future<({ShearLedger ledger, ShearTx tx})> _sendChange(
     spendSeed: seed,
     spendNote: note,
   );
-  return (ledger: ledger, tx: tx);
+  return (ledger: ledger, tx: tx, input: commit);
 }
 
 class _RecordChange extends ShearPoolClient {
@@ -892,6 +933,10 @@ class _RecordChange extends ShearPoolClient {
   Future<Map<String, dynamic>> fluxset() async => {
         'pubs': [pub],
         'commits': [commit],
+        // The FS-1 anchor that covers the one live note, mined at height 1.
+        'anchors': [
+          {'height': 1, 'n': 1},
+        ],
       };
 
   @override

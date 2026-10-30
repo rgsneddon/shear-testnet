@@ -21,8 +21,8 @@ OBJS="$HERE/build/host"
 mkdir -p "$OBJS"
 if [[ "$OS" == "Darwin" ]]; then
   OUT="$HERE/libshear_v3.dylib"
-  gcc $BASE -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJS/shear_v3_export.o" "$HERE/shear_v3_export.c"
-  gcc $BASE -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJS/shear_hash.o" "$MINER/shear_hash.c"
+  gcc $BASE -fPIC -O2 -Wall -DSHEAR_HASH_INTERPRETER_ONLY -I"$MINER" -I"$RX/src" -c -o "$OBJS/shear_v3_export.o" "$HERE/shear_v3_export.c"
+  gcc $BASE -fPIC -O2 -Wall -DSHEAR_HASH_INTERPRETER_ONLY -I"$MINER" -I"$RX/src" -c -o "$OBJS/shear_hash.o" "$MINER/shear_hash.c"
   gcc $BASE -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJS/sha512.o" "$MINER/sha512.c"
   gcc $BASE -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJS/sha256.o" "$MINER/sha256.c"
   c++ $BASE -dynamiclib -fPIC -O2 \
@@ -31,8 +31,8 @@ if [[ "$OS" == "Darwin" ]]; then
     "$RXLIB" -lc++
 else
   OUT="$HERE/libshear_v3.so"
-  gcc $BASE -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJS/shear_v3_export.o" "$HERE/shear_v3_export.c"
-  gcc $BASE -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJS/shear_hash.o" "$MINER/shear_hash.c"
+  gcc $BASE -fPIC -O2 -Wall -DSHEAR_HASH_INTERPRETER_ONLY -I"$MINER" -I"$RX/src" -c -o "$OBJS/shear_v3_export.o" "$HERE/shear_v3_export.c"
+  gcc $BASE -fPIC -O2 -Wall -DSHEAR_HASH_INTERPRETER_ONLY -I"$MINER" -I"$RX/src" -c -o "$OBJS/shear_hash.o" "$MINER/shear_hash.c"
   gcc $BASE -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJS/sha512.o" "$MINER/sha512.c"
   gcc $BASE -fPIC -O2 -Wall -I"$MINER" -I"$RX/src" -c -o "$OBJS/sha256.o" "$MINER/sha256.c"
   # C sources stay C. g++ only links, so libstdc++ is static and not shipped.

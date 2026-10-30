@@ -7,6 +7,8 @@ import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_read_sync.dart';
 
+import 'support/verified_chain.dart';
+
 String _hexHeader() => List.filled(128, 0x11).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
 Map<String, dynamic> _landBody(int height, String dest, double she) => {
@@ -78,7 +80,9 @@ Future<({HttpServer server, List<String> paths})> _node(String dest, int tip) as
 
 void main() {
   test('a mined landing reaches Pending at 0 conf from node compact proofs on Bare, p2P, and Full with no pool ticket', () async {
-    const tip = 4;
+    // A pin sits at 11 or above (#125), so the landing tip is 14.
+    const tip = 14;
+    final chain = VerifiedChain(pinHeight: tip);
     final id = createIdentity();
     final home = ShearLedger()..bindIdentity(id);
     final dest = home.homeDest(id.address, paymentCode: id.paymentCode);
@@ -102,6 +106,8 @@ void main() {
       expect(sync.readBlocks.any((b) => b['height'] == tip), isTrue, reason: '$mode body');
 
       final ledger = ShearLedger()..bindIdentity(id);
+      // Depth counts from the verified tip: the landing block is the pin.
+      await chain.verify(ledger, tip);
       ledger.rememberDest(dest);
       if (mode == ClosureSendMode.connectBare) {
         sync.proofSink = ledger;

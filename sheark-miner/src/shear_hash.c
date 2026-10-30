@@ -233,6 +233,10 @@ static randomx_flags flags_interpreter(void) {
  * light-verify is the same digest (selftest matches). Keep
  * RANDOMX_FLAG_SECURE when get_flags set it (Apple aarch64 W^X). */
 static randomx_flags flags_jit_light(void) {
+#ifdef SHEAR_HASH_INTERPRETER_ONLY
+  /* Never JIT, never the full dataset, on any path. */
+  return flags_interpreter();
+#endif
   randomx_flags f = randomx_get_flags();
   f = (randomx_flags)(f & ~RANDOMX_FLAG_FULL_MEM);
   f = (randomx_flags)(f | RANDOMX_FLAG_JIT | RANDOMX_FLAG_HARD_AES | RANDOMX_FLAG_LARGE_PAGES);
@@ -240,6 +244,9 @@ static randomx_flags flags_jit_light(void) {
 }
 
 static randomx_flags flags_jit_full(void) {
+#ifdef SHEAR_HASH_INTERPRETER_ONLY
+  return flags_interpreter();
+#endif
   randomx_flags f = flags_jit_light();
   f = (randomx_flags)(f | RANDOMX_FLAG_FULL_MEM);
   return f;
@@ -341,6 +348,18 @@ static int init_cache_locked(const unsigned char k[32]);
 static int backend_matches_selftest_locked(void);
 
 int shear_hash_set_backend(const char *name) {
+#ifdef SHEAR_HASH_INTERPRETER_ONLY
+  /* The wallet's mobile build (wallet/native/build-android-shear-v3.sh):
+   * light mode with the interpreter only. No JIT and no full dataset is
+   * ever selected; any other request is refused and the backend stays. */
+  if (!name || strcmp(name, "interpreter") != 0) {
+    fprintf(stderr, "ShearHash: interpreter-only build refused backend %s\n", name ? name : "(null)");
+    return -1;
+  }
+  randomx_flags next = flags_interpreter();
+  const char *label = "interpreter";
+  int want_full = 0;
+#else
   randomx_flags next = flags_jit_light();
   const char *label = "jit";
   int want_full = 0;
@@ -356,6 +375,7 @@ int shear_hash_set_backend(const char *name) {
     next = flags_interpreter();
     label = "interpreter";
   }
+#endif
   exclusive_begin();
   if (next != g_flags) {
     drop_cache_locked();

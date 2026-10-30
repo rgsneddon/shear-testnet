@@ -4,12 +4,17 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:ffi/ffi.dart';
-import 'package:flutter/foundation.dart';
+import 'package:meta/meta.dart';
 
 import 'shear_admit_pin.dart';
 import 'shear_range_isolate.dart';
 
 export 'shear_range_isolate.dart' show debugFlowCryptoOnCaller, rangeOnUiIsolate, requireRangeOffUi;
+
+/// flutter/foundation kDebugMode, the same definition, without importing
+/// Flutter into the plain-Dart library graph.
+const bool _kDebugMode =
+    !bool.fromEnvironment('dart.vm.product') && !bool.fromEnvironment('dart.vm.profile');
 
 /// In-process BP+ range proofs and the FS-1 spend prover. Same C ABI as
 /// `libshear_admit` (`shear_range_prove` / `shear_range_verify` and the
@@ -55,7 +60,7 @@ class AdmitNative {
       return _cached;
     } catch (e) {
       stderr.writeln('admit_lib_load: $e');
-      if (!kDebugMode && !_mobile) {
+      if (!_kDebugMode && !_mobile) {
         throw StateError('admit_lib_load: $e');
       }
       _tried = true;
@@ -74,9 +79,13 @@ class AdmitNative {
       for (var i = 0; i < 32; i++) {
         rr[i] = r[i];
       }
+      // The C argument is a u64. BigInt.toInt() clamps at 2^63-1 on native,
+      // so v >= 2^63 would be proved as 2^63-1. toSigned(64) keeps the same
+      // 64 bits, which the Uint64 FFI argument passes through unchanged.
+      final bits = v.toSigned(64).toInt();
       final rc = debugRange != null
-          ? debugRange!(v.toInt(), rr, out, olen, rangeCap)
-          : _range(v.toInt(), rr, out, rangeCap, olen);
+          ? debugRange!(bits, rr, out, olen, rangeCap)
+          : _range(bits, rr, out, rangeCap, olen);
       final n = olen.value;
       if (rc != 1 || n <= 0 || n > rangeCap) return null;
       final blob = Uint8List.fromList(out.asTypedList(n));
@@ -137,7 +146,7 @@ class AdmitNative {
       }
     }
     // Profile and release. Debug (kDebugMode) is the only unpinned path.
-    if (!kDebugMode) {
+    if (!_kDebugMode) {
       return _openPinned();
     }
     Object? last;

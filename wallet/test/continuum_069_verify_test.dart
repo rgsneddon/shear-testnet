@@ -18,6 +18,8 @@ void main() {
     final session = ShearSession(store: File('${dir.path}/session.json'));
     await tester.runAsync(() async {
       await session.loadOrCreate();
+      // Connect bare reads a public node only after the IP choice (22 Oct).
+      session.publicNodeConsent = true;
       await session.setPassword('test-pass-1');
     });
     final sync = ShearReadSync(seeds: const ['http://127.0.0.1:9'], jitter: Duration.zero);

@@ -12,6 +12,8 @@ import 'package:shear_wallet/shear_read_sync.dart';
 import 'package:shear_wallet/shear_reserve.dart';
 import 'package:shear_wallet/shear_session.dart';
 
+import 'support/sealed_book.dart';
+
 void main() {
   test('Continuum 0.72 build number comes from pubspec +N and is not 49', () {
     expect(kWalletVersion, '0.72');
@@ -149,6 +151,8 @@ void main() {
     expect(spendableFromVaultObserve(sealed: false, oracleNanos: 9), 0);
     expect(spendableFromVaultObserve(sealed: true, oracleNanos: 9), 0);
     expect(reserveWithdrawDialogCopy(), isNot(contains('local-only')));
+    // The withdraw posts a real transaction (1d5c7612, 10 Oct); the dialog says so.
+    expect(reserveWithdrawDialogCopy(), contains('Posts a withdraw transaction.'));
     expect(reserveWithdrawDialogCopy(), contains('Not full custody'));
     final mainSrc = File('lib/main.dart').readAsStringSync();
     expect(mainSrc, contains('vaultObserveLabel(sealed: false)'));
@@ -158,9 +162,24 @@ void main() {
     expect(finish, greaterThan(unlock));
     final open = mainSrc.substring(unlock, finish);
     expect(open, contains('await _finishUnlockSync()'));
+    // Unlock opens the wallet body through _openWalletBody, which awaits the
+    // spendable-first sync before the shell is unlocked. The one earlier
+    // `unlocked = true` is the IP choice screen (68c1553b, 22 Oct): it waits
+    // for the choice and returns before any body or credit read.
+    final body = open.indexOf('Future<void> _openWalletBody');
+    expect(body, greaterThan(0));
+    final enter = open.substring(0, body);
+    final choice = enter.indexOf('if (_needsPublicChoice())');
+    expect(choice, greaterThan(0));
+    final choiceEnd = enter.indexOf('return;', choice);
+    expect(enter.indexOf('unlocked = true'), inExclusiveRange(choice, choiceEnd));
+    expect(enter.substring(choice, choiceEnd), contains('_awaitingPublicChoice = true'));
+    expect(enter.indexOf('unlocked = true', choiceEnd), -1);
+    expect(enter.indexOf('await _openWalletBody()'), greaterThan(choiceEnd));
+    final opener = open.substring(body);
     expect(
-      open.indexOf('await _finishUnlockSync()'),
-      lessThan(open.indexOf('unlocked = true')),
+      opener.indexOf('await _finishUnlockSync()'),
+      inExclusiveRange(0, opener.indexOf('unlocked = true')),
     );
     expect(open.contains('_verifying = true'), isFalse);
     expect(open.contains('await syncCredits'), isFalse);
@@ -207,15 +226,12 @@ void main() {
     final ledger = ShearLedger(pool: ShearPoolClient(baseUrl: 'http://127.0.0.1:${server.port}'))
       ..bindIdentity(id);
     final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-    ledger.rememberNote({
-      'address': home,
-      'dest': home,
-      'verified': true,
-      'height': 2,
-      'amount': 0.4,
-      'commit': Uint8List(32)..[0] = 1,
-      'r': Uint8List(32)..[0] = 2,
-    });
+    // One real opened 0.4 SHE note, mined at 2 with 9 confirmations. The
+    // pool's 1000 SHE balance figure is not a coin.
+    final seed = seedOf(id);
+    ledger.spendSeed = seed;
+    ledger.rememberNote(sealedNoteOn(home, seed, 40000000000, height: 2));
+    ledger.noteLiveHeight(2 + ShearLedger.spendableConfirmations - 1);
     ledger.settleTo(2 + ShearLedger.spendableConfirmations - 1);
     final caller = identityHashCode(Isolate.current).toString();
     final opened = await ledger.followOffUi(

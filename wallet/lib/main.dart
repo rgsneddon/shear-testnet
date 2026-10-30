@@ -49,6 +49,19 @@ const kSpendableSyncing = 'Syncing…';
 /// Connect bare without consent, or an own node that did not resolve.
 const kSpendableNotSyncing = 'not syncing: choose a node';
 
+/// The Spendable figure. A read that failed or has not finished is never a
+/// number, 0 included: it is [kSpendableSyncing], and the ledger's
+/// [ShearLedger.spendableReadError] shows under it.
+String spendableFigureText({
+  required bool sourceBlocked,
+  required bool ready,
+  required double spendShe,
+}) {
+  if (sourceBlocked) return kSpendableNotSyncing;
+  if (!ready) return kSpendableSyncing;
+  return '${formatShe(spendShe)} SHE';
+}
+
 /// Recipient amount on the flow screen, before the user sends.
 Widget flowRecipientAmountLine(String? she) {
   if (she == null || she.isEmpty) return const SizedBox.shrink();
@@ -288,7 +301,6 @@ class ShearWalletAppState extends State<ShearWalletApp>
   final flowMemo = TextEditingController();
   final unlockCtrl = TextEditingController();
   final confirmCtrl = TextEditingController();
-  final reserveAmt = TextEditingController();
   final vorticeKeyCtrl = TextEditingController();
   final shearviewQuery = TextEditingController();
   bool _vorticeBusy = false;
@@ -330,6 +342,9 @@ class ShearWalletAppState extends State<ShearWalletApp>
   final Set<String> _handledPullIds = {};
   bool _showReceiveQr = false;
   Map<String, dynamic>? _reserveLockNotice;
+
+  /// The last Reserve portal read failed. Shown on the pane, never painted.
+  String? _vaultReadError;
   String? _reserveVoteDraft;
   Timer? _reserveLockHold;
   bool _reserveLockDismissable = false;
@@ -589,7 +604,6 @@ class ShearWalletAppState extends State<ShearWalletApp>
     flowMemo.dispose();
     unlockCtrl.dispose();
     confirmCtrl.dispose();
-    reserveAmt.dispose();
     vorticeKeyCtrl.dispose();
     shearviewQuery.dispose();
     for (final c in _tabScroll) {
@@ -1094,6 +1108,10 @@ class ShearWalletAppState extends State<ShearWalletApp>
         paymentCode: id!.paymentCode,
       );
     }
+    ledger.restoreBodyScan(
+      required: session.rememberedBodyProof,
+      scanTo: session.rememberedBodyScanTo,
+    );
     if (session.rememberedReserve != null) {
       reserve.installRemembered(ledger, session.rememberedReserve!);
     }
@@ -2074,6 +2092,8 @@ class ShearWalletAppState extends State<ShearWalletApp>
     session.rememberedOpenedProofs = ledger.exportOpenedProofs();
     session.rememberedNotes = ledger.exportNotesForSession();
     session.rememberedNotesCovered = ledger.notesCovered;
+    session.rememberedBodyProof = ledger.bodyProofRequired;
+    session.rememberedBodyScanTo = ledger.bodyScanTo;
     session.rememberedChainGenesis = ledger.chainGenesis;
     session.rememberedTxs = [
       for (final t in ledger.transactions)
@@ -2351,7 +2371,14 @@ class ShearWalletAppState extends State<ShearWalletApp>
         ),
       ),
       actions: [
-        FittedBox(
+        // The toolbar lays actions out in an unbounded Row, so the FittedBox
+        // needs its own width bound to scale down on a narrow window instead
+        // of overflowing the bar.
+        ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.sizeOf(context).width * 0.55,
+          ),
+          child: FittedBox(
           fit: BoxFit.scaleDown,
           child: Row(
             children: [
@@ -2408,6 +2435,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
                 ),
               ),
             ],
+          ),
           ),
         ),
       ],
@@ -2883,11 +2911,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
 
   /// Syncing until a read from the selected source succeeds. A blocked source
   /// names itself instead of painting 0 or a saved book.
-  String _spendableFigureText(bool spendReady, double spend) {
-    if (_spendSourceBlocked) return kSpendableNotSyncing;
-    if (!spendReady) return kSpendableSyncing;
-    return '${formatShe(spend)} SHE';
-  }
+  String _spendableFigureText(bool spendReady, double spend) =>
+      spendableFigureText(
+        sourceBlocked: _spendSourceBlocked,
+        ready: spendReady,
+        spendShe: spend,
+      );
 
   /// One spinner. No step list. The bar stays so the shell is still responding.
   Widget _bookLoading() {
@@ -2968,6 +2997,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
         ),
       ),
       Text('Spendable', style: TextStyle(color: shearMutedOf(context))),
+      if (!spendReady && ledger.spendableReadError.isNotEmpty)
+        Text(
+          ledger.spendableReadError,
+          key: const Key('continuum-spendable-error'),
+          style: TextStyle(color: shearMutedOf(context), fontSize: 13),
+        ),
       if (ledger.headerVerifyLine != null)
         Text(
           ledger.headerVerifyLine!,
@@ -3124,6 +3159,18 @@ class ShearWalletAppState extends State<ShearWalletApp>
           color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
         ),
       ),
+      // ShearK refuses to run on phones (exit 86, Russell's phone-mining
+      // ruling): the phone wallet says so where the mining login is.
+      if (_hostAndroid) ...[
+        const SizedBox(height: 6),
+        Text(
+          kPhoneMiningLine,
+          key: const Key('continuum-phone-mining'),
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+          ),
+        ),
+      ],
     ];
     final statsPane = <Widget>[
       Text(
@@ -4020,7 +4067,8 @@ class ShearWalletAppState extends State<ShearWalletApp>
   Future<void> _reserveSend(BuildContext context, ShearIdentity ident) async {
     final dest = _reserveDestOf(ident);
     if (dest == null) return;
-    final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
+    // A lock is exactly one π leaf (ruling 25 Oct): the amount is fixed.
+    const she = kPiShe;
     if (!unprivateAmountPermitted(she)) return;
     final depth = await _mempoolDepthNow();
     final lockNanos = (she * kUnitsPerShe).round();
@@ -4059,7 +4107,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Lock ${formatShe(she)} SHE into The Reserve.\n'
+              'Lock $kPiExactText SHE (one π) into The Reserve.\n'
               'This spends Continuum and locks the coins in your portal until the epoch ends.',
             ),
             const SizedBox(height: 8),
@@ -4157,9 +4205,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
     );
   }
 
-  bool get _reserveSendReady {
-    final she = double.tryParse(reserveAmt.text.trim()) ?? 0;
-    if (!unprivateAmountPermitted(she)) return false;
+  /// A Deposit locks exactly one π leaf, so it needs only a ready node.
+  bool get _reserveSendReady => _reserveNodeReady;
+
+  /// Withdraw, roll, and the vote carry no Deposit amount. They wait only on
+  /// the node, never on what is typed in the Deposit field.
+  bool get _reserveNodeReady {
     if (sidecar.committed == ClosureSendMode.localNode ||
         sidecar.committed == ClosureSendMode.localNodeFull) {
       return sidecar.honest || walletAtTip(_syncLabel);
@@ -4578,7 +4629,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
           publicIpConsent: !local && _reserveUnprivateOk,
         );
       } else {
-        final leaves = reserveLockLeaves(ledger.notes);
+        final leaves = reserveLockLeaves(ledger.pickableNotes);
         final postedAll = await postMaturedWithdraws(
           ledger,
           reserve: reserve,
@@ -4981,7 +5032,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
                 ),
               ),
             ],
-      if (p.nanos > 0) ...[
+      if (p.nanos > 0 && _vaultReadError == null) ...[
         const SizedBox(height: 8),
         _glowBanner(
           context,
@@ -5016,19 +5067,14 @@ class ShearWalletAppState extends State<ShearWalletApp>
         ),
       ],
       const SizedBox(height: 8),
-      TextField(
+      // A lock is exactly one π leaf: the amount is shown, never typed.
+      Text(
+        kReserveLockAmountLine,
         key: const Key('reserve-amount'),
-        controller: reserveAmt,
-        keyboardType: TextInputType.number,
-        onChanged: (_) => setState(() {}),
-        decoration: const InputDecoration(labelText: 'Amount SHEAR'),
+        style: const TextStyle(fontWeight: FontWeight.w600),
       ),
       Text(
-        _txFeeAdvice(
-          ((double.tryParse(reserveAmt.text.trim()) ?? 0) * kUnitsPerShe)
-              .round(),
-          oneFeeTo: 'add funds to the vault',
-        ),
+        _txFeeAdvice(kPiSheNanos, oneFeeTo: 'add funds to the vault'),
         key: const Key('reserve-lock-levy'),
       ),
       if (_reserveDepositProgress != null) ...[
@@ -5055,7 +5101,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
             onPressed: _reserveSendReady
                 ? () => _reserveSend(context, ident)
                 : null,
-            child: const Text('Deposit sum'),
+            child: const Text(kReserveLockButton),
           ),
           if ((p.nanos > 0 && reserve.epochIsOver(now)) ||
               p.claimableRewards > 0 ||
@@ -5066,7 +5112,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
             ),
             FilledButton(
               key: const Key('reserve-withdraw'),
-              onPressed: _reserveSendReady
+              onPressed: _reserveNodeReady
                   ? () => _reserveWithdraw(context, ident)
                   : null,
               child: Text(
@@ -5085,7 +5131,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
             ),
             FilledButton(
               key: const Key('reserve-roll'),
-              onPressed: _reserveSendReady
+              onPressed: _reserveNodeReady
                   ? () => _reserveRoll(context, ident)
                   : null,
               child: const Text('Roll over'),
@@ -5227,7 +5273,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
       ));
       voteKids.add(FilledButton(
         key: const Key('reserve-vote-submit'),
-        onPressed: draft == null || _reserveVoteBusy || !_reserveSendReady
+        onPressed: draft == null || _reserveVoteBusy || !_reserveNodeReady
             ? null
             : () => _reserveVote(context, ident, draft),
         child: Text(p.nanos ~/ kPiSheNanos > 0
@@ -5253,6 +5299,15 @@ class ShearWalletAppState extends State<ShearWalletApp>
             textAlign: TextAlign.left,
             style: const TextStyle(fontWeight: FontWeight.w600),
           ),
+          // The portal read failed: say so, and paint no figure from it.
+          if (_vaultReadError != null)
+            Text(
+              _vaultReadError!,
+              key: const Key('reserve-read-error'),
+              textAlign: TextAlign.left,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            )
+          else ...[
           Text('portal ${vortex.yourNanos}', key: const Key('vortex-your-portal'), textAlign: TextAlign.left),
           Text('Flow continuum ${vortex.flowNanos}', key: const Key('vortex-flow-continuum'), textAlign: TextAlign.left),
           Text('Staked  $stakedShe SHE', textAlign: TextAlign.justify),
@@ -5294,6 +5349,7 @@ class ShearWalletAppState extends State<ShearWalletApp>
               textAlign: TextAlign.justify,
             ),
             Text('At epoch end  $endShe SHE', textAlign: TextAlign.justify),
+          ],
           ],
         ],
       ),
@@ -5355,8 +5411,12 @@ class ShearWalletAppState extends State<ShearWalletApp>
         final keepStaked = p.staked;
         final keepIdle = p.idle;
         final keepJoined = p.joined;
-        final json = Map<String, dynamic>.from(await pool.reservePortal(dest));
-        if (json['ok'] == false) return;
+        // A refused or failed read (an own node has no pool vault route and
+        // answers 400) is shown on the pane, and nothing is painted from it.
+        final read = await readVaultPortal(pool, dest);
+        if (mounted) setState(() => _vaultReadError = read.error.isEmpty ? null : read.error);
+        final json = read.portal;
+        if (json == null) return;
         final locks = _reserveLockRows(dest);
         if (locks.isNotEmpty) {
           final prior = json['locks'];
@@ -5904,3 +5964,16 @@ class ScanReceiveQrPageState extends State<ScanReceiveQrPage> {
     );
   }
 }
+
+/// One π leaf, to the protocol unit (11 decimals), as the Deposit shows it.
+final String kPiExactText = (kPiSheNanos / kUnitsPerShe).toStringAsFixed(11);
+
+/// The Deposit amount line. A lock is exactly one π leaf (Russell, 25 Oct
+/// 14:20, Corrections 1); there is no amount to type.
+final String kReserveLockAmountLine = 'Amount: $kPiExactText SHE (a lock is exactly one π)';
+
+/// The Deposit action.
+const kReserveLockButton = 'Lock π';
+
+/// Under the mining login on Android and iOS: ShearK will not run on phones.
+const kPhoneMiningLine = 'Mining is for desktops and servers; ShearK will not run on phones.';

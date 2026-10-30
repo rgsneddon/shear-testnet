@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shear_wallet/shear_cli.dart';
@@ -9,6 +8,8 @@ import 'package:shear_wallet/shear_identity.dart';
 import 'package:shear_wallet/shear_ledger.dart';
 import 'package:shear_wallet/shear_public_confirm.dart';
 import 'package:shear_wallet/shear_reserve.dart';
+
+import 'support/sealed_book.dart';
 
 void main() {
   test('the privacy hop, VPN service, and RPT client are gone', () {
@@ -88,6 +89,7 @@ void main() {
     );
   });
 
+  // A lock is exactly one π leaf (Russell, 25 Oct 14:20), so each lock here is π.
   test('public lock, vote, and withdraw wait for consent and local posts do not', () async {
     final blocked = _book();
     final dest = vaultDest(blocked.id.address, viewKey: blocked.id.viewKey)!;
@@ -102,7 +104,7 @@ void main() {
       restFrame: blocked.id.address,
       paymentCode: blocked.id.paymentCode,
       dest: dest,
-      she: 0.4,
+      she: kPiShe,
       depth: 0,
       spendSeed: hexToBytes(blocked.id.seedHex),
       local: false,
@@ -110,6 +112,7 @@ void main() {
     expect(lock.posted, isFalse);
     expect(lock.tx, isNull);
     expect(lock.remark, kPublicIpWaitCopy);
+    expect(blocked.pool.posts, isEmpty, reason: 'no consent: nothing reached the public node');
     expect(reserve.portal(dest).nanos, 0);
     expect(blocked.ledger.transactions.where((t) => t.kind == 'lock'), isEmpty);
     expect(
@@ -136,38 +139,6 @@ void main() {
     expect(reserve.portal(dest).vote, isNull);
     expect(blocked.ledger.transactions.where((t) => t.kind == 'vote'), isEmpty);
 
-    reserve.epochStartMs = 1;
-    reserve.epochBps = 0;
-    reserve.bonusEnacted = false;
-    reserve.portal(dest)
-      ..staked = 100000000000
-      ..idle = 0
-      ..joined = true;
-    reserve.totalLockedNanos = 100000000000;
-    final now = 1 + kReserveEpochMs;
-    final early = await postReserveWithdraw(
-      blocked.ledger,
-      reserve: reserve,
-      dest: dest,
-      payout: blocked.home,
-      nowMs: 1,
-      local: false,
-    );
-    expect(early, isNull);
-    expect(reserve.portal(dest).staked, 100000000000);
-    await expectLater(
-      postReserveWithdraw(
-        blocked.ledger,
-        reserve: reserve,
-        dest: dest,
-        payout: blocked.home,
-        nowMs: now,
-        local: false,
-      ),
-      throwsA(isA<StateError>().having((e) => e.message, 'message', kPublicIpWaitCopy)),
-    );
-    expect(reserve.portal(dest).staked, 100000000000);
-    expect(blocked.ledger.transactions.where((t) => t.kind == 'withdraw'), isEmpty);
 
     final localBook = _book();
     final localDest = vaultDest(localBook.id.address, viewKey: localBook.id.viewKey)!;
@@ -178,13 +149,14 @@ void main() {
       restFrame: localBook.id.address,
       paymentCode: localBook.id.paymentCode,
       dest: localDest,
-      she: 0.4,
+      she: kPiShe,
       depth: 0,
       spendSeed: hexToBytes(localBook.id.seedHex),
       local: true,
     );
     expect(localLock.posted, isTrue, reason: localLock.remark);
     expect(localLock.tx!.kind, 'lock');
+    expect(localBook.pool.posts, isEmpty, reason: 'a local lock is not a public post');
 
     final consented = _book();
     final consentedDest = vaultDest(consented.id.address, viewKey: consented.id.viewKey)!;
@@ -195,7 +167,7 @@ void main() {
       restFrame: consented.id.address,
       paymentCode: consented.id.paymentCode,
       dest: consentedDest,
-      she: 0.4,
+      she: kPiShe,
       depth: 0,
       spendSeed: hexToBytes(consented.id.seedHex),
       local: false,
@@ -204,6 +176,8 @@ void main() {
     expect(consentedLock.posted, isTrue, reason: consentedLock.remark);
     expect(consentedLock.tx!.kind, 'lock');
     expect(consentedLock.remark, isNot(kPublicIpWaitCopy));
+    expect(consented.pool.posts.where((b) => b['kind'] == 'lock'), hasLength(1),
+        reason: 'with consent the real FS-1 lock body is posted');
 
     final voteBook = _book();
     final voteDest = vaultDest(voteBook.id.address, viewKey: voteBook.id.viewKey)!;
@@ -230,31 +204,38 @@ void main() {
     expect(consentedVote.enacted, isFalse);
     expect(voteBook.ledger.transactions.where((t) => t.kind == 'vote'), isEmpty);
 
-    final withdrawBook = _book();
-    final withdrawDest = vaultDest(withdrawBook.id.address, viewKey: withdrawBook.id.viewKey)!;
-    final withdrawReserve = ShearReserve()
+    // Withdraw: the posted π lock above left its provable leaf. A public
+    // withdraw of it waits for consent before anything is read or posted; a
+    // local one does not ask; with consent it goes on to read the vault book
+    // (this one has no matured tranche, so nothing settles or posts).
+    final leaves = reserveLockLeaves(consented.ledger.notes);
+    expect(leaves, isNotNull, reason: 'the posted lock left its leaf');
+    final seed = hexToBytes(consented.id.seedHex);
+    consentedReserve
       ..epochStartMs = 1
-      ..epochBps = 0
-      ..bonusEnacted = false
-      ..totalLockedNanos = 100000000000;
-    withdrawReserve.portal(withdrawDest)
-      ..staked = 100000000000
-      ..idle = 0
-      ..joined = true;
-    // Current law: consent allows the post, but a body with no lock leaves
-    // does not settle and does not send `from`.
-    final withdrawn = await postReserveWithdraw(
-      withdrawBook.ledger,
-      reserve: withdrawReserve,
-      dest: withdrawDest,
-      payout: withdrawBook.home,
-      nowMs: 1 + kReserveEpochMs,
-      local: false,
-      publicIpConsent: true,
+      ..currentEpoch = 1;
+    final postsBefore = consented.pool.posts.length;
+    Future<({ShearTx tx, Map<String, int> settled})?> withdraw({required bool local, bool consent = false}) =>
+        postReserveWithdraw(
+          consented.ledger,
+          reserve: consentedReserve,
+          dest: consentedDest,
+          payout: consented.home,
+          nowMs: 1 + kReserveEpochMs,
+          spendSeed: seed,
+          leaves: leaves,
+          local: local,
+          publicIpConsent: consent,
+        );
+    await expectLater(
+      withdraw(local: false),
+      throwsA(isA<StateError>().having((e) => e.message, 'message', kPublicIpWaitCopy)),
     );
-    expect(withdrawn, isNull);
-    expect(withdrawReserve.portal(withdrawDest).staked, 100000000000);
-    expect(withdrawBook.ledger.transactions.where((t) => t.kind == 'withdraw'), isEmpty);
+    expect(consented.pool.posts.length, postsBefore, reason: 'no consent: nothing posted');
+    expect(await withdraw(local: true), isNull, reason: 'a local withdraw does not wait for consent');
+    expect(await withdraw(local: false, consent: true), isNull, reason: 'consent: on to the vault book');
+    expect(consented.pool.posts.length, postsBefore, reason: 'no matured tranche: nothing posted');
+    expect(consented.ledger.transactions.where((t) => t.kind == 'withdraw'), isEmpty);
   });
 }
 
@@ -268,31 +249,11 @@ bool _source(String path) {
       path.endsWith('.cpp');
 }
 
-({ShearIdentity id, ShearLedger ledger, String home}) _book() {
-  final id = createIdentity();
-  final ledger = ShearLedger()..bindIdentity(id);
-  final home = ledger.homeDest(id.address, paymentCode: id.paymentCode);
-  ledger.rememberNote({
-    'address': home,
-    'dest': home,
-    'verified': true,
-    'height': 1,
-    'amount': 1.0,
-    'commit': Uint8List(32)..[0] = 1,
-    'r': Uint8List(32)..[0] = 2,
-  });
-  ledger.restoreSealedTip(20);
-  ledger.rememberDest(home);
-  ledger.rememberNodeChain(history: [
-    {
-      'kind': 'coinbase',
-      'dest': home,
-      'amount': 5.0,
-      'height': 1,
-    },
-  ]);
-  ledger.creditKnownNodeLands();
-  ledger.settleTo(20);
-  ledger.recheckRestFrameSpendable(id.address, paymentCode: id.paymentCode);
-  return (id: id, ledger: ledger, home: home);
+/// One real sealed 10 SHE note mined 9 deep (never a node row or a round
+/// credit), with a pool double that serves its note set and records posts.
+({ShearIdentity id, ShearLedger ledger, String home, SealedNotePool pool}) _book() {
+  final b = SealedBook.fund([10 * kUnitsPerShe]);
+  expect(b.spendableUnits, 10 * kUnitsPerShe);
+  final home = b.ledger.homeDest(b.id.address, paymentCode: b.id.paymentCode);
+  return (id: b.id, ledger: b.ledger, home: home, pool: b.pool);
 }

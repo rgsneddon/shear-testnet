@@ -1,0 +1,26 @@
+# Wallet test files the full wallet suite (tool/wallet_suite.sh, the
+# wallet-suite workflow) does not run on their own. Every other
+# test/*_test.dart runs. A row is: <file> <where it runs, or the dated ruling>.
+# A row whose file is gone fails the suite, so this list cannot rot.
+#
+# Fixture emitters: node/tests/test_dart_withdraw_queue_v12.js runs each one
+# with its SHEAR_*_FIXTURE from a real mined chain (full-suite, shear-fs1).
+# Alone they have no fixture.
+test/emit_leaf_vote_test.dart driver: node/tests/test_dart_withdraw_queue_v12.js
+test/emit_lock_spendable_test.dart driver: node/tests/test_dart_withdraw_queue_v12.js
+test/emit_matured_withdraw_test.dart driver: node/tests/test_dart_withdraw_queue_v12.js
+test/emit_queue_lock_test.dart driver: node/tests/test_dart_withdraw_queue_v12.js
+test/emit_receipt_spend_test.dart driver: node/tests/test_dart_withdraw_queue_v12.js
+test/emit_restore_scan_test.dart driver: node/tests/test_dart_withdraw_queue_v12.js
+test/emit_shewall_backup_test.dart driver: node/tests/test_dart_withdraw_queue_v12.js
+test/emit_vault_claim_test.dart driver: node/tests/test_dart_withdraw_queue_v12.js
+test/emit_wallet_identity_test.dart driver: node/tests/test_dart_withdraw_queue_v12.js
+# Needs the NDK-built arm64 libraries: android-admit.yml builds them and runs it.
+test/android_apk_test.dart android-admit.yml (NDK-built arm64 libraries)
+# Vortice scope, Russell 26 Oct: only the Vault/Reserve vortice is in scope;
+# the RPMail vortice and its privacy browser are paused remnants.
+test/rx_rpmail_vortice_test.dart SCOPE vortice scope ruling, Russell 26 Oct
+# An empty placeholder ("Replaced by shear_wallet_test.dart"): no tests to run.
+test/widget_test.dart empty placeholder, replaced by shear_wallet_test.dart
+# Windows-only (skipped on Linux): wallet-shewall-windows.yml runs it on windows-latest.
+test/shewall_windows_ci_test.dart wallet-shewall-windows.yml (Windows runner)
