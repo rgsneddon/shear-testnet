@@ -141,10 +141,11 @@ void main() {
     held.remove('bodyProven');
     expect(spendableUnits(ledger, id), 0, reason: 'unproven body: Pending');
     expect(ledger.spendable(home), 0);
-    expect((ledger.pending(id.address, paymentCode: id.paymentCode) * kUnitsPerShe).round(), nanos);
+    expect((ledger.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode) * kUnitsPerShe).round(), nanos,
+        reason: 'a mined note with no proven body is incoming, not Spendable');
     held['bodyProven'] = true;
     expect(spendableUnits(ledger, id), nanos, reason: 'proven: exactly the note');
-    expect((ledger.pending(id.address, paymentCode: id.paymentCode) * kUnitsPerShe).round(), 0);
+    expect((ledger.unconfirmedIncomingShe(id.address, paymentCode: id.paymentCode) * kUnitsPerShe).round(), 0);
   });
 
   test('P1: a refused send does not paint an unmined change note as Spendable on any dest', () async {
