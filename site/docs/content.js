@@ -351,8 +351,7 @@ window.SHEAR_DOCS = {
     title: 'The Reserve',
     crumb: 'reserve / overview',
     html:
-      '<p>The Reserve is the first vortice and the only programme allowed to mint extra SHE. Open it from the Vortex tab. You lock SHE into your own portal. π SHE (about 3.14159265358 SHE) unlocks one vote for the current epoch. <strong>Your locks</strong> shows two rows; extra locks scroll inside that pane. A Reserve send shows your IP to the node. Use a VPN.</p>' +
-      '<p>There is no Shear privacy hop. Confirm <strong>I already use a VPN / I accept exposing my IP</strong>, then Send. The same confirm is on Windows, Linux, Arch, and Android.</p>'
+      '<p>The Reserve is the first vortice and the only programme allowed to mint extra SHE. Open it from the Vortex tab. You lock SHE into your own portal. π SHE (about 3.14159265358 SHE) unlocks one vote for the current epoch. <strong>Your locks</strong> shows two rows; extra locks scroll inside that pane. A Reserve send shows your IP to the node. Use a VPN.</p>'
   };
 
   P.epochs = {
