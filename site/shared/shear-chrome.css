@@ -147,7 +147,7 @@ html[data-theme="light"] a.nav-btn {
   justify-content: center;
   text-align: center;
   height: 34px;
-  padding: 0 10px;
+  padding: 0 4px;
   color: var(--shear-chrome-text-dim);
   text-decoration: none;
   font-family: var(--shear-chrome-font);

@@ -6,15 +6,15 @@
     },
     "site/boot/index.html": {
       "skeleton": "b4cc9c7d47d41180f45fc5fd7d69261009934b6a8ed4cce6dac91cf28da21076",
-      "style": "fd03a6f669054017d3388c29242d336c0d017096bce274b4ea35e36d3bad3bee"
+      "style": "ae08a8afe42d313f18fcc4633a3f45f3cfc62e665bb6731060fcb610587025cc"
     },
     "dag/index.html": {
       "skeleton": "e164073ef4d83e47c38e7216d8a8ccbbd5610a2a6fe34b48f527d5fc45a461e3",
-      "style": "a2048fb4a26d8242ac3f497cd5d78473bb2de718a2e96aed64e2faa1929d0977"
+      "style": "41f650a5670bfba8288a09a93c823766a0b2b9975817a36f3dd6cb712a604168"
     },
     "explorer/explorer.html": {
       "skeleton": "f98788ac75603124446689e05faeab158328717876ccf63b67ac513ce81a2825",
-      "style": "b9a95530c8cdda6293c7cace426b68e86af4c6d4f97dc4839de6c308ae5bb9b1"
+      "style": "9745689887519674b782454aace612b456d545dec2def625c92f5310c99cba76"
     },
     "mempool/index.html": {
       "skeleton": "916aa9aed5b9e4814ece08510aabbbc0498b8279c955633fc91dfc5379e1c9e0",
@@ -26,11 +26,11 @@
     },
     "pool/public/index.html": {
       "skeleton": "b7309c1f4f1045ee9544eb300b535b94b1f9ab577247141744f664568804519f",
-      "style": "b501244d1f1ef22a3c723a85d4fa5161974a9ff6923e3e30bba27cd0e6c91fc1"
+      "style": "159ac8d0f9f190bfc7bb74f4a1ade0eaf82875428f5a265b199d0a729e5a1f34"
     },
     "pool/public/explorer.html": {
       "skeleton": "371cf7ec27508e4fd621565a0e5c0e5abbaa9395434c8e23bdc639c690f9d267",
-      "style": "177e4abe348422ec84d814a959d99d6829e070d961f8ce8b1f598b034d0cb2be"
+      "style": "ae9d25495e1bf0474d440446d143cd8d0f992bac1c5b54d0e060d2ee43ec24d0"
     },
     "pool/public/miner.html": {
       "skeleton": "c7646568de29f78401ae5c6cb8a028e6f09385116782c76398afd82e7fc80b0a",
@@ -82,7 +82,7 @@
     },
     "site/whitepaper/index.html": {
       "skeleton": "f9f3a31df65e995510c05032a2b3d9ac386e607973164b51ba6dcc6fe5b1133f",
-      "style": "cf4add7c1fb7ab54c2195331277b2fdb75150be2b5b33d8f174afbbd3eee9d82"
+      "style": "490b4027359976240bab0e11f175baad5b5a5c6b3d976a98427bdcd540ba9f1b"
     },
     "vortices/index.html": {
       "skeleton": "eecab1eed4f60df254ae3212b10244328b3b3ffa85929353d57ead949980c5e1",
@@ -96,13 +96,13 @@
     "explorer/css/saas-dark.css": "7d632fa40150c5ac288e298cc18a1c5c49ac0e4b8849e30a4dd6e343b249b459",
     "explorer/css/site.css": "514cbbe925b41a52c0d4136dbb272924d3dad0d5accb132a73c8ea74d4e965ab",
     "explorer/fonts/greatvibes/great-vibes.css": "24ea19919dbfae9b23318f103253797d30e4b61ddc82c0dc6f7a90de7d9f94d8",
-    "explorer/shared/shear-chrome.css": "a587b192091aedaefba6aba5dda6e0213000a0d6c613e63049cd7e7e4446fe37",
+    "explorer/shared/shear-chrome.css": "2d8726149761e90987c02b8b97945e67ca709f2e8e73d9869eca9d04f290bd5f",
     "mempool/brand/nevia.css": "f77dc3bb176dec05147c3ba6bf24f5dfc205739a2ee79c5cda86ab03618cc5f2",
     "mempool/brand/theme.css": "34c670fe1025ee63e998ce82c928e8e78587c3e0284217411c8d802483a661b9",
     "mempool/brand/urema.css": "14c30f0b55efefd31f715c6b7a7aea27189a33be5cd4124723520220208c4310",
     "mempool/css/saas-dark.css": "7d632fa40150c5ac288e298cc18a1c5c49ac0e4b8849e30a4dd6e343b249b459",
     "mempool/css/site.css": "514cbbe925b41a52c0d4136dbb272924d3dad0d5accb132a73c8ea74d4e965ab",
-    "mempool/shared/shear-chrome.css": "a587b192091aedaefba6aba5dda6e0213000a0d6c613e63049cd7e7e4446fe37",
+    "mempool/shared/shear-chrome.css": "2d8726149761e90987c02b8b97945e67ca709f2e8e73d9869eca9d04f290bd5f",
     "pool/public/brand/nevia.css": "f77dc3bb176dec05147c3ba6bf24f5dfc205739a2ee79c5cda86ab03618cc5f2",
     "pool/public/brand/theme.css": "c2f1feaeea84640b4ea0ba27990435efe0bc3e7ecc058334645eb966711a5aa6",
     "pool/public/brand/urema.css": "14c30f0b55efefd31f715c6b7a7aea27189a33be5cd4124723520220208c4310",
@@ -110,7 +110,7 @@
     "pool/public/css/site.css": "514cbbe925b41a52c0d4136dbb272924d3dad0d5accb132a73c8ea74d4e965ab",
     "pool/public/fonts/greatvibes/great-vibes.css": "24ea19919dbfae9b23318f103253797d30e4b61ddc82c0dc6f7a90de7d9f94d8",
     "pool/public/pool-theme.css": "768a71e9b88da4cb904095fe835409942561b8e3e925e6d68a84094fc4e4a671",
-    "pool/public/shared/shear-chrome.css": "a587b192091aedaefba6aba5dda6e0213000a0d6c613e63049cd7e7e4446fe37",
+    "pool/public/shared/shear-chrome.css": "2d8726149761e90987c02b8b97945e67ca709f2e8e73d9869eca9d04f290bd5f",
     "site/boot/brand/nevia.css": "f77dc3bb176dec05147c3ba6bf24f5dfc205739a2ee79c5cda86ab03618cc5f2",
     "site/boot/brand/theme.css": "34c670fe1025ee63e998ce82c928e8e78587c3e0284217411c8d802483a661b9",
     "site/boot/brand/urema.css": "14c30f0b55efefd31f715c6b7a7aea27189a33be5cd4124723520220208c4310",
@@ -120,7 +120,7 @@
     "site/css/saas-dark.css": "7d632fa40150c5ac288e298cc18a1c5c49ac0e4b8849e30a4dd6e343b249b459",
     "site/css/site.css": "514cbbe925b41a52c0d4136dbb272924d3dad0d5accb132a73c8ea74d4e965ab",
     "site/fonts/greatvibes/great-vibes.css": "24ea19919dbfae9b23318f103253797d30e4b61ddc82c0dc6f7a90de7d9f94d8",
-    "site/shared/shear-chrome.css": "a587b192091aedaefba6aba5dda6e0213000a0d6c613e63049cd7e7e4446fe37"
+    "site/shared/shear-chrome.css": "2d8726149761e90987c02b8b97945e67ca709f2e8e73d9869eca9d04f290bd5f"
   },
   "chrome": {
     "explorer/brand/theme.js": "b3fc0980c1dd22e2376bf6fecab38847cf0c91593659fb8fb87e44ca5cd19327",
