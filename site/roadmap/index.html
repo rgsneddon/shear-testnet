@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shear roadmap</title>
+  <meta name="description" content="The Shear roadmap: every open row, in priority order." />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="../css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="../css/saas-dark.css" />
+  <style>
+    .roadmap-wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+    .roadmap-scroll { overflow: auto; max-height: 70vh; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; }
+    table.roadmap { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+    table.roadmap th, table.roadmap td { padding: 8px 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }
+    table.roadmap th { position: sticky; top: 0; background: #07090c; }
+    table.roadmap td:nth-child(1), table.roadmap td:nth-child(5) { white-space: nowrap; }
+    .roadmap-foot { margin-top: 12px; opacity: 0.75; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="DOCS" data-brand-base="../brand/"></div>
+  <script src="../shared/shear-chrome.js"></script>
+  <main class="roadmap-wrap">
+    <h1>Roadmap</h1>
+    <p>Every open row, in priority order. Type Y means the row moves a consensus pin; N means it does not.</p>
+    <div class="roadmap-scroll">
+    <table class="roadmap">
+      <thead><tr><th scope="col">Priority</th><th scope="col">Row</th><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Type</th></tr></thead>
+      <tbody>
+      <tr><td>2</td><td>R01b</td><td>Vault claim post</td><td>planned</td><td>Y</td></tr>
+      <tr><td>3</td><td>R29</td><td>Hash-note admitPub not bound to the miner</td><td>planned</td><td>Y</td></tr>
+      <tr><td>4</td><td>R01a</td><td>Coinbase spend-key binding</td><td>planned</td><td>Y</td></tr>
+      <tr><td>5</td><td>R02</td><td>Vault F1 lock-note binding</td><td>planned</td><td>Y</td></tr>
+      <tr><td>6</td><td>R26</td><td>Reserve fail-closed wallet fixes</td><td>planned</td><td>N</td></tr>
+      <tr><td>7</td><td>R07</td><td>Goal 10 F</td><td>planned</td><td>Y</td></tr>
+      <tr><td>8</td><td>R06</td><td>Goals 6–9</td><td>planned</td><td>Y</td></tr>
+      <tr><td>9</td><td>R28</td><td>BluNotes</td><td>active</td><td>Y</td></tr>
+      <tr><td>9</td><td>R33</td><td>Share frame lz and frame order not canonical in shareSlotRoot</td><td>planned</td><td>Y</td></tr>
+      <tr><td>9</td><td>R35</td><td>Grinding on post-round issuedJobKeys headers</td><td>planned</td><td>Y</td></tr>
+      <tr><td>9</td><td>R36</td><td>Spill credits have no root of their own</td><td>planned</td><td>Y</td></tr>
+      <tr><td>10</td><td>R01c</td><td>Wallet remote-node privacy leak</td><td>planned</td><td>N</td></tr>
+      <tr><td>13</td><td>R05</td><td>PR 2</td><td>planned</td><td>Y</td></tr>
+      <tr><td>14</td><td>R30</td><td>Share selection does not cap distinct payees</td><td>planned</td><td>N</td></tr>
+      <tr><td>14</td><td>R32</td><td>Owed ledger grows without bound</td><td>planned</td><td>Y</td></tr>
+      <tr><td>14</td><td>R34</td><td>Hash note minted with no share</td><td>planned</td><td>Y</td></tr>
+      <tr><td>15</td><td>R39</td><td>Share verify cost</td><td>planned</td><td>N</td></tr>
+      <tr><td>16</td><td>R04</td><td>Hash-safety</td><td>planned</td><td>N</td></tr>
+      <tr><td>17</td><td>R24</td><td>Test chains refused as duplicates</td><td>planned</td><td>N</td></tr>
+      <tr><td>17</td><td>R27</td><td>Real-path money scenarios</td><td>planned</td><td>N</td></tr>
+      <tr><td>18</td><td>R14a</td><td>Public supply audit tool</td><td>planned</td><td>N</td></tr>
+      <tr><td>19</td><td>R31</td><td>Pool owed rows outlive their share bodies across a restart</td><td>planned</td><td>N</td></tr>
+      <tr><td>21</td><td>R37</td><td>Miner-side coinbase template check</td><td>planned</td><td>N</td></tr>
+      <tr><td>22</td><td>R08</td><td>PR 3a</td><td>planned</td><td>N</td></tr>
+      <tr><td>22</td><td>R11</td><td>PR 3b</td><td>planned</td><td>N</td></tr>
+      <tr><td>22</td><td>R12</td><td>Goal 10 A–D</td><td>planned</td><td>Y</td></tr>
+      <tr><td>22</td><td>R23</td><td>The pre-existing wallet Dart failures</td><td>planned</td><td>N</td></tr>
+      <tr><td>22</td><td>R38</td><td>Site tests are not in CI, and one is stale</td><td>planned</td><td>N</td></tr>
+      <tr><td>23</td><td>R03</td><td>CLI reserve lock</td><td>planned</td><td>N</td></tr>
+      <tr><td>23</td><td>R13</td><td>Wallet copy</td><td>planned</td><td>N</td></tr>
+      <tr><td>23</td><td>R14</td><td>PR 128 M3</td><td>planned</td><td>Y</td></tr>
+      <tr><td>24</td><td>R15</td><td>shear-dev deploy GO and live bug hunt</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R18a</td><td>Host rebuild on the mainnet OS split</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R16</td><td>v12 cut</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R17</td><td>Stressnet</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R18b</td><td>Final wipe of testing leftovers and mainnet release deploy</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R19</td><td>Mainnet genesis</td><td>planned</td><td>N</td></tr>
+      <tr><td>—</td><td>R09</td><td>Token spec</td><td>planned</td><td>N</td></tr>
+      <tr><td>—</td><td>R10</td><td>Private tokens build</td><td>planned</td><td>Y</td></tr>
+      <tr><td>—</td><td>R20</td><td>Android ABIs beyond arm64-v8a</td><td>planned</td><td>N</td></tr>
+      <tr><td>—</td><td>R21</td><td>Pinned note-set snapshot</td><td>planned</td><td>Y</td></tr>
+      <tr><td>—</td><td>R25</td><td>Epoch rate row</td><td>planned</td><td>Y</td></tr>
+      <tr><td>—</td><td>R40</td><td>The miner and node &quot;SHA-512&quot; is not standard SHA-512</td><td>ruled</td><td>Y</td></tr>
+      <tr><td>—</td><td>R41</td><td>ShearK-Miner full optimisation</td><td>active</td><td>N</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="roadmap-foot">generated from docs/ROADMAP.md at 5bc42e6a1de0</p>
+  </main>
+</body>
+</html>
