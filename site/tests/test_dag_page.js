@@ -59,7 +59,7 @@ describe('dag.shear.digital page', () => {
     assert.doesNotMatch(page, /GHOSTDAG/);
     assert.doesNotMatch(page, /GH\/s|sol\/s|hashes per second/i);
     const labels = navLabels(page);
-    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
+    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DONATE', 'DOCS']);
   });
 });
 

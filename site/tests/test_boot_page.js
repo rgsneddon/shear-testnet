@@ -32,7 +32,7 @@ describe('boot.shear.digital page', () => {
     assert.match(boot, /href="https:\/\/dag\.shear\.digital\/"/);
     assert.match(boot, /href="https:\/\/vortices\.shear\.digital\/"/);
     assert.deepEqual(navLabels(boot), [
-      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS',
+      'MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DONATE', 'DOCS',
     ]);
   });
 });

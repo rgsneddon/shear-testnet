@@ -251,7 +251,7 @@ describe('whitepaper.shear.digital', () => {
     assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
     assert.ok(pdf.length > 50_000);
     const labels = navLabels(paper);
-    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DOCS']);
+    assert.deepEqual(labels, ['MAIN', 'POOL', 'EXPLORER', 'MEMPOOL', 'DAG', 'MINER', 'NODE', 'WALLET', 'VORTICES', 'DONATE', 'DOCS']);
     assert.equal(labels.includes('WHITEPAPER'), false);
     assert.match(paper, /href="https:\/\/shear\.digital\/docs\/">DOCS</);
     assert.match(paper, /overflow-x:hidden/);
@@ -267,7 +267,8 @@ describe('whitepaper.shear.digital', () => {
     assert.match(paper, /href="https:\/\/dag\.shear\.digital\/">DAG</);
     assert.doesNotMatch(paper, /width:min\(210mm/);
     assert.equal(labels[labels.length - 1], 'DOCS');
-    assert.equal(labels[labels.length - 2], 'VORTICES');
+    assert.equal(labels[labels.length - 2], 'DONATE');
+    assert.equal(labels[labels.length - 3], 'VORTICES');
     const src = fs.readFileSync(path.join(here, '../whitepaper/build_pdf.py'), 'utf8');
     assert.doesNotMatch(src, /The Join/);
     assert.doesNotMatch(src, /join1\./);

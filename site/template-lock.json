@@ -5,15 +5,15 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/boot/index.html": {
-      "skeleton": "84cbddebfe26e3455abdfce37ee850e5f252fb0ef09e6f747f1a90b5225ea15c",
+      "skeleton": "b4cc9c7d47d41180f45fc5fd7d69261009934b6a8ed4cce6dac91cf28da21076",
       "style": "fd03a6f669054017d3388c29242d336c0d017096bce274b4ea35e36d3bad3bee"
     },
     "dag/index.html": {
-      "skeleton": "6f0aa9f59a01e17db9ae5a7d1107029a22cff7a0dedefda5542ed2e2099be143",
+      "skeleton": "e164073ef4d83e47c38e7216d8a8ccbbd5610a2a6fe34b48f527d5fc45a461e3",
       "style": "a2048fb4a26d8242ac3f497cd5d78473bb2de718a2e96aed64e2faa1929d0977"
     },
     "explorer/explorer.html": {
-      "skeleton": "c9c4110589d60e36f38da2e66bb0544373cd476e98f3646772d91db4e026b1bf",
+      "skeleton": "f98788ac75603124446689e05faeab158328717876ccf63b67ac513ce81a2825",
       "style": "b9a95530c8cdda6293c7cace426b68e86af4c6d4f97dc4839de6c308ae5bb9b1"
     },
     "mempool/index.html": {
@@ -25,11 +25,11 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "pool/public/index.html": {
-      "skeleton": "d084b9640b54fd0bf3bfe2a31cca007a97e8b2abf44cf3171f3b6a337d146842",
+      "skeleton": "b7309c1f4f1045ee9544eb300b535b94b1f9ab577247141744f664568804519f",
       "style": "b501244d1f1ef22a3c723a85d4fa5161974a9ff6923e3e30bba27cd0e6c91fc1"
     },
     "pool/public/explorer.html": {
-      "skeleton": "d02918e34f42e7d883602c10fc5089dd2d0b874e1687c2a4bae620d64c3aa986",
+      "skeleton": "371cf7ec27508e4fd621565a0e5c0e5abbaa9395434c8e23bdc639c690f9d267",
       "style": "177e4abe348422ec84d814a959d99d6829e070d961f8ce8b1f598b034d0cb2be"
     },
     "pool/public/miner.html": {
@@ -41,7 +41,7 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/index.html": {
-      "skeleton": "c9197cdfef178f86ca787d43c68bb39103be1d9ff5c34e1bcdabe2b464a7f717",
+      "skeleton": "aece03b09d551c53bf424e2b851056b2e2855476d42db1bc5f449d4d2ba493e7",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/admin/index.html": {
@@ -53,35 +53,35 @@
       "style": "99e0b7f1f1e516a861f1a34caefc57d2584ebc358bfaa42e4b467d1869edbdbe"
     },
     "site/get-started.html": {
-      "skeleton": "e3af7e75367bc51f64cf4909cdfe517ab1ef630930c621fed996a292f3d4314d",
+      "skeleton": "af9c923b079b99c9d2445313ba8d34768b9f49de4904da31014803e5e11e64ed",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/governance.html": {
-      "skeleton": "138c97381743abf5732398a94c6035ee8020b42f43c5db205180a48e03fac0c4",
+      "skeleton": "9b7565937bf030b29ca252002a7764a4809dfccb9d7a57170b3f1987fbf9cc65",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/mine.html": {
-      "skeleton": "25854a1da008efd8f5c9a7579d86e7e99d9938c2e9cb5682a02b807817c66ffe",
+      "skeleton": "3a89d6d248dfe2fdf4a89e8615b33219a2f99d0ac77ac1ef100907442ef0009c",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/miner/index.html": {
-      "skeleton": "021185b229b6461c03598872d5ea1efb0a4df97edecb9709c139895358cbd763",
+      "skeleton": "ab6fe5b9f38e9d109de8c85cc0c3e3754f10a362223e9958c534fce656cc4c4f",
       "style": "0d1a9c3299687be627ef57bdd5c37f7194f42a757440d2a782d80353834e429a"
     },
     "site/network.html": {
-      "skeleton": "13e3d8133c54e1d18f92b5694265c20f2a22a4ddae08c72e6e28ce17857ae810",
+      "skeleton": "43e5b068400d586de835874dc9ff6b1780b48093ca143a2b9f75ed1dd3acc012",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/node/index.html": {
-      "skeleton": "265b5e6bbb1c8a599375edff1355503396ecf5777c6512614922acc01c648583",
+      "skeleton": "995505ac3fa66f099b6a0ceeda95750a256b48fe1d86de9b55e630dcb8897de8",
       "style": "5aae7de3b4d1515b536ef53d3bf66676a1ae9230dc5f9c773e7754d56e2d2fcc"
     },
     "site/wallet/index.html": {
-      "skeleton": "a9ac9573f78160e31724291f9238d331846257c640ccf76355bb130f1fcc49e5",
+      "skeleton": "6b940bb5ee0d2765ad61788fcfb86b9eb73eab1ecb307161f618f553145dc61d",
       "style": "4a410ccd78e0094693bde09c7fc8dcf9472c96fa67b4dbd3141e1ef411503ba7"
     },
     "site/whitepaper/index.html": {
-      "skeleton": "212c1f5ff74c7dca61d7520211e7d02db9327f938fe766ca6bf5a89138b12a9d",
+      "skeleton": "f9f3a31df65e995510c05032a2b3d9ac386e607973164b51ba6dcc6fe5b1133f",
       "style": "cf4add7c1fb7ab54c2195331277b2fdb75150be2b5b33d8f174afbbd3eee9d82"
     },
     "vortices/index.html": {
