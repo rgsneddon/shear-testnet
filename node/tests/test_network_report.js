@@ -70,13 +70,17 @@ describe('network report', () => {
       assert.equal(body.ok, true);
       assert.equal(body.nodesOnline, 1);
       assert.equal(body.height, 7);
-      assert.equal(body.provenRoundHashes, 4);
+      assert.equal(body.provenRoundHashes, 0);
+      assert.deepEqual(body.rounds, []);
+      assert.equal(body.miners, 0);
       assert.equal(body.pending, 1);
       assert.equal(body.pendingKinds.send, 1);
+      assert.equal(JSON.stringify(body).includes('mdeadbeef'), false);
       assert.doesNotMatch(JSON.stringify(body), /ssa1|nanos/);
       const via = await rpc.dispatch('getnetwork');
       assert.equal(via.nodesOnline, 1);
-      assert.equal(via.provenRoundHashes, 4);
+      assert.equal(via.provenRoundHashes, 0);
+      assert.deepEqual(via.rounds, []);
     } finally {
       await rpc.close();
     }

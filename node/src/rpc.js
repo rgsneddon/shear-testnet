@@ -97,7 +97,7 @@ function networkReportJson(store, p2p) {
     hash,
     nodesOnline: nodes,
     peersLive: peers,
-    rounds: typeof store?.openRoundRows === 'function' ? store.openRoundRows() : [],
+    rounds: [],
     mempool: Array.isArray(store?.mempool) ? store.mempool : [],
   });
 }

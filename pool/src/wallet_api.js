@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { isDestAddress, isPaymentCode, isShearAddress, payoutDest, isFullPaymentCode, checkAddressField, hash20FromAddress } from '../../crypto/address.js';
 import { walletSubmitLog, newConnId, lineJoinsIpToIdentity } from '../../crypto/privacy_net.js';
@@ -1046,42 +1045,13 @@ function memoTxWeight(m) {
   return txWeight({ vouts, memoChunks: memo, bFlag });
 }
 
-function publicHashTag(login) {
-  const dest = String(login || '').trim().split('.')[0];
-  const hex = createHash('sha256')
-    .update('shear-miner-tag-v1')
-    .update(dest)
-    .digest('hex')
-    .slice(0, 8);
-  return `m${hex}`;
-}
-
-/** Open-round work is not a mint. `included` stays false until a sealed hash note exists. */
+/** Open-round work is not a mint. Per-miner hash rows are not painted. */
 export function openRoundHashRows(miners, hashBonusNanos) {
-  const book = miners && typeof miners.values === 'function'
-    ? [...miners.values()]
-    : (Array.isArray(miners) ? miners : []);
+  // R28 S1. A per-miner hash row is a tag plus a count. The lattice does not
+  // mint one. Callers that used to paint these rows get an empty list.
+  void miners;
   void hashBonusNanos;
-  const rows = [];
-  for (const m of book) {
-    const login = String(m?.login || m?.workerKey || '');
-    if (/\.fee$/i.test(login)) continue;
-    const count = roundActualHashes(m);
-    if (count < 1) continue;
-    const tag = publicHashTag(login);
-    rows.push({
-      id: `hash-${tag}`,
-      kind: 'hash',
-      count,
-      weight: count,
-      fee: 0,
-      included: false,
-      priority: 800 + count,
-      prime: false,
-      tag,
-    });
-  }
-  return rows.sort((a, b) => b.count - a.count);
+  return [];
 }
 
 export function mempoolLattice(store, limitOrOpts = 24) {

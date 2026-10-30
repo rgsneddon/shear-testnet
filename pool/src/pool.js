@@ -5227,13 +5227,7 @@ export function createPool({
       miners: poolRows.length,
       threads: poolRows.reduce((a, m) => a + (m.threads || 0), 0),
       hashrate: poolRows.reduce((a, m) => a + (Number(m.hashrate) || 0), 0),
-      networkRoundHashes: networkRoundHashesOf(
-        miners,
-        [
-          ...(typeof store.openRoundRows === 'function' ? store.openRoundRows() : []),
-          ...(Array.isArray(networkView?.rounds) ? networkView.rounds : []),
-        ],
-      ),
+      networkRoundHashes: networkRoundHashesOf(miners, []),
       blocks: stats.blocks,
       sealsLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
       rewardIdentity: 'shareBatch-prop-after-fee',

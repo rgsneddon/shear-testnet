@@ -11,7 +11,7 @@ import { encodeHeader } from '../../crypto/header.js';
 import { packHashCreditBytes, unpackHashCreditBytes } from '../../crypto/hash_owed.js';
 import { noteCommitOfDest20 } from '../../crypto/note.js';
 import { assessHeader, GENESIS_PREV, headerHash } from '../src/chain.js';
-import { OPEN_ROUND_PEER_RATE, createStore } from '../src/store.js';
+import { createStore } from '../src/store.js';
 import {
   HEADERS_PAGE,
   ORPHAN_PARENT_MAX,
@@ -2557,11 +2557,8 @@ describe('p2p hello deadline and idle eviction', () => {
       attacker.write(frame({ type: 'work', rows }));
       await delay(80);
       const relays = heard.join('').split('\n').filter((line) => line.includes('"type":"work"'));
-      assert.equal(relays.length, 1);
-      const relayed = JSON.parse(relays[0]);
-      assert.ok(relayed.rows.length > 0);
-      assert.ok(relayed.rows.length <= OPEN_ROUND_PEER_RATE);
-      assert.equal(store.openRoundRows().length, relayed.rows.length);
+      assert.deepEqual(relays, []);
+      assert.deepEqual(store.openRoundRows(), []);
       assert.equal(recFor(p2p, attacker)?.capIdleAt, stuck);
     } finally {
       p2p.close();

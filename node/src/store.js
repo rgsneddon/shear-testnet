@@ -6358,46 +6358,14 @@ export function createStore(dir, {
   }
 
   function noteOpenRound(rows = [], { source = 'local', peer = '', now = Date.now() } = {}) {
-    const local = source === 'local';
-    const inspect = local ? OPEN_ROUND_CAP : OPEN_ROUND_PEER_TAGS * 4;
-    const list = Array.isArray(rows) ? rows.slice(0, inspect) : [];
-    const budget = local ? null : peerBudget(peer, now);
-    const accepted = [];
-    for (const [key, row] of openRound) {
-      if (now - row.at > OPEN_ROUND_TTL_MS) {
-        openRound.delete(key);
-        const owner = peerRoundBudget.get(row.peer);
-        if (owner) owner.tags.delete(key);
-      }
-    }
-    for (const r of list) {
-      const tag = String(r?.tag || '').trim().toLowerCase();
-      if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
-      const count = Math.floor(Number(r.count) || 0);
-      if (count < 1) continue;
-      if (budget) {
-        const known = budget.tags.has(tag);
-        if (!known && budget.tags.size >= OPEN_ROUND_PEER_TAGS) continue;
-        if (budget.used >= OPEN_ROUND_PEER_RATE) continue;
-      }
-      const prev = openRound.get(tag);
-      const take = !prev || local || count >= prev.count || (now - prev.at) > 12_000;
-      if (!take) continue;
-      if (!prev && openRound.size >= OPEN_ROUND_CAP && !(local && dropOldestPeerRound())) continue;
-      openRound.set(tag, {
-        tag,
-        count,
-        at: now,
-        source: local ? 'local' : 'peer',
-        peer: local ? '' : String(peer || ''),
-      });
-      if (budget) {
-        budget.used += 1;
-        budget.tags.add(tag);
-      }
-      if (!prev || count > prev.count) accepted.push({ tag, count });
-    }
-    return accepted;
+    // R28 S1 (FROZEN-v2 dc1e64a1 §1.1 item 9). Per-miner {tag, count} rows are
+    // not kept. A peer on older code can still send them; this node drops
+    // them so they cannot be relayed or served. Pool totals stay on the pool.
+    void rows;
+    void source;
+    void peer;
+    void now;
+    return [];
   }
 
   function clearOpenRound() {
@@ -6405,13 +6373,7 @@ export function createStore(dir, {
   }
 
   function openRoundRows() {
-    const now = Date.now();
-    const out = [];
-    for (const [k, v] of openRound) {
-      if (now - v.at > OPEN_ROUND_TTL_MS) openRound.delete(k);
-      else out.push({ tag: v.tag, count: v.count, source: v.source });
-    }
-    return out.sort((a, b) => b.count - a.count);
+    return [];
   }
 
   // Chain tags stay in the live set. Copying them once per admit, or once per
