@@ -253,7 +253,8 @@ describe('brand pages', () => {
     assert.doesNotMatch(poolHtml, /grid-template-columns:\s*1fr 3fr/);
     assert.match(poolHtml, /class="she-private-lockup">She is Private</);
     assert.match(poolHtml, /ADMITv2 membership/);
-    assert.match(poolHtml, /DINS-DAG/);
+    assert.match(poolHtml, /Continuity-settled proof of work\. DINS settles each round as the blue set: the spine pot plus the hash nanos, once\./);
+    assert.doesNotMatch(poolHtml, /DINS-DAG/);
     assert.match(poolHtml, /blue set/);
     assert.match(poolHtml, /spine pot plus the hash nanos, once/);
     assert.match(poolHtml, /PoW elects the tip/);
