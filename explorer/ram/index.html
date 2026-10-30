@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"/>
+  <title>Shear explorer · staged</title>
+  <link rel="stylesheet" href="/shared/shear-chrome.css"/>
+  <link rel="stylesheet" href="https://shear.digital/css/saas-dark.css"/>
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="EXPLORER" data-brand-base="/brand/" data-testnet-pill="1"></div>
+  <script src="/shared/shear-chrome.js"></script>
+  <main class="wrap">
+    <section class="panel-card">
+      <h1>Shear explorer</h1>
+      <p>This copy is staged beside the live explorer. It does not replace the live page. Nodes own the tip. This page is not the pool and not consensus.</p>
+      <p>Hidden amount, payee, address, IP, and worker name read hidden on chain. A failed read stays hidden on chain.</p>
+    </section>
+    <section class="panel-card" id="tx-search-box">
+      <h2>Search blocks</h2>
+      <form id="tx-search" method="post" action="" onsubmit="return false">
+        <p><label class="label" for="q">Block number, block id, or public record</label><br/>
+          <input id="q" type="search" autocomplete="off"/></p>
+        <div class="search-actions">
+          <button type="submit" id="search-go">Search</button>
+        </div>
+      </form>
+      <pre id="ram-out">hidden on chain</pre>
+    </section>
+  </main>
+  <script type="module">
+    import { HIDDEN, publicRecord } from './public_view.js';
+    const out = document.getElementById('ram-out');
+    document.getElementById('tx-search').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const text = document.getElementById('q').value.trim();
+      let record = null;
+      if (text) {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed === 'object') record = parsed;
+        } catch {
+          record = null;
+        }
+      }
+      const view = publicRecord(record);
+      out.textContent = view.ok === false ? HIDDEN : JSON.stringify(view);
+    });
+  </script>
+</body>
+</html>
