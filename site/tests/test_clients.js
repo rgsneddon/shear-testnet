@@ -8,6 +8,11 @@ const html = fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), '../index.html'),
   'utf8',
 );
+// Wallet downloads live on /wallet/; the live home footer is the 5-link footer.
+const walletHtml = fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '../wallet/index.html'),
+  'utf8',
+);
 
 describe('shear.digital client buttons', () => {
   it('home stays on the SaaS dark theme and pins Continuum 0.71', () => {
@@ -25,20 +30,20 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /Continuum 0\.55/);
     assert.match(html, /cui-ver">0\.71</);
     assert.match(html, /ShearK 2\.8/);
-    assert.match(html, /href="\/wallet\/"/);
+    assert.match(html, /href="https:\/\/shear\.digital\/wallet\/"/);
     assert.doesNotMatch(html, /releases\/download\/0\.71\/shear-wallet-0\.71-macos\.dmg/);
     assert.doesNotMatch(html, /shear-wallet-0\.71-macos\.dmg/);
-    assert.match(html, /releases\/tag\/0\.71/);
-    assert.match(html, /releases\/download\/0\.71\/shear-wallet-0\.71-windows\.zip/);
-    assert.match(html, /Git tag v16 stays on the same commit as tag 0\.66/);
+    assert.match(walletHtml, /releases\/tag\/0\.71/);
+    assert.match(walletHtml, /releases\/download\/0\.71\/shear-wallet-0\.71-windows\.zip/);
+    assert.match(walletHtml, /Git tag v16 stays on the same commit as tag 0\.66/);
     assert.doesNotMatch(html, /not published yet/);
-    assert.match(html, /shear-wallet-0\.71-windows\.zip/);
-    assert.match(html, /shear-wallet-0\.71-android\.apk/);
-    assert.match(html, /shear-wallet-0\.71-linux\.zip/);
-    assert.match(html, /shear-wallet-0\.71-archlinux\.zip/);
-    assert.match(html, /shear-wallet-0\.71-fedora\.zip/);
-    assert.match(html, /releases\/download\/0\.71\/shear-wallet-0\.71-linux\.zip/);
-    assert.match(html, /releases\/download\/0\.71\/shear-wallet-0\.71-fedora\.zip/);
+    assert.match(walletHtml, /shear-wallet-0\.71-windows\.zip/);
+    assert.match(walletHtml, /shear-wallet-0\.71-android\.apk/);
+    assert.match(walletHtml, /shear-wallet-0\.71-linux\.zip/);
+    assert.match(walletHtml, /shear-wallet-0\.71-archlinux\.zip/);
+    assert.match(walletHtml, /shear-wallet-0\.71-fedora\.zip/);
+    assert.match(walletHtml, /releases\/download\/0\.71\/shear-wallet-0\.71-linux\.zip/);
+    assert.match(walletHtml, /releases\/download\/0\.71\/shear-wallet-0\.71-fedora\.zip/);
     assert.doesNotMatch(html, /releases\/download\/v18\/shear-node-v18-macos/);
     assert.doesNotMatch(html, /releases\/download\/v17\//);
     assert.doesNotMatch(html, /releases\/download\/2\.7\//);
@@ -46,7 +51,7 @@ describe('shear.digital client buttons', () => {
     assert.doesNotMatch(html, /0\.55\.1\.1/);
     assert.doesNotMatch(html, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(html, /releases\/download\/0\.55\//);
-    assert.match(html, /href="\/miner\/"/);
+    assert.match(html, /href="https:\/\/shear\.digital\/miner\/"/);
     assert.doesNotMatch(html, /--bg: #eef3f8/);
     assert.doesNotMatch(html, /Owed toward/);
     assert.match(html, /id="shear-topbar"/);

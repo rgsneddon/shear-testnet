@@ -25,7 +25,7 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "pool/public/index.html": {
-      "skeleton": "0bb938f76f9bd3a9de089d15041faff7466002b3c5fe9d684a43dd0ab728af2c",
+      "skeleton": "b4971c1f524d6c5f24712a84826526e311fad83d5cff49975fe60f7ac6c9797c",
       "style": "159ac8d0f9f190bfc7bb74f4a1ade0eaf82875428f5a265b199d0a729e5a1f34"
     },
     "pool/public/explorer.html": {
@@ -41,7 +41,7 @@
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/index.html": {
-      "skeleton": "d2a25101735bc341f8ad7e07478670de0b3d9fbf306aacb071a0594840b6a824",
+      "skeleton": "7ecc5215f9c2a5192c2fc2666c7900f8d2e32240a1fcd942e9b947da904775fc",
       "style": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "site/admin/index.html": {

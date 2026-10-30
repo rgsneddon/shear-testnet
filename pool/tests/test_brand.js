@@ -222,12 +222,12 @@ describe('brand pages', () => {
     assert.match(poolHtml, /data-active="POOL"/);
     assert.match(explorerHtml, /class="nav-btn is-on"[^>]*>EXPLORER</);
     assert.match(mempoolHtml, /data-active="MEMPOOL"/);
-    assert.match(siteHtml, /href="\/wallet\/"/);
+    assert.match(siteHtml, /href="https:\/\/shear\.digital\/wallet\/"/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.55(?!\.)/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.55\.2/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.53/);
     assert.doesNotMatch(siteHtml, /releases\/tag\/0\.52/);
-    assert.match(siteHtml, /href="\/miner\/"/);
+    assert.match(siteHtml, /href="https:\/\/shear\.digital\/miner\/"/);
     assert.doesNotMatch(siteHtml, /theme\.js\?v=15/);
     for (const page of [poolHtml, explorerHtml, mempoolHtml]) {
       assert.equal(/href="https:\/\/github\.com\/rgsneddon\/shear"/.test(page), false);
