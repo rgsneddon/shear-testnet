@@ -308,7 +308,7 @@
   function autoMount() {
     var root = document.getElementById('shear-chrome-root');
     if (!root) return;
-    if (root.querySelector('.top-banner')) return;
+    if (root.querySelector('.top-banner')) { wireChrome(); return; } /* static prerendered nav: wire only, no re-render */
     mount({
       active: root.getAttribute('data-active') || '',
       brandBase: root.getAttribute('data-brand-base') || 'brand/',
