@@ -5,6 +5,14 @@
 - Draft PRs only. No merge, deploy, cut, tag or `push --force` without Russell's GO.
 - No host IPs, pids, machine paths or secrets in commits, PR bodies or logs.
 - No tests on the laptop, p2p-a or p2p-b. Tests run on agent-box through its runner; long jobs detached, logs polled.
+- Every PR must be mergeable into its base the moment it is done. Branch every task off the CURRENT
+  tip of main (`git fetch` first), unless the task says it depends on another open PR; then base the
+  PR on that branch and say so at the top of the PR body. Before writing a DONE line run
+  `git fetch && git merge-tree --write-tree origin/<base> HEAD` (no conflicts) and
+  `git diff origin/<base>...HEAD --stat` (only this task's files). If main moved and conflicts appear,
+  merge `origin/<base>` into the branch with a `-s` merge commit (no rebase, no force-push), re-run the
+  affected suite, then write the DONE line. Put "Mergeable into <base> at <base sha>: yes" in the PR
+  body and in the DONE summary.
 - When a task is truly finished (pushed, suites done, PR body updated), append ONE line to
   `agent-box:/root/claude-ci/handoff/DONE.jsonl` (`mkdir -p` the folder; append only, never rewrite):
 
