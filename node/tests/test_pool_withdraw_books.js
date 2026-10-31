@@ -3,6 +3,12 @@
  * store replay. shear-v1 and shear-regtest here; the live testnet book is
  * covered by node/tests/test_pull_withdraw.js. The transaction is signed by
  * its own input, so the refusal is the kind, not the signature.
+ *
+ * Verify checks the coinbase pot before the per-transaction gate, and the pot
+ * check opens the coinbase rows through the range verifier. So the gate is
+ * also tested directly, and each block leg first shows the same block with no
+ * withdraw clears the coinbase checks: a custodial_pull verdict is the gate's,
+ * never a pot verdict renamed.
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,6 +21,8 @@ import { GENESIS_BITS_PACKED, MAGIC_MAINNET, PI_SHE_NANOS } from '../../crypto/a
 import { MAGIC_REGTEST, regtestBitsOverride } from '../../crypto/regtest_bits.js';
 import { signSpendTx } from '../../crypto/spend.js';
 import { meetsTarget } from '../../crypto/shear_hash.js';
+import { custodialPullRejected } from '../../crypto/levy.js';
+import { nativeLoaded } from '../../crypto/native_admit.js';
 import { buildTemplate, verifyBlock, verifyLoadedChain, GENESIS_PREV } from '../src/chain.js';
 import { createRegtestStore } from './regtest_store.js';
 import { spendBox } from '../../tests/spend_box.js';
@@ -70,22 +78,34 @@ describe('a pool-withdraw block is refused on the mainnet and regtest books', ()
     { name: 'shear-regtest', magic: MAGIC_REGTEST, bits: () => regtestBits },
   ];
 
+  function signedWithdraw(dest, id) {
+    const poolBox = spendBox(newIdentity());
+    const tx = handPoolWithdrawTx({ from: poolBox.dest, to: dest, nanos: PI_SHE_NANOS, fee: 100, id });
+    signSpendTx(tx, poolBox.key);
+    return tx;
+  }
+
+  it('the gate itself refuses a pool-withdraw, by its kind or its first output, with custodial_pull', () => {
+    const tx = signedWithdraw(minerDest(), 'pull-gate');
+    assert.deepEqual(custodialPullRejected(tx), { ok: false, reason: 'custodial_pull' });
+    const byOutput = { ...tx, kind: 'send' };
+    assert.deepEqual(custodialPullRejected(byOutput), { ok: false, reason: 'custodial_pull' });
+    assert.equal(custodialPullRejected({ ...tx, kind: 'send', vout: [{ ...tx.vout[0], kind: 'send' }] }), null);
+  });
+
   for (const book of books) {
     it(`${book.name}: chain verify and store replay both return custodial_pull`, () => {
-      const poolBox = spendBox(newIdentity());
+      assert.equal(nativeLoaded(), true, 'the coinbase pot check needs shearadmit.node to open the coinbase rows');
       const dest = minerDest();
-      const tx = handPoolWithdrawTx({ from: poolBox.dest, to: dest, nanos: PI_SHE_NANOS, fee: 100, id: `pull-${book.name}` });
-      signSpendTx(tx, poolBox.key);
+      const tx = signedWithdraw(dest, `pull-${book.name}`);
       const bits = book.bits();
-      const tpl = buildTemplate({
-        prev: GENESIS_PREV,
-        height: 1,
-        miner: dest,
-        bits,
-        now: NOW,
-        txs: [tx],
-      });
-      const block = blockOf(tpl);
+      const template = (txs) => buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits, now: NOW, txs });
+
+      // The same block with no withdraw clears every coinbase and pot check.
+      const control = verifyBlock(blockOf(template([])), null, { probeBody: true, magic: book.magic });
+      assert.equal(control.ok, true, `${book.name} control: ${control.reason}`);
+
+      const block = blockOf(template([tx]));
       assert.equal(block.txs.some((row) => row && row.id === tx.id), true, 'the template carried the withdraw');
 
       const verified = verifyBlock(block, null, { probeBody: true, magic: book.magic });
