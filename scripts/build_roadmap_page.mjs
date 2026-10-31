@@ -30,7 +30,7 @@ export const PUBLIC_COLUMNS = Object.freeze(['Priority', 'Row', 'Title', 'Status
 /** The public table of docs/ROADMAP.md: exactly these columns, in this order. */
 const PUBLIC_TABLE = Object.freeze(['Priority', 'ID', 'Public title', 'Type', 'Status', 'Private ref']);
 
-/** The status vocabulary. The lead word of the cell, after markdown, picks the token; anything else fails the build. */
+/** The status vocabulary. The whole cell, after markdown, is one of these words; anything else fails the build. */
 const STATUS_WORDS = Object.freeze({
   planned: 'planned',
   active: 'active',
@@ -56,13 +56,14 @@ const PRIVATE_REF = /^(?:pt-[0-9a-f]{6})?$/;
  * the private tracker's deny list.
  */
 const UNSAFE = [
-  /\b(?!v)[a-z](?:-\d{1,2}[a-z]?|\d{1,2})\b/i, // finding codes: H5, F-2, K-1a, N4 (v12 is a version)
+  /\b(?!v\d|p2p\b|x(?:64|86)\b)[a-z]-?\d{1,3}[a-z]?\b/i, // finding codes: H5, H5a, H123, F-2, K-1a, N4 (v12, P2P, x64 are not)
   /\bP[0-3]\b/i, // priority labels P0-P3
   /\b(?:critical|high|medium|low|severe|severity)\b/i, // severity words
   /\b(?:exploit|vuln|leak|bypass|grief)/i, // exploit words
   /\bCVE-\d{4}-\d{4,}\b/i, // CVE ids
   /\b(?:lanes?|auditor|assailant|evaluator)\b/i, // lane names
-  /\b(?:[a-z0-9-]+\.)+(?:digital|com|net|org|io|dev|app|xyz|de|uk)\b/i, // host names
+  /\b(?:[a-z0-9-]+\.)+(?:digital|com|net|org|io|dev|app|xyz|de|uk)\b/i, // host names: domains
+  /\b[a-z0-9]+-(?:box|soak|vps)\b|\bp2p-[a-z]\b|\b[a-z]+node\d+\b/i, // host names: machine-name shapes
   /\b\d{1,3}(?:\.\d{1,3}){3}\b/i, // IPv4
   /\b[0-9a-f]{0,4}(?::[0-9a-f]{1,4}){3,}\b/i, // IPv6-ish
   /\b(?:pid|port)\s*[=:]?\s*\d{2,}\b/i,
@@ -100,14 +101,10 @@ export function publicTitleOf(cell) {
   return stripMarkdown(normalise(cell));
 }
 
-/** The status token, or null when the cell is outside the vocabulary. */
+/** The status token, or null when the cell is anything but one vocabulary word (a closing full stop allowed: "Done."). */
 export function statusOf(cell) {
-  const text = stripMarkdown(cell).toLowerCase().replace(/^[*_\s]+/, '');
-  for (const [word, token] of Object.entries(STATUS_WORDS)) {
-    if (text === word || text.startsWith(`${word} `) || text.startsWith(`${word}(`) || text.startsWith(`${word},`)
-      || text.startsWith(`${word}.`) || text.startsWith(`${word}:`) || text.startsWith(`${word};`)) return token;
-  }
-  return null;
+  const text = stripMarkdown(cell).toLowerCase().replace(/\.$/, '');
+  return Object.prototype.hasOwnProperty.call(STATUS_WORDS, text) ? STATUS_WORDS[text] : null;
 }
 
 /** Y or N, or null for anything else. */
@@ -116,9 +113,11 @@ export function typeOf(cell) {
   return t === 'Y' || t === 'N' ? t : null;
 }
 
+/** A number, or null for an empty cell. Anything else is undefined (the build fails). */
 function priorityOf(cell) {
   const n = stripMarkdown(cell);
-  return /^\d+$/.test(n) ? Number(n) : null;
+  if (n === '') return null;
+  return /^\d+$/.test(n) ? Number(n) : undefined;
 }
 
 /** Cells of one table line. A `\|` is a pipe inside a cell, not a cell border. */
@@ -173,8 +172,10 @@ export function publicRows({ header, rows }, { deny = [] } = {}) {
     if (status == null) throw new Error(`roadmap: ${id} has a status outside the vocabulary: "${stripMarkdown(row.Status)}"`);
     const type = typeOf(row.Type);
     if (type == null) throw new Error(`roadmap: ${id} has a Type other than Y or N`);
+    const priority = priorityOf(row.Priority);
+    if (priority === undefined) throw new Error(`roadmap: ${id} has a Priority that is not a number`);
     if (DROPPED_STATUS.has(status)) return;
-    out.push({ pub: { Priority: priorityOf(row.Priority), Row: id, Title: title, Status: status, Type: type }, index });
+    out.push({ pub: { Priority: priority, Row: id, Title: title, Status: status, Type: type }, index });
   });
   out.sort((a, b) => {
     const pa = a.pub.Priority ?? Number.POSITIVE_INFINITY;
