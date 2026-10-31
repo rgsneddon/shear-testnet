@@ -504,12 +504,45 @@ describe('the deny list fails closed without the tracker', () => {
     assert.notEqual(h.salt, SALT, 'not the test salt');
   });
 
-  it('when the tracker is present, the committed hashes are exactly its terms, and every term is refused by the hashes alone in any spelling', (t) => {
+  it('no committed hash falls to a brute force of every letters-and-digits string up to four characters', () => {
+    const { salt, hashes } = committedHashes();
+    const want = new Set(hashes);
+    const abc = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let found = 0;
+    const walk = (prefix, left) => {
+      if (prefix && want.has(createHash('sha256').update(`${salt}:${prefix}`).digest('hex'))) found += 1;
+      if (left === 0) return;
+      for (const c of abc) walk(prefix + c, left - 1);
+    };
+    walk('', 4);
+    assert.equal(found, 0, `${found} committed hashes are four characters or fewer`);
+  });
+
+  it('the writer leaves terms under eight characters out of the hash file, and the match check ignores them', () => {
+    const tracker = '# T\n\n## Page deny list\n\n- zz-host-long\n- abc\n- p2p-q\n- quill ward desk\n';
+    const dir = scratchRepo({ markdown: doc(ROWS), hashes: DENY_HASHES });
+    try {
+      fs.writeFileSync(path.join(dir, 'docs', 'ROADMAP.tracker.md'), tracker);
+      const run = runBuild(dir, '--write-deny-hashes');
+      assert.equal(run.status, 0, run.stderr);
+      const h = JSON.parse(fs.readFileSync(path.join(dir, 'docs', 'roadmap-deny.json'), 'utf8'));
+      const of = (canonical) => createHash('sha256').update(`${h.salt}:${canonical}`).digest('hex');
+      assert.deepEqual(h.hashes.slice().sort(), [of('zzhostlong'), of('quillwarddesk')].sort(), 'only the long terms are hashed');
+      assert.doesNotThrow(() => page.assertDenyHashesMatch(['zz-host-long', 'abc', 'p2p-q', 'quill ward desk'], h), 'short terms are not expected in the file');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('when the tracker is present, the committed hashes are exactly its long terms, and every long term is refused by the hashes alone in any spelling', (t) => {
     const terms = trackerTerms();
     if (terms.length === 0) { t.skip('no tracker on this machine (CI): covered by the hash-only tests above'); return; }
     const h = committedHashes();
     assert.doesNotThrow(() => page.assertDenyHashesMatch(terms, h));
-    for (const term of terms) {
+    const long = terms.filter((term) => term.toLowerCase().replace(/[^a-z0-9]/g, '').length >= 8);
+    assert.ok(long.length >= 10 && long.length < terms.length, 'the short terms are left out');
+    assert.equal(h.hashes.length, long.length);
+    for (const term of long) {
       const words = term.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
       for (const spelling of [term, term.toUpperCase(), words.join(' '), words.join('_'), words.join('-'), words.join('')]) {
         assert.equal(page.namesHashedTerm(`Rebuild ${spelling} first`, h), true, 'a tracker term in one spelling, by the hash path itself');

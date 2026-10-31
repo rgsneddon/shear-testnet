@@ -23,9 +23,11 @@
  * may carry) is committed only as salted hashes (docs/roadmap-deny.json). The
  * build always checks against those hashes and fails closed when they are
  * missing; when the tracker is present its terms are checked in plain too, and
- * the committed hashes must match them exactly. The salt is public, so a
- * hash keeps a term from being read at a glance, not from being guessed: a
- * short or guessable term can be recovered by brute force.
+ * the committed hashes must match its long terms exactly. The salt is
+ * public, so a hash keeps a term from being read at a glance, not from being
+ * guessed: terms under eight letters and digits would fall to brute force in
+ * seconds, so they are never hashed. Those are refused only where the tracker
+ * is present (and the p2p host names by the machine-name shape everywhere).
  */
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -157,6 +159,14 @@ export function hashTerm(salt, term) {
 /** Deny terms are at most this many words long; longer runs are not tried. */
 const MAX_TERM_WORDS = 4;
 
+/** Terms shorter than this (letters and digits) are never hashed: a public salt cannot hide them. */
+const MIN_HASHED_CHARS = 8;
+
+/** The tracker terms that go into the committed hash file. */
+export function hashedTerms(terms) {
+  return terms.filter((t) => canonicalTerm(t).length >= MIN_HASHED_CHARS);
+}
+
 /** A term the hash path can match: one to four words, something left in canonical form. Anything else fails loudly. */
 function assertMatchableTerm(term) {
   const words = normalise(term).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -285,11 +295,11 @@ export function trackerDenyTerms(text) {
   return [...section.matchAll(/^- (.+?)\s*$/gm)].map((m) => m[1]);
 }
 
-/** The committed hashes must be exactly the tracker's terms: none missing, none extra. */
+/** The committed hashes must be exactly the tracker's long terms: none missing, none extra. */
 export function assertDenyHashesMatch(terms, denyHashes) {
   terms.forEach(assertMatchableTerm);
   const { salt, set } = denyHashSet(denyHashes);
-  const want = new Set(terms.map((t) => hashTerm(salt, t)));
+  const want = new Set(hashedTerms(terms).map((t) => hashTerm(salt, t)));
   const missing = [...want].filter((h) => !set.has(h)).length;
   const extra = [...set].filter((h) => !want.has(h)).length;
   if (missing || extra) {
@@ -412,7 +422,7 @@ if (isMain) {
     deny.forEach(assertMatchableTerm);
     const old = readHashes();
     const salt = old && /^[0-9a-f]{32}$/.test(old.salt || '') ? old.salt : randomBytes(16).toString('hex');
-    const hashes = [...new Set(deny.map((t) => hashTerm(salt, t)))].sort();
+    const hashes = [...new Set(hashedTerms(deny).map((t) => hashTerm(salt, t)))].sort();
     fs.writeFileSync(hashPath, `${JSON.stringify({ salt, hashes }, null, 2)}\n`);
     process.stdout.write(`wrote docs/roadmap-deny.json: ${hashes.length} hashes\n`);
     process.exit(0);
