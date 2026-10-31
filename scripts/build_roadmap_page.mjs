@@ -23,7 +23,9 @@
  * may carry) is committed only as salted hashes (docs/roadmap-deny.json). The
  * build always checks against those hashes and fails closed when they are
  * missing; when the tracker is present its terms are checked in plain too, and
- * the committed hashes must match them exactly.
+ * the committed hashes must match them exactly. The salt is public, so a
+ * hash keeps a term from being read at a glance, not from being guessed: a
+ * short or guessable term can be recovered by brute force.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
@@ -65,13 +67,13 @@ const MACHINE_SHAPE = /\b[a-z0-9]+[-_](?:box|soak|vps)\b|\bp2p[-_ ]?[a-z]\b|\b[a
  * file names a host); they are checked through the deny hashes.
  */
 const UNSAFE = [
-  /\b(?!v\d+[a-z]?\b|p2p\b|x(?:64|86)\b|arm64\b)[a-z]{1,4}[-_.]?\d{1,3}[a-z]?\b/i, // finding codes: H5, F-2, PA-3, SEC_12, H.5 (v12, P2P, x64, arm64 are not)
-  /\b[A-Z]{1,3} \d{1,3}[a-z]?\b/, // spaced finding codes: PA 3, H 5
+  /\b(?!v\d+[a-z]?\b|p2p\b|x(?:64|86)\b|arm64\b)[a-z]{1,4}[-_./]?\d{1,3}[a-z]?\b/i, // finding codes: H5, F-2, PA-3, SEC_12, H.5, PA/3 (v12, P2P, x64, arm64 are not)
+  /\b[a-z]{1,3} \d{1,3}[a-z]?\b/i, // spaced finding codes: PA 3, pa 3, H 5
   /\bP[0-3]\b/i, // priority labels P0-P3
-  /\b(?:critical(?:ly|ity)?|high(?:s|er|est)?|mediums?|low(?:s|er|est)?|sever(?:e|ely|ity|ities))\b/i, // severity words and their forms
-  /\b(?:exploit|vuln|leak|bypass|grief|attack|flaw|weakness|breach|compromis|inject|overflow|underflow|forg(?:e|ed|es|ing|ery|eries)\b|spoof|hijack|backdoor|malicious|insecur|unsafe|harden|secur|steal|stole|theft|tamper|malleab|grind|d?dos\b|denial[\s-]of[\s-]service)/i, // exploit, attack and flaw words
+  /\b(?:critical(?:ly|ity)?|high(?:s|er|est)?|mediums?|low(?:s|er|est)?|sever(?:e|ely|er|est|ity|ities)|sevs?)\b/i, // severity words and their forms (hi-sev)
+  /\b(?:exploit|vuln|leak|bypass|grief|attack|flaw|weak|breach|compromis|inject|overflow|underflow|forg(?:e|ed|es|ing|ery|eries)\b|spoof|hijack|backdoor|malicious|insecur|unsafe|harden|secur|steal|stole|theft|tamper|malleab|grind|d?dos\b|denial[\s-]of[\s-]service|replay|double[\s-]?spend|crash|race\b|races\b|racing\b|fraud|cheat|abus|exposure|disclos|unauthori[sz]|escalat|xss\b|csrf\b|rce\b|sybil|eclipse|poison|impersonat|counterfeit|loophole|panic)/i, // exploit, attack and flaw words
   /\bCVE-\d{4}-\d{4,}\b/i, // CVE ids
-  /\b(?:lanes?|auditors?|assailants?|evaluat(?:ors?|ions?)|reviewers?|red[\s-]?team(?:s|ing)?|pen[\s-]?test(?:s|ing|ers?)?)\b/i, // lane roles and their forms
+  /\b(?:lanes?|auditors?|assailants?|evaluat(?:ors?|ions?)|reviewers?|reviewing|assessors?|testers?|red[\s-]?team(?:s|ers?|ing)?|pen[\s-]?test(?:s|ing|ers?)?)\b/i, // lane roles and their forms
   /\bprivate\b/i, // the page never says a row is private
   /\b(?:[a-z0-9-]+\.)+(?:digital|com|net|org|io|dev|app|xyz|de|uk)\b/i, // host names: domains
   MACHINE_SHAPE, // host names: machine-name shapes
@@ -95,8 +97,10 @@ const HOST_DETAIL = [
   MACHINE_SHAPE,
   /\b(?:hetzner|contabo|ovh|digitalocean|linode|vultr|vps)\b/i, // providers
   /\bDesktop\b/, // design notes on a laptop
-  /\/root\/|\/home\/|\b[A-Z]:\\/, // machine paths
+  /\/root\/|\/home\/|\/Users\/|~\/[A-Za-z]|\b[A-Z]:[\\/]/, // machine paths (~/.shear, a generic datadir, is not one)
   /\b\d{1,3}(?:\.\d{1,3}){3}\b/, // IPv4
+  /\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){3,}\b/i, // IPv6
+  /\bports?\s+\d{2,5}(?:\s*,\s*\d{2,5}){2,}/i, // a host's open-port list
 ];
 
 function stripMarkdown(s) {
@@ -153,6 +157,14 @@ export function hashTerm(salt, term) {
 /** Deny terms are at most this many words long; longer runs are not tried. */
 const MAX_TERM_WORDS = 4;
 
+/** A term the hash path can match: one to four words, something left in canonical form. Anything else fails loudly. */
+function assertMatchableTerm(term) {
+  const words = normalise(term).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (words.length === 0 || words.length > MAX_TERM_WORDS) {
+    throw new Error('roadmap: a deny term the hash path could never match (' + words.length + ' words; one to ' + MAX_TERM_WORDS + ', ASCII letters or digits)');
+  }
+}
+
 /** The deny hashes, checked: a 32-hex salt and at least one sha256. Anything else fails closed. */
 export function denyHashSet(denyHashes) {
   const ok = denyHashes && /^[0-9a-f]{32}$/.test(denyHashes.salt || '')
@@ -162,15 +174,22 @@ export function denyHashSet(denyHashes) {
   return { salt: denyHashes.salt, set: new Set(denyHashes.hashes) };
 }
 
-/** True when a run of one to four words of `text`, joined, hashes to a deny hash. */
+/**
+ * True when a run of one to four words of `text`, joined, hashes to a deny hash,
+ * as written or with a plural ending or a trailing number taken off (hosts, host2).
+ */
 export function namesHashedTerm(text, denyHashes) {
   const { salt, set } = denyHashSet(denyHashes);
+  const hit = (w) => w && set.has(createHash('sha256').update(`${salt}:${w}`).digest('hex'));
   const words = normalise(text).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   for (let i = 0; i < words.length; i += 1) {
     let joined = '';
     for (let n = 0; n < MAX_TERM_WORDS && i + n < words.length; n += 1) {
       joined += words[i + n];
-      if (set.has(createHash('sha256').update(`${salt}:${joined}`).digest('hex'))) return true;
+      const bare = joined.replace(/\d+$/, '');
+      for (const w of new Set([joined, bare, bare.replace(/es$/, ''), bare.replace(/s$/, '')])) {
+        if (hit(w)) return true;
+      }
     }
   }
   return false;
@@ -268,6 +287,7 @@ export function trackerDenyTerms(text) {
 
 /** The committed hashes must be exactly the tracker's terms: none missing, none extra. */
 export function assertDenyHashesMatch(terms, denyHashes) {
+  terms.forEach(assertMatchableTerm);
   const { salt, set } = denyHashSet(denyHashes);
   const want = new Set(terms.map((t) => hashTerm(salt, t)));
   const missing = [...want].filter((h) => !set.has(h)).length;
@@ -389,6 +409,7 @@ if (isMain) {
       process.stderr.write('--write-deny-hashes needs the tracker and its Page deny list on this machine\n');
       process.exit(1);
     }
+    deny.forEach(assertMatchableTerm);
     const old = readHashes();
     const salt = old && /^[0-9a-f]{32}$/.test(old.salt || '') ? old.salt : randomBytes(16).toString('hex');
     const hashes = [...new Set(deny.map((t) => hashTerm(salt, t)))].sort();
@@ -402,7 +423,8 @@ if (isMain) {
   const markdown = fs.readFileSync(docPath, 'utf8');
   const html = buildRoadmapPage(markdown, { deny, denyHashes });
   if (process.argv.includes('--check')) {
-    const have = fs.existsSync(outPath) ? fs.readFileSync(outPath, 'utf8') : '';
+    // A Windows checkout (autocrlf) holds the page with CRLF; the bytes that ship are LF.
+    const have = fs.existsSync(outPath) ? fs.readFileSync(outPath, 'utf8').replace(/\r\n/g, '\n') : '';
     if (have !== html) {
       process.stderr.write('site/roadmap/index.html is stale: run node scripts/build_roadmap_page.mjs\n');
       process.exit(1);

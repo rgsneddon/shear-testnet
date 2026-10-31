@@ -2,6 +2,8 @@ name: roadmap-page
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   roadmap:
     runs-on: ubuntu-latest

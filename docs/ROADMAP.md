@@ -322,8 +322,8 @@ Before the rebuild:
 
 1. CI gains Debian stable and Fedora build-and-run jobs alongside Ubuntu,
    covering the node, the pool where relevant, and the release binaries.
-2. A short live shear-dev session on each target OS (Debian and Fedora nodes
-   peering with the Ubuntu pool), with the results recorded.
+2. A short live shear-dev session on each target OS, the hosts peering with
+   one another, with the results recorded.
 3. An inventory of each host: services, timers, cron jobs, users, ports,
    disk. Record what must be kept (SSH access, TLS certs, DNS, firewall
    rules).
@@ -337,8 +337,8 @@ Before the rebuild:
 Rebuild:
 
 6. Reinstall each host from a fresh image of its OS.
-7. Firewall on each OS (ufw on Ubuntu, nftables on Debian, firewalld on
-   Fedora): ports 22, 80, 443, 1111, 8080 and 30303 only.
+7. A firewall on each host that opens only the ports its services need
+   (the list is in the maintainers' tracker).
 8. Write down each host's update routine. Unattended upgrades are limited to
    security updates; kernel reboots are done by hand and logged.
 9. Verify, don't paint: a post-rebuild check on each host lists its services,
