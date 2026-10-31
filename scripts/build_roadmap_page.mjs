@@ -95,9 +95,9 @@ function normalise(s) {
     .trim();
 }
 
-/** The Public title cell, normalised. Empty is not a title. */
+/** The Public title cell, normalised before any whitespace rule (U+FEFF counts as whitespace). Empty is not a title. */
 export function publicTitleOf(cell) {
-  return normalise(stripMarkdown(cell));
+  return stripMarkdown(normalise(cell));
 }
 
 /** The status token, or null when the cell is outside the vocabulary. */
