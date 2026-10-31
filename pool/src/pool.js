@@ -48,7 +48,7 @@ import {
   PRODUCT_VERSION,
   PI_SHE_NANOS,
 } from '../../crypto/asert.js';
-import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullAllowed, custodialPullRejected, verifyPoolWithdrawOffchain, containsShe1 } from '../../crypto/levy.js';
+import { poolFeeDest, reserveFeeDest, unclaimedFinderDest, levyNanos, mempoolDepthBytes, custodialPullRejected, containsShe1 } from '../../crypto/levy.js';
 import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import {
   THIS_POOL_DIRECT_FEE_DEST,
@@ -61,10 +61,7 @@ import {
 } from './posture.js';
 export { THIS_POOL_DIRECT_FEE_DEST, V10_POOL_FEE_DEST, V11_POOL_FEE_DEST, configuredFeeIdentity, feeIdentityCheck, stratumListenPlan, authPubGate, intervalCertify, CERTIFY_WINDOW } from './posture.js';
 import { createPullBook, PULL_COOLDOWN_MS, AUTO_PAYOUT_MIN_NANOS } from './pull_book.js';
-import {
-  buildAutoPayoutTx,
-  redactSsa1,
-} from './auto_payout.js';
+import { redactSsa1 } from './auto_payout.js';
 import { bootPoolOperator } from './pool_ident.js';
 import { createStore } from '../../node/src/store.js';
 import { epochMs } from '../../crypto/pot_sched.js';
@@ -190,18 +187,6 @@ export const HASHRATE_STALL_HOLD_MS = 90_000;
 export const HASHRATE_HOLD_FRAC = 0.9;
 /** Rebuild /api/stats JSON on this cadence. The HTTP handler never computes it. */
 export const STATS_REFRESH_MS = 400;
-/** Auto-payout sweep cadence. Hourly, so the book walk does not stall the pool page. */
-export const PAYOUT_SWEEP_MS = Math.max(
-  60 * 60 * 1000,
-  Number(process.env.SHEAR_PAYOUT_SWEEP_MS) || (60 * 60 * 1000),
-);
-/** One due miner per tick so a slow queueTx cannot monopolize the loop. */
-export const PAYOUT_SWEEP_MAX_ROWS = 1;
-/** Wall-clock budget for one sweep pass. Remaining due rows reschedule. */
-export const PAYOUT_SWEEP_BUDGET_MS = Math.max(
-  20,
-  Number(process.env.SHEAR_PAYOUT_SWEEP_BUDGET_MS) || 200,
-);
 const HASH_WORKER = fileURLToPath(new URL('./hash_worker.js', import.meta.url));
 const HASH_WORKER_TIMEOUT_MS = 15_000;
 /** Cap in-flight RandomX verifies so a junk submit flood cannot stall HTTP. */
@@ -2281,7 +2266,6 @@ export function createPool({
       for (let i = 0; i < keys.length - 256; i += 1) delete stats.foundAtByHeight[keys[i]];
     }
   }
-  const pendingPulls = new Map();
   const idleMs = Number.isFinite(Number(noValidShareMs)) && Number(noValidShareMs) > 0
     ? Number(noValidShareMs)
     : NO_VALID_SHARE_MS;
@@ -4939,7 +4923,8 @@ export function createPool({
       stale: m.stale || 0,
       blocks: Number(m.blocks) || 0,
       blocksSession: Number(m.blocks) || 0,
-      blocksLifetime: Number(pullBook.view(publicMinerTag(m.login || m.workerKey)).foundBlocks) || 0,
+      // No lifetime record in the pull book: the session count.
+      blocksLifetime: Number(m.blocks) || 0,
       threads: m.threads || 0,
       sessions: m.sessions || (m.connections || []).length,
       connected,
@@ -4968,10 +4953,8 @@ export function createPool({
       try { paintStatsSnap(); } catch { /* the stats cadence retries */ }
     });
   }
-  let payoutTimer = null;
-  let payoutSweepBusy = false;
-  let payoutSweepAgain = false;
-  let autoPayoutLastError = null;
+  // No auto payout on any book: the field stays null for the miner pages.
+  const autoPayoutLastError = null;
   let jobDirty = false;
   function paintStatsSnap() {
     if (sealing) {
@@ -5109,11 +5092,12 @@ export function createPool({
       ),
       blocks: stats.blocks,
       blocksSession: stats.blocks,
-      blocksLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
-      sealsLifetime: typeof pullBook.sealsLifetime === 'function' ? pullBook.sealsLifetime() : 0,
+      // The pull book keeps no seal count: miners are paid from the coinbase.
+      // The session count is the one this process has.
+      blocksLifetime: stats.blocks,
+      sealsLifetime: stats.blocks,
       rewardIdentity: 'shareBatch-prop-after-fee',
       rewardCopy: 'Rewards share the block pot by round work after the 1% pool fee — not one SHE per block you found.',
-      reconcile: typeof pullBook.reconcile === 'function' ? pullBook.reconcile() : undefined,
       accepted: stats.accepted,
       stale: stats.stale,
       circulatingNanos: supply.circulatingNanos,
@@ -5162,10 +5146,9 @@ export function createPool({
       })),
       recentTxs: poolRecentBlockTxs(store, 10).map((t) => {
         const h = Number(t?.height) || 0;
-        const stored = (typeof pullBook.finderOf === 'function') ? pullBook.finderOf(h) : null;
-        let tag = stored?.tag || '';
-        let worker = stored?.worker || '';
-        if (!tag && h >= 1) {
+        let tag = '';
+        let worker = '';
+        if (h >= 1) {
           const blocks = Array.isArray(store?.blocks) ? store.blocks : [];
           const b = blocks.find((x) => Number(x?.height) === h);
           if (b?.miner) tag = publicMinerTag(b.miner);
@@ -5177,7 +5160,8 @@ export function createPool({
           if (names.size === 1) worker = [...names][0];
         }
         const wall = Math.floor(Number(stats.foundAtByHeight?.[String(h)] || 0));
-        const attributed = !!((stored && stored.tag) || wall > 0);
+        // No finder record in the pull book: attribution is the found-at clock.
+        const attributed = wall > 0;
         const row = {
           ...t,
           finder: tag || '',
@@ -5277,8 +5261,8 @@ export function createPool({
       firstSeen: views.length ? Math.min(...views.map((v) => v.firstSeen || now)) : 0,
       ...roll,
       blocksSession: Number(roll.blocks) || 0,
-      blocksLifetime: Number(pull.foundBlocks) || 0,
-      blocks: Math.max(Number(roll.blocks) || 0, Number(pull.foundBlocks) || 0),
+      blocksLifetime: Number(roll.blocks) || 0,
+      blocks: Number(roll.blocks) || 0,
       confirmRemain: Number(pull.confirmRemain) || 0,
       oldestUnconfirmedHeight: Number(pull.oldestUnconfirmedHeight) || 0,
       workers: views,
@@ -5333,163 +5317,6 @@ export function createPool({
     } catch {
       return BLOCK_SUBSIDY_NANOS;
     }
-  }
-
-  function runAutoPayoutSweep() {
-    if (payoutSweepBusy) {
-      payoutSweepAgain = true;
-      return Promise.resolve([]);
-    }
-    payoutSweepBusy = true;
-    const t0 = Date.now();
-    console.error(JSON.stringify({ event: 'auto_payout_begin', at: t0 }));
-    return (async () => {
-      try {
-        return await sweepAutoPayouts({
-          maxRows: PAYOUT_SWEEP_MAX_ROWS,
-          budgetMs: PAYOUT_SWEEP_BUDGET_MS,
-        });
-      } catch (err) {
-        console.error(JSON.stringify({
-          event: 'auto_payout_error',
-          error: String(err && err.message ? err.message : err),
-        }));
-        return [];
-      } finally {
-        console.error(JSON.stringify({ event: 'auto_payout_end', ms: Date.now() - t0 }));
-        payoutSweepBusy = false;
-        if (payoutSweepAgain) {
-          payoutSweepAgain = false;
-          setImmediate(runAutoPayoutSweep);
-        }
-      }
-    })();
-  }
-
-  function refreshOperatorSpendKey() {
-    if (operatorSpendKey) return operatorSpendKey;
-    try {
-      const boot = bootPoolOperator({ dataDir, minerEnv: miner });
-      if (boot.operatorSpendKey) operatorSpendKey = boot.operatorSpendKey;
-    } catch { /* keep unsigned until a matching seed is on disk */ }
-    return operatorSpendKey;
-  }
-
-  function recordAutoPayoutError({ tag, reason, have, need, from } = {}) {
-    autoPayoutLastError = {
-      at: Date.now(),
-      tag: String(tag || ''),
-      reason: String(reason || ''),
-      have: Math.max(0, Math.floor(Number(have) || 0)),
-      need: Math.max(0, Math.floor(Number(need) || 0)),
-      fromRedacted: redactSsa1(from),
-    };
-    try { paintStatsSnap(); } catch { /* keep in-memory error even if snap fails */ }
-  }
-
-  function clearAutoPayoutError() {
-    autoPayoutLastError = null;
-    try { paintStatsSnap(); } catch { /* ignore */ }
-  }
-
-  async function sweepAutoPayouts({
-    maxRows = PAYOUT_SWEEP_MAX_ROWS,
-    budgetMs = PAYOUT_SWEEP_BUDGET_MS,
-  } = {}) {
-    if (!custodialPullAllowed()) return [];
-    const tipH = Number(store.tip?.()?.height || 0);
-    const need = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
-    const from = payoutDest(miner) || poolFeeDest();
-    if (!isDestAddress(from) || containsShe1(from)) return [];
-    const spendKey = refreshOperatorSpendKey();
-    const due = pullBook.dueAuto({ tipHeight: tipH, need });
-    const sent = [];
-    const fee = levyNanos(0, { depth: mempoolDepthBytes(store.mempool || []) });
-    const cap = Math.max(1, Math.floor(Number(maxRows) || PAYOUT_SWEEP_MAX_ROWS));
-    const budget = Math.max(20, Math.floor(Number(budgetMs) || PAYOUT_SWEEP_BUDGET_MS));
-    if (!spendKey && due.length) {
-      const row = due[0];
-      console.error(JSON.stringify({
-        event: 'auto_payout_unsigned',
-        reason: 'need_spend_key',
-        tag: row.tag,
-      }));
-      recordAutoPayoutError({
-        tag: row.tag,
-        reason: 'unsigned',
-        have: 0,
-        need: row.nanos,
-        from,
-      });
-      return [];
-    }
-    const t0 = Date.now();
-    let n = 0;
-    for (const row of due) {
-      if (n >= cap) {
-        payoutSweepAgain = true;
-        break;
-      }
-      if (n > 0 && Date.now() - t0 >= budget) {
-        payoutSweepAgain = true;
-        break;
-      }
-      await new Promise((resolve) => { setImmediate(resolve); });
-      n += 1;
-      const built = buildAutoPayoutTx({ from, to: row.dest, nanos: row.nanos, fee, spendKey });
-      if (!built.ok) {
-        if (built.reason === 'need_spend_key') {
-          console.error(JSON.stringify({
-            event: 'auto_payout_unsigned',
-            reason: 'need_spend_key',
-            tag: row.tag,
-          }));
-          recordAutoPayoutError({
-            tag: row.tag,
-            reason: 'unsigned',
-            have: 0,
-            need: row.nanos,
-            from,
-          });
-        }
-        continue;
-      }
-      const q0 = Date.now();
-      const queued = await Promise.resolve(queueSend(built.tx));
-      console.error(JSON.stringify({
-        event: 'queue_tx_ms',
-        id: built.tx && built.tx.id,
-        kind: 'pool-withdraw',
-        ok: !(queued && queued.ok === false),
-        reason: queued && queued.reason,
-        have: queued && queued.have,
-        need: queued && queued.need,
-        from: built.tx && built.tx.from,
-        ms: Date.now() - q0,
-      }));
-      if (queued && queued.ok === false) {
-        recordAutoPayoutError({
-          tag: row.tag,
-          reason: queued.reason,
-          have: queued.have,
-          need: queued.need,
-          from,
-        });
-        continue;
-      }
-      const taken = pullBook.takeConfirmed(row.tag, {
-        tipHeight: tipH,
-        need,
-        amountNanos: row.nanos,
-        skipCooldown: true,
-      });
-      if (taken.ok) {
-        clearAutoPayoutError();
-        sent.push({ ...row, nanos: taken.nanos });
-      }
-    }
-    // The fee-wallet sweep is off. Miner π auto-payout above is the only send.
-    return sent;
   }
 
   function queueSend(t, meta) {
@@ -5760,7 +5587,7 @@ export function createPool({
         res.statusCode = 410;
         res.end(JSON.stringify({
           ok: false,
-          reason: 'auto_payout',
+          reason: 'custodial_pull',
           deprecated: true,
           autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
           dest: 'ssa1',
@@ -5830,18 +5657,6 @@ export function createPool({
           poolDest: miner,
           pullBook,
           queueSend,
-          pendingPulls,
-          completeMinerPull: (login, dest, nanos) => {
-            const t = publicMinerTag(login);
-            const tipH = Number(store.tip?.()?.height || 0);
-            const confNeed = (typeof store.getpolicy === 'function' ? (store.getpolicy().operational?.pool_merchant || 30) : 30);
-            const view = pullBook.view(t, { tipHeight: tipH, need: confNeed });
-            if (!(view.confirmedNanos > 0)) return { ok: false, reason: 'none_confirmed' };
-            if (Number(nanos) !== view.confirmedNanos) return { ok: false, reason: 'nanos' };
-            const taken = pullBook.takeConfirmed(t, { tipHeight: tipH, need: confNeed });
-            pendingPulls.delete(String(login || '').split('.')[0].toLowerCase());
-            return taken;
-          },
         });
       } catch (err) {
         res.statusCode = 500;
@@ -5897,10 +5712,6 @@ export function createPool({
       if (stopped) return;
       paintStatsSnap();
       if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
-      if (!payoutTimer) {
-        payoutTimer = setInterval(runAutoPayoutSweep, PAYOUT_SWEEP_MS);
-        payoutTimer.unref?.();
-      }
     });
   });
 
@@ -5947,10 +5758,6 @@ export function createPool({
             if (stopped) return;
             paintStatsSnap();
             if (!statsTimer) statsTimer = setInterval(paintStatsSnap, STATS_REFRESH_MS);
-            if (!payoutTimer) {
-              payoutTimer = setInterval(runAutoPayoutSweep, PAYOUT_SWEEP_MS);
-              payoutTimer.unref?.();
-            }
           });
         });
       };
@@ -5981,10 +5788,6 @@ export function createPool({
     if (statsTimer) {
       clearInterval(statsTimer);
       statsTimer = null;
-    }
-    if (payoutTimer) {
-      clearInterval(payoutTimer);
-      payoutTimer = null;
     }
     if (dropTimer) {
       clearInterval(dropTimer);
@@ -6025,8 +5828,6 @@ export function createPool({
     paintStatsSnap,
     scheduleStatsSnap,
     tipWork() { return tipWork.slice(); },
-    runAutoPayoutSweep,
-    sweepAutoPayouts,
     setP2p,
     setNetworkView,
     noteSidecarTip,

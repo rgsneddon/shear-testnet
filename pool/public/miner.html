@@ -62,18 +62,6 @@
     .payout-err { color:var(--muted); font-size:.75rem; margin:.35rem 0 0; font-weight:500; }
     .value { font-size:.9rem; font-weight:650; margin-top:2px; color:var(--cyan); overflow-wrap:anywhere; }
     .value.yellow { color:var(--gold); }
-    .withdraw-btn {
-      margin-top:6px; padding:.45rem .6rem; cursor:pointer;
-      background:var(--input, #fff); color:var(--cyan); border:1px solid var(--blue);
-      font-family:"Segoe UI",system-ui,sans-serif; font-weight:750; font-size:.78rem; text-transform:uppercase; letter-spacing:.04em;
-    }
-    .pull-form { display:flex; flex-wrap:nowrap; gap:8px; align-items:center; margin-top:8px; width:100%; min-width:0; }
-    .pull-form input {
-      flex:1 1 0; min-width:0; width:auto; margin:0; padding:.4rem .5rem; font-size:16px;
-      border:1px solid var(--blue); background:var(--input); color:var(--ink);
-    }
-    .pull-form input::placeholder { color:var(--muted); opacity:1; }
-    .pull-form .withdraw-btn { flex:0 0 auto; margin:0; width:auto; white-space:nowrap; }
     .hid { display:none !important; }
     .err { color:#b42318; font-size:.85rem; min-height:1.1em; margin:6px 0 0; }
     .err.sent { color:var(--green); font-weight:750; }
@@ -223,12 +211,6 @@
     function set(id, v) {
       const el = document.getElementById(id);
       if (el) el.textContent = v;
-    }
-    function fmtPullShe(display, num) {
-      if (display != null && display !== '') return String(display) + ' SHE';
-      const n = Number(num);
-      if (Number.isFinite(n) && n > 0) return n.toFixed(8).replace(/0+$/, '').replace(/\.$/, '') + ' SHE';
-      return '0 SHE';
     }
     function paintFreezeBanner(el, s) {
       if (!el) return;

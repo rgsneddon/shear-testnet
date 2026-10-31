@@ -22,13 +22,14 @@ function runPolicy(env, script) {
 }
 
 describe('range JS is opt-in and hidden amounts fail closed', () => {
-  it('pool and node hidden-amount creation names the native requirement', () => {
+  it('node hidden-amount creation names the native requirement; the pool creates none', () => {
     const pool = readFileSync(path.join(root, 'pool/src/wallet_api.js'), 'utf8');
     const node = readFileSync(path.join(root, 'node/mine_loop.js'), 'utf8');
     const dummy = readFileSync(path.join(root, 'crypto/dummy.js'), 'utf8');
     const note = readFileSync(path.join(root, 'crypto/note.js'), 'utf8');
-    assert.match(pool, /hiddenAmountRangeReady\(\)/);
-    assert.match(pool, /range_native_required/);
+    // The pool creates no hidden amount any more: its custodial send is gone,
+    // and with it the native-range check and the dummy outputs it drew.
+    assert.doesNotMatch(pool, /\bhiddenAmountRangeReady\b|\battachDummyOuts\b|\bproveRange\b|\bsealHiddenNote\b|range_native_required/);
     assert.match(node, /hiddenAmountRangeReady\(\)/);
     assert.match(dummy, /hiddenAmountRangeReady\(\)/);
     assert.match(note, /if \(rangeJsOptIn\(\)\)/);

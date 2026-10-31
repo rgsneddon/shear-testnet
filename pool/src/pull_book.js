@@ -1,25 +1,25 @@
 /**
- * Off-chain pool credits. 0.99 of each found pot (1% fee already stripped)
- * plus 100% of hash-bonus units sit here until auto-payout at π SHE.
- * Hash bonus never takes the 1% pool fee. she1 never stored in the book.
+ * The miner pull book. It credits nothing on any book: miners are paid from
+ * the coinbase (R14a), so no pot share or hash bonus is held here and no
+ * payout is ever due. What remains is the tag record the miner pages read:
+ * the payout dest a miner bound at login and the found counts an older book
+ * wrote. Credits, pulled rows and the pull clock of the custodial book are
+ * not loaded from disk and not written back. she1 never stored.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS, HASH_BONUS_NANOS } from '../../crypto/asert.js';
-import { isSpendableHeight } from '../../crypto/chronoflux.js';
+import { BLOCK_SUBSIDY_NANOS, POOL_FEE_BPS, SPENDABLE_CONFIRMATIONS } from '../../crypto/asert.js';
 import { hash20FromAddress, encodeDest } from '../../crypto/address.js';
 import { payeeFs1Ok } from '../../crypto/n1.js';
 import { asU8 } from '../../crypto/note.js';
 import {
   AUTO_PAYOUT_MIN_NANOS,
-  custodialPullAllowed,
   isMinerSsa1,
-  shouldAutoPayout,
   potCreditAfterFeeNanos,
   redactSsa1,
 } from './auto_payout.js';
 
-/** Auto-payout is π-sum, not a clock. Zero: a dest can be paid again as soon as it re-accumulates π. */
+/** No pull is ever due; the miner pages still read the cooldown field. */
 export const PULL_COOLDOWN_MS = 0;
 export { AUTO_PAYOUT_MIN_NANOS, redactSsa1 };
 
@@ -58,11 +58,13 @@ export function createPullBook(dir) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'pull-book.json');
   const destByTag = new Map();
-  let state = { credits: [], pulled: [], lastPullMs: {}, found: {}, finders: {} };
+  let state = { found: {} };
   let loaded = false;
   if (fs.existsSync(file)) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      // Only the tag record is read. Credits, pulled rows, the pull clock and
+      // the finder rows of the custodial book are left on the floor.
       const found = {};
       if (raw?.found && typeof raw.found === 'object') {
         for (const [k, v] of Object.entries(raw.found)) {
@@ -70,37 +72,7 @@ export function createPullBook(dir) {
           if (k && n > 0) found[String(k).toLowerCase()] = n;
         }
       }
-      const finders = {};
-      if (raw?.finders && typeof raw.finders === 'object') {
-        for (const [k, v] of Object.entries(raw.finders)) {
-          const h = Math.floor(Number(k) || 0);
-          if (!(h >= 1) || !v) continue;
-          const tag = String(v.tag || '').trim().toLowerCase();
-          const worker = String(v.worker || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
-          if (!/^m[0-9a-f]{8}$/.test(tag)) continue;
-          finders[String(h)] = { tag, worker: worker || 'worker' };
-        }
-      }
-      state = {
-        credits: Array.isArray(raw?.credits) ? raw.credits.map((c) => ({
-          tag: c.tag,
-          nanos: c.nanos,
-          height: c.height,
-          ms: c.ms,
-          kind: c.kind === 'hash' ? 'hash' : 'pot',
-          dest20: c.dest20 || '',
-        })) : [],
-        pulled: Array.isArray(raw?.pulled) ? raw.pulled.map((p) => ({
-          tag: p.tag,
-          nanos: p.nanos,
-          height: p.height,
-          ms: p.ms,
-          dest20: p.dest20 || '',
-        })) : [],
-        lastPullMs: raw?.lastPullMs && typeof raw.lastPullMs === 'object' ? raw.lastPullMs : {},
-        found,
-        finders,
-      };
+      state = { found };
       loaded = true;
       if (raw?.dests && typeof raw.dests === 'object') {
         for (const [k, v] of Object.entries(raw.dests)) {
@@ -112,50 +84,15 @@ export function createPullBook(dir) {
           }
         }
       }
-      for (const c of state.credits) {
-        if (c.tag && c.dest20 && !destByTag.get(c.tag)) destByTag.set(c.tag, destFrom20(c.dest20));
-      }
     } catch {
-      state = { credits: [], pulled: [], lastPullMs: {}, found: {}, finders: {} };
+      state = { found: {} };
     }
-  }
-
-  function uniquePotHeights() {
-    const s = new Set();
-    for (const c of state.credits) {
-      if (c.kind === 'hash') continue;
-      const h = Number(c.height) || 0;
-      if (h >= 1) s.add(h);
-    }
-    return s;
-  }
-
-  function sealsLifetime() {
-    return uniquePotHeights().size;
   }
 
   function save() {
     const disk = {
-      credits: state.credits.map((c) => ({
-        tag: c.tag,
-        nanos: c.nanos,
-        height: c.height,
-        ms: c.ms,
-        kind: c.kind === 'hash' ? 'hash' : 'pot',
-        dest20: c.dest20 || '',
-      })),
-      pulled: state.pulled.map((p) => ({
-        tag: p.tag,
-        nanos: p.nanos,
-        height: p.height,
-        ms: p.ms,
-        dest20: p.dest20 || '',
-      })),
-      lastPullMs: state.lastPullMs,
       found: state.found,
-      finders: state.finders || {},
       dests: Object.fromEntries([...destByTag].map(([k, v]) => [k, dest20Hex(v)])),
-      sealsLifetime: sealsLifetime(),
     };
     fs.writeFileSync(file, `${JSON.stringify(disk)}\n`, { mode: 0o600 });
   }
@@ -175,216 +112,42 @@ export function createPullBook(dir) {
     return !!d20;
   }
 
-  function creditRound(rows, {
-    height,
-    nanos = potCreditNanos(),
-    hashByDest = null,
-    hashUnit = HASH_BONUS_NANOS,
-    now = Date.now(),
-    finderTag = '',
-    finderWorker = '',
-  } = {}) {
-    if (!custodialPullAllowed()) return { ok: false, reason: 'custodial_pull' };
-    const list = (rows || []).filter((r) => r && r.tag && (Number(r.count) || 0) > 0);
-    const total = list.reduce((a, r) => a + (Number(r.count) || 0), 0);
-    const pot = Math.max(0, Math.floor(Number(nanos) || 0));
-    if (!(height >= 1)) return { ok: false, reason: 'empty' };
-    if (!total && !(hashByDest && hashByDest.size)) return { ok: false, reason: 'empty' };
-    const finder = String(finderTag || '').trim().toLowerCase();
-    if (finder) state.found[finder] = (Math.floor(Number(state.found[finder]) || 0) + 1);
-    if (finder && /^m[0-9a-f]{8}$/.test(finder)) {
-      if (!state.finders || typeof state.finders !== 'object') state.finders = {};
-      const w = String(finderWorker || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'worker';
-      state.finders[String(height)] = { tag: finder, worker: w };
-    }
-    let left = pot;
-    if (total && pot) {
-      for (let i = 0; i < list.length; i += 1) {
-        const share = i === list.length - 1
-          ? left
-          : Math.floor(pot * (Number(list[i].count) || 0) / total);
-        left -= share;
-        if (share <= 0) continue;
-        const tag = String(list[i].tag).toLowerCase();
-        const d20 = rememberDest(tag, list[i].dest);
-        state.credits.push({
-          tag,
-          nanos: share,
-          height,
-          ms: now,
-          kind: 'pot',
-          dest20: d20,
-        });
-      }
-    }
-    if (hashByDest && typeof hashByDest.forEach === 'function') {
-      const byTag = new Map();
-      for (const row of list) {
-        const dest = String(row.dest || '');
-        const tag = String(row.tag).toLowerCase();
-        const n = Math.floor(Number(hashByDest.get(dest) || hashByDest.get(tag) || 0));
-        if (n > 0) byTag.set(tag, (byTag.get(tag) || 0) + n);
-      }
-      if (!byTag.size) {
-        for (const [key, n] of hashByDest) {
-          const nanosH = Math.floor(Number(n) || 0);
-          if (nanosH <= 0) continue;
-          const match = list.find((r) => r.dest === key || r.tag === key);
-          const tag = String(match?.tag || key).toLowerCase();
-          byTag.set(tag, (byTag.get(tag) || 0) + nanosH);
-          if (match?.dest) rememberDest(tag, match.dest);
-        }
-      }
-      for (const [tag, nanosH] of byTag) {
-        if (nanosH <= 0) continue;
-        const dest = destOf(tag);
-        const d20 = dest ? dest20Hex(dest) : '';
-        state.credits.push({
-          tag,
-          nanos: nanosH,
-          height,
-          ms: now,
-          kind: 'hash',
-          dest20: d20,
-        });
-      }
-    }
-    void hashUnit;
-    save();
-    return { ok: true };
+  /** Nothing is credited on any book: miners are paid from the coinbase. */
+  function creditRound() {
+    return { ok: false, reason: 'custodial_pull' };
   }
 
-  function view(tag, { tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
+  /** Every figure is 0: the book holds no miner money on any book. */
+  function view(tag, { need = SPENDABLE_CONFIRMATIONS } = {}) {
     const key = String(tag || '').trim().toLowerCase();
-    if (!custodialPullAllowed()) {
-      const dest = destOf(key);
-      return {
-        pendingNanos: 0,
-        confirmedNanos: 0,
-        unconfirmedNanos: 0,
-        confirmedPotNanos: 0,
-        confirmedHashNanos: 0,
-        hashPaidNanos: 0,
-        sentNanos: 0,
-        lastPullMs: 0,
-        nextPullMs: 0,
-        dest,
-        destRedacted: redactSsa1(dest),
-        autoPayoutMinNanos: 0,
-        foundBlocks: 0,
-        oldestUnconfirmedHeight: 0,
-        confirmRemain: 0,
-        confirmNeed: Math.max(1, Number(need) || 1),
-      };
-    }
-    let unconfirmedPot = 0;
-    let confirmedPot = 0;
-    let hashPaid = 0;
-    for (const c of state.credits) {
-      if (c.tag !== key) continue;
-      const n = Math.floor(Number(c.nanos) || 0);
-      if (c.kind === 'hash') {
-        hashPaid += n;
-        continue;
-      }
-      if (isSpendableHeight(c.height, tipHeight, need)) confirmedPot += n;
-      else unconfirmedPot += n;
-    }
-    let pulled = 0;
-    for (const p of state.pulled) {
-      if (p.tag !== key) continue;
-      pulled += Math.floor(Number(p.nanos) || 0);
-    }
-    let conf = confirmedPot - pulled;
-    if (conf < 0) {
-      unconfirmedPot = Math.max(0, unconfirmedPot + conf);
-      conf = 0;
-    }
-    const lastPullMs = Number(state.lastPullMs[key] || 0);
     const dest = destOf(key);
-    let oldestUnconfirmedHeight = 0;
-    for (const c of state.credits) {
-      if (c.tag !== key) continue;
-      const h = Number(c.height) || 0;
-      if (!(h >= 1)) continue;
-      if (c.kind === 'hash') continue;
-      if (isSpendableHeight(h, tipHeight, need)) continue;
-      if (!oldestUnconfirmedHeight || h < oldestUnconfirmedHeight) oldestUnconfirmedHeight = h;
-    }
-    const confirmRemain = oldestUnconfirmedHeight
-      ? Math.max(0, oldestUnconfirmedHeight + Math.max(1, Number(need) || 1) - 1 - tipHeight)
-      : 0;
     return {
-      pendingNanos: conf + unconfirmedPot,
-      confirmedNanos: conf,
-      unconfirmedNanos: unconfirmedPot,
-      confirmedPotNanos: Math.max(0, confirmedPot),
-      confirmedHashNanos: Math.max(0, hashPaid),
-      hashPaidNanos: Math.max(0, hashPaid),
-      sentNanos: pulled + hashPaid,
-      lastPullMs,
-      nextPullMs: lastPullMs ? lastPullMs + PULL_COOLDOWN_MS : 0,
+      pendingNanos: 0,
+      confirmedNanos: 0,
+      unconfirmedNanos: 0,
+      confirmedPotNanos: 0,
+      confirmedHashNanos: 0,
+      hashPaidNanos: 0,
+      sentNanos: 0,
+      lastPullMs: 0,
+      nextPullMs: 0,
       dest,
       destRedacted: redactSsa1(dest),
-      autoPayoutMinNanos: AUTO_PAYOUT_MIN_NANOS,
-      foundBlocks: Math.floor(Number(state.found[key]) || 0),
-      oldestUnconfirmedHeight,
-      confirmRemain,
+      autoPayoutMinNanos: 0,
+      oldestUnconfirmedHeight: 0,
+      confirmRemain: 0,
       confirmNeed: Math.max(1, Number(need) || 1),
     };
-  }
-
-  function takeConfirmed(tag, {
-    tipHeight = 0,
-    need = SPENDABLE_CONFIRMATIONS,
-    now = Date.now(),
-    amountNanos = null,
-    skipCooldown = false,
-  } = {}) {
-    const key = String(tag || '').trim().toLowerCase();
-    const v = view(key, { tipHeight, need });
-    if (!skipCooldown && v.lastPullMs && now < v.nextPullMs) {
-      return { ok: false, reason: 'cooldown', nextPullMs: v.nextPullMs };
-    }
-    if (!(v.confirmedNanos > 0)) return { ok: false, reason: 'none_confirmed' };
-    const want = amountNanos == null
-      ? v.confirmedNanos
-      : Math.floor(Number(amountNanos) || 0);
-    if (!(want > 0)) return { ok: false, reason: 'none_confirmed' };
-    if (want > v.confirmedNanos) return { ok: false, reason: 'over_unpaid' };
-    const dest = destOf(key);
-    state.pulled.push({
-      tag: key,
-      nanos: want,
-      height: tipHeight,
-      ms: now,
-      dest20: dest ? dest20Hex(dest) : '',
-    });
-    state.lastPullMs[key] = now;
-    save();
-    return { ok: true, nanos: want, dest };
   }
 
   function destOf(tag) {
     const key = String(tag || '').trim().toLowerCase();
     if (destByTag.has(key) && destByTag.get(key)) return destByTag.get(key);
-    for (let i = state.credits.length - 1; i >= 0; i -= 1) {
-      const c = state.credits[i];
-      if (c.tag === key && c.dest20) {
-        const d = destFrom20(c.dest20);
-        if (d) {
-          destByTag.set(key, d);
-          return d;
-        }
-      }
-    }
     return '';
   }
 
   function tags() {
     const s = new Set();
-    for (const c of state.credits) if (c.tag) s.add(c.tag);
-    for (const p of state.pulled) if (p.tag) s.add(p.tag);
     for (const k of Object.keys(state.found || {})) if (k) s.add(k);
     return [...s];
   }
@@ -430,73 +193,16 @@ export function createPullBook(dir) {
     return acc;
   }
 
+  /** A tag with a found count: the one record an older book may still carry. */
   function hasTag(tag) {
     const key = String(tag || '').trim().toLowerCase();
     if (!key) return false;
-    if (Number(state.found[key]) > 0) return true;
-    if (state.lastPullMs[key]) return true;
-    for (const c of state.credits) if (c.tag === key) return true;
-    for (const p of state.pulled) if (p.tag === key) return true;
-    return false;
+    return Number(state.found[key]) > 0;
   }
 
-  function reconcile({ potAfterFeeNanos = potCreditNanos() } = {}) {
-    const net = Math.max(0, Math.floor(Number(potAfterFeeNanos) || 0));
-    let potCredits = 0;
-    let hashCredits = 0;
-    const byH = new Map();
-    for (const c of state.credits) {
-      const n = Math.floor(Number(c.nanos) || 0);
-      if (c.kind === 'hash') {
-        hashCredits += n;
-        continue;
-      }
-      potCredits += n;
-      const h = Number(c.height) || 0;
-      if (h >= 1) byH.set(h, (byH.get(h) || 0) + n);
-    }
-    let attributedFee = 0;
-    for (const n of byH.values()) attributedFee += attributedPoolFeeNanos(n);
-    const seals = byH.size;
-    const expectedNet = seals * net;
-    const drift = potCredits - expectedNet;
-    return {
-      sealsLifetime: seals,
-      potCreditsNanos: potCredits,
-      hashCreditsNanos: hashCredits,
-      attributedFeeNanos: attributedFee,
-      expectedNetPotNanos: expectedNet,
-      driftNanos: drift,
-      ok: Math.abs(drift) <= seals,
-    };
-  }
-
-  function ledger(tag) {
-    if (!custodialPullAllowed()) return [];
-    const key = String(tag || '').trim().toLowerCase();
-    const byH = new Map();
-    for (const c of state.credits) {
-      if (c.tag !== key) continue;
-      const h = Number(c.height) || 0;
-      if (!(h >= 1)) continue;
-      if (!byH.has(h)) byH.set(h, { height: h, potNanos: 0, hashNanos: 0 });
-      const row = byH.get(h);
-      const n = Math.floor(Number(c.nanos) || 0);
-      if (c.kind === 'hash') row.hashNanos += n;
-      else row.potNanos += n;
-    }
-    return [...byH.values()]
-      .sort((a, b) => b.height - a.height)
-      .map((r) => {
-        const fee = attributedPoolFeeNanos(r.potNanos);
-        return {
-          height: r.height,
-          blockRwdNanos: r.potNanos,
-          hashBonusNanos: r.hashNanos,
-          poolFeeNanos: fee,
-          totalNanos: r.potNanos + r.hashNanos,
-        };
-      });
+  /** No credit rows on any book. */
+  function ledger() {
+    return [];
   }
 
   function unpaidPotNanos({ tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
@@ -507,45 +213,9 @@ export function createPullBook(dir) {
     return n;
   }
 
-  function dueAuto({ tipHeight = 0, need = SPENDABLE_CONFIRMATIONS } = {}) {
-    if (!custodialPullAllowed()) return [];
-    const out = [];
-    for (const tag of tags()) {
-      const dest = destOf(tag);
-      const v = view(tag, { tipHeight, need });
-      const gate = shouldAutoPayout({ confirmedNanos: v.confirmedNanos, dest });
-      if (gate.ok) out.push({ tag, dest: gate.dest, nanos: gate.nanos });
-    }
-    return out;
-  }
-
-  function sweepAuto(opts = {}) {
-    const due = dueAuto(opts);
-    const out = [];
-    for (const row of due) {
-      const taken = takeConfirmed(row.tag, {
-        tipHeight: opts.tipHeight,
-        need: opts.need,
-        now: opts.now,
-        amountNanos: row.nanos,
-        skipCooldown: true,
-      });
-      if (taken.ok) out.push({ tag: row.tag, dest: row.dest, nanos: taken.nanos });
-    }
-    return out;
-  }
-
   if (loaded) save();
-  function finderOf(height) {
-    const h = Math.floor(Number(height) || 0);
-    if (!(h >= 1) || !state.finders) return null;
-    const row = state.finders[String(h)];
-    if (!row || !row.tag) return null;
-    return { tag: String(row.tag), worker: String(row.worker || 'worker') };
-  }
 
   return {
-    creditRound, view, viewByDest, takeConfirmed, destOf, bindDest, tags, hasTag, dueAuto, unpaidPotNanos,
-    sweepAuto, ledger, sealsLifetime, reconcile, finderOf,
+    creditRound, view, viewByDest, destOf, bindDest, tags, hasTag, unpaidPotNanos, ledger,
   };
 }

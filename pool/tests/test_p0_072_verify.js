@@ -18,7 +18,6 @@ import {
 } from '../../crypto/asert.js';
 import { hash20FromAddress, newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { custodialPullAllowed } from '../../crypto/levy.js';
 import { noteCommitOfDest20, openedCoinbaseNanos } from '../../crypto/note.js';
 import { MAGIC_TESTNET, MAGIC_TESTNET_V12 } from '../../crypto/reserve_books.js';
 import { nonceWithShareTarget } from '../../crypto/share_batch.js';
@@ -108,7 +107,7 @@ function bookFile(dir) {
 }
 
 function assertBookEmpty(pool, dir, dests, where) {
-  assert.equal(pool.pullBook.dueAuto({ tipHeight: 80, need: 1 }).length, 0, where);
+  assert.equal(pool.pullBook.dueAuto, undefined, where);
   assert.equal(pool.pullBook.unpaidPotNanos({ tipHeight: 80, need: 1 }), 0, where);
   for (const dest of dests) {
     const tag = publicMinerTag(dest);
@@ -271,15 +270,8 @@ function assertNoPullKeys(value, where) {
 }
 
 function assertStatsShowNoPull(stats, where) {
-  const rec = stats.reconcile;
-  assert.ok(rec, where);
-  assert.equal(rec.potCreditsNanos, 0, where);
-  assert.equal(rec.hashCreditsNanos, 0, where);
-  assert.equal(rec.attributedFeeNanos, 0, where);
-  assert.equal(rec.expectedNetPotNanos, 0, where);
-  assert.equal(rec.driftNanos, 0, where);
-  assert.equal(rec.sealsLifetime, 0, where);
-  assert.equal(rec.ok, true, where);
+  // Nothing to reconcile: the pull book holds no credits on any book.
+  assert.equal(stats.reconcile, undefined, where);
   assert.equal(stats.autoPayoutLastError, null, where);
   assert.equal(stats.blocksLifetime, 0, where);
   assert.equal(stats.sealsLifetime, 0, where);
@@ -331,7 +323,7 @@ function assertMinerPageShowsNoPull(html, where, scan) {
   assert.match(html, /id="m-pending">Shear Privacy</, where);
   assert.match(html, /id="m-confirmed">Shear Privacy</, where);
   assert.match(html, /id="m-hashbonus">Shear Privacy</, where);
-  assert.equal(html.split('fmtPullShe(').length, 2, where);
+  assert.equal(html.includes('fmtPullShe('), false, where);
   const paintAt = html.indexOf('function paint(d)');
   const paintEnd = html.indexOf('function tick()', paintAt);
   assert.ok(paintAt >= 0 && paintEnd > paintAt, where);
@@ -805,10 +797,6 @@ function productionSources(root) {
 describe('P0 072 v12 custodial pull', () => {
   it('no v12 source path reaches poolWithdrawTx', () => {
     assert.equal(MAGIC_TESTNET, MAGIC_TESTNET_V12);
-    assert.equal(custodialPullAllowed(), false);
-    assert.equal(custodialPullAllowed(MAGIC_TESTNET), false);
-    assert.equal(custodialPullAllowed(MAGIC_TESTNET_V12), false);
-    assert.equal(custodialPullAllowed('shear-v1'), true);
 
     const ungated = 'export function leak() {\n  return poolWithdrawTx({ from: 1 });\n}\n';
     assert.throws(() => assertFileUnreachable('leak.js', ungated), /reaches poolWithdrawTx/);
@@ -868,7 +856,10 @@ describe('P0 072 v12 custodial pull', () => {
       calls += before;
       assertFileUnreachable(path.relative(ROOT, file), src);
     }
-    assert.ok(calls >= 1, 'production still names the refused builder');
+    // The pool side no longer names the builder at all; the scan stays so a
+    // call can never come back (crypto/levy.js keeps only the declaration
+    // until the node-side removal is signed off).
+    assert.equal(calls, 0, 'no production path calls the refused builder');
   });
 
   it('pull-balance scan is exact paths, types, and zero custodial display', () => {
@@ -1021,13 +1012,9 @@ describe('P0 072 v12 custodial pull', () => {
           assert.equal(openedPotSum, BLOCK_SUBSIDY_NANOS - fee + carry, where);
           pool.rollOpenRound();
 
-          const beforeSweep = queued.length;
-          const sent = await pool.sweepAutoPayouts();
-          assert.equal(sent.length, 0, where);
-          assert.equal(queued.length, beforeSweep, `${where} sweep reached queueTx`);
-          const again = await pool.runAutoPayoutSweep();
-          assert.equal(again.length, 0, where);
-          assert.equal(queued.length, beforeSweep, `${where} timer sweep reached queueTx`);
+          // No sweep exists to reach queueTx: miners are paid from the coinbase.
+          assert.equal(pool.sweepAutoPayouts, undefined, where);
+          assert.equal(pool.runAutoPayoutSweep, undefined, where);
           assert.equal(queued.filter(isPullTx).length, 0, where);
           assert.equal((pool.store.mempool || []).filter(isPullTx).length, 0, where);
           assertBookEmpty(pool, dir, dests, where);
@@ -1068,6 +1055,7 @@ describe('P0 072 v12 custodial pull', () => {
           assert.equal(dests.some((dest) => publicMinerTag(dest) === ghostTag), false, where);
           const ghost = await httpCall(`${base}/api/miners/${ghostTag}`);
           assertUnknownMiner(ghost, ghostTag, `${where} unknown miner`);
+          const beforeSweep = queued.length;
           const withdraw = await httpCall(`${base}/api/pool/withdraw`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

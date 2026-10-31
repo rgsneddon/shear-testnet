@@ -35,7 +35,7 @@ import { verifyRange, reviveBytes, sealCoinbaseNote, noteCommitOfDest20 } from '
 import { attachAdmitPub } from './admit.js';
 import { PI_SHE_NANOS, GENESIS_BITS_PACKED, NANOS_PER_SHE, POOL_FEE_BPS, HASH_BONUS_NANOS } from './asert.js';
 import { digestTx, buildTemplate, verifyBlock, GENESIS_PREV } from '../node/src/chain.js';
-import { poolWithdrawTx } from './levy.js';
+import { handPoolWithdrawTx } from '../tests/hand_pool_withdraw.js';
 import { attachDummyOuts, publicExplorerRow } from './dummy.js';
 import { admitMempool, emptyMempool } from './mempool.js';
 
@@ -460,7 +460,7 @@ describe('chronoflux prune + collate', () => {
     const payee = newIdentity();
     const from = destForLogin(id.address, { viewKey: id.viewKey });
     const to = destForLogin(payee.address, { viewKey: payee.viewKey });
-    const fat = poolWithdrawTx({ from, to, nanos: 314_159_265_358, fee: 100, id: 'auto-payout-test' });
+    const fat = handPoolWithdrawTx({ from, to, nanos: 314_159_265_358, fee: 100, id: 'auto-payout-test' });
     const sealed = compactTx(fat);
     const blob = JSON.stringify(sealed);
     assert.doesNotMatch(blob, /ssa1/);

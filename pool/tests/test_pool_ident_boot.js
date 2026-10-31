@@ -9,7 +9,6 @@ import { randomBytes } from 'node:crypto';
 import { newIdentity } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
 import { PI_SHE_NANOS } from '../../crypto/asert.js';
-import { buildAutoPayoutTx } from '../src/auto_payout.js';
 import { publicMinerTag, createPool } from '../src/pool.js';
 import { spendBox } from '../../tests/spend_box.js';
 import { verifyPoolWithdrawBound, signSpendTx } from '../../crypto/spend.js';
@@ -19,7 +18,7 @@ import {
   writeOperatorSpendSeed,
   POOL_SPEND_SEED_FILE,
 } from '../src/pool_ident.js';
-import { poolWithdrawTx } from '../../crypto/levy.js';
+import { handPoolWithdrawTx } from '../../tests/hand_pool_withdraw.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -82,15 +81,6 @@ describe('bootPoolOperator matching spend seed', () => {
     assert.equal(mismatched.operatorSpendKey, null);
     assert.equal(mismatched.miner, boot.miner);
     const dest = ssa1();
-    const skipped = buildAutoPayoutTx({
-      from: boot.miner,
-      to: dest,
-      nanos: PI_SHE_NANOS,
-      fee: 100,
-      spendKey: mismatched.operatorSpendKey,
-    });
-    assert.equal(skipped.ok, false);
-    assert.equal(skipped.reason, 'custodial_pull');
     const pool = createPool({
       dataDir: dir,
       miner: boot.miner,
@@ -110,7 +100,7 @@ describe('bootPoolOperator matching spend seed', () => {
       bound.push(verifyPoolWithdrawBound(tx).ok === true);
       return { ok: true, tx };
     };
-    assert.equal((await pool.runAutoPayoutSweep()).length, 0);
+    assert.equal(pool.runAutoPayoutSweep, undefined);
     assert.deepEqual(bound, []);
     assert.equal(pool.publicStats().autoPayoutLastError, null);
     assert.equal(pool.pullBook.view(tag, { tipHeight: 40, need: 30 }).sentNanos, 0);
@@ -148,7 +138,7 @@ describe('bootPoolOperator matching spend seed', () => {
   it('verifyPoolWithdrawBound still refuses unsigned and stolen withdraws', () => {
     const dest = ssa1();
     const poolBox = spendBox(newIdentity());
-    const unsigned = poolWithdrawTx({
+    const unsigned = handPoolWithdrawTx({
       from: poolBox.dest,
       to: dest.split('.')[0],
       nanos: PI_SHE_NANOS,
@@ -158,16 +148,7 @@ describe('bootPoolOperator matching spend seed', () => {
     assert.equal(verifyPoolWithdrawBound(unsigned).reason, 'unsigned');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shear-ident-bound-'));
     const boot = bootPoolOperator({ dataDir: dir });
-    const built = buildAutoPayoutTx({
-      from: boot.miner,
-      to: dest,
-      nanos: PI_SHE_NANOS,
-      fee: 100,
-      spendKey: boot.operatorSpendKey,
-    });
-    assert.equal(built.ok, false);
-    assert.equal(built.reason, 'custodial_pull');
-    const hand = poolWithdrawTx({
+    const hand = handPoolWithdrawTx({
       from: boot.miner,
       to: dest,
       nanos: PI_SHE_NANOS,

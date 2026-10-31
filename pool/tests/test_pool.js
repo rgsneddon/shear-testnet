@@ -20,7 +20,7 @@ import {
 import { requiredJobFields, encodeHeader, decodeHeader, headerFromHex } from '../../crypto/header.js';
 import { payoutDest, newIdentity, encodeHrp, aliasDestOfSilentId, freshStealthDest } from '../../crypto/address.js';
 import { destForLogin } from '../../crypto/flow_sheet.js';
-import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, ewmaBlockIntervalMs, medianBlockIntervalMs, intervalDeltasMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, PAYOUT_SWEEP_MS, wireJob, hashWorkerRejectReason } from '../src/pool.js';
+import { createPool, gateJob, scoreShare, admitClient, foldConnectionInventory, publicMinerLabel, publicMinerTag, splitPot, isPublicMinerRow, lastValidWorkAt, foldPublicMinerViews, HASH_PRESENCE_MS, isCminerFeeLogin, bloomExpletive, publicWorkerName, uniquePublicLabels, avgBlockIntervalMs, avgWallFindIntervalMs, ewmaBlockIntervalMs, medianBlockIntervalMs, intervalDeltasMs, JOB_RESTAMP_MS, STATS_REFRESH_MS, wireJob, hashWorkerRejectReason } from '../src/pool.js';
 import { hasherHasValidRoundShare, roundActualHashes } from '../src/hash_credit.js';
 import { signPoolWithdraw } from '../../crypto/eip712.js';
 import { verifyPoolWithdrawOffchain } from '../../crypto/levy.js';
@@ -315,36 +315,18 @@ describe('HTTP stats cannot stall', () => {
     }
   });
 
-  it('does not sweep auto-payout from stats paint (borkatpayout)', async () => {
+  it('runs no auto-payout sweep; the stats paint never queues a send', async () => {
     const src = fs.readFileSync(new URL('../src/pool.js', import.meta.url), 'utf8');
     const paintAt = src.indexOf('function paintStatsSnap()');
     const pubAt = src.indexOf('function publicStats()');
     assert.ok(paintAt >= 0 && pubAt > paintAt);
     const paint = src.slice(paintAt, pubAt);
-    assert.doesNotMatch(paint, /sweepAutoPayouts/);
     assert.doesNotMatch(paint, /queueSend/);
-    assert.match(src, /PAYOUT_SWEEP_MS/);
-    assert.ok(PAYOUT_SWEEP_MS >= 60 * 60 * 1000);
+    // Miners are paid from the coinbase: no sweep, no timer, no builder.
+    assert.doesNotMatch(src, /sweepAutoPayouts|runAutoPayoutSweep|PAYOUT_SWEEP_|buildAutoPayoutTx|buildPoolFeeSweepTx|poolFeeSweepNanos|poolFeePayoutDest|refreshOperatorSpendKey/);
     const creditAt = src.indexOf('pullBook.creditRound(');
-    const creditEnd = src.indexOf('} catch {', creditAt);
-    assert.ok(creditAt >= 0 && creditEnd > creditAt);
-    assert.doesNotMatch(src.slice(creditAt, creditEnd), /runAutoPayoutSweep/);
-    assert.match(src, /runAutoPayoutSweep/);
+    assert.ok(creditAt >= 0);
     assert.match(src, /setImmediate\(flushDirtyJob\)/);
-    assert.match(src, /PAYOUT_SWEEP_MAX_ROWS/);
-    const sweepAt = src.indexOf('function runAutoPayoutSweep()');
-    assert.ok(sweepAt >= 0);
-    const sweep = src.slice(sweepAt, sweepAt + 1600);
-    assert.match(sweep, /setImmediate\(/);
-    assert.match(src, /PAYOUT_SWEEP_BUDGET_MS/);
-    assert.match(src, /setInterval\(runAutoPayoutSweep/);
-    const bodyAt = src.indexOf('async function sweepAutoPayouts');
-    const bodyEnd = src.indexOf('function queueSend', bodyAt);
-    assert.ok(bodyAt >= 0 && bodyEnd > bodyAt);
-    const body = src.slice(bodyAt, bodyEnd);
-    assert.match(body, /buildAutoPayoutTx/);
-    assert.match(body, /takeConfirmed/);
-    assert.doesNotMatch(body, /buildPoolFeeSweepTx|poolFeeSweepNanos|poolFeePayoutDest/);
     const reload = fs.readFileSync(new URL('../../deploy/reload-stratum-units.sh', import.meta.url), 'utf8');
     assert.match(reload, /SHEAR_STRATUM_BIND=127\.0\.0\.1/);
     assert.match(reload, /SHEAR_STRATUM_AUTH=1/);
@@ -885,7 +867,7 @@ describe('public miner listing', () => {
     assert.doesNotMatch(miner, /id="m-withdraw"/);
     assert.doesNotMatch(miner, /Pull from pool/);
     assert.match(miner, /MINER_BOOT/);
-    assert.match(miner, /fmtPullShe/);
+    assert.doesNotMatch(miner, /fmtPullShe|\.withdraw-btn|\.pull-form/);
     assert.match(miner, /confirmedSentLabel/);
     assert.doesNotMatch(miner, /id="pull-login"/);
     assert.doesNotMatch(miner, /id="pull-dest"/);
@@ -921,9 +903,6 @@ describe('public miner listing', () => {
     assert.doesNotMatch(miner, /wait 24 hours before the next one/);
     assert.doesNotMatch(miner, /wait 90 hours before the next one/);
     assert.doesNotMatch(miner, /sig: 'pull-'/);
-    assert.match(miner, /background:var\(--input\); color:var\(--ink\)/);
-    assert.match(miner, /input::placeholder \{ color:var\(--muted\)/);
-    assert.doesNotMatch(miner, /\.pull-form input[^}]*background:#fff/);
     assert.doesNotMatch(miner, />raskul</);
     assert.equal(/localStorage/.test(miner), false);
     assert.match(dash, /localStorage.getItem\('shear-mine-form'\)/);
@@ -1375,14 +1354,14 @@ describe('public miner listing', () => {
     });
     const json = await r.json();
     assert.equal(r.status, 410);
-    assert.equal(json.reason, 'auto_payout');
+    assert.equal(json.reason, 'custodial_pull');
     const unknown = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent('mdeadbeef')}/withdraw`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
     });
     assert.equal(unknown.status, 410);
-    assert.equal((await unknown.json()).reason, 'auto_payout');
+    assert.equal((await unknown.json()).reason, 'custodial_pull');
     const view = await fetch(`http://127.0.0.1:${httpPort}/api/miners/${encodeURIComponent(tag)}`);
     const miner = await view.json();
     assert.equal(view.status, 404);

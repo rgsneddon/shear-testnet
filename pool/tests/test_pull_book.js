@@ -31,9 +31,7 @@ describe('pool pull book', () => {
     assert.equal(young.unconfirmedNanos, 0);
     assert.equal(young.pendingNanos, 0);
     assert.equal(young.sentNanos, 0);
-    const taken = book.takeConfirmed(tag, { tipHeight: 40, need: 30, now: 1_000, amountNanos: 1 });
-    assert.equal(taken.ok, false);
-    assert.equal(taken.reason, 'none_confirmed');
+    assert.equal(book.takeConfirmed, undefined, 'nothing to take');
     const file = path.join(dir, 'pull-book.json');
     if (fs.existsSync(file)) {
       const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -91,7 +89,7 @@ describe('pool pull book', () => {
     assert.equal(v.pendingNanos, 0);
     assert.equal(v.dest, '');
     assert.equal(book.ledger(tag).length, 0);
-    assert.equal(book.dueAuto({ tipHeight: 40, need: 30 }).length, 0);
+    assert.equal(book.dueAuto, undefined);
   });
 
   it('a split across several miners does not land in the pull book', () => {
@@ -111,12 +109,10 @@ describe('pool pull book', () => {
     const b = book.view(held, { tipHeight: 5, need: 30 });
     assert.equal(a.pendingNanos, 0);
     assert.equal(b.pendingNanos, 0);
-    assert.equal(a.foundBlocks, 0);
-    assert.equal(b.foundBlocks, 0);
-    assert.equal(book.dueAuto({ tipHeight: 40, need: 30 }).length, 0);
-    const rec = book.reconcile({ potAfterFeeNanos: pot });
-    assert.equal(rec.sealsLifetime, 0);
-    assert.equal(rec.potCreditsNanos, 0);
+    assert.equal(a.foundBlocks, undefined);
+    assert.equal(b.foundBlocks, undefined);
+    assert.equal(book.dueAuto, undefined);
+    assert.equal(book.reconcile, undefined, 'nothing to reconcile');
   });
 
   it('sentNanos stays zero when nothing was credited', () => {
@@ -130,8 +126,7 @@ describe('pool pull book', () => {
     const ripe = book.view(tag, { tipHeight: 40, need: 30 });
     assert.equal(ripe.sentNanos, 0);
     assert.equal(ripe.confirmedNanos, 0);
-    const taken = book.takeConfirmed(tag, { tipHeight: 40, need: 30, skipCooldown: true });
-    assert.equal(taken.reason, 'none_confirmed');
+    assert.equal(book.takeConfirmed, undefined, 'nothing to take');
   });
 
   it('viewByDest emits zero owedPi on v12; no balance route serves it', () => {

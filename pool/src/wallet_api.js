@@ -24,26 +24,18 @@ import {
   levyTaxed,
   txWeight,
   mempoolPressure,
-  mempoolDepthBytes,
-  poolPayoutDest,
-  poolWithdrawTx,
-  custodialPullAllowed,
-  verifyPoolWithdrawOffchain,
-  containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
-import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
+import { flowSendNeedsOpen, verifySpendSig, fundedDebit, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
+import { dummyCount } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected, outputMayCarryValueOpen } from '../../crypto/chronoflux.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
-import { noteCommitOfDest20, asU8, hiddenAmountRangeReady, verifySealedNote } from '../../crypto/note.js';
+import { noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js';
 import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
-import { ownerPubFromOpening } from '../../crypto/eip712.js';
 import { decodeHeader } from '../../crypto/header.js';
 import { roundActualHashes } from './hash_credit.js';
-import { withdrawNonces, withdrawDigests } from './withdraw_state.js';
 import { v3BucketSendRejected } from '../../crypto/fs1_send_gate.js';
 import { fs1AnchorRows } from '../../crypto/admit_v3.js';
 
@@ -1259,15 +1251,9 @@ export function paintedSpendableNanos(store, pullBook, address, chainNanos) {
   return chain + (Number.isFinite(owed) && owed > 0 ? owed : 0);
 }
 
-/** Dest-scoped owed-π / confirming pot from the pull-book (credits still below π). */
-export function owedPiFromPullBook(pullBook, address, { tipHeight = 0, need = 30 } = {}) {
-  if (!custodialPullAllowed()) return { owedPi: 0, confirmingPot: 0 };
-  if (!pullBook || typeof pullBook.viewByDest !== 'function' || !isDestAddress(address)) {
-    return { owedPi: 0, confirmingPot: 0 };
-  }
-  const v = pullBook.viewByDest(address, { tipHeight, need });
-  const she = nanosToShe(v.pendingNanos);
-  return { owedPi: she, confirmingPot: she };
+/** Retired: the pull book owes nothing on any book (miners are paid from the coinbase). */
+export function owedPiFromPullBook() {
+  return { owedPi: 0, confirmingPot: 0 };
 }
 
 /** A local opening on a hidden output is not relayed. Public reserve kinds keep v. */
@@ -1534,7 +1520,7 @@ export function parseSendNanos(body) {
   return { ok: true, nanos: null };
 }
 
-export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, pendingPulls, completeMinerPull, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
+export function handleWalletApi(url, method, body, { store, miners, queueSend, lastJob, poolDest, nodesOnline, networkPending, networkRounds, poolOpen, poolIdentity, pullBook } = {}) {
   const path = url.pathname;
   const verb = String(method || 'GET').toUpperCase();
   if ((path === '/api/mempoolPressure' || path === '/api/mempoolpressure') && verb === 'GET') {
@@ -2006,122 +1992,15 @@ export function handleWalletApi(url, method, body, { store, miners, queueSend, l
   if (path === '/api/join/claim' && verb === 'POST') {
     return { status: 404, json: { ok: false, reason: 'not_found', public: false } };
   }
-  if ((path === '/api/pool/pullPending' || path === '/api/pool/pullpending') && verb === 'GET') {
-    const login = String(url.searchParams.get('login') || url.searchParams.get('she1') || '').trim().split('.')[0];
-    const tag = String(url.searchParams.get('tag') || '').trim().toLowerCase();
-    let rec = null;
-    if (pendingPulls && typeof pendingPulls.get === 'function') {
-      if (/^m[0-9a-f]{8}$/.test(tag)) rec = pendingPulls.get(`tag:${tag}`) || null;
-      else if (login.startsWith('she1')) rec = pendingPulls.get(login.toLowerCase()) || null;
-    }
-    if (!rec && !login.startsWith('she1') && !/^m[0-9a-f]{8}$/.test(tag)) {
-      return { status: 400, json: { ok: false, reason: 'need_she1', public: false } };
-    }
-    return {
-      status: 200,
-      json: {
-        ok: true,
-        public: false,
-        pending: rec || null,
-        chainId: 2701,
-      },
-    };
-  }
   if (path === '/api/pool/withdraw' && verb === 'POST') {
     return {
       status: 410,
       json: {
         ok: false,
-        reason: 'auto_payout',
+        reason: 'custodial_pull',
         deprecated: true,
         public: false,
         dest: 'ssa1',
-      },
-    };
-  }
-  if (false && path === '/api/pool/withdraw' && verb === 'POST') {
-    const login = body.login || body.she1;
-    const rawDest = String(body.dest || body.to || '').trim();
-    const nanos = body.nanos != null ? body.nanos : Math.round(Number(body.amount || 0) * NANOS_PER_SHE);
-    const sig = body.sig || body.signature;
-    const dests = [...new Set([rawDest, payoutDest(rawDest) || ''].filter(Boolean))];
-    let off = { ok: false, reason: 'unsigned' };
-    for (const dest of dests) {
-      off = verifyPoolWithdrawOffchain({
-        login,
-        dest,
-        nanos,
-        sig,
-        minerShe1: login,
-        payoutSsa1: dest,
-        height: body.height,
-        nonce: body.nonce,
-        deadline: body.deadline,
-        nonceStore: withdrawNonces,
-        seenDigests: withdrawDigests,
-        open: body.open,
-        spendSig: body.spendSig,
-        ownerPub: ownerPubFromOpening(body.open),
-        requireOwner: true,
-      });
-      if (off.ok) break;
-    }
-    if (!off.ok) return { status: 400, json: { ...off, public: false } };
-    const from = payoutDest(String(poolDest || '')) || poolPayoutDest();
-    if (!isDestAddress(from)) return { status: 503, json: { ok: false, reason: 'no_pool_dest' } };
-    const rec = reconstructOwner(store, from);
-    const fee = levyNanos(off.nanos, { depth: mempoolDepthBytes(store?.mempool || []) });
-    if (rec.spendableNanos < off.nanos + fee) {
-      return { status: 400, json: { ok: false, reason: 'insufficient' } };
-    }
-    const pending = pendingPulls && typeof pendingPulls.get === 'function'
-      ? pendingPulls.get(String(off.login || '').toLowerCase())
-      : null;
-    let tx;
-    if (pending && pending.kind === 'admin-spendable') {
-      if (!hiddenAmountRangeReady()) {
-        return { status: 503, json: { ok: false, reason: 'range_native_required', public: false } };
-      }
-      const open = openingForSpentDest(poolIdentity, from) || String(poolOpen || '');
-      const draft = attachDummyOuts({
-        kind: 'send',
-        from,
-        to: off.dest,
-        nanos: off.nanos,
-        amount: off.nanos / NANOS_PER_SHE,
-        fee,
-        maxLevy: fee,
-        open,
-        vin: [{ address: from }],
-        vout: [{ address: off.dest, nanos: off.nanos, kind: 'send' }],
-      });
-      if (flowSendNeedsOpen(draft) && !verifySpendSig(draft)) {
-        return { status: 400, json: { ok: false, reason: 'unsigned', public: false } };
-      }
-      tx = draft;
-    } else {
-      tx = poolWithdrawTx({ from, to: off.dest, nanos: off.nanos, fee });
-    }
-    if (containsShe1(tx)) return { status: 400, json: { ok: false, reason: 'she1_on_chain' } };
-    let queued = { ok: true, tx };
-    if (typeof queueSend === 'function') queued = queueSend(tx);
-    if (queued && typeof queued === 'object' && queued.ok === false) {
-      return { status: 400, json: { ok: false, reason: queued.reason || 'queue_failed' } };
-    }
-    if (pending && pending.kind === 'admin-spendable') {
-      // miner_coins stay in the pull book; this send is operator spendable only.
-      if (pendingPulls && typeof pendingPulls.delete === 'function') {
-        pendingPulls.delete(String(off.login || '').toLowerCase());
-      }
-    } else if (typeof completeMinerPull === 'function') {
-      try { completeMinerPull(off.login, off.dest, off.nanos); } catch { /* pull book is optional */ }
-    }
-    const kind = pending && pending.kind === 'admin-spendable' ? 'send' : 'pool-withdraw';
-    return {
-      status: 200,
-      json: {
-        ok: true,
-        tx: { id: (queued && queued.id) || tx.id, to: off.dest, nanos: off.nanos, kind },
       },
     };
   }
