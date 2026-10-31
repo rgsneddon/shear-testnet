@@ -84,7 +84,11 @@ describe('in-process range FFI matches the node range oracle', () => {
     assert.match(ffi, /zeroize/);
     assert.match(ffi, /rangeCap/);
     assert.match(ffi, /admitPinFailure/);
-    assert.match(ffi, /!kDebugMode/);
+    // Since a5d14f43 the FFI keeps Flutter out of its import graph: the pin
+    // gate reads a local _kDebugMode with foundation's kDebugMode definition.
+    assert.match(ffi, /const bool _kDebugMode =\s*!bool\.fromEnvironment\('dart\.vm\.product'\) && !bool\.fromEnvironment\('dart\.vm\.profile'\);/);
+    assert.match(ffi, /if \(!_kDebugMode\) \{/, 'profile and release builds check the pin');
+    assert.doesNotMatch(ffi, /package:flutter\//);
     assert.doesNotMatch(ffi, /kReleaseMode/);
     assert.doesNotMatch(ffi, /shear_admit_prove/);
     assert.doesNotMatch(ffi, /writeAsString|systemTemp/);
