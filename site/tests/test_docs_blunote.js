@@ -20,7 +20,7 @@ describe('docs content keeps the BluNotes rename', () => {
 
   it('the round page is DINS, the navbar item is BluNotes (BLU), and #/dins-dag is only an alias', () => {
     assert.match(content, /\{ id: 'dins', title: 'DINS' \}/);
-    assert.match(content, /P\['dins'\] = \{\n\s+title: 'DINS',/);
+    assert.match(content, /P\['dins'\] = \{\r?\n\s+title: 'DINS',/);
     assert.match(content, /DINS<\/a> \(Deterministic In-Node Shares\)/);
     assert.match(content, /BluNotes \(BLU\)/);
     const mentions = content.match(/dins-dag/g) || [];

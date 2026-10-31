@@ -10,7 +10,7 @@ window.SHEAR_DOCS = {
       { id: 'names', title: 'shear1, she1, ssa1' },
       { id: 'privacy', title: 'She is private' },
       { id: 'admit', title: 'ADMITv2' },
-      { id: 'dins-dag', title: 'DINS-DAG' }
+      { id: 'dins', title: 'DINS' }
     ]},
     { title: 'Wallet', children: [
       { id: 'wallet', title: 'Overview' },
@@ -101,7 +101,7 @@ window.SHEAR_DOCS = {
       '<tr><th>Pool</th><td><a href="https://pool.shear.digital/">pool.shear.digital</a> — public <code>stratum+ssl://pool.shear.digital:443</code>. Login is Copy dest. Coins are sealed on the book; the wallet reads them from a node. The pool HUD is not spendable.</td></tr>' +
       '<tr><th>Explorer</th><td><a href="https://explorer.shear.digital/">explorer.shear.digital</a> — every sealed block, newest first. Height, time, status, type. No dest, no amount.</td></tr>' +
       '<tr><th>Mempool</th><td><a href="https://mempool.shear.digital/">mempool.shear.digital</a> — one lattice for the whole network. Gold hoop is pending Flow sends. Cyan hoop is miners. Purple rings are confirming blocks. The last ring is 9 confirmations. Full screen is the lattice alone.</td></tr>' +
-      '<tr><th>DINS-DAG</th><td><a href="https://shear.digital/docs/#/dins-dag">DINS-DAG</a> — blue set for the open round, sorted by identity. The mint is the spine pot plus the hash nanos, once. The live round is the DAG host linked from the navbar.</td></tr>' +
+      '<tr><th>DINS</th><td><a href="https://shear.digital/docs/#/dins">DINS</a> (Deterministic In-Node Shares) — blue set for the open round, sorted by identity. The mint is the spine pot plus the hash nanos, once. The live round is BluNotes (BLU), linked from the navbar.</td></tr>' +
       '<tr><th>Miner</th><td><a href="https://shear.digital/miner/">shear.digital/miner</a> — ShearK 2.8. Separate from Continuum. Run <code>--selftest</code> once, then point it at the pool or at <code>127.0.0.1:1111</code> after your node reports <code>ibd=false</code>.</td></tr>' +
       '<tr><th>Bootstrap</th><td><a href="https://boot.shear.digital/">boot.shear.digital</a> — optional <code>latest.json</code> and <code>latest.bin</code>. A node does not pull this by itself.</td></tr>' +
       '<tr><th>Roadmap</th><td><a href="https://shear.digital/roadmap/">shear.digital/roadmap</a> — every open row of the plan, in priority order.</td></tr>' +
@@ -122,7 +122,7 @@ window.SHEAR_DOCS = {
     title: 'Whitepaper',
     crumb: 'start / whitepaper',
     html:
-      '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS-DAG (one pot-plus-hash mint, once per eligible share). Wallet pin 0.71. Live magic <code>shear-testnet-v11</code>.</p>' +
+      '<p>Version 2.0 of the project note: ADMITv2, node-sync wallets, prune-1000, bootstrap at height 1000 then every 400, ShearHash-v3, emissions, Flow levy, Vortex / vort1, The Reserve, and DINS (one pot-plus-hash mint, once per eligible share). Wallet pin 0.71. Live magic <code>shear-testnet-v11</code>.</p>' +
       '<p><a href="https://shear.digital/whitepaper/">https://shear.digital/whitepaper/</a> presents it as a record with a PDF preview. Download <code>shear-whitepaper.pdf</code> from that page. There is no WHITEPAPER button in the site navbar. Typed whitepaper.shear.digital may fail TLS (apex SAN).</p>'
   };
 
@@ -483,14 +483,17 @@ window.SHEAR_DOCS = {
       '<p>Membership is the full live fluxset of every <code>admitPub</code> on this book, in appearance order. A spend proves it belongs in that set. A sampled subset is the wrong set and fails <code>admit_membership</code>. A reused spend tag fails <code>admit_link_tag</code>. ADMITv2 is full-chain membership, not rings of N. While this book has fewer than 10,000 notes the set is thin.</p>'
   };
 
-  P['dins-dag'] = {
-    title: 'DINS-DAG',
-    crumb: 'addresses / dins-dag',
+  P['dins'] = {
+    title: 'DINS',
+    crumb: 'addresses / dins',
     html:
-      '<p><code>shear-testnet-v11</code> settles a mining round as DINS-DAG. The book fingerprint carries <code>DINS=pot+hash</code> and <code>ROOTA=pot-spine+dag-fluxset</code>. Eligible shares are the blue set, sorted by identity. Arrival order is not membership. Each eligible share is counted once. A blue share is not dropped to favour another set.</p>' +
+      '<p><code>shear-testnet-v11</code> settles a mining round as DINS (Deterministic In-Node Shares). The book fingerprint carries <code>DINS=pot+hash</code> and <code>ROOTA=pot-spine+dag-fluxset</code>. Eligible shares are the blue set, sorted by identity. Arrival order is not membership. Each eligible share is counted once. A blue share is not dropped to favour another set.</p>' +
       '<p>The mint is the spine pot plus the hash nanos, once. That mint is not paid again from a second hash leg. Miners receive the epoch pot in the coinbase and the hash bonus on the next sealed block. Epoch 0 pot is 1.00 SHE. It steps down 0.01 SHE each 4-day testnet epoch to a 0.20 SHE floor. The hash unit is 10<sup>−11</sup> SHE. Public pages show nine digits.</p>' +
-      '<p>Wallet pin Continuum 0.71. Miner pin ShearK 2.8. DAG is a link in the client navbar. Mainnet is not live.</p>'
+      '<p>Wallet pin Continuum 0.71. Miner pin ShearK 2.8. BluNotes (BLU) is a link in the client navbar. Mainnet is not live.</p>'
   };
+  // The old #/dins-dag link still opens this page (BluNotes rename, 27 Oct).
+  P['dins-dag'] = P['dins'];
+
 
   P.p2p = {
     title: 'P2P',

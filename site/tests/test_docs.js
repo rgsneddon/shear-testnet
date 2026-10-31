@@ -169,8 +169,8 @@ describe('shear.digital/docs', () => {
     assert.match(content, /com\.shear\.shear_wallet/);
     assert.match(content, /Stem then fluff/);
     assert.match(content, /ADMITv2/);
-    assert.ok(content.indexOf("id: 'dins-dag'") > content.indexOf("id: 'admit'"));
-    assert.match(content, /P\['dins-dag'\]/);
+    assert.ok(content.indexOf("id: 'dins'") > content.indexOf("id: 'admit'"));
+    assert.match(content, /P\['dins'\]/);
     assert.match(content, /blue set, sorted by identity/);
     assert.match(content, /not paid again from a second hash leg/);
     assert.match(content, /Connect bare/);
