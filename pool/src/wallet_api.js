@@ -28,12 +28,12 @@ import {
   containsShe1,
 } from '../../crypto/levy.js';
 import { flowSendNeedsOpen, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
-import { dummyCount, attachDummyOuts } from '../../crypto/dummy.js';
+import { dummyCount } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected, outputMayCarryValueOpen } from '../../crypto/chronoflux.js';
 import { noteCommitSpendableNanos } from '../../crypto/coinbase_notes.js';
 import { unitsForShare } from '../../crypto/share_batch.js';
-import { noteCommitOfDest20, asU8, hiddenAmountRangeReady, verifySealedNote } from '../../crypto/note.js';
+import { noteCommitOfDest20, verifySealedNote } from '../../crypto/note.js';
 import { emptySupplyState, supplyReport } from '../../node/src/supply.js';
 import { explorerRowPublic, FLOW_PERSONAL, CLOSURE_PERSONAL } from '../../crypto/flow_sheet.js';
 import { decodeHeader } from '../../crypto/header.js';
