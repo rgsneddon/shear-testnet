@@ -36,9 +36,28 @@ wallet/**/local.properties
 wallet/**/Flutter/ephemeral/
 wallet/**/ephemeral/
 crypto/native/admit/target/
-# Operator admin vhost lives on the box only (SHEAR_ADMIN_HOST).
-deploy/nginx-kyrusfables.shear.digital.conf
+# Operator vhosts (the admin host, SHEAR_ADMIN_HOST) live on the box only: every
+# deploy/nginx-*.conf is ignored unless it is a public vhost re-included below by
+# name. A new public vhost needs its own line here.
+deploy/nginx-*.conf
+!deploy/nginx-admin.shear.digital.conf
+!deploy/nginx-b2b.shear.digital.conf
+!deploy/nginx-boot.shear.digital.conf
+!deploy/nginx-dag.shear.digital.conf
+!deploy/nginx-explorer.shear.digital.conf
+!deploy/nginx-mempool.shear.digital.conf
+!deploy/nginx-p2p.shear.digital.conf
+!deploy/nginx-pool.shear.digital.conf
+!deploy/nginx-r2r.shear.digital.conf
+!deploy/nginx-shear-stats-cache.conf
+!deploy/nginx-shear.digital.conf
+!deploy/nginx-stratum-edge.conf
 deploy/nginx-*-secrets.conf
 # Operator spend seed is 0600 on the pool datadir / Desktop vault — never git.
 pool-spend.seed
 **/pool-spend.seed
+# Local agent notes: test hosts, handoff path. Never committed.
+CLAUDE.local.md
+# Maintainers' roadmap tracker: row detail and host detail. Never committed.
+docs/ROADMAP.private.md
+docs/ROADMAP.tracker.md

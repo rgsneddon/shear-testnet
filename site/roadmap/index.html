@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shear roadmap</title>
+  <meta name="description" content="The Shear roadmap: every open row, in priority order." />
+  <link rel="icon" href="../brand/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="../brand/favicon-32.png" sizes="32x32" />
+  <link rel="stylesheet" href="../css/site.css" />
+  <link rel="stylesheet" href="../shared/shear-chrome.css" />
+  <link rel="stylesheet" href="../css/saas-dark.css" />
+  <style>
+    .roadmap-wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+    .roadmap-scroll { overflow-x: hidden; overflow-y: auto; max-height: 70vh; border: 1px solid var(--hairline-strong); border-radius: 8px; }
+    table.roadmap { table-layout: fixed; border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+    table.roadmap th, table.roadmap td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--hairline); vertical-align: top; overflow-wrap: anywhere; }
+    table.roadmap th { position: sticky; top: 0; background: var(--bg-elev); color: var(--text); }
+    table.roadmap th:nth-child(1), table.roadmap td:nth-child(1) { width: 4.5em; white-space: nowrap; }
+    table.roadmap th:nth-child(2), table.roadmap td:nth-child(2) { width: 4.5em; }
+    table.roadmap th:nth-child(4), table.roadmap td:nth-child(4) { width: 7em; }
+    table.roadmap th:nth-child(5), table.roadmap td:nth-child(5) { width: 3.5em; }
+    .roadmap-foot { margin-top: 12px; color: var(--text-dim); font-size: 0.85rem; }
+    .footer-maturity { margin: 0 0 8px; color: var(--text-dim); font-size: 0.85rem; line-height: 1.4; }
+    .footer-line { color: var(--text-dim); font-size: 0.85rem; }
+    @media (max-width: 390px) {
+      table.roadmap { font-size: 0.8rem; }
+      table.roadmap th, table.roadmap td { padding: 6px 5px; }
+      table.roadmap th:nth-child(1), table.roadmap td:nth-child(1) { width: 2.6em; }
+      table.roadmap th:nth-child(2), table.roadmap td:nth-child(2) { width: 3.2em; }
+      table.roadmap th:nth-child(4), table.roadmap td:nth-child(4) { width: 4.6em; }
+      table.roadmap th:nth-child(5), table.roadmap td:nth-child(5) { width: 2.2em; }
+    }
+  </style>
+</head>
+<body>
+  <div id="shear-chrome-root" data-active="MAIN" data-brand-base="../brand/"></div>
+  <script src="../shared/shear-chrome.js"></script>
+  <main class="roadmap-wrap">
+    <h1>Roadmap</h1>
+    <p>Every open row, in priority order. Type Y means the row moves a consensus pin; N means it does not.</p>
+    <div class="roadmap-scroll">
+    <table class="roadmap">
+      <thead><tr><th scope="col">Priority</th><th scope="col">Row</th><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Type</th></tr></thead>
+      <tbody>
+      <tr><td>2</td><td>R01b</td><td>Vault claim post from the wallet</td><td>planned</td><td>Y</td></tr>
+      <tr><td>3</td><td>R29</td><td>Pool share payee checks</td><td>planned</td><td>Y</td></tr>
+      <tr><td>4</td><td>R01a</td><td>Coinbase payout key binding</td><td>planned</td><td>Y</td></tr>
+      <tr><td>5</td><td>R02</td><td>Vault lock-note binding</td><td>planned</td><td>Y</td></tr>
+      <tr><td>6</td><td>R26</td><td>Reserve wallet sync checks</td><td>planned</td><td>N</td></tr>
+      <tr><td>7</td><td>R07</td><td>Spend proof update</td><td>planned</td><td>Y</td></tr>
+      <tr><td>8</td><td>R06</td><td>Wire decode and share commitment rules</td><td>planned</td><td>Y</td></tr>
+      <tr><td>9</td><td>R28</td><td>BluNotes: hidden share payees and payouts</td><td>active</td><td>Y</td></tr>
+      <tr><td>9</td><td>R33</td><td>Share batch encoding</td><td>planned</td><td>Y</td></tr>
+      <tr><td>9</td><td>R35</td><td>Share header window</td><td>planned</td><td>Y</td></tr>
+      <tr><td>9</td><td>R36</td><td>Hash-bonus record root</td><td>planned</td><td>Y</td></tr>
+      <tr><td>10</td><td>R01c</td><td>Wallet light mode scan</td><td>planned</td><td>N</td></tr>
+      <tr><td>13</td><td>R05</td><td>Book magic on every path</td><td>planned</td><td>Y</td></tr>
+      <tr><td>14</td><td>R30</td><td>Share selection limits</td><td>planned</td><td>N</td></tr>
+      <tr><td>14</td><td>R32</td><td>Owed ledger bounds</td><td>planned</td><td>Y</td></tr>
+      <tr><td>14</td><td>R34</td><td>Idle hash-note rule</td><td>planned</td><td>Y</td></tr>
+      <tr><td>15</td><td>R39</td><td>Share verify cost</td><td>planned</td><td>N</td></tr>
+      <tr><td>16</td><td>R04</td><td>Native hash threading</td><td>planned</td><td>N</td></tr>
+      <tr><td>17</td><td>R24</td><td>Test chain fixtures</td><td>planned</td><td>N</td></tr>
+      <tr><td>17</td><td>R27</td><td>Real-path money scenarios</td><td>planned</td><td>N</td></tr>
+      <tr><td>18</td><td>R14a</td><td>Public supply audit tool</td><td>planned</td><td>N</td></tr>
+      <tr><td>19</td><td>R31</td><td>Pool owed rows across a restart</td><td>planned</td><td>N</td></tr>
+      <tr><td>21</td><td>R37</td><td>Miner-side coinbase template check</td><td>planned</td><td>N</td></tr>
+      <tr><td>22</td><td>R08</td><td>Real-data fixtures: consensus paths</td><td>planned</td><td>N</td></tr>
+      <tr><td>22</td><td>R11</td><td>Real-data fixtures: the CI guard</td><td>planned</td><td>N</td></tr>
+      <tr><td>22</td><td>R12</td><td>Reserve epoch, withdraw and claim follow-ups</td><td>planned</td><td>Y</td></tr>
+      <tr><td>22</td><td>R23</td><td>Wallet test failures</td><td>planned</td><td>N</td></tr>
+      <tr><td>22</td><td>R38</td><td>Site tests in CI</td><td>planned</td><td>N</td></tr>
+      <tr><td>23</td><td>R03</td><td>CLI reserve lock</td><td>planned</td><td>N</td></tr>
+      <tr><td>23</td><td>R13</td><td>Wallet copy</td><td>planned</td><td>N</td></tr>
+      <tr><td>23</td><td>R14</td><td>Dev-network pin move</td><td>planned</td><td>Y</td></tr>
+      <tr><td>24</td><td>R15</td><td>Dev-network deploy and bug hunt</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R18a</td><td>Host rebuild for the mainnet OS split</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R16</td><td>v12 cut</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R17</td><td>Stressnet (7-day floor)</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R18b</td><td>Mainnet release deploy</td><td>planned</td><td>N</td></tr>
+      <tr><td>24</td><td>R19</td><td>Mainnet genesis</td><td>planned</td><td>N</td></tr>
+      <tr><td>—</td><td>R09</td><td>Token spec</td><td>planned</td><td>N</td></tr>
+      <tr><td>—</td><td>R10</td><td>Confidential tokens build</td><td>planned</td><td>Y</td></tr>
+      <tr><td>—</td><td>R20</td><td>Android ABIs beyond arm64-v8a</td><td>planned</td><td>N</td></tr>
+      <tr><td>—</td><td>R21</td><td>Pinned note-set snapshot</td><td>planned</td><td>Y</td></tr>
+      <tr><td>—</td><td>R25</td><td>Epoch rate row</td><td>planned</td><td>Y</td></tr>
+      <tr><td>—</td><td>R40</td><td>Hash key derivation</td><td>ruled</td><td>Y</td></tr>
+      <tr><td>—</td><td>R41</td><td>ShearK-Miner optimisation</td><td>active</td><td>N</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="roadmap-foot">generated from docs/ROADMAP.md (sha256 4ff014a964eb)</p>
+  </main>
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <p class="footer-maturity">Experimental testnet software, coins have no value.</p>
+      <div class="footer-line">Shear testnet</div>
+      <nav>
+        <a href="../index.html">Home</a>
+        <a href="../network.html">Network</a>
+        <a href="../docs/index.html">Docs</a>
+        <a href="../privacy.html">Privacy</a>
+        <a href="../legal.html">Legal &amp; licences</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
