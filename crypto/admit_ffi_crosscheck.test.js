@@ -87,7 +87,9 @@ describe('in-process range FFI matches the node range oracle', () => {
     // Since a5d14f43 the FFI keeps Flutter out of its import graph: the pin
     // gate reads a local _kDebugMode with foundation's kDebugMode definition.
     assert.match(ffi, /const bool _kDebugMode =\s*!bool\.fromEnvironment\('dart\.vm\.product'\) && !bool\.fromEnvironment\('dart\.vm\.profile'\);/);
-    assert.match(ffi, /if \(!_kDebugMode\) \{/, 'profile and release builds check the pin');
+    assert.equal((ffi.match(/\b_kDebugMode\s*=/g) || []).length, 1, 'one definition, no local shadow');
+    assert.match(ffi, /if \(!_kDebugMode\) \{\s*return _openPinned\(\);/, 'profile and release builds open the pinned library');
+    assert.match(ffi, /if \(!_kDebugMode && !_mobile\) \{\s*throw StateError\('admit_lib_load:/, 'profile and release desktop builds refuse a failed load');
     assert.doesNotMatch(ffi, /package:flutter\//);
     assert.doesNotMatch(ffi, /kReleaseMode/);
     assert.doesNotMatch(ffi, /shear_admit_prove/);
