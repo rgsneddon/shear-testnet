@@ -16,31 +16,36 @@ const repoRoot = path.join(here, '../..');
 const COMMIT = '0123456789abcdef0123456789abcdef01234567';
 const read = (p) => fs.readFileSync(path.join(repoRoot, p), 'utf8');
 
-const HEADER = '| Priority | ID | Item | Public title | Consensus? | Status | Owner | Reviewer | Working now | PR | Head SHA | Target |\n'
-  + '|----------|----|------|--------------|------------|--------|-------|----------|-------------|----|----------|--------|\n';
+const HEADER = '| Priority | ID | Public title | Type | Status | Private ref |\n'
+  + '|----------|----|--------------|------|--------|-------------|\n';
 
-function doc(rows) {
-  return `# Shear roadmap\n\n## Rows\n\nIntro text.\n\n${HEADER}${rows.join('\n')}\n\n**Note.** After the table.\n`;
+/** A doc with the public table, then a detail table the build must never read. */
+function doc(rows, header = HEADER) {
+  return `# Shear roadmap\n\n## Rows\n\nIntro text.\n\n${header}${rows.join('\n')}\n\n### Row detail\n\n`
+    + '| ID | Item | Owner |\n|----|------|-------|\n| R09 | DETAIL-SENTINEL internal text | OWNER-SENTINEL |\n\n**Note.** After the table.\n';
 }
 
-/** A row: [priority, id, item, public title, consensus, status]. The internal columns carry sentinels. */
-function row(priority, id, item, title, consensus, status) {
-  return `| ${priority} | ${id} | ${item} | ${title} | ${consensus} | ${status} | Claude OWNER-SENTINEL | Grok + Pool Share LANE-SENTINEL | claude, claude/x, since 10:00 | [#999](https://github.com/x/y/pull/999) PR-SENTINEL | deadbeef SHA-SENTINEL | 2 Nov TARGET-SENTINEL |`;
+/** A public row: [priority, id, public title, type, status, private ref]. */
+function row(priority, id, title, type, status, ref = '') {
+  return `| ${priority} | ${id} | ${title} | ${type} | ${status} | ${ref} |`;
 }
 
 const ROWS = [
-  row(3, 'R29', 'Hash-note admitPub not bound to the miner (share research H4, **high**; OWNER-NOTE Russell 27 Oct)', 'Pool share hardening', 'Y: a pin move', 'planned (filed, not fixed; Russell 27 Oct)'),
-  row(2, 'R01b', 'Vault claim post: pool `queuedRewardClaim` takes the FS-1 claim body the wallet sends. **Russell 27 Oct:** more notes', 'Vault claim post from the wallet', 'Y: the block-decode revive', 'planned'),
-  row('', 'R01', 'PR 130: digestTx and bundled fixes', '', 'Y: pins', 'merged'),
-  row(9, 'R28', 'BluNotes: private share payees and payouts, plus pruning (R28; design on Desktop)', 'BluNotes: private share payees and payouts', 'Y: one pin move', 'coding (rule 16; Russell GO 27 Oct; draft PR on claude/r28-blunotes)'),
-  row('', 'R09', 'Token spec (mint.shear.digital), spec only: the first half', 'Token spec', 'N: spec', 'planned (post-mainnet)'),
-  row(9, 'R33', 'Share frame `lz` and frame order not canonical in shareSlotRoot (H10, **low**)', 'Share batch hardening', 'Y', 'planned (filed, not fixed; Russell 27 Oct)'),
-  row(24, 'R19', 'Mainnet genesis', 'Mainnet genesis', 'Y: genesis', 'Done.'),
-  row(24, 'R16', 'v12 cut (onto the rebuilt hosts), run from the R16 cut checklist', '', 'N', 'closed'),
-  row(24, 'R17', 'Stressnet (7-day floor)', 'Stressnet', 'N', 'Shipped'),
-  row(24, 'R18b', 'Final wipe and mainnet release deploy', 'Mainnet release deploy', 'N', 'Deployed 29 Oct'),
-  row(5, 'R40', 'The miner and node "SHA-512" is not standard SHA-512', 'Hash key derivation', 'Y if fixed', '**Ruled 28 Oct (ruling 1):** fix it inside R28'),
+  row(3, 'R29', 'Pool share hardening', 'Y', 'planned', 'pt-0a1b2c'),
+  row(2, 'R01b', 'Vault claim post from the wallet', 'Y', 'planned'),
+  row('', 'R01', 'Transaction digest update', 'Y', 'merged'),
+  row(9, 'R28', 'BluNotes: private share payees and payouts', 'Y', 'coding'),
+  row('', 'R09', 'Token spec', 'N', 'planned'),
+  row(9, 'R33', 'Share batch hardening', 'Y', 'planned', 'pt-3d4e5f'),
+  row(24, 'R19', 'Mainnet genesis', 'Y', 'Done.'),
+  row(24, 'R16', 'v12 cut', 'N', 'closed'),
+  row(24, 'R17', 'Stressnet', 'N', 'Shipped'),
+  row(24, 'R18b', 'Mainnet release deploy', 'N', 'Deployed'),
+  row(5, 'R40', 'Hash key derivation', 'Y', 'ruled', 'pt-6a7b8c'),
 ];
+
+const build = (rows, opts = {}) => buildRoadmapPage(doc(rows), { commit: COMMIT, ...opts });
+const planted = (title, opts) => build([row(1, 'R50', title, 'N', 'planned')], opts);
 
 describe('roadmap page generator', () => {
   it('rows whose status is done, closed, merged, shipped or deployed drop off', () => {
@@ -51,87 +56,127 @@ describe('roadmap page generator', () => {
   });
 
   it('a status outside the vocabulary fails the build; an empty one too', () => {
-    for (const status of ['', 'soon', 'blocked on Russell', 'planed']) {
-      const planted = doc([row(1, 'R50', 'Plain item', 'Plain title', 'N', status)]);
-      assert.throws(() => buildRoadmapPage(planted, { commit: COMMIT }), /status/, JSON.stringify(status));
+    for (const status of ['', 'soon', 'blocked', 'planed']) {
+      assert.throws(() => build([row(1, 'R50', 'Plain title', 'N', status)]), /status/, JSON.stringify(status));
     }
     const byId = Object.fromEntries(publicRows(parseRoadmap(doc(ROWS))).map((r) => [r.Row, r]));
     assert.equal(byId.R29.Status, 'planned');
     assert.equal(byId.R28.Status, 'active');
-    assert.equal(byId.R09.Status, 'planned');
     assert.equal(byId.R40.Status, 'ruled');
   });
 
-  it('only the allow-listed columns reach the page, by name, and the Item text never does', () => {
+  it('the public table carries exactly ID, Priority, Public title, Type, Status and Private ref; more fails the build', () => {
     assert.deepEqual(PUBLIC_COLUMNS, ['Priority', 'Row', 'Title', 'Status', 'Type']);
-    const html = buildRoadmapPage(doc(ROWS), { commit: COMMIT });
-    for (const sentinel of ['OWNER-SENTINEL', 'LANE-SENTINEL', 'PR-SENTINEL', 'SHA-SENTINEL', 'TARGET-SENTINEL', 'OWNER-NOTE', 'since 10:00', 'github.com', 'deadbeef']) {
+    const html = build(ROWS);
+    for (const sentinel of ['DETAIL-SENTINEL', 'OWNER-SENTINEL', 'pt-0a1b2c', 'Private ref']) {
       assert.equal(html.includes(sentinel), false, sentinel);
-    }
-    for (const word of ['Russell', 'Grok', 'Claude', 'Desktop', 'lane', 'rule 16', 'draft PR', 'admitPub', 'shareSlotRoot', 'queuedRewardClaim', 'SHA-512', 'PR 130']) {
-      assert.doesNotMatch(html, new RegExp(word, 'i'), word);
     }
     const heads = [...html.matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
     assert.deepEqual(heads, PUBLIC_COLUMNS);
-    const rows = publicRows(parseRoadmap(doc(ROWS)));
-    for (const r of rows) assert.deepEqual(Object.keys(r), PUBLIC_COLUMNS, r.Row);
+    for (const extra of ['Item', 'Owner', 'Host']) {
+      const wide = HEADER.replace('| Private ref |', `| Private ref | ${extra} |`).replace('|-------------|\n', '|-------------|------|\n');
+      const rows = [`${row(1, 'R50', 'Plain title', 'N', 'planned')} internal ${extra.toLowerCase()} text |`];
+      assert.throws(() => buildRoadmapPage(doc(rows, wide), { commit: COMMIT }), /public table/, extra);
+    }
+    const extraCell = `${row(1, 'R50', 'Plain title', 'N', 'planned')} smuggled detail |`;
+    assert.throws(() => build([extraCell]), /R50.*cells/);
+    const noRef = HEADER.replace(' Private ref |', '').replace('-------------|', '');
+    assert.throws(() => buildRoadmapPage(doc(['| 1 | R50 | Plain title | N | planned |'], noRef), { commit: COMMIT }), /public table/);
   });
 
-  it('the title is the public title, verbatim; a listed row without one fails the build', () => {
+  it('the private ref is opaque: anything but pt- and six hex digits fails the build', () => {
+    for (const ref of ['H5 pool share', 'see R29', 'pt-zzzzzz', 'pt-0a1b2c3']) {
+      assert.throws(() => build([row(1, 'R50', 'Plain title', 'N', 'planned', ref)]), /private ref/, ref);
+    }
+    assert.match(build([row(1, 'R50', 'Plain title', 'N', 'planned', 'pt-abc123')]), /R50/);
+  });
+
+  it('every row needs a public title, a dropped row too', () => {
     const byId = Object.fromEntries(publicRows(parseRoadmap(doc(ROWS))).map((r) => [r.Row, r]));
     assert.equal(byId.R29.Title, 'Pool share hardening');
     assert.equal(byId.R01b.Title, 'Vault claim post from the wallet');
-    assert.equal(byId.R28.Title, 'BluNotes: private share payees and payouts');
-    assert.equal(byId.R33.Title, 'Share batch hardening');
     assert.equal(byId.R29.Type, 'Y');
     assert.equal(byId.R09.Type, 'N');
-    const missing = doc([row(1, 'R50', 'A finding with a long internal name', '', 'N', 'planned')]);
-    assert.throws(() => buildRoadmapPage(missing, { commit: COMMIT }), /R50.*public title/);
-    // A dropped row needs none.
-    const dropped = doc([row(1, 'R51', 'Old work', '', 'N', 'done')]);
-    assert.doesNotMatch(buildRoadmapPage(dropped, { commit: COMMIT }), /R51/);
-    // The table without the column at all is refused.
-    const noColumn = doc(ROWS).replace('| Public title ', '| Other ').replace('|--------------', '|-------');
-    assert.throws(() => buildRoadmapPage(noColumn, { commit: COMMIT }), /Public title/);
+    assert.throws(() => build([row(1, 'R50', '', 'N', 'planned')]), /R50.*public title/);
+    assert.throws(() => build([row(1, 'R51', '', 'N', 'done')]), /R51.*public title/);
   });
 
-  it('the deny-list is a case-insensitive backstop: each internal class fails the build', () => {
-    const classes = {
-      ip: 'Node health at 203.0.113.7 wobbles',
-      'pr label': 'Tests from pr 2',
-      'pr label with suffix': 'Fixtures from PR 3a',
-      'goal label': 'goal 10 F hardening',
-      'lane name': 'Pool Share LANE review',
-      'host name': 'Rebuild AGENT-BOX first',
-      'host name p2p': 'p2p-a and p2p-b rebuilt',
-      email: 'Ask ops@example.org',
-      'file path': 'Check crypto/hash_owed.js:381',
-      'file path without line': 'Fix node/src/chain.js',
-      'owner name': 'russell to rule',
-      'agent name': 'cos routes this',
-      pid: 'Watch PID 4242',
-    };
-    for (const [name, title] of Object.entries(classes)) {
-      const planted = doc([row(1, 'R50', 'Plain item', title, 'N', 'planned')]);
-      assert.throws(() => buildRoadmapPage(planted, { commit: COMMIT }), /public-safety/, name);
+  it('a row ID must match ^R\\d{2}[a-z]?$', () => {
+    for (const id of ['R1', 'R001', 'R01B', 'X01', 'R01-a', 'r01', 'R01ab', 'R０1', 'R01​', 'R 01']) {
+      assert.throws(() => build([row(1, id, 'Plain title', 'N', 'planned')]), /ID/, JSON.stringify(id));
     }
-    const hostCol = doc([row(1, 'R51', 'Plain item', 'Plain title', 'N', 'planned')])
-      .replace('| Target |', '| Target | Host |').replace('|--------|\n', '|--------|------|\n').replace('2 Nov TARGET-SENTINEL |', '2 Nov TARGET-SENTINEL | 198.51.100.9 |');
-    const html = buildRoadmapPage(hostCol, { commit: COMMIT });
-    assert.equal(html.includes('198.51.100.9'), false);
-    assert.equal(html.includes('Host'), false);
-    assert.match(html, /R51/);
+    const ids = publicRows(parseRoadmap(doc(['R01', 'R01b', 'R40', 'R99z'].map((id) => row(1, id, 'Plain title', 'N', 'planned'))))).map((r) => r.Row);
+    assert.deepEqual(ids, ['R01', 'R01b', 'R40', 'R99z']);
+  });
+
+  it('titles are NFKC-normalised with zero-width characters stripped, and must then be plain ASCII', () => {
+    assert.match(planted('Ｐｏｏｌ hardening'), /<td>Pool hardening<\/td>/);
+    assert.match(planted('Pool​ share⁠ hard﻿ening'), /<td>Pool share hardening<\/td>/);
+    for (const title of ['Café scan', 'Pool — hardening', 'Wallet \u{1F512} scan', 'Pool share hardening ']) {
+      assert.throws(() => planted(title), /plain ASCII/, JSON.stringify(title));
+    }
+    assert.throws(() => planted('ＣＶＥ-2024-12345 fix'), /public-safety/, 'fullwidth CVE');
+    assert.throws(() => planted('Pool expl​oit fix'), /public-safety/, 'zero-width split');
+    assert.throws(() => planted('Ｈ５ fix'), /public-safety/, 'fullwidth finding code');
+  });
+
+  it('neutral titles pass the deny-list', () => {
+    for (const title of ['v12 cut', 'Android ABIs beyond arm64-v8a', 'P2P relay', 'Dev-network pin move', 'Wallet light mode scan', 'ShearK-Miner optimisation', 'Reserve epoch, withdraw and claim follow-ups']) {
+      assert.match(planted(title), /R50/, title);
+    }
+  });
+
+  const DENIED = {
+    'finding code H5': 'Pool fix for H5',
+    'finding code F-2': 'F-2 follow-up',
+    'finding code K-1a': 'K-1a closure',
+    'finding code N4': 'Relay N4 fix',
+    'priority label P0-P3': 'p1 wallet fix',
+    'severity word critical': 'Critical vault fix',
+    'severity word high': 'High pool fix',
+    'severity word medium': 'MEDIUM share fix',
+    'severity word low': 'low ledger fix',
+    'exploit word': 'Exploitable share path',
+    'vuln word': 'Vault vulnerability fix',
+    'leak word': 'Wallet privacy leak',
+    'bypass word': 'Fee bypass closed',
+    'grief word': 'Pool griefing guard',
+    'CVE id': 'Patch for cve-2024-12345',
+    'lane name': 'Pool Share LANE review',
+    'lane role': 'Privacy auditor follow-up',
+    hostname: 'Move to admin.example.org',
+    ip: 'Node health at 203.0.113.7 wobbles',
+    'pr label': 'Tests from pr 2',
+    'pr label with suffix': 'Fixtures from PR 3a',
+    'goal label': 'goal 10 F hardening',
+    email: 'Ask ops@example.org',
+    'file path': 'Check crypto/hash_owed.js:381',
+    'file path without line': 'Fix node/src/chain.js',
+    'owner name': 'russell to rule',
+    'agent name': 'cos routes this',
+    pid: 'Watch PID 4242',
+  };
+  for (const [name, title] of Object.entries(DENIED)) {
+    it(`the deny-list refuses a ${name}, in any case`, () => {
+      assert.throws(() => planted(title), /public-safety/, title);
+    });
+  }
+
+  it('host and lane names from the private deny list are refused, in any case, and only when listed', () => {
+    const deny = ['build-host-zz', 'Example Lane Name'];
+    assert.throws(() => planted('Rebuild BUILD-HOST-ZZ first', { deny }), /public-safety/);
+    assert.throws(() => planted('example lane name sign-off', { deny }), /public-safety/);
+    assert.throws(() => planted('Rebuild build​-host-zz first', { deny }), /public-safety/);
+    assert.match(planted('Rebuild the build host first', { deny }), /R50/);
   });
 
   it('an escaped pipe stays inside its cell', () => {
-    const { header, rows } = parseRoadmap(doc([row(1, 'R52', 'Left \\| right in one cell', 'A title with a \\| bar', 'N', 'planned')]));
-    assert.equal(header.length, 12);
+    const { header, rows } = parseRoadmap(doc([row(1, 'R52', 'A title with a \\| bar', 'N', 'planned')]));
+    assert.equal(header.length, 6);
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].Item, 'Left | right in one cell');
     assert.equal(rows[0]['Public title'], 'A title with a | bar');
     assert.equal(rows[0].Status, 'planned');
-    const html = buildRoadmapPage(doc([row(1, 'R52', 'Left \\| right', 'Title with a \\| bar', 'N', 'planned')]), { commit: COMMIT });
-    assert.match(html, /Title with a \| bar/);
+    assert.match(build([row(1, 'R52', 'Title with a \\| bar', 'N', 'planned')]), /Title with a \| bar/);
   });
 
   it('rows come out in Priority order; unranked rows last, in their written order', () => {
@@ -140,15 +185,14 @@ describe('roadmap page generator', () => {
   });
 
   it('is deterministic: same input, same bytes, and names its source commit', () => {
-    const a = buildRoadmapPage(doc(ROWS), { commit: COMMIT });
-    const b = buildRoadmapPage(doc(ROWS), { commit: COMMIT });
-    assert.equal(a, b);
+    const a = build(ROWS);
+    assert.equal(a, build(ROWS));
     assert.match(a, new RegExp(`generated from docs/ROADMAP\\.md at ${COMMIT.slice(0, 12)}`));
-    assert.notEqual(a, buildRoadmapPage(doc(ROWS), { commit: 'f'.repeat(40) }));
+    assert.notEqual(a, build(ROWS, { commit: 'f'.repeat(40) }));
   });
 
   it('uses the site chrome and CSS, makes no external request, and adds no navbar link', () => {
-    const html = buildRoadmapPage(doc(ROWS), { commit: COMMIT });
+    const html = build(ROWS);
     assert.match(html, /data-theme="dark"/);
     assert.match(html, /href="\.\.\/css\/site\.css"/);
     assert.match(html, /href="\.\.\/shared\/shear-chrome\.css"/);
@@ -164,10 +208,9 @@ describe('roadmap page generator', () => {
   });
 
   it('reads in both themes: tokens, not a hard-coded header colour; the Type column does not scroll at 390px', () => {
-    const html = buildRoadmapPage(doc(ROWS), { commit: COMMIT });
+    const html = build(ROWS);
     const style = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
     assert.ok(style.length > 0);
-    assert.doesNotMatch(style, /#07090c/i);
     assert.doesNotMatch(style, /#[0-9a-f]{3,8}\b/i, 'no literal colours in the page style');
     assert.match(style, /table\.roadmap th \{[^}]*background: var\(--/);
     assert.match(style, /border[^;]*var\(--hairline/);
@@ -179,7 +222,7 @@ describe('roadmap page generator', () => {
   });
 
   it('carries the standard five-link footer and the maturity line', () => {
-    const html = buildRoadmapPage(doc(ROWS), { commit: COMMIT });
+    const html = build(ROWS);
     const footer = html.match(/<footer class="footer">([\s\S]*?)<\/footer>/)?.[1] || '';
     assert.ok(footer.length > 0, 'a footer');
     const links = [...footer.matchAll(/<a href="([^"]+)">([^<]+)<\/a>/g)].map((m) => [m[1], m[2]]);
@@ -190,11 +233,34 @@ describe('roadmap page generator', () => {
       ['../privacy.html', 'Privacy'],
       ['../legal.html', 'Legal &amp; licences'],
     ]);
+    assert.ok(footer.includes('Experimental testnet software, coins have no value'), 'the maturity line, exactly');
+    assert.match(footer, /<p class="footer-maturity">Experimental testnet software, coins have no value\.<\/p>/);
     assert.match(footer, /<div data-shear-foot data-wallet-fallback="0\.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …<\/div>/);
     assert.match(html, /<script src="\.\.\/shared\/site-identity\.js"><\/script>/);
     assert.ok(html.indexOf('generated from docs/ROADMAP.md') < html.indexOf('<footer'), 'the source line sits above the footer');
   });
 });
+
+/** Terms the page must never show: the deny classes, checked again on the committed page. */
+const PAGE_DENIED = [
+  /\b(?!v)[a-z](?:-\d{1,2}[a-z]?|\d{1,2})\b/i,
+  /\bP[0-3]\b/i,
+  /\b(?:critical|high|medium|low|severe|severity)\b/i,
+  /\b(?:exploit|vuln|leak|bypass|grief)/i,
+  /\bCVE-\d{4}-\d{4,}\b/i,
+  /\b(?:lanes?|auditor|assailant)\b/i,
+  /\b\d{1,3}(?:\.\d{1,3}){3}\b/,
+  /\bPRs?\s*#?\d|\bGoals?\s*\d/i,
+  /@|\.(?:js|mjs|dart|rs|md)\b/i,
+];
+
+/** The private tracker's deny terms, when the private tracker is on this machine. */
+function privateTerms() {
+  const p = path.join(repoRoot, 'docs', 'ROADMAP.private.md');
+  if (!fs.existsSync(p)) return [];
+  const text = fs.readFileSync(p, 'utf8').split(/^## Page deny list\s*$/m)[1] || '';
+  return [...text.matchAll(/^- (.+?)\s*$/gm)].map((m) => m[1]);
+}
 
 describe('the committed roadmap page and its links', () => {
   it('--check passes: the committed page is the build of docs/ROADMAP.md at its last commit', () => {
@@ -215,16 +281,41 @@ describe('the committed roadmap page and its links', () => {
     assert.match(last, /^[0-9a-f]{40}$/);
     assert.equal(stamped, last.slice(0, 12));
     assert.equal(page, buildRoadmapPage(read('docs/ROADMAP.md'), { commit: last }));
-    assert.doesNotMatch(page, /\b\d{1,3}(?:\.\d{1,3}){3}\b/);
   });
 
-  it('every listed row of docs/ROADMAP.md has a public title and no internal label reaches the page', () => {
+  it('the rebuilt page shows no denied term: every cell is plain ASCII and clear of each deny class', () => {
     const page = read('site/roadmap/index.html');
     const cells = [...page.matchAll(/<td>([^<]*)<\/td>/g)].map((m) => m[1]);
     assert.ok(cells.length >= 5 * 10, 'the page has rows');
-    for (const cell of cells) {
-      assert.doesNotMatch(cell, /\bPRs?\s*#?\d|\bGoals?\s*\d|\blane\b|agent-box|p2p-[a-z]|@|\.(?:js|dart|rs|md)\b/i, cell);
+    const titles = cells.filter((_, k) => k % 5 === 2);
+    for (const title of titles) {
+      assert.match(title, /^[\x20-\x7e]+$/, title);
+      for (const re of PAGE_DENIED) assert.doesNotMatch(title, re, `${title} vs ${re}`);
+      for (const term of privateTerms()) assert.equal(title.toLowerCase().includes(term.toLowerCase()), false, title);
     }
+    for (const id of cells.filter((_, k) => k % 5 === 1)) assert.match(id, /^R\d{2}[a-z]?$/, id);
+    assert.ok(page.includes('<td>Wallet light mode scan</td>'), 'R01c carries its new title');
+  });
+
+  it('docs/ROADMAP.md: a six-column public table, no security detail, and the private tracker is never committed', () => {
+    const md = read('docs/ROADMAP.md');
+    const { header, rows } = parseRoadmap(md);
+    assert.deepEqual(header, ['Priority', 'ID', 'Public title', 'Type', 'Status', 'Private ref']);
+    const r01c = rows.find((r) => r.ID === 'R01c');
+    assert.equal(r01c['Public title'], 'Wallet light mode scan');
+    const secret = rows.filter((r) => r['Private ref']);
+    assert.ok(secret.length >= 10, 'the open security rows carry a private ref');
+    const lines = md.split(/\r?\n/);
+    for (const r of secret) {
+      const named = lines.filter((l) => new RegExp(`^\\|\\s*${r.ID}\\s*\\|`).test(l));
+      assert.deepEqual(named, [], `${r.ID} has no detail line in the public file`);
+    }
+    assert.doesNotMatch(md, /\bH\d{1,2}\b/, 'no finding code of the share research');
+    assert.doesNotMatch(md, /\*\*(?:high|medium|low)\b/i, 'no severity mark');
+    const ignored = read('.gitignore');
+    assert.match(ignored, /^docs\/ROADMAP\.private\.md\r?$/m);
+    const tracked = execFileSync('git', ['ls-files', '--', 'docs/ROADMAP.private.md'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    assert.equal(tracked, '', 'the private tracker is not tracked');
   });
 
   it('the Docs page links to the roadmap; the navbar and the template lock do not change', () => {
@@ -240,12 +331,20 @@ describe('the committed roadmap page and its links', () => {
 
   it('CLAUDE.md names no test host and no handoff path; the hosts live in the local file', () => {
     const claude = read('CLAUDE.md');
-    assert.doesNotMatch(claude, /agent-box|p2p-a|p2p-b|DONE\.jsonl|\/root\//);
+    assert.doesNotMatch(claude, /DONE\.jsonl|\/root\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);
+    for (const term of privateTerms()) assert.equal(claude.toLowerCase().includes(term.toLowerCase()), false, 'a private term');
     assert.match(claude, /Test hosts and their limits are listed in CLAUDE\.local\.md\./);
-    assert.match(claude, /CLAUDE\.local\.md/);
     const ignored = read('.gitignore');
     assert.match(ignored, /^CLAUDE\.local\.md\r?$/m);
     const tracked = execFileSync('git', ['ls-files', '--', 'CLAUDE.local.md'], { cwd: repoRoot, encoding: 'utf8' }).trim();
     assert.equal(tracked, '', 'CLAUDE.local.md is not tracked');
+  });
+
+  it('.gitignore keeps operator admin vhosts out by a generic pattern, never by name', () => {
+    const lines = read('.gitignore').split(/\r?\n/);
+    assert.ok(lines.includes('deploy/nginx-*-admin.conf'), 'the generic admin pattern');
+    for (const l of lines.filter((x) => x.startsWith('deploy/nginx-'))) {
+      assert.ok(l.includes('*'), `a named vhost in .gitignore: line ${lines.indexOf(l) + 1}`);
+    }
   });
 });
