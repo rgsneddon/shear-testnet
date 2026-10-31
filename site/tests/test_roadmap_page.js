@@ -102,7 +102,7 @@ describe('roadmap page generator', () => {
   });
 
   it('a row ID must match ^R\\d{2}[a-z]?$', () => {
-    for (const id of ['R1', 'R001', 'R01B', 'X01', 'R01-a', 'r01', 'R01ab', 'R０1', 'R01​', 'R 01']) {
+    for (const id of ['R1', 'R001', 'R01B', 'X01', 'R01-a', 'r01', 'R01ab', 'R\uFF101', 'R01\u200B', 'R 01']) {
       assert.throws(() => build([row(1, id, 'Plain title', 'N', 'planned')]), /ID/, JSON.stringify(id));
     }
     const ids = publicRows(parseRoadmap(doc(['R01', 'R01b', 'R40', 'R99z'].map((id) => row(1, id, 'Plain title', 'N', 'planned'))))).map((r) => r.Row);
@@ -110,14 +110,14 @@ describe('roadmap page generator', () => {
   });
 
   it('titles are NFKC-normalised with zero-width characters stripped, and must then be plain ASCII', () => {
-    assert.match(planted('Ｐｏｏｌ hardening'), /<td>Pool hardening<\/td>/);
-    assert.match(planted('Pool​ share⁠ hard﻿ening'), /<td>Pool share hardening<\/td>/);
-    for (const title of ['Café scan', 'Pool — hardening', 'Wallet \u{1F512} scan', 'Pool share hardening ']) {
+    assert.match(planted('\uFF30\uFF4F\uFF4F\uFF4C hardening'), /<td>Pool hardening<\/td>/);
+    assert.match(planted('Pool\u200B share\u2060 hard\uFEFFening'), /<td>Pool share hardening<\/td>/);
+    for (const title of ['Caf\u00E9 scan', 'Pool \u2014 hardening', 'Wallet \u{1F512} scan', 'Wallet na\u00EFve scan']) {
       assert.throws(() => planted(title), /plain ASCII/, JSON.stringify(title));
     }
-    assert.throws(() => planted('ＣＶＥ-2024-12345 fix'), /public-safety/, 'fullwidth CVE');
-    assert.throws(() => planted('Pool expl​oit fix'), /public-safety/, 'zero-width split');
-    assert.throws(() => planted('Ｈ５ fix'), /public-safety/, 'fullwidth finding code');
+    assert.throws(() => planted('\uFF23\uFF36\uFF25-2024-12345 fix'), /public-safety/, 'fullwidth CVE');
+    assert.throws(() => planted('Pool expl\u200Boit fix'), /public-safety/, 'zero-width split');
+    assert.throws(() => planted('\uFF28\uFF15 fix'), /public-safety/, 'fullwidth finding code');
   });
 
   it('neutral titles pass the deny-list', () => {
@@ -166,7 +166,7 @@ describe('roadmap page generator', () => {
     const deny = ['build-host-zz', 'Example Lane Name'];
     assert.throws(() => planted('Rebuild BUILD-HOST-ZZ first', { deny }), /public-safety/);
     assert.throws(() => planted('example lane name sign-off', { deny }), /public-safety/);
-    assert.throws(() => planted('Rebuild build​-host-zz first', { deny }), /public-safety/);
+    assert.throws(() => planted('Rebuild build\u200B-host-zz first', { deny }), /public-safety/);
     assert.match(planted('Rebuild the build host first', { deny }), /R50/);
   });
 
@@ -235,7 +235,7 @@ describe('roadmap page generator', () => {
     ]);
     assert.ok(footer.includes('Experimental testnet software, coins have no value'), 'the maturity line, exactly');
     assert.match(footer, /<p class="footer-maturity">Experimental testnet software, coins have no value\.<\/p>/);
-    assert.match(footer, /<div data-shear-foot data-wallet-fallback="0\.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …<\/div>/);
+    assert.match(footer, /<div data-shear-foot data-wallet-fallback="0\.71" data-network-fallback="shear-testnet-v11">Shear \u00B7 \u2026 \u00B7 Continuum \u2026 \u00B7 \u2026<\/div>/);
     assert.match(html, /<script src="\.\.\/shared\/site-identity\.js"><\/script>/);
     assert.ok(html.indexOf('generated from docs/ROADMAP.md') < html.indexOf('<footer'), 'the source line sits above the footer');
   });

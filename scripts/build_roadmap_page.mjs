@@ -2,33 +2,33 @@
 /**
  * Build the public roadmap page (site/roadmap/index.html) from docs/ROADMAP.md.
  *
- * Public-safe by construction: an allow-list of output columns, each cell a
- * plain token or the row's Public title, and a refusal (no output at all) if
- * anything that reaches the page looks like a host, an IP, an owner note, a
- * lane, a PR or Goal label, an email or a file path. A listed row with no
- * Public title fails the build, and so does a status outside the vocabulary.
- * Rows whose status is done, closed, merged, shipped or deployed drop off.
- * Same input, same bytes.
+ * Public-safe by construction. The build reads only the public table of
+ * docs/ROADMAP.md, which carries exactly six columns (Priority, ID, Public
+ * title, Type, Status, Private ref); any other column, or a row with more
+ * cells, fails the build. Open security rows keep their detail in the
+ * private tracker (docs/ROADMAP.private.md, gitignored, never committed).
+ * Every row needs a Public title: NFKC-normalised, zero-width and fullwidth
+ * forms stripped, then plain ASCII and clear of the deny-list, or the build
+ * fails. An ID is R, two digits and an optional lower-case letter. A status
+ * outside the vocabulary fails the build; done, closed, merged, shipped and
+ * deployed rows drop off. Same input, same bytes.
  *
  *   node scripts/build_roadmap_page.mjs          # write the page
  *   node scripts/build_roadmap_page.mjs --check  # exit 1 if the page is stale
+ *
+ * When the private tracker is present, its "Page deny list" (host and lane
+ * names, which no committed file may carry) is refused too.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** The only columns the page may carry, in order. Everything else never leaves the doc. */
+/** The only columns the page may carry, in order. */
 export const PUBLIC_COLUMNS = Object.freeze(['Priority', 'Row', 'Title', 'Status', 'Type']);
 
-/** Doc column -> page column. A doc column not named here is dropped. */
-const SOURCE_OF = Object.freeze({
-  Priority: 'Priority',
-  Row: 'ID',
-  Title: 'Public title',
-  Status: 'Status',
-  Type: 'Consensus?',
-});
+/** The public table of docs/ROADMAP.md: exactly these columns, in this order. */
+const PUBLIC_TABLE = Object.freeze(['Priority', 'ID', 'Public title', 'Type', 'Status', 'Private ref']);
 
 /** The status vocabulary. The lead word of the cell, after markdown, picks the token; anything else fails the build. */
 const STATUS_WORDS = Object.freeze({
@@ -46,8 +46,23 @@ const STATUS_WORDS = Object.freeze({
 });
 const DROPPED_STATUS = new Set(['merged', 'done', 'closed']);
 
-/** Anything matching these must never reach the page: the build refuses. Every pattern is case-insensitive. */
+const ROW_ID = /^R\d{2}[a-z]?$/;
+const PRIVATE_REF = /^(?:pt-[0-9a-f]{6})?$/;
+
+/**
+ * Anything matching these must never reach the page: the build refuses. Every
+ * pattern is case-insensitive and runs on the normalised title. Host and lane
+ * names are not written here (no committed file names a host); they come from
+ * the private tracker's deny list.
+ */
 const UNSAFE = [
+  /\b(?!v)[a-z](?:-\d{1,2}[a-z]?|\d{1,2})\b/i, // finding codes: H5, F-2, K-1a, N4 (v12 is a version)
+  /\bP[0-3]\b/i, // priority labels P0-P3
+  /\b(?:critical|high|medium|low|severe|severity)\b/i, // severity words
+  /\b(?:exploit|vuln|leak|bypass|grief)/i, // exploit words
+  /\bCVE-\d{4}-\d{4,}\b/i, // CVE ids
+  /\b(?:lanes?|auditor|assailant|evaluator)\b/i, // lane names
+  /\b(?:[a-z0-9-]+\.)+(?:digital|com|net|org|io|dev|app|xyz|de|uk)\b/i, // host names
   /\b\d{1,3}(?:\.\d{1,3}){3}\b/i, // IPv4
   /\b[0-9a-f]{0,4}(?::[0-9a-f]{1,4}){3,}\b/i, // IPv6-ish
   /\b(?:pid|port)\s*[=:]?\s*\d{2,}\b/i,
@@ -58,8 +73,6 @@ const UNSAFE = [
   /\b(?:Russell|Grok|Claude|GPT|CoS)\b/i, // owner notes name agents
   /\bDesktop\b|\bhandoff\b/i, // design files and handoff notes
   /\b(?:ssh|hetzner|vps|contabo)\b/i,
-  /\b(?:agent-box|p2p-[a-z]|p2pnode\d*|shear-pool|dedicated-de|ubuntu-soak|fedora-soak|windows-contabo)\b/i, // host names
-  /\blanes?\b/i, // lane names
   /\bPRs?\s*#?\d+[a-z]?\b/i, // PR labels
   /\bGoals?\s*\d+/i, // Goal labels
   /github\.com|pull\/\d+|#\d{2,}/i, // PR internals
@@ -73,9 +86,18 @@ function stripMarkdown(s) {
     .trim();
 }
 
-/** The Public title cell, as written. Empty is not a title. */
+/** NFKC, then zero-width and other format characters and leftover fullwidth forms out. */
+function normalise(s) {
+  return String(s)
+    .normalize('NFKC')
+    .replace(/[\p{Cf}\uFF00-\uFFEF]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** The Public title cell, normalised. Empty is not a title. */
 export function publicTitleOf(cell) {
-  return stripMarkdown(cell);
+  return normalise(stripMarkdown(cell));
 }
 
 /** The status token, or null when the cell is outside the vocabulary. */
@@ -88,8 +110,10 @@ export function statusOf(cell) {
   return null;
 }
 
+/** Y or N, or null for anything else. */
 export function typeOf(cell) {
-  return /^y\b/i.test(stripMarkdown(cell)) ? 'Y' : 'N';
+  const t = stripMarkdown(cell);
+  return t === 'Y' || t === 'N' ? t : null;
 }
 
 function priorityOf(cell) {
@@ -103,50 +127,54 @@ function splitRow(line) {
   return inner.split(/(?<!\\)\|/).map((c) => c.replace(/\\\|/g, '|').trim());
 }
 
-/** The Rows table of docs/ROADMAP.md: header names and one object per row (every doc column, raw). */
+/** The public table of docs/ROADMAP.md: header names and one object per row (raw cells; `cells` counts them). */
 export function parseRoadmap(markdown) {
   const lines = String(markdown).replace(/\r\n/g, '\n').split('\n');
-  const start = lines.findIndex((l) => /^\|\s*(Priority\s*\|\s*)?ID\s*\|\s*Item\s*\|/.test(l));
-  if (start < 0) throw new Error('roadmap: the Rows table header was not found');
+  const start = lines.findIndex((l) => /^\|\s*Priority\s*\|\s*ID\s*\|/.test(l));
+  if (start < 0) throw new Error('roadmap: the public table header was not found');
   const header = splitRow(lines[start]);
   const rows = [];
   for (let i = start + 2; i < lines.length && lines[i].startsWith('|'); i += 1) {
     const cells = splitRow(lines[i]);
     const row = {};
     header.forEach((name, k) => { row[name] = cells[k] ?? ''; });
+    Object.defineProperty(row, 'cells', { value: cells.length });
     rows.push(row);
   }
   return { header, rows };
 }
 
-function assertSafe(where, value) {
+function assertSafe(where, value, deny) {
   for (const re of UNSAFE) {
     if (re.test(value)) throw new Error(`public-safety: ${where} would reach the page (${re})`);
   }
+  const lower = value.toLowerCase();
+  for (const term of deny) {
+    if (term && lower.includes(normalise(term).toLowerCase())) throw new Error(`public-safety: ${where} names a private deny-list term`);
+  }
 }
 
-/** Allow-listed, normalised, filtered and ordered rows. */
-export function publicRows({ header, rows }) {
-  for (const col of Object.values(SOURCE_OF)) {
-    if (!header.includes(col)) throw new Error(`roadmap: the table has no "${col}" column`);
+/** Allow-listed, normalised, filtered and ordered rows. `deny` adds private terms to refuse. */
+export function publicRows({ header, rows }, { deny = [] } = {}) {
+  if (header.length !== PUBLIC_TABLE.length || header.some((h, k) => h !== PUBLIC_TABLE[k])) {
+    throw new Error(`roadmap: the public table carries exactly ${PUBLIC_TABLE.join(', ')}; found ${header.join(', ')}`);
   }
   const out = [];
   rows.forEach((row, index) => {
-    const id = stripMarkdown(row[SOURCE_OF.Row]);
-    const status = statusOf(row[SOURCE_OF.Status]);
-    if (status == null) throw new Error(`roadmap: ${id} has a status outside the vocabulary: "${stripMarkdown(row[SOURCE_OF.Status])}"`);
+    const id = row.ID;
+    if (!ROW_ID.test(id)) throw new Error(`roadmap: row ID ${JSON.stringify(id)} does not match ${ROW_ID}`);
+    if (row.cells !== PUBLIC_TABLE.length) throw new Error(`roadmap: ${id} has ${row.cells} cells; the public table has ${PUBLIC_TABLE.length}`);
+    if (!PRIVATE_REF.test(row['Private ref'])) throw new Error(`roadmap: ${id} has a private ref that is not opaque (pt- and six hex digits)`);
+    const title = publicTitleOf(row['Public title']);
+    if (!title) throw new Error(`roadmap: ${id} has no public title`);
+    assertSafe(`${id} Title`, title, deny);
+    if (!/^[\x20-\x7e]+$/.test(title)) throw new Error(`roadmap: ${id} public title is not plain ASCII after normalisation`);
+    const status = statusOf(row.Status);
+    if (status == null) throw new Error(`roadmap: ${id} has a status outside the vocabulary: "${stripMarkdown(row.Status)}"`);
+    const type = typeOf(row.Type);
+    if (type == null) throw new Error(`roadmap: ${id} has a Type other than Y or N`);
     if (DROPPED_STATUS.has(status)) return;
-    const title = publicTitleOf(row[SOURCE_OF.Title]);
-    if (!title) throw new Error(`roadmap: ${id} is listed but has no public title`);
-    const pub = {
-      Priority: priorityOf(row[SOURCE_OF.Priority]),
-      Row: id,
-      Title: title,
-      Status: status,
-      Type: typeOf(row[SOURCE_OF.Type]),
-    };
-    for (const col of PUBLIC_COLUMNS) assertSafe(`${pub.Row} ${col}`, String(pub[col] ?? ''));
-    out.push({ pub, index });
+    out.push({ pub: { Priority: priorityOf(row.Priority), Row: id, Title: title, Status: status, Type: type }, index });
   });
   out.sort((a, b) => {
     const pa = a.pub.Priority ?? Number.POSITIVE_INFINITY;
@@ -154,6 +182,12 @@ export function publicRows({ header, rows }) {
     return pa - pb || a.index - b.index;
   });
   return out.map(({ pub }) => pub);
+}
+
+/** The "Page deny list" bullets of the private tracker. */
+export function privateDenyTerms(text) {
+  const section = String(text).split(/^## Page deny list\s*$/m)[1] || '';
+  return [...section.matchAll(/^- (.+?)\s*$/gm)].map((m) => m[1]);
 }
 
 function esc(s) {
@@ -217,6 +251,7 @@ ${body}
   </main>
   <footer class="footer">
     <div class="wrap footer-inner">
+      <p class="footer-maturity">Experimental testnet software, coins have no value.</p>
       <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
       <nav>
         <a href="../index.html">Home</a>
@@ -233,8 +268,8 @@ ${body}
 `;
 }
 
-export function buildRoadmapPage(markdown, { commit }) {
-  return renderRoadmapPage(publicRows(parseRoadmap(markdown)), { commit });
+export function buildRoadmapPage(markdown, { commit, deny = [] }) {
+  return renderRoadmapPage(publicRows(parseRoadmap(markdown), { deny }), { commit });
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -243,7 +278,9 @@ if (isMain) {
   const docPath = path.join(repoRoot, 'docs', 'ROADMAP.md');
   const outPath = path.join(repoRoot, 'site', 'roadmap', 'index.html');
   const commit = execFileSync('git', ['log', '-1', '--format=%H', '--', 'docs/ROADMAP.md'], { cwd: repoRoot, encoding: 'utf8' }).trim();
-  const html = buildRoadmapPage(fs.readFileSync(docPath, 'utf8'), { commit });
+  const privPath = path.join(repoRoot, 'docs', 'ROADMAP.private.md');
+  const deny = fs.existsSync(privPath) ? privateDenyTerms(fs.readFileSync(privPath, 'utf8')) : [];
+  const html = buildRoadmapPage(fs.readFileSync(docPath, 'utf8'), { commit, deny });
   if (process.argv.includes('--check')) {
     const have = fs.existsSync(outPath) ? fs.readFileSync(outPath, 'utf8') : '';
     if (have !== html) {

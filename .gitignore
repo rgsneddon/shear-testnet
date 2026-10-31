@@ -37,10 +37,12 @@ wallet/**/Flutter/ephemeral/
 wallet/**/ephemeral/
 crypto/native/admit/target/
 # Operator admin vhost lives on the box only (SHEAR_ADMIN_HOST).
-deploy/nginx-kyrusfables.shear.digital.conf
+deploy/nginx-*-admin.conf
 deploy/nginx-*-secrets.conf
 # Operator spend seed is 0600 on the pool datadir / Desktop vault — never git.
 pool-spend.seed
 **/pool-spend.seed
 # Local agent notes: test hosts, handoff path. Never committed.
 CLAUDE.local.md
+# Private roadmap tracker: open security row detail. Never committed.
+docs/ROADMAP.private.md
