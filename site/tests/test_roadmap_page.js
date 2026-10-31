@@ -91,6 +91,19 @@ describe('roadmap page generator', () => {
     assert.match(build([row(1, 'R50', 'Plain title', 'N', 'planned', 'pt-abc123')]), /R50/);
   });
 
+  it('Status is exactly one vocabulary word and Priority is empty or a number: no free text', () => {
+    for (const status of ['planned (filed, not fixed)', '**planned** see notes', 'planned: H5 work', 'coding (rule 16)', 'Done. 29 Oct', 'Ruled 28 Oct']) {
+      assert.throws(() => build([row(1, 'R50', 'Plain title', 'N', status)]), /status/, status);
+    }
+    for (const status of ['planned', 'active', 'coding', 'in review', 'awaiting GO', 'ruled', 'merged', 'done', 'closed', 'shipped', 'deployed', 'Planned', '**planned**']) {
+      assert.doesNotThrow(() => build([row(1, 'R50', 'Plain title', 'N', status)]), status);
+    }
+    for (const priority of ['high', '3 (after R29)', 'P1', '2a', '-1']) {
+      assert.throws(() => build([row(priority, 'R50', 'Plain title', 'N', 'planned')]), /priority/i, priority);
+    }
+    assert.match(build([row('', 'R50', 'Plain title', 'N', 'planned')]), /R50/);
+  });
+
   it('every row needs a public title, a dropped row too', () => {
     const byId = Object.fromEntries(publicRows(parseRoadmap(doc(ROWS))).map((r) => [r.Row, r]));
     assert.equal(byId.R29.Title, 'Pool share hardening');
@@ -121,7 +134,7 @@ describe('roadmap page generator', () => {
   });
 
   it('neutral titles pass the deny-list', () => {
-    for (const title of ['v12 cut', 'Android ABIs beyond arm64-v8a', 'P2P relay', 'Dev-network pin move', 'Wallet light mode scan', 'ShearK-Miner optimisation', 'Reserve epoch, withdraw and claim follow-ups']) {
+    for (const title of ['x64 build', 'x86 baseline', 'Mining-pool fee view', 'v12 cut', 'Android ABIs beyond arm64-v8a', 'P2P relay', 'Dev-network pin move', 'Wallet light mode scan', 'ShearK-Miner optimisation', 'Reserve epoch, withdraw and claim follow-ups']) {
       assert.match(planted(title), /R50/, title);
     }
   });
@@ -131,6 +144,8 @@ describe('roadmap page generator', () => {
     'finding code F-2': 'F-2 follow-up',
     'finding code K-1a': 'K-1a closure',
     'finding code N4': 'Relay N4 fix',
+    'finding code with a letter suffix': 'H5a closure',
+    'finding code with three digits': 'Fix for H123',
     'priority label P0-P3': 'p1 wallet fix',
     'severity word critical': 'Critical vault fix',
     'severity word high': 'High pool fix',
@@ -145,6 +160,10 @@ describe('roadmap page generator', () => {
     'lane name': 'Pool Share LANE review',
     'lane role': 'Privacy auditor follow-up',
     hostname: 'Move to admin.example.org',
+    'hostname shape -box': 'Rebuild build-box first',
+    'hostname shape p2p-x': 'Rebuild p2p-q first',
+    'hostname shape -soak': 'Move win-soak to the new OS',
+    'hostname shape node digits': 'Retire relaynode7',
     ip: 'Node health at 203.0.113.7 wobbles',
     'pr label': 'Tests from pr 2',
     'pr label with suffix': 'Fixtures from PR 3a',
@@ -312,6 +331,12 @@ describe('the committed roadmap page and its links', () => {
     }
     assert.doesNotMatch(md, /\bH\d{1,2}\b/, 'no finding code of the share research');
     assert.doesNotMatch(md, /\*\*(?:high|medium|low)\b/i, 'no severity mark');
+    assert.doesNotMatch(md, /R01c[- ]P1/, 'no finding label of a private row');
+    for (const r of rows) {
+      assert.match(r.Status, /^(?:planned|active|coding|in review|awaiting GO|ruled|merged|done|closed|shipped|deployed)$/, r.ID);
+      assert.match(r.Priority, /^(?:\d+)?$/, r.ID);
+    }
+    assert.match(md, /private tracker[^.]*Owner, Reviewer, Working now and PR/, 'the rules say where a private row is claimed');
     const ignored = read('.gitignore');
     assert.match(ignored, /^docs\/ROADMAP\.private\.md\r?$/m);
     const tracked = execFileSync('git', ['ls-files', '--', 'docs/ROADMAP.private.md'], { cwd: repoRoot, encoding: 'utf8' }).trim();
