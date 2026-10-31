@@ -6,9 +6,10 @@
  *
  * Verify checks the coinbase pot before the per-transaction gate, and the pot
  * check opens the coinbase rows through the range verifier. So the gate is
- * also tested directly, and each block leg first shows the same block with no
- * withdraw clears the coinbase checks: a custodial_pull verdict is the gate's,
- * never a pot verdict renamed.
+ * also tested directly, and each block leg first shows a block on the same
+ * book with no withdraw clears the coinbase checks (a sanity probe of the pot
+ * path; its coinbase has no withdraw fee). Only the gate emits custodial_pull,
+ * so that verdict on the withdraw block is the gate's.
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -101,7 +102,7 @@ describe('a pool-withdraw block is refused on the mainnet and regtest books', ()
       const bits = book.bits();
       const template = (txs) => buildTemplate({ prev: GENESIS_PREV, height: 1, miner: dest, bits, now: NOW, txs });
 
-      // The same block with no withdraw clears every coinbase and pot check.
+      // A block on this book with no withdraw clears the coinbase and pot checks.
       const control = verifyBlock(blockOf(template([])), null, { probeBody: true, magic: book.magic });
       assert.equal(control.ok, true, `${book.name} control: ${control.reason}`);
 

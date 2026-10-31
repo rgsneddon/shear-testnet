@@ -24,10 +24,8 @@ import {
   levyTaxed,
   txWeight,
   mempoolPressure,
-  mempoolDepthBytes,
-  containsShe1,
 } from '../../crypto/levy.js';
-import { flowSendNeedsOpen, verifySpendSig, fundedDebit, openingForSpentDest, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
+import { flowSendNeedsOpen, verifySpendSig, fundedDebit, verifyReservePortalOpen, reserveNeedsPortalOpen, reconcileSpendable, mempoolDebitNanos } from '../../crypto/spend.js';
 import { dummyCount } from '../../crypto/dummy.js';
 import { isPinnedProgram, listPublicVortices } from '../../crypto/vortex.js';
 import { sealedExplorerRows, collateSamples, isSpendableHeight, flowConfirmations, valueOpenRejected, outputMayCarryValueOpen } from '../../crypto/chronoflux.js';

@@ -22,7 +22,7 @@ function runPolicy(env, script) {
 }
 
 describe('range JS is opt-in and hidden amounts fail closed', () => {
-  it('pool and node hidden-amount creation names the native requirement', () => {
+  it('node hidden-amount creation names the native requirement; the pool creates none', () => {
     const pool = readFileSync(path.join(root, 'pool/src/wallet_api.js'), 'utf8');
     const node = readFileSync(path.join(root, 'node/mine_loop.js'), 'utf8');
     const dummy = readFileSync(path.join(root, 'crypto/dummy.js'), 'utf8');
