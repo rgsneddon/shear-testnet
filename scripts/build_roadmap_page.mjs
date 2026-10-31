@@ -4,22 +4,28 @@
  *
  * Public-safe by construction. The build reads only the public table of
  * docs/ROADMAP.md, which carries exactly six columns (Priority, ID, Public
- * title, Type, Status, Private ref); any other column, or a row with more
- * cells, fails the build. Open security rows keep their detail in the
- * private tracker (docs/ROADMAP.private.md, gitignored, never committed).
- * Every row needs a Public title: NFKC-normalised, zero-width and fullwidth
- * forms stripped, then plain ASCII and clear of the deny-list, or the build
- * fails. An ID is R, two digits and an optional lower-case letter. A status
- * outside the vocabulary fails the build; done, closed, merged, shipped and
- * deployed rows drop off. Same input, same bytes.
+ * title, Type, Status, Ref); any other column, or a row with more cells, fails
+ * the build. Every row carries a Ref (rf- and ten hex digits from a secure
+ * random source), so the column says nothing about what a row is; each row's
+ * detail lives in the maintainers' tracker (docs/ROADMAP.tracker.md,
+ * gitignored, never committed). Every row needs a Public title:
+ * NFKC-normalised, zero-width and fullwidth forms stripped, then plain ASCII
+ * and clear of the deny-list, or the build fails. An ID is R, two digits and
+ * an optional lower-case letter. A status outside the vocabulary fails the
+ * build; done, closed, merged, shipped and deployed rows drop off. The whole
+ * of docs/ROADMAP.md must carry no host detail. Same input, same bytes.
  *
- *   node scripts/build_roadmap_page.mjs          # write the page
- *   node scripts/build_roadmap_page.mjs --check  # exit 1 if the page is stale
+ *   node scripts/build_roadmap_page.mjs                      # write the page
+ *   node scripts/build_roadmap_page.mjs --check              # exit 1 if the page is stale
+ *   node scripts/build_roadmap_page.mjs --write-deny-hashes  # re-hash the tracker's deny list
  *
- * When the private tracker is present, its "Page deny list" (host and lane
- * names, which no committed file may carry) is refused too.
+ * The tracker's "Page deny list" (host and lane names, which no committed file
+ * may carry) is committed only as salted hashes (docs/roadmap-deny.json). The
+ * build always checks against those hashes and fails closed when they are
+ * missing; when the tracker is present its terms are checked in plain too, and
+ * the committed hashes must match them exactly.
  */
-import { execFileSync } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 export const PUBLIC_COLUMNS = Object.freeze(['Priority', 'Row', 'Title', 'Status', 'Type']);
 
 /** The public table of docs/ROADMAP.md: exactly these columns, in this order. */
-const PUBLIC_TABLE = Object.freeze(['Priority', 'ID', 'Public title', 'Type', 'Status', 'Private ref']);
+const PUBLIC_TABLE = Object.freeze(['Priority', 'ID', 'Public title', 'Type', 'Status', 'Ref']);
 
 /** The status vocabulary. The whole cell, after markdown, is one of these words; anything else fails the build. */
 const STATUS_WORDS = Object.freeze({
@@ -47,23 +53,28 @@ const STATUS_WORDS = Object.freeze({
 const DROPPED_STATUS = new Set(['merged', 'done', 'closed']);
 
 const ROW_ID = /^R\d{2}[a-z]?$/;
-const PRIVATE_REF = /^(?:pt-[0-9a-f]{6})?$/;
+const REF = /^rf-[0-9a-f]{10}$/;
+
+/** Machine-name shapes: name-box, name_soak, p2p-x, p2p_x, p2p x, namenode7. */
+const MACHINE_SHAPE = /\b[a-z0-9]+[-_](?:box|soak|vps)\b|\bp2p[-_ ]?[a-z]\b|\b[a-z]+node\d+\b/i;
 
 /**
  * Anything matching these must never reach the page: the build refuses. Every
- * pattern is case-insensitive and runs on the normalised title. Host and lane
- * names are not written here (no committed file names a host); they come from
- * the private tracker's deny list.
+ * pattern but the spaced-code one is case-insensitive and runs on the
+ * normalised title. Host and lane names are not written here (no committed
+ * file names a host); they are checked through the deny hashes.
  */
 const UNSAFE = [
-  /\b(?!v\d|p2p\b|x(?:64|86)\b)[a-z]-?\d{1,3}[a-z]?\b/i, // finding codes: H5, H5a, H123, F-2, K-1a, N4 (v12, P2P, x64 are not)
+  /\b(?!v\d+[a-z]?\b|p2p\b|x(?:64|86)\b|arm64\b)[a-z]{1,4}[-_.]?\d{1,3}[a-z]?\b/i, // finding codes: H5, F-2, PA-3, SEC_12, H.5 (v12, P2P, x64, arm64 are not)
+  /\b[A-Z]{1,3} \d{1,3}[a-z]?\b/, // spaced finding codes: PA 3, H 5
   /\bP[0-3]\b/i, // priority labels P0-P3
-  /\b(?:critical|high|medium|low|severe|severity)\b/i, // severity words
-  /\b(?:exploit|vuln|leak|bypass|grief)/i, // exploit words
+  /\b(?:critical(?:ly|ity)?|high(?:s|er|est)?|mediums?|low(?:s|er|est)?|sever(?:e|ely|ity|ities))\b/i, // severity words and their forms
+  /\b(?:exploit|vuln|leak|bypass|grief|attack|flaw|weakness|breach|compromis|inject|overflow|underflow|forg(?:e|ed|es|ing|ery|eries)\b|spoof|hijack|backdoor|malicious|insecur|unsafe|harden|secur|steal|stole|theft|tamper|malleab|grind|d?dos\b|denial[\s-]of[\s-]service)/i, // exploit, attack and flaw words
   /\bCVE-\d{4}-\d{4,}\b/i, // CVE ids
-  /\b(?:lanes?|auditor|assailant|evaluator)\b/i, // lane names
+  /\b(?:lanes?|auditors?|assailants?|evaluat(?:ors?|ions?)|reviewers?|red[\s-]?team(?:s|ing)?|pen[\s-]?test(?:s|ing|ers?)?)\b/i, // lane roles and their forms
+  /\bprivate\b/i, // the page never says a row is private
   /\b(?:[a-z0-9-]+\.)+(?:digital|com|net|org|io|dev|app|xyz|de|uk)\b/i, // host names: domains
-  /\b[a-z0-9]+-(?:box|soak|vps)\b|\bp2p-[a-z]\b|\b[a-z]+node\d+\b/i, // host names: machine-name shapes
+  MACHINE_SHAPE, // host names: machine-name shapes
   /\b\d{1,3}(?:\.\d{1,3}){3}\b/i, // IPv4
   /\b[0-9a-f]{0,4}(?::[0-9a-f]{1,4}){3,}\b/i, // IPv6-ish
   /\b(?:pid|port)\s*[=:]?\s*\d{2,}\b/i,
@@ -77,6 +88,15 @@ const UNSAFE = [
   /\bPRs?\s*#?\d+[a-z]?\b/i, // PR labels
   /\bGoals?\s*\d+/i, // Goal labels
   /github\.com|pull\/\d+|#\d{2,}/i, // PR internals
+];
+
+/** Host detail the whole of docs/ROADMAP.md may not carry (names come through the deny hashes). */
+const HOST_DETAIL = [
+  MACHINE_SHAPE,
+  /\b(?:hetzner|contabo|ovh|digitalocean|linode|vultr|vps)\b/i, // providers
+  /\bDesktop\b/, // design notes on a laptop
+  /\/root\/|\/home\/|\b[A-Z]:\\/, // machine paths
+  /\b\d{1,3}(?:\.\d{1,3}){3}\b/, // IPv4
 ];
 
 function stripMarkdown(s) {
@@ -120,6 +140,42 @@ function priorityOf(cell) {
   return /^\d+$/.test(n) ? Number(n) : undefined;
 }
 
+/** Lower-case letters and digits only: "Name box", "name_box", "name-box" and "NameBox" are one term. */
+export function canonicalTerm(s) {
+  return normalise(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** The salted hash of one deny term, as committed in docs/roadmap-deny.json. */
+export function hashTerm(salt, term) {
+  return createHash('sha256').update(`${salt}:${canonicalTerm(term)}`).digest('hex');
+}
+
+/** Deny terms are at most this many words long; longer runs are not tried. */
+const MAX_TERM_WORDS = 4;
+
+/** The deny hashes, checked: a 32-hex salt and at least one sha256. Anything else fails closed. */
+export function denyHashSet(denyHashes) {
+  const ok = denyHashes && /^[0-9a-f]{32}$/.test(denyHashes.salt || '')
+    && Array.isArray(denyHashes.hashes) && denyHashes.hashes.length > 0
+    && denyHashes.hashes.every((h) => /^[0-9a-f]{64}$/.test(h));
+  if (!ok) throw new Error('roadmap: no valid deny hashes (docs/roadmap-deny.json); the build fails closed');
+  return { salt: denyHashes.salt, set: new Set(denyHashes.hashes) };
+}
+
+/** True when a run of one to four words of `text`, joined, hashes to a deny hash. */
+export function namesHashedTerm(text, denyHashes) {
+  const { salt, set } = denyHashSet(denyHashes);
+  const words = normalise(text).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  for (let i = 0; i < words.length; i += 1) {
+    let joined = '';
+    for (let n = 0; n < MAX_TERM_WORDS && i + n < words.length; n += 1) {
+      joined += words[i + n];
+      if (set.has(createHash('sha256').update(`${salt}:${joined}`).digest('hex'))) return true;
+    }
+  }
+  return false;
+}
+
 /** Cells of one table line. A `\|` is a pipe inside a cell, not a cell border. */
 function splitRow(line) {
   const inner = line.trim().replace(/^\|/, '').replace(/\|$/, '');
@@ -143,30 +199,49 @@ export function parseRoadmap(markdown) {
   return { header, rows };
 }
 
-function assertSafe(where, value, deny) {
-  for (const re of UNSAFE) {
-    if (re.test(value)) throw new Error(`public-safety: ${where} would reach the page (${re})`);
-  }
+function assertClearOfDeny(where, value, deny, denyHashes) {
+  if (namesHashedTerm(value, denyHashes)) throw new Error(`public-safety: ${where} names a deny-list term`);
   const lower = value.toLowerCase();
   for (const term of deny) {
-    if (term && lower.includes(normalise(term).toLowerCase())) throw new Error(`public-safety: ${where} names a private deny-list term`);
+    if (term && lower.includes(normalise(term).toLowerCase())) throw new Error(`public-safety: ${where} names a deny-list term`);
   }
 }
 
-/** Allow-listed, normalised, filtered and ordered rows. `deny` adds private terms to refuse. */
-export function publicRows({ header, rows }, { deny = [] } = {}) {
+function assertSafe(where, value, deny, denyHashes) {
+  for (const re of UNSAFE) {
+    if (re.test(value)) throw new Error(`public-safety: ${where} would reach the page (${re})`);
+  }
+  assertClearOfDeny(where, value, deny, denyHashes);
+}
+
+/** The whole of docs/ROADMAP.md carries no host detail: no machine name, provider, laptop path, address or deny term. */
+export function assertPublicDoc(markdown, { deny = [], denyHashes } = {}) {
+  const text = normalise(markdown);
+  for (const re of HOST_DETAIL) {
+    const m = text.match(re);
+    if (m) throw new Error(`public-safety: docs/ROADMAP.md carries host detail (${re})`);
+  }
+  assertClearOfDeny('docs/ROADMAP.md', text, deny, denyHashes);
+}
+
+/** Allow-listed, normalised, filtered and ordered rows. `deny` adds plain terms; `denyHashes` is required. */
+export function publicRows({ header, rows }, { deny = [], denyHashes } = {}) {
+  denyHashSet(denyHashes);
   if (header.length !== PUBLIC_TABLE.length || header.some((h, k) => h !== PUBLIC_TABLE[k])) {
     throw new Error(`roadmap: the public table carries exactly ${PUBLIC_TABLE.join(', ')}; found ${header.join(', ')}`);
   }
   const out = [];
+  const refs = new Set();
   rows.forEach((row, index) => {
     const id = row.ID;
     if (!ROW_ID.test(id)) throw new Error(`roadmap: row ID ${JSON.stringify(id)} does not match ${ROW_ID}`);
     if (row.cells !== PUBLIC_TABLE.length) throw new Error(`roadmap: ${id} has ${row.cells} cells; the public table has ${PUBLIC_TABLE.length}`);
-    if (!PRIVATE_REF.test(row['Private ref'])) throw new Error(`roadmap: ${id} has a private ref that is not opaque (pt- and six hex digits)`);
+    if (!REF.test(row.Ref)) throw new Error(`roadmap: ${id} needs a ref of rf- and ten hex digits (every row carries one)`);
+    if (refs.has(row.Ref)) throw new Error(`roadmap: ${id} repeats the ref ${row.Ref}`);
+    refs.add(row.Ref);
     const title = publicTitleOf(row['Public title']);
     if (!title) throw new Error(`roadmap: ${id} has no public title`);
-    assertSafe(`${id} Title`, title, deny);
+    assertSafe(`${id} Title`, title, deny, denyHashes);
     if (!/^[\x20-\x7e]+$/.test(title)) throw new Error(`roadmap: ${id} public title is not plain ASCII after normalisation`);
     const status = statusOf(row.Status);
     if (status == null) throw new Error(`roadmap: ${id} has a status outside the vocabulary: "${stripMarkdown(row.Status)}"`);
@@ -185,20 +260,35 @@ export function publicRows({ header, rows }, { deny = [] } = {}) {
   return out.map(({ pub }) => pub);
 }
 
-/** The "Page deny list" bullets of the private tracker. */
-export function privateDenyTerms(text) {
+/** The "Page deny list" bullets of the maintainers' tracker. */
+export function trackerDenyTerms(text) {
   const section = String(text).split(/^## Page deny list\s*$/m)[1] || '';
   return [...section.matchAll(/^- (.+?)\s*$/gm)].map((m) => m[1]);
+}
+
+/** The committed hashes must be exactly the tracker's terms: none missing, none extra. */
+export function assertDenyHashesMatch(terms, denyHashes) {
+  const { salt, set } = denyHashSet(denyHashes);
+  const want = new Set(terms.map((t) => hashTerm(salt, t)));
+  const missing = [...want].filter((h) => !set.has(h)).length;
+  const extra = [...set].filter((h) => !want.has(h)).length;
+  if (missing || extra) {
+    throw new Error(`roadmap: docs/roadmap-deny.json is out of step with the tracker (${missing} missing, ${extra} extra): run --write-deny-hashes`);
+  }
+}
+
+/** The first 12 hex digits of the source's sha256: survives a squash merge, unlike a commit id. */
+export function sourceDigest(markdown) {
+  return createHash('sha256').update(String(markdown).replace(/\r\n/g, '\n')).digest('hex').slice(0, 12);
 }
 
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-/** The page: the site's sub-path skeleton, one table, the source line, the standard footer. */
-export function renderRoadmapPage(rows, { commit }) {
-  const short = String(commit).slice(0, 12);
-  if (!/^[0-9a-f]{12}$/.test(short)) throw new Error('roadmap: commit must be a hex sha');
+/** The page: the site's sub-path skeleton, one table, the source line, a static footer (no request leaves the page). */
+export function renderRoadmapPage(rows, { source }) {
+  if (!/^[0-9a-f]{12}$/.test(String(source))) throw new Error('roadmap: source must be 12 hex digits');
   const head = PUBLIC_COLUMNS.map((c) => `<th scope="col">${esc(c)}</th>`).join('');
   const body = rows.map((r) => `      <tr>${PUBLIC_COLUMNS.map((c) => `<td>${esc(r[c] ?? '—')}</td>`).join('')}</tr>`).join('\n');
   return `<!DOCTYPE html>
@@ -224,6 +314,8 @@ export function renderRoadmapPage(rows, { commit }) {
     table.roadmap th:nth-child(4), table.roadmap td:nth-child(4) { width: 7em; }
     table.roadmap th:nth-child(5), table.roadmap td:nth-child(5) { width: 3.5em; }
     .roadmap-foot { margin-top: 12px; color: var(--text-dim); font-size: 0.85rem; }
+    .footer-maturity { margin: 0 0 8px; color: var(--text-dim); font-size: 0.85rem; line-height: 1.4; }
+    .footer-line { color: var(--text-dim); font-size: 0.85rem; }
     @media (max-width: 390px) {
       table.roadmap { font-size: 0.8rem; }
       table.roadmap th, table.roadmap td { padding: 6px 5px; }
@@ -248,12 +340,12 @@ ${body}
       </tbody>
     </table>
     </div>
-    <p class="roadmap-foot">generated from docs/ROADMAP.md at ${short}</p>
+    <p class="roadmap-foot">generated from docs/ROADMAP.md (sha256 ${source})</p>
   </main>
   <footer class="footer">
     <div class="wrap footer-inner">
       <p class="footer-maturity">Experimental testnet software, coins have no value.</p>
-      <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
+      <div class="footer-line">Shear testnet</div>
       <nav>
         <a href="../index.html">Home</a>
         <a href="../network.html">Network</a>
@@ -263,14 +355,24 @@ ${body}
       </nav>
     </div>
   </footer>
-  <script src="../shared/site-identity.js"></script>
 </body>
 </html>
 `;
 }
 
-export function buildRoadmapPage(markdown, { commit, deny = [] }) {
-  return renderRoadmapPage(publicRows(parseRoadmap(markdown), { deny }), { commit });
+/** The page for one docs/ROADMAP.md. `denyHashes` is required: without it the build fails closed. */
+export function buildRoadmapPage(markdown, { deny = [], denyHashes } = {}) {
+  assertPublicDoc(markdown, { deny, denyHashes });
+  return renderRoadmapPage(publicRows(parseRoadmap(markdown), { deny, denyHashes }), { source: sourceDigest(markdown) });
+}
+
+/** The tracker on this machine, if any (the second name is the tracker's first-round name). */
+function trackerPath(repoRoot) {
+  for (const name of ['ROADMAP.tracker.md', 'ROADMAP.private.md']) {
+    const p = path.join(repoRoot, 'docs', name);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -278,10 +380,27 @@ if (isMain) {
   const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
   const docPath = path.join(repoRoot, 'docs', 'ROADMAP.md');
   const outPath = path.join(repoRoot, 'site', 'roadmap', 'index.html');
-  const commit = execFileSync('git', ['log', '-1', '--format=%H', '--', 'docs/ROADMAP.md'], { cwd: repoRoot, encoding: 'utf8' }).trim();
-  const privPath = path.join(repoRoot, 'docs', 'ROADMAP.private.md');
-  const deny = fs.existsSync(privPath) ? privateDenyTerms(fs.readFileSync(privPath, 'utf8')) : [];
-  const html = buildRoadmapPage(fs.readFileSync(docPath, 'utf8'), { commit, deny });
+  const hashPath = path.join(repoRoot, 'docs', 'roadmap-deny.json');
+  const tracker = trackerPath(repoRoot);
+  const deny = tracker ? trackerDenyTerms(fs.readFileSync(tracker, 'utf8')) : [];
+  const readHashes = () => (fs.existsSync(hashPath) ? JSON.parse(fs.readFileSync(hashPath, 'utf8')) : null);
+  if (process.argv.includes('--write-deny-hashes')) {
+    if (!tracker || deny.length === 0) {
+      process.stderr.write('--write-deny-hashes needs the tracker and its Page deny list on this machine\n');
+      process.exit(1);
+    }
+    const old = readHashes();
+    const salt = old && /^[0-9a-f]{32}$/.test(old.salt || '') ? old.salt : randomBytes(16).toString('hex');
+    const hashes = [...new Set(deny.map((t) => hashTerm(salt, t)))].sort();
+    fs.writeFileSync(hashPath, `${JSON.stringify({ salt, hashes }, null, 2)}\n`);
+    process.stdout.write(`wrote docs/roadmap-deny.json: ${hashes.length} hashes\n`);
+    process.exit(0);
+  }
+  const denyHashes = readHashes();
+  denyHashSet(denyHashes);
+  if (tracker) assertDenyHashesMatch(deny, denyHashes);
+  const markdown = fs.readFileSync(docPath, 'utf8');
+  const html = buildRoadmapPage(markdown, { deny, denyHashes });
   if (process.argv.includes('--check')) {
     const have = fs.existsSync(outPath) ? fs.readFileSync(outPath, 'utf8') : '';
     if (have !== html) {
@@ -292,6 +411,6 @@ if (isMain) {
   } else {
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     fs.writeFileSync(outPath, html);
-    process.stdout.write(`wrote ${path.relative(repoRoot, outPath)} from docs/ROADMAP.md at ${commit.slice(0, 12)}\n`);
+    process.stdout.write(`wrote ${path.relative(repoRoot, outPath)} from docs/ROADMAP.md (sha256 ${sourceDigest(markdown)})\n`);
   }
 }

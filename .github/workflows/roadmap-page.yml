@@ -1,0 +1,16 @@
+name: roadmap-page
+on:
+  push:
+  pull_request:
+jobs:
+  roadmap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: The committed roadmap page is the build of docs/ROADMAP.md
+        run: node scripts/build_roadmap_page.mjs --check
+      - name: Roadmap page and deny-list tests (no tracker here; the committed hashes stand in)
+        run: node --test site/tests/test_roadmap_page.js

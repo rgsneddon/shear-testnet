@@ -15,6 +15,7 @@ import { configuredFeeIdentity } from '../src/posture.js';
 import { signPoolWithdraw, poolWithdrawDigest } from '../../crypto/eip712.js';
 import { sign } from 'node:crypto';
 import { withdrawNonces, withdrawDigests } from '../src/withdraw_state.js';
+import { namesOperatorHost } from '../../tests/operator_host.js';
 import {
   ADMIN_HOST_EXAMPLE,
   ADMIN_USER,
@@ -120,12 +121,12 @@ describe('operator admin fee wallet', () => {
     assert.match(nginx, /X-Robots-Tag/);
     assert.doesNotMatch(nginx, /\/api\/stats/);
     const adminSrc = fs.readFileSync(new URL('../src/admin.js', import.meta.url), 'utf8');
-    assert.doesNotMatch(adminSrc, /kyrusfables/);
+    assert.equal(namesOperatorHost(adminSrc), false);
     assert.match(adminSrc, /adminWalletDests/);
     assert.match(adminSrc, /adminWalletBalance/);
     for (const rel of ['site/index.html', 'pool/public/index.html', 'pool/public/miner.html', 'pool/public/explorer.html', 'pool/src/admin.js', 'pool/src/pool.js']) {
       const pub = fs.readFileSync(path.join(root, rel), 'utf8');
-      assert.doesNotMatch(pub, /kyrusfables/);
+      assert.equal(namesOperatorHost(pub), false);
     }
   });
 

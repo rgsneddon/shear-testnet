@@ -21,6 +21,8 @@
     table.roadmap th:nth-child(4), table.roadmap td:nth-child(4) { width: 7em; }
     table.roadmap th:nth-child(5), table.roadmap td:nth-child(5) { width: 3.5em; }
     .roadmap-foot { margin-top: 12px; color: var(--text-dim); font-size: 0.85rem; }
+    .footer-maturity { margin: 0 0 8px; color: var(--text-dim); font-size: 0.85rem; line-height: 1.4; }
+    .footer-line { color: var(--text-dim); font-size: 0.85rem; }
     @media (max-width: 390px) {
       table.roadmap { font-size: 0.8rem; }
       table.roadmap th, table.roadmap td { padding: 6px 5px; }
@@ -42,23 +44,23 @@
       <thead><tr><th scope="col">Priority</th><th scope="col">Row</th><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Type</th></tr></thead>
       <tbody>
       <tr><td>2</td><td>R01b</td><td>Vault claim post from the wallet</td><td>planned</td><td>Y</td></tr>
-      <tr><td>3</td><td>R29</td><td>Pool share hardening</td><td>planned</td><td>Y</td></tr>
+      <tr><td>3</td><td>R29</td><td>Pool share payee checks</td><td>planned</td><td>Y</td></tr>
       <tr><td>4</td><td>R01a</td><td>Coinbase payout key binding</td><td>planned</td><td>Y</td></tr>
       <tr><td>5</td><td>R02</td><td>Vault lock-note binding</td><td>planned</td><td>Y</td></tr>
-      <tr><td>6</td><td>R26</td><td>Reserve wallet fail-closed fixes</td><td>planned</td><td>N</td></tr>
-      <tr><td>7</td><td>R07</td><td>Spend proof hardening</td><td>planned</td><td>Y</td></tr>
-      <tr><td>8</td><td>R06</td><td>Wire decode and share commitment hardening</td><td>planned</td><td>Y</td></tr>
-      <tr><td>9</td><td>R28</td><td>BluNotes: private share payees and payouts</td><td>active</td><td>Y</td></tr>
-      <tr><td>9</td><td>R33</td><td>Share batch hardening</td><td>planned</td><td>Y</td></tr>
-      <tr><td>9</td><td>R35</td><td>Share header hardening</td><td>planned</td><td>Y</td></tr>
-      <tr><td>9</td><td>R36</td><td>Hash-bonus record hardening</td><td>planned</td><td>Y</td></tr>
+      <tr><td>6</td><td>R26</td><td>Reserve wallet sync checks</td><td>planned</td><td>N</td></tr>
+      <tr><td>7</td><td>R07</td><td>Spend proof update</td><td>planned</td><td>Y</td></tr>
+      <tr><td>8</td><td>R06</td><td>Wire decode and share commitment rules</td><td>planned</td><td>Y</td></tr>
+      <tr><td>9</td><td>R28</td><td>BluNotes: hidden share payees and payouts</td><td>active</td><td>Y</td></tr>
+      <tr><td>9</td><td>R33</td><td>Share batch encoding</td><td>planned</td><td>Y</td></tr>
+      <tr><td>9</td><td>R35</td><td>Share header window</td><td>planned</td><td>Y</td></tr>
+      <tr><td>9</td><td>R36</td><td>Hash-bonus record root</td><td>planned</td><td>Y</td></tr>
       <tr><td>10</td><td>R01c</td><td>Wallet light mode scan</td><td>planned</td><td>N</td></tr>
       <tr><td>13</td><td>R05</td><td>Book magic on every path</td><td>planned</td><td>Y</td></tr>
       <tr><td>14</td><td>R30</td><td>Share selection limits</td><td>planned</td><td>N</td></tr>
       <tr><td>14</td><td>R32</td><td>Owed ledger bounds</td><td>planned</td><td>Y</td></tr>
       <tr><td>14</td><td>R34</td><td>Idle hash-note rule</td><td>planned</td><td>Y</td></tr>
       <tr><td>15</td><td>R39</td><td>Share verify cost</td><td>planned</td><td>N</td></tr>
-      <tr><td>16</td><td>R04</td><td>Native hash thread safety</td><td>planned</td><td>N</td></tr>
+      <tr><td>16</td><td>R04</td><td>Native hash threading</td><td>planned</td><td>N</td></tr>
       <tr><td>17</td><td>R24</td><td>Test chain fixtures</td><td>planned</td><td>N</td></tr>
       <tr><td>17</td><td>R27</td><td>Real-path money scenarios</td><td>planned</td><td>N</td></tr>
       <tr><td>18</td><td>R14a</td><td>Public supply audit tool</td><td>planned</td><td>N</td></tr>
@@ -79,7 +81,7 @@
       <tr><td>24</td><td>R18b</td><td>Mainnet release deploy</td><td>planned</td><td>N</td></tr>
       <tr><td>24</td><td>R19</td><td>Mainnet genesis</td><td>planned</td><td>N</td></tr>
       <tr><td>—</td><td>R09</td><td>Token spec</td><td>planned</td><td>N</td></tr>
-      <tr><td>—</td><td>R10</td><td>Private tokens build</td><td>planned</td><td>Y</td></tr>
+      <tr><td>—</td><td>R10</td><td>Confidential tokens build</td><td>planned</td><td>Y</td></tr>
       <tr><td>—</td><td>R20</td><td>Android ABIs beyond arm64-v8a</td><td>planned</td><td>N</td></tr>
       <tr><td>—</td><td>R21</td><td>Pinned note-set snapshot</td><td>planned</td><td>Y</td></tr>
       <tr><td>—</td><td>R25</td><td>Epoch rate row</td><td>planned</td><td>Y</td></tr>
@@ -88,12 +90,12 @@
       </tbody>
     </table>
     </div>
-    <p class="roadmap-foot">generated from docs/ROADMAP.md at ab6bd9036973</p>
+    <p class="roadmap-foot">generated from docs/ROADMAP.md (sha256 146b1b939e02)</p>
   </main>
   <footer class="footer">
     <div class="wrap footer-inner">
       <p class="footer-maturity">Experimental testnet software, coins have no value.</p>
-      <div data-shear-foot data-wallet-fallback="0.71" data-network-fallback="shear-testnet-v11">Shear · … · Continuum … · …</div>
+      <div class="footer-line">Shear testnet</div>
       <nav>
         <a href="../index.html">Home</a>
         <a href="../network.html">Network</a>
@@ -103,6 +105,5 @@
       </nav>
     </div>
   </footer>
-  <script src="../shared/site-identity.js"></script>
 </body>
 </html>

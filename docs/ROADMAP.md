@@ -106,8 +106,8 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
       against a node they choose, and node runners rely on pruning.
     - Light wallet mode is the privacy risk, not the snapshot. R21's light
       wallet conditions (local scan, no view key or note queries to a node,
-      own node by default, a plain warning in remote-node mode, Privacy
-      Auditor first) are in its row.
+      own node by default, a plain warning in remote-node mode, the privacy
+      review first) are in its row.
     - The old bootstrap is removed in one small PR before the v12 cut
       (R16), owned by Claude (Russell 26 Oct, 20:30 GMT). It covers the
       node's automatic snapshot write every 200 blocks, the `--bootstrap`
@@ -152,7 +152,7 @@ Until Russell gives a GO on the Claude/Grok split, Claude owns every row.
     - **Stressnet keeps its full 7 days.** If anything slips, its start
       moves; it is never shortened. Genesis stays Mon 21 Dec 2026 14:00 UK,
       and any move needs Russell's sign-off.
-    - **R18a:** check this week whether Hetzner keeps each IP across a
+    - **R18a:** check this week whether the provider keeps each IP across a
       rebuild; write and container-test the rebuild scripts in November.
 16. **Reviews are done on the code, not the concept (Russell 2026-10-27,
     22:29 GMT).**
@@ -176,7 +176,7 @@ moves the later rows by a day.
 **The public table** below is the only part of a row that reaches the public page
 (site/roadmap, built by `scripts/build_roadmap_page.mjs`), and it carries exactly six
 columns: Priority, ID, Public title, Type (Y moves a consensus pin, N does not), Status
-and Private ref. Any other column, or a row with more cells, fails the build. Every row
+and Ref. Any other column, or a row with more cells, fails the build. Every row
 needs a Public title: plain ASCII, neutral, what the row delivers, never the name of a
 finding, a severity, an internal label (PR, Goal, lane), a host, a person, an email or a
 file path; the build fails without one. An ID is `R` plus two digits and an optional
@@ -184,109 +184,71 @@ lower-case letter. Status is one vocabulary word (rule 5, plus `ruled`, `coding`
 `shipped`, `deployed`); any other status fails the build, and a done, closed, merged,
 shipped or deployed row drops off the page. A `|` inside a cell is written `\|`.
 
-**Open security rows** keep their detail (finding, owner, reviewer, claim, PR, target)
-in the private tracker `docs/ROADMAP.private.md`, which is gitignored and never
-committed; the Private ref cell names the row there. Rules 1, 3, 5 and 7 apply to those
-rows through the private tracker, where their Owner, Reviewer, Working now and PR cells
-live; a claim on one is made there. Every other row keeps its detail in the row detail
-table after the public table.
+**Row detail.** Every row keeps its detail (item, consensus note, status note, owner,
+reviewer, claim, PR, head SHA, target) in the maintainers' tracker `docs/ROADMAP.tracker.md`,
+which is gitignored and never committed; the Ref cell names the row there. Every row carries a
+Ref, so the column says nothing about what a row is. Rules 1, 3, 5 and 7 apply through the
+tracker, where each row's Owner, Reviewer, Working now and PR cells live; a claim on a row is
+made there. Host details (names, addresses, providers, OS plans) live there too, never here.
 
-| Priority | ID | Public title | Type | Status | Private ref |
-|----------|----|--------------|------|--------|-------------|
-| 2 | R01b | Vault claim post from the wallet | Y | planned |  |
-| 3 | R29 | Pool share hardening | Y | planned | pt-b83c95 |
-| 4 | R01a | Coinbase payout key binding | Y | planned | pt-66a229 |
-| 5 | R02 | Vault lock-note binding | Y | planned | pt-927c48 |
-| 6 | R26 | Reserve wallet fail-closed fixes | N | planned | pt-428366 |
-| 7 | R07 | Spend proof hardening | Y | planned | pt-921392 |
-| 8 | R06 | Wire decode and share commitment hardening | Y | planned | pt-aacf01 |
-| 9 | R28 | BluNotes: private share payees and payouts | Y | coding |  |
-| 9 | R33 | Share batch hardening | Y | planned | pt-d9d252 |
-| 9 | R35 | Share header hardening | Y | planned | pt-3e6022 |
-| 9 | R36 | Hash-bonus record hardening | Y | planned | pt-31a301 |
-| 10 | R01c | Wallet light mode scan | N | planned | pt-70c71b |
-| 13 | R05 | Book magic on every path | Y | planned | pt-b4c48a |
-| 14 | R30 | Share selection limits | N | planned | pt-119236 |
-| 14 | R32 | Owed ledger bounds | Y | planned | pt-03f76a |
-| 14 | R34 | Idle hash-note rule | Y | planned | pt-7979f6 |
-| 15 | R39 | Share verify cost | N | planned | pt-c86465 |
-| 16 | R04 | Native hash thread safety | N | planned | pt-0e93e3 |
-| 17 | R24 | Test chain fixtures | N | planned |  |
-| 17 | R27 | Real-path money scenarios | N | planned |  |
-| 18 | R14a | Public supply audit tool | N | planned |  |
-| 19 | R31 | Pool owed rows across a restart | N | planned | pt-ed2b6a |
-| 21 | R37 | Miner-side coinbase template check | N | planned | pt-4c6412 |
-| 22 | R08 | Real-data fixtures: consensus paths | N | planned |  |
-| 22 | R11 | Real-data fixtures: the CI guard | N | planned |  |
-| 22 | R12 | Reserve epoch, withdraw and claim follow-ups | Y | planned |  |
-| 22 | R23 | Wallet test failures | N | planned |  |
-| 22 | R38 | Site tests in CI | N | planned |  |
-| 23 | R03 | CLI reserve lock | N | planned |  |
-| 23 | R13 | Wallet copy | N | planned |  |
-| 23 | R14 | Dev-network pin move | Y | planned |  |
-| 24 | R15 | Dev-network deploy and bug hunt | N | planned |  |
-| 24 | R18a | Host rebuild for the mainnet OS split | N | planned |  |
-| 24 | R16 | v12 cut | N | planned |  |
-| 24 | R17 | Stressnet (7-day floor) | N | planned |  |
-| 24 | R18b | Mainnet release deploy | N | planned |  |
-| 24 | R19 | Mainnet genesis | N | planned |  |
-|  | R01 | Transaction digest update | Y | merged |  |
-|  | R09 | Token spec | N | planned |  |
-|  | R10 | Private tokens build | Y | planned |  |
-|  | R20 | Android ABIs beyond arm64-v8a | N | planned |  |
-|  | R21 | Pinned note-set snapshot | Y | planned |  |
-|  | R25 | Epoch rate row | Y | planned |  |
-|  | R40 | Hash key derivation | Y | ruled | pt-1e2d26 |
-|  | R41 | ShearK-Miner optimisation | N | coding |  |
-
-### Row detail (rows without a private ref)
-
-Status note is the full status as last written; the public Status above is its lead word.
-
-| ID | Item | Consensus? | Status note | Owner | Reviewer | Working now | PR | Head SHA | Target |
-|----|------|------------|-------------|-------|----------|-------------|----|----------|--------|
-| R01b | Vault claim post: pool `queuedRewardClaim` takes the FS-1 claim body the wallet sends (found in the PR 107 coverage report: it still expects the old `to` and `proof` shape, so an in-app Vault claim likely fails with `bad_send`). A reproducing test comes first; if confirmed, the fix, a wallet → pool → mempool test and a `double_mint` refusal. **Russell 27 Oct:** the node-side `vaultProof` revive in the block-decode path (`reviveTx`, also the P2P decode) and the wallet prover's epoch-root and period fix (build from the full on-chain epoch tree, not only the wallet's own locks; pass a period, not an epoch) go in this same PR. **Moved here from R01c (Russell 27 Oct):** the wallet's own claimable figure from chain data (lock leaves, closed periods' freeze rows, minus nullifiers minted on chain; never the pool's `claimable`). A launch blocker | Y: the block-decode revive of `vaultProof` (Russell 27 Oct) | planned | Claude | Grok + Vault Security, Pool Share, Wallet, Protocol, pins; exact-diff sign-off |  |  |  | straight after R01, ahead of R01c, R01a and R02 (Russell 26 Oct) |
-| R28 | BluNotes: private share payees and payouts, plus pruning (Russell 27 Oct: privacy not negotiable; payees and amounts fully hidden in shares and coinbase payouts; lean, measured). Design: one-time key (R, P) per share, bound into 48 nonce bits with the job key so each RandomX hash credits one payee (no RandomX or header change); exactly-once work IDs on the proven header with a one-block lookback; a per-block draw of k=16 shares by weight from the block's PoW hash, paid by every node as implicit FS-1 notes (no payee rows, no range proofs, pool learns no address); share bytes in the block budget; compact per-block record (about 1.2 KB, 94% smaller) committed in continuityRoot, with supply checkable from genesis. Retires the owed ledger and spill (closes R31, R32, R36 by removal; R30 moot; R33 folded; R35 reviewed). Renames the two DAG fingerprint labels and removes the unused share_dag parent field in the same pin move. Design note: Desktop PR130-review/R28-private-share-payees-design.md (27 Oct), measured on agent-box. **Russell 27 Oct (provisional, final sign-off by 3 Nov after the Grok team review on 29 Oct):** D1 accepted (payees and earnings hidden; per-winner amount public from PoW; Privacy Auditor to confirm); D2 yes (owed ledger and spill retired, shares scaled within the block; closes R31, R32, R36); D3 k=16 provisional (Mining Economics to say whether 32 is worth the bytes); D4 yes ("this wallet mines" switch, off by default, asks on restore); D5 yes (pruned draws rest on PoW burial; archive nodes keep everything); D6 yes (2 MiB share cap). **Hash bonus (Russell 22 Oct; floor per the PR 116 rulings, 23 Oct): not retired.** R28 retires the owed ledger and spill only. The hash bonus starts at 1 rho per hash unit and moves only by passed governance votes, 1 rho per vote; it has no ceiling, and its total grows with hashrate. Its floor is 0: a governance-set 0 switches the bonus off, and it stays 0 until a vote moves it. `FLOOR 1` is only the clamp for a malformed unit. D2's scaling within the block and D6's 2 MiB share cap bound share bytes and how a block splits its bonus between shares; neither is a per-block ceiling on the hash bonus. If either would bound the total bonus a block pays, that is a ceiling and needs Russell's ruling before R28's pin move | Y: share PoW rule, payout, record commitment; one pin move (testnet, mainnet, mainnetFP, Reserve.json) | coding (rule 16; Russell's GO 27 Oct; draft PR on claude/r28-blunotes; Grok reviews the code from Thu 29 Oct) | Claude | Owner's lanes: Codebase Auditor, Protocol Assailant, Privacy, Public Supply Audit, Wallet UX; Grok cross-review (Y row) |  |  |  | sign-off by 3 Nov to land before the 30 Nov freeze; fallback R28a (a reduced scope) if not signed by 15 Nov (Russell 27 Oct) |
-| R24 | Test chains refused as duplicates (found in R01b, 27 Oct): `test_vault_fs1_funding_v12` fails its before-hook with `append not_heavier` (11 tests cancelled), the same before R01b (0c0f6dc7). **Root cause:** 7ed95f25 (23 Oct, "Reject a lied block hash before it is stored") made `appendProven` take the trusted pow hash as the block id and refuse an id already in the book as `not_heavier` (node/src/store.js). The test's `mine()` passes the same `trustedPowHash: Buffer.alloc(32)` for every block, so its second block is a duplicate. Eight more node tests pass the same constant hash (test_admit_anchor_v12, test_admit_byte_v12, test_fs1_send_gate_v12, test_gate_evm, test_merkle_duplicate_v12, test_reserve_mint, test_typed_inflation_v12, test_work_prop_v12); run nh1 (p2p-b, feat 2f6e9962): all eight pass, since none mines a second block with that hash; only test_vault_fs1_funding_v12 fails. **Fix:** each test gives every block its own hash (as test_dart_withdraw_queue_v12's `nextPow()` does), real data, the store check unchanged; plus a guard that no node test mines two blocks with one trusted hash, and the runs that hid it named in the Review. **Done locally (27 Oct, branch claude/r24-test-block-hashes, 03af0680, unpushed):** helper node/tests/trusted_pow.js `freshPowHash()`; the funding test and test_fs1_send_gate_v12 use it; guard test_trusted_pow_unique_v12 (a real store refuses a reused hash; no node test passes a literal constant to an append) fails at feat (r24g) and passes after (r24f, guard 3/3, send gate 11/11). With its setup unblocked, the funding test shows older drift, 8/19: its non-π lock rows are refused `unsigned`, likely missing `lockAuth` since 325b50f5, and its π twin is refused `duplicate_tx` (5ad292a6) before `admit_link_tag`. It stays on tests/ci_pending.txt under PR 2 with those reasons recorded. test_genesis_pool_seal.js has the same not_heavier class (its PR 3 pending row) and is left until retire-credits lands, since that PR edits it. Not in R01b: neither store.js nor these tests are R01b files. The FS-1 mainnet unlock test that mined withdraw blocks at 17 after claim blocks was folded into R01b instead, since that file is an R01b file (Russell 27 Oct) | N: tests only; store.js and consensus unchanged | planned | Claude | Owner's lanes: Codebase Auditor (test quality, every test file in CI), Protocol Assailant (block validity) |  |  |  | after R01b; before the R16 checklist (Russell 27 Oct) |
-| R27 | Real-path money scenarios (painted sweep part 3, rule 13; Russell 27 Oct): one shared multi-process harness (real node, pool and miner processes on loopback, the real wallet library driven by a Dart program; R01b builds it) and eight scenarios, one per money path: Spendable and receive (0-conf Pending, confirmations, restart, restore); send/Flow (change as Spendable, refused-send copy, 504 or timeout gives "syncing"); lock/deposit; vote with its fee note; vault claim (R01b's); withdraw (matured, multi-portal, refused); restore and receipt spend; pool payouts on chain. Each fake-HTTP test on that path then stays as a labelled unit test or is deleted; the painted servers go once nothing needs them. 234 tests with fakes on money paths, 43 with a partial counterpart, none meeting rule 13 today (Desktop R16-item5-painted-sweep-report.md) | N: tests and harness | planned | Claude | Owner's lanes: Codebase Auditor, Wallet Hardening, FUX |  |  |  | first, early November (Russell 27 Oct, rule 15): the harness gates every later merge ask; scenarios before the R16 cut |
-| R14a | Public supply audit tool: a CLI that reads one's own node and checks, genesis to tip, that emission plus mints minus burns equals the commitment sum with every range proof valid; prints the public supply figure and pass, or fail at the exact height. No phone-home, no pool reliance | N, unless the design needs a consensus change (then Y, with the reason) | planned (lane idle until Thu 29 Oct; spec first, no code before Russell approves it) | Grok (rule 14, Russell 27 Oct; Claude may take it when idle) | Public Supply Audit lane (Claude side) and Supply Auditor (Grok side) |  |  |  | before R15, so it runs on shear-dev and stressnet before genesis |
-| R08 | PR 3a: real-data fixtures, consensus paths | N: tests only | planned | Claude | Owner's lanes: Codebase |  |  |  | 13 Nov (10–15 Nov) |
-| R11 | PR 3b: remaining real-data fixtures and CI guard | N: tests and CI only | planned | Grok | Owner's lanes: Codebase |  |  |  | 21 Nov (17–26 Nov); starts after R08 merges (the shared mining module). Fallback: Claude, after R12 |
-| R12 | Goal 10 A–D: four PR updates (A #117, B #111, C #93, D #107). B stays before mainnet for the Vault claim mint-once test cover. D is trimmed (Russell 26 Oct, approved) to what PR 116's hidden-claim API does not already cover: pool fee-quote stubs and a rewritten `claim_fee_quote_test`; D2, a per-row "Principal unlocked" label with a Withdraw button that stays visible, plus a widget test; D5, `shear_wallet_test` and the claim-fee test in CI; SHA-256 pins on `libshear_v3.so`, checked in CI. D1 is already covered on base. 107's reward-set scan and its RPC, `publishedRewardSets`, `portalClaimableNanos`, `reserveWireBody`, the libshearhash builds, the wallet ASERT copy, the epoch-end unlock clock and `releaseTimeLockPrincipal` are dropped; the last would break D1 and the never-painted rule. The claim post fix is R01b. Android stays arm64-only for launch. E (#98) is folded into R16 (Russell 26 Oct) | Y: A (epoch-end gas) and C (withdraw policy) change consensus | planned | Claude | Grok + Protocol, Vault Security, pins |  |  |  | 25 Nov (20–30 Nov); before the 30 Nov consensus freeze (rule 15) |
-| R23 | The pre-existing wallet Dart failures: 35 test files that fail the same way on feat `dc1422ed` and on PR 130 (native108 and the feat baseline, listed in the PR 130 Review). Each gets a root-cause fix with real data, or a dated ruling; none is left "known" | N: wallet tests and the code they find | planned | Claude | Owner's lanes: Wallet Hardening |  |  |  | before R16; its gate is item 5 of the R16 cut checklist (Russell 27 Oct) |
-| R38 | Site tests are not in CI, and one is stale (found 27 Oct, PR #143): no site/tests/*.js file is in any CI list (tests/ci_shard.js or ci_timings.json), so site/tests/test_mempool.js "paints kind and (pending) for mempool lock/vote" fails unseen on feat 2f6e9962: it expects the copy "Reserve lock and vote appear from mempool", which mempool/index.html no longer has. Fix: wire site/tests into CI, and update the test or the page copy to whichever is right, by root cause | N: tests and CI | planned | Claude | Owner's lanes: Codebase Auditor, Website Analyst |  |  |  | with R23, before the R16 cut |
-| R03 | CLI reserve lock | N: Dart CLI wiring only | planned | Grok | Owner's lanes: Wallet Hardening, pins |  |  |  | TBD (CoS), no earlier than R02's 9 Nov: starts after R02 merges (it builds on the new lock digest; was 31 Oct when R02 was 30 Oct). Fallback: Claude, after R05 |
-| R13 | Wallet copy | N: wallet text and errors only | planned | Grok | Owner's lanes: Wallet Hardening |  |  |  | 27 Nov (22 Nov–2 Dec); starts after R12 merges (D touches `main.dart`). Fallback: Claude, beside R14 |
-| R14 | PR 128 M3: shear-dev pin move | Y: moves the shear-dev pin only; every other pin must equal main | planned | Claude | Grok + Protocol, pins |  |  |  | 27 Nov (22 Nov–3 Dec); before the 30 Nov consensus freeze (rule 15) |
-| R15 | shear-dev deploy GO and live bug hunt | N: operational; fixes found there are their own PRs | planned | Claude | Owner's evaluator lanes; Grok is a second live bug hunter, reporting through the review docs |  |  |  | about 27 Nov (range TBD (CoS)), ahead of the v12 cut around 3 Dec, so R15, then R18a (1–2 days), then R16 fit (was 2 Dec) |
-| R18a | Host rebuild on the mainnet OS split (pool Ubuntu LTS, p2p-a Fedora 44, p2p-b Debian 13; p2p-a and p2p-b rebuilt 30 Oct), so stressnet runs on the mainnet OSes | N: hosts only; agent-box is now the explorer node (Russell 29 Oct, 10:46): whether R18a rebuilds it, and on which OS, is TBD (CoS) | planned | Claude | Owner's evaluator lanes |  |  |  | after R15, before R16 (estimate 1–2 days; the later rows move by that); Hetzner IP persistence checked this week; rebuild scripts written and container-tested in November (rule 15) |
-| R16 | v12 cut (onto the rebuilt hosts), run from the R16 cut checklist below (folded in from #98, Russell 26 Oct) | N: operational; pins checked at the cut | planned | Claude | Owner's lanes: pins |  |  |  | 3 Dec (26 Nov–11 Dec) |
-| R17 | Stressnet (7-day floor) | N: live testnet | planned | Claude | Owner's evaluator lanes; Grok is a second live bug hunter, reporting through the review docs |  |  |  | 10 Dec (3–18 Dec); the full 7 days always; on a slip its start moves, never its length (rule 15) |
-| R18b | Final wipe of testing leftovers and mainnet release deploy (pool, p2p-a, p2p-b; agent-box, the explorer node since Russell 29 Oct 10:46, is in scope or not: TBD (CoS)) | N: hosts only | planned | Claude | Owner's lanes: pins |  |  |  | 18–21 Dec |
-| R19 | Mainnet genesis | N: date fixed by R01 | planned | Claude | Owner's lanes: pins |  |  |  | Mon 21 Dec 2026 14:00 UK (fixed); any move needs Russell's sign-off (rule 15) |
-| R01 | PR 130: digestTx and bundled fixes | Y: `TX_DIGEST=body-v2`, `COINBASE_V=opens`, `COINBASE_NC=dest-bound`, the memo binding (`FS1_MEMO=bound`) and the new mainnet genesis move the testnet, mainnet and mainnetFP pins | merged | Claude | Grok + Protocol, Vault Security, Pool Share, Codebase, Privacy, pins |  | [#130](https://github.com/rgsneddon/shear-testnet/pull/130) | d19c1046 (merged 27 Oct 2026, 14:06 GMT, as 2f6e9962) | 28 Oct (28–29 Oct) |
-| R09 | Token spec (mint.shear.digital), spec only: the first half of the R09–R10 vortice session under rule 11 | N: a spec, no code | planned (post-mainnet) | Claude | Owner's lanes: all lanes |  |  |  | after R19; no date until Russell sets one |
-| R10 | Private tokens build (a vort1 vortice): the second half of the R09–R10 vortice session under rule 11, after the R09 spec is signed off | Y: new tx kind and consensus rules | planned (post-mainnet) | Claude | Grok + all lanes, pins |  |  |  | after R19; no date until Russell sets one |
-| R20 | Android ABIs beyond arm64-v8a | N: wallet packaging only | planned (post-mainnet) | Claude | Owner's lanes: Wallet |  |  |  | after R19; no date until Russell sets one (Russell 26 Oct: arm64-only for launch) |
-| R21 | Pinned note-set snapshot (assumeutxo style): a node may load a UTXO/note-set snapshot whose hash is pinned in the release binary, becomes usable quickly, and still re-verifies from genesis in the background, refusing the snapshot if the result differs. The snapshot can come from anywhere, because the pin is trusted, not the source. No phone-home. Replaces the retired raw-datadir bootstrap (rule 12). **Light wallet privacy (Russell 26 Oct, 20:21 GMT):** the snapshot is public chain data and leaks nothing; light wallet mode is the risk, so it must meet all of these: the wallet downloads every block or output and scans locally, never sends a view key to a node, and never asks a node about specific notes or outputs; it defaults to the user's own node; when it uses someone else's node, remote-node mode shows a plain warning of what that node can still see (IP address and online times); and the Privacy Auditor reviews the design before any code and proposes any network-privacy measure there. **Wallet node setting (Russell 26 Oct, 20:30 GMT):** the user enters their own node's host or IP and port, defaulting to a local node; the wallet checks the node is on the right chain (genesis and pins) before using it; an optional pinned node-key fingerprint keeps a home node reached over the internet from being impersonated; and the remote-node warning shows whenever the node is not on the same machine. The Privacy Auditor reviews it with the rest of R21. No Tor | Y: a pinned snapshot hash in the release binary, and the rule that refuses a snapshot whose background re-verify differs | planned (post-mainnet) | Claude | Grok + Protocol, Privacy Auditor (the light-wallet design, before any code), pins |  |  |  | after R19; no date until Russell sets one (Russell 26 Oct) |
-| R25 | Epoch rate row (option B; Russell 27 Oct): the block that opens each epoch carries a checked coinbase row `{epoch, bps, hashBonusNanos, rr and hb ballot results, leafCount}`, refused by verify when it differs from state (the R01b `freezeCommits` pattern), so the wallet reads each epoch's rate, hash bonus and enacted steps from chain data instead of the pool. Live vote counts stay hidden until a per-block or per-epoch chain row exists (no Dart re-tally); the mint bank and arrival stubs stay hidden until a chain row exists. Design: the design note (private tracker). Also in R25 (Russell 27 Oct): the painted-number sweep of crypto/reserve_vault.js (`publicVaultView`, `portalRewards`), crypto/pot_sched.js and crypto/levy.js. Tests: row equals state, forged and missing rows refused, reorg across an epoch open, the wallet shows the scanned rate and "syncing" before it, pool figures ignored, restart and restore keep the rows, the claim amount equals the mined reward; plus the rule-13 e2e | Y: a new coinbase row and verify rule; fingerprint and pins move | planned (design and tests only until R01b is signed) | Claude | Grok cross-review; Vault Security, Wallet Hardening, Protocol Assailant, Public Supply Audit, pins |  |  |  | after R01b sign-off; no consensus edits before (Russell 27 Oct); batched with R05: one Grok review, one pin move (rule 15); before the 30 Nov freeze |
-| R41 | ShearK-Miner full optimisation (Russell 28 Oct): the fastest, most stable miner for ShearHash-v3 on every shipped platform. **Hard rules:** byte-identical output (every hash, digest, one-time key and nonce binding matches the reference; golden vectors, including the R40 FIPS 180-4 SHA-512 and the R28 C-vs-JS key vectors, run on every build); no algorithm, pin or share-format change (if a speed-up needs one, stop and propose it); privacy unchanged (the --blu flow intact, no telemetry or phone-home, nothing new sent to the pool). **Do:** (1) baseline on agent-box (the explorer node since 29 Oct: run only in a stated window that leaves the explorer unaffected, TBD (CoS)), pool, p2p-a, p2p-b and the Windows pack: H/s per thread, core and watt where possible, plus share-accept rate and latency, with CPU model, flags and OS; (2) profile the hot path (RandomX VM, dataset init, SHA-512 key, nonce binding, stratum I/O), then optimise in order of measured gain: JIT on every arch with an interpreter fallback; huge/large pages with a clean fallback and message; NUMA- and L3-aware placement with auto thread count; runtime CPU-feature dispatch (AES-NI, AVX2, AVX-512, NEON/crypto); hardware AES; lock-free job switching and fast stale drop; compiler flags, LTO and PGO per platform; (3) tests: the full miner suite and vectors on every build; a 12 h+ soak on the active servers (pool, p2p-a or p2p-b; the old soak hosts are retired; which host and window: TBD (CoS)) (H/s stability, memory, accept/reject/stale, no crashes, clean restart); pool and solo end to end with --blu on regtest, including need_key, need_blu and exit 2; a before/after table per host; (4) keep only changes with a measured gain and no failed vector, each reported with its gain, risk and proof; (5) the Windows pack ships the libsodium DLL (R28 269a0893); Apple is a Desktop HANDOFF only (no Mac soak) | N: no consensus, pin or share-format change by rule | coding (rule 16; draft PR on claude/miner-opt, based on R28) | Claude | Owner's lanes: Codebase Auditor, Performance, Privacy (nothing new to the pool) |  |  |  | no merge, release or site change without GO |
+| Priority | ID | Public title | Type | Status | Ref |
+|----------|----|--------------|------|--------|-----|
+| 2 | R01b | Vault claim post from the wallet | Y | planned | rf-5177b4af1d |
+| 3 | R29 | Pool share payee checks | Y | planned | rf-d0839ef12a |
+| 4 | R01a | Coinbase payout key binding | Y | planned | rf-2e557d9aba |
+| 5 | R02 | Vault lock-note binding | Y | planned | rf-b7b9fc3e07 |
+| 6 | R26 | Reserve wallet sync checks | N | planned | rf-943b6598c6 |
+| 7 | R07 | Spend proof update | Y | planned | rf-11afbe39d8 |
+| 8 | R06 | Wire decode and share commitment rules | Y | planned | rf-1bf8b8f04c |
+| 9 | R28 | BluNotes: hidden share payees and payouts | Y | coding | rf-9086c200d6 |
+| 9 | R33 | Share batch encoding | Y | planned | rf-e22ce34431 |
+| 9 | R35 | Share header window | Y | planned | rf-e309e4cfe5 |
+| 9 | R36 | Hash-bonus record root | Y | planned | rf-09460ee09b |
+| 10 | R01c | Wallet light mode scan | N | planned | rf-71f06e541f |
+| 13 | R05 | Book magic on every path | Y | planned | rf-2562fe081f |
+| 14 | R30 | Share selection limits | N | planned | rf-6520f48d0e |
+| 14 | R32 | Owed ledger bounds | Y | planned | rf-066a8681d1 |
+| 14 | R34 | Idle hash-note rule | Y | planned | rf-c15dc8021f |
+| 15 | R39 | Share verify cost | N | planned | rf-04cbd0beae |
+| 16 | R04 | Native hash threading | N | planned | rf-7ccf14ebc7 |
+| 17 | R24 | Test chain fixtures | N | planned | rf-55b80c2d78 |
+| 17 | R27 | Real-path money scenarios | N | planned | rf-dbcfdd6f44 |
+| 18 | R14a | Public supply audit tool | N | planned | rf-b9bfcba500 |
+| 19 | R31 | Pool owed rows across a restart | N | planned | rf-dc88d73b77 |
+| 21 | R37 | Miner-side coinbase template check | N | planned | rf-10ef63d6a8 |
+| 22 | R08 | Real-data fixtures: consensus paths | N | planned | rf-2a19c49185 |
+| 22 | R11 | Real-data fixtures: the CI guard | N | planned | rf-36bb34d706 |
+| 22 | R12 | Reserve epoch, withdraw and claim follow-ups | Y | planned | rf-17df7210ac |
+| 22 | R23 | Wallet test failures | N | planned | rf-acc0e3a1ee |
+| 22 | R38 | Site tests in CI | N | planned | rf-71a44c4a8a |
+| 23 | R03 | CLI reserve lock | N | planned | rf-838af1db41 |
+| 23 | R13 | Wallet copy | N | planned | rf-ffe325a026 |
+| 23 | R14 | Dev-network pin move | Y | planned | rf-cba38bb5a1 |
+| 24 | R15 | Dev-network deploy and bug hunt | N | planned | rf-f99b57fe35 |
+| 24 | R18a | Host rebuild for the mainnet OS split | N | planned | rf-1ab7050b44 |
+| 24 | R16 | v12 cut | N | planned | rf-d41c894997 |
+| 24 | R17 | Stressnet (7-day floor) | N | planned | rf-ae4e9bc994 |
+| 24 | R18b | Mainnet release deploy | N | planned | rf-7fe4eb4baa |
+| 24 | R19 | Mainnet genesis | N | planned | rf-8179034073 |
+|  | R01 | Transaction digest update | Y | merged | rf-df416a59c8 |
+|  | R09 | Token spec | N | planned | rf-5dc8f51c56 |
+|  | R10 | Confidential tokens build | Y | planned | rf-8659713d91 |
+|  | R20 | Android ABIs beyond arm64-v8a | N | planned | rf-1443e24717 |
+|  | R21 | Pinned note-set snapshot | Y | planned | rf-390798bf2a |
+|  | R25 | Epoch rate row | Y | planned | rf-4b8c69dd2a |
+|  | R40 | Hash key derivation | Y | ruled | rf-f11557d2f7 |
+|  | R41 | ShearK-Miner optimisation | N | coding | rf-04db6c04b3 |
 
 **Float (26 Oct, first estimate; superseded by the current float in the agent split note below).** With R09 and R10 after mainnet, the rows from R11 on can run about 6 days (5 to 8) sooner than their targets above. That puts the mainnet release ready around 8–9 Dec on target and 14–18 Dec if every row runs to the late end of its window, against the fixed genesis of 21 Dec 14:00 UK. Without the move it was 14–15 Dec on target, and a late run missed 21 Dec by 1–2 days. The target dates above are unchanged, and the float is not a new date. Plan against it, report any slip that uses it, and an earlier genesis needs Russell's consensus sign-off (rule 8).
 
 **Priority column (Russell, 30 Oct 2026).** Russell's priority order over the rows on `main`; hard dependencies stand (R02 after R01b, R05 after R04, R24 then R27, R37 after R01a). Rows with no number were not in that order and keep their place after the numbered rows, in their previous order: R01 (merged), R09, R10, R20, R21 (post-mainnet), R25, R40, R41. Items in the order that have no row here (#0 roadmap page, FS-1 round 5, the #163 fix round, exact π per lock, the test spread, full Dandelion++) wait for Russell's rows (rule 6). The public page at shear.digital/roadmap is generated from this table by `scripts/build_roadmap_page.mjs`.
 
-**Agent split (Russell 26 Oct, 19:05 GMT).** R03, R04, R11 and R13 are Grok's, and R14a is Grok's under rule 14 (Russell 27 Oct). Each falls back to Claude at the slot in its Target cell if Grok's credits run short, so the split can move with credits; it is not fixed. The heaviest rows stay with Claude: R01–R02, R05, R06, R07, R08, R12, R14 and R15–R19. Grok cross-reviews every `Y` row (rule 7), including R07. A Grok row starts only after the Claude row whose files it shares has merged (rule 4). **Current float (26 Oct, recalculated):** the mainnet release is ready around **8–11 Dec on target** and **14–18 Dec at the late end**, against the fixed genesis of 21 Dec 14:00 UK. That is 10–13 days of float on target and 3–7 days at the late end. This counts R01b (1–2 days) and R01a (2–3 days with the design GO) on Claude's path, which the earlier figure missed. It also counts R04 landing on Grok's own VPS by about 2 Nov, so R05 most likely does not wait for it. **The main risk is R15**, the shear-dev bug hunt: if it runs long it eats most of the float, so watch it closely once shear-dev starts. These are estimates. The target dates above are unchanged.
+**Agent split (Russell 26 Oct, 19:05 GMT).** R03, R04, R11 and R13 are Grok's, and R14a is Grok's under rule 14 (Russell 27 Oct). Each falls back to Claude at the slot in its Target cell if Grok's credits run short, so the split can move with credits; it is not fixed. The heaviest rows stay with Claude: R01–R02, R05, R06, R07, R08, R12, R14 and R15–R19. Grok cross-reviews every `Y` row (rule 7), including R07. A Grok row starts only after the Claude row whose files it shares has merged (rule 4). **Current float (26 Oct, recalculated):** the mainnet release is ready around **8–11 Dec on target** and **14–18 Dec at the late end**, against the fixed genesis of 21 Dec 14:00 UK. That is 10–13 days of float on target and 3–7 days at the late end. This counts R01b (1–2 days) and R01a (2–3 days with the design GO) on Claude's path, which the earlier figure missed. It also counts R04 landing on its own server by about 2 Nov, so R05 most likely does not wait for it. **The main risk is R15**, the shear-dev bug hunt: if it runs long it eats most of the float, so watch it closely once shear-dev starts. These are estimates. The target dates above are unchanged.
 
-R01a and R14a were added by Russell on 26 Oct. R01a is its own PR straight
-after R01, design first; its detail is in the private tracker. R14a is the
-public supply audit tool with its own review lane
-(Public Supply Audit on the Claude side, Supply Auditor on the Grok side), idle until Thu 29
-Oct after the credit reset. Its owner is Grok (rule 14, Russell 27 Oct);
-any change made at the 29 Oct 15:00 alignment is TBD (CoS).
+R01a and R14a were added by Russell on 26 Oct; their detail is in the maintainers' tracker.
 
 R03 (CLI reserve lock) stays where it is (Russell, 25 Oct). R09 (token
-spec) and R10 (private tokens build, a vort1 vortice) moved to after mainnet
+spec) and R10 (confidential tokens build, a vort1 vortice) moved to after mainnet
 genesis as one dedicated vortice session under rule 11, with no date until
 Russell sets one. The other rows did not move (Russell, 26 Oct). This file is the source of truth; the xlsx is not kept in
 step.
@@ -340,16 +302,10 @@ tree at the cut; none of these steps has run. Every step needs Russell's GO.
    3. Find every test that uses a fake HTTP client on a money or Spendable
       path, and give each one a real-path counterpart (rule 13).
 
-## R18a and R18b detail: mainnet hosts and OS split
+## R18a and R18b: mainnet hosts and OS split
 
-Each wipe or reinstall needs Russell's GO, one host at a time.
-
-| Host | IP | OS |
-|------|----|----|
-| pool | `<pool-host>` | Ubuntu Server LTS (current release) |
-| p2p-a | `<p2p-a-host>` | Fedora 44 (rebuilt 30 Oct) |
-| p2p-b | `<p2p-b-host>` | Debian 13 (rebuilt 30 Oct) |
-| agent-box (explorer node, Russell 29 Oct, 10:46) | TBD (CoS) | TBD (CoS); whether R18a and R18b cover it is TBD (CoS) |
+Each wipe or reinstall needs Russell's GO, one host at a time. Which host runs which OS is
+kept in the maintainers' tracker.
 
 Why: OS diversity. One distro's bad update, kernel bug or package compromise
 cannot take down all three hosts. A clean start means users mine, download
@@ -374,7 +330,7 @@ Before the rebuild:
 4. Back up only what is needed. No testnet datadir or `tip.json` copies.
 5. IP independence: no client, wallet, miner config, seed list or doc
    hardcodes a host IP; everything points to DNS names. Check whether
-   Hetzner's Rebuild keeps each IP (if not, keep a Primary IP). If an IP does
+   the provider's rebuild keeps each IP (if not, reserve the IP). If an IP does
    change, lower the DNS TTL 48 hours ahead, then update the DNS records and
    the firewall allowlists.
 

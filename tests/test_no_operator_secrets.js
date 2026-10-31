@@ -7,17 +7,6 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { namesOperatorHost } from './operator_host.js';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function walk(dir, acc = []) {
-  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (ent.name === 'node_modules' || ent.name === '.git' || ent.name === 'build'
-      || ent.name === 'dist' || ent.name === '.dart_tool' || ent.name === 'target') continue;
-    const p = path.join(dir, ent.name);
-    if (ent.isDirectory()) walk(p, acc);
-    else acc.push(p);
-  }
-  return acc;
-}
-
 describe('no operator secrets in the public tree', () => {
   it('never ships the operator admin hostname, in any tracked file, these tests included', () => {
     const files = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
