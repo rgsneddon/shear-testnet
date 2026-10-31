@@ -16,7 +16,7 @@ const { PUBLIC_COLUMNS, buildRoadmapPage, parseRoadmap, publicRows } = page;
 /** Synthetic deny hashes: the hash is written out here, not computed by the code under test. */
 const SALT = '0123456789abcdef0123456789abcdef';
 const sha = (canonical) => createHash('sha256').update(`${SALT}:${canonical}`).digest('hex');
-const DENY_HASHES = Object.freeze({ salt: SALT, hashes: [sha('zzhost'), sha('examplelanename')] });
+const DENY_HASHES = Object.freeze({ salt: SALT, hashes: [sha('zzhost'), sha('quillwarddesk')] });
 
 const HEADER = '| Priority | ID | Public title | Type | Status | Ref |\n'
   + '|----------|----|--------------|------|--------|-----|\n';
@@ -241,11 +241,11 @@ describe('roadmap page generator', () => {
 
   it('hashed deny terms are refused in any spelling: spaced, dashed, underscored, joined, any case', () => {
     for (const title of ['Rebuild zz-host first', 'Rebuild ZZ host first', 'Rebuild zz_host first', 'Rebuild zzhost first', 'Rebuild ZzHost first', 'Rebuild z\u200Bz-host first',
-      'example lane name sign-off', 'Example_Lane_Name sign-off', 'ExampleLaneName sign-off']) {
+      'quill ward desk sign-off', 'Quill_Ward_Desk sign-off', 'QuillWardDesk sign-off', 'Quill-Ward desk sign-off']) {
       assert.throws(() => planted(title, { deny: [] }), /public-safety.*deny-list/, title);
     }
     assert.match(planted('Rebuild the zz cluster host first', { deny: [] }), /R50/, 'only a whole run of the term');
-    assert.match(planted('Example lane-free name', { deny: [] }), /R50/);
+    assert.match(planted('Quill and ward desk sign-off', { deny: [] }), /R50/, 'the words apart are not the term');
   });
 
   it('plain tracker terms are refused too, in any case, and only when listed', () => {
@@ -267,7 +267,7 @@ describe('roadmap page generator', () => {
     const base = doc(ROWS);
     assert.doesNotThrow(() => page.assertPublicDoc(base, opts()));
     for (const leak of ['Rebuild build-box first.', 'Rebuild p2p-q first.', 'Rebuild p2p_q first.', 'Check whether Hetzner keeps the IP.', 'Rent a VPS.',
-      'Design note: Desktop notes/r28.md.', 'Logs in /root/claude-ci.', 'Host 203.0.113.7.', 'Measured on the zz host.', 'Measured on zz_host.', 'Reviewed by ExampleLaneName.']) {
+      'Design note: Desktop notes/r28.md.', 'Logs in /root/claude-ci.', 'Host 203.0.113.7.', 'Measured on the zz host.', 'Measured on zz_host.', 'Reviewed by QuillWardDesk.']) {
       assert.throws(() => page.assertPublicDoc(`${base}\n${leak}\n`, opts()), /public-safety/, leak);
       assert.throws(() => buildRoadmapPage(`${base}\n${leak}\n`, opts()), /public-safety/, `build: ${leak}`);
     }
