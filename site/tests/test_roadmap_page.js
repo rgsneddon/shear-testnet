@@ -232,6 +232,34 @@ describe('roadmap page generator', () => {
     'owner name': 'russell to rule',
     'agent name': 'cos routes this',
     pid: 'Watch PID 4242',
+    'severity form severest': 'Severest share item',
+    'severity short form sev': 'Hi-sev pool item',
+    'code with a slash': 'PA/3 follow-up',
+    'lower-case spaced code': 'pool pa 3 work',
+    'weak word': 'Weak share rule',
+    'lane form red teamers': 'Red teamers retest',
+    'lane form reviewing': 'Reviewing round two',
+    'lane form assessors': 'Assessors signed',
+    'lane form testers': 'Testers signed',
+    'replay word': 'Share replay guard',
+    'double-spend word': 'Double-spend guard',
+    'crash word': 'Relay crash on decode',
+    'race word': 'Race in the owed ledger',
+    'fraud word': 'Payout fraud check',
+    'cheat word': 'Miner cheating check',
+    'abuse word': 'Faucet abuse limits',
+    'exposure word': 'View key exposure',
+    'disclosure word': 'Balance disclosure fix',
+    'unauthorised word': 'Unauthorised withdraw path',
+    'escalation word': 'Admin escalation path',
+    'web attack acronym': 'Admin XSS fix',
+    'sybil word': 'Sybil share flood',
+    'eclipse word': 'Peer eclipse guard',
+    'poisoning word': 'Cache poisoning guard',
+    'impersonation word': 'Node impersonation guard',
+    'counterfeit word': 'Counterfeit note check',
+    'loophole word': 'Fee loophole closed',
+    'panic word': 'Decoder panic on input',
   };
   for (const [name, title] of Object.entries(DENIED)) {
     it(`the deny-list refuses a ${name}, in any case`, () => {
@@ -246,6 +274,11 @@ describe('roadmap page generator', () => {
     }
     assert.match(planted('Rebuild the zz cluster host first', { deny: [] }), /R50/, 'only a whole run of the term');
     assert.match(planted('Quill and ward desk sign-off', { deny: [] }), /R50/, 'the words apart are not the term');
+    for (const title of ['Two zz hosts', 'Rebuild zzhosts first', 'Rebuild zz-hostes first', 'Rebuild zz host2 first', 'Rebuild ZzHost07 first', 'QuillWardDesks sign-off']) {
+      assert.equal(page.namesHashedTerm(title, DENY_HASHES), true, title);
+      assert.throws(() => planted(title, { deny: [] }), /public-safety.*deny-list/, title);
+    }
+    assert.equal(page.namesHashedTerm('Rebuild the cluster first', DENY_HASHES), false);
   });
 
   it('plain tracker terms are refused too, in any case, and only when listed', () => {
@@ -267,7 +300,8 @@ describe('roadmap page generator', () => {
     const base = doc(ROWS);
     assert.doesNotThrow(() => page.assertPublicDoc(base, opts()));
     for (const leak of ['Rebuild build-box first.', 'Rebuild p2p-q first.', 'Rebuild p2p_q first.', 'Check whether Hetzner keeps the IP.', 'Rent a VPS.',
-      'Design note: Desktop notes/r28.md.', 'Logs in /root/claude-ci.', 'Host 203.0.113.7.', 'Measured on the zz host.', 'Measured on zz_host.', 'Reviewed by QuillWardDesk.']) {
+      'Design note: Desktop notes/r28.md.', 'Logs in /root/claude-ci.', 'Host 203.0.113.7.', 'Measured on the zz host.', 'Measured on zz_host.', 'Reviewed by QuillWardDesk.',
+      'Notes in C:/Users/ops/notes.', 'Notes in /Users/ops/notes.', 'Notes in ~/notes.', 'Peer at 2001:db8:0:1::7.', 'Open ports 22, 80, 443 and 30303 only.']) {
       assert.throws(() => page.assertPublicDoc(`${base}\n${leak}\n`, opts()), /public-safety/, leak);
       assert.throws(() => buildRoadmapPage(`${base}\n${leak}\n`, opts()), /public-safety/, `build: ${leak}`);
     }
@@ -428,6 +462,36 @@ describe('the deny list fails closed without the tracker', () => {
     }
   });
 
+  it('a deny term the hash path could never match is refused: more than four words, or nothing left after canonical form', () => {
+    for (const bad of [['one two three four five'], ['\u00E9\u00E8'], ['  ']]) {
+      const hashes = { salt: SALT, hashes: [sha('zzhost')] };
+      assert.throws(() => page.assertDenyHashesMatch(bad, hashes), /deny term/, JSON.stringify(bad));
+    }
+    const tracker = '# T\n\n## Page deny list\n\n- zz-host\n- one two three four five\n';
+    const dir = scratchRepo({ markdown: doc(ROWS), hashes: DENY_HASHES });
+    try {
+      fs.writeFileSync(path.join(dir, 'docs', 'ROADMAP.tracker.md'), tracker);
+      const run = runBuild(dir, '--write-deny-hashes');
+      assert.notEqual(run.status, 0, 'a five-word term is not written');
+      assert.match(run.stderr, /deny term/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('--check reads the committed page with either line ending', () => {
+    const dir = scratchRepo({ markdown: doc(ROWS), hashes: DENY_HASHES });
+    try {
+      assert.equal(runBuild(dir).status, 0);
+      const out = path.join(dir, 'site', 'roadmap', 'index.html');
+      fs.writeFileSync(out, fs.readFileSync(out, 'utf8').replace(/\n/g, '\r\n'));
+      const run = runBuild(dir, '--check');
+      assert.equal(run.status, 0, run.stderr);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('docs/roadmap-deny.json is committed: a 32-hex salt and only sha256 hashes, no term in plain', () => {
     const tracked = execFileSync('git', ['ls-files', '--', 'docs/roadmap-deny.json'], { cwd: repoRoot, encoding: 'utf8' }).trim();
     assert.equal(tracked, 'docs/roadmap-deny.json');
@@ -448,7 +512,7 @@ describe('the deny list fails closed without the tracker', () => {
     for (const term of terms) {
       const words = term.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
       for (const spelling of [term, term.toUpperCase(), words.join(' '), words.join('_'), words.join('-'), words.join('')]) {
-        assert.throws(() => planted(`Rebuild ${spelling} first`, { denyHashes: h, deny: [] }), /public-safety/, 'a tracker term in one spelling');
+        assert.equal(page.namesHashedTerm(`Rebuild ${spelling} first`, h), true, 'a tracker term in one spelling, by the hash path itself');
       }
     }
   });
@@ -507,6 +571,8 @@ describe('the committed roadmap page and its links', () => {
       assert.deepEqual(named, [], `${r.ID} has no detail line in the public file`);
     }
     assert.doesNotMatch(md, /^\|\s*Host\s*\|/m, 'no host table');
+    assert.doesNotMatch(md, /\b(?:ubuntu|debian|fedora)\s+(?:pool|nodes?|hosts?)\b|peering with the \w+ pool/i, 'no OS named for a host role');
+    assert.doesNotMatch(md, /\b(?:ufw|nftables|firewalld)\s+on\s+(?:ubuntu|debian|fedora)\b/i, 'no per-OS firewall plan');
     assert.doesNotThrow(() => page.assertPublicDoc(md, { denyHashes: committedHashes(), deny: trackerTerms() }));
     assert.doesNotMatch(md, /\bH\d{1,2}\b/, 'no finding code of the share research');
     assert.doesNotMatch(md, /\*\*(?:high|medium|low)\b/i, 'no severity mark');
@@ -530,6 +596,7 @@ describe('the committed roadmap page and its links', () => {
     assert.match(wf, /node scripts\/build_roadmap_page\.mjs --check/);
     assert.match(wf, /node --test site\/tests\/test_roadmap_page\.js/);
     assert.doesNotMatch(wf, /ROADMAP\.(?:tracker|private)\.md/, 'CI never has the tracker; the hashes stand in for it');
+    assert.match(wf, /^permissions:\s*\n\s+contents: read/m, 'the job only reads');
   });
 
   it('the Docs page links to the roadmap; the navbar and the template lock do not change', () => {

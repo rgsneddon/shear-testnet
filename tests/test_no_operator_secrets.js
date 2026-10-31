@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { namesOperatorHost } from './operator_host.js';
+import * as operatorHost from './operator_host.js';
+import { createHash } from 'node:crypto';
+
+const { namesOperatorHost } = operatorHost;
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('no operator secrets in the public tree', () => {
@@ -30,6 +33,15 @@ describe('no operator secrets in the public tree', () => {
     assert.match(salt, /^[0-9a-f]{32}$/);
     assert.equal(namesOperatorHost('server_name mypool.site; admin at pool.shear.digital'), false);
     assert.equal(namesOperatorHost(''), false);
+  });
+
+  it('the hash check fires on its word in any case and inside a vhost file name, and on nothing else', () => {
+    const salt = 'ab'.repeat(16);
+    const check = operatorHost.makeHostCheck(salt, createHash('sha256').update(salt + ':zzdesk').digest('hex'));
+    assert.equal(check('server_name ZZDESK.shear.digital;'), true);
+    assert.equal(check('deploy/nginx-zzdesk.shear.digital.conf'), true);
+    assert.equal(check('zz desk and zzdesks'), false, 'whole words only');
+    assert.equal(check(''), false);
   });
 
   it('.gitignore keeps an untracked operator vhost out of git; every tracked public vhost stays in', () => {
